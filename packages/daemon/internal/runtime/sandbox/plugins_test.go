@@ -80,7 +80,7 @@ func TestAnInstallingLaunchWrapsTheAgentArgvInTheInstallScript(t *testing.T) {
 		}
 	}
 	rest := agent[5:]
-	plain := l.agentArgv(r)
+	plain := l.agentArgv(r.agent)
 	// The agent argv the script wraps is the same shape a plain launch's is, less its roots,
 	// which name the installed pair instead of the image's.
 	envoy, legion := pluginRoots(genDir)
@@ -264,7 +264,7 @@ func TestAClaudeLaunchsStartScriptMakesItsConfigurationDirectory(t *testing.T) {
 	if len(agent) < 5 || agent[0] != "/bin/sh" || agent[1] != "-c" || agent[3] != startName || agent[4] != "0" {
 		t.Fatalf("the agent command is %q, want /bin/sh -c <script> %s 0 <agent argv…>", agent, startName)
 	}
-	if got, want := agent[5:], l.agentArgv(r); !slices.Equal(got, want) {
+	if got, want := agent[5:], l.agentArgv(r.agent); !slices.Equal(got, want) {
 		t.Errorf("the wrapped agent argv is %q, want the Claude command %q", got, want)
 	}
 	stateHome := roleStateHome(spec.Role)
@@ -815,7 +815,7 @@ func TestASetupCommandWrapsEveryStartOfEveryRole(t *testing.T) {
 			if got := agent[5:8]; !slices.Equal(got, testSetup) {
 				t.Errorf("the setup words are %q, want %q", got, testSetup)
 			}
-			if got, want := agent[8:], l.agentArgv(r); !slices.Equal(got, want) {
+			if got, want := agent[8:], l.agentArgv(r.agent); !slices.Equal(got, want) {
 				t.Errorf("the wrapped agent argv is %q, want the plain launch's %q", got, want)
 			}
 			if script := agent[2]; strings.Contains(script, "acme/agent-skills") || strings.Contains(script, "bun add") {

@@ -223,10 +223,15 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err := r.dispatchCredential(&l); err != nil {
 		return runtime.Locator{}, err
 	}
-	// So is whether its Oh My Pi resumes by id (trades): a launch that does, with no id Oh My Pi
-	// can read as one, is refused here, before anything of the pod is touched, and a launch that
-	// trades nothing resumes by its file as before (ompResumeRefusal).
-	if err := l.ompResumeRefusal(r); err != nil {
+	// So is whether its Oh My Pi starts under an id the runtime chose (trades): prepare chose one
+	// where the configuration trades, and a launch that keeps a pod that trades nothing drops it
+	// here, once, so each reader of l.omp reads it alone (ompInputs). A launch that resumes by id,
+	// with no id Oh My Pi can read as one, is refused here, before anything of the pod is touched,
+	// and a launch that trades nothing resumes by its file as before (ompResumeRefusal).
+	if !l.trades(r) {
+		l.omp = ompInputs{}
+	}
+	if err := l.ompResumeRefusal(); err != nil {
 		return runtime.Locator{}, fmt.Errorf("launch %s: %w", spec.Claim, err)
 	}
 	if installing && replace {

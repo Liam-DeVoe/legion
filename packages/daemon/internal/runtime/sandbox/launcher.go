@@ -841,7 +841,7 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 		files[claudeMCPFile] = l.claude.mcp
 	}
 	agentArgv := startArgv(roleStateHome(l.spec.Role), l.spec.Generation, l.spec.Plugins, claudeDir, r.setup,
-		l.agentArgv(r), installLockWait(r.bootTimeout, r.registrationIntervals))
+		l.agentArgv(r.agent), installLockWait(r.bootTimeout, r.registrationIntervals))
 	return shimwire.LauncherStart{
 		ID: "start-" + fmt.Sprint(l.spec.Generation), Generation: l.spec.Generation,
 		Argv: append(shim, append([]string{"--"}, agentArgv...)...), Env: values, Files: files,

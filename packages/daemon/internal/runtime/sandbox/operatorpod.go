@@ -194,7 +194,11 @@ func podVariables(pod Pod, launchSecrets []string, exchange PodExchange) map[str
 // volume and mount path Legion's, and refused; a deployment that names no exchange audience keeps
 // them the operator's, as before the key existed. Only under ExchangeAndBroker, where it sets
 // dispatch_token_broker, is DISPATCH_TOKEN_BROKER (brokerOwned) Legion's and refused in the same
-// way. configure runs it, and the daemon before its boot and for `legion config check`.
+// way; there a provider key may not be DISPATCH_TOKEN or DISPATCH_TOKEN_FILE either, since each
+// role trades its pod's identity for its own Dispatch token and the providers Secret may hold no
+// shared one. The shim refuses those two keys at each start as well (shim.ReadProviderEnv), as
+// the last check; this refusal names the key before any pod starts. configure runs it, and the
+// daemon before its boot and for `legion config check`.
 func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecrets, providersSecrets []string, store ompsessions.Store, exchange PodExchange) error {
 	sessionDSNKey := store.DSNSecretKey()
 	if slices.Contains(providersSecrets, sessionDSNKey) {
@@ -262,6 +266,9 @@ func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecret
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(providerKeys)) {
+		if exchange == ExchangeAndBroker && (name == dispatchTokenKey || name == dispatchTokenKey+"_FILE") {
+			return fmt.Errorf("provider_keys names %s, a Dispatch credential, under dispatch_token_broker: each role trades its pod's identity for its own Dispatch token, so the providers Secret may hold no shared one; remove the key", name)
+		}
 		if name == ompsessions.DSNFileName {
 			return fmt.Errorf("provider_keys names %s, the file the providers volume mounts the session database's URL as (runtime.kubernetes.session_store): two of the volume's items would share that path", name)
 		}

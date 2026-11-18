@@ -212,7 +212,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "dispatch_token_broker", Default: "`false`: the daemon presents the bearer `dispatch_token_file` names and hands each launch a copy", RequiredBy: "no",
-			Description: "Whether the daemon's Dispatch credential is its own pod identity, traded at the secrets broker for a token of its own projects, in place of `dispatch_token_file`, which it is refused beside; a launch then carries no Dispatch token, since each role trades its pod's exchange identity for its own, so only `runtime: kubernetes` takes it, with `dispatch_url` and `runtime.kubernetes.agent_secrets.exchange_audience`.",
+			Description: "Whether the daemon's Dispatch credential is its own pod identity, traded at the secrets broker for a token of its own project, in place of `dispatch_token_file`, which it is refused beside; a launch then carries no Dispatch token, since each role trades its pod's exchange identity for its own, so only `runtime: kubernetes` takes it, with `dispatch_url` and `runtime.kubernetes.agent_secrets.exchange_audience`.",
 			Read:        reads(readBool, func(f *fileConfig, v *bool) { f.DispatchTokenBroker = v }),
 		},
 		{

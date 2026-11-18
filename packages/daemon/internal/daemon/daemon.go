@@ -298,7 +298,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// broker, whose first trade and Dispatch's reading of it wait out a broker or a Dispatch that
 	// does not answer, which the boot budget does not bound, as it does not bound the plugin gate.
 	environ := o.environment()
-	dispatchTransport, dispatchBroker, err := dispatchCredential(ctx, cfg, plan.dispatchToken, func(name string) string {
+	dispatchTransport, err := dispatchCredential(ctx, cfg, plan.dispatchToken, func(name string) string {
 		value, _ := envValue(environ, name)
 		return value
 	}, log)
@@ -309,7 +309,6 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 		return err
 	}
-	plan.dispatchBroker = dispatchBroker
 
 	// The boot's first budget starts once the plugin gate and the Dispatch credential have passed,
 	// which no budget bounds (bootTimeout). The loops the boot starts take marks of their own, since
@@ -722,9 +721,8 @@ func closeStore(st *store.Store, log *slog.Logger) {
 const dispatchCredentialLine = "legion daemon's Dispatch credential"
 
 // dispatchCredential settles, at boot and before anything opens (run), the credential every
-// Dispatch call of the daemon's presents, as the transport openWorkflow's client sends through,
-// and under dispatch_token_broker the broker client that trades for it, which the daemon keeps
-// (plan.dispatchBroker). Without dispatch_url there is neither, and it logs nothing.
+// Dispatch call of the daemon's presents, as the transport openWorkflow's client sends through.
+// Without dispatch_url there is none, and it logs nothing.
 //
 // Without dispatch_token_broker the transport presents dispatchToken, the bearer
 // dispatch_token_file names (readBoot), as the client always has (dispatch.BearerTransport). With
@@ -747,17 +745,17 @@ const dispatchCredentialLine = "legion daemon's Dispatch credential"
 // The transition token dispatch_token_transition_file holds (sandbox.DispatchCredential.Transition)
 // is never this credential: it is the sandbox runtime's alone, for a launch into a pod built before
 // the setting.
-func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken string, getenv func(string) string, log *slog.Logger) (http.RoundTripper, *brokerclient.Client, error) {
+func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken string, getenv func(string) string, log *slog.Logger) (http.RoundTripper, error) {
 	switch {
 	case cfg.DispatchURL == "":
-		return nil, nil, nil
+		return nil, nil
 	case !cfg.DispatchTokenBroker:
 		log.Info(dispatchCredentialLine, "credential", "file", "file", cfg.DispatchTokenFile)
-		return dispatch.BearerTransport(dispatchToken, http.DefaultTransport), nil, nil
+		return dispatch.BearerTransport(dispatchToken, http.DefaultTransport), nil
 	}
 	client, broker, err := daemonBrokerClient(cfg, getenv, log)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	session := dispatch.DaemonSession(cfg.Project)
 	var held *brokerclient.Token
@@ -767,7 +765,7 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken st
 		return err
 	}, bootTimeout, tradeTransient))
 	if err != nil {
-		return nil, nil, fmt.Errorf("dispatch_token_broker: the daemon's Dispatch credential, a token of the session %s, cannot be traded at %s: %w", session, broker, err)
+		return nil, fmt.Errorf("dispatch_token_broker: the daemon's Dispatch credential, a token of the session %s, cannot be traded at %s: %w", session, broker, err)
 	}
 	transport := brokerclient.NewTokenTransport(client, http.DefaultTransport)
 	daemonDispatch := dispatch.New(cfg.DispatchURL, transport)
@@ -778,10 +776,10 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken st
 		return err
 	}, bootTimeout, dispatch.Unreachable))
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := checkDaemonCaller(caller, cfg.Project); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	go renewDispatchCredential(ctx, client, held, session, log)
 	attrs := []any{"credential", "broker", "session", session}
@@ -789,7 +787,7 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken st
 		attrs = append(attrs, "transitionFile", cfg.DispatchTokenTransitionFile)
 	}
 	log.Info(dispatchCredentialLine, attrs...)
-	return transport, client, nil
+	return transport, nil
 }
 
 // renewDispatchCredential renews the daemon's Dispatch token off the request path until ctx ends,
@@ -967,12 +965,6 @@ type plan struct {
 	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch, and
 	// under dispatch_token_broker, whose credential is the daemon's own (dispatchCredential).
 	dispatchToken string
-	// dispatchBroker is the broker client whose token every Dispatch call of the daemon's presents
-	// under dispatch_token_broker (dispatchCredential), set once boot has made its first trade; nil
-	// without the setting. Its renewal loop runs on this same client (renewDispatchCredential), and
-	// nothing reads the field yet: the daemon's listener caller, when one is added, is to take this
-	// client rather than trade for a token of its own.
-	dispatchBroker *brokerclient.Client
 	// hookPrompts are the words boot read for each hook whose `prompt_file` names a file, by
 	// hook name (readBoot): the engine is given words and never a path (engineConfig).
 	hookPrompts map[string]string

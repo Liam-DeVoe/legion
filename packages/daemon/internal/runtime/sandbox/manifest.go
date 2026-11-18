@@ -399,9 +399,10 @@ type launch struct {
 	// claude is what a Claude Code launch needs beyond an Oh My Pi one, resolved once in prepare
 	// and zero for every other backend (claudeInputs).
 	claude claudeInputs
-	// omp is the session an Oh My Pi launch whose configuration trades an exchange identity starts
-	// its agent under, resolved once in prepare, and zero for a Claude Code launch and for every
-	// launch the configuration gives no exchange identity (ompInputs).
+	// omp is the session an Oh My Pi launch that trades an exchange identity starts its agent
+	// under (ompInputs): prepare fills it where the configuration trades, and relaunch clears it
+	// for a launch that keeps a pod that trades nothing, so it is zero for a Claude Code launch and
+	// for every launch that trades nothing, and its readers ask nothing else.
 	omp ompInputs
 	// kept is what the live pod this launch keeps rather than replaces already carries for its
 	// role, read from that pod's stored template (relaunch's keptBy). Nil is a launch that builds
@@ -627,11 +628,13 @@ type claudeInputs struct {
 // starts its agent under, decided before the pod is touched as a Claude Code launch's is
 // (claudeInputs): the id its agent command names (agentArgv) is the id the runtime answers for the
 // launch (nameSession, LaunchSession), which the daemon registers for the pod at the shim's hello,
-// before the agent registers (supervise's ensureRegistered). prepare resolves it where the
-// configuration trades. A launch into a kept pod that trades nothing (keptPod.trades) names no id
-// and keeps the argv it had before the runtime chose one: such a pod may run the Oh My Pi of an
-// image older than `--session-id`, which refuses a flag it does not know, and a role that trades
-// nothing gains nothing from a chosen id.
+// before the agent registers (supervise's ensureRegistered). prepare fills it where the
+// configuration trades, and relaunch clears it, once it knows the pod it keeps, for a launch into
+// a kept pod that trades nothing (keptPod.trades). So an Oh My Pi launch's is zero exactly when
+// the launch trades nothing, and each reader decides from it alone (agentArgv, nameSession,
+// ompResumeRefusal): such a launch names no id and keeps the argv it had before the runtime chose
+// one, since its pod may run the Oh My Pi of an image older than `--session-id`, which refuses a
+// flag it does not know, and a role that trades nothing gains nothing from a chosen id.
 type ompInputs struct {
 	// session is the id the agent command names: the one the claim recorded when the launch
 	// resumes, and a fresh UUIDv7 otherwise (ompSessionOf). It is "" for a resume that has no id
@@ -670,15 +673,16 @@ func ompSessionOf(spec runtime.SpawnSpec) (ompInputs, error) {
 	return ompInputs{resume: true}, nil
 }
 
-// ompResumeRefusal refuses a launch that trades (trades, read of the pod it keeps where it keeps
-// one) and resumes, when the id it would pass as `--resume <id>` is none Oh My Pi reads as a
-// session id: there is none, because the claim recorded none and its file's name gives none
-// (`--resume <id>` takes no path), or the id has a shape no session id has (sessionIDFault), such
-// as one an argument parser would take for a flag. relaunch asks it once the pod it keeps is
-// known and before anything of the pod is touched, so the refusal reaches the supervisor as the
-// launch's own. A launch that trades nothing resumes by the file as before and is refused nothing.
-func (l launch) ompResumeRefusal(r *Runtime) error {
-	if !l.trades(r) || !l.omp.resume {
+// ompResumeRefusal refuses a launch that trades and resumes (l.omp.resume, which relaunch clears
+// for a launch that keeps a pod that trades nothing), when the id it would pass as `--resume <id>`
+// is none Oh My Pi reads as a session id: there is none, because the claim recorded none and its
+// file's name gives none (`--resume <id>` takes no path), or the id has a shape no session id has
+// (sessionIDFault), such as one an argument parser would take for a flag. relaunch asks it once
+// the pod it keeps is known and before anything of the pod is touched, so the refusal reaches the
+// supervisor as the launch's own. A launch that trades nothing resumes by the file as before and
+// is refused nothing.
+func (l launch) ompResumeRefusal() error {
+	if !l.omp.resume {
 		return nil
 	}
 	if l.omp.session == "" {
@@ -772,9 +776,8 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 		}
 	}
 	// An Oh My Pi launch that trades starts its agent under an id the runtime chose (ompInputs).
-	// Here trades is the configuration's answer, for the pod a launch builds; a launch that keeps
-	// a pod that trades nothing reads the pod's answer once relaunch knows it (keptBy), and names
-	// none of this (agentArgv, nameSession) and is refused nothing for it (ompResumeRefusal).
+	// Here trades is the configuration's answer, for the pod a launch builds; relaunch clears the
+	// choice for a launch that keeps a pod that trades nothing, once it knows that pod (keptBy).
 	if !l.runsClaude() && l.trades(r) {
 		omp, err := ompSessionOf(spec)
 		if err != nil {
@@ -853,12 +856,12 @@ func SessionFromVolume(file, root string) (string, error) {
 // on the `default` role, the session, then RPC mode and `--append-system-prompt` naming the file
 // the launcher writes the launch's system prompt to (systemPromptPath), never the text.
 //
-// The session is the one prepare chose where the launch trades an exchange identity (trades, read
-// of the pod the launch keeps where it keeps one: ompInputs): `--session-id <id>` for a launch
-// that starts a session and `--resume <id>` for one that resumes, and no path, while the start
-// command still names the recorded file (launcherCommand's ResumeFile), by which the launcher
-// looks the session up. A launch that trades nothing names no id: `--resume=<file>` on the
-// recorded session when it resumes, and nothing when it starts one.
+// The session is the one prepare chose where the launch trades an exchange identity (ompInputs,
+// which is zero for a launch that trades nothing): `--session-id <id>` for a launch that starts a
+// session and `--resume <id>` for one that resumes, and no path, while the start command still
+// names the recorded file (launcherCommand's ResumeFile), by which the launcher looks the session
+// up. A launch that trades nothing names no id: `--resume=<file>` on the recorded session when it
+// resumes, and nothing when it starts one.
 //
 // Oh My Pi 18.16.0 reads an `--append-system-prompt` value with no newline as a path and appends
 // that file's contents, so the prompt meets no argv bound however long the deployment's
@@ -887,7 +890,7 @@ func SessionFromVolume(file, root string) (string, error) {
 // wrote it, so it stands in for no later launch's flag. A profile with no `default` role is not
 // refused here: Oh My Pi launches silently on a built-in model instead, which is the deployment's
 // to notice (deploy/kubernetes/operator-route/README.md, "Changing a role's model").
-func (l launch) agentArgv(r *Runtime) []string {
+func (l launch) agentArgv(agent []string) []string {
 	if l.runsClaude() {
 		return l.claudeArgv()
 	}
@@ -895,11 +898,11 @@ func (l launch) agentArgv(r *Runtime) []string {
 	if l.spec.Plugins != nil {
 		envoy, legion = pluginRoots(pluginGenDir(roleStateHome(l.spec.Role), l.spec.Generation))
 	}
-	argv := append(slices.Clone(r.agent), "--extension", envoy, "--extension", legion, "--model", "@default")
+	argv := append(slices.Clone(agent), "--extension", envoy, "--extension", legion, "--model", "@default")
 	switch {
-	case l.trades(r) && l.omp.resume:
+	case l.omp.resume:
 		argv = append(argv, "--resume", l.omp.session)
-	case l.trades(r):
+	case l.omp.session != "":
 		argv = append(argv, "--session-id", l.omp.session)
 	case l.spec.ResumeSessionFile != "":
 		argv = append(argv, "--resume="+l.spec.ResumeSessionFile)

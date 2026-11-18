@@ -164,9 +164,9 @@ func TestTheBrokerSettingRefusesABootWithoutThePodIdentity(t *testing.T) {
 		t.Run(missing, func(t *testing.T) {
 			env := podIdentity(t, broker.url)
 			delete(env, missing)
-			_, client, err := dispatchCredential(context.Background(), brokerConfig(dispatchServer.URL), "", getenvOf(env), quietLogger())
-			if err == nil || !strings.Contains(err.Error(), want) || client != nil {
-				t.Fatalf("dispatchCredential without %s = %v, %v; want the boot refused naming it (%q)", missing, client, err, want)
+			transport, err := dispatchCredential(context.Background(), brokerConfig(dispatchServer.URL), "", getenvOf(env), quietLogger())
+			if err == nil || !strings.Contains(err.Error(), want) || transport != nil {
+				t.Fatalf("dispatchCredential without %s = %v, %v; want the boot refused naming it (%q)", missing, transport, err, want)
 			}
 		})
 	}
@@ -193,9 +193,9 @@ func TestAPermanentBrokerRefusalRefusesTheBoot(t *testing.T) {
 		dispatchServer := newCredentialDispatch(t, daemonWhoami("EXAMPLE"))
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_, client, err := dispatchCredential(ctx, brokerConfig(dispatchServer.URL), "", getenvOf(podIdentity(t, broker.url)), quietLogger())
-		if err == nil || !strings.Contains(err.Error(), "invalid_grant: "+words) || client != nil {
-			t.Fatalf("dispatchCredential = %v, %v; want the boot refused in the broker's words %q", client, err, words)
+		transport, err := dispatchCredential(ctx, brokerConfig(dispatchServer.URL), "", getenvOf(podIdentity(t, broker.url)), quietLogger())
+		if err == nil || !strings.Contains(err.Error(), "invalid_grant: "+words) || transport != nil {
+			t.Fatalf("dispatchCredential = %v, %v; want the boot refused in the broker's words %q", transport, err, words)
 		}
 		if trades := broker.trades.Load(); trades != 1 {
 			t.Fatalf("the broker was asked %d trades, want 1: a refusal no retry cures is not asked again", trades)
@@ -216,9 +216,9 @@ func TestAPermanentBrokerRefusalRefusesTheBoot(t *testing.T) {
 		var logged bytes.Buffer
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		transport, client, err := dispatchCredential(ctx, brokerConfig(dispatchServer.URL), "", getenvOf(podIdentity(t, broker.url)), slog.New(slog.NewTextHandler(&logged, nil)))
-		if err != nil || transport == nil || client == nil {
-			t.Fatalf("dispatchCredential after a 503 = %v, %v, %v; want the trade made again and the boot on\nlog:\n%s", transport, client, err, logged.String())
+		transport, err := dispatchCredential(ctx, brokerConfig(dispatchServer.URL), "", getenvOf(podIdentity(t, broker.url)), slog.New(slog.NewTextHandler(&logged, nil)))
+		if err != nil || transport == nil {
+			t.Fatalf("dispatchCredential after a 503 = %v, %v; want the trade made again and the boot on\nlog:\n%s", transport, err, logged.String())
 		}
 		if trades := broker.trades.Load(); trades != 2 {
 			t.Fatalf("the broker was asked %d trades, want 2: the 503 and the trade after it", trades)
@@ -255,17 +255,17 @@ func TestTheBootRefusesAnEntryDispatchWouldRefuse(t *testing.T) {
 			whoami := daemonWhoami("EXAMPLE")
 			tc.change(whoami)
 			dispatchServer := newCredentialDispatch(t, whoami)
-			transport, client, err := dispatchCredential(context.Background(), brokerConfig(dispatchServer.URL), "", getenvOf(podIdentity(t, broker.url)), quietLogger())
+			transport, err := dispatchCredential(context.Background(), brokerConfig(dispatchServer.URL), "", getenvOf(podIdentity(t, broker.url)), quietLogger())
 			if tc.want == "" {
-				if err != nil || transport == nil || client == nil {
-					t.Fatalf("dispatchCredential for the daemon's own whoami = %v, %v, %v; want the boot on", transport, client, err)
+				if err != nil || transport == nil {
+					t.Fatalf("dispatchCredential for the daemon's own whoami = %v, %v; want the boot on", transport, err)
 				}
 				return
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "the deployment must fix the secrets broker's exchange entry for the daemon's own account") {
 				t.Fatalf("dispatchCredential = %v; want the boot refused naming %q and the broker entry to fix", err, tc.want)
 			}
-			if transport != nil || client != nil {
+			if transport != nil {
 				t.Fatal("a refused boot answered a credential")
 			}
 		})
@@ -304,7 +304,7 @@ func TestTheDaemonNeverSendsTheTransitionToken(t *testing.T) {
 		t.Fatalf("boot planned a Dispatch bearer for the daemon's own calls under dispatch_token_broker (the transition token: %t), want none",
 			p.dispatchToken == transitionToken)
 	}
-	transport, _, err := dispatchCredential(context.Background(), cfg, p.dispatchToken, getenvOf(env), quietLogger())
+	transport, err := dispatchCredential(context.Background(), cfg, p.dispatchToken, getenvOf(env), quietLogger())
 	if err != nil {
 		t.Fatalf("dispatchCredential: %v", err)
 	}
@@ -371,7 +371,7 @@ func TestTheBootLogNamesTheDispatchCredential(t *testing.T) {
 			if !tc.cfg.DispatchTokenBroker {
 				dispatchToken = fileToken
 			}
-			if _, _, err := dispatchCredential(context.Background(), tc.cfg, dispatchToken, getenvOf(podIdentity(t, broker.url)), slog.New(slog.NewJSONHandler(&logged, nil))); err != nil {
+			if _, err := dispatchCredential(context.Background(), tc.cfg, dispatchToken, getenvOf(podIdentity(t, broker.url)), slog.New(slog.NewJSONHandler(&logged, nil))); err != nil {
 				t.Fatalf("dispatchCredential: %v", err)
 			}
 			var lines []map[string]any
@@ -420,7 +420,7 @@ func TestTheDaemonRenewsItsDispatchTokenOffTheRequestPath(t *testing.T) {
 		brokerclient.MachineTokenFileVar: writeSecret(t, "daemon-exchange-token", rig.MintSubjectToken(t, brokertest.DaemonExchangeAccount, "daemon-pod-uid")),
 	}
 	booted := time.Now()
-	transport, _, err := dispatchCredential(t.Context(), brokerConfig(dispatchServer.URL), "", getenvOf(env), quietLogger())
+	transport, err := dispatchCredential(t.Context(), brokerConfig(dispatchServer.URL), "", getenvOf(env), quietLogger())
 	if err != nil {
 		t.Fatalf("dispatchCredential: %v", err)
 	}

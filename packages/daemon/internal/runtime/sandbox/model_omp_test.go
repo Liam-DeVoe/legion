@@ -132,7 +132,7 @@ func TestOhMyPiAppendsTheWholePromptFileItIsNamed(t *testing.T) {
 	const size = 200_000
 	line, last := "A line of a system prompt longer than one argv string may be.\n", "The prompt's own last line."
 	prompt := strings.Repeat(line, size/len(line)+1)[:size-len(last)-1] + "\n" + last
-	frames, stderr := promptOnce(t, withPromptFile(t, launch{}.agentArgv(&Runtime{agent: []string{omp}}), prompt), work, environ, "Reply ok.")
+	frames, stderr := promptOnce(t, withPromptFile(t, launch{}.agentArgv([]string{omp}), prompt), work, environ, "Reply ok.")
 	if !slices.ContainsFunc(frames, func(frame testbin.OMPFrame) bool { return frame.Type == "message_end" }) {
 		t.Fatalf("the turn ended with no answer\nstderr: %s", stderr)
 	}
@@ -147,7 +147,7 @@ func TestOhMyPiAppendsTheWholePromptFileItIsNamed(t *testing.T) {
 	}
 
 	missing := filepath.Join(dir, "absent", "system-prompt.md")
-	control := launch{}.agentArgv(&Runtime{agent: []string{omp}})
+	control := launch{}.agentArgv([]string{omp})
 	control[slices.Index(control, "--append-system-prompt")+1] = missing
 	_, stderr = promptOnce(t, control, work, environ, "Reply ok.")
 	seen = taken()
@@ -220,7 +220,7 @@ func TestTheResumedAgentRunsTheConfiguredModel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	argv := withPromptFile(t, launch{spec: runtime.SpawnSpec{ResumeSessionFile: saved[0]}}.agentArgv(&Runtime{agent: []string{omp}}), "The test's system prompt.")
+	argv := withPromptFile(t, launch{spec: runtime.SpawnSpec{ResumeSessionFile: saved[0]}}.agentArgv([]string{omp}), "The test's system prompt.")
 
 	// The control, and it runs first: the same launch with the flag taken out reads the session's
 	// own pin, which at this point is the one the saving turn wrote and nothing else.
@@ -318,7 +318,7 @@ func TestAFallbackChainStillWalksUnderAnExplicitModel(t *testing.T) {
 		"modelRoles:\n  default: first/first-model\n"+
 			"retry:\n  modelFallback: true\n  maxDelayMs: 1000\n  fallbackChains:\n    first/first-model:\n      - second/second-model\n")
 
-	argv := withPromptFile(t, launch{}.agentArgv(&Runtime{agent: []string{omp}}), "The test's system prompt.")
+	argv := withPromptFile(t, launch{}.agentArgv([]string{omp}), "The test's system prompt.")
 	frames, stderr := promptOnce(t, argv, work, testbin.OMPEnviron(home), "Reply ok.")
 	answered := ""
 	for _, frame := range frames {
@@ -356,7 +356,7 @@ func TestMeasuredNoDefaultRoleLaunchesOnABuiltInModel(t *testing.T) {
 			"    apiKey: unused\n    models:\n      - id: configured\n        name: Configured\n",
 		"enabledModels:\n  - operator/configured\n")
 
-	argv := withPromptFile(t, launch{}.agentArgv(&Runtime{agent: []string{omp}}), "The test's system prompt.")
+	argv := withPromptFile(t, launch{}.agentArgv([]string{omp}), "The test's system prompt.")
 	stdout, stderr, err := runOmp(t, argv, work, testbin.OMPEnviron(home), `{"type":"get_state","id":"1"}`+"\n")
 	if err != nil {
 		t.Fatalf("omp %s: %v, want a launch\nstdout: %s\nstderr: %s", strings.Join(argv[1:], " "), err, stdout, stderr)

@@ -69,7 +69,8 @@ func launchSecretNames(cfg config.Config, lookup func(string) (string, bool)) []
 // the key). Under runtime: kubernetes, the operator's pod and provider keys are then held to the
 // Sandbox runtime's own refusals (sandbox.CheckPod), the exchange identity's names among them only
 // where runtime.kubernetes.agent_secrets names an exchange_audience, and DISPATCH_TOKEN_BROKER only
-// under dispatch_token_broker.
+// under dispatch_token_broker, where a provider key named DISPATCH_TOKEN or DISPATCH_TOKEN_FILE is
+// refused as a shared Dispatch token.
 func checkOperatorConfig(cfg config.Config, lookup func(string) (string, bool)) error {
 	names := launchSecretNames(cfg, lookup)
 	for _, key := range cfg.ProviderKeys {

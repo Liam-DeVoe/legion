@@ -697,9 +697,10 @@ current-context: legion-daemon
 }
 
 // A Kubernetes daemon refuses, before its boot, an operator pod that collides with Legion's own —
-// a mount at Legion's launcher token projection (the LEGION-270 plan's negative control), and a provider key
-// or pod variable a launch secret's pointer names (the Envoy bearer's, the NATS nkey seed's) — so
-// no pod is ever built with it.
+// a mount at Legion's launcher token projection (the LEGION-270 plan's negative control), a provider key
+// or pod variable a launch secret's pointer names (the Envoy bearer's, the NATS nkey seed's), and,
+// under dispatch_token_broker, a provider key named for the Dispatch token — so no pod is ever
+// built with it.
 func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -743,6 +744,18 @@ func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(
 				cfg.ProviderKeys = []config.ProviderKey{{Env: "FOO", Secret: "NATS_NKEY_SEED"}}
 			},
 			want: "provider_keys names FOO from the providers Secret's key NATS_NKEY_SEED, which the pod mounts as the launch secret NATS_NKEY_SEED: the shim would export that secret into Oh My Pi's environment as FOO",
+		},
+		{
+			// Under dispatch_token_broker each role trades its pod's identity for its own Dispatch
+			// token, so the boot names a shared one among the provider keys, and every role's shim
+			// does not have to refuse it at each start.
+			name: "a provider key for the Dispatch token under dispatch_token_broker",
+			change: func(cfg *config.Config) {
+				cfg.DispatchTokenBroker = true
+				cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpirySeconds: 3600, ExchangeAudience: "legion-broker-exchange"}
+				cfg.ProviderKeys = []config.ProviderKey{{Env: "DISPATCH_TOKEN", Secret: "dispatch"}}
+			},
+			want: "provider_keys names DISPATCH_TOKEN, a Dispatch credential, under dispatch_token_broker: each role trades its pod's identity for its own Dispatch token, so the providers Secret may hold no shared one; remove the key",
 		},
 		{
 			// Every agent reads it, and the dispatch command turns Dispatch off over a value that is

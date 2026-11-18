@@ -203,7 +203,7 @@ func TestNothingChangesWithoutTheKey(t *testing.T) {
 			}
 			want := slices.Concat(r.agent, []string{"--extension", envoyPlugin, "--extension", legionPlugin, "--model", "@default"},
 				session, []string{"--mode", "rpc", "--append-system-prompt", systemPromptPath(tc.spec.Generation)})
-			if got := l.agentArgv(r); !slices.Equal(got, want) {
+			if got := l.agentArgv(r.agent); !slices.Equal(got, want) {
 				t.Errorf("the agent command is %q, want %q", got, want)
 			}
 			if start := launcherCommand(l, r); start.ResumeFile != tc.spec.ResumeSessionFile {

@@ -436,7 +436,7 @@ func TestAClaudeStartCommandNamesTheSessionItsLauncherKeeps(t *testing.T) {
 				return env, l
 			}
 			fresh, l := startEnv(claudeWorkerSpec(t))
-			argv := l.agentArgv(r)
+			argv := l.agentArgv(r.agent)
 			at := slices.Index(argv, "--session-id")
 			if at < 0 || at+1 == len(argv) || fresh[claudelaunch.SessionVariable] != argv[at+1] {
 				t.Errorf("a fresh Claude start command names %s=%q, want the session its agent command starts in %q",
