@@ -30,7 +30,9 @@ func binary(head []byte) bool {
 // for, and git neither writes it nor, in a partial clone, fetches it. cat-file --batch flushes its
 // answer to each id before it reads the next unless --buffer is given, which is git's documented
 // interactive use. A blob cat-file does not answer whole is an error, never a file read as empty,
-// and the batch ends with close, which stops git where the reader stopped early.
+// and the batch ends with close, which stops git where the reader stopped early. A push reads the
+// commit objects it adds through one batch of its own the same way, each asked as a commit
+// (Guard.pushRecords), where a git apiece would be one more process for each commit.
 type blobBatch struct {
 	// in is git's standard input, which head writes each id to, and asks the reading end of it,
 	// which this process holds until git has ended (close): a write to in then never fails for a
@@ -42,8 +44,9 @@ type blobBatch struct {
 	// stop ends the context git runs under, and ran answers how git ended.
 	stop context.CancelFunc
 	ran  chan error
-	// id is the blob being read, the one head asked for, which a blob cut short is named by (cut).
-	id string
+	// id is the object being read, the one head asked for, and kind the type it was asked as,
+	// which an object cut short is named by (cut).
+	id, kind string
 	// first holds the first bytes of the blob being read (head), one buffer for every blob: each
 	// reader is done with one blob's head before it reads the next.
 	first [binaryHead]byte
@@ -77,26 +80,27 @@ func (g *Guard) readBlobs(ctx context.Context, dir string) (*blobBatch, error) {
 	return batch, nil
 }
 
-// head asks for blob id and reads its header and its first binaryHead bytes, or all of it where it
-// is shorter, which say whether it is binary (binary), and answers how many bytes of it are left.
-// The bytes are the batch's own, good until the next head.
-func (b *blobBatch) head(id string) (rest int64, head []byte, err error) {
-	b.id = id
+// head asks for object id, which must be of type kind ("blob"), and reads its header and its first
+// binaryHead bytes, or all of it where it is shorter, which say whether a blob is binary (binary),
+// and answers how many bytes of it are left. The bytes are the batch's own, good until the next
+// head.
+func (b *blobBatch) head(id, kind string) (rest int64, head []byte, err error) {
+	b.id, b.kind = id, kind
 	if _, err := io.WriteString(b.in, id+"\n"); err != nil {
 		return 0, nil, err
 	}
-	// "<id> blob <size>", and "<id> missing" for no such object.
+	// "<id> <type> <size>", and "<id> missing" for no such object.
 	header, err := b.out.ReadSlice('\n')
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, bufio.ErrBufferFull) {
 		return 0, nil, err
 	}
 	fields := strings.Fields(string(header))
-	if len(fields) != 3 || fields[0] != id || fields[1] != "blob" {
-		return 0, nil, fmt.Errorf("git cat-file read no blob %s", id)
+	if len(fields) != 3 || fields[0] != id || fields[1] != kind {
+		return 0, nil, fmt.Errorf("git cat-file read no %s %s", kind, id)
 	}
 	size, err := strconv.ParseInt(fields[2], 10, 64)
 	if err != nil || size < 0 {
-		return 0, nil, fmt.Errorf("git cat-file read no blob %s", id)
+		return 0, nil, fmt.Errorf("git cat-file read no %s %s", kind, id)
 	}
 	head = b.first[:min(size, binaryHead)]
 	if _, err := io.ReadFull(b.out, head); err != nil {
@@ -111,7 +115,7 @@ func (b *blobBatch) head(id string) (rest int64, head []byte, err error) {
 // the file in its own words; over is 0 for every other blob. The batch reads nothing after a blob
 // left unread, and the caller ends it there (close).
 func (b *blobBatch) text(id string, bound int64) (file string, over int64, err error) {
-	rest, head, err := b.head(id)
+	rest, head, err := b.head(id, "blob")
 	if err != nil {
 		return "", 0, err
 	}
@@ -125,7 +129,7 @@ func (b *blobBatch) text(id string, bound int64) (file string, over int64, err e
 	return file, 0, err
 }
 
-// whole reads the rest of the blob head read, rest bytes of it, and answers the blob whole.
+// whole reads the rest of the object head read, rest bytes of it, and answers the object whole.
 func (b *blobBatch) whole(head []byte, rest int64) (string, error) {
 	var content strings.Builder
 	content.Grow(len(head) + int(rest))
@@ -157,11 +161,11 @@ func (b *blobBatch) end() error {
 	return nil
 }
 
-// cut is the error of a blob whose content git did not write whole: git's own failure where git
-// failed, and else the blob cut short.
+// cut is the error of an object whose content git did not write whole: git's own failure where git
+// failed, and else the object cut short.
 func (b *blobBatch) cut(err error) error {
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return fmt.Errorf("git cat-file answered blob %s cut short", b.id)
+		return fmt.Errorf("git cat-file answered %s %s cut short", b.kind, b.id)
 	}
 	return err
 }

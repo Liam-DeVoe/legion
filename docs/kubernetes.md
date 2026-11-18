@@ -95,10 +95,14 @@ It carries:
     A read of a commit that fails quotes git's own message without the user and token a URL in it carries, such as the URL of the promisor remote a partial clone's failed lazy fetch names (`withoutUserinfo`).
     The pod's roles share one memory limit, so the read holds one path's files at a time;
 
-  - every header of a commit and of an annotated tag, each as a record of its own labelled `commit <short> <name>` or `tag <short> <name>`, a tag's own name as `tag <short> name` (`objectHeaders`, `Guard.commitRecords`, `Guard.tagRecords`).
-    A header git writes over more than one line is read with every line of it, and a header is read whole, as a message is.
+  - every header of a commit and of an annotated tag, each read whole, its name with its value, as a record of its own (`objectHeaders`, `headerRecord`, `Guard.commitRecords`, `Guard.tagRecords`).
+    A header that is a name alone is read too, since git's own check of what a repository receives (`receive.fsckObjects`) takes a crafted commit or tag that holds one, or a header of any name.
+    A record is labelled by its header's name, `commit <short> <name>` or `tag <short> <name>`, and a tag's own name as `tag <short> name`, only where git itself writes a header of that name, and as `commit <short> header` or `tag <short> header` for any other, since such a name is the push's own text and a refusal prints its labels (`commitHeaders`, `tagHeaders`, from git 2.47.3's `commit.c` and `builtin/tag.c`).
+    A header git writes over more than one line is read with every line of it, as a message is.
     A merge of a signed tag holds that whole tag object, its name, tagger and message among it, in its `mergetag` header, and publishes it whether or not the tag itself is pushed.
     What a commit's other records hold already is not read again: its tree and parent lines, which hold object ids, and an author or committer line that is its identity record and a date.
+    The commit objects the headers are read from go through one `git cat-file --batch` for the whole push (`Guard.pushRecords`), and each tag object through a `git cat-file tag` of its own, fetching nothing (below), since one git runs under one environment and a commit's read can fetch what a partial clone lacks.
+    So a commit costs the guard at most three gits of its own, its `git show`, its `diff-tree` and the `cat-file --batch` its files are read through: 1,001 new commits, each adding one small file, pushed to an empty local bare with a passing stand-in for the shared check, took 47.0 s at the median of three runs in an issue pod on 2026-11-18, where one more git for each commit, a `git cat-file commit`, took 61.7 s.
     git formats the last author and the last committer line of a commit that holds two, so an earlier one is read as a header, and so are a tag's second `object` and `type` lines, since git follows a tag by its first;
 
   - a text file it reads above 32 MiB as a setup error that refuses the push and names the file and its size, whichever the shape (`Guard.blobBound`):

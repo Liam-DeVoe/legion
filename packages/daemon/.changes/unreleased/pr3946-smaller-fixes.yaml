@@ -21,3 +21,6 @@ body: |-
   A push now has every header of each commit and each annotated tag it adds read by those rules,
   among them the mergetag of a merge of a signed tag, which holds that tag's name, tagger and
   message whether or not the tag itself is pushed.
+  Each header is read whole, its name with its value, so a header whose name names something
+  private, or one that is a name alone, refuses the push too, and a refusal labels any header git
+  itself does not write as a header of its commit or tag.

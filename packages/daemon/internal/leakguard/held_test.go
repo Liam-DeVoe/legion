@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -483,27 +484,36 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 
 // A failed read of a pushed commit quotes git's own account of it without the user and password
 // a URL in it carries. In a partial clone, as an issue pod's fork clones are (--filter=blob:none),
-// git fetches a blob the clone lacks from the promisor remote the moment a read asks for it, and a
-// fetch that fails names the remote's URL, which can carry a token: the list of a commit's changes
-// (Guard.git), whose renames are found by the content of its blobs, and the read of its files
-// (blobBatch) each quote it. The stand-in git here fails the one call each case names as such a
-// fetch fails, and runs the real git for every other call.
+// git fetches an object the clone lacks from the promisor remote the moment a read asks for it,
+// and a fetch that fails names the remote's URL, which can carry a token: the list of a commit's
+// changes (Guard.git), whose renames are found by the content of its blobs, the read of its
+// object, which the push's first cat-file --batch answers (Guard.pushRecords), and the read of its
+// files, which the commit's own batch answers (blobBatch), each quote it. The stand-in git here
+// fails the one call each case names as such a fetch fails, once the calls of that shape the case
+// passes have run, and runs the real git for every other call.
 func TestAFailedReadOfACommitQuotesGitWithoutACredential(t *testing.T) {
 	const failed = "LEAK CHECK SETUP ERROR: the push to origin: what the push adds could not be read: "
 	unreachable := " exited 128: fatal: unable to access '" + theURL + "/': Could not resolve host: github.com"
 	for _, tc := range []struct {
 		name string
-		// call is the git subcommand that fails, as its arguments begin.
-		call string
-		want string
+		// call is the git subcommand that fails, as its arguments begin, and passed how many calls
+		// of it run the real git before it fails.
+		call   string
+		passed int
+		want   string
 	}{
 		{name: "the list of a commit's changes", call: "diff-tree", want: failed + "git diff-tree" + unreachable},
-		{name: "the read of a commit's files", call: "cat-file --batch", want: failed + "git cat-file" + unreachable},
+		{name: "the read of a commit's object", call: "cat-file --batch", want: failed + "git cat-file" + unreachable},
+		{name: "the read of a commit's files", call: "cat-file --batch", passed: 1, want: failed + "git cat-file" + unreachable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			bin := t.TempDir()
+			bin, calls := t.TempDir(), filepath.Join(t.TempDir(), "calls")
 			writeProgram(t, bin, "git", `case " $* " in
-*`+shQuote(" "+tc.call+" ")+`*) echo `+shQuote("fatal: unable to access '"+credentialedURL+"/': Could not resolve host: github.com")+` >&2; exit 128 ;;
+*`+shQuote(" "+tc.call+" ")+`*)
+  echo >>`+shQuote(calls)+`
+  if [ "$(wc -l <`+shQuote(calls)+`)" -gt `+strconv.Itoa(tc.passed)+` ]; then
+    echo `+shQuote("fatal: unable to access '"+credentialedURL+"/': Could not resolve host: github.com")+` >&2; exit 128
+  fi ;;
 esac
 exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 `)

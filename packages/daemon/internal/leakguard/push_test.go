@@ -144,7 +144,8 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 				return crafted(t, authorLine+committerLine+"build-host "+theHost+"\n")
 			},
 			want: func(head string) []string {
-				return []string{"commit " + short(head) + " build-host: " + theClass}
+				// git writes no header of that name, so its label names it as a header alone.
+				return []string{"commit " + short(head) + " header: " + theClass}
 			},
 		},
 		{
@@ -294,8 +295,9 @@ func TestAnAnnotatedTagsTaggerAndMessageAreRead(t *testing.T) {
 		{
 			name: "a header of the tag's own beyond its name and its tagger names a host",
 			build: func(t *testing.T) (string, []string) {
+				// git writes no tag header of that name, so its label names it as a header alone.
 				pushed := crafted(t, "release-host "+theHost+"\n")
-				return pushed, []string{"tag " + short(pushed) + " release-host: " + theClass}
+				return pushed, []string{"tag " + short(pushed) + " header: " + theClass}
 			},
 		},
 		{

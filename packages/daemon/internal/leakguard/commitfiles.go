@@ -23,18 +23,19 @@ import (
 // whole message, as git show formats them. A commit publishes every header it holds, and git show
 // formats no other: a merge of a signed tag holds that whole tag object in its mergetag header, the
 // tag's name, its tagger and its message, and a signed commit holds its signature. So each header
-// is read too, from the commit object as git cat-file writes it, a header of more than one line
-// with its every line (objectHeaders), and is a record labelled "commit <short> <name>", unless
-// the commit's other records hold it already: a tree or a parent line that holds an object id,
-// which names nothing, and an author or a committer line that holds the identity read as that
-// record and its date alone (identityLine). git show formats the last author line and the last
-// committer line of a commit that holds two, so an earlier one that holds anything else is read
-// as a header of its own. The headers are read whole, as the message is.
+// is read too, from the commit object as the push's one cat-file --batch answers it (objects,
+// Guard.pushRecords), a header of more than one line with its every line (objectHeaders), as a
+// record of the whole header, its name with its value (headerRecord), unless the commit's other
+// records hold it already: a tree or a parent line that holds an object id, which names nothing,
+// and an author or a committer line that holds the identity read as that record and its date alone
+// (identityLine). git show formats the last author line and the last committer line of a commit
+// that holds two, so an earlier one that holds anything else is read as a header of its own. The
+// headers are read whole, as the message is.
 //
 // A record about a file carries that file's path as its label and the line or the path as its
 // text, so that the engine reads the path as a path: the rule file's one path-scoped allowlist
 // is anchored on a whole path, and a label carrying anything else would take it away.
-func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record, error) {
+func (g *Guard) commitRecords(ctx context.Context, dir, commit string, objects *blobBatch) ([]Record, error) {
 	// git writes the separator for itself, as %x00 in the format: an argument of this process's
 	// own holding a zero byte is a child that cannot be started at all. %P comes before the
 	// body, which is the one field that can hold a newline, so the parents are read with the
@@ -52,7 +53,11 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record
 	if len(parts) < 5 {
 		return nil, fmt.Errorf("git show %s answered no identity, parents and message", short(commit))
 	}
-	object, err := g.git(ctx, dir, "cat-file", "commit", commit)
+	rest, head, err := objects.head(commit, "commit")
+	if err != nil {
+		return nil, err
+	}
+	object, err := objects.whole(head, rest)
 	if err != nil {
 		return nil, err
 	}
@@ -69,8 +74,7 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record
 			name == "committer" && identityLine(value, parts[2]) {
 			continue
 		}
-		// A copy, so that a record of one line does not hold the whole object git wrote.
-		records = append(records, Record{Label: label + " " + name, Text: strings.Clone(value)})
+		records = append(records, headerRecord(label, name, value, commitHeaders))
 	}
 	records = append(records, Record{Label: label + " message", Text: parts[4]})
 	var paths []string
@@ -352,10 +356,10 @@ func textLines(file string) iter.Seq[string] {
 
 // objectHeaders are the headers of a commit or a tag object, as git cat-file writes them ahead of
 // the blank line its message follows: each header's name and value, in the order of headers. A
-// header is a line "<name> <value>", and each line after it that starts with a space carries its
-// value on, which is how git writes a value of more than one line: a merge's mergetag, which holds
-// the whole tag object the merge is of, or a signature. Such a value is its lines joined by
-// newlines, each with that space off.
+// header is a line "<name> <value>", or a name alone, whose value is empty, and each line after it
+// that starts with a space carries its value on, which is how git writes a value of more than one
+// line: a merge's mergetag, which holds the whole tag object the merge is of, or a signature. Such
+// a value is its lines joined by newlines, each with that space off.
 func objectHeaders(headers string) iter.Seq2[string, string] {
 	return func(yield func(name, value string) bool) {
 		for rest := headers; rest != ""; {
@@ -370,6 +374,31 @@ func objectHeaders(headers string) iter.Seq2[string, string] {
 			}
 		}
 	}
+}
+
+// commitHeaders and tagHeaders are the names of the headers git itself writes in a commit object
+// and in a tag object, as git 2.47.3's source writes them: a commit's tree, parent, author,
+// committer and encoding (commit.c's standard_header_field), its mergetag (commit.c's
+// handle_signed_tag) and its signature (commit.c's gpg_sig_headers), and a tag's object, type, tag
+// and tagger (builtin/tag.c's create_tag) and the signature of its other hash, which git writes
+// as a commit's (builtin/tag.c's do_sign, through commit.c's add_header_signature).
+var (
+	commitHeaders = []string{"tree", "parent", "author", "committer", "encoding", "mergetag", "gpgsig", "gpgsig-sha256"}
+	tagHeaders    = []string{"object", "type", "tag", "tagger", "gpgsig", "gpgsig-sha256"}
+)
+
+// headerRecord is the record of a header, name and value (objectHeaders), of the commit or the tag
+// label names ("commit 1a2b3c4"). Its text is the whole header, its name with its value, since the
+// object publishes both and a header can be a name alone; it is a copy, so that a record of one
+// header does not hold the whole object. Its label names the header where the name is one of own,
+// the names git itself writes, and is "<label> header" for any other: such a name is the push's
+// own text, and a label carries it into the report with no rule but the path rules reading it.
+func headerRecord(label, name, value string, own []string) Record {
+	text := name + " " + value
+	if !slices.Contains(own, name) {
+		name = "header"
+	}
+	return Record{Label: label + " " + name, Text: text}
 }
 
 // identityDate is what follows the identity in a commit's author or committer line: the date, as

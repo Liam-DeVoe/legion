@@ -123,8 +123,10 @@ func TestAFileIsBinaryByItsOwnContentAlone(t *testing.T) {
 }
 
 // blobRecord is the PATH entry of a stand-in git that runs the real git for every call, and keeps
-// in the file record the blobs each cat-file --batch is asked for, one a line: what of a commit's
-// files the guard reads. No batch, no file.
+// in the file record the objects each cat-file --batch is asked for, one a line, each kept before
+// git reads it, so that the asks of every batch are kept in the order they were made: each commit
+// object a push reads (Guard.pushRecords), and what of a commit's files the guard reads. No batch,
+// no file.
 func blobRecord(t *testing.T) (path, record string) {
 	t.Helper()
 	bin := t.TempDir()
@@ -132,7 +134,7 @@ func blobRecord(t *testing.T) (path, record string) {
 	writeProgram(t, bin, "git", `git=`+shQuote(fixturegit.CompiledGit(t))+` record=`+shQuote(record)+`
 case " $* " in
 *" cat-file --batch "*)
-  tee -a "$record" | "$git" "$@"
+  while IFS= read -r id; do printf '%s\n' "$id" >>"$record"; printf '%s\n' "$id"; done | "$git" "$@"
   exit ;;
 esac
 exec "$git" "$@"
@@ -140,8 +142,8 @@ exec "$git" "$@"
 	return pathWith(bin), record
 }
 
-// asked are the blobs record holds (blobRecord), in the order they were asked for, and none where
-// no batch was asked for any.
+// asked are the objects record holds (blobRecord), in the order they were asked for, and none
+// where no batch was asked for any.
 func asked(t *testing.T, record string) []string {
 	t.Helper()
 	blobs, err := os.ReadFile(record)
@@ -157,10 +159,10 @@ func asked(t *testing.T, record string) []string {
 // whether it is the commit's own or the parent's file the commit's is compared with: a file passed
 // over, or read in part, would pass its lines unread. A rename or a mode change that leaves such a
 // file as the parent has it adds no line, and nothing of the file is read: cat-file is asked for
-// no blob. A text file at the bound is read, a text file that replaces a binary one adds every
-// line it has, and of a commit that changes a binary file and a text file, the text file alone
-// adds a line. The bound here is 64 bytes, and the blobs the guard asks for are kept
-// (blobRecord).
+// no blob, the commit object alone. A text file at the bound is read, a text file that replaces a
+// binary one adds every line it has, and of a commit that changes a binary file and a text file,
+// the text file alone adds a line. The bound here is 64 bytes, and the objects the guard asks for
+// are kept (blobRecord).
 func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 	big := strings.Repeat("a line of ordinary prose\n", 4)
 	named := "the runner answers at " + theHost + "\n"
@@ -176,7 +178,8 @@ func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 		failure func(commit string) string
 		// want is the report, and nil where the push passes or fails.
 		want []string
-		// readsNothing is whether the guard asks cat-file for no blob of the commit's.
+		// readsNothing is whether the guard asks cat-file for no blob of the commit's, the commit
+		// object alone.
 		readsNothing bool
 	}{
 		{
@@ -251,8 +254,8 @@ func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path)
 			guard.blobBound = 64
 			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", destination))
-			if read := asked(t, record); tc.readsNothing && len(read) > 0 {
-				t.Errorf("the guard asked cat-file for %q, want no blob", read)
+			if read := asked(t, record); tc.readsNothing && !slices.Equal(read, []string{head}) {
+				t.Errorf("the guard asked cat-file for %q, want the commit alone, %q", read, head)
 			}
 			if tc.failure != nil {
 				wantSetupFailure(t, err, tc.failure(head))
@@ -268,7 +271,7 @@ func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 // and a merge parent's file once an earlier parent's file at that path holds every line of the
 // merge's. Such a file the repository lacks refuses nothing, since no line of it would be read:
 // the commit here is pushed from a repository its parent's file has been removed from, and
-// passes. The blobs the guard asks for are kept (blobRecord).
+// passes. The objects the guard asks for are kept (blobRecord), each commit it reads among them.
 func TestAFileNoLineCanBeTakenFromIsNotAskedFor(t *testing.T) {
 	named := "the runner answers at " + theHost + "\n"
 	for _, tc := range []struct {
@@ -277,8 +280,8 @@ func TestAFileNoLineCanBeTakenFromIsNotAskedFor(t *testing.T) {
 		// lacks is the file the repository is made to lack before the push, as <rev>:<path> with
 		// HEAD the pushed commit, "" for none.
 		lacks string
-		// asks are the blobs the guard asks cat-file for, in order, each as <rev>:<path> with HEAD
-		// the pushed commit.
+		// asks are the objects the guard asks cat-file for, in order, each as <rev>[:<path>] with
+		// HEAD the pushed commit: each commit the push reads, then the blobs of its files.
 		asks []string
 	}{
 		{
@@ -286,15 +289,16 @@ func TestAFileNoLineCanBeTakenFromIsNotAskedFor(t *testing.T) {
 			held:  map[string]string{"notes.lock": "a line of the parent\n"},
 			added: map[string]string{"notes.lock": "\x00a line of the parent\n" + named},
 			lacks: "HEAD^:notes.lock",
-			asks:  []string{"HEAD:notes.lock"},
+			asks:  []string{"HEAD", "HEAD:notes.lock"},
 		},
 		{
 			name:  "a merge's second parent's file, where its first parent's holds every line of the merge's",
 			held:  map[string]string{"notes.md": "one\ntwo\nthree\n"},
 			side:  map[string]string{"notes.md": "a line the side branch writes\n"},
 			added: map[string]string{"notes.md": "three\ntwo\n"},
-			// The main commit's file, which it adds, then the merge's and its first parent's.
-			asks: []string{"HEAD^1:main.md", "HEAD:notes.md", "HEAD^1:notes.md"},
+			// The main commit and its file, which it adds, then the merge, the merge's file and its
+			// first parent's.
+			asks: []string{"HEAD^1", "HEAD^1:main.md", "HEAD", "HEAD:notes.md", "HEAD^1:notes.md"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -425,8 +429,13 @@ func TestAFilesRecordsCarryItsPath(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			records, err := guard.commitRecords(bound(t), repo, tc.commit)
+			ctx := bound(t)
+			batch, err := guard.readBlobs(ctx, repo)
 			if err != nil {
+				t.Fatal(err)
+			}
+			records, err := guard.commitRecords(ctx, repo, tc.commit, batch)
+			if err = batch.close(err); err != nil {
 				t.Fatalf("read the commit: %v", err)
 			}
 			commit := "commit " + short(tc.commit)
@@ -522,8 +531,8 @@ const movedFiles = 12500
 // (fork/exec: file name too long), and refused its push as a setup failure that named neither the
 // commit nor the cause. The commit here moves movedFiles files from one directory to another and
 // adds a line naming a host to a text file beside them: it is refused for that line, and cat-file
-// is asked for that file's two blobs alone, the commit's and its parent's. The trees are written
-// with plumbing, one blob for every moved file.
+// is asked for the commit and that file's two blobs alone, the commit's and its parent's. The
+// trees are written with plumbing, one blob for every moved file.
 func TestACommitThatMovesThousandsOfFilesIsReadForItsLine(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	repo := filepath.Join(root, "repo")
@@ -560,7 +569,7 @@ func TestACommitThatMovesThousandsOfFilesIsReadForItsLine(t *testing.T) {
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path)
 	err := guard.Push(bound(t), mainPush(repo, base, head, "origin", destination))
 	wantRefused(t, err, []string{"notes.md: " + theClass})
-	if read := asked(t, record); !slices.Equal(read, []string{named, notes}) {
-		t.Errorf("the guard asked cat-file for %d blobs, %.80q, want notes.md's two, %q", len(read), read, []string{named, notes})
+	if read := asked(t, record); !slices.Equal(read, []string{head, named, notes}) {
+		t.Errorf("the guard asked cat-file for %d objects, %.80q, want the commit and notes.md's two blobs, %q", len(read), read, []string{head, named, notes})
 	}
 }
