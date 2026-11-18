@@ -44,6 +44,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/logging"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -691,6 +692,9 @@ func main() {
 	// The display tree fill (texttreefill.Run): a leased loop like the rest, reserved here so
 	// that this process's count is the same whether or not it has work to do.
 	textTreeFillLeases := reserve("text tree fill")
+	// The Legion sampler (legion.RunSampler): a leased loop like the rest, reserved here so that
+	// this process's count is the same whether or not any project names a daemon.
+	legionSamplerLeases := reserve("Legion sampler")
 	// The intakes' six callers - a consumer lease, a hold and the hold's renewal per durable -
 	// whether or not this configuration starts them (delivery.ReserveIntakeLeases).
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
@@ -707,8 +711,9 @@ func main() {
 		fatal("dispatch: the lease pool's callers are not its connections", "error", err)
 	}
 	// The background loops below - the embedding queue and its coverage pass, the suggestion
-	// sweep, the term-statistics refresh, the architecture importer's ticker, the delivery
-	// reconcile and intakes - read and write through the background pool, so under load a request
+	// sweep, the term-statistics refresh, the architecture importer's ticker, the Legion sampler,
+	// the delivery reconcile and intakes - read and write through the background pool, so under
+	// load a request
 	// never queues behind a loop's statement for a connection, nor a loop behind the requests. The
 	// document service's own loops (the settlement resumption, the task progress and reference
 	// excerpt reconciliations) take it from the store themselves. Each leased loop still takes its
@@ -960,6 +965,15 @@ func main() {
 	// GitHub client: it shares their flights, so a Refresh and a tick of one source make one set of
 	// GitHub calls, and the Close below ends both importers' flights.
 	go architecture.Run(ctx, appCtx.Architecture().On(backgroundStore, backgroundGitHub), architectureImportLeases)
+
+	// dispatch://INFRA-1077: each project whose legion_settings row names a Legion daemon has its
+	// `GET /legion/v1/state` read once a minute from one replica, under the `legion-state` lease,
+	// and every value that moved recorded. It is a timer and not a woken loop for the reason the
+	// delivery reconcile below is: a remote daemon announces nothing Dispatch can listen for. Its
+	// statements - the settings it reads, each read's record and announcement, the prune - run on
+	// the background pool, as every other loop's here do, and none while it waits on a daemon
+	// (legion.Client's RequestTimeout bounds that wait), so no request queues behind a pass.
+	go legion.RunSampler(ctx, background, legionSamplerLeases)
 
 	// LEGION-567: the delivery timeline's 5-minute GitHub-App reconcile runs regardless of NATS
 	// (it never touches it); the NATS consumer that catches events between reconcile passes needs

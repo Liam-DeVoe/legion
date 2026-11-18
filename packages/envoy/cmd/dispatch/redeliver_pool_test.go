@@ -135,7 +135,7 @@ func applicationBehind(
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no statement carrying %q queued behind the held github_rate_limits within %s, so no sweep read its backoff:\n%s",
+			t.Fatalf("no statement carrying %q queued behind the table the gate holds within %s, so the loop under test never reached it:\n%s",
 				fragment, within, process.Output.String())
 		}
 		time.Sleep(10 * time.Millisecond)

@@ -24,7 +24,7 @@ Each item below names a variable, then its purpose.
 
   Postgres connection string.
   Dispatch applies embedded migrations before serving.
-  Every pool's size is fixed in code, at most 112 connections a process in all (`store.ConnectionsPerProcess`) (the request pool's 48 is `store.SharedPoolSize`), so a connection string carrying `pool_max_conns` is refused at startup; remove the parameter.
+  Every pool's size is fixed in code, at most 113 connections a process in all (`store.ConnectionsPerProcess`) (the request pool's 48 is `store.SharedPoolSize`), so a connection string carrying `pool_max_conns` is refused at startup; remove the parameter.
   Each connection names its pool in `application_name`, which replaces the connection string's own:
   `dispatch-requests`, `dispatch-background`, `dispatch-live`, `dispatch-settlements`, `dispatch-rooms`, `dispatch-room-appends`, `dispatch-health`, `dispatch-listen`, `dispatch-leases`, `dispatch-outbox`, `dispatch-compaction`, `dispatch-text-trees`, `dispatch-horizon` or `dispatch-registry`, so `select application_name, count(*) from pg_stat_activity group by 1` shows what each pool holds.
   A connection of the request, background, outbox and room-appends pools carries one more setting no other pool's does, `idle_in_transaction_session_timeout` of 70 seconds (`store.RequestIdleInTransactionTimeout`), and a document settlement's write, a document compaction's write and the compaction sweep's removal of a document from its list set the same bound for their own transaction (`store.BoundIdleInTransaction`), so Postgres ends an orphaned transaction of theirs instead of leaving it holding the issue rows and document locks every request's write waits on - and a request's, the event horizon - until the server notices its socket is gone.
@@ -1010,7 +1010,7 @@ What the two processes share, and what each keeps to itself:
 
 - No leased background loop runs a pass beside another process's pass of the same loop.
   Each pass takes a named session-level advisory lease for its length (`duty.Exclusive`), so a process whose attempt lands inside another's pass finds it held and logs a skip.
-  The twelve timer loops — the delivery reconcile, the architecture import, the webhook redelivery sweep, the CI reconcile pass (lease `ci-reconcile`, beside the redelivery sweep in what it recovers), the hourly document compaction sweep (lease `document-compaction`, first tick at start, with or without NATS), the block index reconciliation, the term-statistics refresh, the repair of closed and reopened issues' asks, the keyed writes' maintenance sweep (lease `suggestion-outcomes`), the document settlement resumption, the prune of the registry of live server processes and the display tree fill (`texttreefill`, lease `text-tree-fill`)
+  The thirteen timer loops — the delivery reconcile, the architecture import, the webhook redelivery sweep, the CI reconcile pass (lease `ci-reconcile`, beside the redelivery sweep in what it recovers), the hourly document compaction sweep (lease `document-compaction`, first tick at start, with or without NATS), the block index reconciliation, the term-statistics refresh, the repair of closed and reopened issues' asks, the keyed writes' maintenance sweep (lease `suggestion-outcomes`), the document settlement resumption, the prune of the registry of live server processes, the Legion sampler's read of each project's daemon (lease `legion-state`, first tick at start, one pass a minute) and the display tree fill (`texttreefill`, lease `text-tree-fill`)
   — also record each pass in `duty_passes` (migration `0115`), in a row per lease and period, so a process whose tick lands between another's passes
   — the ordinary case, since each ticker draws its phase at boot and a rolling update starts the second process minutes after the first
   — finds the period already served and logs the same skip: each runs once per period across the processes.
@@ -1025,7 +1025,7 @@ What the two processes share, and what each keeps to itself:
 
 - The embeddings `project_key` fill (lease `embeddings-project-key-fill`, `api.RunEmbeddingProjectKeyFill`) is leased and is no loop of a cadence: it is one pass of one to two hours that labels the rows stored before migration `20261109120000`, started once at boot, and it takes its lease with no period because the cursor row of `20261109120100` says when there is nothing left to do, so the process of a roll that finds the lease held logs the skip and fills nothing.
   That process then tries for the lease again every five minutes until that cursor row reads done, so a holder killed mid-pass costs the labelling one wait rather than lasting until something next boots, and each process's goroutine and its lease-pool connection go back for good once the rows are labelled.
-  Seventeen names are leased in all: the fourteen leased loops of the two items above — the twelve timer loops and the two woken ones — the CI reconcile among them, one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers and for each of the four callers of the two intakes' holds, 21, and two spare, 23 (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pools.go` lists the names and says what the spare two are for; every caller reserves its connection by name at boot and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly those 21 callers).
+  Eighteen names are leased in all: the fourteen leased loops of the two items above — the twelve timer loops and the two woken ones — the CI reconcile among them, the Legion sampler (`legion.RunSampler`, lease `legion-state`, its statements on the background pool), one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers and for each of the four callers of the two intakes' holds, 22, and two spare, 24 (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pools.go` lists the names and says what the spare two are for; every caller reserves its connection by name at boot and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly those 22 callers).
 
 - The delivery live hub, the event-stream relay, the process's shared listener connection, with the document rooms' room sync and the woken loops' wakes on it, and the document rooms' timers stay per-process by design (below), the embedding queue and the task progress reconciliation claim their own work, and the outbox publishes under its hold (above);
   the embedding queue's coverage pass runs in every process with no lease, each of its steps safe beside another process's, and only the processes whose embedder has the one active identity embed or drop a vector (Search, below);
@@ -1211,15 +1211,15 @@ During the roll that releases this behaviour, processes of the earlier build beh
 Every change this build writes still notifies `dispatch_doc_changed`, which the earlier build reads, and an issue that the earlier build closes still closes this build's rooms through the trigger.
 
 **Each process holds its own connections, so a second process doubles them.**
-Every pool's size is fixed in code (`internal/dispatch/store/pools.go`), and a serving process opens at most 48 + 6 + 4 + 4 + 23 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 112 connections to Postgres (`store.ConnectionsPerProcess`, which adds those fourteen constants):
+Every pool's size is fixed in code (`internal/dispatch/store/pools.go`), and a serving process opens at most 48 + 6 + 4 + 4 + 24 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 113 connections to Postgres (`store.ConnectionsPerProcess`, which adds those fourteen constants):
 
 | Pool | Connections | What takes them |
 | --- | --- | --- |
 | Requests (`store.SharedPoolSize`) | 48 | Every API request's reads and writes, and the document writers that hold a room's lock on a connection of their own (`lockRoom` through `withRoomLock`: snapshots, prunes, deletions); `application_name=dispatch-requests`. |
-| Background (`backgroundPoolSize`) | 6 | The background loops - the delivery sweep's resume (at most three of the six at once) and the GitHub rate limits the loops' own GitHub client reads among them - and the work a request leaves running behind its answer - the comment mention sender's own claim statements and a read's store of the display trees it built among them - so a request never queues behind one of their statements; `application_name=dispatch-background`. |
+| Background (`backgroundPoolSize`) | 6 | The background loops - the delivery sweep's resume (at most three of the six at once), the Legion sampler's reads and records, and the GitHub rate limits the loops' own GitHub client reads among them - and the work a request leaves running behind its answer - the comment mention sender's own claim statements and a read's store of the display trees it built among them - so a request never queues behind one of their statements; `application_name=dispatch-background`. |
 | Live (`livePoolSize`) | 4 | The live-update readers: the event stream relay, the delivery hub's intake, recompute and seed, and an events subscription's replay; `application_name=dispatch-live`. |
 | Settlements (`settlementsPoolSize`) | 4 | The document settlements, the store of the display tree of each version they write among them, so a burst of them neither waits for the requests' connections nor takes them; `application_name=dispatch-settlements`. |
-| Leases (`store.LeasePoolSize`) | 23 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`) and the delivery intakes' holds (`duty.Hold`), the embeddings `project_key` fill and the display tree fill among them: one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`, 21), and two spare. |
+| Leases (`store.LeasePoolSize`) | 24 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`) and the delivery intakes' holds (`duty.Hold`), the Legion sampler's read of each project's daemon, the embeddings `project_key` fill and the display tree fill among them: one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`, 22), and two spare. |
 | Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name=dispatch-room-appends`. |
 | Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name=dispatch-rooms`. |
 | Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name=dispatch-compaction`. |
@@ -1230,7 +1230,7 @@ Every pool's size is fixed in code (`internal/dispatch/store/pools.go`), and a s
 | Registry (`registryPoolSize`) | 1 | Held for the life of the process: the heartbeat that stamps its row in the registry of live server processes every 5 seconds (`processes.Register`). |
 | Listeners (`listenerConnections`) | 5 | What the process may hold at once, each on a connection of its own: the events outbox's `LISTEN` on `dispatch_events` and `dispatch_duty_holds`, the shared listener hub the document rooms' room sync and the woken background loops wait on, and the document rooms' NOTIFY sender, each held for the life of the process, and the delivery hub's and the event stream relay's, each held only while something subscribes to them. |
 
-Two processes at their ceiling hold 224, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
+Two processes at their ceiling hold 226, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
 
 **A connection is closed after its next response once it is 60 seconds old** (`maxConnAge`, `cmd/dispatch/conn_age.go`):
 the server stamps each connection's accept time and answers the first request it reads at that age or later with `Connection: close`, and a request carrying an `Upgrade` header, a websocket handshake, keeps its connection.
@@ -3259,8 +3259,8 @@ when that row cannot be written, the create goes in unchecked and its `201` name
 the closest one at or above `duplicateNudgeScore` and below the refusal is named to the filer as `advice.suggestions.likely_duplicate`, which refuses nothing.
 Both bars are set by `TestNearCopyRefusalReplay` over a frozen export of a project's history (`scripts/near-copy-replay.sh`), and a change to the term picker or to the scoring statement invalidates that calibration.
 A candidate's snippet marks the words its title shares with the new one, and the `POSSIBLE_DUPLICATE` message quotes a candidate's whole title.
-The check runs once for every create, forced or not, in a read transaction of its own bounded by `duplicateGateTimeout` (500 ms) on the context and by `statement_timeout` inside it:
-one bound, because two would have a read of 700 ms refuse an unforced create while recording for a forced one that the check did not answer.
+The check runs once for every create, forced or not, in a read transaction of its own bounded by `duplicateGateTimeout` (2 s) on the context and by `statement_timeout` inside it:
+one bound, because with two, a read that ends between the two deadlines would refuse an unforced create while recording for a forced one that the check did not answer.
 A create whose check does not answer is written either way, forced or not, and the `201` says so in `advice.suggestions.near_copy_check`:
 the create went in without the near-copy check an unforced create otherwise meets.
 A forced one also records `forced` with an empty `past` on its `issue.created` event, which is how the weekly audit tells it from an override.
@@ -3897,6 +3897,20 @@ Each item below names a path with its method and identity, then its purpose.
   absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
   A mapping an issue names as its `repo` is deleted and moved like any other: an issue's own repository needs no mapping.
   `AGENTS.md` gives the rules and the `settings.repo_project.updated` events.
+
+- `/api/v1/projects/{key}/legion/daemon` (GET, PUT, DELETE; cookie, trusted header, or bearer)
+
+  The Legion daemon this project's state is read from: GET reads it, with the actor that first named it and when it was last written, or `null` when the project names none; PUT names it, `{state_url}`; DELETE stops reading it, what the sampler already recorded staying.
+  No route lists every project's daemon, since R26 of dispatch://INFRA-979's spec permits one cross-project read and this is not it: the Settings page's Legion section reads each project's.
+  A `state_url` that is not an absolute http(s) URL with a host and no path is `400 LEGION_SETTING_INPUT`, a DELETE for a project that names no daemon `404 NOT_FOUND`, a key that is not a project key `400 INVALID_PROJECT`, and a project that does not exist `404 PROJECT_NOT_FOUND`.
+  The daemon points Dispatch at a host, so it belongs to the deployment rather than to the project it is addressed under, and a project-scoped credential is refused the PUT and the DELETE as it is a repository mapping, the project this path names included.
+  `internal/dispatch/api/settings_legion.go` gives the rest, including why neither write emits an event.
+
+- `/api/v1/projects/{key}/legion/board` (GET; cookie, trusted header, or bearer)
+
+  The Legion board of the project its path names, from what the sampler recorded of that project's daemon; the `/ws/live` `legion` view carries the same body and pushes each change, and no page draws it.
+  Eleven columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro`, `merging`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure.
+  `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for a project that does not exist.
 
 - `/api/v1/github/app-installation/{owner}/{repo}` (GET; cookie, trusted header, or bearer)
 
