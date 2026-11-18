@@ -31,9 +31,9 @@ const (
 // carries, line for line. An edit to either side alone fails here: a line changed in the guide
 // and not in the header would otherwise never reach the test that runs the header's block.
 func TestThePlanRatingsWayBackIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
-	held := "the header of " + migrationNames(t, planRatingsVersion)[0]
-	assertIsTheGuidesBlock(t, headersWayBack(t, planRatingsVersion, held), "the header", held,
-		"internal/store's test runs the header's block and an operator the guide's",
+	name := "the header of " + migrationNames(t, planRatingsVersion)[0]
+	assertIsTheGuidesBlock(t, heldBlock{Text: headersWayBack(t, planRatingsVersion, name), Name: name, Label: "the header",
+		Why: "internal/store's test runs the header's block and an operator the guide's"},
 		planRatingsWayBackSection, planRatingsWayBackMark)
 }
 

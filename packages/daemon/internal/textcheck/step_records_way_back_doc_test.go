@@ -39,13 +39,13 @@ var stepRecordsWayBackMark = fmt.Sprintf("delete from schema_version where versi
 // header carries, line for line: an edit to either alone fails here, since the store's test runs
 // the header's and an operator runs the guide's.
 func TestTheStepRecordsWayBackIsOneTextInTheRollForwardAndTheGuide(t *testing.T) {
-	held := "the header of " + migrationNames(t, stepRecordsRollForward)[0]
-	header := headersWayBack(t, stepRecordsRollForward, held)
+	name := "the header of " + migrationNames(t, stepRecordsRollForward)[0]
+	header := headersWayBack(t, stepRecordsRollForward, name)
 	if first, _, _ := strings.Cut(header, "\n"); first != stepRecordsWayBackFirst {
 		t.Fatalf("the way back of migration %d opens %q, want %q", stepRecordsRollForward, first, stepRecordsWayBackFirst)
 	}
-	assertIsTheGuidesBlock(t, header, "the header", held,
-		"the store's test runs the header's block and an operator the guide's",
+	assertIsTheGuidesBlock(t, heldBlock{Text: header, Name: name, Label: "the header",
+		Why: "the store's test runs the header's block and an operator the guide's"},
 		stepRecordsWayBackSection, stepRecordsWayBackMark)
 }
 
