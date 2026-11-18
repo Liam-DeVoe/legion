@@ -376,7 +376,7 @@ approval to the version it writes. Once they have answered:
 A settled decision is the human's. A plan that would overturn one goes back to the planner with the
 decision kept, unless the planner brings evidence the human did not weigh that would change it
 (such as a measurement showing the settled choice cannot pass a check); then a decision
-block names the decision and that evidence. A plan never overturns a settled decision on its own.
+block names the decision and that evidence.
 A person's request after the approval becomes a requirement only when you write it into the spec
 and they approve that version; it is never another issue's, and no comment or answer of theirs
 takes a requirement out.
@@ -435,8 +435,8 @@ Write the root as a view when each of these is true:
 
 In every other case, ask for the root's own approval, as "When the root asks for its own approval"
 below says. Ask for it too when one of that section's cases holds, even where the five conditions
-above are true. `register_gate` reads each condition again. It refuses a call that fails one and
-records nothing, and its code and message name what Dispatch shows.
+above are true. `register_gate` reads each condition again and refuses a call that fails one,
+recording nothing and naming what Dispatch shows.
 
 A view's Design decides how the root builds each of the ancestor's requirements. This holds also
 where it changes a Design line that a person approved before the root became a view: such a line
@@ -541,8 +541,8 @@ version with no basis, in each of these cases:
 - A changes request is the newest review of the root's own spec.
 - A person asked for the root's own approval.
 
-The root's spec itself then says which of these holds: a section of decisions.md does not stand for
-it. When a person asks on the issue for the root's own approval, request that approval first, then
+A sentence of the root's spec then states which of these holds, in its own words: a pointer to
+decisions.md, to a list or to another passage does not stand for it. When a person asks on the issue for the root's own approval, request that approval first, then
 register that version with no basis. A person's request for the root's own approval wins over the
 basis.
 
@@ -610,9 +610,8 @@ When a root's architect sends you a requirement:
 7. Tell the root's architect that the request is open.
 
 The summary of each request of the route names each root, the requirement and the cost, which are
-part of what the person approves, although `dispatch request-approval --help` asks for one
-sentence. Its last sentence gives the two reviews' result, as for every approval request. State
-the cost so:
+part of what the person approves, whatever length `dispatch request-approval --help` asks for. Its
+last sentence gives the two reviews' result. State the cost so:
 
 - Where the ancestor is its tree's root, the new version closes its gate. Say that its tree merges
   nothing and starts no newly released child until the person approves.
@@ -622,9 +621,8 @@ the cost so:
 - Where a person's approval re-admitted the ancestor already and it waits in the line, say that its
   tree, once it starts, waits for this approval.
 
-Roots whose steps already rest on the ancestor stay open through the new version. "After approval"
-puts each change to an approved spec to the person as a decision block. On this route, the approval
-request is the person's decision instead.
+Roots whose steps already rest on the ancestor stay open through the new version. On this route the
+approval request, not a decision block ("After approval"), is the person's decision.
 
 More rules for the ancestor's architect:
 
@@ -641,7 +639,8 @@ More rules for the ancestor's architect:
 - Where the root that a `Delivered by` requirement names leaves the workflow without delivering it,
   file a child of the ancestor for the requirement, whose spec is a view that names it, rewrite the
   requirement with that child's name in place of the root's, and request the person's approval of
-  that version. Where a requirement it delivered names no root, keep its words and file such a
+  that version. That child is no duplicate of the root that left: it does the work that root left
+  undone. Where a requirement it delivered names no root, keep its words and file such a
   child for it. The request's summary says why the requirement lost its root, so the person weighs
   that reason there: ask nothing first. That version is not a version of the route: its summary
   names no root, and a sibling root that finds its request open asks for its own approval.

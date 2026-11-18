@@ -153,7 +153,9 @@ so say that too.
 ### A member under a root on the backlog
 
 A member under a Legion root on the backlog does not move that root. You file such a member
-yourself, or the session that filed it tells you on the controller topic. A root's architect also
+yourself, or the session that files it tells you on the controller topic, naming the member and the
+root, and moves nothing itself. It tells you even when the person who moved the root to the backlog
+works with it: you decide whether the root runs again. A root's architect also
 tells you when its root rests on an ancestor on the backlog
 (`skill://legion-architect/references/design-gate.md#a-requirement-the-ancestor-does-not-state`).
 Decide whether that root runs again under [Free slots](skill://legion-controller/SKILL.md#free-slots):
