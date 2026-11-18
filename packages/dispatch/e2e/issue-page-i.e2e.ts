@@ -2177,6 +2177,162 @@ test("the caret Enter puts in a statement stays on screen while the editor draws
   });
 });
 
+// The box a row's editor scrolls in anchors its own scroll on the words it holds, and the window
+// anchors nothing inside it: `EditorBox` (StagedDocument.tsx) puts `overflow-anchor: none` on an
+// element around the box, not on the box. The editor draws the names of the issues a document
+// cites after the caret is in, so the words above the caret grow, and the box, anchored on the
+// words the caret is in, scrolls by as much in the same frame, so those words stay where they
+// stand. With the property on the box itself, the box anchored nothing: at 1440 by 900 the caret
+// went from 111 px down the window to 136 px, 443 px and then 597 px, for some 600 ms, until the
+// row's second look at the block (`holdEditorAtBlock`) put it back. The row above reads the caret
+// once, after that second look, so it passed with the property on either element.
+// SLOW(>=2s): a whole seeded issue, sixty issues of another project and a long spec citing them,
+// a load waited on until the focus lands, then End and Enter, and the caret read on every frame
+// for two seconds from the frame it is in the statement.
+test("the words the caret Enter puts in a statement stand still while the editor draws the names above them", async ({
+  browser,
+}) => {
+  await phase(browser, seedWholeIssue, async (page) => {
+    // The cited issues are another project's, so nothing the page reads before the editor opens
+    // has their names in hand, and the editor draws them after the caret is in.
+    await createProject({ key: "CITED", name: "Cited issues" });
+    const cited: string[] = [];
+    for (let number = 1; number <= 60; number += 1) {
+      const issue = await createIssue({
+        force: true,
+        project: "CITED",
+        title: `A cited issue of another project, number ${number}, whose title runs long`,
+      });
+      cited.push(issue.key);
+    }
+    const spec = await createIssue(
+      {
+        force: true,
+        project: PROJECT,
+        spec: [
+          "# Long statements under words that cite another project",
+          "",
+          "## Problem",
+          "",
+          ...Array.from({ length: 6 }, (_, paragraph) => [
+            `Paragraph ${paragraph + 1} cites ${cited
+              .slice(paragraph * 10, paragraph * 10 + 10)
+              .map((key) => `dispatch://${key}`)
+              .join(", ")}.`,
+            "",
+          ]).flat(),
+          "## Requirements",
+          "",
+          ...Array.from({ length: 12 }, (_, index) => [
+            `:::requirement{#r-cited-${index + 1}}`,
+            `Statement ${index + 1} says ${Array.from({ length: 500 }, (_, word) => `word${word}`).join(" ")}.`,
+            ":::",
+            "",
+          ]).flat(),
+        ].join("\n"),
+        title: "An issue whose statements stand under words citing another project",
+      },
+      asPlanner
+    );
+    const statement = "r-cited-12";
+    const last = blockNodeId(await primarySlug(spec.key), statement);
+    await gotoIssue(page, `/issues/${spec.key}`);
+    await expectIssuePageDrawn(page);
+    await expect
+      .poll(async () => (await focusedRow(page)) !== null, {
+        message: "the page opens with the focus on no row",
+      })
+      .toBe(true);
+    await page.keyboard.press("End");
+    await expect
+      .poll(() => focusedRow(page), { message: "End did not reach the last statement" })
+      .toBe(last);
+    /** Where the caret stood at one frame, `at` ms after the first frame it was in the
+     *  statement: its top down the window, and the window's scroll, in px. */
+    type CaretReading = { readonly at: number; readonly scroll: number; readonly top: number };
+    // The claim is where the caret stands over time, so the page reads it on every frame, from
+    // the first frame the caret is in the statement until two seconds later, with no key pressed
+    // between: a reading at one instant passes before the names draw or after the row's second
+    // look has put the block back. The reading is armed before Enter, so it misses no frame.
+    const sampler = await page.evaluateHandle(
+      ({ block, span }) => {
+        const done = Promise.withResolvers<{
+          readonly first: CaretReading;
+          readonly lineHeight: number;
+          readonly readings: readonly CaretReading[];
+        }>();
+        const readings: CaretReading[] = [];
+        let start: number | undefined;
+        let lineHeight = 0;
+        const frame = (now: number) => {
+          const selection = window.getSelection();
+          const anchor = selection?.anchorNode ?? null;
+          if (start === undefined) {
+            const editable =
+              document.activeElement?.closest('[data-node-row] [contenteditable="true"]') ?? null;
+            const drawn = editable?.querySelector(`[data-block-id="${block}"]`) ?? null;
+            if (editable === null || anchor === null || drawn?.contains(anchor) !== true) {
+              requestAnimationFrame(frame);
+              return;
+            }
+            start = now;
+            // One line of the editor, as `holdEditorAtBlock` measures it: its computed line
+            // height, or CSS's `normal` of about 1.2 times its font size where it keeps the word.
+            const style = getComputedStyle(editable);
+            const height = Number.parseFloat(style.lineHeight);
+            lineHeight = Number.isFinite(height) ? height : 1.2 * Number.parseFloat(style.fontSize);
+          }
+          // A caret on an empty line has no rectangle of its own, so its line's box is read.
+          const line = anchor instanceof Element ? anchor : anchor?.parentElement;
+          const box =
+            (selection !== null && selection.rangeCount > 0
+              ? selection.getRangeAt(0).getClientRects()[0]
+              : undefined) ?? line?.getBoundingClientRect();
+          const reading = {
+            at: Math.round(now - start),
+            scroll: window.scrollY,
+            top: box?.top ?? Number.NaN,
+          };
+          readings.push(reading);
+          if (now - start < span) {
+            requestAnimationFrame(frame);
+            return;
+          }
+          done.resolve({ first: readings[0] ?? reading, lineHeight, readings });
+        };
+        requestAnimationFrame(frame);
+        return { done: done.promise };
+      },
+      { block: statement, span: 2_000 }
+    );
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretInRowBlock(page, statement), {
+        message: "Enter did not put the caret in the statement",
+      })
+      .toBe(true);
+    const { first, lineHeight, readings } = await sampler.evaluate((armed) => armed.done);
+    // Each place the caret stood in turn, from the first: the path a failure names.
+    const path = readings
+      .filter(
+        (reading, index) =>
+          Math.round(reading.top) !== Math.round(readings[index - 1]?.top ?? Number.NaN)
+      )
+      .map((reading) => `${Math.round(reading.top)} px at ${reading.at} ms`);
+    expect(
+      Math.max(...readings.map((reading) => Math.abs(reading.top - first.top))),
+      `the caret stood ${path.join(", ")} down the window after it was in the statement, more than one line of the editor (${lineHeight} px) from where it went in, while the editor drew the names above it at 1440x900`
+    ).toBeLessThanOrEqual(lineHeight);
+    const scrolled = Math.max(
+      ...readings.map((reading) => Math.abs(reading.scroll - first.scroll))
+    );
+    expect(
+      scrolled,
+      `the window scrolled by ${scrolled} px while the editor drew the names above the caret at 1440x900`
+    ).toBe(0);
+  });
+});
+
 // c-children, as the architect ruled on the children's section: no view draws a children's
 // section above the outline; the children are one group of rows of the outline, where the model
 // places them, which for every child today is under the issue; each child's row holds its
