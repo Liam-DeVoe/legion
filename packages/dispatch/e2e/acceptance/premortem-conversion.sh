@@ -54,7 +54,7 @@ USAGE
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_env DISPATCH_URL PROJECT STORE_DSN
-require_commands curl jq psql
+require_commands curl jq psql cmp
 read_bearer
 
 readonly driver=premortem-conversion.sh
@@ -392,7 +392,6 @@ references C2 "read the part_of tuple of $lens1" from "$lens1" part_of
 expect C2 "$lens1 hangs under $key1 through its part_of tuple" "[[\"issue\",\"dispatch://$key1\"]]" \
   '[.edges[] | [.node.kind, .node.ref]]'
 
-cp "$work/lens1.json" "$work/body"
 risk_count="$(jq '.risks | length' "$work/lens1.json")"
 missing="$(jq -r --slurpfile e "$work/expected-risks.json" '[$e[0][].heading] - [.risks[].heading] | join("; ")' "$work/lens1.json")"
 [[ "$risk_count" == 11 && -z "$missing" ]] ||
@@ -565,12 +564,12 @@ for converted in 1 2; do
   expect D "the document list of $key holds its spec, and not $document, which is retired" \
     "$(jq -cn --arg k "$key" '{retired: [], spec: ["\($k)/spec"]}')" --arg k "$key" --arg r "$ref_key" \
     '{spec: [.[] | select(.ref_key == "\($k)/spec") | .ref_key], retired: [.[] | select(.ref_key == $r) | .ref_key]}'
-  # The redirect's shape, the lens as the node the old address answers, is this driver's reading:
-  # no moved-node redirect exists at this head (references.go answers none). It is reconciled with
-  # dispatch://INFRA-1150's redirect shape when that retirement lands; until then section D, the
-  # last of the run, fails.
+  # The redirect is the shape a moved block's old address answers (dispatch://INFRA-1150's
+  # movedBlockNode): the node the move reaches, named by its own address, as `.node`. A retired
+  # document's address with no move answers its issue instead (refs' loadArtifactNodes), so the
+  # lens here is the conversion's moved_to and nothing else.
   references D "read $document, its old address" to "$document"
-  expect D "$document answers a redirect to the lens $lens, not the answer a deleted document gives" \
+  expect D "$document answers a redirect to the lens $lens, not the issue a retired document's address answers" \
     "$(jq -cn --arg l "$lens" '{kind: "lens", ref: $l}')" '.node | {kind, ref}'
   lenses_on D "follow the redirect of $document to the lens" "$(jq -r '.node.ref' "$work/body")"
   expect D "the redirect of $document reaches $lens, whose eleven risks a reader walks down to" \

@@ -42,6 +42,22 @@ import (
 // a beginning wherever it is cut, and is as long as the lenses it holds.
 const lensChainDepth = 50
 
+// lensStandsOnKinds are the kinds of node a lens may stand on, as decodeNodeAddress names them:
+// the kinds of a node under an issue, which is where P9 (dispatch://INFRA-1950/artifact/plan-md)
+// lets a lens be invoked - the issue, a document and its blocks, an ask, a comment or a message
+// and its blocks, and the lenses, findings, risks and constraints under those, the kinds that
+// stand on a node by their part_of tuple alone (refs.StandingKinds) - as the arms of refs'
+// backlink counts that count a lens on a node (lensStandsOn) name them. A node of any other
+// kind holds no lens, and the read answers it the 404 a node nobody holds answers before it reads
+// the store: a person, a session, a role or a page is a node the store holds and every reader may
+// see, so answering one 200 would tell any caller whether that person exists, which the person
+// page keeps from them (D12b).
+var lensStandsOnKinds = append([]string{
+	graphstore.KindIssue, graphstore.KindArtifact, refs.BlockNodeKind,
+	string(refs.ItemAsk), refs.ItemAsk.BlockKind(), string(refs.ItemComment), refs.ItemComment.BlockKind(),
+	string(refs.ItemMessage), refs.ItemMessage.BlockKind(),
+}, refs.StandingKinds()...)
+
 // lensesQuery is GET /api/v1/lenses's query: the one node whose lenses are read.
 type lensesQuery struct {
 	// On is the node's dispatch:// address, or its store address as the /nodes/{id} routes take
@@ -91,8 +107,9 @@ type lensRead struct {
 	// On is the address of the node the lens stands on, the far end of its part_of tuple, which
 	// is the log of its invocation; null where the reader may not see that node.
 	On *string `json:"on"`
-	// Author is the person or the session its authored_by tuple names, null for a lens written
-	// on the shared bearer, which proves no author.
+	// Author is the person or the session its authored_by tuple names, the writer
+	// graphstore.AuthorOf names of its made_by: the session its body named for a lens written on
+	// the shared bearer, and null only where the write named only a workload (spec v46 R12).
 	Author    *reasoningAuthor `json:"author"`
 	CreatedAt time.Time        `json:"created_at"`
 	Verdict   *string          `json:"verdict"`
@@ -140,41 +157,24 @@ type nodeLenses struct {
 // graph_nodes row, held, beside its current part_of tuple, placed (to_kind, to_id, seq), which
 // source names; the rows narrow keeps that are not gone (gone) and that the reader, bound at
 // viewer, may see through the predicate of a lens (refs.VisibleKindRow), in order. Beside each
-// ride its stored state and visibility (refs.StoredNodeOf), its verdict, the lens_kind its
-// current has_kind tuple names with that kind's words, the far end of its current authored_by
-// tuple, and the lenses at either end of its current triggered_by tuples, each a lens that is not
-// gone and that the reader may see, by id in the order those tuples were written.
+// ride its stored state and visibility, off the row it holds (refs.StoredRowOf), its verdict, its
+// kind with that kind's words (refs.LensKindSQL), the far end of its current authored_by tuple
+// (refs.CurrentFarEndSQL), and the lenses at either end of its current triggered_by tuples, each a
+// lens that is not gone and that the reader may see, by id in the order those tuples were written.
 func lensRowsStatement(source, narrow, order, gone, viewer string) string {
 	lens := `'` + graphstore.KindLens + `'`
 	return `
 	select held.id, placed.seq, placed.to_kind, placed.to_id, held.made_at,
-	       ` + refs.StoredNodeOf(lens, `held.id`) + `,
+	       ` + refs.StoredRowOf("held") + `,
 	       nullif(held.attributes->>'` + graphstore.AttributeVerdict + `', ''),
 	       chosen_kind.id, chosen_kind.words, author.to_kind, author.to_id,
 	       coalesce(triggers.ids, '{}'), coalesce(triggered.ids, '{}')
 	from ` + source + `
 	left join lateral (
-		select kind_node.id, coalesce(kind_node.attributes->>'` + graphstore.AttributeWords + `', '') as words
-		from (
-			` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted`,
-		`t.from_kind = `+lens+` and t.from_id = held.id and t.kind = '`+graphstore.TupleHasKind+`'
-				and t.to_kind <> '`+graphstore.KindValue+`'`) + `
-		) chosen
-		join graph_nodes kind_node on kind_node.kind = chosen.to_kind and kind_node.id = chosen.to_id
-		where chosen.asserted and chosen.to_kind = '` + graphstore.KindLensKind + `' and kind_node.state <> ` + gone + `
-			and ` + refs.VisibleKindRow(graphstore.KindLensKind, "kind_node", viewer) + `
-		order by chosen.to_id
-		limit 1
+		` + refs.LensKindSQL("held", `kind_node.id, coalesce(kind_node.attributes->>'`+graphstore.AttributeWords+`', '') as words`, viewer) + `
 	) chosen_kind on true
 	left join lateral (
-		select newest.to_kind, newest.to_id from (
-			` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted`,
-		`t.from_kind = `+lens+` and t.from_id = held.id and t.kind = '`+graphstore.TupleAuthoredBy+`'
-				and t.to_kind <> '`+graphstore.KindValue+`'`) + `
-		) newest
-		where newest.asserted
-		order by newest.to_kind, newest.to_id
-		limit 1
+		` + refs.CurrentFarEndSQL(`newest.to_kind, newest.to_id`, lens, `held.id`, graphstore.TupleAuthoredBy) + `
 	) author on true
 	left join lateral (
 		select array_agg(linked.to_id order by linked.seq) as ids
@@ -215,25 +215,18 @@ var lensesOnNodeQuery = lensRowsStatement(`(
 // being $2 (lensRowsStatement): the lenses a chain reaches that the read holds no row of yet.
 var lensesByIDQuery = lensRowsStatement(`graph_nodes held
 	left join lateral (
-		select newest.to_kind, newest.to_id, newest.seq from (
-			`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.seq, t.asserted`,
-	`t.from_kind = '`+graphstore.KindLens+`' and t.from_id = held.id and t.kind = '`+graphstore.TuplePartOf+`'
-				and t.to_kind <> '`+graphstore.KindValue+`'`)+`
-		) newest
-		where newest.asserted
-		order by newest.to_kind, newest.to_id
-		limit 1
+		`+refs.CurrentFarEndSQL(`newest.to_kind, newest.to_id, newest.seq`, `'`+graphstore.KindLens+`'`, `held.id`, graphstore.TuplePartOf)+`
 	) placed on true`,
 	`held.kind = '`+graphstore.KindLens+`' and held.id = any($1)`, ``, "$2", "$3")
 
 // lensFindingsQuery reads the findings of the lenses whose ids are $1 for the reader $3: each
 // block node whose current part_of tuple points at one of those lenses, that is not gone ($2) and
 // that the reader may see through the predicate of a finding (refs.VisibleKindRow), with its text
-// (refs.StandingTextSQL) and its stored state and visibility, by lens and in rank order, the seq
-// of that tuple.
+// (refs.StandingTextSQL) and its stored state and visibility off the row it holds
+// (refs.StoredRowOf), by lens and in rank order, the seq of that tuple.
 var lensFindingsQuery = `
-	select placed.to_id, held.id, placed.seq, ` + refs.StandingTextSQL("held") + `,
-	       ` + refs.StoredNodeOf(`'`+refs.BlockNodeKind+`'`, `held.id`) + `
+	select placed.to_id, held.id, placed.seq, ` + refs.StandingTextSQL("held", "$3") + `,
+	       ` + refs.StoredRowOf("held") + `
 	from (
 		` + graphstore.CurrentTupleRead(`t.to_id, t.from_id`, `t.to_id, t.from_id, t.seq, t.asserted`,
 	`t.to_kind = '`+graphstore.KindLens+`' and t.to_id = any($1) and t.kind = '`+graphstore.TuplePartOf+`'
@@ -247,15 +240,16 @@ var lensFindingsQuery = `
 // lensRisksQuery reads the risks under the lenses whose ids are $1 for the reader $3: each risk
 // whose current part_of tuple points at one of those lenses, that is not gone ($2) and that the
 // reader may see through the predicate of a risk, with its attributes, its stored state and
-// visibility, and the far end of each of its current prevented_by tuples, in the order they were
-// written. Those far ends are resolved afterwards through the block loader (refs.Nodes), which
-// binds the block predicate and answers a block no current version holds as none.
+// visibility off the row it holds (refs.StoredRowOf), and the far end of each of its current
+// prevented_by tuples, in the order they were written. Those far ends are resolved afterwards
+// through the block loader (refs.Nodes), which binds the block predicate and answers a block no
+// current version holds as none.
 var lensRisksQuery = `
 	select placed.to_id, held.id,
 	       coalesce(held.attributes->>'` + graphstore.AttributeHeading + `', ''),
 	       coalesce(held.attributes->>'` + graphstore.AttributeEarlyWarning + `', ''),
 	       coalesce(held.attributes->>'` + graphstore.AttributePrevention + `', ''),
-	       ` + refs.StoredNodeOf(`'`+graphstore.KindRisk+`'`, `held.id`) + `,
+	       ` + refs.StoredRowOf("held") + `,
 	       coalesce(checks.ids, '{}')
 	from (
 		` + graphstore.CurrentTupleRead(`t.to_id, t.from_id`, `t.to_id, t.from_id, t.seq, t.asserted`,
@@ -325,9 +319,9 @@ func scanLensRows(rows pgx.Rows, err error) ([]lensRow, error) {
 			&kindID, &kindWords, &authorKind, &authorID, &triggeredBy, &triggered); err != nil {
 			return nil, fmt.Errorf("scan a lens: %w", err)
 		}
-		state, visibility, ok := refs.StoredStateAndVisibility(stored)
-		if !ok {
-			return nil, fmt.Errorf("the lens %s holds a stored state and visibility of %d values", row.id, len(stored))
+		state, visibility, err := refs.StoredStateOf("lens "+row.id, stored)
+		if err != nil {
+			return nil, err
 		}
 		row.read.Address, row.read.State, row.read.Visibility = lensAddress(row.id), state, visibility
 		row.read.CreatedAt = row.read.CreatedAt.UTC()
@@ -479,10 +473,10 @@ func lensChildren(ctx context.Context, q refs.Queryer, viewer any, ids []string)
 			rows.Close()
 			return nil, nil, nil, fmt.Errorf("scan a finding of a lens: %w", err)
 		}
-		state, visibility, ok := refs.StoredStateAndVisibility(stored)
-		if !ok {
+		state, visibility, err := refs.StoredStateOf("finding "+id, stored)
+		if err != nil {
 			rows.Close()
-			return nil, nil, nil, fmt.Errorf("the finding %s holds a stored state and visibility of %d values", id, len(stored))
+			return nil, nil, nil, err
 		}
 		_, blockID, _ := strings.Cut(id, "#")
 		finding.Address, finding.State, finding.Visibility = refs.BlockRef(lensAddress(lens), blockID), state, visibility
@@ -504,10 +498,10 @@ func lensChildren(ctx context.Context, q refs.Queryer, viewer any, ids []string)
 			rows.Close()
 			return nil, nil, nil, fmt.Errorf("scan a risk of a lens: %w", err)
 		}
-		state, visibility, ok := refs.StoredStateAndVisibility(stored)
-		if !ok {
+		state, visibility, err := refs.StoredStateOf("risk "+id, stored)
+		if err != nil {
 			rows.Close()
-			return nil, nil, nil, fmt.Errorf("the risk %s holds a stored state and visibility of %d values", id, len(stored))
+			return nil, nil, nil, err
 		}
 		risk.Address, risk.State, risk.Visibility = "dispatch://"+graphstore.KindRisk+"/"+id, state, visibility
 		checks[risk.Address] = prevented
@@ -523,17 +517,20 @@ func lensChildren(ctx context.Context, q refs.Queryer, viewer any, ids []string)
 // readLenses is the lens read of the node address names, for who (nodeLenses). The node is
 // decoded as the /nodes/{id} routes decode theirs (decodeNodeAddress: a dispatch:// address by
 // text.ParseRef and refs.TargetOf, or a store address) and read through the registry with who's
-// visibility (refs.Node), so an address that decodes to nothing, a node nobody holds and a node
-// who may not see all answer one 404 NOT_FOUND, in the same words but the address.
+// visibility (refs.Node), so an address that decodes to nothing, a node of a kind no lens stands on
+// (lensStandsOnKinds), a node nobody holds and a node who may not see all answer one 404
+// NOT_FOUND, in the same words but the address. A kind no lens stands on is refused before
+// anything is read, so that answer is the same whatever the store holds.
 //
 // Its statements, beside the node's own: the lenses on the node; the lenses a chain reaches that
 // stand elsewhere, one statement for each depth of a walk that meets any; the findings and the
 // risks of every lens answered, one statement each; and one call of the registry (refs.Nodes)
-// for the place of every lens answered that stands elsewhere and every check a risk names.
+// for the place of every lens answered that stands elsewhere than on the node or on a lens the
+// read holds, and every check a risk names.
 func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address string) (nodeLenses, error) {
 	notFound := errorf(http.StatusNotFound, "NOT_FOUND", "no node %q", address)
 	kind, id, ok := decodeNodeAddress(address)
-	if !ok {
+	if !ok || !slices.Contains(lensStandsOnKinds, kind) {
 		return nodeLenses{}, notFound
 	}
 	node, found, err := refs.Node(ctx, q, who, kind, id, true)
@@ -580,12 +577,21 @@ func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address st
 	if err != nil {
 		return nodeLenses{}, err
 	}
-	// The place of each lens that stands elsewhere than the node read, through its own loader,
-	// which answers its parent only where the reader may see that parent; the node itself, where
-	// it is a lens, carries its own already. And the checks each risk names, through theirs.
+	// The place of each lens that stands elsewhere than the node read. A lens standing on a lens
+	// the read holds a row of names that lens's address: the row passed the reader's predicate and
+	// is not gone, which is what the lens's own loader asks of its parent. Any other lens is read
+	// through its own loader, which answers its parent only where the reader may see that parent;
+	// the node itself, where it is a lens, carries its own already. And the checks each risk
+	// names, through theirs.
+	onAHeldLens := func(row *lensRow) *lensRow {
+		if row.parent.kind != graphstore.KindLens {
+			return nil
+		}
+		return walk.rows[row.parent.id]
+	}
 	var targets []refs.Target
 	for _, id := range answered {
-		if row := walk.rows[id]; row.placed && row.parent != on && !(isLens && id == node.ID) {
+		if row := walk.rows[id]; row.placed && row.parent != on && !(isLens && id == node.ID) && onAHeldLens(row) == nil {
 			targets = append(targets, refs.Target{Kind: graphstore.KindLens, ID: id})
 		}
 	}
@@ -609,6 +615,8 @@ func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address st
 			lens.On = parentAddress(node.Parent)
 		case row.placed && row.parent == on:
 			lens.On = addressOrNull(node.Ref)
+		case row.placed && onAHeldLens(row) != nil:
+			lens.On = addressOrNull(onAHeldLens(row).read.Address)
 		case row.placed:
 			lens.On = parentAddress(resolved[refs.Target{Kind: graphstore.KindLens, ID: id}].Parent)
 		}

@@ -246,15 +246,34 @@ const nodeColumns = `kind, id, supertag, visibility, state, attributes, made_at,
 // the build knows nothing of is a row this answers and the caller skips, never a read that has
 // to name every node in advance.
 func NodesOfKind(ctx context.Context, q Queryer, kind string) ([]Node, error) {
-	rows, err := q.Query(ctx, `
-		select `+nodeColumns+`
-		from graph_nodes
-		where kind = $1
-		order by id
-	`, kind)
+	rows, err := q.Query(ctx, nodesOfKind, kind)
 	if err != nil {
 		return nil, fmt.Errorf("read nodes of kind %s: %w", kind, err)
 	}
+	return scanNodesOfKind(rows, kind)
+}
+
+// QueueNodesOfKind queues NodesOfKind's read of kind on batch, for a reader that sends it in one
+// round trip beside reads of its own, and sets nodes to what it answers once the caller's batch
+// results are read (pgx.BatchResults.Close), which answers its error.
+func QueueNodesOfKind(batch *pgx.Batch, kind string, nodes *[]Node) {
+	batch.Queue(nodesOfKind, kind).Query(func(rows pgx.Rows) error {
+		read, err := scanNodesOfKind(rows, kind)
+		*nodes = read
+		return err
+	})
+}
+
+// nodesOfKind is the statement of NodesOfKind, $1 the kind.
+const nodesOfKind = `
+		select ` + nodeColumns + `
+		from graph_nodes
+		where kind = $1
+		order by id
+	`
+
+// scanNodesOfKind reads every node row of kind a read of nodesOfKind answers.
+func scanNodesOfKind(rows pgx.Rows, kind string) ([]Node, error) {
 	defer rows.Close()
 	var nodes []Node
 	for rows.Next() {

@@ -157,19 +157,11 @@ func TestTheReasoningRoutesWriteEachNodeAndAnswerItsShape(t *testing.T) {
 		t.Errorf("the lens stands on %v, want the spec by its ref_key", got)
 	}
 	// The findings rank in the order they were written: the seq of their part_of tuples.
-	var ranked []string
-	rows, err := rig.database.Pool.Query(context.Background(), `
+	ranked, err := readStrings(context.Background(), rig.database.Pool, `
 		select from_id from graph_tuples where kind = $1 and to_kind = $2 and to_id = $3 and from_kind = 'block' order by seq
 	`, graphstore.TuplePartOf, graphstore.KindLens, lens.ID)
 	if err != nil {
 		t.Fatalf("read the findings' part_of tuples: %v", err)
-	}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			t.Fatalf("scan a finding's part_of: %v", err)
-		}
-		ranked = append(ranked, id)
 	}
 	if want := []string{lens.Findings[0].ID, lens.Findings[1].ID}; !slices.Equal(ranked, want) {
 		t.Errorf("the findings rank %v, want %v", ranked, want)
@@ -275,15 +267,17 @@ func TestTheReasoningRoutesRefuseAndStoreNothing(t *testing.T) {
 		t.Fatalf("the store holds %d lenses after the refusals, and held %d before", after, before)
 	}
 
-	// On the shared bearer a lens is project-visible and names no author.
+	// On the shared bearer a lens is project-visible and names the session its body names as
+	// its writer (spec v46 R12), though that bearer proves no author.
 	shared := sessionRequest(t, rig.handler, http.MethodPost, "/api/v1/issues/"+rig.issue+"/lenses",
 		map[string]any{"on": rig.spec, "kind": "inversion", "actor": sessionActor()})
 	if shared.Code != http.StatusCreated {
 		t.Fatalf("a lens on the shared bearer: status=%d body=%s", shared.Code, shared.Body.String())
 	}
 	inversion := decodeBody[lensInvoked](t, shared)
-	if inversion.Author != nil || inversion.Visibility != graphstore.VisibilityProject {
-		t.Fatalf("the shared bearer's lens answers author %+v and visibility %q, want none and project", inversion.Author, inversion.Visibility)
+	if inversion.Author == nil || inversion.Author.Kind != graphstore.KindSession || inversion.Author.ID != sessionActor()["id"] ||
+		inversion.Visibility != graphstore.VisibilityProject {
+		t.Fatalf("the shared bearer's lens answers author %+v and visibility %q, want the session its body names and project", inversion.Author, inversion.Visibility)
 	}
 
 	// A second has_kind is the store's 409, and the lens holds the kind it held.

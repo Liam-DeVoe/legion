@@ -386,7 +386,7 @@ carries: a comment and a message of 48,000 characters taken and read back whole,
 32,001 characters refused by name, and `dispatch limits` (A8); a passage only at the end of a block
 longer than 32,000 characters found by meaning and a one-line ask option found by its text, each
 hit naming the block (A9, skipped with one `SKIP:` line on a server with no embedder); and a
-question of 2,001 characters taken by `dispatch ask` and by a document's decision block (A14).
+question of 2,001 characters taken by `dispatch ask` and by a document's ask block (A14).
 Each passing check prints `PASS: <section> <what>`; the first
 failure prints `FAIL: <section> <what>: <observed>` and exits 1. Its inputs:
 
@@ -416,7 +416,7 @@ failure prints `FAIL: <section> <what>: <observed>` and exits 1. Its inputs:
   line, and every other section runs.
 
 It writes two issues in `PROJECT`: the first holds the spec, comments, messages and the documents
-`cites.md`, `decisions.md`, `changes.md` and `list.md`; the second is its child, retitled, holding an
+`cites.md`, `rollout.md`, `changes.md` and `list.md`; the second is its child, retitled, holding an
 ask the script rewords, a comment on a quote of its spec and a reply, a message and a reply, and the
 uploads `notes.txt` and `pixel.png`. It resolves the ask and closes both issues, also when a check
 fails.
@@ -709,11 +709,17 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-All ten drivers source `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
-share: it refuses an unset input or a missing command with exit 2, reads the bearer from
-`DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it, unsetting both so no process the
-script starts inherits it, and holds the `pass`, `fail`, `skip`, `want_status`, `expect` and
-`query` every driver checks with. `with-harness.sh` is no driver and sources none of it.
+Twenty-one of the twenty-four drivers in `e2e/acceptance/` source `e2e/acceptance/lib.sh`, the
+preamble and the check vocabulary they share: it refuses an unset input or a missing command with
+exit 2, reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it,
+unsetting both so no process the script starts inherits it, and holds the `pass`, `fail`, `skip`,
+`want_status`, `expect` and `query` each of them checks with. Nineteen source it themselves;
+`lens-schema.sh` and `node-visibility-census.sh` source `lib-processes.sh`, which sources
+`lib-baseline.sh`, which sources `lib.sh`. The other three source none of it:
+`document-roundtrip.sh` and `omp-roundtrip.sh` check with functions of their own, and
+`outside-path-reach.sh` is handed to a person as one file (below). `with-harness.sh` is no driver
+and sources none of it, and `lib-baseline.sh`, `lib-processes.sh`, `lib-tree.sh` and
+`seed-decisions.sh` are files the drivers source, not drivers.
 
 The drivers of dispatch://INFRA-1253 and `seed-corpus.sh` also source `e2e/acceptance/lib-tree.sh`,
 after `lib.sh` and, for a driver over rows an earlier release wrote, after `lib-baseline.sh`. It

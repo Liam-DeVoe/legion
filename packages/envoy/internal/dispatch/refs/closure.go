@@ -5,11 +5,21 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// Member is an artifact reached through an issue's reference closure.
+// Member is one member of an issue's reference closure: a document a citation reaches, or the
+// lens a cited document's address moved to.
 type Member struct {
+	// Kind is the member's kind: graphstore.KindArtifact for a document, or graphstore.KindLens for
+	// the lens a citation of a document reaches where the document's address moved to it, as the
+	// pre-mortem conversion moves the address of the document it retires (api.ConvertPremortem).
+	Kind string
+	// Address is the member's dispatch:// address: the document's (ArtifactRef) or the lens's.
+	Address string
+	// RefKey is the ref_key of the document the citation reaches: the member itself, or, for a
+	// lens, the retired document whose address moved to it.
 	RefKey string
 	Depth  int
 	Via    model.ReferenceVia
@@ -45,6 +55,21 @@ const (
 	documentOfTarget = `case when r.to_kind = 'block' then split_part(block_target.node_id, '#', 1) else r.to_id end`
 )
 
+// documentMovedTo is the join that answers, for a refs row r whose target is a document, the lens
+// the document's address moved to (block_moved_to, which reads from a document's address the
+// moved_to the pre-mortem conversion appends to the lens it retires the document into), where
+// the acting person, bound at param, may see that lens: moved_document.lens_id, null for every
+// other row. A document whose lens the reader may not see stays the document, as it reads to a
+// reader who sees no move, so the walk says nothing of that lens. Like documentBlockHeld's, its
+// to_kind test is a one-time filter, so the function runs for a document target alone.
+func documentMovedTo(param string) string {
+	return `left join lateral (
+				select moved.lens_id from block_moved_to(r.to_id) as moved (lens_id)
+				where r.to_kind = 'artifact' and moved.lens_id is not null
+				  and ` + VisibleKind(graphstore.KindLens, `moved.lens_id`, param) + `
+			) moved_document on true`
+}
+
 // closureQuery is the statement Closure runs, held here so that its plan can be read by name. $1
 // is the issue and $2 the acting credential (VisibilityArg). It is rendered at its first use and
 // not as the variable is initialized, because the predicates it binds read the registry, which
@@ -58,17 +83,27 @@ const (
 // for every link of the issue. Its target is the document the walk reaches, and the block of it
 // the row's target resolves to where the row names one, so a document hidden from them is neither
 // listed nor walked on from.
+//
+// A row's lens_id is the lens a cited document's address moved to (documentMovedTo), and its
+// ref_key that document's still: the lens is the member, in the document's place, and the walk
+// goes on from no lens, which cites nothing. A citation of a block of that document still reaches
+// the document itself, since the move is of the document's own address, so one document can
+// stand for two members, the lens and itself, and the members are told apart by both columns.
+// Beside each member ride the columns of its document's address (ArtifactRef).
 var closureQuery = sync.OnceValue(func() string {
 	visibleSource := VisibleEnd(`r.from_kind`,
 		`case when r.from_kind = 'artifact' then (select s.ref_key from artifacts s where s.id = r.from_id::uuid) else r.from_id end`,
 		true, `$2`)
 	visibleTarget := VisibleKind("artifact", documentOfTarget, `$2`) +
 		` and (r.to_kind <> 'block' or ` + VisibleKind("block", `block_target.node_id`, `$2`) + `)`
+	movedTo := documentMovedTo(`$2`)
 	return `
 		with recursive closure as (
-			select ` + documentOfTarget + ` as ref_key, 1 as depth, r.from_kind as via_kind, r.from_id as via_id
+			select ` + documentOfTarget + ` as ref_key, 1 as depth, r.from_kind as via_kind, r.from_id as via_id,
+			       moved_document.lens_id
 			from refs r
 			` + documentBlockHeld + `
+			` + movedTo + `
 			where ` + documentTarget + ` and (
 				  (r.from_kind = 'ask'      and r.from_id in (select id::text from asks      where issue_key = $1))
 				or (r.from_kind = 'comment'  and r.from_id in (select id::text from comments  where issue_key = $1))
@@ -78,26 +113,29 @@ var closureQuery = sync.OnceValue(func() string {
 			  and ` + visibleSource + `
 			  and ` + visibleTarget + `
 			union
-			select ` + documentOfTarget + `, 1, 'ask', r.ask_id::text` + askPartLinksFrom + `
-			` + documentBlockHeld + askPartLinksCurrent + `
+			select ` + documentOfTarget + `, 1, 'ask', r.ask_id::text, moved_document.lens_id` + askPartLinksFrom + `
+			` + documentBlockHeld + `
+			` + movedTo + askPartLinksCurrent + `
 			  and r.ask_id in (select id from asks where issue_key = $1)
 			  and ` + documentTarget + `
 			  and ` + VisibleKind(string(ItemAsk), `r.ask_id::text`, `$2`) + `
 			  and ` + visibleTarget + `
 			union
-			select ` + documentOfTarget + `, c.depth + 1, 'artifact', a.id::text
+			select ` + documentOfTarget + `, c.depth + 1, 'artifact', a.id::text, moved_document.lens_id
 			from closure c
 			join artifacts a on a.ref_key = c.ref_key
 			join refs r on r.from_kind = 'artifact' and r.from_id = a.id::text
 			` + documentBlockHeld + `
-			where c.depth < 9 and ` + documentTarget + `
+			` + movedTo + `
+			where c.depth < 9 and c.lens_id is null and ` + documentTarget + `
 			  and ` + visibleTarget + `
 		)
-		select distinct on (c.ref_key) c.ref_key, c.depth, c.via_kind, c.via_id
+		select distinct on (c.ref_key, c.lens_id) c.ref_key, c.depth, c.via_kind, c.via_id, c.lens_id,
+		       a.issue_key, coalesce(a.project_key, ''), a.session_id, a.slug, a.kind, a.is_primary
 		from closure c
 		join artifacts a on a.ref_key = c.ref_key
 		where a.issue_key is distinct from $1
-		order by c.ref_key, c.depth, c.via_kind, c.via_id
+		order by c.ref_key, c.lens_id, c.depth, c.via_kind, c.via_id
 	`
 })
 
@@ -105,7 +143,10 @@ var closureQuery = sync.OnceValue(func() string {
 // a block reaches the block's document, while a current version of the document holds that
 // block, and a reference to a block that moved reaches the document of the block its moved_to
 // tuples reach (graphstore.MovedTo): a deleted block's links drop out of the closure until a
-// version holds its id again, unless a move records where it went. A
+// version holds its id again, unless a move records where it went. A reference to a document
+// whose own address moved to a lens - the pre-mortem conversion retires a document into one and
+// moves its address there (api.ConvertPremortem) - reaches that lens, a member of kind lens at
+// the lens's address, and the walk goes no further from it. A
 // block of a comment or message reaches its item, as a document's block reaches its document: a
 // link one holds is read from its item's own refs row, which every comment and message keeps
 // beside its blocks' mentions, so the member's via is the item. An ask keeps no such row - its
@@ -127,12 +168,20 @@ func Closure(ctx context.Context, q Queryer, who model.Actor, issueKey string) (
 	truncated := false
 	for rows.Next() {
 		var member Member
-		if err := rows.Scan(&member.RefKey, &member.Depth, &member.Via.Kind, &member.Via.ID); err != nil {
+		var lens, issue, session *string
+		var project, slug, kind string
+		var primary bool
+		if err := rows.Scan(&member.RefKey, &member.Depth, &member.Via.Kind, &member.Via.ID, &lens,
+			&issue, &project, &session, &slug, &kind, &primary); err != nil {
 			return nil, false, err
 		}
 		if member.Depth == 9 {
 			truncated = true
 			continue
+		}
+		member.Kind, member.Address = graphstore.KindArtifact, ArtifactRef(issue, project, session, slug, kind, primary)
+		if lens != nil {
+			member.Kind, member.Address = graphstore.KindLens, StoreRef(graphstore.KindLens, *lens)
 		}
 		members = append(members, member)
 	}
@@ -143,7 +192,10 @@ func Closure(ctx context.Context, q Queryer, who model.Actor, issueKey string) (
 		if members[left].Depth != members[right].Depth {
 			return members[left].Depth < members[right].Depth
 		}
-		return members[left].RefKey < members[right].RefKey
+		if members[left].RefKey != members[right].RefKey {
+			return members[left].RefKey < members[right].RefKey
+		}
+		return members[left].Kind < members[right].Kind
 	})
 	return members, truncated, nil
 }

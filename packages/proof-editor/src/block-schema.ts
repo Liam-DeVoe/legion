@@ -259,12 +259,23 @@ function parseAttribute(typeName: string, name: string, attribute: BlockAttribut
 }
 
 /**
- * A block that names no value for an attribute holds its default, unless an editor of schema
- * version `version` may not create the attribute yet: that one is left out, so the editor never
- * writes it.
+ * The value a block that names none holds for `attribute`, in an editor of schema version
+ * `version`, as the document service's writtenDefault reads it: the attribute's default, with two
+ * exceptions that hold none. A server attribute: the server writes it into a block or nobody does,
+ * and a block it is not written into - an ask's `state` once the fleet keeps an answer on the ask's
+ * node alone - is read without it, so an edit inside the block never writes a value for it into the
+ * live document (y-prosemirror writes every attribute the editor's node holds into the shared one;
+ * a node the editor creates, as a paste does, carries it as null, which the server reads as absent:
+ * pmdoc's nullReadsAbsent). And an attribute this editor may not create yet, which is left out so
+ * the editor never writes it.
  */
+function writtenDefault(attribute: BlockAttributeSchema, version: number): string | boolean | readonly string[] | undefined {
+  return attribute.server || !creatable(version, attribute) ? undefined : attribute.default;
+}
+
+/** A block that names no value for an attribute holds its written default (`writtenDefault`). */
 function schemaAttrs(type: BlockTypeSchema, version: number): Record<string, { default?: string | boolean | readonly string[] }> {
-  return Object.fromEntries(Object.entries(type.attributes).map(([name, attribute]) => [name, { default: creatable(version, attribute) ? attribute.default : undefined }]));
+  return Object.fromEntries(Object.entries(type.attributes).map(([name, attribute]) => [name, { default: writtenDefault(attribute, version) }]));
 }
 
 // An attribute whose `markdown` field is false (pmdoc `InMarkdown`) is never written into markdown,
@@ -273,7 +284,7 @@ function directiveAttrs(type: BlockTypeSchema, attrs: Record<string, string> | u
   const parsed: Record<string, string | boolean | readonly string[] | undefined> = {};
   for (const [name, attribute] of Object.entries(type.attributes)) {
     const value = attribute.markdown === false ? undefined : attrs?.[name];
-    parsed[name] = value === undefined ? (creatable(version, attribute) ? attribute.default : undefined) : parseAttribute(type.name, name, attribute, value);
+    parsed[name] = value === undefined ? writtenDefault(attribute, version) : parseAttribute(type.name, name, attribute, value);
   }
   for (const name of Object.keys(attrs ?? {})) {
     if (name !== 'id' && name !== 'className' && !(name in type.attributes)) {

@@ -2,32 +2,27 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 
 import { api } from "../../../api/client";
-import { roleDocument } from "../../../api/issue-cache";
-import { artifactBlocksQuery } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { wordsOf } from "../../refs/tree-fragment";
 import { decisionChanges } from "../decision-review";
-import type { DocumentBlocks, TreeNode } from "../issue-tree";
+import type { TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
 import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./decisions-parts";
 
 /**
  * The one seam between today's reads and the Decisions view: it turns the decisions read, the
- * issue's asks, its comments and the decisions document's blocks into the view's parts, so no
- * other file of the view names a read. Once the server's decisions model gives the view its
- * entries, that model's read replaces this module and leaves the view as it is.
+ * issue's asks and its comments into the view's parts, so no other file of the view names a
+ * read. Once the server's decisions model gives the view its entries, that model's read replaces
+ * this module and leaves the view as it is.
  *
- * The reads are the ones the page's tree is built from: the three reads the tree reads, under
- * the keys `useIssueTree.ts` reads them by, and the decisions document's blocks under the tree's
- * own key for them (`artifactBlocksQuery`, for the document `roleDocument` names), so the view
- * adds no request of its own. The blocks are why a Change stands under the decision whose
- * section holds its anchor (`decision-review.ts`): the quote alone cannot say which, since two
- * decisions can hold the same words. Until the blocks answer, a Change stands under the first
- * decision whose words hold its quote. A read that holds no decisions, or that has not answered
- * yet, gives no decision and no error: the view draws the questions alone.
+ * The reads are the three the page's tree reads, under the keys `useIssueTree.ts` reads them by,
+ * so the view adds no request of its own. No document plays the decisions part, since decisions
+ * are nodes of the spec, so no blocks of one are read: a Change stands under the first decision
+ * whose words hold its quote (`decision-review.ts`). A read that holds no decisions, or that has
+ * not answered yet, gives no decision and no error: the view draws the questions alone.
  *
  * The view draws four parts. A decision another person made is no part of its own: it stands
  * under the reader's decisions, with that person's name on its row, so the model's `others` is
@@ -38,10 +33,10 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
  * (`useTreeKeymap.ts`) and the body's empty line read. Until they do, a view with no question
  * or no decision to go to may be one whose questions and decisions have not arrived, so `q` and
  * `w` with nowhere to go say nothing rather than that there is none, and the body draws no line
- * that the issue holds nothing, as the outline does (`slots/body.tsx`). The comments and the
- * blocks are not waited for: they say of no entry whether it is there, only whether a decision
- * stands in the review list or in the reader's own, so a failed read of either still lets an
- * issue that holds nothing say so.
+ * that the issue holds nothing, as the outline does (`slots/body.tsx`). The comments are not
+ * waited for: they say of no entry whether it is there, only whether a decision stands in the
+ * review list or in the reader's own, so a failed read of them still lets an issue that holds
+ * nothing say so.
  *
  * The seam says too which of those two reads was refused before it first answered
  * (`unreadable`), and asks one of them alone again (`retry`). The body draws a line with a
@@ -49,7 +44,7 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
  * is asked again belong to the read, and only this module names one, so they are read here and
  * the body knows a read only by the word its line is drawn for. A read whose refetch fails over
  * an answer it already holds keeps that answer, which the view still draws from, so it is not
- * among them; nor are the comments and the blocks, which only move a decision between parts.
+ * among them; nor are the comments, which only move a decision between parts.
  *
  * The hook is the module's one export and its answer's type is its own, so the read that
  * replaces this module has one name to give the view and nothing else of it to keep.
@@ -103,15 +98,10 @@ export function useDecisionsEntries({
     queryFn: () => api.listComments(issue.key),
     queryKey: ["comments", issue.key],
   }).data;
-  // The blocks of the decisions document, which name the section each Change's anchor stands
-  // in and so the decision it changes, under the key the tree reads them by. An issue with no
-  // decisions document reads none.
-  const documentId = roleDocument(issue, "decisions")?.id;
-  const blocks = useQuery({
-    ...artifactBlocksQuery(documentId ?? ""),
-    enabled: documentId !== undefined,
-  }).data;
-  // The comments and the blocks only move a decision between parts, so they are not waited for.
+  // No document plays the decisions part any more: decisions are nodes of the spec, so the
+  // issue names no decisions document (`roleDocument`) and no blocks of one are read. A Change
+  // stands under the first decision whose words hold its quote (`decision-review.ts`).
+  // The comments only move a decision between parts, so they are not waited for.
   const readsHeld = decisions !== undefined && asks !== undefined;
   // A read was refused before it first answered where it holds no answer and is in error. A
   // refetch that fails sets the error over the answer the read last gave and keeps that answer,
@@ -134,16 +124,9 @@ export function useDecisionsEntries({
     },
     [refetchAsks, refetchDecisions]
   );
-  const documents = useMemo<readonly DocumentBlocks[] | undefined>(
-    () =>
-      documentId === undefined || blocks === undefined
-        ? undefined
-        : [{ artifactId: documentId, blocks }],
-    [documentId, blocks]
-  );
   const changes = useMemo(
-    () => decisionChanges(decisions, comments, issue.artifacts, documents),
-    [decisions, comments, issue.artifacts, documents]
+    () => decisionChanges(decisions, comments, issue.artifacts, undefined),
+    [decisions, comments, issue.artifacts]
   );
   // How this issue addresses a node, which is the one rule the tree was built with, so a
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`). `nodeIdOf` names no block by

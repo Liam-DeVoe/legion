@@ -1,33 +1,30 @@
 -- 20261116184707_issue_tree_graph_edges_both_arms.up.sql
 --
--- dispatch://INFRA-1253 carries two children that each re-state `graph_edges`, and neither
--- child's re-statements hold the other's changes:
+-- dispatch://INFRA-1253 carries two children that each re-state `graph_edges`:
 --
---   20261116091932_graph_edges_store_tuples (dispatch://INFRA-1950) gives the tuple arm the class
---   `store`, the relations the store holds with no projection row behind them: `changed_by_run`,
---   `has_kind`, `triggered_by`, `constrained_by` and `prevented_by` out of any node, and `part_of`
---   and `authored_by` out of an `interaction`, a `lens`, a `risk` or a `constraint`; and
---   20261116160000_graph_edges_findings (dispatch://INFRA-1950), re-stated from 091932's text,
---   leaves a tuple out of a finding of a lens - a `block` node whose id begins `lens/` - out of that
---   class and adds one arm over the store's current tuples that answers the relations of the class
---   out of a finding with the literal from_kind `lens_block`;
+--   dispatch://INFRA-1950 gives the tuple arm the class `store`, the relations the store holds
+--   with no projection row behind them: `changed_by_run`, `has_kind`, `triggered_by`,
+--   `constrained_by` and `prevented_by` out of any node, and `part_of` and `authored_by` out of an
+--   `interaction`, a `lens`, a `risk` or a `constraint`; it leaves a tuple out of a finding of a
+--   lens - a `block` node whose id begins `lens/` - out of that class and adds one arm over the
+--   store's current tuples that answers the relations of the class out of a finding with the
+--   literal from_kind `lens_block`. Its one statement of the view is
+--   20261117020856_graph_edges_asks_and_store_class, which sorts after this one; and
 --
 --   20261116094101_graph_edges_asks (dispatch://INFRA-1150) answers the asks arms of
 --   `anchored_to`, `owned_by` and `followed_by` only for a row whose `node_kind` is null, and
 --   gives the tuple arm an ask's `anchored_to` and `owned_by` (class `ask`), its `followed_by`
 --   (class `ask_follower`) and an answered ask's `shaped` (class `block_ref`).
 --
--- The runner applies them in version order, so a database migrated through all three holds the
--- last, 20261116160000, alone, and graph_edges answers none of an ask's relations from its node.
--- This re-states the view once more as 20261116160000 states it, with 20261116094101's changes
--- added: the three `node_kind is null` tests on the asks arms, and the tuple arm's classes `ask`,
--- `ask_follower` and an ask's `shaped`, each with the join of its projection row. The class
--- `store`, with its guard against a finding, is tested after a block's `in_document` and before
--- every other class, as 20261116160000 tests it, so a requirement block's `constrained_by` is not
--- read as a block reference; the finding arm stands last. No kind of the class `store` is a kind
--- an ask's class names, so every row either child's arms answered is answered as it was, and the
--- kinds `refs.TupleKinds` lists are both children's. A database that applied them in another order
--- holds another one of them last, and this states the same view over it.
+-- This states the view with both children's changes: 20261116094101's arms, with the three
+-- `node_kind is null` tests on the asks arms and the tuple arm's classes `ask`, `ask_follower`
+-- and an ask's `shaped`, each with the join of its projection row, and dispatch://INFRA-1950's
+-- class `store`, with its guard against a finding, tested after a block's `in_document` and
+-- before every other class, so a requirement block's `constrained_by` is not read as a block
+-- reference; the finding arm stands last. It is the statement 20261117020856 makes, byte for
+-- byte, so a database that applied either holds the view the other states. No kind of the class
+-- `store` is a kind an ask's class names, so every row either child's arms answered is answered
+-- as it was, and the kinds `refs.TupleKinds` lists are both children's.
 --
 -- It drops no arm and changes no row an arm answers for either child: a build of the release
 -- before reads the rows it read. Re-stating the view holds `graph_edges` ACCESS EXCLUSIVE for the

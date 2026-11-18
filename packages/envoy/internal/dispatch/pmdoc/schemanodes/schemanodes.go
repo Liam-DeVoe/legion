@@ -202,6 +202,12 @@ func readAttributeNodes(ctx context.Context, q graphstore.Queryer) (map[string]a
 	if err != nil {
 		return nil, err
 	}
+	return heldAttributes(nodes)
+}
+
+// heldAttributes is what each of nodes, the attribute nodes of the store, carries, by its address,
+// leaving out a node the store holds gone.
+func heldAttributes(nodes []graphstore.Node) (map[string]attributeAttributes, error) {
 	held := make(map[string]attributeAttributes, len(nodes))
 	for _, node := range nodes {
 		if node.State == graphstore.StateGone {
@@ -225,35 +231,38 @@ func typeAttributes(ctx context.Context, q graphstore.Queryer, name string, held
 	if err != nil {
 		return nil, err
 	}
-	type placed struct {
-		position  int
-		attribute pmdoc.BlockAttribute
-	}
-	var attributes []placed
+	var tied []string
 	for _, tuple := range tuples {
-		if tuple.FromKind != KindAttribute {
-			continue
+		if tuple.FromKind == KindAttribute {
+			tied = append(tied, tuple.FromID)
 		}
-		carried, present := held[tuple.FromID]
-		if !present {
-			continue
-		}
-		attributes = append(attributes, placed{position: carried.Position, attribute: pmdoc.BlockAttribute{
-			Name:                 carried.Name,
-			BlockAttributeSchema: carried.BlockAttributeSchema,
-		}})
 	}
-	sort.SliceStable(attributes, func(left, right int) bool {
-		if attributes[left].position != attributes[right].position {
-			return attributes[left].position < attributes[right].position
-		}
-		return attributes[left].attribute.Name < attributes[right].attribute.Name
-	})
-	declared := make(pmdoc.BlockAttributes, len(attributes))
-	for index, held := range attributes {
-		declared[index] = held.attribute
+	ordered := orderedAttributes(tied, held)
+	declared := make(pmdoc.BlockAttributes, len(ordered))
+	for index, attribute := range ordered {
+		declared[index] = pmdoc.BlockAttribute{Name: attribute.Name, BlockAttributeSchema: attribute.BlockAttributeSchema}
 	}
 	return declared, nil
+}
+
+// orderedAttributes is the attribute nodes of one type, the ids its `attribute_of` tuples come
+// from, in the order the nodes record - by position, then by name - leaving out an id held does
+// not hold: the order of a type's attributes in the block schema (typeAttributes) and among the
+// store's own types (StoreTypesIn) alike.
+func orderedAttributes(ids []string, held map[string]attributeAttributes) []attributeAttributes {
+	ordered := make([]attributeAttributes, 0, len(ids))
+	for _, id := range ids {
+		if attribute, present := held[id]; present {
+			ordered = append(ordered, attribute)
+		}
+	}
+	sort.SliceStable(ordered, func(left, right int) bool {
+		if ordered[left].Position != ordered[right].Position {
+			return ordered[left].Position < ordered[right].Position
+		}
+		return ordered[left].Name < ordered[right].Name
+	})
+	return ordered
 }
 
 // decodeNodeAttributes reads a node's attributes column into the shape its kind carries. The

@@ -76,6 +76,9 @@ type Followed struct {
 // That relation is stated after the row: its time is the row's, which the insert gives it. A
 // follow given its cause appends it at once, in a statement of its own that runs only when the row
 // was marked; one whose cause comes later holds it in Uncaused with the node's base attributes.
+// That followed_by changes the ask's node it goes out of (graphstore.Tuple's Changes), as a
+// pointer a request appends does, so a follow made for a run of the command bar names the ask
+// as changed by that run (graphstore.WithRun); the following session's node is never marked.
 //
 // A follow whose cause comes later states no base attribute in that statement and answers the
 // node's two for the caller to append under its event (graphstore.WriteArmsUncaused,
@@ -130,6 +133,7 @@ func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.A
 		return followed, nil
 	}
 	relation := followedBy(askID, sessionID, true, who, *since, event)
+	relation.Changes = true
 	if event == graphstore.NoEvent {
 		followed.Uncaused.Tuples = append(followed.Uncaused.Tuples, graphstore.UncausedTuple{Tuple: relation})
 		return followed, nil
@@ -170,8 +174,9 @@ type Unfollowed struct {
 // Unfollow removes sessionID from askID's followers in the caller's transaction and reports
 // whether a row went. Where that row was marked, the ask node's followed_by to the session is its
 // record, and the unfollow states its end: a retraction made by who at at, held in Unfollowed for
-// the event the caller appends after the delete, as a follow holds its relation. An unmarked row
-// is answered by graph_edges' old arm, which its delete takes the edge out of with nothing more.
+// the event the caller appends after the delete, as a follow holds its relation, and marked as
+// changing the ask's node (graphstore.Tuple's Changes), as a follow's is. An unmarked row is
+// answered by graph_edges' old arm, which its delete takes the edge out of with nothing more.
 func Unfollow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.Actor, at time.Time) (Unfollowed, error) {
 	var marked bool
 	err := tx.QueryRow(ctx, `
@@ -186,7 +191,9 @@ func Unfollow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model
 	}
 	unfollowed := Unfollowed{Removed: true}
 	if marked {
-		unfollowed.Uncaused.Tuples = []graphstore.UncausedTuple{{Tuple: followedBy(askID, sessionID, false, who, at, graphstore.NoEvent)}}
+		retraction := followedBy(askID, sessionID, false, who, at, graphstore.NoEvent)
+		retraction.Changes = true
+		unfollowed.Uncaused.Tuples = []graphstore.UncausedTuple{{Tuple: retraction}}
 	}
 	return unfollowed, nil
 }

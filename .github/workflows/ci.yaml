@@ -318,6 +318,7 @@ jobs:
       check_action_pins_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_action_pins_test }}
       check_private_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_test }}
       check_plugin_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_plugin_names_test }}
+      check_kept_for_one_release_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_kept_for_one_release_test }}
       check_fireevent_reasons_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_fireevent_reasons_test }}
       check_daemon_api_contract_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_daemon_api_contract_test }}
       check_release_credentials_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_release_credentials_test }}
@@ -686,6 +687,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/cireconcile/*'
               - 'packages/envoy/internal/dispatch/config/*'
               - 'packages/envoy/internal/dispatch/dashboard/*'
+              - 'packages/envoy/internal/dispatch/decisionread/*'
               - 'packages/envoy/internal/dispatch/delivery/**'
               - 'packages/envoy/internal/dispatch/docs/*'
               - 'packages/envoy/internal/dispatch/docs/crafted/*'
@@ -1429,6 +1431,12 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-plugin-names.test.sh'
               - '.github/scripts/check-plugin-names.sh'
+            check_kept_for_one_release_test: &check_kept_for_one_release_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-kept-for-one-release.test.sh'
+              - '.github/scripts/check-kept-for-one-release.sh'
             check_fireevent_reasons_test: &check_fireevent_reasons_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1663,6 +1671,7 @@ jobs:
               - *check_action_pins_test
               - *check_private_names_test
               - *check_plugin_names_test
+              - *check_kept_for_one_release_test
               - *check_fireevent_reasons_test
               - *check_daemon_api_contract_test
               - *check_release_credentials_test
@@ -1980,6 +1989,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/cireconcile/*'
               - 'packages/envoy/internal/dispatch/config/*'
               - 'packages/envoy/internal/dispatch/dashboard/*'
+              - 'packages/envoy/internal/dispatch/decisionread/*'
               - 'packages/envoy/internal/dispatch/delivery/**'
               - 'packages/envoy/internal/dispatch/docs/*'
               - 'packages/envoy/internal/dispatch/docs/crafted/*'
@@ -2127,6 +2137,9 @@ jobs:
               - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
+              # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb, and
+              # cmd/dispatch's untagged tests read storetest in every tagged build.
+              - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testsocks5/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
@@ -2180,6 +2193,10 @@ jobs:
               - 'packages/contracts/src/**'
               # src/__tests__ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
+              # The one corpus both clients read: src/__tests__/wire.test.ts:23-29 reads the Go
+              # package's own testdata by relative path, that file itself and never a copy, so a
+              # field added there must start this job.
+              - 'packages/envoy/internal/brokerclient/testdata/wire.json'
             # The private workspace package both Oh My Pi plugins import, and the jj
             # .github/actions/install-jj installs for the one case of src/jj-attribution.test.ts
             # that runs the real jj.
@@ -2907,6 +2924,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/awareness_flood_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_many_sockets_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_simultaneous_multiprocess_test.go'
+              - '!packages/envoy/cmd/dispatch/document_gone_test.go'
               - '!packages/envoy/cmd/dispatch/graph_cost_test.go'
               - '!packages/envoy/cmd/dispatch/keyed_kill_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/multiprocess_test.go'
@@ -2915,6 +2933,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/predicate_lens_read_cost_test.go'
               - '!packages/envoy/cmd/dispatch/previous_build_answer_test.go'
               - '!packages/envoy/cmd/dispatch/read_cost_test.go'
+              - '!packages/envoy/cmd/dispatch/restore_approvals_test.go'
               - '!packages/envoy/cmd/dispatch/store_census_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_cli_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_documents_test.go'
@@ -2945,6 +2964,7 @@ jobs:
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/cmd/dispatch/attribute_removal_test.go'
+              - '!packages/envoy/cmd/dispatch/document_gone_test.go'
               - '!packages/envoy/cmd/dispatch/edit_memory_test.go'
               - '!packages/envoy/cmd/dispatch/graph_cost_test.go'
               - '!packages/envoy/cmd/dispatch/history_memory_test.go'
@@ -2957,6 +2977,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/predicate_lens_read_cost_test.go'
               - '!packages/envoy/cmd/dispatch/previous_build_answer_test.go'
               - '!packages/envoy/cmd/dispatch/read_cost_test.go'
+              - '!packages/envoy/cmd/dispatch/restore_approvals_test.go'
               - '!packages/envoy/cmd/dispatch/store_census_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_cli_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_documents_test.go'
@@ -3049,6 +3070,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/awareness_flood_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_many_sockets_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_simultaneous_multiprocess_test.go'
+              - '!packages/envoy/cmd/dispatch/document_gone_test.go'
               - '!packages/envoy/cmd/dispatch/edit_memory_test.go'
               - '!packages/envoy/cmd/dispatch/graph_cost_test.go'
               - '!packages/envoy/cmd/dispatch/history_memory_test.go'
@@ -3064,6 +3086,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/predicate_lens_read_cost_test.go'
               - '!packages/envoy/cmd/dispatch/previous_build_answer_test.go'
               - '!packages/envoy/cmd/dispatch/read_cost_test.go'
+              - '!packages/envoy/cmd/dispatch/restore_approvals_test.go'
               - '!packages/envoy/cmd/dispatch/store_census_test.go'
               - '!packages/envoy/cmd/dispatch/write_cost_test.go'
               - '!packages/envoy/going/**/*_test.go'
@@ -3155,6 +3178,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/awareness_flood_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_many_sockets_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_simultaneous_multiprocess_test.go'
+              - '!packages/envoy/cmd/dispatch/document_gone_test.go'
               - '!packages/envoy/cmd/dispatch/edit_memory_test.go'
               - '!packages/envoy/cmd/dispatch/graph_cost_test.go'
               - '!packages/envoy/cmd/dispatch/history_memory_test.go'
@@ -3170,6 +3194,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/predicate_lens_read_cost_test.go'
               - '!packages/envoy/cmd/dispatch/previous_build_answer_test.go'
               - '!packages/envoy/cmd/dispatch/read_cost_test.go'
+              - '!packages/envoy/cmd/dispatch/restore_approvals_test.go'
               - '!packages/envoy/cmd/dispatch/store_census_test.go'
               - '!packages/envoy/cmd/dispatch/write_cost_test.go'
               - '!packages/envoy/going/**/*_test.go'
@@ -3230,6 +3255,7 @@ jobs:
               # The API's CI-reconcile passes route reads cireconcile's own record, so the soak's
               # Dispatch server compiles that package too (go list -deps ./cmd/listener).
               - 'packages/envoy/internal/dispatch/cireconcile/*'
+              - 'packages/envoy/internal/dispatch/decisionread/*'
               - 'packages/envoy/internal/dispatch/delivery/**'
               - 'packages/envoy/internal/dispatch/docs/*'
               - 'packages/envoy/internal/dispatch/docs/crafted/*'
@@ -3485,8 +3511,8 @@ jobs:
               - *bun_install
               - 'packages/envoy-client/**'
               # src/broker-credential.ts:21-22 imports @legion/broker-client/environment and
-              # @legion/broker-client/token-client, and this job runs that package's own typecheck
-              # and tests.
+              # @legion/broker-client/token-client, so this job's typecheck and tests compile them.
+              # That package's own typecheck and tests are the broker-client job's.
               - 'packages/broker-client/**'
               - 'packages/contracts/src/**'
               # src/broker-credential.ts:21-22 imports @legion/broker-client/*.
@@ -3527,10 +3553,6 @@ jobs:
               # src/__tests__/dispatch-who-waits.test.ts:783,791 reads the CLI guide's sentence on
               # an assignee move, which must name the project's default assignee.
               - 'packages/envoy/cmd/dispatch/README.md'
-              # The one corpus both clients read: packages/broker-client/src/__tests__/wire.test.ts:23-29
-              # reads the Go package's own testdata by relative path, that file itself and never a
-              # copy, so a field added there must start this job.
-              - 'packages/envoy/internal/brokerclient/testdata/wire.json'
               # src/__tests__/stream-topics.test.ts:118-121,131 reads the listener's own cases of
               # which topics reach a private stream subject, the file
               # packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads.
@@ -3744,6 +3766,7 @@ jobs:
               # here, for the reason this filter's header gives: a dependency's testdata is read
               # by that package's own tests, which run in a job of their own.
               - 'packages/envoy/internal/dispatch/cireconcile/*'
+              - 'packages/envoy/internal/dispatch/decisionread/*'
               - 'packages/envoy/internal/dispatch/delivery/*'
               - 'packages/envoy/internal/dispatch/delivery/measures/*'
               # internal/dispatch/api/delivery_measures_test.go:82 and delivery_test.go:714 read
@@ -3932,6 +3955,8 @@ jobs:
               # docs/statement_timing_test.go measures this package's statements through it.
               - 'packages/envoy/internal/dispatch/benchtime/*'
               - 'packages/envoy/internal/dispatch/bytelru/*'
+              # internal/dispatch/docs restores an answered ask through it (decision_restore.go).
+              - 'packages/envoy/internal/dispatch/decisionread/*'
               - 'packages/envoy/internal/dispatch/docs/*'
               - 'packages/envoy/internal/dispatch/docs/crafted/*'
               - 'packages/envoy/internal/dispatch/docs/docstest/*'
@@ -4864,6 +4889,7 @@ jobs:
       check_action_pins_test: ${{ needs.changes.outputs.check_action_pins_test }}
       check_private_names_test: ${{ needs.changes.outputs.check_private_names_test }}
       check_plugin_names_test: ${{ needs.changes.outputs.check_plugin_names_test }}
+      check_kept_for_one_release_test: ${{ needs.changes.outputs.check_kept_for_one_release_test }}
       check_fireevent_reasons_test: ${{ needs.changes.outputs.check_fireevent_reasons_test }}
       check_daemon_api_contract_test: ${{ needs.changes.outputs.check_daemon_api_contract_test }}
       check_release_credentials_test: ${{ needs.changes.outputs.check_release_credentials_test }}

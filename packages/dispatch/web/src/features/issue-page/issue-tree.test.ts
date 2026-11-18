@@ -303,6 +303,7 @@ function decisions(made: readonly Decision[]): IssueDecisions {
   return {
     decisions: [...made],
     document: `dispatch://${KEY}/artifact/decisions-md`,
+    entries: [],
     open_questions: [],
   };
 }
@@ -2394,6 +2395,7 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
       decisions: {
         decisions: [reviewed],
         document: "dispatch://LAY-2/artifact/decisions-md",
+        entries: [],
         open_questions: [],
       },
       documents: [{ artifactId: spec.id, blocks }],

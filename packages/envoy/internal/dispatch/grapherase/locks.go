@@ -109,9 +109,14 @@ func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx) (erasedRead
 // of the command bar its going_requests row and then its going_events rows (runTables). R17 has a
 // node's row taken before any projection row whose foreign key names it, and every writer of
 // these rows that takes an owner row takes it before them, which the erase already holds. A run's
-// rows name no node, and their writers take the run's interaction node row before them too: each
-// frame of this build takes it `for no key update` and then the run's row (api's
-// appendGoingEvent), so an erase holding the node's row has no frame of this build to wait for.
+// rows name no node, and no writer of them waits on the run's interaction node row while it holds
+// one of them. Each frame of this build takes the node's row `for no key update` before the run's
+// row (api's appendGoingEvent). A frame of a run with no node, and the backfill's writer for one
+// run (graphcensus.WriteRun), take the run's row `for no key update` and then write the node,
+// which no other transaction can see until they commit, let alone hold; a frame that finds there
+// a node another write committed and another transaction holds lets its transaction go and begins
+// again, taking the node's row first (api's lockGoingRun). So an erase holding the node's row may
+// wait at the run's row for such a writer, which never waits for the erase.
 //
 // Taking them here, and not when apply deletes them, is what orders the erase against a writer
 // that holds one of them and no owner row: the block index tick's window arm takes a comment's
@@ -121,18 +126,9 @@ func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx) (erasedRead
 // for the erase while the erase waited for it, until Postgres ended one of them. Here the erase
 // waits at the row holding no row the arm writes, and the arm commits first.
 func (e *Erasure) lockProjectionRows(ctx context.Context, tx pgx.Tx) error {
-	for _, held := range projectedTables {
-		if _, err := tx.Exec(ctx, `select 1 from `+held.Table+` where node_kind = $1 and node_address = $2 order by `+
-			held.Key+` for update`, e.Kind, e.ID); err != nil {
-			return fmt.Errorf("lock the %s rows of %s:%s: %w", held.Table, e.Kind, e.ID, err)
-		}
-	}
-	if run, ok := e.run(); ok {
-		for _, held := range runTables {
-			if _, err := tx.Exec(ctx, `select 1 from `+held.Table+` where `+held.Column+` = $1::uuid order by `+
-				held.Key+` for update`, run); err != nil {
-				return fmt.Errorf("lock the %s rows of %s:%s: %w", held.Table, e.Kind, e.ID, err)
-			}
+	for _, own := range e.ownRowSets() {
+		if _, err := tx.Exec(ctx, `select 1 from `+own.table+` where `+own.where+` order by `+own.key+` for update`, own.args...); err != nil {
+			return fmt.Errorf("lock the %s rows of %s:%s: %w", own.table, e.Kind, e.ID, err)
 		}
 	}
 	return nil

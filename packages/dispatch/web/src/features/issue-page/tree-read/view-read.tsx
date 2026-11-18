@@ -21,9 +21,9 @@ import {
  * never stale by age. A filter's observer here watches its view only while the filter is on
  * (`ViewRead`), and `useIssueTree`'s, which never read, keep every view in the cache for the
  * load, so a filter turned off and on again finds its answer held and sends nothing; it finds a
- * refused view refused, and sends nothing either, unless a refresh asked for that view again
- * while the filter was off (`viewQuery`). Once the stage goes, the views are collected as any
- * query nothing observes is.
+ * refused view refused, whether it holds an answer or not, and sends nothing either, unless the
+ * page's subscription asked for that view again while the filter was off (`TREE_FRESH`). Once
+ * the stage goes, the views are collected as any query nothing observes is.
  * `useIssueTree` watches the three reads without ever sending one, and sets what they hold on the
  * tree's root (`TreeNode.views`), which is what each filter draws from.
  *
@@ -68,9 +68,10 @@ export function ViewReadProvider({
 /**
  * One filter's view read, watched while the filter is on: its observer is subscribed then and
  * unsubscribed while the filter is off, rather than enabled and disabled. An observer enabled
- * again reads its view wherever the view holds no answer, since TanStack reads a stale query
- * then and a query that holds none is always stale, so a refused view would be read on every
- * press of its filter. A subscribed one reads it as a new observer does (`viewQuery`).
+ * again reads its view wherever the view is stale, a refused one included, since TanStack reads
+ * a stale query then whatever its mount options say, so a refused view would be read on every
+ * press of its filter. A subscribed one reads it as a new observer of the tree's reads does
+ * (`TREE_FRESH`).
  */
 function ViewRead({
   filter,

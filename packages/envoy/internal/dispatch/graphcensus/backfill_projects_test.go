@@ -16,8 +16,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestTheBackfillGivesEveryRowItsNodeAndProject is the backfill of the project of every node
-// (dispatch://INFRA-3862) under INFRA-1149's r-view-end contract. A database holds the rows a build
+// TestTheBackfillGivesEveryRowItsNodeAndProject is the backfill of the project of every node,
+// which walks only the rows its marker does not mark. A database holds the rows a build
 // before the node writers wrote: an issue, its document, a project's document, a conversation's
 // file, an ask, a message on the issue, a direct message and its session's reply, with no node;
 // and a comment whose node the comment writer stored with no project. Before the run the census
@@ -232,7 +232,7 @@ func seedRowsWithoutNodes(t *testing.T, ctx context.Context, database *store.Sto
 	// The comment writer of the build before stored the node with no project, then the row that
 	// names it.
 	node, tuples := graphstore.CommentFacts(nil, seeded.comment, model.Actor{Kind: "user", ID: "alice"}, seeded.at,
-		graphstore.NoEvent, graphstore.VisibilityProject, "", "", "", nil)
+		graphstore.NoEvent, "", "", "", nil)
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
 		if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, tuples); err != nil {
 			return err

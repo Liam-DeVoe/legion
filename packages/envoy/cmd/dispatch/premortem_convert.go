@@ -12,6 +12,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -27,9 +29,10 @@ issue, whose verdict is the document's verdict followed by its two closing secti
 world-class implementation looks like" and "The smallest first slice that proves the model", word
 for word; under it one risk for risk 0 and each numbered risk of the document's newest version,
 each with its heading, its early warning and its prevention and a prevented_by tuple to each check
-the map names for it; then the document is retired, its address moving to the lens. It prints the
-report as JSON: the document, the lens, and each risk with its checks and its reason. A document
-converted already is reported as such, naming its lens, and nothing is written.
+the map names for it; then the document is retired, leaving its issue's document list, and its
+address moves to the lens, so GET /api/v1/references?to=<its address> answers the lens. It prints
+the report as JSON: the document, the lens, and each risk with its checks and its reason. A
+document converted already is reported as such, naming its lens, and nothing is written.
 
   --issue         the issue the document belongs to
   --artifact      the document's slug
@@ -56,9 +59,9 @@ document does not hold, a number twice, a risk the document holds with no line, 
 names no check block that is not gone.
 
 Exit 0 when it converted, ran dry, or found the document converted already, printing the report; 1
-when it refused (the map file, or a document that is none or no pre-mortem), naming why and writing
-nothing; 2 when it could not run (a flag it does not take, no DATABASE_URL, a database it could not
-reach, a write that failed).
+when it refused (the map file, or a document that is none, no pre-mortem, or retired by anything
+but a conversion), naming why and writing nothing; 2 when it could not run (a flag it does not
+take, no DATABASE_URL, a database it could not reach, a write that failed).
 `
 
 // premortemConvert is `envoy-dispatch premortem-convert`, the command that runs the pre-mortem
@@ -67,7 +70,9 @@ reach, a write that failed).
 // from the file --prevented-by names (parsePreventedBy), runs the conversion in one transaction of
 // its own against DATABASE_URL as api.PremortemConverter, the server's own credential, and prints
 // the report the route answers. It migrates nothing: the schema it writes into is the
-// deployment's own, as for every other database subcommand.
+// deployment's own. The document.retired event the retirement appends reaches every server's
+// stream from its commit, as any committed event does (api's event relay), so the command
+// publishes nothing itself.
 func premortemConvert(ctx context.Context, args []string, databaseURL string, out, errOut io.Writer) int {
 	flags := flag.NewFlagSet("premortem-convert", flag.ContinueOnError)
 	flags.SetOutput(errOut)
@@ -144,19 +149,13 @@ func premortemConvert(ctx context.Context, args []string, databaseURL string, ou
 // convertPremortem runs api.ConvertPremortem on database in one transaction of its own, as the
 // server's own credential, and commits it: what the command runs once its map file is read.
 func convertPremortem(ctx context.Context, database *store.Store, issue, artifact string, entries []api.PremortemEntry, dryRun bool) (api.PremortemReport, error) {
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		return api.PremortemReport{}, fmt.Errorf("begin the conversion: %w", err)
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	report, err := api.ConvertPremortem(ctx, tx, api.PremortemConverter, api.PremortemConverter, issue, artifact, entries, dryRun)
-	if err != nil {
-		return api.PremortemReport{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return api.PremortemReport{}, fmt.Errorf("commit the conversion of %s/%s: %w", issue, artifact, err)
-	}
-	return report, nil
+	var report api.PremortemReport
+	err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		var err error
+		report, _, err = api.ConvertPremortem(ctx, tx, api.PremortemConverter, api.PremortemConverter, issue, artifact, entries, dryRun)
+		return err
+	})
+	return report, err
 }
 
 // parsePreventedBy reads the map file the usage gives: one entry for each line that is neither

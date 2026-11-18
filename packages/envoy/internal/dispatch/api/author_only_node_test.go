@@ -444,19 +444,20 @@ func TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse(t *testing.T) {
 	hidden := []struct {
 		name, address, kind, id, text, word string
 		nobodys, nobodysID                  string
-		// personCompared is whether the kind's predicate compares the person a credential proves,
-		// which a person's personal token reads as that person's cookie does.
-		personCompared bool
+		// authorCompared is whether the kind's predicate compares the author a credential proved
+		// (graphstore.AuthorIsSQL), which a person's personal token reads as that person's cookie
+		// does; an interaction's compares the whole credential instead.
+		authorCompared bool
 	}{
 		{name: "alice's lens", address: hiddenLens.Address, kind: graphstore.KindLens, id: hiddenLens.ID,
-			text: hiddenLensVerdict, word: "zephyrine", personCompared: true},
+			text: hiddenLensVerdict, word: "zephyrine", authorCompared: true},
 		{name: "alice's finding", address: hiddenFinding.Address, kind: graphstore.KindLensBlock, id: hiddenFinding.BlockID,
-			text: hiddenFindingText, word: "thistlemoor", personCompared: true,
+			text: hiddenFindingText, word: "thistlemoor", authorCompared: true,
 			nobodys: project.Address + "#b-" + nobodysBlock, nobodysID: nobodysBlock},
 		{name: "alice's risk", address: hiddenRisk.Address, kind: graphstore.KindRisk, id: hiddenRisk.ID,
-			text: hiddenRiskHeading, word: "marblewort", personCompared: true},
+			text: hiddenRiskHeading, word: "marblewort", authorCompared: true},
 		{name: "alice's constraint", address: hiddenConstraint.Address, kind: graphstore.KindConstraint, id: hiddenConstraint.ID,
-			text: hiddenConstraintRule, word: "quoddity", personCompared: true},
+			text: hiddenConstraintRule, word: "quoddity", authorCompared: true},
 		{name: "alice's interaction", address: interaction, kind: graphstore.KindInteraction, id: run.ID,
 			text: hiddenRunWords, word: "vellichor"},
 	}
@@ -710,13 +711,13 @@ func TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse(t *testing.T) {
 
 	// Each of alice's five answers bob, at its address, what an address of its kind nobody holds
 	// answers him; and her personal token reads her four nodes of the kinds that compare the
-	// person, at visibility author, where bob's reads none of them.
+	// author a credential proved, at visibility author, where bob's reads none of them.
 	for _, node := range hidden {
 		for _, direction := range []string{"to", "from"} {
 			requireNobodysAnswer(t, fmt.Sprintf("%s: GET /api/v1/references?%s=%s, %s holding %q", bobCookie.name, direction, node.address, node.name, node.text),
 				bobCookie.references(direction, node.address), bobCookie.references(direction, node.nobodys), node.id, node.nobodysID)
 		}
-		if !node.personCompared {
+		if !node.authorCompared {
 			continue
 		}
 		if answered := aliceToken.node(node.address); answered.Kind != node.kind || answered.Ref != node.address ||

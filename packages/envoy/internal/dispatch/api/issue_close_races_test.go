@@ -28,13 +28,13 @@ const raceDeadline = 10 * time.Second
 // issue's row. Either the resolution commits first, so the ask keeps the resolver's record and the
 // close has nothing of it to withdraw, or the close commits first, so the resolution is refused
 // 409 ISSUE_CLOSED and the ask reads withdrawn naming the closer. Either way the ask has exactly
-// one ask.resolved event, and a decision block's block reads resolved, as its row does.
+// one ask.resolved event, and an ask block's block reads resolved, as its row does.
 func TestClosingAnIssueAgainstAConcurrentResolveLeavesOneRecord(t *testing.T) {
 	resolver := model.Actor{Kind: "session", ID: sessionActor()["id"].(string)}
 	for _, block := range []bool{false, true} {
 		name := "a plain ask"
 		if block {
-			name = "a decision block's ask"
+			name = "an ask block's ask"
 		}
 		t.Run(name, func(t *testing.T) {
 			f := newCloseAsksFixture(t)
@@ -179,10 +179,12 @@ func TestTheRepairSweepLeavesTheCopyOfAResolvedDecisionResolved(t *testing.T) {
 // document owed a settlement, which the settle delay of an hour keeps from running here, and the
 // close withdraws nothing of an ask already answered. The close's sweep writes the copy from its
 // source's row instead, as settlement keeps any copy in step with its source
-// (docs' rollWindowAskAttributes), so it reads answered, naming who answered and when, with the
-// answer itself, without waiting for that settlement; the decision's own block is left as the
-// answer route wrote it. A block holds its ask's state only while another build serves, so the
-// test registers a process of each of two builds and reads the copy's live tree.
+// (docs' rollWindowAskAttributes), so it reads answered, naming who answered and when, without
+// waiting for that settlement; the answer's words, which no write of the sweep weighs for size,
+// are left to the copy's own settlement (docs' answeredCopyWrite), which writes them once it
+// runs. The decision's own block is left as the answer route wrote it. A block holds its ask's
+// state only while another build serves, so the test registers a process of each of two builds and
+// reads the copy's live tree.
 func TestADecisionAnsweredJustBeforeTheCloseTakesTheIssueLeavesItsCopyAnswered(t *testing.T) {
 	var documents *docs.Service
 	wrapper := &afterCloseSettlementDocs{}
@@ -220,9 +222,11 @@ func TestADecisionAnsweredJustBeforeTheCloseTakesTheIssueLeavesItsCopyAnswered(t
 // its issue leaves its copy in the issue's other document owing the settlement that shows the
 // answer, which the settle delay of an hour keeps from running here. The repair's sweep of that
 // closed issue writes the copy from its source's row, as the close's own sweep does, so it reads
-// answered with the answer, and leaves the decision's own block as the answer route wrote it. A
-// block holds its ask's state only while another build serves (docs' rollWindowAskAttributes), so
-// the test registers a process of each of two builds and reads the copy's live tree.
+// answered, naming who answered and when, and leaves the decision's own block as the answer route
+// wrote it; the copy's own settlement then writes the answer's words, which the sweep leaves out
+// (docs' answeredCopyWrite). A block holds its ask's state only while another build serves (docs'
+// rollWindowAskAttributes), so the test registers a process of each of two builds and reads the
+// copy's live tree.
 func TestTheRepairSweepLeavesTheCopyOfAnAnsweredDecisionAnswered(t *testing.T) {
 	// An hour, so the settlement the answer arms for the copy never fires while the test runs.
 	f := newRepairFixtureSettlingAfter(t, time.Hour)
@@ -237,6 +241,10 @@ func TestTheRepairSweepLeavesTheCopyOfAnAnsweredDecisionAnswered(t *testing.T) {
 		t.Fatalf("repair = %+v, want no ask withdrawn or restored and no unindexed block swept", repair)
 	}
 	requireAnsweredDecisionAndCopy(t, f.handler, f.database, f.documents, issue.PrimaryArtifactID, decision, copied, answered)
+	if err := f.documents.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
+		t.Fatalf("settle the copy the sweep left owed: %v", err)
+	}
+	requireLiveTree(t, f.documents, copied, `state="answered"`, `answered_by="alice"`, decisionSelected, `answer="`+decisionAnswer+`"`, `copied_from="`+decision+`"`)
 }
 
 // A decision answered and settled before its issue's close has a copy holding the answer in full,
@@ -299,8 +307,10 @@ func answerDecision(t *testing.T, handler http.Handler, database *store.Store, s
 
 // requireAnsweredDecisionAndCopy fails t unless decision's row, and its block on spec, are as the
 // answer route left them (answered), with no ask.resolved event, and its copy on copied reads
-// answered in its live tree (liveTree), as settlement keeps a copy in step with its source: its
-// answerer, the time, the selection and the answer, naming the source.
+// answered in its live tree (liveTree), as a sweep writes a copy of an answered ask while another
+// build serves: its answerer and the time, naming the source, and neither the selection nor the
+// answer, which the sweep weighs no room for and leaves to the copy's own settlement (docs'
+// answeredCopyWrite).
 func requireAnsweredDecisionAndCopy(t *testing.T, handler http.Handler, database *store.Store, documents *docs.Service, spec, decision, copied string, answered answeredDecision) {
 	t.Helper()
 	if row := askRowTexts(t, database, decision)[0]; row != answered.row {
@@ -312,9 +322,9 @@ func requireAnsweredDecisionAndCopy(t *testing.T, handler http.Handler, database
 	if live, _ := documentTexts(t, handler, spec); live != answered.spec {
 		t.Fatalf("spec %s live text:\n%s\nwant it as the answer left it:\n%s", spec, live, answered.spec)
 	}
-	if live := liveTree(t, documents, copied); !contains(`state="answered"`, `answered_by="alice"`, `answered_at="`, decisionSelected,
-		`answer="`+decisionAnswer+`"`, `copied_from="`+decision+`"`)(live) {
-		t.Fatalf("copy %s live tree:\n%s\nwant it answered by alice with the selection and the answer, naming its source", copied, live)
+	if line := askDirective(t, liveTree(t, documents, copied), "close-decision"); !contains(`state="answered"`, `answered_by="alice"`, `answered_at="`,
+		`copied_from="`+decision+`"`)(line) || strings.Contains(line, "selected=") || strings.Contains(line, "answer=") {
+		t.Fatalf("copy %s opens its block %s, want it answered by alice, naming its source, without the selection or the answer", copied, line)
 	}
 }
 
@@ -374,7 +384,7 @@ func requireResolvedDecisionAndCopy(t *testing.T, handler http.Handler, database
 	requireLiveText(t, handler, copied, `#close-decision urgency="med" multiple="false" state="resolved" copied_from="`+decision+`"`)
 }
 
-// A decision block written within the settle delay, whose settlement is in flight - holding the
+// An ask block written within the settle delay, whose settlement is in flight - holding the
 // issue's row - when the issue is closed: the close waits for it on that row, so the settlement
 // indexes the block as an ask credited to its writer, and the close then withdraws that ask,
 // naming the closer. The close's own settlement, behind it, finds the document settled. The
@@ -417,15 +427,15 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 		}},
 	})
 	if edited.Code != http.StatusOK {
-		t.Fatalf("write the decision block: status=%d body=%s", edited.Code, edited.Body.String())
+		t.Fatalf("write the ask block: status=%d body=%s", edited.Code, edited.Body.String())
 	}
 	select {
 	case <-held:
 	case <-time.After(raceDeadline):
-		t.Fatal("the decision block's settlement never started")
+		t.Fatal("the ask block's settlement never started")
 	}
 	if id := findBlockAsk(t, handler, issue.Key, spec, "late-decision"); id != "" {
-		t.Fatalf("the decision block is ask %s while its settlement is held", id)
+		t.Fatalf("the ask block is ask %s while its settlement is held", id)
 	}
 
 	var closed *httptest.ResponseRecorder
@@ -454,7 +464,7 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 
 	asks := documentBlockAsks(t, handler, issue.Key, spec)
 	if len(asks) != 1 || asks[0].BlockID == nil || *asks[0].BlockID != "late-decision" {
-		t.Fatalf("the document's block asks = %#v, want the decision block's one", asks)
+		t.Fatalf("the document's block asks = %#v, want the ask block's one", asks)
 	}
 	ask := asks[0]
 	if ask.Author.Kind != "session" || ask.Author.ID != sessionActor()["id"] {
@@ -469,7 +479,7 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	awaitSettled(t, database, spec)
 	written := versionMarkdowns(t, database, spec)[versions:]
 	if len(written) != 1 || !strings.Contains(written[0], "#late-decision") {
-		t.Fatalf("the document's versions since the decision block was written are %q, want the edit's own alone: neither the settlement nor the close writes one", written)
+		t.Fatalf("the document's versions since the ask block was written are %q, want the edit's own alone: neither the settlement nor the close writes one", written)
 	}
 	requireNoAnswerAttributes(t, "the edit's version", written[0])
 }
@@ -491,7 +501,7 @@ func versionMarkdowns(t *testing.T, database *store.Store, document string) []st
 }
 
 // A client that hangs up on its close while the close's own settlement of a document runs does not
-// cut that settlement short: it runs on without the client's cancellation, so the decision block
+// cut that settlement short: it runs on without the client's cancellation, so the ask block
 // written a moment before is indexed as an ask credited to its writer, and the document owes no
 // settlement afterwards, whatever becomes of the close.
 func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
@@ -520,10 +530,10 @@ func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
 		}},
 	})
 	if edited.Code != http.StatusOK {
-		t.Fatalf("write the decision block: status=%d body=%s", edited.Code, edited.Body.String())
+		t.Fatalf("write the ask block: status=%d body=%s", edited.Code, edited.Body.String())
 	}
 	if id := findBlockAsk(t, handler, issue.Key, spec, "late-decision"); id != "" {
-		t.Fatalf("the decision block is ask %s before any settlement", id)
+		t.Fatalf("the ask block is ask %s before any settlement", id)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -540,7 +550,7 @@ func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
 
 	id := findBlockAsk(t, handler, issue.Key, spec, "late-decision")
 	if id == "" {
-		t.Fatal("the settlement the client hung up on never indexed the decision block")
+		t.Fatal("the settlement the client hung up on never indexed the ask block")
 	}
 	if ask := readBlockAsk(t, handler, id); ask.Author.Kind != "session" || ask.Author.ID != sessionActor()["id"] {
 		t.Fatalf("the decision's author = %#v, want the session that wrote it", ask.Author)

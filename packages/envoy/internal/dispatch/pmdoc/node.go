@@ -308,7 +308,7 @@ func validateTypedBlock(n *Node, typ BlockTypeSchema) error {
 			continue
 		}
 		definition := typ.Attributes.Get(name)
-		if value == nil && definition.Default == nil {
+		if nullReadsAbsent(typ, BlockAttribute{Name: name, BlockAttributeSchema: definition}, value) {
 			continue
 		}
 		if err := validateAttributeValue(name, definition, value); err != nil {

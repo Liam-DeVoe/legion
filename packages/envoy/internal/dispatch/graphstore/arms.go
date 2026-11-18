@@ -2,6 +2,7 @@ package graphstore
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -75,7 +76,7 @@ func WriteArmsUncaused(first int, nodes []Node, tuples []Tuple, claims []Claim) 
 // writeArms is both: states says whether the node arm states the base attributes of each node
 // it makes. A node, a value tuple or a claim stating a state or a visibility at a value that
 // attribute does not take is refused before any arm is built (checkBaseValues), and so is a node
-// reserved for its author whose kind takes no such node (checkAuthorOnly), so the caller's
+// reserved for its author whose kind takes no such node (CheckVisibilityAdmitted), so the caller's
 // statement never runs it; so is a relation or a claim whose kind the pointer type rules hold
 // (pointerRules): an arm reads none of the nodes such a rule names, so that relation is appended
 // through Write or Caused alone (refusePointersInArms).
@@ -382,12 +383,12 @@ func nodeParams(nodes []Node) ([]any, error) {
 	for index, node := range nodes {
 		encoded, err := encodeAttributes(node.Attributes)
 		if err != nil {
-			return nil, fmt.Errorf("encode attributes of node %s/%s: %w", node.Kind, node.ID, err)
+			return nil, fmt.Errorf("encode attributes of a %s node: %w", node.Kind, err)
 		}
 		// Recorded drops the request's credential, which no row ever holds.
 		madeBy, err := json.Marshal(node.MadeBy.Recorded())
 		if err != nil {
-			return nil, fmt.Errorf("encode writer of node %s/%s: %w", node.Kind, node.ID, err)
+			return nil, fmt.Errorf("encode writer of a %s node: %w", node.Kind, errWriterNotEncoded)
 		}
 		kinds[index], ids[index] = node.Kind, node.ID
 		supertags[index], visibilities[index], states[index] = node.Supertag, node.Visibility, node.State
@@ -418,7 +419,7 @@ func tupleParams(tuples []Tuple) ([]any, error) {
 	for index, tuple := range tuples {
 		who, err := json.Marshal(tuple.Who.Recorded())
 		if err != nil {
-			return nil, fmt.Errorf("encode writer of %s %s: %w", tuple.Kind, tuple.FromID, err)
+			return nil, fmt.Errorf("encode writer of a %s tuple from a %s node: %w", tuple.Kind, tuple.FromKind, errWriterNotEncoded)
 		}
 		fromKinds[index], fromIDs[index], kinds[index] = tuple.FromKind, tuple.FromID, tuple.Kind
 		toKinds[index], toIDs[index], ats[index] = tuple.ToKind, tuple.ToID, tuple.At
@@ -441,7 +442,7 @@ func claimParams(claims []Claim) ([]any, error) {
 	for index, claim := range claims {
 		who, err := json.Marshal(claim.Who.Recorded())
 		if err != nil {
-			return nil, fmt.Errorf("encode writer of %s %s: %w", claim.Kind, claim.FromID, err)
+			return nil, fmt.Errorf("encode writer of a %s claim from a %s node: %w", claim.Kind, claim.FromKind, errWriterNotEncoded)
 		}
 		fromKinds[index], fromIDs[index], kinds[index] = claim.FromKind, claim.FromID, claim.Kind
 		toKinds[index], toIDs[index], ats[index] = claim.ToKind, claim.ToID, claim.At
@@ -449,3 +450,8 @@ func claimParams(claims []Claim) ([]any, error) {
 	}
 	return []any{fromKinds, fromIDs, kinds, toKinds, toIDs, ats, whos, sourceEvents}, nil
 }
+
+// errWriterNotEncoded stands for a writer that json.Marshal refused. An Actor's Recorded form
+// holds strings alone, so the refusal cannot happen today. The error names no writer, because a
+// writer's id can be a person's email and a writer error reaches the index pass's log lines.
+var errWriterNotEncoded = errors.New("the writer does not encode as JSON")

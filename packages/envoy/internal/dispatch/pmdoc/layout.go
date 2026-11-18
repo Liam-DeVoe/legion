@@ -219,7 +219,7 @@ func WalkAskBlocks(node *Node, visit func(id string)) {
 
 // HoldsAskBlock reports whether node is an ask block or holds one wherever it stands, stopping at
 // the first it finds. It walks as WalkAskBlocks walks (holdsBlocks), so it answers true for a node
-// that walk visits at least once. A caller that only asks whether a block holds a decision block
+// that walk visits at least once. A caller that only asks whether a block holds an ask block
 // reads it rather than walking the whole subtree and setting a flag, since it runs on every body
 // write (itemblocks.Check).
 func HoldsAskBlock(node *Node) bool {

@@ -24,25 +24,56 @@ import (
 // tree for the ask card to read (G1). The first version a document writes without them carries
 // its approval (R10, carryVerdict).
 
-// anotherBuildServes reports whether processes.Live, read through q, lists processes of more
-// than one build: two commits, an unstamped build's empty commit being one build with every other
-// empty commit, as the decisions step reads the fleet (DecisionStep.anotherBuildLive). It compares
-// the live processes' commits among themselves and needs no commit of this process's own, which
-// the document service is not given: every process registers in server_processes before it serves
-// (processes.Register), and its row stays live while it heartbeats, so this process is among the
-// processes listed, and a list of one commit is this build alone. A database no process registers
+// anotherBuildServes reports whether processes.Live, read through q, lists a process of a build
+// that still reads an ask's state and answer from the attributes of its block: one whose
+// registered schema version is below the version at which answers left the markdown
+// (answersLeftTheMarkdown). That version is fixed, the one this release introduced: the release
+// before this one reads schema version 4 and this release 5, so a process of it makes two builds,
+// and so does a process of a build older still, which registers no schema number at all and
+// whose row holds the column's default, 0 (processes.Process.PredatesFleetColumns). A process at
+// that version or past it reads every answer from the server, as this build does, so to this
+// guard the fleet is one build however many commits and schema versions it serves: a later
+// release at version 6, which still holds this guard, reads a process of this release as one of
+// its own fleet rather than as a reader of block attributes, and writes them back into nobody's
+// documents.
+//
+// The rule reads the schema numbers, never the commits among themselves, for two reasons. This
+// process writes documents before it registers - main restores the decided wordings, repairs the
+// issues' asks and starts settlement's resumption before joinRegistry - and after a lapsed
+// heartbeat drops its row from the live window, and a fleet of base processes alone lists one
+// commit then, though the base's pages read every block's attributes. And a later release deployed
+// over this one lists two commits while both read answers from the server, so comparing commits
+// would open a roll window that serves no page. The decisions step compares commits with its own
+// (DecisionStep.anotherBuildLive), since any other build, whatever schema it reads, can write a
+// row without its node; this guard is the ask attributes' alone. A database no process registers
 // in, as a docs test's is, lists none and holds no other build either.
 func anotherBuildServes(ctx context.Context, q processes.Querier) (bool, error) {
 	live, err := processes.Live(ctx, q)
 	if err != nil {
 		return false, err
 	}
+	left := answersLeftTheMarkdown()
 	for _, process := range live {
-		if process.Commit != live[0].Commit {
+		if process.SchemaVersion < left {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// answersLeftTheMarkdown is the schema version from which no build reads an ask's answer from
+// its block: the version that introduced the `decision` type, read off the installed schema
+// (its since), which is the version this release, the one that took the answer out of the
+// markdown (dispatch://INFRA-1150 R3 and R10), introduced. At this release it is this build's own
+// version, so the rule reads as R10 and H5 word it - no process below this build's schema version
+// - and a later schema keeps that since as it keeps every element's, so the number does not move
+// with the build reading it. A manifest that declares no `decision` type - only one a test
+// installs in place of this build's - bounds the fleet at its own version.
+func answersLeftTheMarkdown() int {
+	if versions, declared := (pmdoc.Element{Kind: pmdoc.TypedBlockElement, Name: "decision"}).Versions(); declared {
+		return versions.Since
+	}
+	return pmdoc.SchemaVersion()
 }
 
 // storedAskAttributes is the server attributes of an ask block that its markdown carries, read off
@@ -68,10 +99,30 @@ func storedAskAttributes() []string {
 // version can store (storedAskAttributes) is taken off. The write reports whether it changed the
 // block, and is made again on the live document (repairLive). On a fleet of one build it is nil:
 // settlement then takes the seven out of the block (askReadableWrite).
+//
+// The options chosen and the words are caller text, and a copy of them in a block grows its
+// document as an edit does, so each write that makes that copy weighs it against what one upload
+// may hold, as the release before does: the answer route (KeepAskBlockInStep) and settlement
+// (withholdAnswersWithoutRoom) write a block whose answer the document has no room for without
+// them (rollWindowAskAttributesWithheld), and the ask keeps the answer whole.
+//
+// kept for one release: roll-window-attributes
 func rollWindowAskAttributes(twoBuilds bool, ask model.Ask, copied string) func(*pmdoc.Node) bool {
 	if !twoBuilds {
 		return nil
 	}
+	return rollWindowAskWrite(ask, copied, true)
+}
+
+// rollWindowAskAttributesWithheld is rollWindowAskAttributes's write for a block whose answer the
+// document has no room for: the block says who answered it and when, and carries neither the
+// options chosen nor the words (answerWords), as the release before wrote such a block.
+func rollWindowAskAttributesWithheld(ask model.Ask, copied string) func(*pmdoc.Node) bool {
+	return rollWindowAskWrite(ask, copied, false)
+}
+
+// rollWindowAskWrite is the write both of those make, with the answer's words where words.
+func rollWindowAskWrite(ask model.Ask, copied string, words bool) func(*pmdoc.Node) bool {
 	return func(node *pmdoc.Node) bool {
 		desired := pmdoc.Attrs{"state": ask.State}
 		if copied != "" {
@@ -81,9 +132,11 @@ func rollWindowAskAttributes(twoBuilds bool, ask model.Ask, copied string) func(
 		if ask.State == asks.StateAnswered && ask.Answer != nil {
 			desired["answered_by"] = ask.Answer.User
 			desired["answered_at"] = asks.AnsweredAtValue(ask.Answer.At)
-			desired["selected"] = append([]string{}, ask.Answer.Selected...)
-			if ask.Answer.Text != nil {
-				desired["answer"] = *ask.Answer.Text
+			if words {
+				desired["selected"] = append([]string{}, ask.Answer.Selected...)
+				if ask.Answer.Text != nil {
+					desired["answer"] = *ask.Answer.Text
+				}
 			}
 		}
 		changed := false
@@ -102,6 +155,65 @@ func rollWindowAskAttributes(twoBuilds bool, ask model.Ask, copied string) func(
 		}
 		return changed
 	}
+}
+
+// holdsAnswerWords reports whether node, an ask block, carries an answer's words (answerWords).
+func holdsAnswerWords(node *pmdoc.Node) bool {
+	for _, name := range answerWords {
+		if _, held := node.Attrs[name]; held {
+			return true
+		}
+	}
+	return false
+}
+
+// grownBy is document, the rendering of a document holding the block from, grown by what to, the
+// same block with other attributes, adds to the block's own rendering. An answer's words lengthen
+// the block's directive line, which carries every attribute quoted, and make no element, so the
+// document is measured as it was (answersWithRoom weighs the text routes' answers so too).
+func grownBy(document rendering, from, to *pmdoc.Node) (rendering, error) {
+	was, err := renderTree(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{from}})
+	if err != nil {
+		return rendering{}, err
+	}
+	is, err := renderTree(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{to}})
+	if err != nil {
+		return rendering{}, err
+	}
+	return rendering{bytes: document.bytes + len(is) - len(was), measured: document.measured}, nil
+}
+
+// answerHasRoom reports whether the document tree, which holds block, has room for block with
+// attrs, the attributes an answer's words are written into (rollWindowAskAttributes), by what one
+// upload may hold (weigh).
+func answerHasRoom(tree, block *pmdoc.Node, attrs pmdoc.Attrs) (bool, error) {
+	markdown, err := renderTree(tree)
+	if err != nil {
+		return false, err
+	}
+	document := renderingOf(markdown)
+	answered := *block
+	answered.Attrs = attrs
+	grown, err := grownBy(document, block, &answered)
+	if err != nil {
+		return false, err
+	}
+	return weigh(document, grown) == nil, nil
+}
+
+// withoutIndexes is items but those at the indexes dropped names, in their order, in items' own
+// array.
+func withoutIndexes[T any](items []T, dropped map[int]bool) []T {
+	if len(dropped) == 0 {
+		return items
+	}
+	kept := items[:0]
+	for index, item := range items {
+		if !dropped[index] {
+			kept = append(kept, item)
+		}
+	}
+	return kept
 }
 
 // sameAskAttribute reports whether got, an attribute value an ask block holds, is want: a list
@@ -163,5 +275,15 @@ func askReadableWrite(twoBuilds bool, ask model.Ask, copied string) func(*pmdoc.
 			return keep(node) || changed
 		}
 		return withoutStoredAskAttributes(node) || changed
+	}
+}
+
+// askReadableWriteWithheld is askReadableWrite while another build serves, for a block whose
+// answer the document has no room for (rollWindowAskAttributesWithheld).
+func askReadableWriteWithheld(ask model.Ask, copied string) func(*pmdoc.Node) bool {
+	keep := rollWindowAskAttributesWithheld(ask, copied)
+	return func(node *pmdoc.Node) bool {
+		changed := clearAskInvalidAttribute(node)
+		return keep(node) || changed
 	}
 }

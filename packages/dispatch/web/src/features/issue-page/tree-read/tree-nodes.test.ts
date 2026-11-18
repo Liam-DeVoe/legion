@@ -711,7 +711,7 @@ test("a decisions.md section finds its Change by its words", () => {
   expect([...changes].map(([ref, comment]) => [ref, comment.id])).toEqual([[draw.ref, "c-change"]]);
   const root = buildIssueTree({
     comments,
-    decisions: { ...decisions, open_questions: [] },
+    decisions: { ...decisions, entries: [], open_questions: [] },
     issue: issueDetails(),
     tree: answer(
       comments.map((one) =>

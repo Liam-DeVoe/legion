@@ -8,6 +8,7 @@ import type {
   NodeLenses,
   NodeStateInput,
   NodeStateWritten,
+  NodeVisibility,
   PointerInput,
   PointerWritten,
   PremortemConvertInput,
@@ -24,36 +25,42 @@ import {
   optionalBoolean,
   optionalString,
   optionalStringArray,
+  type SessionContext,
   stringArg,
 } from "./context";
 import { refusalWithCode } from "./failures";
 
 /**
  * The commands that write and read the nodes a piece of work is reasoned about with, on
- * Dispatch's node and tuple store: a lens invoked on a node of an issue, a finding added to one, a
- * risk under a pre-mortem, a constraint under the issue, one pointer tuple out of a node, the
- * issue's constraints, and the lenses on any node. Each write names the node it wrote by its
- * dispatch:// address, which is how every later call names it, and says when that node is the
- * caller's alone. Dispatch refuses these writes by code (LENS_KIND_REQUIRED, INVALID_POINTER,
- * POINTER_ALREADY_ASSERTED, AUTHOR_NAMES_NOBODY, NOT_FOUND), and each description names them, so
- * the code reaches the caller.
+ * Dispatch's node and tuple store. `lens` invokes a lens on a node of an issue, `finding` adds a
+ * finding to one, `risk` writes a risk under a pre-mortem, `constraint` a constraint under the
+ * issue, `pointer` one pointer tuple out of a node, and `state` and `settle` a node's state;
+ * `constraints`, `lenses` and `proposed` read the issue's constraints, the lenses on any node and
+ * the issue's proposed nodes; `premortem-convert` turns the issue's pre-mortem document into a
+ * lens and its risks. Each write names the node it wrote by its dispatch:// address, which is how
+ * every later call names it, and says when that node is the caller's alone. Dispatch refuses these
+ * calls by code - LENS_KIND_REQUIRED, INVALID_POINTER, POINTER_ALREADY_ASSERTED,
+ * AUTHOR_NAMES_NOBODY, CONSTRAINT_INPUT, NODE_STATE_NOT_WRITABLE, NODE_NOT_PROPOSED,
+ * SETTLE_NOT_PERMITTED, ARTIFACT_INPUT and NOT_FOUND among them - and each tool's description
+ * names its own, so the code reaches the caller.
  */
 
-/** `visibility` as the schema parsed it: project, author, or nothing at all. */
-function optionalVisibility(args: Record<string, unknown>): "project" | "author" | undefined {
-  const value = optionalString(args, "visibility");
-  return value === "project" || value === "author" ? value : undefined;
+/** `visibility` as the schema took it, which holds it to NODE_VISIBILITIES. */
+function optionalVisibility(args: Record<string, unknown>): NodeVisibility | undefined {
+  return optionalString(args, "visibility") as NodeVisibility | undefined;
 }
 
 /** What a line about one written node adds when the node is the caller's alone. */
-function reservedNote(visibility: string): string {
+function authorOnlyNote(visibility: string): string {
   return visibility === "author" ? ", for you alone" : "";
 }
 
-/** Who wrote a node, as a line about it names them: nobody under a credential that proves none. */
+/** Who wrote a node, as a line about it names them: the person or the session its authored_by
+ *  tuple names, and nobody where the write named neither, as a pod's token alone names only its
+ *  workload. */
 function authorText(author: ReasoningAuthor | null): string {
   return author === null
-    ? "nobody (the credential proves no author)"
+    ? "nobody (the write named no person or session)"
     : `${author.kind} ${author.id}`;
 }
 
@@ -79,12 +86,12 @@ export async function lensCommand(context: CommandContext): Promise<DispatchTool
   const findings = lens.findings ?? [];
   return {
     text: [
-      `Invoked a ${lens.kind} lens on ${lens.on}: ${lens.address}${reservedNote(lens.visibility)}, written by ${authorText(lens.author)}`,
+      `Invoked a ${lens.kind} lens on ${lens.on}: ${lens.address}${authorOnlyNote(lens.visibility)}, written by ${authorText(lens.author)}`,
       ...(lens.triggered_by === null ? [] : [`Triggered by ${lens.triggered_by}`]),
       ...(lens.verdict === null ? [] : [`Verdict: ${lens.verdict}`]),
       ...findings.map(
         (finding) =>
-          `- finding ${finding.address}${reservedNote(finding.visibility)}: ${finding.text}`
+          `- finding ${finding.address}${authorOnlyNote(finding.visibility)}: ${finding.text}`
       ),
     ].join("\n"),
     details: {
@@ -113,7 +120,7 @@ export async function findingCommand(context: CommandContext): Promise<DispatchT
     throw refusalWithCode(error);
   }
   return {
-    text: `Added a finding to ${finding.lens}: ${finding.address}${reservedNote(finding.visibility)}`,
+    text: `Added a finding to ${finding.lens}: ${finding.address}${authorOnlyNote(finding.visibility)}`,
     details: {
       issue: issueKey,
       lens: finding.lens,
@@ -144,7 +151,7 @@ export async function riskCommand(context: CommandContext): Promise<DispatchTool
   const preventedBy = risk.prevented_by ?? [];
   return {
     text: [
-      `Wrote a risk under ${risk.lens}: ${risk.address}${reservedNote(risk.visibility)}`,
+      `Wrote a risk under ${risk.lens}: ${risk.address}${authorOnlyNote(risk.visibility)}`,
       preventedBy.length === 0
         ? "No check prevents it yet."
         : `Prevented by ${preventedBy.join(", ")}`,
@@ -186,7 +193,7 @@ export async function constraintCommand(context: CommandContext): Promise<Dispat
     throw refusalWithCode(error);
   }
   return {
-    text: `Wrote a constraint under ${issueKey}: ${constraint.address}${reservedNote(constraint.visibility)} (${constraintFields(constraint)})`,
+    text: `Wrote a constraint under ${issueKey}: ${constraint.address}${authorOnlyNote(constraint.visibility)} (${constraintFields(constraint)})`,
     details: { issue: issueKey, constraint: constraint.address, visibility: constraint.visibility },
   };
 }
@@ -209,7 +216,7 @@ export async function constraintsCommand(context: CommandContext): Promise<Dispa
           `${listed.issue} holds ${constraints.length} constraint${constraints.length === 1 ? "" : "s"} you may see:`,
           ...constraints.map(
             (constraint) =>
-              `- ${constraint.address}${reservedNote(constraint.visibility)}: ${constraintFields(constraint)}; written by ${authorText(constraint.author)}; ${constraint.state}`
+              `- ${constraint.address}${authorOnlyNote(constraint.visibility)}: ${constraintFields(constraint)}; written by ${authorText(constraint.author)}; ${constraint.state}`
           ),
         ];
   return {
@@ -262,7 +269,7 @@ export async function pointerCommand(context: CommandContext): Promise<DispatchT
 function lensLines(lens: LensRead): string[] {
   const kind = lens.kind === null ? "a lens of no kind" : `${lens.kind.id} (${lens.kind.words})`;
   const lines = [
-    `- ${lens.address}${reservedNote(lens.visibility)}: ${kind} on ${lens.on ?? "a node you may not see"}, invoked by ${authorText(lens.author)}; ${lens.state}`,
+    `- ${lens.address}${authorOnlyNote(lens.visibility)}: ${kind} on ${lens.on ?? "a node you may not see"}, invoked by ${authorText(lens.author)}; ${lens.state}`,
   ];
   if (lens.verdict !== null) lines.push(`  verdict: ${lens.verdict}`);
   // The document renders a Go list as nullable, and Dispatch answers an empty one.
@@ -272,7 +279,7 @@ function lensLines(lens: LensRead): string[] {
   if (triggered.length > 0) lines.push(`  triggered ${triggered.join(", ")}`);
   for (const finding of lens.findings ?? []) {
     lines.push(
-      `  - finding ${finding.address}${reservedNote(finding.visibility)}: ${finding.text}`
+      `  - finding ${finding.address}${authorOnlyNote(finding.visibility)}: ${finding.text}`
     );
   }
   for (const risk of lens.risks ?? []) {
@@ -280,20 +287,19 @@ function lensLines(lens: LensRead): string[] {
     const prevention =
       preventedBy.length === 0 ? "no check prevents it" : `prevented by ${preventedBy.join(", ")}`;
     lines.push(
-      `  - risk ${risk.address}${reservedNote(risk.visibility)}: ${risk.heading} (${prevention})`
+      `  - risk ${risk.address}${authorOnlyNote(risk.visibility)}: ${risk.heading} (${prevention})`
     );
   }
   return lines;
 }
 
 /** `dispatch lenses`: the lenses invoked on one node, in the order they were invoked, and each
- *  chain of triggered lenses they stand in. */
-export async function lensesCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client } = context;
-  const on = stringArg(args, "on");
+ *  chain of triggered lenses they stand in. It acts for nobody, so it resolves no origin. */
+export async function lensesCommand(context: SessionContext): Promise<DispatchToolResult> {
+  const on = stringArg(context.args, "on");
   let read: NodeLenses;
   try {
-    read = await client.lenses(on);
+    read = await context.newClient().lenses(on);
   } catch (error) {
     throw refusalWithCode(error);
   }
@@ -329,13 +335,21 @@ export async function lensesCommand(context: CommandContext): Promise<DispatchTo
   };
 }
 
-/** The line a write of a node's state answers: the node, the state it moved from and to. */
-function stateLine(verb: string, written: NodeStateWritten): string {
+/** What a write of a node's state answers: the line naming the node and the state it moved from
+ *  and to, `verb` saying how it moved, and the two states. */
+function stateResult(
+  issueKey: string,
+  verb: string,
+  written: NodeStateWritten
+): DispatchToolResult {
   const { node, previous } = written;
-  if (previous === node.state) {
-    return `${node.kind} ${node.address} is already ${node.state}; nothing was written`;
-  }
-  return `${verb} ${node.kind} ${node.address}: ${previous} -> ${node.state}${reservedNote(node.visibility)}`;
+  return {
+    text:
+      previous === node.state
+        ? `${node.kind} ${node.address} is already ${node.state}; nothing was written`
+        : `${verb} ${node.kind} ${node.address}: ${previous} -> ${node.state}${authorOnlyNote(node.visibility)}`,
+    details: { issue: issueKey, node: node.address, state: node.state, previous },
+  };
 }
 
 /** `dispatch state`: one write of the state of a node of the issue. */
@@ -351,15 +365,7 @@ export async function stateCommand(context: CommandContext): Promise<DispatchToo
   } catch (error) {
     throw refusalWithCode(error);
   }
-  return {
-    text: stateLine("Wrote the state of", written),
-    details: {
-      issue: issueKey,
-      node: written.node.address,
-      state: written.node.state,
-      previous: written.previous,
-    },
-  };
+  return stateResult(issueKey, "Wrote the state of", written);
 }
 
 /** `dispatch settle`: the settle of one proposed node of the issue. */
@@ -372,15 +378,7 @@ export async function settleCommand(context: CommandContext): Promise<DispatchTo
   } catch (error) {
     throw refusalWithCode(error);
   }
-  return {
-    text: stateLine("Settled", written),
-    details: {
-      issue: issueKey,
-      node: written.node.address,
-      state: written.node.state,
-      previous: written.previous,
-    },
-  };
+  return stateResult(issueKey, "Settled", written);
 }
 
 /** `dispatch proposed`: the nodes of the issue at state proposed that the caller may see. */
@@ -424,7 +422,7 @@ export async function premortemConvertCommand(
     report = await client.convertPremortem(issueKey, stringArg(args, "artifact"), {
       actor,
       // The schema took the entries whole: one { risk, checks, reason } for each risk.
-      prevented_by: args.prevented_by as PremortemConvertInput["prevented_by"],
+      prevented_by: args["prevented_by"] as PremortemConvertInput["prevented_by"],
       dry_run: optionalBoolean(args, "preview") === true,
     });
   } catch (error) {
