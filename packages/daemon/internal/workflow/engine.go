@@ -1947,6 +1947,22 @@ func (e *Engine) phaseRow(ctx context.Context, tx pgx.Tx, issue string, role cla
 	return row, nil
 }
 
+// workerClaim is the claim of the agent that works role's step of issue now (record.WorkerClaim),
+// read from the issue's phases rows in tx: what the engine tells a role's worker reaches that
+// agent, a keyed agent on a step of another role included. Where the role's row runs no step of
+// the plan, it is the role's own token.
+func (e *Engine) workerClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (claim.Token, error) {
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return "", err
+	}
+	rows, err := e.store.Phases(ctx, tx, issue.Key)
+	if err != nil {
+		return "", err
+	}
+	return record.WorkerClaim(project, issue.Key, role, rows)
+}
+
 // issueForBranch is the issue whose branch (claim.IssueBranch) branch is, when it is recorded on
 // repo, as its record keeps GitHub's spelling (record.Issue.GitHubRepo), compared as
 // sameRepository compares two names — without case, as GitHub compares names, and a configured

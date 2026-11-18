@@ -982,7 +982,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 		}
 	}
 	recipients = append(recipients, roleRecipient{issue: root.Tree, role: claim.RoleArchitect, row: root.Tree})
-	told, err := e.addressRoles(root.Project, recipients,
+	told, err := e.addressRoles(ctx, tx, root.Project, recipients,
 		e.logUnnamable(ctx, "workflow: the design gate moved and this holder could not be named, so it is not told",
 			"tree", root.Tree, "step", string(step), "version", version, "open", open))
 	if err != nil {

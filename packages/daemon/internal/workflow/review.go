@@ -294,7 +294,7 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 		}
 		recipients = append(recipients, roleRecipient{issue: issue.Key, role: role, row: issue.Key})
 	}
-	addressed, err := e.addressRoles(issue.Project, recipients, nil)
+	addressed, err := e.addressRoles(ctx, tx, issue.Project, recipients, nil)
 	if err != nil {
 		return err
 	}
@@ -857,7 +857,7 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return false, err
 		}
-		reviewer, err := reviewerToken(issue)
+		reviewer, err := e.workerClaim(ctx, tx, issue, claim.RoleReviewer)
 		if err != nil {
 			return false, err
 		}
@@ -892,7 +892,7 @@ func (e *Engine) tellStuckMergeState(ctx context.Context, tx pgx.Tx, issue recor
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return err
 	}
-	reviewer, err := reviewerToken(issue)
+	reviewer, err := e.workerClaim(ctx, tx, issue, claim.RoleReviewer)
 	if err != nil {
 		return err
 	}
@@ -906,16 +906,6 @@ func (e *Engine) tellStuckMergeState(ctx context.Context, tx pgx.Tx, issue recor
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing,
 		Summary: by, Reason: r.reason})
-}
-
-// reviewerToken is the claim token of issue's reviewer, whose role topic the architect is given
-// to ask the decision on and whose role a message addresses.
-func reviewerToken(issue record.Issue) (claim.Token, error) {
-	project, err := claim.ProjectToken(issue.Project)
-	if err != nil {
-		return "", err
-	}
-	return claim.NewToken(project, issue.Key, claim.RoleReviewer)
 }
 
 // told says whether the notice a round GitHub will not merge from would write has already gone
