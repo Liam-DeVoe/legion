@@ -15,6 +15,7 @@ import { z } from "zod";
 import type { RequestCredential } from "./bearer";
 import { messageFor } from "./errors";
 import { machineID } from "./machine";
+import { type RedirectTarget, redirectedTo, redirectTarget, SAME_ADDRESS_CAUSE } from "./redirect";
 import { streamDeliversNothing } from "./stream-topics";
 import type { TmuxPlace } from "./tmux-place";
 
@@ -79,6 +80,15 @@ const DeliveryAnswerWireSchema = z.object({
   consumer_start: z.number().int().nonnegative().optional(),
 });
 
+// A list the listener may write as null (a session with no interest record, dispatch://INFRA-742),
+// as an absent key (a listener that predates the field), or as a real array. The reader answers []
+// for the first two and still refuses a wrong element type, so listSessions refuses such a row
+// rather than reading it as empty.
+const StringListWireSchema = z
+  .array(z.string())
+  .nullish()
+  .transform((list) => list ?? []);
+
 const SessionWireSchema = z.object({
   session_id: z.string(),
   machine_id: z.string(),
@@ -93,9 +103,9 @@ const SessionWireSchema = z.object({
   dir: z.string(),
   port: z.number().int(),
   title: z.string(),
-  topics: z.array(z.string()),
-  roles: z.array(z.string()).optional(),
-  capabilities: z.array(z.string()).optional(),
+  topics: StringListWireSchema,
+  roles: StringListWireSchema,
+  capabilities: StringListWireSchema,
   self_subscribed: z.boolean(),
   last_seen: z.number().int().optional(),
   state: WireStateSchema,
@@ -153,14 +163,17 @@ const RoleHeldWireSchema = z.object({
 const ErrorWireSchema = z.object({
   error: z.string(),
   code: z.string().optional(),
-  // Why the listener refused a registration it can give the session no consumer. This list is
-  // the one every other comment in these packages points at, and it is the listener's own
-  // (`cmd/listener/session_delivery.go`'s delivery reason constants and the refusals that carry
-  // them): 503 `consumer_error` (a consumer call that failed, or a listener holding no
-  // session-consumer connection), 503 `no_grant` (the listener's NATS user may not manage
-  // session consumers), 503 `consumer_limit` (the stream holds as many consumers as its
-  // `max_consumers` allows, so the server creates no more), 409 `not_requested` (the
-  // registration asked for no consumer) and 409 `invalid_session_id` (the id names no consumer).
+  // Why the listener refused. This list is the one every other comment in these packages points
+  // at, and it is the listener's own (`cmd/listener/session_delivery.go`'s delivery reason
+  // constants and the refusals that carry them, and `cmd/listener/sender_limit.go`'s
+  // `senderRateLimitedAnswer`). A registration it can give the session no consumer: 503
+  // `consumer_error` (a consumer call that failed, or a listener holding no session-consumer
+  // connection), 503 `no_grant` (the listener's NATS user may not manage session consumers), 503
+  // `consumer_limit` (the stream holds as many consumers as its `max_consumers` allows, so the
+  // server creates no more), 409 `not_requested` (the registration asked for no consumer) and 409
+  // `invalid_session_id` (the id names no consumer). A send or a publish: 429
+  // `sender_rate_limited` (its agent session sent faster than the listener lets one session send,
+  // so this message was not stored; `retry_after_seconds` says when it can be sent again).
   reason: z.string().optional(),
   expected: z.array(z.string()).optional(),
   state: SessionStateSchema.optional(),
@@ -169,6 +182,8 @@ const ErrorWireSchema = z.object({
   last_seen: z.number().int().optional(),
   /** Always false on a lapsed role's 404: a lookup releases no claim, whatever the state. */
   claim_released: z.boolean().optional(),
+  /** A `sender_rate_limited` refusal's wait: the whole seconds until the sender may send again. */
+  retry_after_seconds: z.number().int().positive().optional(),
 });
 
 /**
@@ -238,6 +253,8 @@ const PublishResponseSchema = EnvelopeResponseSchema.extend({
   kept_until: z.number().int().optional(),
 });
 
+/** The fetch a client sends through. It is given `redirect: "manual"` on every call and must keep
+ *  it: a 3xx is the client's answer, which it refuses (`EnvoyRedirectError`). */
 export type EnvoyFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 export type EnvoyClientConfig = {
@@ -706,15 +723,44 @@ function refusalStateText(parsed: z.infer<typeof ErrorWireSchema>): string {
   return ` ${sentences.join(" ")}`;
 }
 
+/**
+ * A call the listener's address answered with a 3xx, which the client refuses rather than follow:
+ * fetch would send the credential's headers and a 307's or 308's body on to the origin it names.
+ * It is never sent again, and it names the status, where the redirect points (`redirectedTo`) and
+ * what to correct: the Envoy URL, which the client puts before each of its routes, so a redirect
+ * within the same address means that URL's path is wrong.
+ */
+export class EnvoyRedirectError extends Error {
+  readonly name = "EnvoyRedirectError";
+
+  constructor(
+    readonly details: {
+      readonly method: string;
+      /** The request's URL as text names it: without the user and password it may carry. */
+      readonly url: string;
+      readonly status: number;
+      readonly target: RedirectTarget;
+    }
+  ) {
+    const fix =
+      details.target.kind === "the same origin"
+        ? `correct the path of the Envoy URL (ENVOY_URL, or envoy.json's envoy.url), which the client puts before its own; ${SAME_ADDRESS_CAUSE}`
+        : "set the Envoy URL (ENVOY_URL, or envoy.json's envoy.url) to the listener's own address";
+    super(
+      `${details.method} ${details.url} answered ${details.status}, ${redirectedTo(details.target)}, and the Envoy client follows no redirect: ${fix}`
+    );
+  }
+}
+
 export class EnvoyApiError extends Error {
   readonly name = "EnvoyApiError";
   readonly expected: readonly string[] | undefined;
   /** The listener's machine-readable `code`, when its error body carries one. */
   readonly code: string | undefined;
   /**
-   * Why the listener refused, when its error body carries one: the reason a registration no
-   * session consumer can be given is refused with, one of those `ErrorWireSchema.reason` names
-   * above.
+   * Why the listener refused, when its error body carries one: one of the names
+   * `ErrorWireSchema.reason` lists above, such as the reason a registration no session consumer
+   * can be given is refused with, or `sender_rate_limited`.
    */
   readonly reason: string | undefined;
   /** The session the refusal is about: a role's holder, where its body names one. */
@@ -728,6 +774,13 @@ export class EnvoyApiError extends Error {
    *  lapsed role and it is always false: a lookup or a publish takes nothing from a holder,
    *  whatever its state. */
   readonly claimReleased: boolean | undefined;
+  /**
+   * The whole seconds until the sender may send again, when the body names them: a
+   * `sender_rate_limited` refusal's `retry_after_seconds`. The client never sends a refused
+   * message again by itself (`request` retries nothing below 500), so a caller that wants the
+   * message sent waits this long and sends it again.
+   */
+  readonly retryAfterSeconds: number | undefined;
 
   constructor(
     readonly details: {
@@ -759,6 +812,7 @@ export class EnvoyApiError extends Error {
     this.sessionState = parsed?.holder_state ?? parsed?.state;
     this.lastSeen = parsed?.last_seen;
     this.claimReleased = parsed?.claim_released;
+    this.retryAfterSeconds = parsed?.retry_after_seconds;
   }
 }
 
@@ -860,9 +914,11 @@ type RequestOptions = {
   readonly actingSession?: string;
 };
 
-/** One attempt's outcome: the listener's status and body, or no answer and why. */
+/** One attempt's outcome: the listener's status and body, a 3xx and where it points, or no answer
+ *  and why. */
 type AttemptOutcome =
   | { readonly response: Response; readonly body: string }
+  | { readonly redirected: RedirectTarget; readonly status: number }
   | { readonly unanswered: unknown };
 
 /**
@@ -922,14 +978,22 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // in the credential's own words (a pending registration names its session).
       if (unminted !== undefined && deadline.aborted) return { unanswered: unminted };
       for (const [name, value] of Object.entries(presented ?? {})) headers.set(name, value);
+      // No call follows a redirect: fetch would send the credential's headers (a DPoP proof
+      // among them) and a 307's or 308's body on to the origin the `Location` names, and Bun
+      // drops only `Authorization` and `Cookie` on the way. The 3xx is the answer, refused below.
       response = await config.fetch(url, {
         ...init,
         headers,
         signal: deadline,
+        redirect: "manual",
       });
     } catch (error) {
       return { unanswered: error };
     }
+    // Read from the status before any of the body, which `redirectTarget` cancels, so a 3xx whose
+    // body never ends holds no connection.
+    const target = redirectTarget(response, url);
+    if (target !== undefined) return { redirected: target, status: response.status };
     if (unminted !== undefined && (response.status === 401 || response.status === 403)) {
       // The listener wanted the credential this machine could not mint. That is no answer about
       // the call itself, so it retries like any other unanswered attempt — the broker may have
@@ -975,6 +1039,16 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         }
         throw outcome.unanswered;
       }
+      if ("redirected" in outcome) {
+        // A 3xx is a refusal, never sent again: the listener did not answer it, and an attempt
+        // more meets the same answer.
+        throw new EnvoyRedirectError({
+          method: init.method ?? "GET",
+          url: shownSettingUrl(url) ?? `a URL ${url.length} characters long`,
+          status: outcome.status,
+          target: outcome.redirected,
+        });
+      }
       const { response, body } = outcome;
       if (response.ok) return body;
 
@@ -984,6 +1058,8 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         status: response.status,
         responseBody: body,
       });
+      // Only a 5xx is sent again. A 4xx is the listener's answer to this message, and so is a 429
+      // `sender_rate_limited`: the agent reads its sentence and decides when to send it again.
       if (response.status >= 500) {
         options.onUnanswered?.();
         if (attempt + 1 < tries) {
@@ -1100,9 +1176,12 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         // A 2xx whose body does not parse is the listener's word that cannot be read.
         response = EnvelopeResponseSchema.parse(JSON.parse(answer));
       } catch (error) {
-        if (error instanceof EnvoyApiError && error.details.status < 500 && !unanswered) {
-          throw error;
-        }
+        // A refusal the listener answered, and a redirect the client refused, which no listener
+        // read, each leave the message unsent, unless an earlier attempt may have stored it.
+        const refused =
+          (error instanceof EnvoyApiError && error.details.status < 500) ||
+          error instanceof EnvoyRedirectError;
+        if (refused && !unanswered) throw error;
         throw new EnvoySendUnconfirmedError(input.targetSessionID, idempotencyKey, attempts, error);
       }
       return {

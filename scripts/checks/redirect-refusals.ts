@@ -36,9 +36,9 @@ interface RowPlace {
 
 /** Each listed site, a client that sends a credential, by its file and symbol, with its row. */
 export const SITES: Readonly<Record<string, RowPlace>> = {
-  "packages/claude-envoy/src/envoy-client.ts sendEnvoyMessage": {
-    directory: "packages/claude-envoy",
-    file: "tests/envoy-client.test.ts",
+  "packages/envoy-client/src/transport.ts createEnvoyClient's request": {
+    directory: "packages/envoy-client",
+    file: "src/__tests__/transport-redirect.test.ts",
   },
   "packages/pi-shared/src/daemon-client.ts createLegionDaemonClient": {
     directory: "packages/pi-shared",

@@ -71,16 +71,6 @@ const RESTS = {
     "the broker URL must be an http or https URL",
     "cb980260847d"
   ),
-  sendEnvoyShown: basis(
-    "packages/claude-envoy/src/envoy-client.ts",
-    "const shown = shownSettingUrl(url.href)",
-    "73d3d4e4ebc0"
-  ),
-  sendEnvoyCleaned: basis(
-    "packages/claude-envoy/src/envoy-client.ts",
-    "const cleaned = error.message.replaceAll(url.href, shown)",
-    "d274ae096869"
-  ),
   baseUrlOf: basis("packages/dispatch/e2e/api.ts", "export function baseUrlOf(", "a85145f96f34"),
   liveProbe: basis(
     "packages/dispatch/e2e/delivery-live-probe.ts",
@@ -252,12 +242,6 @@ export const JUDGED: readonly Judged[] = [
     file: "packages/claude-envoy/hooks/session-hook.ts",
     text: "JSON.stringify({",
     why: "the session's answers as Dispatch wrote them, or a failed read of them, whose errors name the Dispatch URL through shownSettingUrl",
-  },
-  {
-    file: "packages/claude-envoy/src/envoy-client.ts",
-    text: "throw new Error(cleaned,",
-    why: "ky's message with the URL replaced by its shown form (shownSettingUrl), which holds no user part",
-    rests: [RESTS.sendEnvoyShown, RESTS.sendEnvoyCleaned],
   },
   {
     file: "packages/contracts/src/legion-roles.ts",

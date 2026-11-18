@@ -245,9 +245,22 @@ attempt was refused: the message may or may not have arrived. The error names it
 is, a resend under that key inside the 72-hour duplicate window is dropped as a repeat if the
 first copy arrived (`DELIVERY_DUPLICATE_WINDOW_MS` names the rare cases a recipient that restarted
 still sees it twice). A send
-refused with a 4xx on every attempt stays an `EnvoyApiError`. Listener error responses preserve their
-`error` and optional `expected` fields. The listener's bearer is the `token` the client is given
-(`envoySettings`); without one it sends no `Authorization` header.
+refused with a 4xx on every attempt stays an `EnvoyApiError`. An `EnvoyApiError` keeps the
+listener's `error` as its message, with ` (reason: <reason>)` after it where the body names one,
+and keeps the body's `code`, `reason` and `expected`, and the `retry_after_seconds` of a refusal
+for the sender's rate as `retryAfterSeconds`. A 429 is not sent again: the client throws it at
+once, and the caller decides whether to wait `retryAfterSeconds` and send the message again. The
+listener's bearer is the `token` the client is given (`envoySettings`); without one it sends no
+`Authorization` header.
+
+No call follows a redirect: fetch would send the credential's headers (a DPoP proof among them)
+and a 307's or 308's body on to the origin a 3xx names, and Bun drops only `Authorization` and
+`Cookie` on the way. Every call is sent with `redirect: "manual"` (a fetch given to the client
+must keep it), and a 3xx, read from its status before any of its body, which is cancelled, throws
+`EnvoyRedirectError` at once, never sent again: it names the status, where the redirect points
+(another origin by its scheme and host, another path of the same address, or no target) and what
+to correct in the Envoy URL. A send it refuses is no `EnvoySendUnconfirmedError`, since no
+listener read it.
 
 Every call whose body names the session it acts for — `subscribe`, `unsubscribe`,
 `unregisterSession`, `setRole`, and a `send` or `publish` with a `sourceSessionID` —
@@ -321,7 +334,9 @@ has nothing to retry either way.
 
 `subscribe`'s answer carries the registration's `delivery` field; a registration the listener can
 give no consumer is refused by name, and its reason is on `EnvoyApiError`, under the one canonical
-list of them (`ErrorWireSchema.reason` in `src/transport.ts`).
+list of them (`ErrorWireSchema.reason` in `src/transport.ts`). The same list holds
+`sender_rate_limited`, the reason of the 429 a send or a publish gets when its agent session has
+sent faster than the listener lets one session send: the message was not stored.
 
 ## envoy.json
 
