@@ -227,19 +227,29 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 			grant.Issue, whose))
 		return
 	}
-	if (grant.Role == claim.RoleImplementer || grant.Role == claim.RoleMerger) && !requireFailureFields(w, field{"commit", req.Commit}) {
+	// A role the deployment defines reports its step as a tester does: with the verdict pass or
+	// fail and the commit it read, and with no handoff record (the phase step ends with none). The
+	// rules read the role, never the settings: a role outside Legion's six is a role of the
+	// deployment, and the claim's token was derived for it.
+	deploymentRole := !claim.IsBuiltin(grant.Role)
+	if (grant.Role == claim.RoleImplementer || grant.Role == claim.RoleMerger || deploymentRole) && !requireFailureFields(w, field{"commit", req.Commit}) {
 		return
 	}
 	if grant.Role == claim.RoleTester && req.Verdict != "pass" && req.Verdict != "fail" {
 		writeFailure(w, http.StatusBadRequest, "TESTER_VERDICT_REQUIRED", "tester verdict must be pass or fail")
 		return
 	}
-	if grant.Role != claim.RoleTester && req.Verdict != "" {
-		writeFailure(w, http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", "only a tester may report a verdict")
+	if deploymentRole && req.Verdict != "pass" && req.Verdict != "fail" {
+		writeFailure(w, http.StatusBadRequest, "STEP_VERDICT_REQUIRED", fmt.Sprintf("a step of the role %s reports the verdict pass or fail; nothing was recorded", grant.Role))
 		return
 	}
-	// The step a failed step's task returns to is the tester's fail's alone (returnToRefusal),
-	// refused here on every other completion before anything is read or recorded.
+	if grant.Role != claim.RoleTester && !deploymentRole && req.Verdict != "" {
+		writeFailure(w, http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", "only a tester or a role of the deployment reports a verdict")
+		return
+	}
+	// The step a failed step's task returns to is named by a fail alone, the tester's or a role of
+	// the deployment's (returnToRefusal), refused here on every other completion before anything is
+	// read or recorded.
 	if refusal := returnToRefusal(req, req.Verdict == "fail", fmt.Sprintf("this completion of phase %s of %s", issue.Phase, grant.Issue)); refusal != nil {
 		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
 		return
@@ -322,15 +332,20 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
-	// The phase this completion is of is phase.Of's, and the issue's for the architect, which
-	// leaves none. The record a phase with a handoff ends with is read back and held to the
-	// completion before anything is recorded: always when the role works the issue's phase, and
-	// for a phase it left only when the completion names one. A completion of a left phase that
-	// names none is the engine's to decide (workflow's leftItsPhase), which answers
+	// The phase this completion is of is the issue's where the role works it (record.Issue.RoleAt:
+	// at step, the role of the running step, so a role the deployment defines is current only at
+	// its own step), the phase the role left otherwise (phase.LeftBy), and the issue's for the
+	// architect, which leaves none. The record a phase with a handoff ends with is read back and
+	// held to the completion before anything is recorded: always when the role works the issue's
+	// phase, and for a phase it left only when the completion names one. A completion of a left
+	// phase that names none is the engine's to decide (workflow's leftItsPhase), which answers
 	// HANDOFF_NOT_CURRENT_PHASE when the role's completion of that phase already stands or no role
 	// works the issue's phase. A phase that writes none takes no record, and a completion of such a
 	// phase that names one is refused.
-	of := phase.Of(grant.Role, issue.Phase)
+	of := phase.LeftBy(grant.Role, issue.Phase)
+	if issue.RoleAt(issue.Phase) == grant.Role {
+		of = issue.Phase
+	}
 	endsRetro := of == phase.Retro
 	if of == "" {
 		of = issue.Phase
@@ -496,10 +511,10 @@ func planRatingRefusal(req HandoffCompleteRequest, endsRetro bool, pluginContrac
 }
 
 // returnToRefusal holds a completion's returnTo (R7) to its rule, and is nil when the completion
-// names none or names one it may. failsAStep is whether the completion fails a step (a tester's
-// verdict fail, which VERDICT_ROLE_FORBIDDEN leaves to the tester alone), and what names the
-// completion in a refusal. Every refusal is a 400 its caller writes before anything is recorded,
-// so the same completion sent again, corrected, is taken:
+// names none or names one it may. failsAStep is whether the completion fails a step (the verdict
+// fail of a tester or of a role of the deployment, the roles VERDICT_ROLE_FORBIDDEN leaves a
+// verdict to), and what names the completion in a refusal. Every refusal is a 400 its caller
+// writes before anything is recorded, so the same completion sent again, corrected, is taken:
 //
 //   - INVALID_RETURN_TO: returnTo below 1, which names no step of a task.
 //   - RETURN_TO_NEEDS_FAIL: a completion that fails no step names returnTo: a pass, another role's
@@ -698,7 +713,7 @@ func entryFence(grant credential.Grant, position completionPosition, entry int64
 		return nil
 	}
 	p := position.issue.Phase
-	if p == phase.Admitted || phase.RoleFor(p) != grant.Role {
+	if p == phase.Admitted || position.issue.RoleAt(p) != grant.Role {
 		return intake.NotCurrentPhase(grant.Role, p, grant.Issue)
 	}
 	if entry > position.entry {

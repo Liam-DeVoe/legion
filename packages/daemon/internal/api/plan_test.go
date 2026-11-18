@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -158,6 +159,45 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 		t.Fatalf("facts = %#v, want %#v: one for each version taken, the second registration of version 4 being the first's", got, want)
 	}
 	assertProcessedEvent(t, h, "plan:LEGION-208:1:"+planDoc+":4")
+}
+
+// register_plan judges a plan against the deployment the server is given (Options.Deployment),
+// the roles the daemon's settings define: with checker in it, `implementer checker` is taken;
+// without it, the plan is refused naming checker (R14); and `reviewer implementer` is refused
+// with the reason of a step that reads a pull request before the implementer, whatever the
+// deployment.
+func TestRegisterPlanTakesARoleTheDeploymentDefines(t *testing.T) {
+	readsBeforeTheImplementer := PlanReason{Task: "a", Reason: "step 1 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none. This release of Legion does not carry it out yet."}
+	for _, tc := range []struct {
+		name       string
+		deployment plan.Deployment
+		steps      string
+		refused    []PlanReason
+	}{
+		{"checker in the deployment", checkerDeployment(), "implementer checker", nil},
+		{"checker in no deployment", plan.Deployment{Roles: plan.BuiltinRoles()}, "implementer checker",
+			[]PlanReason{{Task: "a", Reason: "step 2 of task a names the role checker, which neither the deployment nor the plan defines."}}},
+		{"a review before the implementer", checkerDeployment(), "reviewer implementer", []PlanReason{readsBeforeTheImplementer}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts, statuses := planHarness(t)
+			h.handler = NewServer("127.0.0.1", 8437, Options{Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject,
+				OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(),
+				Handlers: []intake.Handler{facts}, Dispatch: statuses, Deployment: tc.deployment}).Handler
+			architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+			statuses.givePlan(planDoc, 4, taskBlock("a", tc.steps))
+
+			answer := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4)
+
+			if tc.refused != nil {
+				assertPlanRefused(t, answer, tc.refused...)
+				return
+			}
+			if answer.Code != http.StatusOK {
+				t.Fatalf("register %s = %d %s, want 200", tc.steps, answer.Code, answer.Body)
+			}
+		})
+	}
 }
 
 // What register_plan answers for a document it cannot read a plan from, each before anything is

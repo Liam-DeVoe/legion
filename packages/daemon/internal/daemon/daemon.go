@@ -2339,6 +2339,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		OperatorToken:      p.operatorToken,
 		Controller:         st,
 		Steps:              cfg.Gates.Steps(),
+		Deployment:         cfg.Deployment(),
 		ControllerLaunched: keeper != nil,
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },

@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -99,6 +100,10 @@ type Options struct {
 	// named them: what register_gate resolves a registration's step against, and what the
 	// controller secret route answers `legion controller start`. The empty list gates no step.
 	Steps []record.DesignStep
+	// Deployment is the roles a step of this deployment names, each with its type
+	// (config.Config.Deployment): Legion's own and each role of `roles`. register_plan judges a
+	// plan against it. A server given none takes Legion's own (plan.BuiltinRoles).
+	Deployment plan.Deployment
 	// ControllerLaunched is the daemon launching the project's controller itself (`controller:
 	// daemon`): one controller runs per project, so the controller secret route refuses the operator
 	// and a registration registers the controller only from a launch of the controller's claim.
@@ -307,6 +312,8 @@ type server struct {
 	controller      ControllerStore
 	// steps is Options.Steps, resolved: the deployment's design-gate steps, nil never.
 	steps []record.DesignStep
+	// deployment is Options.Deployment, resolved: Legion's own roles where none was given.
+	deployment plan.Deployment
 	// controllerLaunched is Options.ControllerLaunched.
 	controllerLaunched bool
 	// pluginRelaunchable is Options.PluginRelaunchable, noPluginInstall Options.NoPluginInstall.
@@ -380,6 +387,9 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	if serving == nil {
 		serving = func(recorded ghrepo.Repository) ghrepo.Repository { return recorded }
 	}
+	if opts.Deployment.Roles == nil {
+		opts.Deployment = plan.Deployment{Roles: plan.BuiltinRoles()}
+	}
 	s := &server{
 		state:              opts.State,
 		stateTransactions:  opts.StateTransactions,
@@ -393,6 +403,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		dispatchProject:    opts.DispatchProject,
 		controller:         opts.Controller,
 		steps:              opts.Steps,
+		deployment:         opts.Deployment,
 		controllerLaunched: opts.ControllerLaunched,
 		pluginRelaunchable: opts.PluginRelaunchable,
 		noPluginInstall:    opts.NoPluginInstall,
