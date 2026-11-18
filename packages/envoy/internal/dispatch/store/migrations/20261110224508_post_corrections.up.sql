@@ -1,10 +1,10 @@
 -- 20261110224508_post_corrections.up.sql
 --
 -- The author of a comment or of an issue message replaces its body, or deletes it, and every
--- body a replacement took the place of is kept. Four things the schema has no room for today:
+-- body a replacement took the place of is kept. Five things the schema has no room for today:
 -- a comment carries edited_at (0021) but no record of who withdrew it, a message carries
--- neither, no table holds a body a write replaced, and no version records that a delete renamed
--- it.
+-- neither, no table holds a body a write replaced, no version records the comment whose accepted
+-- suggestion named it, and no version records that a delete renamed it.
 --
 -- comments.deleted_at and comments.deleted_by, and messages.edited_at, messages.deleted_at and
 -- messages.deleted_by, are plain nullable adds with no default: a catalog change that reads and
@@ -36,6 +36,15 @@
 -- version no delete renamed does. It carries no foreign key: it records what a delete did to the
 -- version, which stands whatever becomes of the comment's row.
 --
+-- artifact_versions.accepted_from names the comment whose accepted suggestion named the version:
+-- the accept sets it in its own transaction, right after it writes the version, and the delete of
+-- that comment finds the version it renames by it. It is a plain nullable add with no default
+-- too, so every version stored before this migration reads null, as every version no accept made
+-- does, and the delete of a comment accepted before it finds its version by the time the accept
+-- wrote it, as it did before. It carries no foreign key either: it records what an accept did to
+-- the version. It needs no index: the delete reads it among the versions of one document, which
+-- the unique key on (artifact_id, number) already narrows to.
+--
 -- The two partial indexes are the two reads: GET /api/v1/comments/{id}/history and
 -- GET /api/v1/messages/{id}/history each answer one post's rows newest first, with ?before= for
 -- the page after. Each holds only the rows of its own kind, since a row carries exactly one
@@ -58,7 +67,7 @@ alter table comments add column deleted_at timestamptz, add column deleted_by js
 
 alter table messages add column edited_at timestamptz, add column deleted_at timestamptz, add column deleted_by jsonb;
 
-alter table artifact_versions add column renamed_by_delete uuid;
+alter table artifact_versions add column renamed_by_delete uuid, add column accepted_from uuid;
 
 create table post_body_history (
     id bigint generated always as identity primary key,

@@ -539,6 +539,15 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 			s.writeHandlerError(w, err)
 			return
 		}
+		// The version records the comment whose accept named it (artifact_versions.accepted_from),
+		// in this transaction, so the comment's delete finds the version by that link and renames
+		// it (renameAcceptedVersion) however many other versions of the document carry its time.
+		if _, err := tx.Exec(r.Context(), `
+			update artifact_versions set accepted_from = $3 where artifact_id = $1 and number = $2
+		`, comment.Anchor.ArtifactID, named.Version.Number, comment.ID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 		diff, err := s.namedVersionDiff(r.Context(), tx, comment.Anchor.ArtifactID, named.Version)
 		if err != nil {
 			s.writeHandlerError(w, err)

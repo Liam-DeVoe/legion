@@ -172,35 +172,49 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 // event the accept appended keeps the name it carried: no delete rewrites a stored event, and
 // only the deleted comment's own events are read without its body (attachPostMarks).
 //
-// Until that mark no row links the version to the comment, so the version is found by the time
-// the accept wrote it. The accept writes the version (Docs.NamedVersion), the version's
-// artifact.version event and the comment's suggestion.accepted event in one transaction, and the
-// version's created_at and each event's take their column's default, now(), the time that
-// transaction began; nothing updates either afterwards. (The comment's own resolved_at is no
-// such mark: a later resolve moves it and a reopen clears it.) The version is therefore the
-// named version of the anchor's document whose created_at is the time of the comment's
-// suggestion.accepted event, read within the comment's owner, as loadCommentCreatedEvent reads
-// its comment.created event. Another named version of that document carries the same time only
-// when a transaction that began in the same microsecond wrote it, and the accept's own
-// transaction writes no other: a lookup that finds more than one version renames none, and one
-// that finds none - an accept whose event or version is not where this reads them - renames none
-// either, each logged with the comment and the document.
+// The accept records the version it made by the comment's id (artifact_versions.accepted_from,
+// written in commentAction's transaction right after Docs.NamedVersion), so the version is the one
+// of the anchor's document that link names, whatever other version carries its time. A suggestion
+// accepted before the accept recorded that link has no version naming it, and only for such a
+// comment is the version found by the time the accept wrote it. The accept writes the version
+// (Docs.NamedVersion), the version's artifact.version event and the comment's suggestion.accepted
+// event in one transaction, and the version's created_at and each event's take their column's
+// default, now(), the time that transaction began; nothing updates either afterwards. (The
+// comment's own resolved_at is no such mark: a later resolve moves it and a reopen clears it.) The
+// version is therefore the named version of the anchor's document whose created_at is the time of
+// the comment's suggestion.accepted event, read within the comment's owner, as
+// loadCommentCreatedEvent reads its comment.created event. Another named version of that document
+// carries the same time only when a transaction that began in the same microsecond wrote it, and
+// the accept's own transaction writes no other: a lookup that finds more than one version renames
+// none, and one that finds none - an accept whose event or version is not where this reads them -
+// renames none either, each logged with the comment and the document.
 func renameAcceptedVersion(ctx context.Context, tx pgx.Tx, comment model.Comment) error {
-	ownerColumn, ownerID := commentEventOwner(comment)
 	artifactID := comment.Anchor.ArtifactID
 	rows, err := tx.Query(ctx, `
-		select v.number from artifact_versions v
-		where v.artifact_id = $3 and v.named and v.created_at in (
-			select e.created_at from events e
-			where e.`+ownerColumn+` = $1 and e.type = 'suggestion.accepted' and e.payload ->> 'id' = $2
-		)
-	`, ownerID, comment.ID, artifactID)
+		select number from artifact_versions where artifact_id = $1 and accepted_from = $2
+	`, artifactID, comment.ID)
 	if err != nil {
 		return err
 	}
 	numbers, err := pgx.CollectRows(rows, pgx.RowTo[int])
 	if err != nil {
 		return err
+	}
+	if len(numbers) == 0 {
+		ownerColumn, ownerID := commentEventOwner(comment)
+		rows, err = tx.Query(ctx, `
+			select v.number from artifact_versions v
+			where v.artifact_id = $3 and v.named and v.created_at in (
+				select e.created_at from events e
+				where e.`+ownerColumn+` = $1 and e.type = 'suggestion.accepted' and e.payload ->> 'id' = $2
+			)
+		`, ownerID, comment.ID, artifactID)
+		if err != nil {
+			return err
+		}
+		if numbers, err = pgx.CollectRows(rows, pgx.RowTo[int]); err != nil {
+			return err
+		}
 	}
 	if len(numbers) != 1 {
 		slog.Warn("dispatch: a deleted comment's accepted suggestion names no single document version, so no version is renamed",
