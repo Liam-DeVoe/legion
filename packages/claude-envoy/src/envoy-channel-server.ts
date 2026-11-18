@@ -1050,10 +1050,8 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * stops taking them at once. Both callers here — `unfollowRemovedTopics`, a removal's
    * best-effort drop, and the public `unfollow` below — take these same two steps in this order;
    * only whether they wait for them differs, and which topics `unfollow` sends: no role's topic.
-   * No registry write is made when nothing is left to send. Each caller records the person's
-   * unfollow in the ledger in the same step (`ledger.followedChanged`), so neither the first read
-   * of the entry nor a restart follows a topic again whose registry write fails
-   * (`releasedOnResume`); a registry write that lands forgets the record (`ledger.released`).
+   * No registry write is made when nothing is left to send. A registry write that lands forgets
+   * their unfollow records (`ledger.released`).
    */
   function dropFromTopicsAndRegistry(
     topics: readonly string[],
@@ -1072,16 +1070,22 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       )
     }
     if (unregistered.length === 0) return Promise.resolve()
-    // The release names this process, so the listener frees the role claim of this process
-    // alone where one of these topics is a role's: a second process that resumed this session
-    // id keeps the role it holds.
-    return serialized(() =>
-      options.client.unsubscribe({
-        sessionID: identity.id,
-        topics: unregistered,
-        clientInstanceID: options.clientInstanceID,
-      }),
-    ).then(() => ledger.released(unregistered))
+    return serialized(() => releaseAtListener(unregistered))
+  }
+
+  /**
+   * Releases `topics` at the listener, then forgets the person's unfollow records of them
+   * (`ledger.released`). The release names this process, so the listener frees the role claim of
+   * this process alone where one of these topics is a role's: a second process that resumed this
+   * session id keeps the role it holds.
+   */
+  async function releaseAtListener(topics: readonly string[]): Promise<void> {
+    await options.client.unsubscribe({
+      sessionID: identity.id,
+      topics,
+      clientInstanceID: options.clientInstanceID,
+    })
+    await ledger.released(topics)
   }
 
   /**
@@ -1535,12 +1539,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // Not followed here whether or not this release lands: a failed one leaves the record, and
       // the topic not followed, so the next heartbeat's subtraction below releases it.
       try {
-        await options.client.unsubscribe({
-          sessionID: identity.id,
-          topics: released,
-          clientInstanceID: options.clientInstanceID,
-        })
-        await ledger.released(released)
+        await releaseAtListener(released)
       } catch (error) {
         process.stderr.write(
           `envoy-channel: could not release the topics this session unfollowed (${messageFor(error)}); the next heartbeat releases them\n`,
@@ -1555,12 +1554,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         topic !== directSubject && !topic.startsWith(ROLE_TOPIC_PREFIX) && !followed.has(topic),
     )
     if (drifted.length === 0) return
-    await options.client.unsubscribe({
-      sessionID: identity.id,
-      topics: drifted,
-      clientInstanceID: options.clientInstanceID,
-    })
-    await ledger.released(drifted)
+    await releaseAtListener(drifted)
   }
 
   // One tick at a time, and at most one pending behind it. `serialized` already
@@ -1832,8 +1826,8 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // A role's topic leaves the followed set and the record but is never sent to the listener,
       // whose release of it frees this process's role claim: the role claim holds that topic, not
       // this follow, as pi-envoy's `envoy_unsubscribe` has it. A release that fails is answered
-      // rather than thrown, as it is there: the topics stay unfollowed, the heartbeat's interest
-      // reconciliation takes them out of the entry, and a restart before it releases them.
+      // rather than thrown, as it is there: the topics stay unfollowed, and the heartbeat's
+      // interest reconciliation takes them out of the entry.
       const unregistered = removed.filter((topic) => !topic.startsWith(ROLE_TOPIC_PREFIX))
       const unsubscribing = dropFromTopicsAndRegistry(removed, unregistered).then(
         () => undefined,

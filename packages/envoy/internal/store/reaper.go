@@ -24,14 +24,7 @@ const (
 
 // InterestReapAllowance is the age past which Reap deletes a dead session's interest: grace, the
 // window the row's session is given after its last write, plus InterestRefreshAge, the most that
-// write may lag the session's last heartbeat. A row exactly that old is kept. A session registry
-// without the listener state bucket holds a departed session's last heartbeat for its retention
-// (session.WithLastSeenRetention, session.LastSeenMemory, 2 hours, by default), which outlasts
-// this allowance, so every row the reaper can still hold has one. With the bucket
-// (session.WithLastSeenBucket, which a listener with a delivery lease opens) the bucket drops
-// that heartbeat listenerStateMaxAge (20 minutes) after the session's last write. Reap deletes the
-// row at its first pass after both this allowance and the session's record have run out (the
-// listener passes every 5 minutes, and the record ends one TTL after its last write).
+// write may lag the session's last heartbeat. A row exactly that old is kept.
 func InterestReapAllowance(grace time.Duration) time.Duration {
 	return grace + InterestRefreshAge
 }

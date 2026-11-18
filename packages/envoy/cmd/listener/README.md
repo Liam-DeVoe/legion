@@ -45,7 +45,6 @@ A standby runs none of them, never creates or updates the durable, and registers
 The lease is the key `lease.<durable>` (`lease.listener-<machine id>`) in the KV bucket `envoy_listener` (`bus.ListenerStateBucket`), which the listener creates at `ENVOY_NATS_REPLICAS` replicas, file storage, one value per key and a 20 minute `MaxAge` (`listenerStateMaxAge`), raising a bucket an earlier build created with a shorter one on every open.
 The age is sized by the `seen.` records beside the lease, not by the lease:
 every pod answers a lapsed session's `last_seen` out of that record alone, and the session registry would report it for the session TTL and its last-seen retention (`session.LastSeenMemory`, 2 hours) past the session's last registration write, so the bucket's age, which drops the record 20 minutes after that write, is what ends the answer.
-The interest reaper deletes a dead session's row at its first pass after both the session's record and its own allowance have run out (`store.InterestReapAllowance`, 15 minutes after the row's `updated_at`, which lags the session's last heartbeat by up to `store.InterestRefreshAge`).
 Its value is JSON: `holder` (the holding pod's instance), `boot` (random per process start), `deliver_subject`, `service_since`, `acquired_at`, `released`, `former_boots` (below), and `stale_binding`, `unsettled`, `ack_wait_owed` and `receiving` ("Take-over" below);
 a field this build does not know is kept across every rewrite.
 `former_boots` names the boots that held the lease before `holder` (`formerBoots`, `lease_record.go`):

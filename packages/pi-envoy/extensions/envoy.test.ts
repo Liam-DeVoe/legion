@@ -21751,6 +21751,23 @@ describe("consumer delivery", () => {
     expect(JSON.stringify(appended)).not.toContain("notifications.team.moved-to");
   });
 
+  /** An empty interest entry for a row's sessions (`bootConsumer`'s `registry`). */
+  const interestEntry = (): InterestEntry => ({ topics: new Set(), releases: [], refusing: false });
+
+  /** The person unfollows `topics` while the listener refuses every release, so the entry keeps
+   *  them; answers the tool's result, which names the refusal (`registrationError`). */
+  async function unfollowRefused(
+    session: Awaited<ReturnType<typeof bootConsumer>>,
+    registry: InterestEntry,
+    topics: readonly string[]
+  ) {
+    registry.refusing = true;
+    const answer = await session.unfollow(topics);
+    registry.refusing = false;
+    expect(answer?.details).toMatchObject({ registrationError: expect.any(String) });
+    return answer;
+  }
+
   // A resume follows every topic the listener's entry holds but one the person unfollowed whose
   // release at the listener failed, which it releases instead (`recoverRegisteredInterests`):
   // `releasedOnResume` in @legion/envoy-client/delivery-ledger is the rule, and each row below
@@ -21759,14 +21776,11 @@ describe("consumer delivery", () => {
   test("a resume releases a topic the person unfollowed whose release failed, and does not follow it again", async () => {
     const base = "notifications.dispatch.issue.INFRA-557";
     const topic = `${base}.>`;
-    const registry: InterestEntry = { topics: new Set(), releases: [], refusing: false };
+    const registry = interestEntry();
     const first = await bootConsumer("resume-releases-a", { registry });
     await first.follow(topic);
     await settle();
-    registry.refusing = true;
-    const answer = await first.unfollow([topic]);
-    registry.refusing = false;
-    expect(answer?.details).toMatchObject({ registrationError: expect.any(String) });
+    await unfollowRefused(first, registry, [topic]);
     // The process stops before anything released them: the entry still holds the topic and the
     // base its follow derived.
     expect([...registry.topics]).toEqual(expect.arrayContaining([topic, base]));
@@ -21787,7 +21801,7 @@ describe("consumer delivery", () => {
   test("a resume follows again a topic whose follow the ledger never wrote, and releases the person's unfollow", async () => {
     const unfollowed = "notifications.team.alpha";
     const unwritten = "notifications.team.deploys";
-    const registry: InterestEntry = { topics: new Set(), releases: [], refusing: false };
+    const registry = interestEntry();
     let refusingState = false;
     const first = await bootConsumer("resume-unwritten-a", {
       registry,
@@ -21795,10 +21809,7 @@ describe("consumer delivery", () => {
     });
     await first.follow(unfollowed);
     await settle();
-    registry.refusing = true;
-    const answer = await first.unfollow([unfollowed]);
-    registry.refusing = false;
-    expect(answer?.details).toMatchObject({ registrationError: expect.any(String) });
+    await unfollowRefused(first, registry, [unfollowed]);
     // From here the session file takes no ledger state, as one that cannot be written refuses it.
     refusingState = true;
     await first.follow(unwritten);
@@ -21823,18 +21834,13 @@ describe("consumer delivery", () => {
     const base = "notifications.dispatch.issue.INFRA-558";
     const wildcard = `${base}.>`;
     const unfollowed = "notifications.team.alpha";
-    const registry: InterestEntry = { topics: new Set(), releases: [], refusing: false };
+    const registry = interestEntry();
     const first = await bootConsumer("resume-derived-a", { registry });
     await first.follow(base);
     await first.follow(unfollowed);
     await settle();
-    registry.refusing = true;
-    const answer = await first.unfollow([base, unfollowed]);
-    registry.refusing = false;
-    expect(answer?.details).toMatchObject({
-      removed: [base, unfollowed],
-      registrationError: expect.any(String),
-    });
+    const answer = await unfollowRefused(first, registry, [base, unfollowed]);
+    expect(answer?.details).toMatchObject({ removed: [base, unfollowed] });
     // The `X.>` follow derives the base again: a follow after the person's unfollow of it.
     await first.follow(wildcard);
     await settle();

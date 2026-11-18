@@ -23,8 +23,7 @@ import (
 // starts between an earlier build's 10 minutes and 20 minutes after a killed holder's last renewal
 // now finds that holder's record rather than none: it waits the lease's ttl and takes the lease
 // as expired, with a settle hold and the ack wait that term owes its successor, where it took an
-// absent record at once and settled nothing. The delivery ledger judges every record by its own
-// ages (dedupe.KV).
+// absent record at once and settled nothing.
 // listenerStateRequestWait is the JetStream wait of every request on the bucket's handle: a
 // renewal that hangs must give up well inside the holder's validity (leaseTTL - leaseMargin) so
 // its retry still lands in it. A bucket create the wait cuts short is a connection error the

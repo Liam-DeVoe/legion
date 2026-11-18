@@ -19,6 +19,8 @@ import {
 const SESSION = "ses-1";
 const AGENT = `notifications.agent.${SESSION}`;
 const ISSUE = "notifications.dispatch.issue.DSP-1.>";
+const TEAM = "notifications.team.deploys";
+const ROLE = "notifications.role.reviewer";
 const T0 = Date.UTC(2026, 9, 26, 12, 0, 0);
 
 const clock = { now: T0 };
@@ -249,29 +251,25 @@ describe("the topics the ledger persists", () => {
 });
 
 describe("the person's unfollows the ledger persists", () => {
-  const TEAM = "notifications.team.deploys";
-  const ROLE = "notifications.role.reviewer";
-
-  test("are written with the followed subjects, each with when, until released or followed again", async () => {
+  test("are written with the followed subjects, until released or followed again", async () => {
     host.followed = [AGENT, ISSUE, TEAM];
     await ledger.followedChanged();
-    clock.now = T0 + 5;
     host.followed = [AGENT];
     await ledger.followedChanged([ISSUE, TEAM, AGENT, ROLE]);
 
     // One write, at once; an agent subject and a role lane are never recorded.
     expect(host.writes.at(-1)?.state).toEqual({
       topics: [AGENT],
-      unfollowed: { [ISSUE]: T0 + 5, [TEAM]: T0 + 5 },
+      unfollowed: [ISSUE, TEAM],
     });
     expect(ledger.state()).toEqual({
       topics: [AGENT],
-      unfollowed: { [ISSUE]: T0 + 5, [TEAM]: T0 + 5 },
+      unfollowed: [ISSUE, TEAM],
     });
 
     // The listener released one: its record is done with.
     await ledger.released([TEAM]);
-    expect(host.writes.at(-1)?.state).toEqual({ topics: [AGENT], unfollowed: { [ISSUE]: T0 + 5 } });
+    expect(host.writes.at(-1)?.state).toEqual({ topics: [AGENT], unfollowed: [ISSUE] });
 
     // A follow again takes the other's out, and a state with no record is written as before.
     host.followed = [AGENT, ISSUE];
@@ -281,7 +279,7 @@ describe("the person's unfollows the ledger persists", () => {
   });
 
   test("come back from a restore, and a client of the earlier release still reads the state", async () => {
-    const state = { topics: [AGENT], unfollowed: { [ISSUE]: T0 - 1 } };
+    const state = { topics: [AGENT], unfollowed: [ISSUE] };
     ledger.restore({ state, ledger: [] });
 
     expect(ledger.state()).toEqual(state);
@@ -306,7 +304,6 @@ describe("a resume", () => {
     const writeFailed = "notifications.dispatch.issue.DSP-4";
     const derived = "notifications.dispatch.issue.DSP-1";
     const otherProcess = "notifications.team.other";
-    const role = "notifications.role.reviewer";
     const entry = [
       AGENT,
       ISSUE,
@@ -315,13 +312,13 @@ describe("a resume", () => {
       writeFailed,
       derived,
       otherProcess,
-      role,
+      ROLE,
     ];
     const state = {
       topics: [AGENT, ISSUE],
       // Records only a writer that broke the rule would leave beside a followed topic, an agent
       // subject or a role lane: none of them is released either.
-      unfollowed: { [unfollowed]: T0, [refollowedHere]: T0, [ISSUE]: T0, [AGENT]: T0, [role]: T0 },
+      unfollowed: [unfollowed, refollowedHere, ISSUE, AGENT, ROLE],
     };
 
     expect(releasedOnResume(entry, state, [refollowedHere])).toEqual([unfollowed]);

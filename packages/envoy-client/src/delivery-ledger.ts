@@ -1,9 +1,4 @@
-import {
-  AGENT_TOPIC_PREFIX,
-  DELIVERY_DUPLICATE_WINDOW_MS,
-  dedupeKeyNamesItsEvent,
-  ROLE_TOPIC_PREFIX,
-} from "@legion/contracts";
+import { DELIVERY_DUPLICATE_WINDOW_MS, dedupeKeyNamesItsEvent } from "@legion/contracts";
 import { encode } from "@toon-format/toon";
 import { z } from "zod";
 import {
@@ -14,6 +9,7 @@ import {
 } from "./delivery";
 import { subscriptionRemovedTopics } from "./dispatch-subscribe";
 import { messageFor } from "./errors";
+import { rememberedTopics } from "./stream-topics";
 
 /**
  * How long the ledger remembers a frame, from when it recorded it. The stream keeps a message no
@@ -50,25 +46,19 @@ export type LedgerEntry = z.infer<typeof LedgerEntrySchema>;
  * instead and no topic list; it parses as no topics, and the listener's registry is then the one
  * source of what to follow again.
  *
- * `unfollowed` maps each topic the person unfollowed (`envoy_unsubscribe`, a `subscription.removed`
- * frame) to when, in milliseconds on the host's clock (`DeliveryLedger.followedChanged`). A record
- * lasts until the listener releases the topic (`DeliveryLedger.released`) or the session follows
- * it again, and it is what a resume releases the topic on (`releasedOnResume`). The field is
- * optional and written only when it holds a record: a client of an earlier release reads this
- * state as it always did and ignores the field, and a state such a client wrote has none.
+ * `unfollowed` lists each topic the person unfollowed (`envoy_unsubscribe`, a
+ * `subscription.removed` frame; `DeliveryLedger.followedChanged`). A record lasts until the
+ * listener releases the topic (`DeliveryLedger.released`) or the session follows it again, and it
+ * is what a resume releases the topic on (`releasedOnResume`). The field is optional and written
+ * only when it holds a record: a client of an earlier release reads this state as it always did
+ * and ignores the field, and a state such a client wrote has none.
  */
 export const LedgerStateSchema = z.object({
   topics: z.array(z.string()).default([]),
-  unfollowed: z.record(z.string(), z.number()).optional(),
+  unfollowed: z.array(z.string()).optional(),
 });
 
 export type LedgerState = z.infer<typeof LedgerStateSchema>;
-
-/** Whether a resume may release `topic`: an agent subject or a role lane never is. The host opens
- *  its own agent subject, another's is not its to follow, and a role's claim holds its lane. */
-function releasable(topic: string): boolean {
-  return !topic.startsWith(AGENT_TOPIC_PREFIX) && !topic.startsWith(ROLE_TOPIC_PREFIX);
-}
 
 /**
  * The topics of the listener's entry (`entry`) that a resume releases at the listener and does
@@ -93,11 +83,11 @@ export function releasedOnResume(
   state: LedgerState | undefined,
   followedNow: Iterable<string> = []
 ): string[] {
-  const unfollowed = state?.unfollowed;
-  if (unfollowed === undefined) return [];
-  const followed = new Set([...(state?.topics ?? []), ...followedNow]);
-  return [...new Set(entry)].filter(
-    (topic) => Object.hasOwn(unfollowed, topic) && !followed.has(topic) && releasable(topic)
+  if (state?.unfollowed === undefined) return [];
+  const unfollowed = new Set(state.unfollowed);
+  const followed = new Set([...state.topics, ...followedNow]);
+  return rememberedTopics([...new Set(entry)]).filter(
+    (topic) => unfollowed.has(topic) && !followed.has(topic)
   );
 }
 
@@ -215,10 +205,10 @@ export interface DeliveryLedger {
   /**
    * Takes the host's followed subjects now, so a restart follows them again
    * (`rememberedTopics`), and persists them at once. `unfollowed` names the topics the person
-   * unfollowed in this change (`envoy_unsubscribe`, a `subscription.removed`): each is recorded
-   * with the time, so a resume releases it when the listener's entry still holds it
-   * (`releasedOnResume`, which states when an unfollow holds across a resume). An agent subject or
-   * a role lane is never recorded, and a topic the host follows again loses its record.
+   * unfollowed in this change (`envoy_unsubscribe`, a `subscription.removed`): each is recorded,
+   * so a resume releases it when the listener's entry still holds it (`releasedOnResume`, which
+   * states when an unfollow holds across a resume). An agent subject or a role lane is never
+   * recorded, and a topic the host follows again loses its record.
    */
   followedChanged(unfollowed?: readonly string[]): Promise<void>;
   /**
@@ -290,9 +280,9 @@ export function createDeliveryLedger(options: DeliveryLedgerOptions): DeliveryLe
   const ledger = createLedger(now);
   // The topics the host follows, as the last sync read them.
   let topics: string[] = [];
-  // The person's unfollows whose release the listener has not confirmed, topic to when
+  // The person's unfollows whose release the listener has not confirmed
   // (`LedgerState.unfollowed`).
-  let unfollowed = new Map<string, number>();
+  let unfollowed = new Set<string>();
   // The entries no write has persisted yet, and the state JSON the last write persisted.
   let unwritten: LedgerEntry[] = [];
   let writtenState: string | undefined;
@@ -338,13 +328,11 @@ export function createDeliveryLedger(options: DeliveryLedgerOptions): DeliveryLe
   // Topics and records sorted: equal states serialise equally, so a comparison of the text says
   // whether the state changed. A state with no record carries no `unfollowed`, as an earlier
   // release wrote it.
-  const stateJSON = (): string =>
-    JSON.stringify({
-      topics: [...topics].sort(),
-      ...(unfollowed.size === 0
-        ? {}
-        : { unfollowed: Object.fromEntries([...unfollowed].sort(([a], [b]) => (a < b ? -1 : 1))) }),
-    });
+  const currentState = (): LedgerState => ({
+    topics: [...topics].sort(),
+    ...(unfollowed.size === 0 ? {} : { unfollowed: [...unfollowed].sort() }),
+  });
+  const stateJSON = (): string => JSON.stringify(currentState());
 
   const record = (identity: LedgerIdentity) => {
     const entry = ledger.record(identity);
@@ -390,8 +378,7 @@ export function createDeliveryLedger(options: DeliveryLedgerOptions): DeliveryLe
   // after its topic's last follow (`releasedOnResume`).
   const syncFollowed = (unfollowedNow: readonly string[]) => {
     topics = [...new Set(host.followedSubjects())];
-    const at = now();
-    for (const topic of unfollowedNow) if (releasable(topic)) unfollowed.set(topic, at);
+    for (const topic of rememberedTopics(unfollowedNow)) unfollowed.add(topic);
     for (const topic of topics) unfollowed.delete(topic);
   };
 
@@ -456,10 +443,7 @@ export function createDeliveryLedger(options: DeliveryLedgerOptions): DeliveryLe
       for (const topic of topics) unfollowed.delete(topic);
       await flush(alive);
     },
-    state: () => ({
-      topics: [...topics],
-      ...(unfollowed.size === 0 ? {} : { unfollowed: Object.fromEntries(unfollowed) }),
-    }),
+    state: currentState,
     delivered: (frame) => ledger.has(ledgerIdentity(frame)),
     async recordDelivered(frame) {
       const alive = bind()?.alive;
@@ -505,7 +489,7 @@ export function createDeliveryLedger(options: DeliveryLedgerOptions): DeliveryLe
       epoch += 1;
       ledger.restore(snapshot.ledger);
       topics = [...new Set(snapshot.state?.topics ?? [])];
-      unfollowed = new Map(Object.entries(snapshot.state?.unfollowed ?? {}));
+      unfollowed = new Set(snapshot.state?.unfollowed ?? []);
       writtenState = snapshot.state === undefined ? undefined : stateJSON();
       unwritten = [];
     },

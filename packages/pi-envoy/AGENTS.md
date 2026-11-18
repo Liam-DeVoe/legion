@@ -678,8 +678,8 @@ agent subject nor a role lane), so a session stopped longer
 than the listener's 10-minute grace still follows its topics and is relayed what the stream kept
 for them. An unfollow (`envoy_unsubscribe`, a removal) is written at once with its record, and the
 release that lands forgets the record; a topic the entry still holds is released and not followed
-on that record alone (`releasedSubjects`), never because the state does not name it. The rule is
-`releasedOnResume`'s in `@legion/envoy-client/delivery-ledger`.
+on that record alone, never because the state does not name it (`releasedOnResume` in
+`@legion/envoy-client/delivery-ledger`).
 
 A frame that fails to show is answered `nak`, so the relay sends it again. On its third delivery
 (`ConsumerFrame.deliveries`) the session is shown one card in its place naming the

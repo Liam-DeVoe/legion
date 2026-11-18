@@ -71,15 +71,12 @@ topic but a role's or one reaching a private stream subject), which remembered t
 at start (`rememberedTopics`), when a `subscription.removed` frame closes a topic and takes it
 out of the registry, and which topics a registration carries (`registrationTopics`: the
 session's own agent subject and every followed topic, leaving out one reaching a private stream
-subject that is not this session's — `reachesPrivateStreamSubject`, the listener's rule: another
-session's agent subject, a failed-delivery lane, a controller notice lane of a project whose
-controller role this session does not hold, the listener's kept lane or resume lane
-(`notifications.envoy.kept.`, `notifications.envoy.resume.`), or a wildcard reaching one); those
+subject that is not this session's — `reachesPrivateStreamSubject`, the listener's rule); those
 rules are `@legion/envoy-client/stream-topics`'s, and this server keeps only how it shows a card,
 where it warns, and its file. No topic is left out because the stream subjects this build was
 compiled with capture nothing of it: the listener judges that on a fresh read of the deployed
 stream's subjects, which during a roll hold a newer build's too, and keeps a topic nothing captures
-yet in the row and in the consumer's filter, with a warning (`uncapturedTopicWarning` in
+yet in the row (`uncapturedTopicWarning` in
 `@legion/contracts`). `follow`, which is the `envoy_subscribe` tool's call and nothing else,
 follows every topic its caller names and answers the listener's warnings for its registration
 (`FollowResult`), which the tool returns beside the session's interest as `warnings`. It leaves

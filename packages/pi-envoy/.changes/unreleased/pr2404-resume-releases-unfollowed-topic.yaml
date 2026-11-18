@@ -7,7 +7,7 @@ body: |-
   `subscription.removed` frame removed failed, the entry still listed the topic, and the resume
   followed it again.
 
-  Now the `envoy-replay-state` entry records each such unfollow, with its time, in the new
+  Now the `envoy-replay-state` entry records each such unfollow in the new
   `unfollowed` field. The resume releases each topic that the registry entry lists and that the
   newest state records as unfollowed after its last follow, and it does not follow that topic. It
   follows each other topic of the entry, also a topic that the state does not name: a follow whose

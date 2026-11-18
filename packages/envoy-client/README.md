@@ -119,10 +119,10 @@ before it, or the write failed - reports the loss rather than settling the frame
 The state holds the topics the session follows, so a host can follow them again after the
 listener reaped its interests, and the person's unfollows whose release the listener has not
 confirmed: `followedChanged(unfollowed)` records them, and `released(topics)` or a follow again
-forgets them. A resume releases such a topic from the listener's entry rather than follow it from
-there, and follows every other topic the entry holds; `releasedOnResume(entry, state,
-followedNow)` is that rule, and its doc comment is the one place it is written. An older client
-ignores the added `unfollowed` field.
+forgets them.
+A resume releases such a topic by `releasedOnResume(entry, state, followedNow)` rather than follow
+it from the listener's entry.
+An older client ignores the added `unfollowed` field.
 `restore(snapshot)` loads what a host persisted, dropping expired ledger entries and keeping the
 state at any age. A write carries the state only when it changed. A frame the host fails to show is answered `nak` and sent again, and
 on its third delivery the host shows a notice naming it instead (`showFailureNotice`); a host whose
@@ -145,14 +145,12 @@ what a restart follows again: its own agent subject and every topic it follows b
 subject it holds for a role, and a topic reaching a private stream subject.
 `reachesPrivateStreamSubject(ownAgentSubject, topic, roles?)` is the listener's own rule,
 `privateStreamSubjects` and `ReachesPrivateStreamSubject` in
-`packages/envoy/internal/bus/stream.go`, which a host's registration applies too: another session's
-agent subject, a failed-delivery lane on an agent subject or a team topic, a controller notice lane
-of a project whose controller role `roles` does not name, the listener's kept lane
-(`notifications.envoy.kept.`) and resume lane (`notifications.envoy.resume.`, the session's own
-included), which only the listener reads, or a wildcard reaching one. A session
-holding that role registers its own project's lane, since its consumer is the only way the notice
-reaches it (`controllerNoticeRole` names the role a lane is for). `rememberedTopics(topics)` is what
-a restore follows again from a persisted state: every subject but agent subjects and role lanes.
+`packages/envoy/internal/bus/stream.go`, which a host's registration applies too; `roles` names
+the controller roles the session holds.
+A session holding a project's controller role registers that project's lane, since its consumer
+is the only way the notice reaches it (`controllerNoticeRole` names the role a lane is for).
+`rememberedTopics(topics)` is what a restore follows again from a persisted state: every subject
+but agent subjects and role lanes.
 `registrationTopics(ownAgentSubject, followed, roles?)` is what every registration carries: the
 session's own agent subject and every followed topic but one reaching a private stream subject.
 It leaves out no topic for being outside the stream subjects this build was compiled with, and

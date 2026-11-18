@@ -9,9 +9,7 @@ import {
   type LedgerSnapshot,
   type LedgerState,
   LedgerStateSchema,
-  releasedOnResume,
 } from "@legion/envoy-client/delivery-ledger";
-import { rememberedTopics } from "@legion/envoy-client/stream-topics";
 
 /** The custom type of every card the extension shows the session. */
 const ENVOY_MESSAGE = "envoy-message";
@@ -29,7 +27,7 @@ export const REPLAY_DELIVERED_ENTRY = "envoy-replay-delivered";
  * when it changed; the newest one is the state. Its topics are every subject the session followed,
  * so a restart after the listener reaped its interests still follows its topics, and `unfollowed`
  * the person's unfollows whose release is still owed, which a resume releases
- * (`releasedSubjects`).
+ * (`releasedOnResume`).
  */
 export const REPLAY_STATE_ENTRY = "envoy-replay-state";
 
@@ -74,7 +72,7 @@ function customEntries(entries: readonly unknown[], customType: string): unknown
 }
 
 /** The newest `REPLAY_STATE_ENTRY` that parses, at any age. */
-function newestState(entries: readonly unknown[]): LedgerState | undefined {
+export function newestReplayState(entries: readonly unknown[]): LedgerState | undefined {
   const states = customEntries(entries, REPLAY_STATE_ENTRY);
   for (let index = states.length - 1; index >= 0; index -= 1) {
     const parsed = LedgerStateSchema.safeParse(states[index]);
@@ -95,7 +93,7 @@ export function replaySnapshot(entries: readonly unknown[], now = Date.now()): L
     if (parsed.success) ledger.push(parsed.data);
   }
   ledger.push(...writtenCards(entries, ledger, now));
-  const state = newestState(entries);
+  const state = newestReplayState(entries);
   return state === undefined ? { ledger } : { state, ledger };
 }
 
@@ -201,22 +199,6 @@ function writtenCards(
     found.push({ ...identity, at: Number.isNaN(written) ? now : written });
   }
   return found;
-}
-
-/** The topics the newest replay state says the session followed that a restore follows again
- *  (`rememberedTopics`: neither an agent subject nor a role lane). */
-export function rememberedSubjects(entries: readonly unknown[]): readonly string[] {
-  return rememberedTopics(newestState(entries)?.topics);
-}
-
-/** The topics of the listener's entry (`registered`) that a resume releases and does not follow
- *  again, by the newest replay state and what the session follows now (`releasedOnResume`). */
-export function releasedSubjects(
-  entries: readonly unknown[],
-  registered: readonly string[],
-  followedNow: Iterable<string>
-): string[] {
-  return releasedOnResume(registered, newestState(entries), followedNow);
 }
 
 /** The replay notices a session's entries record as held and not as handed, in the order held

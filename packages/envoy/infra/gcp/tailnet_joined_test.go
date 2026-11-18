@@ -27,10 +27,9 @@ state=$(printf '%s\n' $STATES | sed -n "${n}p")
 printf '{"BackendState":"%s","Self":{}}\n' "$state"
 `
 
-// joinedDeadline bounds one run of the script. A run asks docker once for each state it is given,
-// four at most here, and sleep returns at once, so it starts a few dozen short processes and ends
-// well inside a second. A run still going at the deadline loops without end, and would otherwise
-// hold the test until go test's own timeout, 10 minutes by default.
+// joinedDeadline bounds one run of the script. A run asks docker once per state it is given and
+// sleep is stubbed, so it ends well inside a second; a run still going at the deadline loops
+// without end, and would otherwise hold the test until go test's own timeout.
 const joinedDeadline = 30 * time.Second
 
 // joinedRun is one run of the script: the docker calls, the sleeps, and the marker and key file.
@@ -93,8 +92,7 @@ func (h *joinedHarness) run(t *testing.T, states ...string) (string, error) {
 	require.NoError(t, os.RemoveAll(filepath.Join(h.logs, "sleeps")))
 	ctx, cancel := context.WithTimeout(context.Background(), joinedDeadline)
 	defer cancel()
-	shell := shellCommand(t, h.script, h.marker, h.key)
-	cmd := exec.CommandContext(ctx, shell.Args[0], shell.Args[1:]...)
+	cmd := shellCommandContext(t, ctx, h.script, h.marker, h.key)
 	// The deadline kills the shell alone; a stub it started can hold the output open after it, so
 	// the read of the output stops a second later.
 	cmd.WaitDelay = time.Second

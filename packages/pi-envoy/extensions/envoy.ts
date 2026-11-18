@@ -60,6 +60,7 @@ import {
   envoyNoticeText,
   failureNoticeFields,
   ledgerIdentity,
+  releasedOnResume,
   storedText,
 } from "@legion/envoy-client/delivery-ledger";
 import { commandName } from "@legion/envoy-client/dispatch-command";
@@ -108,7 +109,11 @@ import {
   sessionSettings,
 } from "@legion/envoy-client/session-settings";
 import { postSlackReply } from "@legion/envoy-client/slack-post";
-import { replayFollowedSubjects, warningsForNamedTopics } from "@legion/envoy-client/stream-topics";
+import {
+  rememberedTopics,
+  replayFollowedSubjects,
+  warningsForNamedTopics,
+} from "@legion/envoy-client/stream-topics";
 import { readTmuxPlace } from "@legion/envoy-client/tmux-place";
 import { createTmuxPlaceCache } from "@legion/envoy-client/tmux-place-cache";
 import {
@@ -192,11 +197,10 @@ import {
   CONSUMER_STATE_ENTRY,
   consumerSnapshot,
   heldReplayNotices,
+  newestReplayState,
   REPLAY_DELIVERED_ENTRY,
   REPLAY_NOTICE_ENTRY,
   REPLAY_STATE_ENTRY,
-  releasedSubjects,
-  rememberedSubjects,
   replaySnapshot,
 } from "../src/missed-messages";
 import { opensAsk } from "../src/opens-ask";
@@ -2427,7 +2431,7 @@ export default function envoyExtension(pi: PiApi): void {
   // records until the listener releases them (`DeliveryLedger.followedChanged`).
   const ledgerOpen = (): boolean =>
     !shuttingDown && sessionID !== "" && registrationState.inboundOpenSession() === sessionID;
-  const ledgerFollowedChanged = async (unfollowed: readonly string[] = []): Promise<void> => {
+  const ledgerFollowedChanged = async (unfollowed?: readonly string[]): Promise<void> => {
     if (ledger !== undefined && ledgerOpen()) await ledger.followedChanged(unfollowed);
   };
 
@@ -3461,9 +3465,7 @@ export default function envoyExtension(pi: PiApi): void {
     // controller-session.ts).
     // The topics the newest ledger state names come back too: the listener reaps a dead session's
     // interests after its grace, and the transcript still says what the session followed. Agent
-    // and role subjects are never among them. Every topic the entry holds is followed again but
-    // one the person unfollowed whose release at the listener failed, which is released here
-    // instead; `releasedOnResume` (`@legion/envoy-client/delivery-ledger`) states that rule.
+    // and role subjects are never among them.
     const registry = await handle.readInterest(sessionID);
     const slackRetired = publishedInterface?.roleClaim.slackRoleOwned === true;
     const registered = registry?.topics ?? [];
@@ -3479,34 +3481,34 @@ export default function envoyExtension(pi: PiApi): void {
         retired,
         "envoy: could not unregister a resumed controller's retired Slack topics"
       );
-    const entries = activeSessionContext?.sessionManager.getEntries() ?? [];
-    // The person's unfollows the entry still holds (`releasedSubjects`), released as a step of
+    const state = newestReplayState(activeSessionContext?.sessionManager.getEntries() ?? []);
+    // The person's unfollows the entry still holds (`releasedOnResume`), released as a step of
     // this pass too. A release that lands forgets their records; one that fails keeps them, so
     // the next resume releases them, and they are not followed here either way.
-    const unfollowed = releasedSubjects(
-      entries,
+    const released = releasedOnResume(
       registered.filter((topic) => !retired.includes(topic)),
+      state,
       followed
     );
     if (
-      unfollowed.length > 0 &&
+      released.length > 0 &&
       (await handle.unregisterTopics(
         sessionID,
-        unfollowed,
+        released,
         "envoy: could not release the topics this session unfollowed; the next resume releases them"
       ))
     ) {
-      await ledger?.released(unfollowed);
+      await ledger?.released(released);
     }
     // The newest ledger state's topics (`rememberedTopics`), but a retired Slack topic. They are
     // followed again, so the registration that ends this pass carries them and the session's
     // consumer relays what the stream kept for them.
-    const remembered = rememberedSubjects(entries).filter(
+    const remembered = rememberedTopics(state?.topics).filter(
       (topic) => !(slackRetired && slackTopicChannel(topic) !== undefined)
     );
     for (const topic of new Set([...registered, ...remembered])) {
       if (topic === legacyAgentSubject(sessionID) || topic.startsWith(ROLE_TOPIC_PREFIX)) continue;
-      if (retired.includes(topic) || unfollowed.includes(topic)) continue;
+      if (retired.includes(topic) || released.includes(topic)) continue;
       await handle.subscribe(topic);
     }
   };

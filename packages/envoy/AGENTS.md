@@ -4324,7 +4324,6 @@ A read-only broker token carries no project either, but none of the three checks
   Its read of the bucket waits no longer than the caller's context, and ends at the reconnect of the connection it went out on with `bus.ErrRequestLostWithConnection` (`bus.BoundedOn`), so `GET /v1/interests/` keeps its own 3.5 s budget for the whole list and leaves a row it could not read without a heartbeat.
   Without the bucket, it answers a lapsed session for the registry's last-seen retention (`session.WithLastSeenRetention`, `session.LastSeenMemory` (2 hours) by default and never less than one TTL) past that registration's expiry.
   With the bucket, which a listener with a lease opens, the bucket's age ends the answer first: the state bucket drops a `seen.` record 20 minutes after its last write (`listenerStateMaxAge`), and no pod answers once the record is gone (`internal/session/lastseen.go`).
-  So the answer lasts 20 minutes past the last write.
   The state bucket's `MaxAge` (`listenerStateMaxAge`, 20 minutes) bounds how long the shared record itself stands, and every open raises a bucket an earlier build created with a shorter age.
   An id's revision fence does not leave with its per-process last-seen record: the last-seen deadline (`expireDue`) drops only that record.
   The next completed read that finds the bucket no longer holds the key drops the fence (`kvwatch.Copy.CompleteRead`).
