@@ -1444,16 +1444,14 @@ type CheckResult struct {
 	// CommitRepo is the linked repository the record route took CommitSHA to be of
 	// (check_results.commit_repo), one the check's issue links a pull request in and does not
 	// resolve to: one with an open or merged linked pull request that GitHub said holds the
-	// commit. A row recorded before the route refused a linked read that did not answer may
-	// name instead, where GitHub proved the repository that issue resolves to does not hold the
-	// commit and no linked repository was shown to, the first linked repository whose read — of
-	// a linked pull request's state or of the commit — did not answer, which no read showed to
-	// hold the commit. It is nil for every other result: a commit of the issue's own repository,
-	// a commit whose read there did not answer and that no linked repository was shown to hold,
-	// and a result nothing was asked about. The results read compares a branch check's result
-	// with that repository's branches, reads a `before_merge` result's pull requests through
-	// it, and decides such a result by it where it is set, and names it in CommitStands.Repo
-	// where it decided an other_commit or unknown answer. It is no part of the wire shape.
+	// commit, and no other. A linked read that did not answer, where no repository was shown to
+	// hold the commit, and a failed read of the issue's links store no row at all. It is nil for
+	// every other result: a commit of the issue's own repository, a commit whose read there did
+	// not answer and that no linked repository was shown to hold, and a result nothing was asked
+	// about. The results read compares a branch check's result with that repository's branches,
+	// reads a `before_merge` result's pull requests through it, and decides such a result by it
+	// where it is set, and names it in CommitStands.Repo where it decided an other_commit or
+	// unknown answer. It is no part of the wire shape.
 	CommitRepo *string `json:"-"`
 	// CommitStands is where this result's commit stands against what its check compared with,
 	// and CheckWordsMoved whether the check's words moved after the result was recorded, which

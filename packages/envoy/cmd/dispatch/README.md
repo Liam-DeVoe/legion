@@ -3830,7 +3830,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/settings/repo-projects/{owner}/{repo}` (PUT, DELETE; cookie, trusted header, or bearer)
 
   Create or replace, or remove, a repository mapping; PUT takes `{project, default?, renamed_to?}`, and `default: true` moves the project's one default to it.
-  PUT holds the path's owner and name to the characters GitHub allows, and refuses a name that is `.`, `..` or empty once a trailing `.git` is trimmed (`acme/...git`, `acme/.git`), with `400 INVALID_REPO_PROJECT`, as it holds `renamed_to`; the stored name becomes the repository of the project's issues that name none, which delivery puts into GitHub paths.
+  PUT holds the path's owner and name to the characters GitHub allows, and refuses a name that is `.`, `..`, empty or longer than 100 characters once a trailing `.git` is trimmed (`acme/...git`, `acme/.git`), with `400 INVALID_REPO_PROJECT`, as it holds `renamed_to`; the stored name becomes the repository of the project's issues that name none, which delivery puts into GitHub paths.
   DELETE reads its path as every mapping's path was read before that rule, so a mapping stored under such a name can still be removed.
   A browser, and with it the dashboard's delete, resolves a `..` segment away before it sends the request, so a mapping stored under `acme/..` is removed by a request that writes the dots percent-encoded, `DELETE /api/v1/settings/repo-projects/acme/%2E%2E`, which the CI reconcile's warning about such a mapping names (`removed_by`).
   `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`):
