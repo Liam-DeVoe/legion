@@ -36,8 +36,8 @@ func BuildStamped(t testing.TB, name, commit string) string {
 
 // Command is a binary to build: Name is what the binary is called under the test's own
 // directory, Dir the directory go build runs in (the test's own when empty), Target what it
-// builds ("." when empty), Flags the flags before the target, and Env the whole environment of
-// the go command (the process's when nil).
+// builds ("." when empty), Flags the flags before the target, and Env the environment of the go
+// command (the process's when nil), to which the build adds GOPROXY=off (runBuild says why).
 type Command struct {
 	Name   string
 	Dir    string
@@ -92,6 +92,11 @@ func BuildCommand(t testing.TB, c Command) string {
 
 // runBuild is one go build of c, into a binary named c.Name under a directory of this test's
 // own. It returns the empty path where the build failed, having failed the test.
+//
+// The build fetches no module: it runs with GOPROXY=off, after c.Env, so it builds from the
+// module cache alone. A fetch while a test runs would turn a fault of the module proxy into this
+// test's failure, on a change that touched nothing it tests; a module the cache lacks fails the
+// build instead, with the command that fetches what it needs before the tests (fetchFirst).
 func runBuild(t testing.TB, c Command, overlay string) string {
 	t.Helper()
 	binary := filepath.Join(t.TempDir(), c.Name)
@@ -105,13 +110,32 @@ func runBuild(t testing.TB, c Command, overlay string) string {
 		target = "."
 	}
 	args = append(args, target)
+	env := c.Env
+	if env == nil {
+		env = os.Environ()
+	}
 	cmd := exec.Command("go", args...)
-	cmd.Dir, cmd.Env = c.Dir, c.Env
+	cmd.Dir, cmd.Env = c.Dir, append(env[:len(env):len(env)], "GOPROXY=off")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Errorf("build %s: %v\n%s", c.Name, err, out)
+		t.Errorf("build %s: %v\n%s%s", c.Name, err, out, fetchFirst(c.Dir, target, out))
 		return ""
 	}
 	return binary
+}
+
+// fetchFirst is what a build whose output says it needed a module the cache lacks adds to its
+// failure: the command that downloads the modules a build of target in dir needs, which a job runs
+// in a step before its tests. It is empty for any other failure.
+func fetchFirst(dir, target string, out []byte) string {
+	if !strings.Contains(string(out), "GOPROXY=off") {
+		return ""
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	return "\nThe module cache lacks a module this build needs, and a test fetches no module while it " +
+		"runs. Fetch them before the tests, from the repository root:\n  .github/scripts/go-fetch.sh deps " +
+		dir + " " + target
 }
 
 // Process is a binary a test started, with its combined output.
