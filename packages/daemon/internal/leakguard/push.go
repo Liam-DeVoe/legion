@@ -86,7 +86,8 @@ func ParseUpdates(r io.Reader) ([]Update, error) {
 // would move there.
 type PushRequest struct {
 	// Dir is the repository the push is made from, which the shared check and the git commands
-	// that read the records both run in.
+	// that read the records both run in, and which a URL that is a relative local path is read
+	// against (Guard.advertised).
 	Dir string
 	// Remote is the remote's name, as git hands it to a pre-push hook ("origin").
 	Remote string
@@ -123,13 +124,14 @@ func PushName(remote string) string {
 //
 // The rules read no commit the destination already holds, which is a commit one of its branches
 // or tags reaches as the destination itself reports them at the push: one git ls-remote of the
-// URL git hands the hook (Guard.advertised), made where an update moves a ref to a commit. A read
-// that fails refuses the push as a setup failure naming the URL. No ref of the repository's own
-// says what the destination holds: git moves a remote's refs/remotes/<remote>/* for a push to
-// whatever URL the remote pushes to at the time, a local bare one a role points it at for one run
-// (`git remote set-url --push origin <bare>`) included, and a ref can be written by hand, so a
-// commit only such a ref reaches is still one the push publishes (the architect's rule of
-// 2026-11-17).
+// URL git hands the hook, run outside the repository so that none of its configuration leads the
+// read elsewhere, and bounded (Guard.advertised), made where an update moves a ref to a commit.
+// A read that fails, or that its bound stops, refuses the push as a setup failure naming the URL.
+// No ref of the repository's own says what the destination holds: git moves a remote's
+// refs/remotes/<remote>/* for a push to whatever URL the remote pushes to at the time, a local
+// bare one a role points it at for one run (`git remote set-url --push origin <bare>`) included,
+// and a ref can be written by hand, so a commit only such a ref reaches is still one the push
+// publishes (the architect's rule of 2026-11-17).
 func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	what := PushName(req.Remote)
 	check, err := g.Resolve()

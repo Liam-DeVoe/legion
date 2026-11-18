@@ -1,6 +1,7 @@
 package leakguard
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,27 +13,50 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
-// reach points url at the bare repository bare in repo's configuration, as
-// url.<file URL of bare>.insteadOf. The guard reads what a push's destination holds with git
-// ls-remote of its URL, run in the repository (Guard.advertised), so a test can name a repository
-// on github.com and have the read reach a bare of its own, never the network.
-func reach(t *testing.T, fixture fixturegit.Runner, repo, url, bare string) {
-	t.Helper()
-	fixture.Run(repo, "git", "config", "url.file://"+bare+".insteadOf", url)
+// reach is what the guard's environment carries for url to reach the bare repository bare:
+// url.<file URL of bare>.insteadOf, as a GIT_CONFIG_COUNT block of one. The guard reads what a
+// push's destination holds with git ls-remote of its URL, run outside the repository under the
+// guard's own environment (Guard.advertised), whose GIT_CONFIG_COUNT block is where a pod's
+// credential helper is set too, so a test can name a repository on github.com and have the read
+// reach a bare of its own, never the network. A fixture's own git that pushes to url runs under
+// it too (fixturegit.Runner.With).
+func reach(url, bare string) []string {
+	return []string{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=url.file://" + bare + ".insteadOf", "GIT_CONFIG_VALUE_0=" + url}
 }
 
-// destinationAt is a bare repository of the test's own that url reaches from repo (reach),
-// holding each of refspecs, which a push from repo by the bare's path writes there as `git push`
-// reads one ("<commit>:refs/heads/main"): a push by path writes no remote-tracking ref of repo's.
-func destinationAt(t *testing.T, fixture fixturegit.Runner, repo, url string, refspecs ...string) string {
+// destinationAt is a bare repository of the test's own holding each of refspecs, which a push
+// from repo by the bare's path writes there as `git push` reads one ("<commit>:refs/heads/main"):
+// a push by path writes no remote-tracking ref of repo's. It answers what the guard's environment
+// carries for url to reach that bare (reach).
+func destinationAt(t *testing.T, fixture fixturegit.Runner, repo, url string, refspecs ...string) []string {
 	t.Helper()
 	bare := filepath.Join(t.TempDir(), "destination.git")
 	fixture.Run(repo, fixturegit.InitBare(bare, "main")...)
 	if len(refspecs) > 0 {
 		fixture.Run(repo, append([]string{"git", "push", "--quiet", bare}, refspecs...)...)
 	}
-	reach(t, fixture, repo, url, bare)
-	return bare
+	return reach(url, bare)
+}
+
+// commitFiles writes files into repo's working tree, each path to its content, a directory a path
+// names made where it is not there, commits the working tree with message, and answers the commit.
+// It is the commit of every fixture of these tests that commits what it wrote on top of HEAD, a
+// merge git holds unfinished included; a fixture whose commit has parents of its own choosing
+// writes its tree and runs commit-tree itself.
+func commitFiles(t *testing.T, fixture fixturegit.Runner, repo string, files map[string]string, message string) string {
+	t.Helper()
+	for name, content := range files {
+		path := filepath.Join(repo, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fixture.Run(repo, "git", "add", "-A")
+	fixture.Run(repo, "git", "commit", "--quiet", "-m", message)
+	return fixture.Run(repo, "git", "rev-parse", "HEAD")
 }
 
 // A push's records are read from the commits it would add, out of a real repository: the
@@ -48,26 +72,13 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 	fixture := fixturegit.Isolated(t, home)
 	fixture.Run(root, fixturegit.InitBare(remote, "main")...)
 	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
-	write := func(t *testing.T, name, content string) {
-		t.Helper()
-		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	commit := func(t *testing.T, message string, env ...string) string {
-		t.Helper()
-		fixture.Run(repo, "git", "add", "-A")
-		fixture.With(env...).Run(repo, "git", "commit", "--quiet", "-m", message)
-		return fixture.Run(repo, "git", "rev-parse", "HEAD")
-	}
-	write(t, "README.md", "one\n")
-	base := commit(t, "the commit the destination holds")
+	base := commitFiles(t, fixture, repo, map[string]string{"README.md": "one\n"}, "the commit the destination holds")
 	// The push's destination holds the base commit on its main, which it advertises: that is what
-	// makes it a commit no push adds. It is named on github.com, and this repository's
-	// configuration reaches it at the local bare (reach).
+	// makes it a commit no push adds. It is named on github.com, and the guard's environment
+	// reaches it at the local bare (reach).
 	fixture.Run(repo, "git", "remote", "add", "origin", remote)
 	fixture.Run(repo, "git", "push", "--quiet", "origin", "main")
-	reach(t, fixture, repo, theURL, remote)
+	reached := reach(theURL, remote)
 	branch := func(t *testing.T, name string) {
 		t.Helper()
 		fixture.Run(repo, "git", "checkout", "--quiet", "-B", name, base)
@@ -90,8 +101,7 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 			name: "the message names a host",
 			build: func(t *testing.T) string {
 				branch(t, "message")
-				write(t, "README.md", "one\ntwo\n")
-				return commit(t, "moved the run to "+theHost+" this morning")
+				return commitFiles(t, fixture, repo, map[string]string{"README.md": "one\ntwo\n"}, "moved the run to "+theHost+" this morning")
 			},
 			want: func(head string) []string {
 				return []string{"commit " + short(head) + " message: " + theClass}
@@ -101,8 +111,8 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 			name: "the author identity names a host",
 			build: func(t *testing.T) string {
 				branch(t, "author")
-				write(t, "README.md", "one\nthree\n")
-				return commit(t, "a message of no interest", "GIT_AUTHOR_EMAIL=builder@"+theHost)
+				author := fixture.With("GIT_AUTHOR_EMAIL=builder@" + theHost)
+				return commitFiles(t, author, repo, map[string]string{"README.md": "one\nthree\n"}, "a message of no interest")
 			},
 			want: func(head string) []string {
 				return []string{"commit " + short(head) + " author: " + theClass}
@@ -112,8 +122,7 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 			name: "an added line of a tracked file names a host",
 			build: func(t *testing.T) string {
 				branch(t, "line")
-				write(t, "README.md", "one\nthe runner answers at "+theHost+"\n")
-				return commit(t, "a message of no interest")
+				return commitFiles(t, fixture, repo, map[string]string{"README.md": "one\nthe runner answers at " + theHost + "\n"}, "a message of no interest")
 			},
 			want: func(string) []string { return []string{"README.md: " + theClass} },
 		},
@@ -121,8 +130,7 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 			name: "the ref name names a host",
 			build: func(t *testing.T) string {
 				branch(t, "ref-name")
-				write(t, "README.md", "one\nfour\n")
-				return commit(t, "a message of no interest")
+				return commitFiles(t, fixture, repo, map[string]string{"README.md": "one\nfour\n"}, "a message of no interest")
 			},
 			ref:    "refs/heads/legion/" + theHost,
 			newRef: true,
@@ -132,11 +140,7 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 			name: "a commit that names nothing",
 			build: func(t *testing.T) string {
 				branch(t, "clean")
-				if err := os.MkdirAll(filepath.Join(repo, "docs"), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				write(t, "docs/notes.md", "a line of ordinary prose\n")
-				return commit(t, "a message of no interest")
+				return commitFiles(t, fixture, repo, map[string]string{"docs/notes.md": "a line of ordinary prose\n"}, "a message of no interest")
 			},
 		},
 	} {
@@ -149,7 +153,7 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 			if tc.newRef {
 				remoteSHA = noSHA
 			}
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, reached...)
 			err := guard.Push(bound(t), PushRequest{
 				Dir:    repo,
 				Remote: "origin",
@@ -161,76 +165,52 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 					RemoteSHA: remoteSHA,
 				}},
 			})
-			if tc.want == nil {
-				if err != nil {
-					t.Fatalf("a push that names nothing: %v", err)
-				}
-				return
+			var want []string
+			if tc.want != nil {
+				want = tc.want(head)
 			}
-			if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want(head)) {
-				t.Errorf("the report is %q, want %q", refused.Lines, tc.want(head))
-			}
+			wantRefused(t, err, want)
 		})
 	}
 }
 
 // pushOf is a repository whose base the destination at theURL holds on its main, the base
-// writing the files held, and head, the commit the push adds, on that base, which writes the
-// files added, each path to its content, and makes edit's change to the working tree, where edit
-// is not nil. Where side is not nil, head is a merge, in the shape of
+// writing the files held, and head, the commit the push adds, on that base, which makes edit's
+// change to the working tree, where edit is not nil, and then writes the files added, each path
+// to its content. Where side is not nil, head is a merge, in the shape of
 // TestAMergesOwnResolutionIsRead: of main, at a commit of its own on the base, and of a branch
 // side, whose commit on the base writes the files side names, with the files added written by
 // the merge's resolution. The destination holds side's commit too, at a branch of its own, so
 // that the push adds main's commit and the merge alone: a file side writes is read as a parent's
-// file of the merge, and never as a file of a commit the push adds.
-func pushOf(t *testing.T, held, side, added map[string]string, edit func(t *testing.T, repo string)) (repo, base, head string) {
+// file of the merge, and never as a file of a commit the push adds. It answers too what the
+// guard's environment carries for theURL to reach the destination (reach).
+func pushOf(t *testing.T, held, side, added map[string]string, edit func(t *testing.T, repo string)) (repo, base, head string, reached []string) {
 	t.Helper()
 	home, root := t.TempDir(), t.TempDir()
 	repo = filepath.Join(root, "repo")
 	fixture := fixturegit.Isolated(t, home)
 	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
-	write := func(files map[string]string) {
-		t.Helper()
-		for name, content := range files {
-			path := filepath.Join(repo, name)
-			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	commit := func(message string) string {
-		t.Helper()
-		fixture.Run(repo, "git", "add", "-A")
-		fixture.Run(repo, "git", "commit", "--quiet", "-m", message)
-		return fixture.Run(repo, "git", "rev-parse", "HEAD")
-	}
-	write(map[string]string{"README.md": "one\n"})
-	write(held)
-	base = commit("the commit the destination holds")
+	files := map[string]string{"README.md": "one\n"}
+	maps.Copy(files, held)
+	base = commitFiles(t, fixture, repo, files, "the commit the destination holds")
 	if side != nil {
 		fixture.Run(repo, "git", "checkout", "--quiet", "-b", "side")
-		write(map[string]string{"side.md": "a line of the side branch\n"})
-		write(side)
-		commit("the side commit")
+		files := map[string]string{"side.md": "a line of the side branch\n"}
+		maps.Copy(files, side)
+		commitFiles(t, fixture, repo, files, "the side commit")
 		fixture.Run(repo, "git", "checkout", "--quiet", "main")
-		write(map[string]string{"main.md": "a line of the main branch\n"})
-		commit("the main commit")
+		commitFiles(t, fixture, repo, map[string]string{"main.md": "a line of the main branch\n"}, "the main commit")
 		fixture.Run(repo, "git", "merge", "--quiet", "--no-ff", "--no-commit", "side")
 	}
-	write(added)
 	if edit != nil {
 		edit(t, repo)
 	}
-	head = commit("the commit the push adds")
+	head = commitFiles(t, fixture, repo, added, "the commit the push adds")
 	refspecs := []string{base + ":refs/heads/main"}
 	if side != nil {
 		refspecs = append(refspecs, "side:refs/heads/side")
 	}
-	destinationAt(t, fixture, repo, theURL, refspecs...)
-	return repo, base, head
+	return repo, base, head, destinationAt(t, fixture, repo, theURL, refspecs...)
 }
 
 // mainPush is the push of head to main, where the destination holds base, to remote at url.
@@ -265,13 +245,10 @@ case " $* " in
 esac
 exec "$git" "$@"
 `)
-	repo, base, head := pushOf(t, map[string]string{"notes.md": "one\n"}, nil, map[string]string{"notes.md": "one\nthe runner answers at " + theHost + "\n"}, nil)
-	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, pathWith(bin))
+	repo, base, head, reached := pushOf(t, map[string]string{"notes.md": "one\n"}, nil, map[string]string{"notes.md": "one\nthe runner answers at " + theHost + "\n"}, nil)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, append(reached, pathWith(bin))...)
 	err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
-	want := []string{"notes.md: " + theClass}
-	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
-		t.Errorf("the report is %q, want %q", refused.Lines, want)
-	}
+	wantRefused(t, err, []string{"notes.md: " + theClass})
 }
 
 // octopusParents is how many parents the merges octopusRepo writes have: as many as
@@ -281,14 +258,14 @@ const octopusParents = 52
 // octopusRepo is the fixture of the octopus merge tests: a repository whose base, which the
 // destination holds, has one file, shared.md, and octopusParents parents on that base, each of
 // which adds a line of its own to shared.md, parent 17's being line17. The destination, which
-// theURL reaches (reach), holds every parent at a branch of its own, so a merge of them is the
-// whole of what a push of it adds. It answers the repository, the base, every, shared.md as it
-// holds every parent's line, which is what each merge's shared file starts from, and octopus,
-// which writes a merge of every parent whose shared.md is as shared has it, and whose
-// resolution.md is as added has it, where added is not empty: a file no parent has. A merge's
-// commit is written with commit-tree over a tree of the fixture's own, so no octopus strategy
-// resolves 52 heads.
-func octopusRepo(t *testing.T, line17 string) (repo, base, every string, octopus func(shared, added string) string) {
+// theURL reaches under what the guard's environment carries for it (reach), holds every parent at
+// a branch of its own, so a merge of them is the whole of what a push of it adds. It answers the
+// repository, the base, every, shared.md as it holds every parent's line, which is what each
+// merge's shared file starts from, what the guard's environment carries, and octopus, which
+// writes a merge of every parent whose shared.md is as shared has it, and whose resolution.md is
+// as added has it, where added is not empty: a file no parent has. A merge's commit is written
+// with commit-tree over a tree of the fixture's own, so no octopus strategy resolves 52 heads.
+func octopusRepo(t *testing.T, line17 string) (repo, base, every string, reached []string, octopus func(shared, added string) string) {
 	t.Helper()
 	home, root := t.TempDir(), t.TempDir()
 	remote := filepath.Join(root, "remote.git")
@@ -309,10 +286,7 @@ func octopusRepo(t *testing.T, line17 string) (repo, base, every string, octopus
 		return fixture.Run(repo, "git", "write-tree")
 	}
 	const first = "the shared file\n"
-	write("shared.md", first)
-	fixture.Run(repo, "git", "add", "-A")
-	fixture.Run(repo, "git", "commit", "--quiet", "-m", "the commit the destination holds")
-	base = fixture.Run(repo, "git", "rev-parse", "HEAD")
+	base = commitFiles(t, fixture, repo, map[string]string{"shared.md": first}, "the commit the destination holds")
 	every = first
 	var merged []string
 	push := []string{"git", "push", "--quiet", "origin", "main"}
@@ -330,7 +304,7 @@ func octopusRepo(t *testing.T, line17 string) (repo, base, every string, octopus
 	}
 	fixture.Run(repo, "git", "remote", "add", "origin", remote)
 	fixture.Run(repo, push...)
-	reach(t, fixture, repo, theURL, remote)
+	reached = reach(theURL, remote)
 	octopus = func(shared, added string) string {
 		t.Helper()
 		write("shared.md", shared)
@@ -349,7 +323,7 @@ func octopusRepo(t *testing.T, line17 string) (repo, base, every string, octopus
 		}
 		return head
 	}
-	return repo, base, every, octopus
+	return repo, base, every, reached, octopus
 }
 
 // ParseUpdates reads git's own pre-push lines, which is how a `legion leak-check` standing in for

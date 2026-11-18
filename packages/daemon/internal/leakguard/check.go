@@ -146,7 +146,9 @@ type child struct {
 	env []string
 	// inherit, where it is not nil, is which names of the base environment the child keeps;
 	// the guard's own names and env go on top either way. Nil keeps the whole base, which is
-	// what every child keeps but the visibility read made with no credential (Guard.lsRemote).
+	// what every child keeps but two: the visibility read made with no credential
+	// (Guard.lsRemote), and the read of what a push's destination holds, which keeps all of it
+	// but GIT_DIR (Guard.advertised).
 	inherit func(name string) bool
 	// noAskpass, where it is true, leaves the child no askpass program at all: of the prompt
 	// settings (promptsNothing) it gets noTerminalPrompt alone, so GIT_ASKPASS, SSH_ASKPASS and

@@ -85,6 +85,21 @@ func refusal(t *testing.T, err error) *Refusal {
 	return refused
 }
 
+// wantRefused fails the test unless err is the refusal whose report is want (refusal), or, where
+// want is nil, unless the write passed.
+func wantRefused(t *testing.T, err error, want []string) {
+	t.Helper()
+	if want == nil {
+		if err != nil {
+			t.Fatalf("got %v, want the write passed", err)
+		}
+		return
+	}
+	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
+		t.Errorf("the report is %q, want %q", refused.Lines, want)
+	}
+}
+
 // setupFailure is err as a *SetupFailure, failing the test where it is anything else.
 func setupFailure(t *testing.T, err error) *SetupFailure {
 	t.Helper()
@@ -243,10 +258,7 @@ func TestTheGhShapeScansWhatItBuffered(t *testing.T) {
 	if string(answer.Stdin) != body {
 		t.Errorf("the caller got %q back, want the bytes it gave", answer.Stdin)
 	}
-	refused := refusal(t, err)
-	if want := []string{"the gh call's standard input: " + theClass}; !slices.Equal(refused.Lines, want) {
-		t.Errorf("the report is %q, want %q", refused.Lines, want)
-	}
+	wantRefused(t, err, []string{"the gh call's standard input: " + theClass})
 }
 
 // The report names the record and the class and nothing else: not the text that matched, not the

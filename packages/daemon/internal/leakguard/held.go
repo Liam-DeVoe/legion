@@ -3,9 +3,11 @@ package leakguard
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 )
 
 // commits are the commits an update that is no deletion would add to the destination, oldest
@@ -85,26 +87,48 @@ var fetchesNothing = []string{"GIT_NO_LAZY_FETCH=1"}
 //
 //	git ls-remote --heads --tags -- <url>
 //
-// run in dir, so that its configuration's url.<base>.insteadOf leads the read where it leads a
-// push, and under the guard's prompt settings (promptsNothing), whose GIT_TERMINAL_PROMPT=0 and
-// askpass that answers nothing make a read that wants a credential fail rather than prompt. The
-// `--` keeps a URL that starts with a dash from being read as an option. Each sha it prints is
-// kept, an annotated tag's peeled commit (<tag>^{}) too, where dir has it as a commit, which one
-// cat-file --batch-check of them all answers. A sha dir does not have holds nothing, since
-// rev-list cannot walk from it: where it is a commit ahead of dir's, the commits of dir's that it
-// reaches are read, which is the fail-closed direction. The cat-file fetches nothing
-// (fetchesNothing), so that in a partial clone, as an issue pod's fork clones are
-// (--filter=blob:none), a sha dir lacks is answered missing rather than fetched from the promisor
-// remote: the read of what url holds fetches nothing, and a sha dir lacks holds nothing there as
-// it does anywhere. An empty answer, a repository with no branch and no tag, holds nothing. A git
-// that cannot be run, or that exits other than 0, is an error naming url, never a repository read
-// as holding nothing, and the error carries no credential: the URL it names and git's standard
-// error it quotes are each written without the user and password a URL can carry
-// (withoutUserinfo).
+// run outside dir, in /, a directory only root can write, so that git finds no repository there
+// and no configuration of dir's applies to the read. git hands the hook the URL dir's
+// configuration has already led the push to, and a rewrite read a second time can lead the read
+// to another repository: under url.<base>.pushInsteadOf, which git applies to the push URL alone,
+// the URL the hook is handed can be one a url.<base>.insteadOf of dir's rewrites, and a read made
+// in dir would list the refs of the repository that rewrite names, not of the one the push writes
+// to. The review of cybermonklabs/legion#3946 reproduced that on git 2.47.3: with origin at
+// https://example.invalid/fork, url.<real.git>.pushInsteadOf that URL and
+// url.<fake.git>.insteadOf <real.git>, the push landed in real.git, the hook was handed real.git,
+// and a git ls-remote of it in the clone listed fake.git's refs. So the read keeps none of the
+// caller's GIT_DIR (outsideTheRepository), and a URL that is a relative local path is read
+// against dir (againstDir), as git read it for the push. The rest of the caller's environment
+// still applies, the GIT_CONFIG_COUNT block a pod's credential helper is set in among it, and so
+// does the user's global configuration.
+//
+// The read runs under the guard's prompt settings (promptsNothing), whose GIT_TERMINAL_PROMPT=0
+// and askpass that answers nothing make a read that wants a credential fail rather than prompt,
+// and for at most heldReadBound, so that a destination that stops answering refuses the push
+// rather than holding it. The `--` keeps a URL that starts with a dash from being read as an
+// option. Each sha it prints is kept, an annotated tag's peeled commit (<tag>^{}) too, where dir
+// has it as a commit, which one cat-file --batch-check of them all, run in dir, answers. A sha dir
+// does not have holds nothing, since rev-list cannot walk from it: where it is a commit ahead of
+// dir's, the commits of dir's that it reaches are read, which is the fail-closed direction. The
+// cat-file fetches nothing (fetchesNothing), so that in a partial clone, as an issue pod's fork
+// clones are (--filter=blob:none), a sha dir lacks is answered missing rather than fetched from
+// the promisor remote: the read of what url holds fetches nothing, and a sha dir lacks holds
+// nothing there as it does anywhere. An empty answer, a repository with no branch and no tag,
+// holds nothing. A git that cannot be run, that exits other than 0, or that its bound stops is an
+// error naming url, never a repository read as holding nothing, and the error carries no
+// credential: the URL it names and git's standard error it quotes are each written without the
+// user and password a URL can carry (withoutUserinfo).
 func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, error) {
 	read := "git ls-remote " + withoutUserinfo(url)
+	bounded, cancel := context.WithTimeout(ctx, heldReadBound)
+	defer cancel()
 	var stderr strings.Builder
-	status, out, err := g.run(ctx, child{argv: gitArgv("ls-remote", "--heads", "--tags", "--", url), dir: dir, stderr: &stderr})
+	status, out, err := g.run(bounded, child{
+		argv:    gitArgv("ls-remote", "--heads", "--tags", "--", againstDir(dir, url)),
+		dir:     "/",
+		inherit: outsideTheRepository,
+		stderr:  &stderr,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", read, err)
 	}
@@ -139,6 +163,44 @@ func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, erro
 		}
 	}
 	return commits, nil
+}
+
+// heldReadBound is how long the read of what a push's destination holds runs at most
+// (Guard.advertised). The hook's own context has no deadline (cmd/legion's main), so without it a
+// destination that stops answering would hold the push for as long as it did not answer. Two
+// minutes is that read many times over: measured from an issue pod on 2026-11-18, seven reads of
+// cybermonklabs/legion's 5,749 branches and tags took 0.58 s to 0.67 s, 0.63 s the median. It is
+// a variable so that a test can shorten it.
+var heldReadBound = 2 * time.Minute
+
+// outsideTheRepository is which names of the caller's environment the read of what a push's
+// destination holds keeps (Guard.advertised): every one but GIT_DIR. git hands a pre-push hook
+// GIT_DIR where the push was made with `git --git-dir <dir>`, which is how `jj git push` makes
+// it, and a git that keeps it reads that repository's configuration from any directory. Measured
+// on git 2.47.3 from /: GIT_DIR=<clone>/.git makes git read the clone's configuration, and
+// GIT_COMMON_DIR or GIT_WORK_TREE alone does not.
+func outsideTheRepository(name string) bool {
+	return name != "GIT_DIR"
+}
+
+// againstDir is url as a read made outside dir reaches what git reached from dir: a URL that is a
+// relative local path joined to dir, the directory git runs the hook in, which is the one git read
+// that path from for the push, and every other URL as it is. A URL is a local path by git's own
+// rule (connect.c's url_is_local_not_ssh): it names no scheme (`<scheme>://`), and it has no
+// colon, or a slash before its first colon, since `host:path` with the colon first is git's scp
+// form of ssh. The path is joined, not cleaned, so that a `..` in it is read from the directory
+// itself, as git's own read of it is, rather than from the parent of a symbolic link dir was
+// named through.
+func againstDir(dir, url string) string {
+	if strings.Contains(url, "://") || filepath.IsAbs(url) {
+		return url
+	}
+	if colon := strings.IndexByte(url, ':'); colon >= 0 {
+		if slash := strings.IndexByte(url, '/'); slash < 0 || slash > colon {
+			return url
+		}
+	}
+	return dir + string(filepath.Separator) + url
 }
 
 // userinfo is the user and password a URL with a scheme can carry, the "user:token@" of

@@ -1,9 +1,7 @@
 package leakguard
 
 import (
-	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -21,41 +19,22 @@ func TestAMergesOwnResolutionIsRead(t *testing.T) {
 	repo := filepath.Join(root, "repo")
 	fixture := fixturegit.Isolated(t, home)
 	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
-	write := func(name, content string) {
-		t.Helper()
-		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	commit := func(message string) string {
-		t.Helper()
-		fixture.Run(repo, "git", "add", "-A")
-		fixture.Run(repo, "git", "commit", "--quiet", "-m", message)
-		return fixture.Run(repo, "git", "rev-parse", "HEAD")
-	}
-	write("README.md", "one\n")
-	base := commit("the commit the destination holds")
+	base := commitFiles(t, fixture, repo, map[string]string{"README.md": "one\n"}, "the commit the destination holds")
 	fixture.Run(repo, "git", "checkout", "--quiet", "-b", "side")
-	write("side.md", "a line of the side branch\n")
-	commit("the side commit")
+	commitFiles(t, fixture, repo, map[string]string{"side.md": "a line of the side branch\n"}, "the side commit")
 	fixture.Run(repo, "git", "checkout", "--quiet", "main")
-	write("main.md", "a line of the main branch\n")
-	commit("the main commit")
+	commitFiles(t, fixture, repo, map[string]string{"main.md": "a line of the main branch\n"}, "the main commit")
 	// The merge itself is clean; what the resolution adds is this file, which stands in neither
 	// parent and is the whole of what the merge commit publishes of its own.
 	fixture.Run(repo, "git", "merge", "--quiet", "--no-ff", "--no-commit", "side")
-	write("resolution.md", "the runner answers at "+theHost+"\n")
-	head := commit("the merge")
+	head := commitFiles(t, fixture, repo, map[string]string{"resolution.md": "the runner answers at " + theHost + "\n"}, "the merge")
 	if parents := fixture.Run(repo, "git", "rev-list", "--parents", "-n", "1", head); len(strings.Fields(parents)) != 3 {
 		t.Fatalf("the fixture's head is %q, want a commit of two parents", parents)
 	}
-	destinationAt(t, fixture, repo, theURL, base+":refs/heads/main")
-	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+	reached := destinationAt(t, fixture, repo, theURL, base+":refs/heads/main")
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, reached...)
 	err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
-	want := []string{"resolution.md: " + theClass}
-	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
-		t.Errorf("the report is %q, want %q", refused.Lines, want)
-	}
+	wantRefused(t, err, []string{"resolution.md: " + theClass})
 }
 
 // A merge's text file above the bound refuses the push as a setup failure that names the file and
@@ -106,23 +85,18 @@ func TestAMergesFileAboveTheBoundRefusesThePush(t *testing.T) {
 			if side == nil {
 				side = map[string]string{}
 			}
-			repo, base, head := pushOf(t, nil, side, tc.added, nil)
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			repo, base, head, reached := pushOf(t, nil, side, tc.added, nil)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, reached...)
 			guard.blobBound = 64
 			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
-			switch {
-			case tc.failure != nil:
+			if tc.failure != nil {
 				setupFailure(t, err)
 				if want := tc.failure(head); err.Error() != want {
 					t.Errorf("the failure is\n  %s\nwant\n  %s", err, want)
 				}
-			case tc.want != nil:
-				if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want) {
-					t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
-				}
-			case err != nil:
-				t.Fatalf("a merge whose one named line is in a binary file: %v", err)
+				return
 			}
+			wantRefused(t, err, tc.want)
 		})
 	}
 }
@@ -133,7 +107,7 @@ func TestAMergesFileAboveTheBoundRefusesThePush(t *testing.T) {
 // holds every parent, so that line is text it already has, and the merge is the whole of what
 // each push adds.
 func TestAnOctopusMergeIsReadFromItsFiles(t *testing.T) {
-	repo, base, every, octopus := octopusRepo(t, "the runner of parent 17 answers at "+theHost)
+	repo, base, every, reached, octopus := octopusRepo(t, "the runner of parent 17 answers at "+theHost)
 
 	for _, tc := range []struct {
 		name string
@@ -157,17 +131,9 @@ func TestAnOctopusMergeIsReadFromItsFiles(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, reached...)
 			err := guard.Push(bound(t), mainPush(repo, base, tc.head, "origin", theURL))
-			if tc.want == nil {
-				if err != nil {
-					t.Fatalf("a merge that adds nothing of its own: %v", err)
-				}
-				return
-			}
-			if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want) {
-				t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
-			}
+			wantRefused(t, err, tc.want)
 		})
 	}
 }

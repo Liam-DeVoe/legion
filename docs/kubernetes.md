@@ -96,13 +96,23 @@ It carries:
 
   - a text file it reads above 32 MiB as a setup error that refuses the push and names the file and its size, whichever the shape (`Guard.blobBound`):
     a commit's own file, or a file it is compared with.
-    The guard reads none of the files a commit's file is compared with where the commit's file is binary, and passes over the rest once the files read before them hold every line of it;
+    The guard reads none of the files a commit's file is compared with where the commit's file is binary, and passes over the rest once the files read before them hold every line of it.
+    The bound is per file, not per push:
+    what one push holds in memory is no file above it, and every record of the push, each added line, path, identity and message, until the rules have read them;
 
   - and no commit that a branch or a tag of the destination already reaches, as one `git ls-remote --heads --tags` of the URL git hands the hook reads them (`Guard.advertised`, `internal/leakguard/held.go`).
     Each push with an update that is not a deletion, to a destination the guard scans, costs that one read, and a read that fails refuses the push as a setup error that names the remote and the URL.
+    The read runs outside the clone, in `/` and without the hook's `GIT_DIR`, so no configuration of the clone's leads it to another repository:
+    git hands the hook the URL the clone's configuration already led the push to, and under the clone's `url.<base>.pushInsteadOf` that URL can be one its `url.<base>.insteadOf` rewrites.
+    A URL that is a relative local path is read from the clone's directory, where git read it for the push.
+    The process's own environment still applies, the `GIT_CONFIG_COUNT` block a pod's credential helper is set in among it, and so does the user's global configuration.
+    The read has a bound of its own, two minutes, since the hook's context has none (`heldReadBound`); seven reads of cybermonklabs/legion's 5,749 branches and tags from an issue pod took 0.63 s at the median on 2026-11-18.
+    A destination that stops answering refuses the push as a setup error that names the URL and the bound.
     The URL such an error names, and git's own message it quotes, carry no user and no token (`withoutUserinfo`).
     A push made to a URL rather than to a remote is named by that URL in every refusal and setup failure, and that name carries no user and no token either (`PushName`).
     A branch or a tag at a commit the clone does not have holds nothing, so where that commit is ahead of the clone's, the clone's commits it reaches are read, which fails closed.
+    A push whose destination holds nothing the clone has, an empty local bare repository among them, fails closed the same way:
+    it reads every commit the branch reaches, at one read of each, which is thousands for a fork's branch.
     Both reads that ask whether the clone has a commit run with `GIT_NO_LAZY_FETCH=1`: the batch check of the shas `git ls-remote` prints (`Guard.advertised`), and the check of the commit the update says the destination's ref is at now (`Guard.holds`).
     So a partial clone fetches none it lacks from its promisor remote, and such a commit holds nothing there either.
     No ref of the clone's own counts: git moves a remote's `refs/remotes/<remote>/` for a push to whatever URL the remote pushes to at that time, a local bare one that a role points it at for one run (`git remote set-url --push origin <bare>`) included, and a ref can be written by hand.

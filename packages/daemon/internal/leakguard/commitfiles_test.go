@@ -25,26 +25,18 @@ func TestARootCommitsAddedLinesAreRead(t *testing.T) {
 	repo := filepath.Join(root, "repo")
 	fixture := fixturegit.Isolated(t, home)
 	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
-	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("the runner answers at "+theHost+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	fixture.Run(repo, "git", "add", "-A")
-	fixture.Run(repo, "git", "commit", "--quiet", "-m", "the first commit")
-	head := fixture.Run(repo, "git", "rev-parse", "HEAD")
-	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+	head := commitFiles(t, fixture, repo, map[string]string{"README.md": "the runner answers at " + theHost + "\n"}, "the first commit")
 	// The destination holds nothing: a ref the push creates, in a repository with no branch and
 	// no tag that could say otherwise.
-	destinationAt(t, fixture, repo, theURL)
+	reached := destinationAt(t, fixture, repo, theURL)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, reached...)
 	err := guard.Push(bound(t), PushRequest{
 		Dir:     repo,
 		Remote:  "origin",
 		URL:     theURL,
 		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
 	})
-	want := []string{"README.md: " + theClass}
-	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
-		t.Errorf("the report is %q, want %q", refused.Lines, want)
-	}
+	wantRefused(t, err, []string{"README.md: " + theClass})
 }
 
 // A file is binary by its own content alone, whatever an attribute says: a file .gitattributes
@@ -123,18 +115,10 @@ func TestAFileIsBinaryByItsOwnContentAlone(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			repo, base, head := pushOf(t, tc.held, tc.side, tc.added, nil)
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			repo, base, head, reached := pushOf(t, tc.held, tc.side, tc.added, nil)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, reached...)
 			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
-			if tc.want == nil {
-				if err != nil {
-					t.Fatalf("a push whose one named line is in a binary file: %v", err)
-				}
-				return
-			}
-			if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want) {
-				t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
-			}
+			wantRefused(t, err, tc.want)
 		})
 	}
 }
@@ -263,27 +247,22 @@ func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			repo, base, head := pushOf(t, tc.held, nil, tc.added, tc.edit)
+			repo, base, head, reached := pushOf(t, tc.held, nil, tc.added, tc.edit)
 			path, record := blobRecord(t)
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, append(reached, path)...)
 			guard.blobBound = 64
 			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
 			if read := asked(t, record); tc.readsNothing && len(read) > 0 {
 				t.Errorf("the guard asked cat-file for %q, want no blob", read)
 			}
-			switch {
-			case tc.failure != nil:
+			if tc.failure != nil {
 				setupFailure(t, err)
 				if want := tc.failure(head); err.Error() != want {
 					t.Errorf("the failure is\n  %s\nwant\n  %s", err, want)
 				}
-			case tc.want != nil:
-				if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want) {
-					t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
-				}
-			case err != nil:
-				t.Errorf("a commit that adds no line the rules refuse: %v", err)
+				return
 			}
+			wantRefused(t, err, tc.want)
 		})
 	}
 }
@@ -463,18 +442,10 @@ func TestACommitsLinesAreReadFromItsBlobs(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			repo, base, head := pushOf(t, tc.held, nil, tc.added, tc.edit)
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			repo, base, head, reached := pushOf(t, tc.held, nil, tc.added, tc.edit)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, reached...)
 			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
-			if tc.want == nil {
-				if err != nil {
-					t.Fatalf("a commit whose one named line its parent's file holds: %v", err)
-				}
-				return
-			}
-			if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want) {
-				t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
-			}
+			wantRefused(t, err, tc.want)
 		})
 	}
 }
@@ -524,14 +495,11 @@ func TestACommitThatMovesThousandsOfFilesIsReadForItsLine(t *testing.T) {
 	}
 	base := fixture.Run(repo, "git", "commit-tree", tree("packages/an-invented-package/src", notes), "-m", "the commit the destination holds")
 	head := fixture.Run(repo, "git", "commit-tree", tree("packages/an-invented-package/lib", named), "-p", base, "-m", "a move of every file")
-	destinationAt(t, fixture, repo, theURL, base+":refs/heads/main")
+	reached := destinationAt(t, fixture, repo, theURL, base+":refs/heads/main")
 	path, record := blobRecord(t)
-	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, append(reached, path)...)
 	err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
-	want := []string{"notes.md: " + theClass}
-	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
-		t.Errorf("the report is %q, want %q", refused.Lines, want)
-	}
+	wantRefused(t, err, []string{"notes.md: " + theClass})
 	if read := asked(t, record); !slices.Equal(read, []string{named, notes}) {
 		t.Errorf("the guard asked cat-file for %d blobs, %.80q, want notes.md's two, %q", len(read), read, []string{named, notes})
 	}

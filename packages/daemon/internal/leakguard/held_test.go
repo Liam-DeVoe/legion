@@ -1,11 +1,11 @@
 package leakguard
 
 import (
-	"os"
+	"context"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
@@ -18,16 +18,11 @@ func TestAPushThatAddsNoCommitReadsNoCommit(t *testing.T) {
 	repo := filepath.Join(root, "repo")
 	fixture := fixturegit.Isolated(t, home)
 	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
-	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("the file names "+theHost+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	fixture.Run(repo, "git", "add", "-A")
-	fixture.Run(repo, "git", "commit", "--quiet", "-m", "a commit naming "+theHost)
-	head := fixture.Run(repo, "git", "rev-parse", "HEAD")
+	head := commitFiles(t, fixture, repo, map[string]string{"README.md": "the file names " + theHost + "\n"}, "a commit naming "+theHost)
 	// The destination holds that commit at that ref already, so the push moves nothing and the
 	// commit's own text is none of its business.
-	destinationAt(t, fixture, repo, theURL, head+":refs/heads/main")
-	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+	reached := destinationAt(t, fixture, repo, theURL, head+":refs/heads/main")
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, reached...)
 	err := guard.Push(bound(t), PushRequest{
 		Dir:     repo,
 		Remote:  "origin",
@@ -69,22 +64,13 @@ func TestTheReadOfWhatTheDestinationHoldsFetchesNothing(t *testing.T) {
 			fixture.Run(promisor, "git", "config", "uploadpack.allowAnySHA1InWant", "true")
 			fixture.Run(root, fixturegit.InitBare(destination, "main")...)
 			fixture.Run(root, fixturegit.InitWorkTree(seed, "main")...)
-			commit := func(dir, name, content, message string) string {
-				t.Helper()
-				if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				fixture.Run(dir, "git", "add", "-A")
-				fixture.Run(dir, "git", "commit", "--quiet", "-m", message)
-				return fixture.Run(dir, "git", "rev-parse", "HEAD")
-			}
-			base := commit(seed, "README.md", "one\n", "the commit the destination holds")
+			base := commitFiles(t, fixture, seed, map[string]string{"README.md": "one\n"}, "the commit the destination holds")
 			fixture.Run(seed, "git", "push", "--quiet", promisor, "main")
 			fixture.Run(root, "git", "clone", "--quiet", "--filter=blob:none", "file://"+promisor, repo)
-			later := commit(seed, "README.md", "one\ntwo\n", "a commit the clone never fetched")
+			later := commitFiles(t, fixture, seed, map[string]string{"README.md": "one\ntwo\n"}, "a commit the clone never fetched")
 			fixture.Run(seed, "git", "push", "--quiet", promisor, later+":refs/heads/later")
 			fixture.Run(seed, "git", "push", "--quiet", destination, base+":refs/heads/main", later+":refs/heads/later")
-			reach(t, fixture, repo, theURL, destination)
+			reached := reach(theURL, destination)
 			// lacks is whether the clone lacks the later commit, asked so that the asking fetches
 			// nothing.
 			lacks := func() bool {
@@ -94,25 +80,130 @@ func TestTheReadOfWhatTheDestinationHoldsFetchesNothing(t *testing.T) {
 			if !lacks() {
 				t.Fatalf("the clone has %s before the push is read, so this test proves nothing", short(later))
 			}
-			head := commit(repo, "notes.md", "the runner answers at "+theHost+"\n", "a message of no interest")
+			head := commitFiles(t, fixture, repo, map[string]string{"notes.md": "the runner answers at " + theHost + "\n"}, "a message of no interest")
 			remoteSHA := base
 			if tc.atLater {
 				remoteSHA = later
 			}
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, reached...)
 			err := guard.Push(bound(t), PushRequest{
 				Dir:     repo,
 				Remote:  "origin",
 				URL:     theURL,
 				Updates: []Update{{LocalRef: tc.ref, LocalSHA: head, RemoteRef: tc.ref, RemoteSHA: remoteSHA}},
 			})
-			want := []string{"notes.md: " + theClass}
-			if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
-				t.Errorf("the report is %q, want %q", refused.Lines, want)
-			}
+			wantRefused(t, err, []string{"notes.md: " + theClass})
 			if !lacks() {
 				t.Errorf("the read of the push fetched %s, the commit the destination's later branch is at, into the clone", short(later))
 			}
+		})
+	}
+}
+
+// The read of what the destination holds is made outside the clone, so no configuration of the
+// clone's leads it to another repository (Guard.advertised). git hands the hook the URL the
+// clone's configuration has already led the push to. Under the clone's url.<base>.pushInsteadOf,
+// which git applies to the push URL alone, that URL can be one the clone's url.<base>.insteadOf
+// rewrites, and a read made in the clone would list the refs of the stand-in repository the
+// rewrite names: the review of cybermonklabs/legion#3946 reproduced that, and its case is the
+// first here. The stand-in advertises the commit the push adds, a line the rules refuse, and the
+// repository the push writes to holds nothing, so that commit is read and refused. The case holds
+// for a push made with `git --git-dir <dir>`, which is how `jj git push` makes one, and whose
+// hook git hands GIT_DIR. A URL that is a relative local path is read from the clone's
+// directory, where git read it for the push: the repository there holds the pushed commit, so
+// the push passes. A destination the clone's own url.<base>.insteadOf alone reaches is read at
+// the URL as written, which no transport but file reaches here, so the read fails. Each push
+// creates main.
+func TestTheReadOfWhatTheDestinationHoldsIsMadeOutsideTheClone(t *testing.T) {
+	// pushRewritten is the review's case: origin at a URL that names no repository, which the
+	// clone's pushInsteadOf rewrites, for a push alone, to destination.git, which holds nothing,
+	// and an insteadOf of the clone's that rewrites destination.git to stand-in.git, which holds
+	// head. It answers destination.git, the URL git hands the hook.
+	pushRewritten := func(t *testing.T, run func(string, ...string) string, repo, head string) string {
+		t.Helper()
+		root := filepath.Dir(repo)
+		destination, standIn := filepath.Join(root, "destination.git"), filepath.Join(root, "stand-in.git")
+		run(root, fixturegit.InitBare(destination, "main")...)
+		run(root, fixturegit.InitBare(standIn, "main")...)
+		run(repo, "git", "push", "--quiet", standIn, head+":refs/heads/main")
+		const fork = "https://example.invalid/fork"
+		run(repo, "git", "remote", "add", "origin", fork)
+		run(repo, "git", "config", "url."+destination+".pushInsteadOf", fork)
+		run(repo, "git", "config", "url."+standIn+".insteadOf", destination)
+		if pushed := run(repo, "git", "remote", "get-url", "--push", "origin"); pushed != destination {
+			t.Fatalf("origin pushes to %s, want %s: the case would prove nothing", pushed, destination)
+		}
+		if listed := run(repo, "git", "ls-remote", "--heads", destination); !strings.HasPrefix(listed, head) {
+			t.Fatalf("git ls-remote of %s in the clone lists %q, want the stand-in's main at %s: the case would prove nothing", destination, listed, head)
+		}
+		return destination
+	}
+	for _, tc := range []struct {
+		name string
+		// destination makes the repository the push is made to, beside repo, and the clone's
+		// configuration the case names, and answers the URL git hands the hook.
+		destination func(t *testing.T, run func(dir string, argv ...string) string, repo, head string) string
+		// gitDir is whether the hook's environment names the clone's GIT_DIR.
+		gitDir bool
+		// want is the report, and nil where the push passes or fails; failure is the setup
+		// failure, "" where there is none.
+		want    []string
+		failure string
+	}{
+		{
+			name:        "a push URL the clone's pushInsteadOf names and its insteadOf rewrites",
+			destination: pushRewritten,
+			want:        []string{"notes.md: " + theClass},
+		},
+		{
+			name:        "the same push made with git --git-dir, as jj makes one",
+			destination: pushRewritten,
+			gitDir:      true,
+			want:        []string{"notes.md: " + theClass},
+		},
+		{
+			name: "a URL that is a relative local path",
+			destination: func(_ *testing.T, run func(string, ...string) string, repo, head string) string {
+				root := filepath.Dir(repo)
+				run(root, fixturegit.InitBare(filepath.Join(root, "destination.git"), "main")...)
+				run(repo, "git", "push", "--quiet", "../destination.git", head+":refs/heads/main")
+				return "../destination.git"
+			},
+		},
+		{
+			name: "a destination the clone's own insteadOf alone reaches",
+			destination: func(_ *testing.T, run func(string, ...string) string, repo, head string) string {
+				bare := filepath.Join(filepath.Dir(repo), "destination.git")
+				run(repo, fixturegit.InitBare(bare, "main")...)
+				run(repo, "git", "push", "--quiet", bare, head+":refs/heads/main")
+				run(repo, "git", "config", "url.file://"+bare+".insteadOf", theURL)
+				return theURL
+			},
+			failure: "LEAK CHECK SETUP ERROR: the push to origin: the destination's refs could not be read: git ls-remote " + theURL + " exited 128: fatal: transport 'https' not allowed",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, _, head, _ := pushOf(t, nil, nil, map[string]string{"notes.md": "the runner answers at " + theHost + "\n"}, nil)
+			url := tc.destination(t, fixturegit.Isolated(t, t.TempDir()).Run, repo, head)
+			var hook []string
+			if tc.gitDir {
+				hook = append(hook, "GIT_DIR="+filepath.Join(repo, ".git"))
+			}
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, hook...)
+			err := guard.Push(bound(t), PushRequest{
+				Dir:     repo,
+				Remote:  "origin",
+				URL:     url,
+				Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
+			})
+			if tc.failure != "" {
+				setupFailure(t, err)
+				if err.Error() != tc.failure {
+					t.Errorf("the failure is\n  %s\nwant\n  %s", err, tc.failure)
+				}
+				return
+			}
+			wantRefused(t, err, tc.want)
 		})
 	}
 }
@@ -160,8 +251,8 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			repo, base, head := pushOf(t, nil, nil, map[string]string{"notes.md": "the runner answers at " + theHost + "\n"}, nil)
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, pathWith(bin))
+			repo, base, head, reached := pushOf(t, nil, nil, map[string]string{"notes.md": "the runner answers at " + theHost + "\n"}, nil)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, append(reached, pathWith(bin))...)
 			err := guard.Push(bound(t), mainPush(repo, base, head, tc.remote, credentialed))
 			setupFailure(t, err)
 			if err.Error() != tc.want {
@@ -171,6 +262,42 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 				t.Errorf("the failure carries the URL's credential: %v", err)
 			}
 		})
+	}
+}
+
+// A read of what the destination holds that does not answer ends at its own bound
+// (heldReadBound), although the caller's context has no deadline, as the hook's has none: a
+// destination that stops answering refuses the push rather than holding it. The push is refused
+// as a setup failure that names the URL, without its credential, and the bound. The stand-in git
+// here never answers an ls-remote, and runs the real git for every other call; the bound is 2 s.
+func TestAReadOfWhatTheDestinationHoldsThatDoesNotAnswerEndsAtItsBound(t *testing.T) {
+	saved := heldReadBound
+	heldReadBound = 2 * time.Second
+	t.Cleanup(func() { heldReadBound = saved })
+	// The userinfo is built apart from the scheme, so no line of this file is a URL that carries
+	// one, which the shared check would refuse at the push.
+	const user, token = "invented-user", "invented-token"
+	userinfo := user + ":" + token + "@"
+	credentialed := strings.Replace(theURL, "https://", "https://"+userinfo, 1)
+	bin := t.TempDir()
+	writeProgram(t, bin, "git", `case " $* " in
+*" ls-remote "*) exec sleep 30 ;;
+esac
+exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
+`)
+	repo, base, head, reached := pushOf(t, nil, nil, map[string]string{"notes.md": "the runner answers at " + theHost + "\n"}, nil)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, append(reached, pathWith(bin))...)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	started := time.Now()
+	err := guard.Push(ctx, mainPush(repo, base, head, "origin", credentialed))
+	answeredWithin10s(t, started)
+	setupFailure(t, err)
+	if want := "LEAK CHECK SETUP ERROR: the push to origin: the destination's refs could not be read: git ls-remote " + theURL + ": git ran 2 s and was stopped by its bound of 2 s"; err.Error() != want {
+		t.Errorf("the failure is\n  %s\nwant\n  %s", err, want)
+	}
+	if strings.Contains(err.Error(), user) || strings.Contains(err.Error(), token) {
+		t.Errorf("the failure carries the URL's credential: %v", err)
 	}
 }
 
@@ -205,8 +332,8 @@ func TestAFailedReadOfACommitQuotesGitWithoutACredential(t *testing.T) {
 esac
 exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 `)
-			repo, base, head := pushOf(t, map[string]string{"notes.md": "one\n"}, nil, map[string]string{"notes.md": "one\ntwo\n"}, nil)
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, pathWith(bin))
+			repo, base, head, reached := pushOf(t, map[string]string{"notes.md": "one\n"}, nil, map[string]string{"notes.md": "one\ntwo\n"}, nil)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, append(reached, pathWith(bin))...)
 			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
 			setupFailure(t, err)
 			if err.Error() != tc.want {
@@ -231,19 +358,10 @@ func TestAnUpdatesRemoteSideHoldsWhatTheCloneHas(t *testing.T) {
 	fixture := fixturegit.Isolated(t, home)
 	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
 	fixture.Run(root, fixturegit.InitWorkTree(other, "main")...)
-	commit := func(dir, name, content, message string) string {
-		t.Helper()
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		fixture.Run(dir, "git", "add", "-A")
-		fixture.Run(dir, "git", "commit", "--quiet", "-m", message)
-		return fixture.Run(dir, "git", "rev-parse", "HEAD")
-	}
-	base := commit(repo, "held.md", "the runner answers at "+theHost+"\n", "the commit the destination's main is at")
-	head := commit(repo, "notes.md", "a line of ordinary prose\n", "a message of no interest")
-	unknown := commit(other, "README.md", "one\n", "a commit the clone has never had")
-	destinationAt(t, fixture, repo, theURL)
+	base := commitFiles(t, fixture, repo, map[string]string{"held.md": "the runner answers at " + theHost + "\n"}, "the commit the destination's main is at")
+	head := commitFiles(t, fixture, repo, map[string]string{"notes.md": "a line of ordinary prose\n"}, "a message of no interest")
+	unknown := commitFiles(t, fixture, other, map[string]string{"README.md": "one\n"}, "a commit the clone has never had")
+	reached := destinationAt(t, fixture, repo, theURL)
 	for _, tc := range []struct {
 		name      string
 		remoteSHA string
@@ -254,17 +372,9 @@ func TestAnUpdatesRemoteSideHoldsWhatTheCloneHas(t *testing.T) {
 		{name: "a remote side the clone does not have", remoteSHA: unknown, want: []string{"held.md: " + theClass}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, reached...)
 			err := guard.Push(bound(t), mainPush(repo, tc.remoteSHA, head, "origin", theURL))
-			if tc.want == nil {
-				if err != nil {
-					t.Fatalf("the push of the commit after the remote side: %v", err)
-				}
-				return
-			}
-			if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want) {
-				t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
-			}
+			wantRefused(t, err, tc.want)
 		})
 	}
 }
@@ -281,39 +391,23 @@ func TestAForwardMergeReadsNoCommitTheDestinationHolds(t *testing.T) {
 	fixture := fixturegit.Isolated(t, home)
 	fixture.Run(root, fixturegit.InitBare(remote, "main")...)
 	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
-	write := func(name, content string) {
-		t.Helper()
-		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	commit := func(message string) string {
-		t.Helper()
-		fixture.Run(repo, "git", "add", "-A")
-		fixture.Run(repo, "git", "commit", "--quiet", "-m", message)
-		return fixture.Run(repo, "git", "rev-parse", "HEAD")
-	}
-	write("README.md", "one\n")
-	commit("the first commit")
+	commitFiles(t, fixture, repo, map[string]string{"README.md": "one\n"}, "the first commit")
 	fixture.Run(repo, "git", "checkout", "--quiet", "-b", "work")
-	write("work.md", "a line of the branch\n")
-	tip := commit("the branch's own commit")
+	tip := commitFiles(t, fixture, repo, map[string]string{"work.md": "a line of the branch\n"}, "the branch's own commit")
 	fixture.Run(repo, "git", "checkout", "--quiet", "main")
-	write("main.md", "the runner answers at "+theHost+"\n")
-	commit("a commit of the default branch")
+	commitFiles(t, fixture, repo, map[string]string{"main.md": "the runner answers at " + theHost + "\n"}, "a commit of the default branch")
 	// The destination holds both branches: its work is the old tip the push moves, and its main
 	// holds the default branch's commit.
 	fixture.Run(repo, "git", "remote", "add", "origin", remote)
 	fixture.Run(repo, "git", "push", "--quiet", "origin", "main", "work")
-	reach(t, fixture, repo, theURL, remote)
+	reached := reach(theURL, remote)
 	fixture.Run(repo, "git", "checkout", "--quiet", "work")
 	fixture.Run(repo, "git", "merge", "--quiet", "--no-ff", "-m", "merge main into work", "main")
 	merge := fixture.Run(repo, "git", "rev-parse", "HEAD")
 	if parents := fixture.Run(repo, "git", "rev-list", "--parents", "-n", "1", merge); len(strings.Fields(parents)) != 3 {
 		t.Fatalf("the fixture's merge is %q, want a commit of two parents", parents)
 	}
-	write("copy.md", "the runner answers at "+theHost+"\n")
-	onTop := commit("a commit the destination does not hold")
+	onTop := commitFiles(t, fixture, repo, map[string]string{"copy.md": "the runner answers at " + theHost + "\n"}, "a commit the destination does not hold")
 
 	for _, tc := range []struct {
 		name string
@@ -329,22 +423,14 @@ func TestAForwardMergeReadsNoCommitTheDestinationHolds(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, reached...)
 			err := guard.Push(bound(t), PushRequest{
 				Dir:     repo,
 				Remote:  "origin",
 				URL:     theURL,
 				Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: tc.head, RemoteRef: "refs/heads/work", RemoteSHA: tip}},
 			})
-			if tc.want == nil {
-				if err != nil {
-					t.Fatalf("the push of the merge alone: %v", err)
-				}
-				return
-			}
-			if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want) {
-				t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
-			}
+			wantRefused(t, err, tc.want)
 		})
 	}
 }
@@ -397,25 +483,11 @@ func TestACommitARehearsalHoldsIsReadAtThePushToTheDestination(t *testing.T) {
 			fixture.Run(root, fixturegit.InitBare(remote, "main")...)
 			fixture.Run(root, fixturegit.InitBare(rehearsal, "main")...)
 			fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
-			write := func(content string) {
-				t.Helper()
-				if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte(content), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			commit := func(message string) string {
-				t.Helper()
-				fixture.Run(repo, "git", "add", "-A")
-				fixture.Run(repo, "git", "commit", "--quiet", "-m", message)
-				return fixture.Run(repo, "git", "rev-parse", "HEAD")
-			}
-			write("one\n")
-			base := commit("the commit the destination holds")
+			base := commitFiles(t, fixture, repo, map[string]string{"README.md": "one\n"}, "the commit the destination holds")
 			fixture.Run(repo, "git", "remote", "add", "origin", remote)
 			fixture.Run(repo, "git", "push", "--quiet", "origin", "main")
-			reach(t, fixture, repo, theURL, remote)
-			write("one\nthe runner answers at " + theHost + "\n")
-			head := commit("a message of no interest")
+			reached := reach(theURL, remote)
+			head := commitFiles(t, fixture, repo, map[string]string{"README.md": "one\nthe runner answers at " + theHost + "\n"}, "a message of no interest")
 			rehearsed := tc.rehearse(fixture.Run, repo, rehearsal)
 			if held := fixture.Run(repo, "git", "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/"); held != "refs/remotes/origin/main "+base+"\n"+tc.tracked+" "+head {
 				t.Fatalf("the fixture's remote-tracking refs are %q, want origin/main at the base and %s at the commit", held, tc.tracked)
@@ -431,22 +503,16 @@ func TestACommitARehearsalHoldsIsReadAtThePushToTheDestination(t *testing.T) {
 				{name: "the push to origin", remote: "origin", url: theURL, remoteSHA: base, want: []string{"README.md: " + theClass}},
 				{name: "the push to the rehearsal", remote: rehearsed, url: rehearsal, remoteSHA: noSHA},
 			} {
-				guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-				err := guard.Push(bound(t), PushRequest{
-					Dir:     repo,
-					Remote:  push.remote,
-					URL:     push.url,
-					Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: push.remoteSHA}},
+				t.Run(push.name, func(t *testing.T) {
+					guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, reached...)
+					err := guard.Push(bound(t), PushRequest{
+						Dir:     repo,
+						Remote:  push.remote,
+						URL:     push.url,
+						Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: push.remoteSHA}},
+					})
+					wantRefused(t, err, push.want)
 				})
-				if push.want == nil {
-					if err != nil {
-						t.Errorf("%s, of a commit the rehearsal holds: %v", push.name, err)
-					}
-					continue
-				}
-				if refused := refusal(t, err); !slices.Equal(refused.Lines, push.want) {
-					t.Errorf("%s: the report is %q, want %q", push.name, refused.Lines, push.want)
-				}
 			}
 		})
 	}
@@ -462,7 +528,8 @@ func TestACommitARehearsalHoldsIsReadAtThePushToTheDestination(t *testing.T) {
 func TestOnlyWhatTheDestinationAdvertisesHoldsACommit(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		// hold makes a ref of the repository's, or of the destination's, reach head.
+		// hold makes a ref of the repository's, or of the destination's, reach head, with run a
+		// fixture under which theURL reaches the destination (reach).
 		hold func(t *testing.T, run func(dir string, argv ...string) string, repo, head string)
 		// tracked is the remote-tracking ref hold writes at head, "" where it writes none.
 		tracked string
@@ -499,25 +566,17 @@ func TestOnlyWhatTheDestinationAdvertisesHoldsACommit(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			repo, base, head := pushOf(t, nil, nil, map[string]string{"notes.md": "the runner answers at " + theHost + "\n"}, nil)
+			repo, base, head, reached := pushOf(t, nil, nil, map[string]string{"notes.md": "the runner answers at " + theHost + "\n"}, nil)
 			fixture := fixturegit.Isolated(t, t.TempDir())
-			tc.hold(t, fixture.Run, repo, head)
+			tc.hold(t, fixture.With(reached...).Run, repo, head)
 			if tc.tracked != "" {
 				if at := fixture.Run(repo, "git", "rev-parse", tc.tracked); at != head {
 					t.Fatalf("%s is at %s, want the commit %s: the case would prove nothing", tc.tracked, at, head)
 				}
 			}
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, reached...)
 			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
-			if tc.want == nil {
-				if err != nil {
-					t.Fatalf("the push of a commit the destination holds: %v", err)
-				}
-				return
-			}
-			if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want) {
-				t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
-			}
+			wantRefused(t, err, tc.want)
 		})
 	}
 }
