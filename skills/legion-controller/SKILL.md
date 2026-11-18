@@ -79,9 +79,9 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `held on <KEY>` | Nothing, unless `reason: "escalated"`: then an escalation, decided from the failed claim's `failure` in `read_state` and the limits in `settings` (`skill://legion-controller/references/escalation.md#an-escalated-hold`) |
 | `worker-died on <KEY>` (`role: "architect"`) | Nothing when the root's `phase` is `done`: the tree is parked already. Otherwise restart the tree when you find no cause or its cause is gone, and ask whether to park it when the cause stays (`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`) |
 | `worker-stalled on <KEY>` (`role: "architect"`) | Nothing, unless the notice says the claim failed: its turn was ended, its task is still owed, and the notice says what became of its process |
-| An unreachable claim's notice (`unreachable-claims`, `relaunch-ready`, `relaunch-guard-held`, `relaunch-not-back`, `unreachable-exit`, `envoy-no-live-session`, `worker-locked-out`) | [Claims Envoy cannot reach](#claims-envoy-cannot-reach), and `skill://legion-controller/references/wakes.md#claims-envoy-cannot-reach` |
+| An unreachable claim's notice (`unreachable-claims`, `relaunch-ready`, `relaunch-guard-held`, `relaunch-not-back`, `unreachable-exit`, `envoy-no-live-session`, `worker-locked-out`) | [Claims Envoy cannot reach](#claims-envoy-cannot-reach), and `skill://legion-controller/references/unreachable-claims.md` |
 | `update-stalled on <KEY>` | `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled` |
-| `provider-errors on <KEY>` | Name the run and its model in the day's report; send it to the issue's architect; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
+| `provider-errors on <KEY>` | Name the run and its model in the day's report; send it to the architect that owns the issue, or, for a stuck child's own architect, to the architect above that child; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
 | An architect's escalation | `skill://legion-controller/references/escalation.md` |
 | A finding ask's reference, or its answer | `skill://legion-controller/references/finding-asks.md` |
 | An answer to a park ask (`Park it`, `Leave it admitted`) or a deferral ask (`Defer it`, `Let it run`) | The procedure that opened it: `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` step 4, or `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4 |
@@ -110,7 +110,8 @@ The daemon relaunches no workflow claim by itself, and its own controller claim 
 
 Some of these claims are a person's work and not yours to retry, and the daemon names each of them in a notice of its own: ask the person with a `dispatch ask` on the report issue that names the claim, its issue and the refusal, since they can have the pod replaced or the old process ended on its node.
 Such a case stops nothing else: relaunch every other unreachable claim, the other claims of that same pod included, and relaunch again a claim the guard refused once the daemon's `relaunch-ready` notice says the guard would let it through.
-Which claims are a person's, what `relaunch` refuses and what each notice carries: `skill://legion-controller/references/wakes.md#claims-envoy-cannot-reach`.
+Which claims are a person's, what `relaunch` refuses and what each notice carries: `skill://legion-controller/references/unreachable-claims.md`.
+
 ## Issues handed to Legion
 
 The daemon works only issues carrying the Dispatch label `legion` (any case). Work reaches Legion
@@ -138,11 +139,12 @@ An issue whose work must start at a commit other than its base branch's head nee
 `legion/<KEY>` created at that commit before Legion starts the issue. One command creates it:
 `gh api -X POST repos/<owner>/<name>/git/refs -f ref=refs/heads/legion/<KEY> -f sha=<commit>`. You
 ask for that command rather than run it, because you edit no repository and push no commit: for a
-root, whoever hands the work over runs it; for a child of a tree, the tree's architect runs it. The
-daemon sets the deadline: its own `issue_branch` row creates `legion/<KEY>` at the issue's base
-branch and leaves a branch GitHub already has where it is, so a root's branch must exist before
-the issue is admitted, and a child's before the child starts its first phase, which it can do as
-soon as its tree's design gate opens and nothing holds it. Read the branch back before you
+root, whoever hands the work over runs it; for a child of a tree, the architect that owns the
+child's parent runs it. The daemon sets the deadline: its own `issue_branch` row creates
+`legion/<KEY>` at the issue's base branch and leaves a branch GitHub already has where it is, so
+a root's branch must exist before the issue is admitted, and a child's before the child starts its
+first phase, which it can do as soon as its tree's design gate opens and nothing holds it. Read
+the branch back before you
 `set_status` the root to `todo`:
 `gh api repos/<owner>/<name>/git/ref/heads/legion/<KEY>`. The issue's own spec tells its worker
 which branch to open the pull request against; nothing else carries that.
