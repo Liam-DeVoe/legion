@@ -67,9 +67,11 @@ func (e *connectionLost) Is(target error) bool { return target == ErrConnectionL
 // Reconnected reports whether err is a request the loss of its connection cut off (Request), or a
 // call on that connection nats.go answered with its close (lostIfClosed), and that client is
 // connected again within ctx, so the caller sends the request again: it waits for the reconnect as
-// a publish does (ensureConnWithContext), until it lands, ctx ends or the client stops. Any other
-// err, and a ctx that has ended, report false at once: the caller answers err as it always did.
-// The caller releases what it holds before it calls this, since the wait lasts as long as the
+// a publish does (ensureConnWithContext), and dials a replacement for a connection nats.go has
+// closed, until one is connected, ctx ends or the client stops; it reports true only once the
+// client's connection is connected, so a caller that retries on it does not retry before. Any
+// other err, and a ctx that has ended, report false at once: the caller answers err as it always
+// did. The caller releases what it holds before it calls this, since the wait lasts as long as the
 // outage.
 func Reconnected(ctx context.Context, err error) bool {
 	var lost *connectionLost
@@ -92,17 +94,21 @@ func requestUnsent(err error) bool {
 // connForRequest is the wait a request on c makes for a connection before it is sent, and a stored
 // publish whose connection closed under it before it is sent again (sendStored):
 // ensureConnWithContext's, except on a client every caller of which retries a lost request itself
-// (withLossAtOnce), where a request made while nats.go reconnects its connection answers
-// ErrConnectionLost at once. Such a caller holds a session's lock, the shared stream read or a
-// relay's restart turn, and releases it before it waits (Reconnected); a wait made here would be
-// made with it held. A closed connection is still replaced, a client still awaiting its first
-// connection still waits for it, and a stopped client still answers as ensureConnWithContext does.
+// (withLossAtOnce), where a request made while its connection is down - nats.go reconnecting it,
+// or nats.go having closed it - answers ErrConnectionLost at once, unsent. Such a caller holds a
+// session's lock, the shared stream read or a relay's restart turn, and releases it before it
+// waits (Reconnected), so a wait made here would be made with it held: the dial that replaces a
+// closed connection, which lasts until a server answers, up to ten attempts a second apart
+// (connectWithContext), is made by that retry instead, through Reconnected's
+// ensureConnWithContext, with nothing held. A client still awaiting its first connection still
+// waits for it, a connection nats.go is draining counts as connected (nats.go v1.53.1
+// nats.go:6392-6394), and a stopped client still answers as ensureConnWithContext does.
 func (c *Client) connForRequest(ctx context.Context) error {
 	if c.lossAtOnce && !c.stopped() {
 		c.mu.Lock()
 		conn, awaiting := c.Conn, c.awaitingConnection
 		c.mu.Unlock()
-		if conn != nil && !awaiting && !conn.IsClosed() && !conn.IsConnected() {
+		if conn != nil && !awaiting && !conn.IsConnected() {
 			return &connectionLost{client: c, unsent: true}
 		}
 	}

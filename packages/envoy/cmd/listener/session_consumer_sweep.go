@@ -124,8 +124,9 @@ func startSessionConsumerSweep(ctx context.Context, sweep *sessionConsumerSweep,
 //
 // A list whose connection was lost (bus.ErrConnectionLost) is made again once the connection is
 // back, inside the list's budget (bus.Reconnected); the pass holds nothing while it waits. The
-// session consumers' client answers a request made while its connection is down with that error at
-// once (bus's withLossAtOnce), so without this a pass made during a reconnect would be skipped.
+// session consumers' client answers a request made while its connection is down, reconnecting or
+// closed, with that error at once (bus's withLossAtOnce), so without this a pass made during a
+// reconnect, or before a closed connection's replacement, would be skipped.
 func (s *sessionConsumerSweep) pass(ctx context.Context) {
 	if !s.trusted() || s.delivery.grantRefused() {
 		return

@@ -167,6 +167,36 @@ func TestAResumeRecordWhoseConnectionClosedUnderItIsSentAgainAndStoredOnce(t *te
 // listener, for a connection the hold refuses, and answers the record's own bound, `waiting for
 // NATS to reconnect: context deadline exceeded`.
 func TestAResumeRecordWhoseReplacementIsDownAnswersTheLossAtOnceAndDeletesNothing(t *testing.T) {
+	replacementDownRow(t, "ses_resume_closed_down", false)
+}
+
+// The row above with the replacement closed in turn, as nats.go closes a connection it gives up
+// on, rather than reconnecting: a delete whose resume record's replacement connection is closed
+// when the record would be sent again answers the loss at once too, unsent, rather than dialling
+// the next replacement with the session's lock held, deletes nothing and writes no record; once
+// the hold serves again, Reconnected dials that replacement, reporting true only once it is
+// connected, and the delete made again records the floor and deletes the consumer.
+//
+// The seam cuts the hold and then closes the replacement before the wait for the second send's
+// connection, so no dial can connect until the row restores the hold. A dial through the cut hold
+// fails at each attempt and is made again a second later, up to ten attempts (connectWithContext),
+// so within the record's own 5 s bound (publishBound) it can end only at that bound, and a dial
+// that did run its ten attempts would answer a loss carrying nats.go's ErrNoServers (lostIfClosed);
+// the row requires the loss connForRequest gives at once, with no cause of nats.go's own.
+//
+// The control is this row with connForRequest's `!conn.IsClosed()` restored, as at b5dc181071:
+// the wait for the second send dials the closed replacement through the cut hold, with the
+// session's lock held in the listener, and the delete answers the record's bound, `context deadline
+// exceeded`.
+func TestAResumeRecordWhoseReplacementClosedAgainAnswersTheLossAtOnceAndDeletesNothing(t *testing.T) {
+	replacementDownRow(t, "ses_resume_closed_again", true)
+}
+
+// replacementDownRow is the two rows above: a delete of session's consumer whose resume record's
+// first send goes out on the JetStream context of a connection the client has just replaced, and
+// whose replacement is down before the second, cut and, when closeAgain is true, closed.
+func replacementDownRow(t *testing.T, session string, closeAgain bool) {
+	t.Helper()
 	uri := testnats.URL(t)
 	owner, err := ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -187,7 +217,6 @@ func TestAResumeRecordWhoseReplacementIsDownAnswersTheLossAtOnceAndDeletesNothin
 	t.Cleanup(hold.Restore)
 	ctx, cancel := context.WithTimeout(context.Background(), ownWait(t))
 	defer cancel()
-	const session = "ses_resume_closed_down"
 	agent := contracts.LegacyAgentSubject(session)
 	subject := SessionResumeSubject(session)
 	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
@@ -210,12 +239,15 @@ func TestAResumeRecordWhoseReplacementIsDownAnswersTheLossAtOnceAndDeletesNothin
 		cut = true
 		stage.Store(nil)
 		hold.Cut()
+		if closeAgain {
+			replaced.Close()
+		}
 		testwait.WithinPolling(t, testnats.Remaining(t), time.Millisecond, "the replacement connection to drop under the cut",
-			func() bool { return !replaced.IsConnected() })
+			func() bool { return !replaced.IsConnected() && (!closeAgain || replaced.IsClosed()) })
 	}
 	stage.Store(&run)
 	floor, err := consumers.Delete(ctx, session, nil)
-	connected, ended := client.Connected(), ctx.Err()
+	connected, ended, current := client.Connected(), ctx.Err(), client.Connection()
 	stage.Store(nil)
 	if !sent {
 		t.Fatalf("the delete made no stored send (%d, %v), so no connection closed under its resume record", floor, err)
@@ -226,8 +258,13 @@ func TestAResumeRecordWhoseReplacementIsDownAnswersTheLossAtOnceAndDeletesNothin
 	if !cut {
 		t.Fatalf("the delete answered %d, %v before any wait for a second send of its record, so the hold was never cut", floor, err)
 	}
-	if !errors.Is(err, ErrConnectionLost) || ended != nil || connected {
-		t.Fatalf("the delete whose record's replacement connection was down answered %d, %v (its context: %v, connected: %t); want ErrConnectionLost at once, while its context runs and the client is not connected", floor, err, ended, connected)
+	var lost *connectionLost
+	atOnce := errors.As(err, &lost) && lost.unsent && lost.cause == nil
+	if !errors.Is(err, ErrConnectionLost) || !atOnce || ended != nil || connected {
+		t.Fatalf("the delete whose record's replacement connection was down (closed again: %t) answered %d, %v (its context: %v, connected: %t); want ErrConnectionLost at once, unsent and before any dial, while its context runs and the client is not connected", closeAgain, floor, err, ended, connected)
+	}
+	if closeAgain && current != replaced {
+		t.Fatal("the client's connection changed while the hold refused every dial")
 	}
 	if floor != 0 {
 		t.Fatalf("the delete that wrote no record answered floor %d, want 0", floor)
@@ -239,6 +276,12 @@ func TestAResumeRecordWhoseReplacementIsDownAnswersTheLossAtOnceAndDeletesNothin
 	hold.Restore()
 	if !Reconnected(ctx, err) {
 		t.Fatalf("the client did not recover its connection within the row's wait: %v", err)
+	}
+	if !client.Connected() {
+		t.Fatal("Reconnected reported the connection back and the client is not connected")
+	}
+	if closeAgain && client.Connection() == replaced {
+		t.Fatal("Reconnected reported the connection back on the closed replacement, with no connection dialled in its place")
 	}
 	if _, err := consumers.Info(ctx, session); err != nil {
 		t.Fatalf("the consumer's info after the delete that wrote no record = %v, want the consumer still there", err)

@@ -224,11 +224,13 @@ type SessionConsumers struct {
 // messages behind other sessions' traffic with no error. The listener calls this at its start and
 // ends the process on the error, so it refuses to start against such a server.
 //
-// Its client answers a request made while nats.go reconnects its connection with ErrConnectionLost
-// at once, rather than waiting for the reconnect first (withLossAtOnce, connForRequest): every
-// caller of a SessionConsumers call that holds something - a session's lock, the shared stream
-// read, a relay's restart turn - retries the loss itself, releasing what it holds while it waits
-// (Reconnected), and a wait made before the request would be made with all of it held.
+// Its client answers a request made while its connection is down - nats.go reconnecting it, or
+// nats.go having closed it - with ErrConnectionLost at once, rather than waiting for the reconnect
+// or dialling a replacement first (withLossAtOnce, connForRequest): every caller of a
+// SessionConsumers call that holds something - a session's lock, the shared stream read, a relay's
+// restart turn - retries the loss itself, releasing what it holds while it waits, and that wait
+// dials a closed connection's replacement (Reconnected); a wait made before the request would be
+// made with all of it held.
 func ConnectSessionConsumers(urls []string, inactiveThreshold time.Duration, logger *slog.Logger, options ...ConnectOption) (*SessionConsumers, error) {
 	client, err := Connect(urls, append([]ConnectOption{WithName("envoy-session-consumers"), withLossAtOnce()}, options...)...)
 	if err != nil {
@@ -266,6 +268,12 @@ func (s *SessionConsumers) SetCreateFault(fault func(consumer string) error) {
 	defer s.pendingMu.Unlock()
 	s.createFault = fault
 }
+
+// CloseConnection closes the client's connection as nats.go closes one it gives up on, with the
+// client still running, so the client's recovery and its callers' retries (Reconnected) dial its
+// replacement. It is a seam for tests, which put a session consumer call in front of a closed
+// connection; nothing else calls it.
+func (s *SessionConsumers) CloseConnection() { s.client.Connection().Close() }
 
 // Drain drains the connection, letting acks already sent reach the server, within timeout.
 func (s *SessionConsumers) Drain(timeout time.Duration) error { return s.client.Drain(timeout) }

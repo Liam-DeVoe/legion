@@ -2,7 +2,7 @@ kind: Fixed
 body: |-
   A NATS request whose reply a dropped connection lost no longer waits for its whole timeout: it
   fails within the moment nats.go reports the loss, with `bus.ErrConnectionLost`, where it waited
-  5 s to 10 s. Every request of the listener and its relays but the few AGENTS.md names goes
+  5 s to 10 s. Nearly every request of the listener and its relays goes
   through one helper bound to the connection's life (`bus.Request`): the stream read the session
   consumers share, every session consumer call and pull, the connection probe, forwards, KV reads
   and writes, and the JetStream calls of every context the listener opens. A registration, a relay
@@ -26,9 +26,12 @@ body: |-
   write with no `Nats-Msg-Id` at all, an envelope with no `event_id` among them, is sent once and
   answers the loss. The session resume record now carries a `Nats-Msg-Id` drawn for each write, so
   one whose connection closed under it is sent again on the new connection when that is already
-  up, and stored once; while the new connection is still reconnecting, and when the connection was
-  lost, it answers the loss at once rather than waiting with the session's lock held, the consumer
-  delete deletes nothing, and the delete's retry or the sweep's next pass writes it.
+  up, and stored once; while the new connection is still reconnecting or has closed in turn, and
+  when the connection was lost, it answers the loss at once rather than waiting with the session's
+  lock held, the consumer delete deletes nothing, and the delete's retry or the sweep's next pass
+  writes it. Every call of the session consumers' connection made while it is closed answers the
+  loss at once too, as one made while it reconnects does, so the dial that replaces it is made by
+  the caller's retry with the session's lock released, not under it.
 time: 2026-11-17T05:19:00Z
 custom:
     Issue: pr4278

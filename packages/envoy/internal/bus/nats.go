@@ -122,10 +122,11 @@ func withStreamSubjectsRefresh(every time.Duration) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.streamSubjectsRefresh = every })
 }
 
-// withLossAtOnce has the client answer a request made while nats.go reconnects its connection with
-// ErrConnectionLost at once rather than waiting for the reconnect (connForRequest), and not send a
-// stored publish again after a loss (sendStored): for a client every caller of which retries a
-// lost request itself, releasing what it holds while it waits (ConnectSessionConsumers).
+// withLossAtOnce has the client answer a request made while its connection is down, nats.go
+// reconnecting it or having closed it, with ErrConnectionLost at once rather than waiting for the
+// reconnect or dialling a replacement first (connForRequest), and not send a stored publish again
+// after a loss (sendStored): for a client every caller of which retries a lost request itself,
+// releasing what it holds while it waits (ConnectSessionConsumers).
 func withLossAtOnce() ConnectOption {
 	return clientOption(func(o *connectOpts) { o.lossAtOnce = true })
 }
@@ -300,8 +301,8 @@ type Client struct {
 	// client has just replaced, which nats.go answers with its close, and to take the replacement
 	// down before the second.
 	beforeStoredSend func(resend bool)
-	// lossAtOnce is withLossAtOnce's: a request made while the connection is reconnecting answers
-	// ErrConnectionLost without waiting for it (connForRequest).
+	// lossAtOnce is withLossAtOnce's: a request made while the connection is reconnecting or closed
+	// answers ErrConnectionLost without waiting for it or dialling (connForRequest).
 	lossAtOnce bool
 	mu         sync.Mutex
 
@@ -2195,12 +2196,11 @@ func unacknowledged(err error, mayHold bool) error {
 // on the connection connForRequest serves: the replacement, or the one Drain still drains. That is
 // ensureConnWithContext's wait on every client but one that answers a loss at once
 // (withLossAtOnce), whose callers hold a session's lock, the shared stream read or a relay's
-// restart turn: there a replacement nats.go is reconnecting answers the loss at once
-// (ErrConnectionLost, unsent), so the caller releases what it holds before it waits
-// (Reconnected), a replacement that is up is sent the publish again, and one that has closed in
-// turn is dialled again, as before every request of that client. The session resume record is
-// such a publish, under a message id each write draws for its own sends
-// (SessionConsumers.recordResumeFloorAt).
+// restart turn: there a replacement that is down, nats.go reconnecting it or having closed it in
+// turn, answers the loss at once (ErrConnectionLost, unsent), so the caller releases what it holds
+// before it waits, and its retry dials a closed one with nothing held (Reconnected); a replacement
+// that is up is sent the publish again. The session resume record is such a publish, under a
+// message id each write draws for its own sends (SessionConsumers.recordResumeFloorAt).
 //
 // Every other publish is sent once and answers the error. One with no message id, whatever its
 // caller asks, since nothing would let the stream tell a second send of one that landed from a
