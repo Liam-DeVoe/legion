@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   type ActiveDispatchConfig,
@@ -577,11 +578,9 @@ describe("readEnvoyConfig", () => {
   // An address that is not an http or https URL is refused with the words the Dispatch server's
   // own reading of the file says too. One that the URL parser reads as such a URL, but that still
   // holds a raw `@` once the user part it found is taken out (a token with a `/` or a `#` in it
-  // reads as a host taken from the token), is refused too, named by its length and told how to
-  // write a user part.
+  // reads as a host taken from the token), is refused too, named by its length and the cause the
+  // one function found.
   test("refuses an address that is not an http or https URL", () => {
-    const userPart =
-      "; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part";
     for (const [section, key] of [
       ["dispatch", "serverUrl"],
       ["envoy", "url"],
@@ -602,7 +601,7 @@ describe("readEnvoyConfig", () => {
           [section]: { [key]: address },
         });
         expect(errorOf(readEnvoyConfig(file, { HOME: tempDir() }, { cwd: tempDir() }))).toBe(
-          `${file}: ${section}.${key}: must be an http or https URL: its value is ${address.length} characters long${userPart}`
+          `${file}: ${section}.${key}: must be an http or https URL: ${unshownSettingUrl(address)}`
         );
       }
     }

@@ -424,8 +424,8 @@ describe("databaseUrlRefusal", () => {
 
   // A user part that holds a `/` (a password or a token can) makes the URL parser read a host
   // taken from the user part, and the rest as the path, so the hosts it reads are not named: the
-  // refusal names the value by its length and says how to write a user part. The password is made
-  // for this run.
+  // refusal names the value by its length and says that cause and how to write a user part. The
+  // password is made for this run.
   test("a DATABASE_URL whose user part holds a / is refused naming no part of it", () => {
     const password = crypto.randomUUID();
     for (const url of [
@@ -434,7 +434,7 @@ describe("databaseUrlRefusal", () => {
     ]) {
       const said = databaseUrlRefusal(url) ?? "accepted";
       expect(said).toBe(
-        `DATABASE_URL must name a loopback Postgres (127.0.0.1, localhost or [::1]) or a Unix socket: its value is ${url.length} characters long; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part; this command truncates it`
+        `DATABASE_URL must name a loopback Postgres (127.0.0.1, localhost or [::1]) or a Unix socket: its value is ${url.length} characters long; it holds an @ outside its user part (in its path, query or fragment); if its user part holds a /, ?, # or \\, write each of them in it percent-encoded (/ as %2F, ? as %3F, # as %23, \\ as %5C), else write that @ as %40; this command truncates it`
       );
     }
   });

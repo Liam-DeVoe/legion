@@ -13,6 +13,7 @@ import { afterEach, expect, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { inspect } from "node:util";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { signedIn, stubIssuer } from "../../test/sign-ins";
 import { importDpopKey } from "../dpop";
@@ -232,10 +233,10 @@ test("an answer that is not JSON is named without its text, which could be a tok
 });
 
 // The two services' URLs may carry a user and a password: an error names each with neither, and
-// one that is no http or https URL with a host is refused naming its length alone, and how to write
-// a user part since it holds an `@`, before it is asked anything. No member of the error, nor of a
-// cause under it, holds the password. The password is made for this run.
-test("a pool URL with a user part is named without it, and one that is no http or https URL with a host by its length alone", async () => {
+// one that is no http or https URL with a host is refused naming its length and the cause the one
+// function found, before it is asked anything. No member of the error, nor of a cause under it,
+// holds the password. The password is made for this run.
+test("a pool URL with a user part is named without it, and one that is no http or https URL with a host by its length and cause", async () => {
   const password = crypto.randomUUID();
   const withUser = (url: string) => url.replace("http://", `http://made-up-user:${password}@`);
   const refusing = stubService(() => ({ status: 400, body: '{"error":"invalid_grant"}' }));
@@ -258,8 +259,8 @@ test("a pool URL with a user part is named without it, and one that is no http o
       ),
     });
   }
-  const userPart =
-    "; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part";
+  // Each refusal names its URL in the one function's words (setting-url.test.ts holds a row per
+  // cause of them).
   expect(said).toEqual([
     {
       message: `trade this machine's credential at the security token service ${refusing.url}/v1/token: HTTP 400: {"error":"invalid_grant"}`,
@@ -270,11 +271,11 @@ test("a pool URL with a user part is named without it, and one that is no http o
       holds: false,
     },
     {
-      message: `the security token service URL must be an http or https URL: its value is ${`${unreadable}/v1/token`.length} characters long${userPart}`,
+      message: `the security token service URL must be an http or https URL: ${unshownSettingUrl(`${unreadable}/v1/token`)}`,
       holds: false,
     },
     {
-      message: `the IAM Credentials URL must be an http or https URL: its value is ${unreadable.length} characters long${userPart}`,
+      message: `the IAM Credentials URL must be an http or https URL: ${unshownSettingUrl(unreadable)}`,
       holds: false,
     },
   ]);

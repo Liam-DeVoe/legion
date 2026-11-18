@@ -843,8 +843,9 @@ test(
 );
 
 // --url may carry a user and a password. One that is no http or https URL with a host is a usage
-// error naming its length alone, and the socket of one that carries a user part is named without
-// it when Dispatch refuses it. The password is made for this run.
+// error naming its length and the cause the one function found, and the socket of one that
+// carries a user part is named without it when Dispatch refuses it. The password is made for this
+// run.
 test(
   "a --url that is no http or https URL with a host is named by its length, and one with a user part without it",
   async () => {

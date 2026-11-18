@@ -167,6 +167,7 @@ export class Supervisor {
 }
 
 const loopbackHosts = ["127.0.0.1", "localhost", "[::1]", "::1"];
+const POSTGRES_SCHEMES = ["postgres:", "postgresql:"];
 
 /** Why `raw` may not be the database this command truncates, or undefined when it names this
  *  machine: every host libpq would connect to is a loopback name or address or a Unix socket
@@ -196,11 +197,10 @@ export function databaseUrlRefusal(raw: string): string | undefined {
   // A user part that holds a `/` leaves a raw `@` once the user part the URL parser found is taken
   // out, and the host it read is then a part of the user part: such a value is named by its
   // length (`shownSettingUrl`, of the Postgres schemes), not by its hosts.
-  const misread =
-    raw.includes("@") && shownSettingUrl(raw, ["postgres:", "postgresql:"]) === undefined;
+  const misread = raw.includes("@") && shownSettingUrl(raw, POSTGRES_SCHEMES) === undefined;
   return misread
     ? "DATABASE_URL must name a loopback Postgres (127.0.0.1, localhost or [::1]) or a Unix " +
-        `socket: ${unshownSettingUrl(raw)}; this command truncates it`
+        `socket: ${unshownSettingUrl(raw, POSTGRES_SCHEMES)}; this command truncates it`
     : "DATABASE_URL must name a loopback Postgres (127.0.0.1, localhost or [::1]) or a Unix " +
         `socket, not ${remote.join(", ")}: this command truncates it`;
 }

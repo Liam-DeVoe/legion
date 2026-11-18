@@ -39,8 +39,8 @@ async function run(...args: string[]): Promise<{ code: number; stderr: string; l
 }
 
 // --url may carry a user and a password: one that is no http or https URL with a host is a usage
-// error naming its length alone. The password is made for this run.
-test("a --url that is no http or https URL with a host is a usage error naming its length alone", async () => {
+// error naming its length and the cause the one function found. The password is made for this run.
+test("a --url that is no http or https URL with a host is a usage error naming its length and cause", async () => {
   const password = crypto.randomUUID();
   const said: { code: number; holds: boolean; named: boolean }[] = [];
   const values = [

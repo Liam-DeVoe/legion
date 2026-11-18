@@ -4,10 +4,10 @@ import { rowLimit, runBounded } from "../../../packages/dispatch/e2e/__tests__/b
 
 // Two drivers of scripts/e2e take Dispatch's URL as their first argument and the URL of a fake
 // server of their own as their third, and either may carry a user and a password. One that is no
-// http or https URL with a host is refused naming its length alone, and how to write a user part
-// since it holds an `@`, before anything parses it: the URL parser's error for it, which the
-// runtime prints on its `input:` or `base:` line, holds the value whole. The password is made for
-// this run.
+// http or https URL with a host is refused naming its length and the cause, here that it does not
+// parse, with how to write a user part since it holds an `@`, before anything parses it: the URL
+// parser's error for it, which the runtime prints on its `input:` or `base:` line, holds the value
+// whole. The password is made for this run.
 const drivers = [
   {
     script: "dispatch-claimant-delivery.ts",
@@ -47,11 +47,11 @@ async function runDrivers(dispatchUrl: string, fakeUrl: string) {
 
 /** The words a driver refuses `value`, given as `argument`, with. */
 function refusal(argument: string, value: string): string {
-  return `${argument} must be an http or https URL: its value is ${value.length} characters long; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part\n`;
+  return `${argument} must be an http or https URL: its value is ${value.length} characters long; it does not parse as a URL; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part\n`;
 }
 
 test(
-  "a driver whose Dispatch URL is no http or https URL with a host names its length alone",
+  "a driver whose Dispatch URL is no http or https URL with a host names its length and cause",
   async () => {
     const password = crypto.randomUUID();
     const dispatchUrl = `http://made-up-user:${password}/x@[bad`;
@@ -64,7 +64,7 @@ test(
 );
 
 test(
-  "a driver whose fake server's URL is no http or https URL with a host names its length alone",
+  "a driver whose fake server's URL is no http or https URL with a host names its length and cause",
   async () => {
     const password = crypto.randomUUID();
     const fakeUrl = `http://made-up-user:${password}/x@[bad`;

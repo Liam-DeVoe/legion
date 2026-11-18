@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import publicUrlFixture from "../../../contracts/fixtures/dispatch-public-url.json";
 import {
@@ -258,13 +259,11 @@ describe("Dispatch from a harness's envoy.json", () => {
     });
   });
 
-  // A refused DISPATCH_URL is named by its length, and one that holds an `@` is also told how to
-  // write a user part: a token with a `/` in it reads as a host taken from the token, so a raw `@`
-  // is still left once the user part the URL parser found is taken out, and no request may go to
-  // that host.
+  // A refused DISPATCH_URL is named by its length and the cause the one function found (its words
+  // per cause are setting-url.test.ts's rows): a token with a `/` in it reads as a host taken from
+  // the token, so a raw `@` is still left once the user part the URL parser found is taken out,
+  // and no request may go to that host.
   test("refuses a DISPATCH_URL that is not an http or https URL, and a DISPATCH_TOKEN that cannot be sent", () => {
-    const userPart =
-      "; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part";
     for (const url of [
       "not-a-url",
       "localhost:8766",
@@ -280,7 +279,7 @@ describe("Dispatch from a harness's envoy.json", () => {
       ).toEqual({
         enabled: false,
         notice: null,
-        error: `DISPATCH_URL must be an http or https URL: its value is ${url.length} characters long${url.includes("@") ? userPart : ""}`,
+        error: `DISPATCH_URL must be an http or https URL: ${unshownSettingUrl(url)}`,
       });
     }
     expect(
@@ -319,15 +318,14 @@ describe("Dispatch from a harness's envoy.json", () => {
     // The shared fixture (fixtures/dispatch-public-url.json): every value the daemon's CheckPod
     // accepts at load (`valid`) is accepted here too, so no value boot lets through turns Dispatch
     // off in an agent. Boot holds to a narrower rule, so `agentsOnly` is accepted here alone.
-    const userPart =
-      "; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part";
+    // Each refused value is named in the one function's words.
     for (const url of [...publicUrlFixture.invalid, "https://MadeUpTok3n/Zx9@dispatch.example"]) {
       expect(
         dispatchFor({ ...env, DISPATCH_PUBLIC_URL: url }, { ...command, cwd: tempDir() })
       ).toEqual({
         enabled: false,
         notice: null,
-        error: `DISPATCH_PUBLIC_URL must be an http or https URL: its value is ${url.length} characters long${url.includes("@") ? userPart : ""}`,
+        error: `DISPATCH_PUBLIC_URL must be an http or https URL: ${unshownSettingUrl(url)}`,
       });
     }
     for (const url of [...publicUrlFixture.valid, ...publicUrlFixture.agentsOnly]) {

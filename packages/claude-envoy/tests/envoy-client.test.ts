@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 import { writeFileSync } from "node:fs"
 import { createServer, type Server } from "node:net"
 import { join, resolve } from "node:path"
+import { unshownSettingUrl } from "@legion/contracts/setting-url"
 import { REDIRECT_CODES, redirectServers } from "@legion/test-fixtures/redirect-servers"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 
@@ -268,12 +269,13 @@ test("envoy-send prints no user and no password of its Envoy URL, whatever the l
 }, 30_000)
 
 // The Envoy URL may carry a user and a password. One the URL parser does not read as an http or
-// https URL with a host turns Envoy off before any client is built, named by its length alone: the
-// parser's own error would hold the value whole. One that holds an `@` is also told how to write a
-// user part. Among them, a user part that holds a `/` or a `#` (a base64 token can) makes the
-// parser read a host taken from it, here a listener of the test's own, which gets no request. The
-// password is made for this run.
-test("envoy-send whose Envoy URL is no http or https URL with a host, or holds an @ that no user part ends, sends nothing and names its length alone", async () => {
+// https URL with a host turns Envoy off before any client is built, named by its length and the
+// cause the one function found: the parser's own error would hold the value whole. Among them, a
+// user part that holds a `/` or a `#` (a base64 token can) makes the parser read a host taken from
+// it, here a listener of the test's own, which gets no request; and a value with a line ending at
+// its end, as a file leaves it, is refused naming the line ending. The password is made for this
+// run.
+test("envoy-send whose Envoy URL is no http or https URL with a host, or holds an @ that no user part ends, sends nothing and names its length and cause", async () => {
   const password = crypto.randomUUID()
   let asked = 0
   const listener = Bun.serve({
@@ -292,9 +294,8 @@ test("envoy-send whose Envoy URL is no http or https URL with a host, or holds a
       `http://made-up-user:${password}/x@127.0.0.1:1`,
       `http://127.0.0.1:${listener.port}/${password}@envoy.example`,
       `http://127.0.0.1:${listener.port}#${password}@envoy.example`,
+      `http://127.0.0.1:${listener.port}\n`,
     ]
-    const userPart =
-      "; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part"
     const said: { readonly exit: number; readonly line: string }[] = []
     for (const value of values) {
       const { exitCode, stdout, stderr } = await envoySend(["ses_receiver", "never sent"], {
@@ -306,7 +307,7 @@ test("envoy-send whose Envoy URL is no http or https URL with a host, or holds a
     expect({ said, asked }).toEqual({
       said: values.map((value) => ({
         exit: 1,
-        line: `Claude Envoy send failed: Envoy is off: ENVOY_URL must be an http or https URL: its value is ${value.length} characters long${value.includes("@") ? userPart : ""}\n`,
+        line: `Claude Envoy send failed: Envoy is off: ENVOY_URL must be an http or https URL: ${unshownSettingUrl(value)}\n`,
       })),
       asked: 0,
     })

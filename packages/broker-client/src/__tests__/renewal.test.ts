@@ -7,6 +7,7 @@
 
 import { expect, test } from "bun:test";
 import { inspect } from "node:util";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import { signedIn, stubIssuer } from "../../test/sign-ins";
 import { newDpopKey } from "../dpop";
 import { personIdentity } from "../person-identity";
@@ -54,11 +55,10 @@ async function clientAt(
 }
 
 // The broker's URL may carry a user and a password: a refusal names the broker with neither, and
-// a URL that is no http or https URL with a host is refused naming its length alone, and how to
-// write a user part since it holds an `@`, before the identity is read or anything traded. No
-// member of the error, nor of a cause under it, holds the password. The password is made for this
-// run.
-test("a broker URL with a user part is named without it, and one that is no http or https URL with a host by its length alone", async () => {
+// a URL that is no http or https URL with a host is refused naming its length and the cause the
+// one function found, before the identity is read or anything traded. No member of the error, nor
+// of a cause under it, holds the password. The password is made for this run.
+test("a broker URL with a user part is named without it, and one that is no http or https URL with a host by its length and cause", async () => {
   const password = crypto.randomUUID();
   const withUser = (url: string) => url.replace("http://", `http://made-up-user:${password}@`);
   const broker = stubBroker(() => ({ body: { ...accepted("never", 600), token_type: "Bearer" } }));
@@ -92,7 +92,7 @@ test("a broker URL with a user part is named without it, and one that is no http
         holds: false,
       },
       {
-        message: `the broker URL must be an http or https URL: its value is ${unreadable.length} characters long; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part`,
+        message: `the broker URL must be an http or https URL: ${unshownSettingUrl(unreadable)}`,
         holds: false,
       },
     ]);

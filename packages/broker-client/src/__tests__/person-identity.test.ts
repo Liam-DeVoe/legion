@@ -6,6 +6,7 @@
 
 import { afterEach, expect, test } from "bun:test";
 import { inspect } from "node:util";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import { type IssuerAnswer, signedIn, stubIssuer } from "../../test/sign-ins";
 import { personIdentity } from "../person-identity";
 import { SIGNIN_COMMAND, type SignInFlow } from "../signins";
@@ -150,9 +151,9 @@ test("a record made with another sign-in client is refused before any request", 
 // AGENT_SECRETS_SIGNIN_ISSUER may carry a user and a password, which an issuer's identifier never
 // holds, so its discovery cannot pass with one: the read refuses such an issuer before anything is
 // asked, naming it with neither. An issuer that is no http or https URL with a host is refused
-// naming its length alone, and how to write a user part since it holds an `@`. No member of the
-// error, nor of a cause under it, holds the password. The password is made for this run.
-test("an issuer with a user part is refused named without it, and one that is no http or https URL with a host by its length alone", async () => {
+// naming its length and the cause the one function found. No member of the error, nor of a cause
+// under it, holds the password. The password is made for this run.
+test("an issuer with a user part is refused named without it, and one that is no http or https URL with a host by its length and cause", async () => {
   const password = crypto.randomUUID();
   const issuer = await issuerFor();
   const withUser = issuer.url.replace("http://", `http://made-up-user:${password}@`);
@@ -184,7 +185,7 @@ test("an issuer with a user part is refused named without it, and one that is no
       holds: false,
     },
     ...unreadable.map((value) => ({
-      message: `AGENT_SECRETS_SIGNIN_ISSUER must name an http or https URL: its value is ${value.length} characters long; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part`,
+      message: `AGENT_SECRETS_SIGNIN_ISSUER must name an http or https URL: ${unshownSettingUrl(value)}`,
       holds: false,
     })),
   ]);

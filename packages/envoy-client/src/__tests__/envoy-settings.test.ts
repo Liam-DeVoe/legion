@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { type DispatchConfigResolution, dispatchSettings } from "../dispatch-config";
 import { type EnvoyConfig, readEnvoyConfig } from "../envoy-config";
@@ -355,12 +356,10 @@ describe("envoySettings", () => {
     });
   });
 
-  // A refused ENVOY_URL is named by its length, and one that holds an `@` is also told how to write
-  // a user part (a token with a `/` in it reads as a host taken from the token).
+  // A refused ENVOY_URL is named by its length and the cause the one function found, in its words
+  // (setting-url.test.ts holds a row per cause of them).
   test("an ENVOY_URL that is not an http or https URL is refused", () => {
     const config = configFrom({ envoy: { enabled: true } });
-    const userPart =
-      "; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part";
     for (const url of [
       "listener:9020",
       "nats://listener.internal.example:4222",
@@ -370,7 +369,21 @@ describe("envoySettings", () => {
       expect(envoySettings({ ENVOY_URL: url }, config)).toEqual({
         enabled: false,
         notice: null,
-        error: `ENVOY_URL must be an http or https URL: its value is ${url.length} characters long${url.includes("@") ? userPart : ""}`,
+        error: `ENVOY_URL must be an http or https URL: ${unshownSettingUrl(url)}`,
+      });
+    }
+  });
+
+  // A value read from a file or a YAML block keeps its last line ending. The URL parser would drop
+  // it, but a line that showed the value would carry it, so it is refused, and the refusal says the
+  // line ending is the cause.
+  test("an ENVOY_URL that ends in a line ending is refused naming that cause", () => {
+    const config = configFrom({ envoy: { enabled: true } });
+    for (const url of ["http://127.0.0.1:9020\n", "http://127.0.0.1:9020\r\n"]) {
+      expect(envoySettings({ ENVOY_URL: url }, config)).toEqual({
+        enabled: false,
+        notice: null,
+        error: `ENVOY_URL must be an http or https URL: its value is ${url.length} characters long; it holds a control character (a line ending or a tab, often one left from a file); remove it`,
       });
     }
   });

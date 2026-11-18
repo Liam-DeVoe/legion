@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { unshownSettingUrl } from "../../../packages/contracts/src/setting-url";
 import {
   bridgeConfigFromEnvironment,
   bridgeReadyLine,
@@ -115,7 +116,7 @@ describe("bridgeConfigFromEnvironment", () => {
       ready,
       ...refused.map(
         (rig) =>
-          `SMOKE_RIG_NATS must be a nats:// or tls:// URL with a host: its value is ${rig.length} characters long; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part`
+          `SMOKE_RIG_NATS must be a nats:// or tls:// URL with a host: ${unshownSettingUrl(rig, ["nats:", "tls:"])}`
       ),
     ]);
   });

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import {
   REDIRECT_CODES,
   type RedirectServers,
@@ -696,10 +697,10 @@ for (const code of REDIRECT_CODES) {
 }
 
 // A --gateway URL may carry a user and a password. One the URL parser does not read as an http or
-// https URL with a host is refused naming its length alone: that reading cannot be trusted to have
-// found the password, since `user:password@host` parses with `user:` as its scheme and the password
-// in its path. The password is made for this run.
-test("a --gateway that is no http or https URL with a host is refused naming its length alone", async () => {
+// https URL with a host is refused naming its length and the cause the one function found: that
+// reading cannot be trusted to have found the password, since `user:password@host` parses with
+// `user:` as its scheme and the password in its path. The password is made for this run.
+test("a --gateway that is no http or https URL with a host is refused naming its length and cause", async () => {
   const password = crypto.randomUUID();
   const command = path.join(dir("refused-gateway"), "key-command");
   writeFileSync(command, "#!/bin/sh\necho made-up-model-key\n");
@@ -729,11 +730,10 @@ test("a --gateway that is no http or https URL with a host is refused naming its
     expect(sent).toEqual([]);
     said.push(run.stderr);
   }
-  const userPart =
-    "; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part";
+  // Each refused value is named in the one function's words.
   expect(said).toEqual(
     refused.map((gateway) => [
-      `label-comments: --gateway must be an http or https URL: its value is ${gateway.length} characters long${gateway.includes("@") ? userPart : ""}`,
+      `label-comments: --gateway must be an http or https URL: ${unshownSettingUrl(gateway)}`,
     ])
   );
 });

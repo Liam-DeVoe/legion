@@ -74,7 +74,7 @@ export function bridgeConfigFromEnvironment(
   // not show is refused before anything is dialed, named by its length and what to correct.
   if (shownSettingUrl(downstreamUrl, NATS_SCHEMES) === undefined) {
     throw new Error(
-      `SMOKE_RIG_NATS must be a nats:// or tls:// URL with a host: ${unshownSettingUrl(downstreamUrl)}`
+      `SMOKE_RIG_NATS must be a nats:// or tls:// URL with a host: ${unshownSettingUrl(downstreamUrl, NATS_SCHEMES)}`
     );
   }
   const upstreamUrl = environment.SMOKE_UPSTREAM_NATS?.trim() ?? "";

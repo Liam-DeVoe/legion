@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import {
   REDIRECT_CODES,
   redirectCase,
@@ -566,11 +567,11 @@ describe("postSlackReply", () => {
   });
 
   // An override the URL parser does not read as an http or https URL with a host is refused
-  // naming its length alone, and how to write a user part when it holds an `@`: that reading
-  // cannot be trusted to have found a password or a token, since `user:password@host` parses with
-  // `user:` as its scheme and the password in its path. So is one with a `/` in its user part,
-  // which the parser reads as a host taken from the user part. The values are made for this run.
-  test("a Slack API override that is no http or https URL with a host is named by its length alone", async () => {
+  // naming its length and the cause the one function found: that reading cannot be trusted to
+  // have found a password or a token, since `user:password@host` parses with `user:` as its scheme
+  // and the password in its path. So is one with a `/` in its user part, which the parser reads as
+  // a host taken from the user part. The values are made for this run.
+  test("a Slack API override that is no http or https URL with a host is named by its length and cause", async () => {
     const password = crypto.randomUUID();
     const refused = [
       `made-up value ${crypto.randomUUID()}`,
@@ -586,12 +587,11 @@ describe("postSlackReply", () => {
       const { env } = brokerEnvironment("granted", value);
       said.push(await outcome(env));
     }
-    const userPart =
-      "; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part";
+    // Each refused value is named in the one function's words.
     expect(said).toEqual(
       refused.map(
         (value) =>
-          `SLACK_POST_API_URL must be an https URL, or http on a loopback host: its value is ${value.length} characters long${value.includes("@") ? userPart : ""}; nothing was posted`
+          `SLACK_POST_API_URL must be an https URL, or http on a loopback host: ${unshownSettingUrl(value)}; nothing was posted`
       )
     );
   });

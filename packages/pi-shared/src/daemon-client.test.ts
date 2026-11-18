@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { inspect } from "node:util";
 import { LegionReadyRequest } from "@legion/contracts/legion-api";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import {
   REDIRECT_CODES,
   type RedirectServers,
@@ -695,10 +696,10 @@ test("a refusal after a dropped attempt comes back as a new error saying the dro
 });
 
 // LEGION_DAEMON_URL may carry a user and a password. One the URL parser does not read as an http
-// or https URL with a host fails each call naming its length alone, and how to write a user part
-// when it holds an `@`, and nothing is sent: fetch would try a host it reads out of the value, and
-// its error would hold the value whole. The password is made for this run.
-test("a daemon URL that is no http or https URL with a host fails each call naming its length alone, sending nothing", async () => {
+// or https URL with a host fails each call naming its length and the cause the one function found,
+// and nothing is sent: fetch would try a host it reads out of the value, and its error would hold
+// the value whole. The password is made for this run.
+test("a daemon URL that is no http or https URL with a host fails each call naming its length and cause, sending nothing", async () => {
   const password = crypto.randomUUID();
   const values = [
     `made-up-user:${password}@127.0.0.1:1`,
@@ -722,12 +723,11 @@ test("a daemon URL that is no http or https URL with a host fails each call nami
       ),
     });
   }
-  const userPart =
-    "; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part";
+  // Each refused value is named in the one function's words.
   expect(sent).toEqual([]);
   expect(said).toEqual(
     values.map((value) => ({
-      message: `LEGION_DAEMON_URL must be an http or https URL: its value is ${value.length} characters long${value.includes("@") ? userPart : ""}`,
+      message: `LEGION_DAEMON_URL must be an http or https URL: ${unshownSettingUrl(value)}`,
       holds: false,
     }))
   );

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import tls from "node:tls";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { unshownSettingUrl } from "../../../packages/contracts/src/setting-url";
 
 // The probe runs as an operator runs it, a process of its own, against a local TLS server that
 // does or does not advertise SETTINGS_ENABLE_CONNECT_PROTOCOL. The certificate is made per run by
@@ -199,10 +200,10 @@ test("anything but one https URL is a usage error, exit 2", async () => {
 });
 
 // The URL may carry a user and a password: no line names them, and a value that is no http or
-// https URL with a host is named by its length alone, and how to write a user part when it holds
-// an `@`. So is one with a `/` in its user part, which the URL parser reads as a host taken from
-// the user part. The password is made for this run.
-test("a URL with a user part is named without it, and one that is no http or https URL by its length alone", async () => {
+// https URL with a host is named by its length and the cause the one function found. So is one with
+// a `/` in its user part, which the URL parser reads as a host taken from the user part. The
+// password is made for this run.
+test("a URL with a user part is named without it, and one that is no http or https URL by its length and cause", async () => {
   const password = crypto.randomUUID();
   const unreadable = [
     `made-up-user:${password}@dispatch.example`,
@@ -221,7 +222,7 @@ test("a URL with a user part is named without it, and one that is no http or htt
     },
     ...unreadable.map((value) => ({
       code: 2,
-      stderr: `h2-settings: not an https URL: its value is ${value.length} characters long; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part\nusage: bun scripts/e2e/lib/h2-settings.ts <https-url>\n`,
+      stderr: `h2-settings: not an https URL: ${unshownSettingUrl(value)}\nusage: bun scripts/e2e/lib/h2-settings.ts <https-url>\n`,
     })),
   ]);
 });

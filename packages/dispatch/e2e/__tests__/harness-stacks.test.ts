@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
@@ -179,9 +180,10 @@ test("a run of more than one stack refuses to start without a Postgres provider"
 });
 
 // DISPATCH_E2E_FILE_STORE_ENDPOINT may carry a user and a password. One that is no http or https
-// URL with a host is refused naming its length alone, and one that carries a user part is refused
-// named without it, since the fetch of Playwright's Node refuses such a URL printing it whole;
-// each before a Postgres or a server starts. The password is made for this run.
+// URL with a host is refused naming its length and the cause the one function found, and one that
+// carries a user part is refused named without it, since the fetch of Playwright's Node refuses
+// such a URL printing it whole; each before a Postgres or a server starts. The password is made
+// for this run.
 test("a file store endpoint that is no http or https URL with a host, or that carries a user part, is refused printing no part of the password", async () => {
   const password = crypto.randomUUID();
   const unreadable = `made-up-user:${password}@127.0.0.1:1`;
@@ -196,7 +198,7 @@ test("a file store endpoint that is no http or https URL with a host, or that ca
     said.push(error instanceof Error ? error.message : String(error));
   }
   expect(said).toEqual([
-    `DISPATCH_E2E_FILE_STORE_ENDPOINT must be an http or https URL: its value is ${unreadable.length} characters long; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part`,
+    `DISPATCH_E2E_FILE_STORE_ENDPOINT must be an http or https URL: ${unshownSettingUrl(unreadable)}`,
     "DISPATCH_E2E_FILE_STORE_ENDPOINT http://127.0.0.1:1 must carry no user and no password: the fetch of Playwright's Node refuses a URL that carries them, printing it whole",
   ]);
 });

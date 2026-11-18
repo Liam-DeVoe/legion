@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import {
   REDIRECT_CODES,
   type RedirectServers,
@@ -280,12 +281,12 @@ test(
         holds: `${stdout}${stderr}`.includes(password),
       });
     }
-    const userPart =
-      "; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part";
+    // Each refusal names its URL in the one function's words (setting-url.test.ts holds a row per
+    // cause of them).
     expect(said).toEqual([
       ...unparsed.map((base) => ({
         exit: 1,
-        died: `PLAYWRIGHT_BASE_URL must be an http or https URL: its value is ${base.length} characters long${base.includes("@") ? userPart : ""}`,
+        died: `PLAYWRIGHT_BASE_URL must be an http or https URL: ${unshownSettingUrl(base)}`,
         holds: false,
       })),
       {

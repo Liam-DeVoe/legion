@@ -32,19 +32,64 @@
  */
 export function shownSettingUrl(
   value: string,
-  schemes: readonly string[] = ["http:", "https:"]
+  schemes: readonly string[] = HTTP_SCHEMES
 ): string | undefined {
+  const reading = readSettingUrl(value, schemes);
+  return "shown" in reading ? reading.shown : undefined;
+}
+
+/**
+ * The words a refusal names a setting's value by when `shownSettingUrl` shows none of it: its
+ * length, and the cause `shownSettingUrl`'s checks found, of the same `schemes`, with what to
+ * correct. They hold no part of the value.
+ */
+export function unshownSettingUrl(
+  value: string,
+  schemes: readonly string[] = HTTP_SCHEMES
+): string {
+  const reading = readSettingUrl(value, schemes);
+  const length = `its value is ${value.length} characters long`;
+  return "cause" in reading ? `${length}; ${reading.cause}` : length;
+}
+
+const HTTP_SCHEMES: readonly string[] = ["http:", "https:"];
+
+const USER_PART_ADVICE =
+  "if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part";
+
+/** `shownSettingUrl`'s checks of `value`, in order: what it shows, or the first cause it shows
+ *  none, in words that hold no part of the value. */
+function readSettingUrl(
+  value: string,
+  schemes: readonly string[]
+): { readonly shown: string } | { readonly cause: string } {
   for (let i = 0; i < value.length; i++) {
     const code = value.charCodeAt(i);
-    if (code < 0x20 || code === 0x7f) return undefined;
+    if (code < 0x20 || code === 0x7f) {
+      return {
+        cause:
+          "it holds a control character (a line ending or a tab, often one left from a file); remove it",
+      };
+    }
   }
   let parsed: URL;
   try {
     parsed = new URL(value);
   } catch {
-    return undefined;
+    return {
+      cause: value.includes("@")
+        ? `it does not parse as a URL; ${USER_PART_ADVICE}`
+        : "it does not parse as a URL",
+    };
   }
-  if (!schemes.includes(parsed.protocol) || parsed.host === "") return undefined;
+  if (!schemes.includes(parsed.protocol)) {
+    const starts = schemes.map((scheme) => `${scheme}//`);
+    const last = starts.pop();
+    return {
+      cause: `it does not start with ${starts.length > 0 ? `${starts.join(", ")} or ${last}` : last}`,
+    };
+  }
+  if (parsed.host === "") return { cause: "it names no host" };
   // What is left once the user part the parser found is taken out: the value as written when it
   // has none, else as the parser writes it, with no `/` after a bare origin the value did not have.
   let left = value;
@@ -54,21 +99,14 @@ export function shownSettingUrl(
     const written = parsed.toString();
     left = written.endsWith("/") && !value.endsWith("/") ? written.slice(0, -1) : written;
   }
-  if (left.includes("@")) return undefined;
-  if (parsed.protocol === "http:" || parsed.protocol === "https:") return left;
+  if (left.includes("@")) {
+    return {
+      cause:
+        "it holds an @ outside its user part (in its path, query or fragment); if its user part holds a /, ?, # or \\, write each of them in it percent-encoded (/ as %2F, ? as %3F, # as %23, \\ as %5C), else write that @ as %40",
+    };
+  }
+  if (parsed.protocol === "http:" || parsed.protocol === "https:") return { shown: left };
   parsed.search = "";
   parsed.hash = "";
-  return parsed.toString();
-}
-
-/**
- * The words a refusal names a setting's value by when `shownSettingUrl` shows none of it: its
- * length, and, when the value holds an `@`, what to correct, since a user part that the URL parser
- * could not read whole is one cause. They hold no part of the value.
- */
-export function unshownSettingUrl(value: string): string {
-  const length = `its value is ${value.length} characters long`;
-  return value.includes("@")
-    ? `${length}; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part`
-    : length;
+  return { shown: parsed.toString() };
 }

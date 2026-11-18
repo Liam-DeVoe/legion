@@ -133,33 +133,84 @@ describe("shownSettingUrl", () => {
   });
 });
 
-// A refusal names a value that shownSettingUrl shows none of by its length alone. When the value
-// holds an `@`, a user part the URL parser could not read whole is one cause, so the words also
-// say what to correct; they never hold a part of the value.
+// A refusal names a value that shownSettingUrl shows none of by its length, and says the cause that
+// shownSettingUrl's checks found, each in its own words, with what to correct; the words never hold
+// a part of the value. A value shownSettingUrl shows is named by its length alone.
 describe("unshownSettingUrl", () => {
   const secret = "pw-4c7e19";
-  const correct =
-    "; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part";
+  const control =
+    "it holds a control character (a line ending or a tab, often one left from a file); remove it";
+  const unparsed = "it does not parse as a URL";
+  const userPart =
+    "if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part";
+  const atOutside =
+    "it holds an @ outside its user part (in its path, query or fragment); if its user part holds a /, ?, # or \\, write each of them in it percent-encoded (/ as %2F, ? as %3F, # as %23, \\ as %5C), else write that @ as %40";
 
   test.each([
-    ["not a url"],
-    ["   "],
-    [""],
-    ["ftp://host.example/a"],
-  ])("%p is named by its length alone", (value) => {
-    expect(unshownSettingUrl(value)).toBe(`its value is ${value.length} characters long`);
-  });
-
-  test.each([
-    [`https://MadeUpTok3n/${secret}@host.example`],
-    [`https://made-up-user:4821#${secret}@host.example`],
-    [`made-up-user:${secret}@host.example`],
-    [`https://made-up-user:pa/${secret}@host.example`],
-  ])("%p is named by its length, with what to correct, and no part of it", (value) => {
-    const words = unshownSettingUrl(value);
-    expect(words).toBe(`its value is ${value.length} characters long${correct}`);
+    ["a line ending at its end", "http://127.0.0.1:9020\n", undefined, control],
+    [
+      "a carriage return and a line feed at its end",
+      "http://127.0.0.1:9020\r\n",
+      undefined,
+      control,
+    ],
+    ["a tab inside", `https://made-up-user:${secret}@host.example/a\tb`, undefined, control],
+    ["no URL at all", "not a url", undefined, unparsed],
+    ["nothing", "", undefined, unparsed],
+    ["a host with a space", "https://bad host/a", undefined, unparsed],
+    [
+      "a / in the password, whose rest reads as a port",
+      `https://made-up-user:pa/${secret}@host.example`,
+      undefined,
+      `${unparsed}; ${userPart}`,
+    ],
+    [
+      "another scheme",
+      "ftp://host.example/a",
+      undefined,
+      "it does not start with http:// or https://",
+    ],
+    [
+      "no scheme, its user read as one",
+      `made-up-user:${secret}@host.example`,
+      undefined,
+      "it does not start with http:// or https://",
+    ],
+    [
+      "another scheme, of the NATS schemes",
+      "https://nats.example:4222",
+      ["nats:", "tls:"],
+      "it does not start with nats:// or tls://",
+    ],
+    [
+      "no host, of the Postgres schemes",
+      "postgres:///db?host=/run/postgresql",
+      ["postgres:", "postgresql:"],
+      "it names no host",
+    ],
+    [
+      "a / in a token that is the user part",
+      `https://MadeUpTok3n/${secret}@host.example`,
+      undefined,
+      atOutside,
+    ],
+    [
+      "a # in the password",
+      `https://made-up-user:4821#${secret}@host.example`,
+      undefined,
+      atOutside,
+    ],
+    ["an @ in the query", "https://host.example/?to=a@b", undefined, atOutside],
+  ] as const)("a value with %s is named by its length and that cause", (_, value, schemes, cause) => {
+    const words = unshownSettingUrl(value, schemes);
+    expect(words).toBe(`its value is ${value.length} characters long; ${cause}`);
     expect(words).not.toContain(secret);
     expect(words).not.toContain("MadeUpTok3n");
     expect(words).not.toContain("made-up-user");
+  });
+
+  test("a value shownSettingUrl shows is named by its length alone", () => {
+    const value = `https://made-up-user:${secret}@host.example/a`;
+    expect(unshownSettingUrl(value)).toBe(`its value is ${value.length} characters long`);
   });
 });
