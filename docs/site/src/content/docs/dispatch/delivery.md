@@ -134,12 +134,16 @@ beside it is of: "< 45m for every change" for the longest change, "median < 60m"
 longest change and its median, and every change under the target puts the median under it, so
 the label names the longest change alone and the verdict is the same. A card whose target
 judges its own headline figure alone (deploys a day, the failure rate per deploy, run success,
-the count of unowned P0 issues) names no statistic. On the two lead-time cards a figure takes the
-verdict's colour only when it is one of the statistics the label names; merge to production's
-median is always coloured by its own comparison with the target. A day's bar on a card's chart
-is green where that day's value of each judged statistic meets the target, red where one misses
-it, and neutral where the day has no value of one; the dashed target line is drawn only when the
-target judges the figure the bars draw.
+the count of unowned P0 issues) names no statistic. Every figure on a card takes a verdict's colour
+only when the card's target judges the statistic the figure shows, and reads plain otherwise; a
+statistic another judged one implies, which the label leaves out, reads plain too, and the card's
+met or missed badge stays the verdict of all the target judges. So merge to production's median
+reads plain under the catalogue's target, whose longest change implies it, the failure rate's upper
+bound reads plain unless the target judges it, and a target someone set to judge the failure rate
+per pull request, or the deploys with a pull request a day, leaves the card's headline figure plain.
+A day's bar on a card's chart is green where that day's value of each judged statistic meets the
+target, red where one misses it, and neutral where the day has no value of one; the dashed target
+line is drawn only when the target judges the figure the bars draw.
 
 ## For agents
 
@@ -151,7 +155,12 @@ targets, whether each is met, and the unowned P0 issues. Each target is
 the order they are judged (the eval's `target_judges`, or its primary series' headline statistic
 when it names none). Each verdict under `status` is true, false, or null when there is no target
 or nothing to judge. The verdicts are the eval's own, judged by the same code as
-`GET /api/v1/projects/{key}/evals`. The route takes the timeline's parameters: `from` and `to`
+`GET /api/v1/projects/{key}/evals`. Two of them are the verdict of one statistic the eval's target
+judges rather than of all of them: `merge_to_production_median` is the median's
+(`minutes.median` of `merge-to-production`) and `change_failure_rate_upper_bound` the upper
+bound's (`upper_bound.rate` of `change-fail-rate`), each null where the eval's `judges` do not
+name that statistic. With the catalogue's judges the median has a verdict and the upper bound has
+none. The route takes the timeline's parameters: `from` and `to`
 (the last seven days when both are left out, at most 84 days apart), `q` for the search, and any
 filter repeated for several values, such as `&repo=acme/widgets&priority=P0`. `from`, `to` and
 `q`, and the Pipeline route's `at`, take one value each, and a query naming one of them twice is

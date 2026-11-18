@@ -218,10 +218,12 @@ var DefaultTargets = Targets{
 
 // Status is whether each KPI meets its target, its eval's verdict of the answer's figures
 // (evals.VerdictOf), null where the eval's target is off or no figure it judges has a value. Each
-// is its eval's verdict (MergeToProduction merge-to-production's, of the longest change and the
-// median), but MergeToProductionMedian and ChangeFailureRateUpperBound, each one more figure of an
-// eval (the median merge to production, the failure rate's upper bound) judged by that eval's
-// target.
+// is its eval's verdict over every statistic its target judges (MergeToProduction
+// merge-to-production's, of the longest change and the median as the catalogue judges it), but
+// MergeToProductionMedian and ChangeFailureRateUpperBound, each the verdict of one statistic of an
+// eval (the median merge to production, the failure rate's upper bound) against that eval's
+// target, and null as well where that eval's target judges no such statistic: the catalogue's
+// judges give the median a verdict and the upper bound none.
 type Status struct {
 	DeploysPerDay               *bool `json:"deploys_per_day"`
 	ChangeFailureRate           *bool `json:"change_failure_rate"`

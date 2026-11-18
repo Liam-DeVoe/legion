@@ -135,12 +135,14 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
   const [open, setOpen] = useState(false);
   const show = (format: (response: DeliveryMeasuresResponse) => string): string =>
     data === undefined ? PENDING : format(data);
-  const toneOf = (met: (response: DeliveryMeasuresResponse) => boolean | null): string =>
-    data === undefined ? textMutedOnSurface : tone(met(data));
-  // A lead-time card shows two figures of its eval, and its verdict is of the statistics its
-  // target judges: a figure takes the verdict's tone where it is one the card names
-  // (`shownJudges`) and reads plain where it is not, so a card judged by its p90, or by a longest
-  // change that implies its median, does not colour its median by that verdict.
+  // Every figure a card colours by a verdict follows one rule: the verdict is of the statistics the
+  // card's target judges, so the figure takes its tone only where the target judges the statistic
+  // the figure shows (`shownJudges`, less one another judge implies) and reads plain where it
+  // judges others or is off, whatever verdict of that figure the answer carries. So a card judged
+  // by its p90, or by a longest change that implies its median, does not colour its median;
+  // change-fail-rate judged by its per-PR rate colours neither its per-deploy rate nor its upper
+  // bound; and deploy-frequency judged by its deploys with a PR does not colour its deploys a day.
+  // The card's badge (`met`) stays the verdict of everything its target judges.
   const judgedTone = (
     judge: string,
     target: (response: DeliveryMeasuresResponse) => Target,
@@ -193,7 +195,13 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
           title="Deploys a day"
         >
           <div className="flex items-baseline gap-2">
-            <BigNumber className={toneOf((d) => d.status.deploys_per_day)}>
+            <BigNumber
+              className={judgedTone(
+                "deploys.per_day",
+                (d) => d.targets.deploys_per_day,
+                (d) => d.status.deploys_per_day
+              )}
+            >
               {show((d) => `${d.measures.deploy_frequency.per_day.toFixed(1)}/day`)}
             </BigNumber>
             {measures === undefined ? null : (
@@ -227,7 +235,13 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
         >
           <div className="flex items-baseline gap-2">
             {/* Two decimals: 4.96% meets the target, 5.00% does not. */}
-            <BigNumber className={toneOf((d) => d.status.change_failure_rate)}>
+            <BigNumber
+              className={judgedTone(
+                "per_deploy.rate",
+                (d) => d.targets.change_failure_rate,
+                (d) => d.status.change_failure_rate
+              )}
+            >
               {show((d) =>
                 !measured(d.measures.change_failure_rate)
                   ? NO_VALUE
@@ -247,7 +261,11 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
               <div className={`text-xs ${textMutedOnSurface}`}>
                 up to{" "}
                 <span
-                  className={`font-semibold ${tone(data.status.change_failure_rate_upper_bound)}`}
+                  className={`font-semibold ${judgedTone(
+                    "upper_bound.rate",
+                    (d) => d.targets.change_failure_rate,
+                    (d) => d.status.change_failure_rate_upper_bound
+                  )}`}
                 >
                   {pct(data.measures.change_failure_rate.per_deploy.upper_bound_rate, 2)}
                 </span>{" "}
@@ -272,7 +290,13 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
         >
           <div className="flex flex-wrap items-baseline gap-x-3">
             <span className="flex items-baseline gap-1">
-              <BigNumber className={toneOf((d) => d.status.merge_to_production_median)}>
+              <BigNumber
+                className={judgedTone(
+                  "minutes.median",
+                  (d) => d.targets.merge_to_production_minutes,
+                  (d) => d.status.merge_to_production_median
+                )}
+              >
                 {show((d) =>
                   formatMinutes(d.measures.lead_time.merge_to_production.median_minutes)
                 )}
@@ -339,7 +363,13 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
           title="Deploy runs reaching production"
         >
           <div className="flex items-baseline gap-2">
-            <BigNumber className={toneOf((d) => d.status.deploy_run_success)}>
+            <BigNumber
+              className={judgedTone(
+                "runs.rate",
+                (d) => d.targets.deploy_run_success_rate,
+                (d) => d.status.deploy_run_success
+              )}
+            >
               {show((d) =>
                 d.measures.deploy_run_success.rate === null
                   ? NO_VALUE
@@ -379,7 +409,13 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
           title="P0 issues with no owner"
         >
           <div className="flex items-baseline gap-2">
-            <BigNumber className={toneOf((d) => d.status.unowned_p0)}>
+            <BigNumber
+              className={judgedTone(
+                "issues.value",
+                (d) => d.targets.unowned_p0,
+                (d) => d.status.unowned_p0
+              )}
+            >
               {show((d) => `${(d.unowned_p0 ?? []).length}`)}
             </BigNumber>
             {data === undefined ? null : (
