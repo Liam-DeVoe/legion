@@ -2,7 +2,7 @@ import { beforeEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:t
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: user-event has no form for the presses and events the title's and the actions group's cases send: a press the browser cancels as it turns into a drag (its pointercancel and dragend, with no mouseup), a right press whose context menu takes its release (its contextmenu, with no pointerup), a tap's order (its pointer up before the mousedown that moves the focus, where user-event moves the focus as its pointer goes down), a blur of the window, and a key pressed during an IME composition.
+// biome-ignore lint/style/noRestrictedImports: user-event has no form for the presses and events the title's and the actions group's cases send: a press the browser cancels as it turns into a drag (its pointercancel and dragend, with no mouseup), a right press whose context menu takes its release (its contextmenu, with no pointerup), a tap's order (its pointer up before the mousedown that moves the focus, where user-event moves the focus as its pointer goes down), a blur of the window and its focus as the reader comes back, and a key pressed during an IME composition or, as Safari sends it, just after one.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http } from "msw";
@@ -1139,6 +1139,18 @@ test.each([
   }
 });
 
+/** Opens the title's editor by a click on the heading, as a reader does, and answers the heading
+ *  and the editor, which holds the focus. */
+async function openTitleEditor(
+  user: UserEvent
+): Promise<{ editor: HTMLElement; heading: HTMLElement }> {
+  const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+  await user.click(heading);
+  const editor = await screen.findByRole("textbox", { name: "Issue title" });
+  await waitFor(() => expect(editor).toHaveFocus());
+  return { editor, heading };
+}
+
 // A press of the primary button that the browser turns into a drag, as when the reader drags the
 // words they selected in the editor, sends no mouseup: Chromium sends dragstart, pointercancel and
 // dragend, and no mouseup and no click. Nothing waits on such a press, so an edit a key then ends
@@ -1187,10 +1199,7 @@ test("a press that ends the edit and turns into a drag leaves the title clamped 
   document.body.append(link);
 
   try {
-    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
-    await user.click(heading);
-    const editor = await screen.findByRole("textbox", { name: "Issue title" });
-    await waitFor(() => expect(editor).toHaveFocus());
+    const { heading } = await openTitleEditor(user);
     // The press goes down on the link, which takes the focus inside its mousedown, and becomes a
     // drag: the events Chromium sends for it, in its order, with no mouseup.
     fireEvent.pointerDown(link, { button: 0, isPrimary: true, pointerType: "mouse" });
@@ -1256,10 +1265,7 @@ test("a tap that ends the edit holds the title whole until its click", async () 
   document.body.append(outside);
 
   try {
-    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
-    await user.click(heading);
-    const editor = await screen.findByRole("textbox", { name: "Issue title" });
-    await waitFor(() => expect(editor).toHaveFocus());
+    const { heading } = await openTitleEditor(user);
     // A tap's order, its pointer up before the mousedown that takes the focus: user-event moves
     // the focus as its pointer goes down.
     fireEvent.pointerDown(outside, { button: 0, isPrimary: true, pointerType: "touch" });
@@ -1282,17 +1288,31 @@ test("a tap that ends the edit holds the title whole until its click", async () 
   }
 });
 
-/** Opens the title's editor by a click on the heading and writes `draft` in it in place of the
- *  title, with the editor keeping the focus. */
+/** Opens the title's editor (`openTitleEditor`) and writes `draft` in it in place of the title,
+ *  with the editor keeping the focus. */
 async function editTitle(user: UserEvent, draft: string) {
-  const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
-  await user.click(heading);
-  const editor = await screen.findByRole("textbox", { name: "Issue title" });
-  await waitFor(() => expect(editor).toHaveFocus());
+  const { editor, heading } = await openTitleEditor(user);
   await user.clear(editor);
   await user.keyboard(draft);
   expect(editor).toHaveValue(draft);
   return { editor, heading };
+}
+
+/** Takes the page's focus away as a switch to another window does, and runs `whileAway` before
+ *  the reader comes back: `focused` loses the focus with no element to go to and stays the
+ *  document's active element, and the document has no focus until this returns. */
+function blurWindow(focused: HTMLElement, whileAway?: () => void): void {
+  const hasFocus = spyOn(document, "hasFocus").mockReturnValue(false);
+  try {
+    // What a browser sends as its window loses the focus, with no relatedTarget and the focus
+    // left where it was: user-event has no form for a window's blur. testing-library's
+    // `fireEvent.blur` sends the focusout before the blur, as a browser does.
+    fireEvent.blur(focused, { relatedTarget: null });
+    fireEvent.blur(window);
+    whileAway?.();
+  } finally {
+    hasFocus.mockRestore();
+  }
 }
 
 // A switch to another window or tab blurs the editor with no element for the focus to go to, and
@@ -1304,63 +1324,85 @@ test("a switch to another window keeps the title's editor open with its draft an
   const restore = stubHeader(issue);
   const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: "Review the plan" });
   const view = renderHeader();
-  const outside = document.createElement("button");
-  outside.type = "button";
-  outside.textContent = "Elsewhere";
-  document.body.append(outside);
 
   try {
     const { editor } = await editTitle(user, "Review the plan");
-    // The document has no focus while the reader is in the other window.
-    const hasFocus = spyOn(document, "hasFocus").mockReturnValue(false);
-    try {
-      // What a browser sends as its window loses the focus, with no relatedTarget and the focus
-      // left where it was: user-event has no form for a window's blur.
-      fireEvent.blur(editor, { relatedTarget: null });
-      fireEvent.focusOut(editor, { relatedTarget: null });
-      fireEvent.blur(window);
-    } finally {
-      hasFocus.mockRestore();
-    }
-    expect(screen.getByRole("textbox", { name: "Issue title" })).toBe(editor);
+    blurWindow(editor);
+    expect(editor).toBeInTheDocument();
     expect(editor).toHaveValue("Review the plan");
     expect(editor).toHaveFocus();
     expect(patchIssue).not.toHaveBeenCalled();
 
-    await user.click(outside);
+    await user.click(document.body);
     await waitFor(() =>
       expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument()
     );
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
   } finally {
-    outside.remove();
     view.unmount();
     patchIssue.mockRestore();
     restore();
   }
 });
 
-// The Escape that cancels an IME composition is the input method's: the editor stays open with the
-// reader's draft. A plain Escape after it still discards the draft and gives the focus back to the
-// heading.
-test("an Escape that ends an IME composition leaves the title's editor open with its draft", async () => {
+// While the reader is away in another window the focus can move by code, the header's keeper's or
+// the page's, with no blur reaching the editor: Chromium sends none while the page has no focus.
+// Back in the window the editor no longer holds the focus, so the edit ends as its blur would have
+// ended it, and the draft is sent, once.
+test("a focus moved while the window is away ends the title's edit as the reader comes back and sends the draft once", async () => {
   const user = userEvent.setup();
   const restore = stubHeader(issue);
   const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: "Review the plan" });
   const view = renderHeader();
 
   try {
-    const { editor, heading } = await editTitle(user, "Review the plan");
-    // user-event has no form for this: it cannot mark a key as an IME composition.
-    fireEvent.keyDown(editor, { isComposing: true, key: "Escape" });
-    expect(screen.getByRole("textbox", { name: "Issue title" })).toBe(editor);
-    expect(editor).toHaveValue("Review the plan");
-    expect(editor).toHaveFocus();
+    const { editor } = await editTitle(user, "Review the plan");
+    const control = screen.getByRole("button", { name: "Issue actions" });
+    blurWindow(editor, () => act(() => control.focus()));
+    expect(control).toHaveFocus();
+    expect(editor).toBeInTheDocument();
+    expect(patchIssue).not.toHaveBeenCalled();
 
-    await user.keyboard("{Escape}");
-    await waitFor(() => expect(heading).toHaveFocus());
-    expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
+    // The window's focus as the reader comes back: user-event has no form for it.
+    fireEvent.focus(window);
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument()
+    );
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// An event's refresh can close the issue while the reader is away in another window, which
+// disables the editor they left open. A closed issue takes no title, so the edit ends and drops
+// its draft, and the heading reads the issue's title again: no disabled editor is left holding a
+// draft that nothing can end.
+test("an issue closed while the window is away ends the title's edit and drops its draft", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: "Review the plan" });
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { editor, heading } = await editTitle(user, "Review the plan");
+    blurWindow(editor, () =>
+      act(() => {
+        queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
+          ...issue,
+          closed_at: "2026-09-12T10:00:00Z",
+          status: "done",
+        });
+      })
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument()
+    );
     expect(heading).toHaveTextContent(issue.title);
     expect(patchIssue).not.toHaveBeenCalled();
   } finally {
@@ -1370,10 +1412,18 @@ test("an Escape that ends an IME composition leaves the title's editor open with
   }
 });
 
-// The Enter that confirms an IME composition is the input method's: the editor stays open with the
-// reader's draft and sends nothing, where the title would be written mid-word. A plain Enter after
-// it still writes the title, once, and gives the focus back to the heading.
-test("an Enter that ends an IME composition leaves the title's editor open and sends no write", async () => {
+// The Escape that cancels an IME composition and the Enter that confirms one are the input
+// method's keys: the editor stays open with the reader's draft and sends nothing, where an Enter
+// would write the title mid-word. Chromium and Firefox mark such a key `isComposing`; Safari sends
+// it after the composition's end, unmarked, with keyCode 229. A plain key after it still ends the
+// edit and gives the focus back to the heading: Escape restores the title and sends nothing, and
+// Enter writes the title, once.
+test.each([
+  ["Escape", "isComposing"],
+  ["Enter", "isComposing"],
+  ["Escape", "keyCode 229"],
+  ["Enter", "keyCode 229"],
+] as const)("an %s that ends an IME composition, marked by %s, leaves the title's editor open with its draft and sends no write", async (key, mark) => {
   const user = userEvent.setup();
   const restore = stubHeader(issue);
   const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: "Review the plan" });
@@ -1382,17 +1432,27 @@ test("an Enter that ends an IME composition leaves the title's editor open and s
   try {
     const { editor, heading } = await editTitle(user, "Review the plan");
     // user-event has no form for this: it cannot mark a key as an IME composition.
-    fireEvent.keyDown(editor, { isComposing: true, key: "Enter" });
-    expect(screen.getByRole("textbox", { name: "Issue title" })).toBe(editor);
+    fireEvent.keyDown(
+      editor,
+      mark === "isComposing"
+        ? { isComposing: true, key }
+        : { isComposing: false, key, keyCode: 229 }
+    );
+    expect(editor).toBeInTheDocument();
     expect(editor).toHaveValue("Review the plan");
     expect(editor).toHaveFocus();
     expect(patchIssue).not.toHaveBeenCalled();
 
-    await user.keyboard("{Enter}");
+    await user.keyboard(`{${key}}`);
     await waitFor(() => expect(heading).toHaveFocus());
     expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
-    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    if (key === "Escape") {
+      expect(heading).toHaveTextContent(issue.title);
+      expect(patchIssue).not.toHaveBeenCalled();
+    } else {
+      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    }
   } finally {
     view.unmount();
     patchIssue.mockRestore();
@@ -1484,11 +1544,7 @@ test("the actions group stays open as the window loses the focus from one of its
 
   try {
     const { control, first: action } = await openIssueActionsByKey(user);
-    // What a browser sends as its window loses the focus, with no relatedTarget and the focus
-    // left where it was: user-event has no form for a window's blur.
-    fireEvent.blur(action, { relatedTarget: null });
-    fireEvent.focusOut(action, { relatedTarget: null });
-    fireEvent.blur(window);
+    blurWindow(action);
     expect(action).toHaveFocus();
     expect(control).toHaveAttribute("aria-expanded", "true");
   } finally {

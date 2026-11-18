@@ -1,5 +1,5 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
   bgTransparent,
@@ -65,6 +65,7 @@ export function IssueTitleRow({
   // as that press ends.
   const heldForPress = useRef(false);
   const heading = useRef<HTMLHeadingElement>(null);
+  const editor = useRef<HTMLTextAreaElement | null>(null);
   // Set by a key that ends the edit, and read once the heading is drawn again: the focus goes
   // back to it.
   const returning = useRef(false);
@@ -92,6 +93,47 @@ export function IssueTitleRow({
       }
     );
   }, []);
+  // Ends the edit as the editor's blur does: the draft is sent, and a press under way holds the
+  // heading at the editor's height until it ends.
+  const endEdit = () => {
+    drafts.requestTitleSubmit();
+    if (pressing.current) {
+      // The press under way lets the heading go as it ends.
+      heldForPress.current = true;
+      setHeld(true);
+    }
+    setEditing(false);
+  };
+  // Read through a ref by the window's listener below, which is taken once for the edit, so the
+  // edit ends with the draft and the issue as they stand when the reader comes back.
+  const latestEndEdit = useRef(endEdit);
+  useLayoutEffect(() => {
+    latestEndEdit.current = endEdit;
+  });
+  useEffect(() => {
+    if (!editing) return;
+    const view = heading.current?.ownerDocument.defaultView;
+    if (view == null) return;
+    // A switch to another window leaves the edit open (the editor's blur below), and the focus
+    // can move while the reader is away, by the header's focus keeper or the page's own code,
+    // with no blur reaching the editor: Chromium sends none while the page has no focus. An
+    // editor that no longer holds the focus as the reader comes back ends the edit as its blur
+    // would have.
+    const returned = () => {
+      if (view.document.activeElement !== editor.current) latestEndEdit.current();
+    };
+    view.addEventListener("focus", returned);
+    return () => view.removeEventListener("focus", returned);
+  }, [editing]);
+  // An issue closed while its title is edited, as an event's refresh can close it while the
+  // reader is away, takes no title (`useIssueDrafts` refuses one), and its disabled editor would
+  // hold a draft nothing ends: the edit ends and drops the draft, and the heading reads the
+  // issue's title.
+  useEffect(() => {
+    if (!editing || !isClosed) return;
+    drafts.discardTitle();
+    setEditing(false);
+  }, [drafts, editing, isClosed]);
 
   const type = "text-xl leading-[26px] min-[761px]:text-[22px] min-[761px]:leading-[29px]";
   // The box both views share, to the pixel: the font, the wrapping and the rule the editor
@@ -138,20 +180,15 @@ export function IssueTitleRow({
             // left the editor, so it stays open with their draft, sends nothing and leaves the
             // press alone.
             if (!event.currentTarget.ownerDocument.hasFocus()) return;
-            drafts.requestTitleSubmit();
-            if (pressing.current) {
-              // The press this blur came from lets the heading go as it ends.
-              heldForPress.current = true;
-              setHeld(true);
-            }
-            setEditing(false);
+            endEdit();
           }}
           // A title is one line of words: a line break typed or pasted is a space.
           onChange={(event) => drafts.writeTitle(event.target.value.replace(/\s*\n\s*/gu, " "))}
           onKeyDown={(event) => {
             // The Escape that cancels an IME composition and the Enter that confirms one are the
-            // input method's keys, not the reader ending the edit.
-            if (event.nativeEvent.isComposing) return;
+            // input method's keys, not the reader ending the edit. Safari sends them after its
+            // compositionend, with `isComposing` false and keyCode 229 (WebKit bug 165004).
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
             if (event.key === "Escape") {
               drafts.discardTitle();
               returning.current = true;
@@ -164,7 +201,10 @@ export function IssueTitleRow({
               event.currentTarget.blur();
             }
           }}
-          ref={(node) => node?.focus()}
+          ref={(node) => {
+            editor.current = node;
+            node?.focus();
+          }}
           rows={1}
           value={drafts.title}
         />

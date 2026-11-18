@@ -94,9 +94,7 @@ function placeOf(lost: HTMLElement, records: readonly MutationRecord[]): HTMLEle
   let place: HTMLElement | null = null;
   for (const record of records) {
     const { target } = record;
-    if (record.type !== "childList" || !(target instanceof HTMLElement) || !target.isConnected) {
-      continue;
-    }
+    if (!(target instanceof HTMLElement) || !target.isConnected) continue;
     for (const removed of record.removedNodes) {
       if (removed.contains(lost)) place = target;
     }
@@ -294,7 +292,7 @@ function watchLayer(
     const active = page.activeElement;
     // A focus still on a control of the closed layer is as good as nowhere: the browser drops it
     // to the body in a later task.
-    const dropped = focusOnDocument() || (active !== null && layer.contains(active));
+    const dropped = focusOnDocument() || layer.contains(active);
     // An opener that can still hold the focus is the layer's to give it back to, or the reader
     // moved the focus off it.
     if (!dropped || pressedOntoPage || canHoldFocus(opener)) return;

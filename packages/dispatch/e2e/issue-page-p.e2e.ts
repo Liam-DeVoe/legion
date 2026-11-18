@@ -1278,10 +1278,11 @@ test("the press that ends a title edit reaches the control under it @phone", asy
 // A press the browser turns into a drag, as it does a press on words the reader selected in the
 // title's editor, sends no mouseup and no click: Chromium ends it with a pointercancel as the drag
 // starts and a dragend as the drop lands. The title row holds the heading at the editor's height
-// while a press that ended the edit is under way, so it must read that press as over at its
-// pointercancel, as the drag starts; else the next edit a key ends finds the press under way, and
-// a title of three lines stays drawn whole at 1440 px instead of clamped to two. A drag of
-// selected words is a press of the mouse, so the row runs at the desktop width and on no phone.
+// while a press that ended the edit is under way, so it must read that press as over by the
+// drag's end (`hearPresses` ends it at the pointercancel, as the drag starts); else the next edit
+// a key ends finds the press under way, and a title of three lines stays drawn whole at 1440 px
+// instead of clamped to two. A drag of selected words is a press of the mouse, so the row runs at
+// the desktop width and on no phone.
 test("the title is clamped again after a key ends an edit whose words the reader dragged", async ({
   browser,
 }) => {

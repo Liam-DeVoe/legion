@@ -300,7 +300,6 @@ export function IssuePropertiesRow({
       )}
       {entries.length === 0 ? null : (
         <ApprovalSteps
-          actions={waiting.approvals.length > 0}
           actionsOn={waiting.approvals}
           entries={entries}
           layout="contents"
