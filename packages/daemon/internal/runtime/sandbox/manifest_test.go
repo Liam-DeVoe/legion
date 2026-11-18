@@ -441,7 +441,7 @@ func TestABurstableIssuePodCarriesNoSafeToEvictAnnotation(t *testing.T) {
 // The Guaranteed rule is written twice, once on each side of the package boundary, and the two
 // must agree: guaranteedReservation decides the safe-to-evict annotation from the requirements the
 // daemon hands this runtime, and config.Reservation.Burstable decides, from the configuration's
-// strings, the `resources:` line `legion start --check-config` prints (capabilities'
+// strings, the `resources:` line `legion config check` prints (capabilities'
 // BurstableLine). It is not one function because this package takes resolved requirements and
 // reads no configuration, and the configuration depends on no runtime implementation. So this
 // walk holds the two to one answer over each reservation: an operator who reads "Guaranteed" in

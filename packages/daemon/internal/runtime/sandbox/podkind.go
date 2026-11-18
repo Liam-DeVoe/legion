@@ -129,7 +129,8 @@ func (k issuePod) asksExtendedRunTime(r *Runtime) bool {
 // two are one rule written on each side of a package boundary — this package reads no
 // configuration, and the configuration depends on no runtime implementation — and
 // TestTheSafeToEvictAnnotationsGuaranteedRuleAgreesWithTheConfigurations holds them to one answer,
-// so the pod an operator's `--check-config` calls Guaranteed is the pod that carries the annotation.
+// so the pod an operator's `legion config check` calls Guaranteed is the pod that carries the
+// annotation.
 // Ephemeral storage is not read, and never should be: every pod of this deployment requests less
 // of the node's disk than its limit allows it to write (defaultResources), so reading it would
 // make every pod Burstable here while the kubelet, which reads cpu and memory alone, calls them
