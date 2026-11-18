@@ -645,9 +645,11 @@ interface WriteProgress {
   sawKeyedLayer: boolean;
 }
 
-/** A write: its one `Idempotency-Key` and what its attempts have shown. */
+/** A write: its one `Idempotency-Key`, the request as a text names it (`requestForText`), and
+ *  what its attempts have shown. */
 interface WriteCall {
   readonly key: string;
+  readonly request: string;
   readonly progress: WriteProgress;
 }
 
@@ -1968,7 +1970,7 @@ export class DispatchClient {
     key?: string
   ): Promise<{ readonly status: number; readonly payload: T }> {
     const url = this.#url(path, query);
-    const write = this.#writeCall(method, key);
+    const write = this.#writeCall(method, url, key);
     return this.#noRoute(
       async () => {
         const response = await this.#send(
@@ -2009,7 +2011,8 @@ export class DispatchClient {
    * A write that ends on no route after an attempt that shows it reached Dispatch
    * (`WriteProgress.landed`) may have landed on the build that serves the route, so it throws
    * `DispatchWriteUnsettledError` with the no-route answer as its cause, never the rolling
-   * release's "try again", which reads as nothing written.
+   * release's "try again", which reads as nothing written; and the call's deadline ending a
+   * no-route wait after such an attempt is unsettled as the loop's own deadline is (`#ended`).
    */
   async #noRoute<T>(
     attempt: () => Promise<T>,
@@ -2024,19 +2027,25 @@ export class DispatchClient {
         sleep: this.#sleep,
       });
     } catch (error) {
+      // The write loop's own verdict (unsettled, or landed with its answer gone) stands as it is.
       if (
         write === undefined ||
         !write.progress.landed ||
-        !(error instanceof DispatchNoRouteError || isNoRoute(error))
+        error instanceof DispatchWriteUnsettledError ||
+        error instanceof DispatchWriteLandedError
       ) {
         throw error;
       }
-      throw new DispatchWriteUnsettledError(
-        error as DispatchServiceError,
-        write.progress.sent,
-        undefined,
-        write.progress.sawKeyedLayer
-      );
+      const { progress, request } = write;
+      if (error instanceof DispatchNoRouteError || isNoRoute(error)) {
+        throw new DispatchWriteUnsettledError(
+          error as DispatchServiceError,
+          progress.sent,
+          undefined,
+          progress.sawKeyedLayer
+        );
+      }
+      throw this.#ended(error, request, progress.sent, true, progress.sawKeyedLayer);
     }
   }
 
@@ -2046,10 +2055,11 @@ export class DispatchClient {
    * caller's own, where it has one intent across calls and processes, else one minted for this
    * call alone. A read, a PUT or a DELETE has none.
    */
-  #writeCall(method: string, key: string | undefined): WriteCall | undefined {
+  #writeCall(method: string, url: string, key: string | undefined): WriteCall | undefined {
     if (method !== "POST" && method !== "PATCH") return undefined;
     return {
       key: key ?? crypto.randomUUID(),
+      request: `${method} ${requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)}`,
       progress: { sent: 0, reached: false, landed: false, running: false, sawKeyedLayer: false },
     };
   }
@@ -2080,7 +2090,7 @@ export class DispatchClient {
     key?: string
   ): Promise<T> {
     const url = this.#url(path);
-    const write = this.#writeCall(method, key);
+    const write = this.#writeCall(method, url, key);
     return this.#noRoute(
       async () => {
         const encoded = new Response(form);

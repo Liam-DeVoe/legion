@@ -1167,6 +1167,32 @@ describe("DispatchClient's writes", () => {
     expect(error.message).toContain("may or may not have taken effect");
   });
 
+  // The deadline that ends a no-route retry's wait after an attempt that may have landed leaves the
+  // write unsettled too, never the runtime's bare "The operation timed out." (the red team of the
+  // review of c5ed36708c, F3).
+  test("the deadline during a no-route wait after a silent attempt leaves the write unsettled", async () => {
+    const { retry, stall } = stalling();
+    const { fetchImpl } = scripted(
+      [stall, refusal(404, "NOT_FOUND", "no route for POST /api/v1/issues/DSP-1/comments")],
+      { echo: (request) => request === 1 }
+    );
+
+    const error = await failure(
+      new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl, {
+        writeRetry: retry,
+        deadlineMs: 300,
+        // The wait between no-route answers ends only when the client's deadline does.
+        sleep: (_ms, signal) =>
+          new Promise<void>((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+          }),
+      }).comment("DSP-1", comment)
+    );
+
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect(error.message).toContain("had no definitive answer when its deadline ended it");
+  }, 10_000);
+
   // A Dispatch not known to run the keyed layer is never asked twice, however long the call has.
   test("a silent attempt against a Dispatch not known to run the keyed layer is its only one", async () => {
     const { retry, stall } = stalling();
