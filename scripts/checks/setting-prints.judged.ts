@@ -368,6 +368,11 @@ export const JUDGED: readonly Judged[] = [
       why: "a row of the check's own list: a site's file and symbol and its test file's path",
     })
   ),
+  {
+    file: "scripts/checks/setting-prints.ts",
+    text: 'Bun.spawnSync(["git", ...args]',
+    why: "the git commands this search runs to read its scope, handed the revision --base names; nothing prints them",
+  },
   ...[
     'await fetch(new URL("/healthz", base))',
     "new URL(`/api/v1/issues/${encodeURIComponent(options.issue)}/comments`, options.url),",
