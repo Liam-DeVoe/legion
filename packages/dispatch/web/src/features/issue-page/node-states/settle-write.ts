@@ -88,23 +88,12 @@ export function useSettleIssue(): string | undefined {
  * (`dropViews`), so the open view is read again; the write stays out until the coverage's read
  * is answered. The tree and the views are those of the issue the tree is drawn for
  * (`SettleIssueProvider`), else of `key`: a node whose own address names another issue settles
- * under that issue, whose coverage is the one read again. The tree is read here, not left to
- * `subscribeTreeFreshness`, which hears an invalidation of the coverage: a coverage read already
- * marked stale - a read of it failed, or a refresh still owes one - raises none, and another
- * issue's coverage is no query of the page's. Where it does hear one, it refreshes the tree and
- * the views and drops none, leaving out each whose read began in the turn it heard that in, as
- * the reads begun here did. The coverage's read begins first, so its answer, changed or not, is
- * no newer than the tree read begun here (`answeredNewer`), for which the subscription would read
- * the tree and the open view again: the coverage, the tree and the open view are read once each,
- * where the live feed is up and no tree read is out or held by the refresh interval. Where one
- * is, `refreshQueries` begins none here, so the coverage's read is newer than the tree's last
- * read whatever it answers - a read begun while its query is marked invalid, as the invalidation
- * here begins it, counts as newer (`readWhileInvalid`) - and the subscription reads the tree and
- * the open view again, which costs a read and leaves none out. Where the live feed is down, a
- * change the subscription hears while a write is out - this one stays out until the coverage's
- * read is answered - is refreshed only once the last write settles, and so reads the tree and the
- * open view once more, since their reads began here before then; Keep's reads
- * (`DecisionActions.tsx`) go the same way.
+ * under that issue, whose coverage is the one read again. The coverage's read is begun first,
+ * then the tree's. The tree is read here, not left to the tree read's subscription, which hears
+ * an invalidation of the coverage: a coverage read already marked stale - a read of it failed,
+ * or a refresh still owes one - raises none, and another issue's coverage is no query of the
+ * page's. Whether the subscription reads the tree and the open view again after these reads,
+ * and when, is its own to decide (`subscribeTreeFreshness` in `tree-read/tree-read.ts`).
  * A refusal reads nothing again.
  */
 export function useSettle(key: string, reference: string, landed: () => void) {
