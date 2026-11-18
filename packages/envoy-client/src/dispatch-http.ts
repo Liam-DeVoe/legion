@@ -101,6 +101,7 @@ import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
 import { rowStores, WRITE_ROWS } from "./dispatch-write-rows";
 import { isRedirectStatus, messageFor, redirectOrigin, withoutUserinfo } from "./errors";
+import { pathNamesNothingPattern } from "./go-space";
 
 export type {
   CredentialPendingResponse,
@@ -203,9 +204,10 @@ export class DispatchGatewayError extends DispatchServiceError {
  * no answer at all, after an attempt that may have reached Dispatch: its last attempt was cut off
  * for silence, or the call's deadline ended it. This is deliberately no `DispatchServiceError`,
  * which a caller reads as a refusal Dispatch decided. `last` (also the `cause`) is that last
- * refusal, the silence cut or the deadline's timeout. Where the call saw Dispatch's keyed layer
- * judge the write (`keyed`), the message says Dispatch finishes an attempt it received, and that a
- * resend is a new command's, under a new key, so the write is to be read back first.
+ * refusal, the silence cut or the deadline's timeout. Where the call relied on Dispatch's keyed
+ * layer (`keyed`: an answer named the write's key back, or the write was asked again under it),
+ * the message says Dispatch finishes an attempt it received, and that a resend is a new command's,
+ * under a new key, so the write is to be read back first.
  */
 export class DispatchWriteUnsettledError extends Error {
   override readonly name = "DispatchWriteUnsettledError";
@@ -324,15 +326,10 @@ export class DispatchAnswerMissingError extends Error {
   }
 }
 
-/** Whether a value of a URL path names nothing: empty, only white space, or `.` or `..`, a step of
- *  the path, which the URL parser drops (`/api/v1/agents/../answers` is `/api/v1/answers`). */
-function namesNothing(segment: string): boolean {
-  return segment.trim() === "" || segment === "." || segment === "..";
-}
-
 /**
- * A call whose path holds a value that names nothing (`namesNothing`, `DispatchClient.#url`),
- * refused before any request: sent, `POST /api/v1/comments//resolve` names no comment, and
+ * A call whose path holds a value that names nothing (`pathNamesNothingPattern`: Go's white space
+ * alone, or only dots and slashes), refused before any request (`DispatchClient.#url`): sent,
+ * `POST /api/v1/comments//resolve` names no comment, and
  * Dispatch's router answers it with a redirect to another path, and `GET /api/v1/agents/../answers`
  * asks another route. The message names the place of that value in the route.
  */
@@ -344,13 +341,13 @@ export class DispatchEmptyPathError extends Error {
       .map((segment) =>
         segment === ""
           ? "{empty}"
-          : namesNothing(segment)
+          : pathNamesNothingPattern.test(segment)
             ? `{${JSON.stringify(segment)}}`
             : segment
       )
       .join("/");
     super(
-      `/${route} holds a value that names nothing where the call names what it is about (empty, only white space, or a step of a path, which the URL drops), so nothing was sent: a variable that gives it may be empty or unset`
+      `/${route} holds a value that names nothing where the call names what it is about (empty, only white space, or only dots and slashes, which name no step of a path), so nothing was sent: a variable that gives it may be empty or unset`
     );
   }
 }
@@ -557,9 +554,7 @@ function requestSignal(
  * `Retry-After` applies, with no retry starting once `inFlightWithinMs` has passed. An upload keeps
  * the schedule alone, since each repeat sends its whole body again. No retry of any write starts
  * more than `inFlightWithinMs` after the client was made, since the client's deadline counts from
- * there. `pause` and `now` are the timer and the monotonic clock, which a test replaces; `now`
- * also dates what the process learns about which Dispatch runs the keyed layer
- * (`KEYED_LAYER_MEMORY_MS`).
+ * there. `pause` and `now` are the timer and the monotonic clock, which a test replaces.
  */
 export interface DispatchWriteRetry {
   readonly pausesMs: readonly number[];
@@ -585,8 +580,7 @@ export interface DispatchWriteRetry {
  * p95 19.6 s, p99 45.5 s, p99.9 62 s, each command timed whole, process start included, so an
  * upper bound on the write itself. 20 s of silence is that p95, and two silent attempts and the
  * ask that collects the answer still fit in 55 s (20 + 1 + 20 + 2 = 43 s). Cutting off a healthy
- * write costs nothing against a Dispatch known to run the keyed layer, which goes on running it
- * and replays its answer.
+ * write costs nothing: Dispatch's keyed layer goes on running it and replays its answer.
  */
 export const DISPATCH_WRITE_RETRY: DispatchWriteRetry = {
   pausesMs: [1_000, 2_000, 4_000, 8_000],
@@ -620,88 +614,6 @@ function retryAfterMs(response: Response): number {
   if (/^\d+$/.test(value)) return Number(value) * 1_000;
   const at = Date.parse(value);
   return Number.isNaN(at) ? 0 : Math.max(0, at - Date.now());
-}
-
-/**
- * How long what this process learned about a Dispatch's keyed layer holds: five minutes from the
- * answer that showed it. A Dispatch rolled back to a release without the layer is still believed to
- * run it for at most that long after it last showed it, which bounds the time in which a failed
- * write could be resent to it and run twice.
- */
-export const KEYED_LAYER_MEMORY_MS = 5 * 60_000;
-
-/**
- * The Dispatch origins this process has lately seen run the keyed-write layer, each with when it
- * last saw it (on `DispatchWriteRetry.now`'s clock): an answer that carried back the key its request
- * sent (`keyEchoed`), or a `/healthz` that said `idempotency_keys: true`, in this process or in an
- * earlier one of the same `dispatch` session (`rememberKeyedLayer`). Only such a Dispatch is asked
- * again under a key; against any other a repeat would be a second write. An entry older than
- * `KEYED_LAYER_MEMORY_MS` says nothing, and only a yes is kept: a probe that found no layer is asked
- * again by the next write that fails.
- */
-const KEYED_LAYER_SEEN = new Map<string, number>();
-
-/**
- * Each origin's `/healthz` probe while it runs, so writes that fail together ask once; dropped once
- * it answers (`DispatchClient.#runsKeyedLayer`).
- */
-const KEYED_LAYER_PROBES = new Map<string, Promise<boolean>>();
-
-/** How long the `/healthz` probe waits; it runs only after a write has already failed. */
-const KEY_LAYER_PROBE_MS = 5_000;
-
-/**
- * Forgets what this process learned about which Dispatch runs the keyed layer. A test seam: the
- * memory is per process and per origin, so a test that drives one origin as a Dispatch of its own
- * starts from nothing.
- */
-export function forgetKeyedLayerMemory(): void {
-  KEYED_LAYER_SEEN.clear();
-  KEYED_LAYER_PROBES.clear();
-}
-
-/**
- * What this process has seen of the keyed layer within `KEYED_LAYER_MEMORY_MS`, each origin with
- * the wall-clock time of its sighting, for a host that runs each call in a process of its own to
- * hand to the next (`rememberKeyedLayer`): the `dispatch` command keeps it in its session's state,
- * since otherwise every call would know nothing and ask `/healthz`, which the load that stalled
- * the write can keep from answering in time. Read on the monotonic clock a client dates by when
- * `DispatchWriteRetry.now` is unset, as the command's are.
- */
-export function keyedLayerMemory(): Record<string, string> {
-  const wall = Date.now();
-  const now = performance.now();
-  const kept: Record<string, string> = {};
-  for (const [origin, seen] of KEYED_LAYER_SEEN) {
-    const age = now - seen;
-    if (age >= 0 && age < KEYED_LAYER_MEMORY_MS) {
-      kept[origin] = new Date(wall - age).toISOString();
-    }
-  }
-  return kept;
-}
-
-/**
- * Takes in what an earlier process saw (`keyedLayerMemory`'s shape), so a yes still holds only
- * `KEYED_LAYER_MEMORY_MS` from the answer that showed it. Anything else says nothing and is passed
- * over: a value that is not that shape, a time that does not parse, one older than the bound and
- * one ahead of the wall clock. The wall clock is the one clock processes share across a reboot
- * (Bun's `process.hrtime` counts from its own process's start), so a wall clock set back between
- * two calls stretches the bound by as much. A sighting this process already holds gives way only
- * to a later one.
- */
-export function rememberKeyedLayer(saved: unknown): void {
-  if (typeof saved !== "object" || saved === null) return;
-  const wall = Date.now();
-  const now = performance.now();
-  for (const [origin, at] of Object.entries(saved)) {
-    if (typeof at !== "string") continue;
-    const age = wall - Date.parse(at);
-    if (!(age >= 0 && age < KEYED_LAYER_MEMORY_MS)) continue;
-    const seen = now - age;
-    const known = KEYED_LAYER_SEEN.get(origin);
-    if (known === undefined || known < seen) KEYED_LAYER_SEEN.set(origin, seen);
-  }
 }
 
 /**
@@ -788,7 +700,8 @@ interface WriteCall {
   readonly key: string;
   /** Whether an attempt of the call may have reached a handler, which may have stored. */
   reached: boolean;
-  /** Whether the call saw the keyed layer judge it: an echoed key, or `/healthz`. */
+  /** Whether the call relied on Dispatch's keyed layer: an answer named its key back, or the call
+   *  asked again under its key. */
   keyed: boolean;
   /** Whether the last definitive answer is the keyed layer's verdict on the key: one that names
    *  the key back and that the layer keeps as the key's outcome (`WriteAnswer.kept`), so that
@@ -830,12 +743,6 @@ interface WriteAnswer {
    * says only that this request was not run. Only a kept answer says what the write did.
    */
   readonly kept: boolean;
-  /**
-   * Whether it is Dispatch's own refusal (its error JSON, with a string `error`) that carried no key
-   * back: Dispatch answered, and its keyed layer did not judge the request, so what the process
-   * remembers about the origin is not trusted for it (`DispatchClient.#runsKeyedLayer`).
-   */
-  readonly unjudged: boolean;
 }
 
 /** The statuses whose response carries no body, which `new Response` refuses one for. */
@@ -864,7 +771,6 @@ async function writeAnswer(response: Response, key: string): Promise<WriteAnswer
       running: false,
       echoed,
       kept: echoed,
-      unjudged: false,
     };
   }
   const { status } = response;
@@ -893,7 +799,6 @@ async function writeAnswer(response: Response, key: string): Promise<WriteAnswer
     running,
     echoed,
     kept: echoed && status !== 401 && shape.code !== IDEMPOTENCY_KEY_REUSED,
-    unjudged: !echoed && typeof shape.error === "string",
   };
 }
 
@@ -2441,15 +2346,11 @@ export class DispatchClient {
    * deadline and its caller's cancellation end the attempts at once, whether a fetch or a pause
    * is under way (`#ended`).
    *
-   * It asks again only against a Dispatch this process has lately seen run the keyed layer: a
-   * Dispatch without the layer would run a repeat as a second write, so its 5xx — which can come
-   * after it committed — is reported as it stands rather than resent. A failing answer that echoed
-   * the request's key (`keyEchoed`) is that knowledge itself, so one of Dispatch's own 5xx, 429 or
-   * `409 KEY_IN_FLIGHT` is asked again at once. Dispatch's own refusal with no echo says its layer
-   * did not judge this request, so the write asks `/healthz` afresh whatever the process
-   * remembers; a transport failure, a silence cut and an answer something in Dispatch's place wrote
-   * say nothing, so they rely on what an answer or `/healthz` showed within
-   * `KEYED_LAYER_MEMORY_MS`, and ask `/healthz` when nothing did (`#runsKeyedLayer`).
+   * Every Dispatch runs the keyed layer on every write route, so a repeat under the key is answered
+   * from the key rather than run again: a write asks again after any answer that is no definitive
+   * one, a transport failure and a silence cut alike, and asks nothing else first. A failing answer
+   * that names the request's key back (`keyEchoed`), one of Dispatch's own 5xx, 429 or
+   * `409 KEY_IN_FLIGHT`, says the layer judged it.
    */
   async #sendPresenting(
     method: string,
@@ -2529,7 +2430,6 @@ export class DispatchClient {
         sentOut = true;
         call.attempts += 1;
         answer = await writeAnswer(await this.#attempt(url, method, sent, body, silenceMs), key);
-        if (answer.echoed) KEYED_LAYER_SEEN.set(this.#baseUrl, this.#now());
         if (!answer.again) {
           // A definitive answer the keyed layer keeps as the key's outcome is its verdict on it:
           // the write ran under it, or the outcome it stored is replayed (`#settle`). One it does
@@ -2566,15 +2466,9 @@ export class DispatchClient {
         answer === undefined ? 0 : retryAfterMs(answer.response)
       );
       const latest = Math.min(started + (running ? inFlightWithinMs : withinMs), lastAsk);
-      // Only a Dispatch that runs the keyed layer may be asked again: against any other a repeat
-      // would be a second write. The `/healthz` probe takes time of its own, and a timer can fire
-      // late on a loaded host, so the bound is read again after each of them.
+      // A timer can fire late on a loaded host, so the bound is read again after the pause.
       let again = scheduled !== undefined && this.#now() + wait <= latest;
-      if (again) {
-        again = answer?.echoed || (await this.#runsKeyedLayer(answer?.unjudged ?? false));
-        call.keyed ||= again;
-        again &&= this.#now() + wait <= latest;
-      }
+      call.keyed ||= again;
       if (again) {
         try {
           await pause(wait, this.#signal);
@@ -2692,78 +2586,6 @@ export class DispatchClient {
   }
 
   /**
-   * Whether this Dispatch runs the keyed layer, so a failed write may be asked again under its
-   * key: true while an answer that echoed a key, or a `/healthz` saying `idempotency_keys: true`,
-   * is younger than `KEYED_LAYER_MEMORY_MS`, and otherwise what `/healthz` says now, which writes
-   * failing together ask once. `unjudged` (Dispatch's own refusal that echoed no key) sets aside
-   * what the process remembers, since that answer itself says the layer did not judge the
-   * request: the probe decides. Only a yes is kept. It runs only after a write has already
-   * failed, so the normal path costs nothing. The probe is shared, so it runs under its own
-   * bound and under no write's signal: this client's signal ends this write's wait on it alone,
-   * read as no layer, as a failed probe is, and the probe goes on for the other writes.
-   */
-  async #runsKeyedLayer(unjudged: boolean): Promise<boolean> {
-    const origin = this.#baseUrl;
-    if (unjudged) KEYED_LAYER_SEEN.delete(origin);
-    const seen = KEYED_LAYER_SEEN.get(origin);
-    if (seen !== undefined && this.#now() - seen < KEYED_LAYER_MEMORY_MS) return true;
-    const signal = this.#signal;
-    if (signal.aborted) return false;
-    let probe = KEYED_LAYER_PROBES.get(origin);
-    if (probe === undefined) {
-      probe = this.#probeKeyedLayer().finally(() => KEYED_LAYER_PROBES.delete(origin));
-      KEYED_LAYER_PROBES.set(origin, probe);
-    }
-    const { promise: left, resolve: leave } = Promise.withResolvers<boolean>();
-    const abort = (): void => leave(false);
-    signal.addEventListener("abort", abort, { once: true });
-    const runs = await Promise.race([probe, left]).finally(() =>
-      signal.removeEventListener("abort", abort)
-    );
-    if (runs) KEYED_LAYER_SEEN.set(origin, this.#now());
-    return runs;
-  }
-
-  /**
-   * `GET /healthz`'s `idempotency_keys`, bounded at `KEY_LAYER_PROBE_MS`, its credential included.
-   * Its status is not read: Dispatch answers 503 whenever its database or
-   * NATS is down, the outage a failed write most likely met, and still says
-   * `idempotency_keys: true`, a fact of its binary. A probe that fails, times out, answers no JSON
-   * or leaves the field out is false: the write is reported as it stands rather than resent, since
-   * a Dispatch without the layer would run a repeat as a second write.
-   */
-  async #probeKeyedLayer(): Promise<boolean> {
-    try {
-      const probe = `${this.#baseUrl}/healthz`;
-      // The probe is shared by the writes that fail together, so it runs under its own bound and
-      // under no write's signal. Its credential is given that bound too: a broker credential
-      // waiting on a pod's missing registration stops at it, and the trade goes on.
-      const bound = AbortSignal.timeout(KEY_LAYER_PROBE_MS);
-      const headers = await this.#credential.headers("GET", probe, undefined, bound);
-      const response = await this.fetchImpl(probe, {
-        method: "GET",
-        redirect: "manual",
-        headers: { Accept: "application/json", ...headers },
-        signal: bound,
-      });
-      // A redirect's body is not read, whatever its type says: it is no word of Dispatch's.
-      if (isRedirectStatus(response.status)) {
-        response.body?.cancel().catch(() => undefined);
-        return false;
-      }
-      if (!isJson(response)) return false;
-      const health: unknown = await response.json();
-      return (
-        typeof health === "object" &&
-        health !== null &&
-        Reflect.get(health, "idempotency_keys") === true
-      );
-    } catch {
-      return false;
-    }
-  }
-
-  /**
    * What a write throws once it stops asking with no definitive answer: the last attempt's refusal
    * as `#response` reads it, unless that refusal alone would say the write never took effect while
    * an attempt may have reached Dispatch (`reached`), when it is a `DispatchWriteUnsettledError`
@@ -2792,9 +2614,11 @@ export class DispatchClient {
   }
 
   /** The URL of `path` under the base URL, with `query`. A path value that names nothing is refused
-   *  here, before any request, for every call (`namesNothing`, `DispatchEmptyPathError`). */
+   *  here, before any request, for every call (`pathNamesNothingPattern`, `DispatchEmptyPathError`). */
   #url(path: readonly string[], query?: object): string {
-    if (path.some(namesNothing)) throw new DispatchEmptyPathError(path);
+    if (path.some((segment) => pathNamesNothingPattern.test(segment))) {
+      throw new DispatchEmptyPathError(path);
+    }
     const url = new URL(
       `${path.map((segment) => encodeURIComponent(segment)).join("/")}`,
       `${this.#baseUrl}/`

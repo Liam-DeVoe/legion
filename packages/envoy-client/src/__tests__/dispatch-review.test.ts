@@ -5,7 +5,7 @@ import { keyedLayer } from "../../test/keyed-layer";
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
-import { DispatchServiceError, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DispatchServiceError } from "../dispatch-http";
 import { messageFor } from "../errors";
 import { ToolInputError } from "../tool-input-errors";
 
@@ -134,7 +134,6 @@ beforeEach(() => {
   noRoute = false;
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 async function run(argv: readonly string[]): Promise<{

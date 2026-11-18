@@ -8,7 +8,7 @@ import { keyedLayer } from "../../test/keyed-layer";
 import { routeAnswer } from "../../test/route-answers";
 import { bearerCredential } from "../bearer";
 import { type DispatchToolResult, executeDispatchTool } from "../dispatch-execute";
-import { DISPATCH_WRITE_RETRY, DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DISPATCH_WRITE_RETRY, DispatchClient } from "../dispatch-http";
 import {
   forgetShownPictures,
   readPictures,
@@ -123,7 +123,8 @@ function dispatch(
   return { requests, uploads, posted, fetchImpl: keyedLayer(fetchImpl) as typeof fetch };
 }
 
-/** The call as the host session `sessionId` makes it: the session reads and posts as itself. */
+/** The call as the host session `sessionId` makes it: the session reads and posts as itself. A
+ *  write that gets no definitive answer is asked again under its key at once, with no wait. */
 function run(
   tool: string,
   args: Record<string, unknown>,
@@ -142,6 +143,7 @@ function run(
       throw new Error("no repository");
     },
     fetchImpl,
+    writeRetry: { ...DISPATCH_WRITE_RETRY, pause: async () => undefined },
   });
 }
 
@@ -462,7 +464,6 @@ describe("sending pictures", () => {
   test("an upload that may have reached Dispatch is not said to have failed", async () => {
     let uploads = 0;
     const server = dispatch((pathname, init) => {
-      if (pathname === "/healthz") return json({ idempotency_keys: true });
       if (pathname !== "/api/v1/issues/DSP-41/artifacts" || init.method !== "POST") return;
       uploads += 1;
       const status = uploads === 1 ? 502 : 429;
@@ -489,9 +490,6 @@ describe("sending pictures", () => {
         writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [0], pause: async () => undefined },
       })
     );
-    // The /healthz answer above is remembered per process and origin; later files' tests drive
-    // the same origin as a Dispatch of their own.
-    forgetKeyedLayerMemory();
 
     expect(uploads).toBe(2);
     expect(failure.message).toStartWith(`images: ${shot} may or may not have been uploaded: `);
@@ -501,8 +499,8 @@ describe("sending pictures", () => {
     expect(server.posted).toEqual([]);
   });
 
-  // A gateway's 502 can come after Dispatch stored the upload, so it is no refusal either, even
-  // where the write is not asked again (no keyed layer is known here).
+  // A gateway's 502 can come after Dispatch stored the upload, so it is no refusal either, after
+  // the last of the write's attempts.
   test("an upload a gateway answered 502 is not said to have failed", async () => {
     const server = dispatch((pathname, init) =>
       pathname === "/api/v1/issues/DSP-41/artifacts" && init.method === "POST"

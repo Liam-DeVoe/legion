@@ -42,7 +42,7 @@ Such a 404 means no linked issue, no such document, or a server without the rout
 
 ## A redirect
 
-No request of the client follows a redirect: not a read, not a write, and not the `/healthz` probe.
+No request of the client follows a redirect: not a read, and not a write.
 Dispatch's API routes answer no request with a 3xx, so a 3xx is a refusal of whatever answered in Dispatch's place.
 It is a `DispatchGatewayError`, whatever its body is.
 Its message names the request as for any gateway's answer, then the status and the reason phrase, and the origin that the redirect points at.
@@ -59,13 +59,16 @@ The GitHub Actions identity, of `@legion/broker-client` and of the Go broker cli
 ## A path value that names nothing
 
 The client refuses a call whose URL path would hold a value that names nothing, before any request, for every caller (`DispatchEmptyPathError`, thrown by `#url`).
-Such a value is empty, only white space, or `.` or `..` (`namesNothing`).
+Such a value is only Go's white space, or nothing at all, or only dots and slashes inside such white space, such as `.`, `..`, `./`, `../`, `.//` or `/` (`pathNamesNothingPattern` in `go-space.ts`).
+Go's white space is the set Dispatch trims a value by (`strings.TrimSpace`); it holds U+0085, which JavaScript's `trim` keeps, and not U+FEFF, which `trim` takes.
 Sent, `POST /api/v1/comments//resolve` names no comment, and Dispatch's router answers it with a redirect to another path.
 The URL drops `.` and `..` as steps of the path, so `GET /api/v1/issues/..` asks `GET /api/v1/`, another route.
+A script that writes `"./$X"` with an empty `X` sends `./`, which a server that reads the path decoded takes as no step.
 The message names the route with `{empty}`, or the value in double quotes, in place of that value, and says that nothing was sent.
 It adds that a variable that gives the value may be empty or unset.
 A model's tool call reaches this refusal, since a tool's schema takes such a value.
-The `dispatch` command refuses each such value of a flag before it calls the client, naming the flag, so no argument of the command reaches it.
+The `dispatch` command refuses each such value first, naming the flag, for each flag whose value goes into a URL path (each `path` field of `IDENTIFIER_FIELDS` in `dispatch-command.ts`: `--issue`, `--project`, `--artifact`, `--retract`, `--comment` and `--session`).
+So no argument of the command reaches this refusal: a program that ran every command in each of its forms (of an issue, of a project, and of a project's document) with 14 such values in each string flag that has no fixed set of values found no run that did.
 
 ## A write whose outcome is unknown
 
@@ -76,7 +79,7 @@ That error is deliberately not a `DispatchServiceError`, because a caller reads 
 Its message gives the last answer and the number of attempts.
 It then says whether an earlier attempt may have reached Dispatch, or whether Dispatch was still running one.
 It says that the write may or may not have taken effect.
-Where the call saw the keyed layer judge the write, the message says that Dispatch finishes an attempt that it received.
+Where an answer named the call's key back, or the call asked again under that key, the message says that Dispatch finishes an attempt that it received.
 It then says to read the write back before you send it again, because a new command sends it under a new key.
 Otherwise it says to check whether the write took effect before you send it again.
 

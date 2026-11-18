@@ -827,8 +827,9 @@ export async function runDispatchCli(
       // so the two stay one answer. A refusal the executor makes during the call, such as an id of
       // the wrong shape or an ask id prefix matching no ask, only the call reaches. Everything else
       // here is Dispatch's own refusal or failure. No argument of the command reaches the client's
-      // refusal of a path value that names nothing (`DispatchEmptyPathError`): the parse refuses
-      // each such value of a flag first, naming the flag.
+      // refusal of a path value that names nothing (`DispatchEmptyPathError`): each flag whose
+      // value goes into a URL path is a `path` field of IDENTIFIER_FIELDS (`dispatch-command.ts`),
+      // which the parse refuses first, naming the flag.
       code = error instanceof ToolInputError ? USAGE : REFUSED;
     }
   }

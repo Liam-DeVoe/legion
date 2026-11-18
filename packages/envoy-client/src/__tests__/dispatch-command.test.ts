@@ -470,6 +470,97 @@ describe("the dispatch command surface", () => {
     });
   });
 
+  // Each item of a list names a thing as a single value does: Dispatch drops a blank project of
+  // `dispatch priorities` and reads every project's counts with no line, so each item is refused
+  // as the single value is.
+  test("an item of a list value that names nothing is refused, naming the flag", () => {
+    for (const argv of [
+      ["priorities", "--project", " "],
+      ["priorities", "--project", "ACME", "--project", "\t"],
+    ]) {
+      expect(parseCommand(argv, noFiles), argv.join(" ")).toMatchObject({
+        kind: "refused",
+        problems: ["--project is only white space, so the call names no project"],
+      });
+    }
+    expect(parseCommand(["priorities", "--project", "ACME"], noFiles)).toMatchObject({
+      kind: "call",
+      args: { project: ["ACME"] },
+    });
+  });
+
+  // A value of only dots and slashes names no step of a URL path: `./`, `../` and `.//` are what
+  // a script writes for "./$X" with an empty X, and sent they reach no thing of the flag's.
+  test("a value of only dots and slashes where it goes into a path is refused, naming the flag", () => {
+    const dots = (flag: string, value: string, noun: string) =>
+      `${flag} is "${value}", only dots and slashes, which name no step of a URL path, so the call names no ${noun}`;
+    for (const [argv, problem] of [
+      [["read", "--issue", "./"], dots("--issue", "./", "issue")],
+      [["read", "--issue", "../"], dots("--issue", "../", "issue")],
+      [["read", "--issue", ".//"], dots("--issue", ".//", "issue")],
+      [["resolve-comment", "--comment", "/"], dots("--comment", "/", "comment")],
+      [
+        ["send-to-agent", "--session", "...", "--body", "Hello."],
+        dots("--session", "...", "session"),
+      ],
+      [["doc-read", "--project", "ACME", "--artifact", "./"], dots("--artifact", "./", "document")],
+    ] as const) {
+      expect(parseCommand(argv, noFiles), argv.join(" ")).toMatchObject({
+        kind: "refused",
+        problems: [problem],
+      });
+    }
+  });
+
+  // A document of a project is found by its reference in `GET /api/v1/projects/{key}/artifacts/
+  // {ref}`, so an empty --artifact reached the client's own refusal of the path, which names the
+  // route and not the flag. Each command that takes a document refuses it here, as it does an
+  // empty --issue.
+  test("an empty --artifact is refused in each command that takes a project's document, naming the flag", () => {
+    const unset =
+      "--artifact is empty, so the call names no document: a variable that gives it may be empty or unset";
+    for (const argv of [
+      ["ask", "--project", "ACME", "--artifact", "", "--question", "Ship it?"],
+      ["comment", "--project", "ACME", "--artifact", "", "--body", "Looks good."],
+      [
+        "suggest",
+        "--project",
+        "ACME",
+        "--artifact",
+        "",
+        "--quote",
+        "old wording",
+        "--replace-with",
+        "new wording",
+      ],
+      ["doc-edit", "--project", "ACME", "--artifact", "", "--ops-json", "[]"],
+      ["doc-read", "--project", "ACME", "--artifact", ""],
+      ["request-approval", "--project", "ACME", "--artifact", "", "--summary", "A live sync."],
+      ["read", "--project", "ACME", "--artifact", ""],
+    ]) {
+      expect(parseCommand(argv, noFiles), argv.join(" ")).toMatchObject({
+        kind: "refused",
+        problems: [unset],
+      });
+    }
+  });
+
+  // Dispatch trims a value by Go's white space (`strings.TrimSpace`), which takes U+0085 where
+  // JavaScript's `trim` keeps it: `dispatch issues --project $'\u0085'` listed every project's
+  // issues with no line. So the refusal reads Go's set (`goBlankPattern`).
+  test("a value of Go's white space alone, U+0085 among it, is refused, naming the flag", () => {
+    for (const [argv, flag, noun] of [
+      [["issues", "--project", "\u0085"], "--project", "project"],
+      [["issues", "--project", "ACME", "--parent", "\u0085"], "--parent", "parent"],
+      [["read", "--issue", " \u0085\u3000"], "--issue", "issue"],
+    ] as const) {
+      expect(parseCommand(argv, noFiles), argv.join(" ")).toMatchObject({
+        kind: "refused",
+        problems: [`${flag} is only white space, so the call names no ${noun}`],
+      });
+    }
+  });
+
   // `dispatch issue --parent ""` made the issue with no parent and no line, as an empty variable
   // writes it, so the create refuses it as the issue list does. `issue-update --parent ""` clears
   // the parent, as its help says, so that command still takes it (the row above).

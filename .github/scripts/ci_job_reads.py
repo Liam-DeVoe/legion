@@ -2444,8 +2444,11 @@ GATES = [
         ("packages/pi-shared/test/**", "packages/pi-legion/extensions/legion-phase-stall-omp.test.ts:14, legion-role-tools-omp.test.ts:13, src/skills-guard.test.ts:15, scripts/prepack.test.ts:4"),
         ("packages/envoy-client/test/subscribe-answer.ts", "packages/pi-legion/extensions/legion-role-claim.test.ts:46 "
                                                            "imports @legion/envoy-client/test/subscribe-answer, and "
-                                                           "packages/pi-shared/test/omp-harness.ts:17, which this "
+                                                           "packages/pi-shared/test/omp-harness.ts:18, which this "
                                                            "package's omp tests drive, imports it too"),
+        ("packages/envoy-client/test/keyed-layer.ts", "packages/pi-shared/test/omp-harness.ts:17, which this package's "
+                                                      "omp tests drive and its typecheck compiles, serves its stand-in "
+                                                      "behind keyedLayer"),
         # envoy-client's sources, and broker-client's with them, are the shared read below.
         (CONTRACTS_SRC, f"{at('pi-legion', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
         (TEST_FIXTURES_SRC, "packages/pi-legion's extensions and src tests import @legion/test-fixtures"),

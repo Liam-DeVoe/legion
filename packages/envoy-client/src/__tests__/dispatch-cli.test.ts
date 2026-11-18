@@ -32,12 +32,7 @@ import {
 } from "../dispatch-cli";
 import { ownIdentityDispatch } from "../dispatch-config";
 import { resetAdviceMemory } from "../dispatch-execute";
-import {
-  DISPATCH_WRITE_RETRY,
-  DispatchClient,
-  forgetKeyedLayerMemory,
-  KEYED_LAYER_MEMORY_MS,
-} from "../dispatch-http";
+import { DISPATCH_WRITE_RETRY, DispatchClient } from "../dispatch-http";
 import { forgetShownPictures } from "../dispatch-picture-tools";
 
 interface Recorded {
@@ -638,7 +633,6 @@ beforeEach(() => {
   stateDir = makeDirectory();
   // Each run is its own process in production: nothing the library remembers carries over.
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 function environment(
@@ -679,31 +673,23 @@ async function run(
 function nextProcess(sessionId: string): void {
   resetAdviceMemory();
   forgetShownPictures(sessionId);
-  forgetKeyedLayerMemory();
 }
 
 /**
  * The test server behind Dispatch's keyed layer, which judged every answer to a write and names
  * its `Idempotency-Key` back on each: the first `failing` message posts fail in transport before
- * they reach it, and `/healthz` never answers within its bound, as under the load that stalls a
- * write.
+ * they reach it.
  */
 function keyedDispatch(failing: number): {
   readonly fetchImpl: typeof fetch;
   readonly keys: string[];
-  readonly probes: string[];
 } {
   const keys: string[] = [];
-  const probes: string[] = [];
   let left = failing;
   const fetchImpl = keyedLayer(
     async (input: string | URL | Request, init?: RequestInit) => {
       const request = new Request(input, init);
       const { pathname } = new URL(request.url);
-      if (pathname === "/healthz") {
-        probes.push(pathname);
-        throw new DOMException("The operation timed out.", "TimeoutError");
-      }
       if (request.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages") {
         keys.push(request.headers.get(IDEMPOTENCY_KEY_HEADER) ?? "");
         if (left-- > 0) throw new TypeError("fetch failed");
@@ -712,7 +698,7 @@ function keyedDispatch(failing: number): {
     },
     { judged: () => true }
   ) as typeof fetch;
-  return { fetchImpl, keys, probes };
+  return { fetchImpl, keys };
 }
 
 function ledger(sessionId: string): { tool: string; error?: string }[] {
@@ -1153,99 +1139,21 @@ describe("the dispatch CLI", () => {
     expect(second.stdout).not.toContain("is still in triage");
   });
 
-  // Every `dispatch` command is a process of its own, so what one call saw of Dispatch's keyed
-  // layer reaches the next only through the session's state. A later call's write whose attempt
-  // fails is asked again under its key on that alone, without /healthz, which the load that
-  // stalled the write can keep from answering in time.
-  test("a failed write is asked again under its key when an earlier call of the session saw the keyed layer", async () => {
+  // Every `dispatch` command is a process of its own, and its write whose attempt fails is asked
+  // again under its key on its own: Dispatch's keyed layer answers the repeat from the key, so the
+  // call needs nothing an earlier call saw, and the session's state keeps nothing of the layer.
+  test("a failed write is asked again under its key in a call of its own, and the state keeps nothing of the keyed layer", async () => {
     const message = ["message", "--issue", "DSP-1", "--body", "Deliverable landed."];
-    const first = keyedDispatch(0);
-    expect((await run(message, omp, "", first.fetchImpl)).code).toBe(0);
+    const stalled = keyedDispatch(1);
+    const { code, stdout } = await run(message, omp, "", stalled.fetchImpl);
+    expect(code, stdout).toBe(0);
+    expect(stalled.keys).toHaveLength(2);
+    expect(stalled.keys[1]).toBe(stalled.keys[0] ?? "");
     const state = JSON.parse(
       readFileSync(join(stateDir, "sessions", "ses-1", "state.json"), "utf-8")
     );
-    expect(Object.keys(state.keyedLayer)).toEqual([`http://127.0.0.1:${server.port}`]);
-    nextProcess("ses-1");
-    const stalled = keyedDispatch(1);
-    const second = await run(message, omp, "", stalled.fetchImpl);
-    expect(second.code).toBe(0);
-    expect(stalled.keys).toHaveLength(2);
-    expect(stalled.keys[1]).toBe(stalled.keys[0] ?? "");
-    expect(stalled.probes).toEqual([]);
+    expect(Object.keys(state).sort()).toEqual(["advice", "follows", "pictures"]);
   });
-
-  // A sighting holds for KEYED_LAYER_MEMORY_MS from the answer that showed it, across processes as
-  // within one. One older than that, one dated ahead of the clock, and anything that is not a
-  // sighting say nothing, so the write asks /healthz and, with no yes from it, is reported rather
-  // than sent twice.
-  test("a carried sighting of the keyed layer is trusted only while it is under five minutes old", async () => {
-    const origin = `http://127.0.0.1:${server.port}`;
-    const message = ["message", "--issue", "DSP-1", "--body", "Deliverable landed."];
-    const dir = join(stateDir, "sessions", "ses-1");
-    mkdirSync(dir, { recursive: true });
-    const sighting = (ago: number) => ({ [origin]: new Date(Date.now() - ago).toISOString() });
-    const call = async (keyedLayer: unknown) => {
-      writeFileSync(
-        join(dir, "state.json"),
-        JSON.stringify({ advice: [], pictures: [], follows: [], keyedLayer })
-      );
-      nextProcess("ses-1");
-      const stalled = keyedDispatch(1);
-      const { code } = await run(message, omp, "", stalled.fetchImpl);
-      return { code, posts: stalled.keys.length, probes: stalled.probes.length };
-    };
-    expect(await call(sighting(60_000))).toEqual({ code: 0, posts: 2, probes: 0 });
-    for (const keyedLayer of [
-      sighting(KEYED_LAYER_MEMORY_MS + 1_000),
-      sighting(-60_000),
-      { [origin]: "yesterday" },
-      { [origin]: Date.now() },
-      "garbage",
-    ]) {
-      expect(await call(keyedLayer), JSON.stringify(keyedLayer)).toEqual({
-        code: 1,
-        posts: 1,
-        probes: 1,
-      });
-    }
-  });
-
-  // Dispatch's own refusal that carries no key back says its keyed layer did not judge the
-  // request, so the carried sighting is set aside: the write asks /healthz instead of being sent
-  // again, and the call's save leaves the sighting out of state.json, so the next call trusts
-  // nothing it carried. A client that kept the sighting would resend through its 15 s of pauses;
-  // the test's 30 s bound lets that show as five posts rather than as a timeout.
-  test("a Dispatch refusal that echoes no key drops the carried sighting from state.json", async () => {
-    const origin = `http://127.0.0.1:${server.port}`;
-    const file = join(stateDir, "sessions", "ses-1", "state.json");
-    mkdirSync(join(stateDir, "sessions", "ses-1"), { recursive: true });
-    const keyedLayer = { [origin]: new Date(Date.now() - 60_000).toISOString() };
-    writeFileSync(file, JSON.stringify({ advice: [], pictures: [], follows: [], keyedLayer }));
-    nextProcess("ses-1");
-    let posts = 0;
-    let probes = 0;
-    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-      const request = new Request(input, init);
-      const { pathname } = new URL(request.url);
-      if (pathname === "/healthz") {
-        probes++;
-        throw new DOMException("The operation timed out.", "TimeoutError");
-      }
-      if (request.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages") {
-        posts++;
-        return Response.json({ code: "INTERNAL", error: "database is down" }, { status: 503 });
-      }
-      return fetch(request);
-    }) as typeof fetch;
-    const { code } = await run(
-      ["message", "--issue", "DSP-1", "--body", "Deliverable landed."],
-      omp,
-      "",
-      fetchImpl
-    );
-    expect({ code, posts, probes }).toEqual({ code: 1, posts: 1, probes: 1 });
-    expect(JSON.parse(readFileSync(file, "utf-8")).keyedLayer).toEqual({});
-  }, 30_000);
 
   test("a read from a Dispatch server older than the repository fields answers, warning on stderr", async () => {
     const { code, stdout, stderr } = await run(["read", "--issue", "DSP-3"], omp);
@@ -1913,7 +1821,8 @@ describe("dispatch result --project, as a CI job writes it", () => {
    *  request with a 503. */
   let runnerHold: Promise<boolean> = Promise.resolve(true);
   let dispatchAnswer: () => Response | Promise<Response>;
-  /** Whether the stand-in Dispatch answers the write now as no keyed layer does: naming no key. */
+  /** Whether the stand-in answers the write naming no key back, as something in Dispatch's place
+   *  does: Dispatch's own answer to a keyed write always names it. */
   let unkeyed = false;
   /** The result Dispatch stores for the job's write, as the route answers it. */
   const result = storedSpecResult(43, "pass", "", 1);
@@ -1965,7 +1874,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
         asked();
         return dispatchAnswer();
       },
-      { judged: (response) => response.ok || response.status === 409, noKeyedLayer: () => unkeyed }
+      { judged: (response) => response.ok || response.status === 409, namesNoKey: () => unkeyed }
     ),
   });
   afterAll(() => {
@@ -2313,7 +2222,8 @@ describe("dispatch result --project, as a CI job writes it", () => {
   test("a 409 KEY_COMMITTED that does not name the write's key back prints write_outcome_unknown and exits 1", async () => {
     for (const named of ["", "another-request-key"]) {
       written.length = 0;
-      // One names no key back, as no keyed layer answers; the other names another request's.
+      // One names no key back, as something in Dispatch's place answers; the other names another
+      // request's.
       unkeyed = named === "";
       dispatchAnswer = () => keyCommitted(named === "" ? undefined : named);
       const { code, stdout, stderr } = await runJob(record, jobEnvironment());
@@ -2379,12 +2289,17 @@ describe("dispatch result --project, as a CI job writes it", () => {
   }
 
   // A write that went out and heard nothing back may have stored the result, here it did: the
-  // proxy drops the answer of the write and of /healthz, which would let it ask again. The job's
-  // step still fails, since the write is not confirmed, and its one line says so to a program.
+  // proxy drops the answer of the write. The command's bound leaves no time for a pause
+  // (`oneAttempt`), so the write is not asked again. The job's step still fails, since the write
+  // is not confirmed, and its one line says so to a program.
   test("a write that went out and heard no answer prints write_outcome_unknown and exits 1", async () => {
-    const proxy = lossyProxy(() => true, true);
+    const proxy = lossyProxy(() => true, false);
     try {
-      const ran = await runJob(record, { ...jobEnvironment(), DISPATCH_URL: proxy.url });
+      const ran = await runJob(
+        record,
+        { ...jobEnvironment(), DISPATCH_URL: proxy.url },
+        oneAttempt
+      );
       expect(ran).toEqual({
         code: 1,
         stdout: `${JSON.stringify({ write_outcome_unknown: "ECONNRESET" })}\n`,
@@ -2392,7 +2307,6 @@ describe("dispatch result --project, as a CI job writes it", () => {
       });
       expect(written.map((seen) => [seen.method, seen.path])).toEqual([
         ["POST", "/api/v1/projects/ACME/results"],
-        ["GET", "/healthz"],
       ]);
     } finally {
       proxy.stop();
@@ -2405,10 +2319,11 @@ describe("dispatch result --project, as a CI job writes it", () => {
     const closed = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
     const url = `http://127.0.0.1:${closed.port}`;
     closed.stop(true);
-    const { code, stdout, stderr } = await runJob(record, {
-      ...jobEnvironment(),
-      DISPATCH_URL: url,
-    });
+    const { code, stdout, stderr } = await runJob(
+      record,
+      { ...jobEnvironment(), DISPATCH_URL: url },
+      oneAttempt
+    );
     expect({ code, stderr, unknown: stdout.includes("write_outcome_unknown") }).toEqual({
       code: 1,
       stderr: "",
@@ -2422,12 +2337,10 @@ describe("dispatch result --project, as a CI job writes it", () => {
   // answers KEY_COMMITTED: the old line, byte for byte, and exit 0.
   test("a landed write whose answer is lost and asked again still prints landed_without_answer", async () => {
     const proxy = lossyProxy((write) => write === 1, false);
-    dispatchAnswer = () => {
-      if (written.at(-1)?.path === "/healthz") return Response.json({ idempotency_keys: true });
-      return written.filter((seen) => seen.method === "POST").length === 1
+    dispatchAnswer = () =>
+      written.filter((seen) => seen.method === "POST").length === 1
         ? storedAnswer()
         : keyCommitted();
-    };
     try {
       const ran = await runJob(record, { ...jobEnvironment(), DISPATCH_URL: proxy.url });
       expect(ran).toEqual({
@@ -2437,7 +2350,6 @@ describe("dispatch result --project, as a CI job writes it", () => {
       });
       expect(written.map((seen) => [seen.method, seen.path])).toEqual([
         ["POST", "/api/v1/projects/ACME/results"],
-        ["GET", "/healthz"],
         ["POST", "/api/v1/projects/ACME/results"],
       ]);
     } finally {
@@ -2459,6 +2371,9 @@ describe("dispatch result --project, as a CI job writes it", () => {
   /** A bound of the command short enough for a test, on the fake clock each of its rows runs on
    *  (`onFakeClock`): no round starts later than `reserveMs` before `totalMs`. */
   const shortBound = (totalMs: number, reserveMs: number): ResultBound => ({ totalMs, reserveMs });
+  /** A bound whose window to ask a write again (its total less its reserve, 0.5 s) ends before the
+   *  write's first pause of 1 s, so a write that gets no definitive answer makes its one attempt. */
+  const oneAttempt = shortBound(60_000, 59_500);
 
   // Dispatch answers 201 only after it stored the result, and names the request's key back on it
   // (`TestEveryKeyedAnswerNamesItsKey`), so a body lost after that status line is a landing whose
@@ -3011,22 +2926,19 @@ describe("dispatch result --project, as a CI job writes it", () => {
     }
   }, 30_000);
 
-  // The case of the fresh acceptance of f60429ff0d (its D-A): a Dispatch whose /healthz says it
-  // runs the keyed layer, so the write client also asks again under the key inside each call,
-  // while Dispatch's check of the token turns every attempt away. The client's deadline and the
-  // command's waits are one bound on one clock: the call ends inside it with the refusal that
-  // names the last code, and no write_outcome_unknown, since no handler ever ran. Before the one
-  // bound the client's own 60 s deadline, counted apart from the command's waits, ended the call
-  // first, and an attempt it ended before it was sent read as one that may have stored.
+  // The case of the fresh acceptance of f60429ff0d (its D-A): the write client asks again under
+  // the key inside each call, while Dispatch's check of the token turns every attempt away. The
+  // client's deadline and the command's waits are one bound on one clock: the call ends inside it
+  // with the refusal that names the last code, and no write_outcome_unknown, since no handler ever
+  // ran. Before the one bound the client's own 60 s deadline, counted apart from the command's
+  // waits, ended the call first, and an attempt it ended before it was sent read as one that may
+  // have stored.
   for (const [name, answer, code] of [
     ["503 BROKER_UNAVAILABLE", tokenNotChecked.unavailable, "BROKER_UNAVAILABLE"],
     ["429 BROKER_TOKEN_RATE_LIMITED", tokenNotChecked.limited, "BROKER_TOKEN_RATE_LIMITED"],
   ] as const) {
     test(`Dispatch's token check turning every write away with ${name}, against the keyed layer, ends at the one bound naming ${code}`, async () => {
-      dispatchAnswer = () =>
-        written.at(-1)?.path === "/healthz"
-          ? Response.json({ status: "degraded", idempotency_keys: true })
-          : answer();
+      dispatchAnswer = answer;
       const ran = await onFakeClock(record, jobEnvironment(), shortBound(8_000, 1_000), eachWait);
       expect(
         {
@@ -3449,7 +3361,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
         "json",
         (value) => {
           dispatchAnswer = () => Response.json({ code: value, error: "internal" }, { status: 500 });
-          return runJob(record, jobEnvironment());
+          return runJob(record, jobEnvironment(), oneAttempt);
         },
       ],
       [

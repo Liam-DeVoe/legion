@@ -83,7 +83,7 @@ func TestUnicodeIsSpaceReportsTheCommittedScalars(t *testing.T) {
 		"This test measured this Go over every scalar from 0 to 10FFFF, so the characters above are where "+
 		"Go stands now and the list is what Go reported when the list was written: raising Go or its "+
 		"Unicode version moves the first line, editing the file by hand moves the second.\n"+
-		"goBlankPattern in packages/envoy-client/src/dispatch-execute.ts writes the same set out as a "+
+		"goBlankPattern in packages/envoy-client/src/go-space.ts writes the same set out as a "+
 		"regular expression, and `dispatch artifact` reads it to tell whether the Dispatch server will "+
 		"call a create's content blank; the server reads strings.TrimSpace, which trims what this test "+
 		"measured. Measure the two together: write what this test reports into the list, correct the "+
