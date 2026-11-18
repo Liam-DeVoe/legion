@@ -376,7 +376,6 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project string, cred
 		ProvidersSecrets:        providersSecrets(cfg, lookup),
 		SessionStore:            k.SessionStore,
 		Setup:                   k.Setup,
-		SkillsRepository:        k.SkillsRepository,
 		TestPostgres:            k.TestPostgres,
 		MemoryGuard:             memoryGuard,
 		BootTimeout:             cfg.WorkerBootTimeout,
