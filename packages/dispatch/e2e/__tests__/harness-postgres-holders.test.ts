@@ -56,7 +56,10 @@ const onLinux = process.platform === "linux";
 const pgCtlSpellings: readonly {
   readonly title: string;
   readonly link: "none" | "kept" | "gone";
-  readonly spell: (run: string) => {
+  readonly spell: (
+    run: string,
+    alias: string
+  ) => {
     readonly HARNESS_DATA?: string;
     readonly HARNESS_CWD?: string;
   };
@@ -91,6 +94,12 @@ const pgCtlSpellings: readonly {
     link: "none",
     spell: (run) => ({ HARNESS_DATA: `${run}//worker-0/pgdata` }),
   },
+  {
+    title:
+      "v-no-leftover-postgres: a start leaves the Postgres of a stack killed while its pg_ctl start runs with a -D through a link that its mark does not hold, and names it in one line; the next start after that pg_ctl ended removes the postmaster it started",
+    link: "none",
+    spell: (run, alias) => ({ HARNESS_DATA: join(alias, basename(run), "worker-0", "pgdata") }),
+  },
 ];
 
 // A stack killed hard while its `pg_ctl start` runs leaves that pg_ctl running, and the
@@ -106,6 +115,9 @@ for (const { title, link, spell } of pgCtlSpellings) {
       // it there; the lines name the run directory's one spelling.
       const given = link === "none" ? tmp : `${tmp}-link`;
       if (link !== "none") symlinkSync(tmp, given);
+      // A link of this user's to the TMPDIR that no mark holds, for a `-D` spelt through it.
+      const alias = `${tmp}-alias`;
+      symlinkSync(tmp, alias);
       const run = join(given, basename(own));
       const bin = join(tmp, "bin");
       const go = join(tmp, "go");
@@ -113,7 +125,7 @@ for (const { title, link, spell } of pgCtlSpellings) {
       const data = join(run, "worker-0", "pgdata");
       const [named, namedSockets] = [join(own, "worker-0", "pgdata"), join(own, basename(sockets))];
       const mark = join(own, marksDirectory, "worker-0.json");
-      const spelt = spell(run);
+      const spelt = spell(run, alias);
       startingPgCtl(bin, go);
       const harness = Bun.spawn([process.execPath, "--eval", harnessScript], {
         env: {
@@ -189,6 +201,7 @@ for (const { title, link, spell } of pgCtlSpellings) {
           }
         }
         if (link !== "none") rmSync(given, { force: true });
+        rmSync(alias, { force: true });
         rmSync(tmp, { recursive: true, force: true });
       }
     },
@@ -223,7 +236,11 @@ test.skipIf(!onLinux)(
     leaveData(data);
     const mark = writeMark(run, owners().gone, data, mkdtempSync(join(tmp, "no-bin-")));
     const sockets = socketsOf(mark);
-    const holder = standIn(data);
+    // `tail -f /dev/null` names only absolute paths outside the directory: its working directory
+    // alone holds it.
+    const tail = Bun.which("tail");
+    if (tail === null) throw new Error("no tail on PATH to hold a directory");
+    const holder = standIn(data, [tail, "-f", "/dev/null"]);
     try {
       const before = entriesChangedAt(dirname(data));
       const first = await sweep(tmp);
