@@ -915,13 +915,7 @@ again. `DISPATCH_URL`,
 how a Legion pane gets the Dispatch and Envoy its daemon names. A file's token goes with
 `DISPATCH_URL` or `ENVOY_URL` only when the variable names the origin of the server written in that
 file, and a file's `natsSeed` with `ENVOY_NATS_URL` only when it names that file's `natsUrls`;
-otherwise the section is off with an error naming the variable to set. `DISPATCH_TOKEN_BROKER=1`
-overrides no field: it makes the secrets broker the only route for Dispatch's credential, so the
-session reads no Dispatch token at all (not `DISPATCH_TOKEN`, `DISPATCH_TOKEN_FILE` or the file's
-`dispatch.token`), and with nothing to trade it has Dispatch off with an error that says so
-(`dispatchSettings`). The Legion daemon tells it to a role in a pod that carries the exchange
-identity under `dispatch_token_broker`, and `legion controller start` to its controller under the
-same setting; a value other than `1` is refused, and unset or blank is off.
+otherwise the section is off with an error naming the variable to set.
 
 With Envoy off the extension builds no listener client, registers no Envoy tool and no `/whoami`,
 and opens no NATS connection; the Legion claim bridge and every other listener call go through one

@@ -80,10 +80,7 @@ repository its own installation holds;
 `GH_HOST` set empty: read by the pane's `gh` and `git`, by nothing here), the Envoy
 variables (`ENVOY_URL`, `ENVOY_NATS_URL`, `ENVOY_TOKEN_FILE`, read by `@legion/envoy-client`),
 `NATS_NKEY_SEED_FILE` when the daemon has a NATS nkey seed, and `DISPATCH_URL`/`DISPATCH_TOKEN_FILE`
-when the daemon has `dispatch_url` configured, or, under `dispatch_token_broker` in a pod that
-carries the exchange identity, `DISPATCH_URL` with `DISPATCH_TOKEN_BROKER=1` and no
-`DISPATCH_TOKEN_FILE` (contract 165; read by `@legion/envoy-client`) — and, beside the pane, the
-environment of a pod's
+when the daemon has `dispatch_url` configured — and, beside the pane, the environment of a pod's
 `workspace-init provision` init container (`initEnvironment`, `internal/runtime/sandbox/manifest.go`:
 the image's `PATH` and the XDG base directories, and nothing of a disk carried forward — the pod's
 disk is created with the pod and empty, so every provision is the first), which the image's own
@@ -98,12 +95,7 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 165 (dispatch://INFRA-4425:
-under `dispatch_token_broker` the daemon starts an Oh My Pi role in a pod that carries the exchange
-identity with `--session-id <id>` or `--resume <id>`, tells such a pod's roles
-`DISPATCH_TOKEN_BROKER=1` and no `DISPATCH_TOKEN_FILE`, and `GET /legion/v1/state` carries
-`dispatchCredential`, which a caller below 165 is served without),
-after contract 146 (dispatch://INFRA-2614:
+number is the one `DaemonAPIVersion` declares, last bumped by contract 146 (dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries
 `entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of
 its last entry, which outlast that entry's task and which a tree's own root carries from its
