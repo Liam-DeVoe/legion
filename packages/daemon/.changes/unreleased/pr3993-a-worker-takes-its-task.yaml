@@ -7,7 +7,7 @@ body: |-
   and started no turn within `worker_turn_start_timeout_seconds` (1500 by default). A daemon that
   cannot open or create the bucket refuses to boot and names the missing grant, and so does one that
   connects as the agents' shared NATS user; `legion probe-boot` makes the same check, and
-  `legion start --check-config` prints the refusal of a daemon that would connect as that user.
+  `legion config check` prints the refusal of a daemon that would connect as that user.
   The daemon purges its own project's delete markers from the bucket an hour after each delete,
   and the listener forgets each one at its next whole read of the bucket. A daemon with
   no `nats_urls` boots and launches no worker, and says so. `legion state` names each claim whose

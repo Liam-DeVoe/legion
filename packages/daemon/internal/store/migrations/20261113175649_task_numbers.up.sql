@@ -147,37 +147,43 @@
 -- roll-forward writes every owed value once under the number the second fill gave it.
 --
 -- The re-arm asks nothing of the other rows. What it does need is that no migration recorded
--- after this one builds on the fourteen columns it drops, and at this release none of the six
+-- after this one builds on the fourteen columns it drops, and at this release none of the eight
 -- recorded after it touches them: 20261113181500_architect_stalled_notices adds the table
 -- architect_stalled_notices, 20261113182000_architect_entry_upgrade writes the root architects'
 -- phases rows, their claims' given_entry and served_entry and that table's marks,
 -- 20261114020537_claim_entry_handshake adds the four claims.handshake_* columns,
 -- 20261114031356_merge_queue_removal rewrites outbox_kind_check,
--- 20261114061900_phase_entry_verbatim adds phases.entry_verbatim, and
+-- 20261114061900_phase_entry_verbatim adds phases.entry_verbatim,
 -- 20261116165926_role_holders_publish rewrites outbox_kind_check again and adds the unique index
--- outbox_role_holders_publish_issue_unique. The release before this one, contract 152, carries
--- all six, so the rollback to it runs this block alone and leaves the six standing. A rollback
--- past it — to contract 87, across 20261111225552_phase_entry — crosses every release between the
--- two and runs their ways back newest first, with the daemon stopped, as docs/kubernetes.md lists
--- them: this block; the role-holders publication's outbox delete, which leaves no row of its kind
--- behind; contract 146's block, which reverses the four of those six that are the root
--- architect's entry (all but the two kind lists); the merge-queue removal's outbox delete; the
--- five statements of the release whose update round ends at its bound, whose
+-- outbox_role_holders_publish_issue_unique, 20261116234034_phase_reviewed_head adds
+-- phases.reviewed_head and pending_task_deliveries.round_named and ends each task a reviewer's row
+-- stores with the review round's two sentences, and 20261117200337_update_ask_marks_at_delivery
+-- clears claims.update_tasked_at where that claim's ask still waits in the outbox. The release
+-- before this one, contract 152, carries all eight, so the rollback to it runs this block alone
+-- and leaves the eight standing. A rollback past it — to contract 87, across
+-- 20261111225552_phase_entry — crosses every release between the two and runs their ways back
+-- newest first, with the daemon stopped, as docs/kubernetes.md lists them: this block; the
+-- reviewed commit's block, which takes the key roundNamed off each start row contract 87 decodes
+-- strictly; the role-holders publication's outbox delete, which leaves no row of its kind behind;
+-- contract 146's block, which reverses the four of those eight that are the root architect's entry
+-- (all but the two kind lists and the two of contract 152); the merge-queue removal's outbox
+-- delete; the five statements of the release whose update round ends at its bound, whose
 -- 20261113110610_drop_claim_update_answer_marks dropped two columns contract 87's claim read
 -- names; the steps of contract 111's slot past review and of contract 98's held list; and last
 -- the phase entry's own block. Contract 141's 20261111045636_experiment_assignments, contract
 -- 133's 20261112070503_pull_request_state_read_at and 20261113082415_claim_ended_work, which
 -- cybermonklabs/legion#3983 landed at that contract too, and contract 132's
 -- 20261111214351_issue_released_for_wait have no way back of their own, and each adds one column
--- or table no earlier release names; contract 123's 20261113090512_phase_entry_moved_back needs
--- no statement on the way back, and contracts 152, 151, 144, 137 and 104 add no migration. The
--- release before the phase entry reads the three marks as the release before this one does, and neither
--- contract 146's block nor the phase entry's touches this migration's columns. The roll-forward
+-- or table no earlier release names; contract 123's 20261113090512_phase_entry_moved_back and
+-- contract 152's 20261117200337_update_ask_marks_at_delivery need no statement on the way back,
+-- and contracts 151, 144, 137 and 104 add no migration. The release before the phase entry reads
+-- the three marks as the release before this one does, and neither contract 146's block, the
+-- reviewed commit's nor the phase entry's touches this migration's columns. The roll-forward
 -- after them applies again, in version order, every migration those ways back re-armed: the phase
 -- entry's first, then 20261113110610_drop_claim_update_answer_marks, which the update round's way
 -- back re-arms, then this one and contract 146's four after it, so this fill reads the
 -- served_entry the phase entry's second fill wrote, before 20261113182000 settles each root
--- architect at entry 1 again.
+-- architect at entry 1 again, and 20261116234034_phase_reviewed_head last.
 alter table claims add column task_written bigint not null default 0;
 alter table claims add column task_taken bigint not null default 0;
 alter table claims add column task_finished bigint not null default 0;

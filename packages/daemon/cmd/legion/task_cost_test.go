@@ -92,9 +92,9 @@ func TestTaskCostExitsOneWhenTheWindowHoldsNoDaemonLine(t *testing.T) {
 	}
 }
 
-// Arguments the reading cannot take are a usage error, exit 2, naming what is wrong beside the
-// usage, and no reading is printed; a help flag prints the usage and exits 0 without reading the
-// log.
+// Arguments the reading cannot take are a usage error, exit 2, naming what is wrong and the
+// command's help, and no reading is printed; a help flag prints the usage on stdout and exits 0
+// without reading the log.
 func TestTaskCostRefusesArgumentsItCannotRead(t *testing.T) {
 	for _, tc := range []struct {
 		args []string
@@ -105,18 +105,25 @@ func TestTaskCostRefusesArgumentsItCannotRead(t *testing.T) {
 		{[]string{"--from", "2026-11-14T10:00:00Z", "--to", "2026-11-14T09:00:00Z"}, "is not after --from"},
 		{[]string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z", "daemon.log"}, `unexpected argument "daemon.log"`},
 		{[]string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z", "--take-timeout", "0"}, "--take-timeout 0 is not a positive number of seconds"},
+		{[]string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z", "--since", "30m"}, "unknown flag: --since"},
 	} {
 		code, stdout, stderr := taskCost(t, taskCostLog, tc.args...)
 		if code != 2 || stdout != "" || !strings.HasPrefix(stderr, "legion task-cost: ") || !strings.Contains(stderr, tc.want) ||
-			!strings.Contains(stderr, "usage: legion task-cost ") {
-			t.Errorf("legion task-cost %q = %d, stdout %q, stderr %q; want 2 naming %q beside the usage", tc.args, code, stdout, stderr, tc.want)
+			!strings.HasSuffix(stderr, "Run 'legion task-cost --help' for usage.\n") {
+			t.Errorf("legion task-cost %q = %d, stdout %q, stderr %q; want 2 naming %q and the command's help", tc.args, code, stdout, stderr, tc.want)
 		}
 	}
 	code, stdout, stderr := taskCost(t, "", "--help")
-	if code != 0 || stdout != "" || !usageOf(stderr, "task-cost") ||
-		!strings.Contains(stderr, "kubectl -n legion logs deploy/legion-<project>-daemon -c legion | legion task-cost") ||
-		strings.Contains(stderr, "--since-time") {
+	if code != 0 || stderr != "" ||
+		!strings.Contains(stdout, "legion task-cost --from <RFC 3339> --to <RFC 3339> [--claim <token>] [--take-timeout <seconds>]") ||
+		!strings.Contains(stdout, "kubectl -n legion logs deploy/legion-<project>-daemon -c legion | legion task-cost") ||
+		strings.Contains(stdout, "--since-time") {
 		t.Errorf("legion task-cost --help = %d, stdout %q, stderr %q; want 0 and the usage with the documented pipe, which reads the container's whole log", code, stdout, stderr)
+	}
+	for _, name := range []string{"--from", "--to", "--claim", "--take-timeout"} {
+		if !strings.Contains(stdout, "      "+name+" ") {
+			t.Errorf("legion task-cost --help lists no %s flag:\n%s", name, stdout)
+		}
 	}
 }
 

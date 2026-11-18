@@ -9,7 +9,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
 
-// A file that names no NATS has `legion start --check-config` print, after Config OK, the line a
+// A file that names no NATS has `legion config check` print, after Config OK, the line a
 // booting daemon logs for it (daemon.NoNATSLine): such a daemon boots and serves, and launches no
 // worker, since it has no task bucket to hand one its task through. A file that names NATS prints
 // no such line. The check exits 0 either way: the line is a report, and nothing is refused.
@@ -27,7 +27,7 @@ func TestCheckConfigSaysNoNATSLaunchesNoWorker(t *testing.T) {
 			config := projectsConfig(t, row.projects)
 
 			var out, errb bytes.Buffer
-			code := run(context.Background(), []string{"legion", "start", "--config", config, "--check-config"}, &out, &errb)
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 			if code != 0 || out.String() != row.want || errb.Len() != 0 {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), row.want)
@@ -36,7 +36,7 @@ func TestCheckConfigSaysNoNATSLaunchesNoWorker(t *testing.T) {
 	}
 }
 
-// paneSeedLine is the line `legion start --check-config` prints after Config OK for a file whose
+// paneSeedLine is the line `legion config check` prints after Config OK for a file whose
 // daemon would connect to NATS as the pane seed's user, written out here for the reason noNATSLine
 // is: what an operator reads is the point of the line.
 const paneSeedLine = "nats: the daemon connects as the pane seed's user (NATS_NKEY_SEED_FILE), the session user every pane shares, " +
@@ -45,12 +45,12 @@ const paneSeedLine = "nats: the daemon connects as the pane seed's user (NATS_NK
 
 // A daemon that connects to NATS as the pane seed's user — the pane seed alone, or a daemon seed
 // that is the pane seed — has its boot refused at its open of the task bucket, since the user
-// every pane shares holds no grant on it. That is known offline, so `legion start --check-config`
+// every pane shares holds no grant on it. That is known offline, so `legion config check`
 // prints the boot's own sentence after its OK line, as it prints the no-NATS line, and exits 0. A
 // daemon seed of its own prints no such line, and neither does a file that names no NATS, whose
 // daemon connects to none and gets the no-NATS line instead.
 //
-// The negative control is the check without the line (main's checkStartConfig printing nothing
+// The negative control is the check without the line (main's checkConfig printing nothing
 // of CheckStart's paneSeed): the first two rows then read Config OK straight into the
 // production-check line.
 func TestCheckConfigSaysADaemonOnThePaneSeedIsRefusedItsBoot(t *testing.T) {
@@ -75,7 +75,7 @@ func TestCheckConfigSaysADaemonOnThePaneSeedIsRefusedItsBoot(t *testing.T) {
 			}
 
 			var out, errb bytes.Buffer
-			code := run(context.Background(), []string{"legion", "start", "--config", config, "--check-config"}, &out, &errb)
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 			if printed := out.String() + errb.String(); strings.Contains(printed, paneSeed) || strings.Contains(printed, daemonSeed) {
 				t.Fatalf("the check printed a seed: stdout %q stderr %q", out.String(), errb.String())

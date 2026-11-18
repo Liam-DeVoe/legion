@@ -53,7 +53,8 @@ It writes the figures on its standard output.
 
 The command exits with status 0 when it gives a reading.
 It exits with status 1 when the window holds no line of the daemon, or no line of the claim that `--claim` names, and when it cannot read its standard input.
-It exits with status 2 when it cannot use its arguments, and then writes its usage.
+It exits with status 2 when it cannot use its arguments.
+It then names the argument that it cannot use, and `legion task-cost --help`, which writes its usage.
 
 ## How far back the reading goes
 

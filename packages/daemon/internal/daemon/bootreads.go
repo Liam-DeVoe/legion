@@ -47,7 +47,7 @@ type variantInstructions struct {
 // file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch bearer's
 // file, and the runtime's own reads (readTmux, readSandbox).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
-// runtime. prepare runs it first; CheckStart is it for `legion start --check-config`, so the check
+// runtime. prepare runs it first; CheckStart is it for `legion config check`, so the check
 // refuses whatever boot refuses before its first write. What boot does after it is not a check's to
 // do: create the state directory, write the instructions copies and the Dispatch token file, read
 // provider keys from secretsd, and run the plugin gate or the image probe.
@@ -90,7 +90,7 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	// Every hook that reads its words from a file rather than writing them in the key, read as
 	// the deployment's instructions are and refused the same way. The engine is given words and
 	// never a path, so a file a hook names is as much a part of boot as the instructions are: a
-	// missing one refuses boot, and `legion start --check-config` with it.
+	// missing one refuses boot, and `legion config check` with it.
 	for _, hook := range cfg.Hooks {
 		if hook.PromptFile == "" {
 			continue
@@ -254,7 +254,7 @@ func checkRoleConfigFiles(cfg config.Config) error {
 	return nil
 }
 
-// CheckStart is `legion start --check-config`'s reading of what boot reads before it writes
+// CheckStart is `legion config check`'s reading of what boot reads before it writes
 // anything (readBoot), over the daemon's environment (lookup, and the process's for the OMP
 // invocation): nil when boot would get past every such refusal, the public keys of the pane
 // seed's user and the daemon seed's user, each "" when the daemon has no such seed, never a seed,
@@ -271,7 +271,7 @@ func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (paneNats
 	return r.paneNatsUser, daemonNatsUser, paneSeedLine(cfg, r.nats), nil
 }
 
-// paneSeedLine is `legion start --check-config`'s line for a daemon of cfg whose NATS connection
+// paneSeedLine is `legion config check`'s line for a daemon of cfg whose NATS connection
 // nats authenticates as the pane seed's user — the pane seed alone, or a daemon seed that is the
 // pane seed — and "" for one that does not or that names no NATS, which NoNATSLine speaks for. It
 // is the boot's own refusal (paneSeedRefusal), known offline: such a daemon's boot is refused at

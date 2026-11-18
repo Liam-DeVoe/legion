@@ -782,8 +782,8 @@ func putStoredClaim(t *testing.T, cfg config.Config, c supervise.Claim) {
 	}
 }
 
-// The line a daemon whose configuration names no NATS says at boot and `legion start
-// --check-config` prints, written out here; a configuration that names NATS has none.
+// The line a daemon whose configuration names no NATS says at boot and `legion config check`
+// prints, written out here; a configuration that names NATS has none.
 func TestNoNATSLineIsSaidOnlyForAConfigurationThatNamesNoNATS(t *testing.T) {
 	const want = "nats: nats_urls names no NATS, so this daemon has no task bucket (legion_tasks) to hand a worker its task through: " +
 		"it launches no worker, and refuses every spawn, retry and resume of one until nats_urls names Envoy's NATS"

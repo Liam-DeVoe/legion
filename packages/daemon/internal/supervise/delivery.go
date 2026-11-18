@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -172,6 +173,13 @@ type Delivery struct {
 	// (dispatch://INFRA-956/artifact/cause-evidence-md), so no provider text reaches a task's
 	// text. Empty for a task no provider error has taken back.
 	ProviderErrorNote string
+	// RoundNamed is the typed fact that Task ends with the daemon's two sentences of a reviewer's
+	// review round (reviewround.Sentences), from the start row that queued it
+	// (record.SuperviseRequest.RoundNamed, RequestDeliver.RoundNamed). message reads it: a task of
+	// the reviewer without it, which a start row of the release before this one, an operator or a
+	// delivery the release before stored can be, is taken with the daemon's sentences naming no
+	// commit and no entry at its end.
+	RoundNamed bool
 }
 
 // taken is whether a take of the task was accepted and has not been taken back.
@@ -318,6 +326,18 @@ type Sentences struct{ Abandoned, Ended bool }
 // instruction, since there is no task to continue (abandonedTask); the record's sentence does
 // not, because it is the text.
 //
+// A task of the reviewer ends with the daemon's two sentences of its review round, the last two
+// of each task the reviewer takes (reviewround.Sentences), and this is the one place the text of
+// each accepted take of a delivery is composed, so it is where the rule holds for every task,
+// whatever queued it. A task that says it ends with them (RoundNamed), as each task the workflow
+// queues for the reviewer does (workflow's queuedRow), is taken as it stands. A task of the
+// reviewer that does not say so is given them at its end, naming no commit and no entry: a start
+// row or a delivery the release before this one stored, whose text can end with words of the same
+// shape that no review recorded, or a task an operator wrote. Its reviewer reads the whole change
+// and keeps the entry of its round. It is the fact and never the task's text that tells the two
+// apart, since two such texts can be the same word for word. The relaunch's record is no task,
+// and is taken as it is.
+//
 // One case still carries a stale note: the previous release's upsert carries no out_of_memory
 // column, so if an image rollback takes a marked task back again for another end, the row keeps
 // the mark, and a roll-forward carries the note for that end.
@@ -326,6 +346,9 @@ func (d Delivery) message(c Claim) (string, Sentences) {
 	relaunch := d.Relaunch()
 	if relaunch && c.EndedWork.Tells() {
 		text, carried.Ended = RelaunchSentence(c.EndedWork), true
+	}
+	if !relaunch && !d.RoundNamed && c.Role == claim.RoleReviewer {
+		text += reviewround.Sentences("", 0)
 	}
 	var prefix string
 	if c.Abandoned.Tells() {
@@ -590,7 +613,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 		id = rand.Text()
 	}
 	d := Delivery{ID: id, Task: task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
-		Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(),
+		Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed,
 		Number: m.claim.TaskWritten + 1, Origin: originOf(request)}
 	// The claim records the row, the entry, its handshake and the number only once the store has
 	// them with the delivery: a write that failed leaves the row undelivered, the entry ungiven and

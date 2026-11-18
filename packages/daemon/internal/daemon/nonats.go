@@ -17,7 +17,7 @@ import (
 // retry, a resume and every relaunch are refused with this sentence (noLaunch).
 //
 // One sentence, from one place, for its two readers, as IntakeHandlerLimitLine is: the boot logs it
-// at Warn (run), and `legion start --check-config` prints it after its OK line, so an operator who
+// at Warn (run), and `legion config check` prints it after its OK line, so an operator who
 // reads one has read the other word for word.
 func NoNATSLine(cfg config.Config) string {
 	if len(cfg.NatsURLs) > 0 {

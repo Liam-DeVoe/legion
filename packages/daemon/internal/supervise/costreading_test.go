@@ -7,7 +7,6 @@ package supervise
 import (
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -17,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/pflag"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -1069,13 +1070,13 @@ func TestParseTaskCostArgsReadsTheLogWindow(t *testing.T) {
 		{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T09:30:00Z", "--take-timeout", "5m"},
 		{"--since", "30m"},
 	} {
-		if got, err := ParseTaskCostArgs(args); err == nil || errors.Is(err, flag.ErrHelp) {
+		if got, err := ParseTaskCostArgs(args); err == nil || errors.Is(err, pflag.ErrHelp) {
 			t.Errorf("ParseTaskCostArgs(%q) = %+v, %v; want a refusal", args, got, err)
 		}
 	}
 	for _, help := range []string{"-h", "-help", "--help"} {
-		if _, err := ParseTaskCostArgs([]string{help}); !errors.Is(err, flag.ErrHelp) {
-			t.Errorf("ParseTaskCostArgs(%q) = %v, want flag.ErrHelp", help, err)
+		if _, err := ParseTaskCostArgs([]string{help}); !errors.Is(err, pflag.ErrHelp) {
+			t.Errorf("ParseTaskCostArgs(%q) = %v, want pflag.ErrHelp", help, err)
 		}
 	}
 }

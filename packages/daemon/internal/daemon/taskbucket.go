@@ -181,7 +181,7 @@ func (b *taskBucket) refused(step string, err error) error {
 // user is the one every session of the deployment shares, and it is granted nothing of the task
 // bucket, by design, so such a daemon never boots until it is given a user of its own. One
 // sentence, from one place, for its two readers, as NoNATSLine is: the boot's refusal at the
-// bucket's open carries it (refused), and `legion start --check-config` prints it after its OK
+// bucket's open carries it (refused), and `legion config check` prints it after its OK
 // line (paneSeedLine), so an operator who reads one has read the other word for word.
 const paneSeedRefusal = "the daemon connects as the pane seed's user (" + natsauth.SeedFileVariable +
 	"), the session user every pane shares, which holds no grant on the task bucket: give the daemon a user of its own (" +
