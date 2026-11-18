@@ -915,13 +915,13 @@ register_stand_in() {
   consumer_registration "$answer" "$session" "$@"
 }
 register_asker() {
-  local lane token
+  local lane lane_project
   register_stand_in "$asker_session" "answer-loop rig asker" || return 1
   register_stand_in "$controller_session" "answer-loop rig controller" "${controller_lanes[@]}" && return 0
   for lane in "${controller_lanes[@]}"; do
-    token=${lane#notifications.legion.}
-    token=${token%.controller}
-    envoy -f -o /dev/null --data "$(jq -cn --arg s "$controller_session" --arg role "legion-$token-controller" --arg instance "$stand_in_instance" \
+    lane_project=${lane#notifications.legion.}
+    lane_project=${lane_project%.controller}
+    envoy -f -o /dev/null --data "$(jq -cn --arg s "$controller_session" --arg role "legion-$lane_project-controller" --arg instance "$stand_in_instance" \
       '{session_id: $s, role: $role, soft: true, client_instance_id: $instance}')" "$(listener_url /v1/roles/set)" || return 1
   done
   register_stand_in "$controller_session" "answer-loop rig controller" "${controller_lanes[@]}"
