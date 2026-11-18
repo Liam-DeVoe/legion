@@ -2619,9 +2619,9 @@ describe("dispatch result --project, as a CI job writes it", () => {
     }, 30_000);
   }
 
-  // Dispatch's keyed layer names the key back on every answer of every write route, so a 201 that
-  // names no key back is no answer of Dispatch's to this write, whatever result it holds: this
-  // call's own, another run's of the same check, verdict and commit (the hardening note H1 of the
+  // Dispatch's keyed layer names the key back on every answer of every POST and PATCH route, so a
+  // 201 that names no key back is no answer of Dispatch's to this write, whatever result it holds:
+  // this call's own, another run's of the same check, verdict and commit (the hardening note H1 of the
   // deep audit of 7735fa52b4), or another call's of another project, check, verdict or commit (a
   // proxy or a cache that answers one write with another's). The write may have reached Dispatch
   // behind what answered: write_outcome_unknown, exit 1. No content of the answer is compared.

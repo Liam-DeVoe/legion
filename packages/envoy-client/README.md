@@ -578,14 +578,21 @@ request that shares it. The numbers come from the 3,612 `dispatch`
 write commands that succeeded between 2026-10-31 21:00Z and 2026-11-02 07:30Z, each timed whole
 (p50 1.8 s, p95 19.6 s, p99 45.5 s). All of it sits inside the call's own 60 s deadline, so a
 Dispatch that is down holds a `dispatch` command, and the session waiting on it, no longer than
-that. When the write ends with no definitive answer after an answer named its key back or after
-it was asked again under that key, the error says Dispatch finishes an attempt it received, and
-to read the write back before sending it again, since a new command sends it under a new key. The
-call's deadline and its cancellation end the write at once and are never retried. Any other
-answer - a 2xx, a replay, `422 KEY_REUSED`, another 4xx - is the answer, at once.
+that. A write that ends with no definitive answer after an attempt that may have reached Dispatch
+has an unknown outcome (`writeOutcomeUnknown`). Where its last answer says so alone - a gateway's
+page that may have reached Dispatch (`DispatchGatewayError`, whose line says to check whether the
+write took effect before retrying it), Dispatch's own 5xx, or a transport failure - the call
+throws that answer's error. Otherwise - a silence cut, the deadline, or a last answer that alone
+would say nothing was stored - it throws `DispatchWriteUnsettledError`, which says the write may
+or may not have taken effect; where an answer named the write's key back, or the write was asked
+again under that key, it also says Dispatch finishes an attempt it received, and to read the write
+back before sending it again, since a new command sends it under a new key. The call's deadline
+and its cancellation end the write at once and are never retried. Any other answer - a 2xx, a
+replay, `422 KEY_REUSED`, another 4xx - is the answer, at once.
 
-Every Dispatch runs the keyed layer on every write route: `GET /healthz` answers
-`idempotency_keys: true` on every build since `legion-envoy-v21.0.0`, a fact of the binary. So a
+Every Dispatch runs the keyed layer on every `POST` and `PATCH` route, the writes the client asks
+again: `GET /healthz` answers `idempotency_keys: true` on every build since
+`legion-envoy-v21.0.0`, a fact of the binary, and the client asks it nothing. So a
 write is asked again under its key after any answer that is no definitive one, a transport failure
 and a silence cut alike, and asks nothing else first: the repeat is answered from the key rather
 than run again. A rollback to a release older than that runs a repeat as a second write
@@ -849,8 +856,8 @@ one call that is no session's, and a session reads those results with `dispatch 
 
 `dispatch-session-state.ts` keeps one directory per session under `DISPATCH_STATE_DIR` (default
 `<XDG_STATE_HOME or ~/.local/state>/dispatch/sessions/<id>`): `state.json` carries what a
-long-lived host remembered across calls (the triage lines and pictures already shown, the asks
-whose follow notice was printed, which Dispatch lately showed it runs the keyed layer), and
+long-lived host remembered across calls (the triage lines and pictures already shown, and the asks
+whose follow notice was printed), and
 `results.jsonl` gets one line per call with the tool's `details` or its refusal, a refusal the CLI
 made before the call reached Dispatch included, which pi-envoy's run-end check reads; a line that
 is not JSON is named (file and line number) and skipped. Directories idle for 14 days are removed,

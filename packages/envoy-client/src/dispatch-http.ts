@@ -690,8 +690,9 @@ class WriteAttemptSilent extends Error {
  * One write call as a whole, the one place what its attempts showed is kept: its one
  * `Idempotency-Key`, which every attempt carries, its no-route retries (`#noRoute`) and its
  * re-send after a dead token (`#send`) included, whether an attempt of it may have reached a
- * handler, whether it saw the keyed layer judge it, and whether the answer it ends on is the keyed
- * layer's verdict on its key. The keyed layer wraps each route's handler (`keyedWrites`,
+ * handler, whether it relied on the keyed layer (an answer named its key back, or it asked again
+ * under its key), and whether the answer it ends on is the keyed layer's verdict on its key. The
+ * keyed layer wraps each route's handler (`keyedWrites`,
  * packages/envoy/internal/dispatch/api/request_keys.go), so the router's no-route answer and
  * Dispatch's check of the token come before it and store nothing under the key: asking again
  * under it is safe, and a later attempt under it is answered what an earlier one stored.
@@ -2324,11 +2325,11 @@ export class DispatchClient {
    * deadline and its caller's cancellation end the attempts at once, whether a fetch or a pause
    * is under way (`#ended`).
    *
-   * Every Dispatch runs the keyed layer on every write route, so a repeat under the key is answered
-   * from the key rather than run again: a write asks again after any answer that is no definitive
-   * one, a transport failure and a silence cut alike, and asks nothing else first. A failing answer
-   * that names the request's key back (`keyEchoed`), one of Dispatch's own 5xx, 429 or
-   * `409 KEY_IN_FLIGHT`, says the layer judged it.
+   * Every Dispatch runs the keyed layer on every POST and PATCH route, so a repeat under the key is
+   * answered from the key rather than run again: a write asks again after any answer that is no
+   * definitive one, a transport failure and a silence cut alike, and asks nothing else first. A
+   * failing answer that names the request's key back (`keyEchoed`), one of Dispatch's own 5xx, 429
+   * or `409 KEY_IN_FLIGHT`, says the layer judged it.
    */
   async #sendPresenting(
     method: string,
@@ -2385,7 +2386,7 @@ export class DispatchClient {
     // Whether Dispatch may still be running an attempt: one was cut off for silence or answered
     // 409 KEY_IN_FLIGHT. Its keyed layer finishes that run whatever this call does, so the call
     // keeps asking for its stored answer under `inFlightWithinMs`. Whether an attempt may have
-    // reached a handler, and whether the call saw the keyed layer, are the call's own facts
+    // reached a handler, and whether the call relied on the keyed layer, are the call's own facts
     // (`WriteCall`), kept across its no-route retries and its re-send after a dead token.
     let running = false;
     for (let attempt = 1; ; attempt++) {
@@ -2535,9 +2536,9 @@ export class DispatchClient {
    * What a write throws when its deadline or its caller's cancellation ends it, with `error` the
    * fetch's or the pause's: once an attempt may have reached Dispatch (`mayHaveReached`), the
    * deadline's timeout is a `DispatchWriteUnsettledError` saying the write may or may not have
-   * taken effect (and, where the call saw the keyed layer judge it, `keyed`, that Dispatch finishes
-   * it); a cancellation, the caller's own, and a timeout before anything reached Dispatch are
-   * thrown as they are.
+   * taken effect (and, where an answer named the write's key back or the write was asked again
+   * under it, `keyed`, that Dispatch finishes it); a cancellation, the caller's own, and a timeout
+   * before anything reached Dispatch are thrown as they are.
    */
   #ended(
     error: unknown,
@@ -2567,8 +2568,9 @@ export class DispatchClient {
    * What a write throws once it stops asking with no definitive answer: the last attempt's refusal
    * as `#response` reads it, unless that refusal alone would say the write never took effect while
    * an attempt may have reached Dispatch (`reached`), when it is a `DispatchWriteUnsettledError`
-   * (which says, where the call saw the keyed layer judge the write, `keyed`, that Dispatch finishes
-   * it). `#response` throws for every status `writeAnswer` asks again after.
+   * (which says, where an answer named the write's key back or the write was asked again under it,
+   * `keyed`, that Dispatch finishes it). `#response` throws for every status `writeAnswer` asks
+   * again after.
    */
   async #unsettled(
     method: string,

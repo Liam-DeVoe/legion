@@ -274,11 +274,11 @@ describe("DispatchClient's writes", () => {
     expect(pauses).toEqual([1_000, 2_000, 4_000, 3_000]);
   });
 
-  // Dispatch's keyed layer runs on every write route of every Dispatch, and answers a repeat under
-  // the key from the key rather than running it again, so a write asks again under its key after
-  // any failure that is no definitive answer: one that names the key back, a gateway's page, a
-  // transport failure, and Dispatch's own refusal that names none. It asks nothing else first: the
-  // two requests are the write's two attempts, under one key.
+  // Dispatch's keyed layer runs on every POST and PATCH route of every Dispatch, and answers a
+  // repeat under the key from the key rather than running it again, so a write asks again under
+  // its key after any failure that is no definitive answer: one that names the key back, a
+  // gateway's page, a transport failure, and Dispatch's own refusal that names none. It asks
+  // nothing else first: the two requests are the write's two attempts, under one key.
   test("resend under the key after any failure that is no definitive answer, and ask nothing else", async () => {
     for (const [first, namesNoKey] of [
       [refusal(503, "UNAVAILABLE", "database unavailable"), false],

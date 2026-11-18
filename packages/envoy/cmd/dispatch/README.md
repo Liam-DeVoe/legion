@@ -778,7 +778,7 @@ Run the commands from a checkout of this repository with `bun install` run, each
 
 2. `curl -s https://<dispatch>/healthz` prints a body with `"idempotency_keys":true`: this build judges `Idempotency-Key` (Keyed writes, below).
    The field is a fact of the build, so a `503` for a database or NATS that is down carries it too;
-   a body without it is a Dispatch that would make a retried write twice, and the `dispatch` command sends no write again to it.
+   a body without it is a Dispatch that would make a retried write twice, and the `dispatch` command, which asks `/healthz` nothing, sends a write whose answer it lost again under its key to that build as to any other.
 
 3. `bun scripts/e2e/lib/dispatch-keyed-comment.ts --url https://<dispatch> --bearer-file <token file> --issue <scratch issue>` posts one comment twice under one `Idempotency-Key`, as a page whose first answer was lost asks again.
    It passes when the repeat is Dispatch's stored answer and the issue holds the comment once:

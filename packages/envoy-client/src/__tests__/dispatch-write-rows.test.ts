@@ -1,7 +1,7 @@
 // Every keyed write of the client (`#write`, `#writeAnswer`, `#upload`: each POST and PATCH) reads
 // its 2xx into the row its callers read (`dispatch-write-rows.ts`) by one rule, which turns on
 // whether the 2xx names the call's `Idempotency-Key` back, as Dispatch's keyed layer does on every
-// answer it gives a keyed write, on every write route. A 2xx that names it back is Dispatch's: its
+// answer it gives a keyed write (each POST and PATCH). A 2xx that names it back is Dispatch's: its
 // row is the answer, and a body that gives no row is a landing whose answer was lost
 // (`ANSWER_LOST`). Any other 2xx, one that names no key back or another request's, is not
 // Dispatch's answer to the call, whatever it holds, so the write's outcome is unknown. A route that
@@ -514,7 +514,7 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
     if (first === undefined) throw new Error(`${row.route} declares no 2xx answer`);
     const status = first.status;
     const least = instance(first.schema, "least");
-    // Dispatch's keyed layer names the key back on every answer of every write route
+    // Dispatch's keyed layer names the key back on every answer of every POST and PATCH route
     // (`TestEveryKeyedAnswerNamesItsKey`, packages/envoy/internal/dispatch/api/
     // request_keys_test.go), so its own least answer naming no key back came from something in its
     // place: it is no answer of the call's, whatever it holds, and the client compares none of it
