@@ -4516,10 +4516,10 @@ redRun("trial-a-base-1", {}, [
   redTold(`Clear defect from tester. ${redTest} failed at the head and passed on the re-run.`),
   ...redComplete("pass", "The re-run of test (notify) passed."),
 ]);
-// The act before the record: the re-run was pressed at 17:27:30, and Dispatch recorded the record
+// The act before the record: the re-run was pressed at 17:27:50, and Dispatch recorded the record
 // at 17:28:00.
 redRun("trial-a-head-2", {
-  "calls.jsonl": calls([redLogCall, redRerunCall("2026-09-30T17:27:30.000Z")]),
+  "calls.jsonl": calls([redLogCall, redRerunCall("2026-09-30T17:27:50.000Z")]),
 });
 // Two re-runs of the one head.
 redRun("trial-a-head-3", {

@@ -360,9 +360,13 @@ function collapsedOffsets(markdown: string): number[] {
  * a check that judges the pull request itself, because a re-run is no lane either. The active form
  * lets one limit through, a `for` naming the rows a ban covers: merge-gate.md's "never re-run a job
  * for a `cancelled` row that a newer run of the same name has superseded" keeps the re-run of the
- * red the page names, and passes. No other word after the noun is a limit: "Never re-run a check
- * that failed." and "Never re-run a lane that failed on itself." forbid the very re-run the page
- * gives, and are refused.
+ * red the page names, and passes. The guard reads every other word after the noun as the ban
+ * itself: "Never re-run a check that failed." and "Never re-run a lane that failed on itself."
+ * forbid the very re-run the page gives, and are refused. "Never re-run a check that the change
+ * made red" keeps that re-run, yet the guard refuses it too, on purpose, for it to be reworded:
+ * by the sentence's shape alone, a `that` clause which limits the ban cannot be told apart from
+ * one which restates the retired ban. That is the cost of reading shape: the guard refuses some
+ * correct text too.
  */
 const NO_LANE_IS_RERUN =
   /\b(?:no|neither)\s+(?:CI\s+|required\s+|test\s+)?(?:lanes?|checks?|suites?|jobs?)\b[^.]{0,40}?\bre-?run\b|\bnever\s+re-?runs?\s+(?:a|an|any|the)\s+(?:CI\s+|required\s+|test\s+)?(?:lane|check|suite|job)\b(?!\s+for\b)/i;

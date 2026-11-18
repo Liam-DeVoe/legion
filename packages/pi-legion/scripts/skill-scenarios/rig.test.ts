@@ -2367,7 +2367,7 @@ describe("red_fixture", () => {
   test("the base's rules, rulesets, branch and protection each answer the required ci", async () => {
     const run = greenRun("required-set");
     expect(
-      bash(`${fn("required_set_fixture")}\nR=$1 worker_repo=$2\nrequired_set_fixture ci`, [
+      bash(`${fn("required_set_fixture")}\nR=$1 worker_repo=$2\nrequired_set_fixture ci main`, [
         run,
         RED_REPO,
       ])
@@ -2436,18 +2436,23 @@ describe("red_fixture", () => {
   // generic check-runs route takes the prompt's two reads again: red_fixture writes them in every
   // world (required_set_fixture), ahead of every other route.
   test("every world's fixture carries the five reads of the base's required set, ahead of every other route", () => {
+    // Which of the five comes first is incidental, since each read lands on a route of its own
+    // (the row above), so the first five routes of each world are compared with them sorted.
     const required = [
       "rules/branches/main",
       "rulesets",
       "rulesets/1",
       "branches/main",
       "branches/main/protection",
-    ].map(requiredSetRoute);
+    ]
+      .map(requiredSetRoute)
+      .sort();
     const seen = RED_WORLDS.map((world) => {
       const fixtures: { routes: { match: string }[] } = JSON.parse(
         readFileSync(path.join(redFixture(world), "fixtures.json"), "utf8")
       );
-      return { world, routes: fixtures.routes.slice(0, 5).map((route) => route.match) };
+      const firstFive = fixtures.routes.slice(0, 5).map((route) => route.match);
+      return { world, routes: firstFive.sort() };
     });
     expect(seen).toEqual(RED_WORLDS.map((world) => ({ world, routes: required })));
   });
@@ -2684,10 +2689,8 @@ describe("red_fixture", () => {
         ...reruns,
         round: "goes-on",
         disposal: true,
-        report: false,
+        ...plain,
         decline_fails: true,
-        aggregate: false,
-        spent: false,
         by_hand: true,
       },
       l: {
@@ -2696,11 +2699,8 @@ describe("red_fixture", () => {
         ...reruns,
         round: "goes-on",
         disposal: true,
+        ...plain,
         report: true,
-        decline_fails: false,
-        aggregate: false,
-        spent: false,
-        by_hand: false,
       },
     };
     expect(

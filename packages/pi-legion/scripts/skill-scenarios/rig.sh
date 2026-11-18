@@ -1934,7 +1934,7 @@ red_worlds() {
 #      checks event, and the rig reports the check between the two turns (red_report)
 red_fixture() {
   local world=$1 facts pr head branch check job step summary log log_err test_name world_log
-  local run_id job_id red_id lanes required
+  local run_id job_id red_id lanes required base
   facts=$(red_world "$world") || fail "red_fixture: '$world' is no world of red-at-the-head"
   read -r pr head branch < <(jq -r '"\(.pr) \(.head) \(.branch)"' "$R/world.json")
   run_id=$((7000000 + pr))
@@ -1994,6 +1994,12 @@ red_fixture() {
   # of the base answers, `gh pr checks --required` (the jq below) and the rules of its rulesets and
   # its branch protection (required_set_fixture), so the base reads the same through each of them.
   required=ci
+  # The base the pull request merges into, whose required set required_set_fixture answers: read
+  # here, from worker_fixture's one answer of the `gh pr view` route, since the jq below turns that
+  # route into a sequence of replies.
+  base=$(jq -er 'first(.routes[] | select(.match == "^gh pr view") | .stdout.baseRefName)' \
+    "$R/fixtures.json") ||
+    fail "red_fixture: no \`gh pr view\` route of $R/fixtures.json answers the base"
   # The failing line this world's log read answers, as the world knows it: a world whose read
   # answers an error (h) leaves none, since the role reads no line there.
   world_log=$log
@@ -2222,8 +2228,8 @@ red_fixture() {
     mv "$R/fixtures.red.json" "$R/fixtures.json"
   fi
   # The five reads of the base's required set, which read nothing of the world but the repository
-  # and the base, go ahead of every route the jq above wrote, on the same `ci` ($required).
-  required_set_fixture "$required"
+  # and the base ($base), go ahead of every route the jq above wrote, on the same `ci` ($required).
+  required_set_fixture "$required" "$base"
   # The world the scorer reads, beside worker_fixture's: the red check, the run and job that carry
   # it, the failing line the world's log read answers (`log`, empty where that read answers an
   # error), where the red is a test, that test's full name (`test`, empty where it is none), and
@@ -2239,17 +2245,17 @@ red_fixture() {
   mv "$R/world.red.json" "$R/world.json"
 }
 
-# required_set_fixture CHECK puts five reads of the base's required set ahead of every route of
-# $R/fixtures.json, each answering that the base requires CHECK alone, as red_fixture's
-# `gh pr checks --required` route answers it (red_fixture binds the one CHECK both take): the rules
-# GitHub applies to the base, through its rulesets (`rules/branches/<base>`), which the prompt of
-# the reviewer reads (packages/daemon/internal/prompts/go/reviewer.md, "CI is yours to read"); the
-# rulesets of the repository, their list and the one ruleset, which applies to the default branch
-# and holds that same rule; the base branch, read for its protection, which the prompt reads too;
-# and the protection of the base on its own endpoint, the same required checks in the shape that
-# endpoint answers them in. They read nothing of the world but the repository (worker_repo) and the
-# base, which the `gh pr view` route answers as `baseRefName`: in its one answer as worker_fixture
-# writes it, and in each of its replies once red_fixture has made the route a sequence. Each
+# required_set_fixture CHECK BASE puts five reads of the required set of the base branch BASE
+# ahead of every route of $R/fixtures.json, each answering that BASE requires CHECK alone, as
+# red_fixture's `gh pr checks --required` route answers it (red_fixture binds the one CHECK both
+# take): the rules GitHub applies to the base, through its rulesets (`rules/branches/<base>`),
+# which the prompt of the reviewer reads (packages/daemon/internal/prompts/go/reviewer.md, "CI is
+# yours to read"); the rulesets of the repository, their list and the one ruleset, which applies
+# to the default branch and holds that same rule; the base branch, read for its protection, which
+# the prompt reads too; and the protection of the base on its own endpoint, the same required
+# checks in the shape that endpoint answers them in. They read nothing of the world but the
+# repository (worker_repo) and BASE, which red_fixture reads, before its own jq rewrites any
+# route, from the `baseRefName` of the answer worker_fixture writes for `gh pr view`. Each
 # answers unfiltered, since the stand-in applies the `--jq` of a call itself, and the branch
 # answers its name and its protection alone. They come ahead of every other route: in the batch of
 # 2026-11-17 the `--jq` text of the two reads of the prompt held `required_status_checks`, so the
@@ -2261,11 +2267,8 @@ red_fixture() {
 # it, nor the rulesets list the one ruleset, and the rules path has its `rules/` between the
 # repository and `branches/`.
 required_set_fixture() {
-  jq --arg repo "$worker_repo" --arg required "$1" '
+  jq --arg repo "$worker_repo" --arg required "$1" --arg base "$2" '
     ("https://api.github.com/repos/" + $repo) as $api
-    | (first(.routes[] | select(.match == "^gh pr view")
-             | (.stdout // .replies[0].stdout).baseRefName)
-       // error("required_set_fixture: no `gh pr view` route answers the base")) as $base
     | ($api + "/branches/" + $base + "/protection") as $protection_url
     | {contexts:[$required], checks:[{context:$required, app_id:null}]} as $status_checks
     | {id:1, name:("Require " + $required), target:"branch", source_type:"Repository",

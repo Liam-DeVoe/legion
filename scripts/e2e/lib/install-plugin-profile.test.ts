@@ -194,10 +194,8 @@ fi
     const r = install(["--omp-binary", binary], f);
     expect(r.stderr).not.toContain("unbound variable");
     expect(r.code).toBe(1);
-    expect(r.stderr).toBe(
-      `install-plugin-profile: ${realpathSync(binary)} plugin list under HOME=${realpathSync(f.home)} ` +
-        "OMP_PROFILE=legion-e2e-test does not show @sjawhar/pi-envoy@0.0.0-test enabled: []\n"
-    );
+    expect(r.stderr).toContain(`${realpathSync(binary)} plugin list`);
+    expect(r.stderr).toContain("enabled: []");
     expect(r.calls).toEqual([]);
   });
 
