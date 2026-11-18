@@ -733,8 +733,8 @@ func censusOfKind(ctx context.Context, tx pgx.Tx, held projection, args []any) (
 
 // presentNodes is the kind's node side bound to every state but gone: a node the store holds gone
 // is no node a row may project, and the row side holds it to that separately. Any other state is
-// a node a row projects, so a state a later release adds, such as dispatch://INFRA-1950's
-// proposed, settled and overtaken (R8 of dispatch://INFRA-1149), reads here as live does. It
+// a node a row projects, so a state a later release adds, such as proposed, settled and
+// overtaken (R8 of this change), reads here as live does. It
 // answers each node's state beside its digest, which nodeDifferences names a node with.
 func presentNodes(held projection) string {
 	return `select node.id, node.digest, present.state from (` + held.nodes + `) node (id, digest)

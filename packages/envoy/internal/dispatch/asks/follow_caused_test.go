@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestAFollowersNodeAndItsBaseTuplesNameOneEvent is dispatch://INFRA-1149's R1 and R8 for the
+// TestAFollowersNodeAndItsBaseTuplesNameOneEvent is this change's R1 and R8 for the
 // node a follow makes before its caller's event exists. The follow writes the session's node at
 // the sentinel and graphstore.Caused moves that row onto the event the caller appends after it.
 // No tuple may be updated to learn its cause, so a base attribute stated in the follow's own

@@ -13,7 +13,7 @@ import (
 )
 
 // TestAMentionThatSettlesAfterItsCommentsBatchIsRecordedWhenItSettles is the defect
-// dispatch://INFRA-1149's c-person-graph found in production: a mention whose attempt settled
+// the check c-person-graph found in production: a mention whose attempt settled
 // sent after the outbox had published its comment was recorded nowhere - no delivered_to tuple,
 // no page of the session and no part_of under it - because the comment's batch reads the
 // attempts as they stand when it runs, and nothing holds a comment back for a mention of a

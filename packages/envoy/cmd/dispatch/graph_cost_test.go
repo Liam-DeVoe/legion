@@ -4,7 +4,7 @@
 
 package main
 
-// The two cost measurements of dispatch://INFRA-1149 share this file. c-write-cost is
+// The two cost measurements of this change share this file. c-write-cost is
 // TestNoWritePathThisChildChangesGetsSlower (write_cost_test.go) and c-read-cost is
 // TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode (read_cost_test.go). What they
 // share is the pair of arms they compare, the corpus writer that seeds each arm through that

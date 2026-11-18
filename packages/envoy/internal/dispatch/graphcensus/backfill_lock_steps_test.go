@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
-// TestEveryBackfillBatchTakesTheStoreLockOrder is the backfill's half of dispatch://INFRA-1149's
+// TestEveryBackfillBatchTakesTheStoreLockOrder is the backfill's half of the check
 // c-lock-order for the three batches backfill_fence_test.go does not prove: writeBlockRefBatch,
 // writeCommentBatch and writeRoleBatch, three of the store write call sites graphstore's
 // TestEveryStoreWriteCallSiteIsListed lists. graphstore's TestEveryStoreWriteTakesOneLockOrder

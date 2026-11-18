@@ -22,7 +22,7 @@ type claimTuple struct {
 	Asserted           bool
 }
 
-// TestTheStoreHoldsNodesAndAppendedTuples is this half of dispatch://INFRA-1149's c-store-tuples:
+// TestTheStoreHoldsNodesAndAppendedTuples is this half of the check c-store-tuples:
 // the facts a resolved role holder states, which a shell driver cannot reach - the holder lives
 // in Envoy's role claim bucket, and this pod's harness has none - so the check words them as
 // driven on the write path in process. The claim store is injected (roleClaimStub), so the run

@@ -58,11 +58,12 @@ type resolvedRole struct {
 //
 // The tuple side is R1's: a tuple's far end is an address and never a foreign key, and a tuple
 // may point at an address a later child writes. So the delivered_to tuple of a destination this
-// batch reached is stated whatever node that session has yet - dispatch://INFRA-1152 owns
+// batch reached is stated whatever node that session has yet - the child that moves the inbox,
+// the messages and the read state owns
 // messages and their deliveries and gives those sessions their nodes. Only a comment has a node
 // on the near end today (deliveredItem), so an event that delivered anything else appends no
 // tuple at all; the children that give an issue, an ask and a message their nodes append those
-// (dispatch://INFRA-1253, dispatch://INFRA-1152).
+// (the child that moves issues and their documents, and the one that moves the messages).
 //
 // A delivery is a destination this batch reached, and a mention attempt the listener took. A
 // mention's is recorded under the comment.delivery receipt its settle appended (mentionReached),
@@ -297,7 +298,7 @@ func nodeOfSubject(subject string) (kind, id string, ok bool) {
 // thing a delivery is recorded from (mentionReached is the other reading of it), whose
 // id its payload carries. An event about anything else reaches its destinations all the same,
 // and the tuple that records that waits for the child which makes issues, asks and messages
-// nodes (dispatch://INFRA-1253, dispatch://INFRA-1152).
+// nodes (the child that moves issues and their documents, or the one that moves the messages).
 func deliveredItem(event model.Event) (kind, id string, ok bool) {
 	if !strings.HasPrefix(event.Type, "comment.") {
 		return "", "", false

@@ -436,13 +436,13 @@ func IndexBlocks(
 // what deletes the window rows its blocks no longer stand for (writeWindows' `dropped`), so
 // leaving such a version unmarked here would leave those rows standing for text the document
 // no longer holds; the arm finds it by the version recorded here rather than by a row of
-// document_blocks it has none of (documentsOwedWindowsQuery, INFRA-988).
+// document_blocks it has none of (documentsOwedWindowsQuery).
 //
 // What a reader meets for it: a document's windows, and so its hits in meaning search, appear
 // one reconciliation tick after the write rather than within it, as a comment's do
 // (indexItemBlocks). The write holds the issue row for its own rows alone: this window write
 // was 9.7% of an hour's database time over 31,241 calls at a 114.3 ms mean on the load-test
-// deployment, and the writers queued behind it were waiting on that row (INFRA-988).
+// deployment, and the writers queued behind it were waiting on that row.
 func standsAtVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int) (won, stale, marked bool, err error) {
 	err = tx.QueryRow(ctx, `
 		with before as (

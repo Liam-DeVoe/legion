@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Drives the one statement in Dispatch that removes bytes (dispatch://INFRA-1149's c-erasure).
+# Drives the one statement in Dispatch that removes bytes (the check c-erasure).
 # It writes a document, has a person approve a version of it, and writes a comment holding a
 # secret that version's markdown holds too. It plants the same bytes in rows of other nodes - a
 # document of another issue and a comment of that issue - which no erase here derives from, and

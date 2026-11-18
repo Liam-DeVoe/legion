@@ -1,6 +1,6 @@
 //go:build basebuild
 
-// The three tests of this tag are dispatch://INFRA-1149's acceptance runs:
+// The three tests of this tag are this change's acceptance runs:
 // TestTheStoreCensusReadsZeroDifferences in this file, and TestNoWritePathThisChildChangesGetsSlower
 // (write_cost_test.go) and TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
 // (read_cost_test.go), which share graph_cost_test.go. Each builds the server at the commit
@@ -14,7 +14,7 @@
 package main
 
 // The store census end to end, from before the migration that made the store
-// (dispatch://INFRA-1149's c-census). The test is TestTheStoreCensusReadsZeroDifferences below,
+// (the check c-census). The test is TestTheStoreCensusReadsZeroDifferences below,
 // and everything else in this file is what it drives.
 
 import (

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drives the growth pass of the node and tuple store's census against a running server's own
-# database (dispatch://INFRA-1149's c-growth). It runs `envoy-dispatch census --store --sizing`
+# database (the check c-growth). It runs `envoy-dispatch census --store --sizing`
 # and reads every figure that check names out of the report: the write rate by kind, the row count
 # and the total relation size of every table this branch's migrations touch, the tuples and nodes
 # a write of each kind states, the rows a day and the bytes a row of each store table, and the
@@ -22,7 +22,7 @@
 # window wrote and what the loop then drained, each as documents and blocks a minute, each over
 # the window named on its own line - are measured over one corpus.
 #
-# One gate holds the loop, the backlog (dispatch://INFRA-1149/artifact/verification-md#b-c-growth):
+# One gate holds the loop, the backlog (the c-growth block of this change's verification document):
 # the loop must drain documents no slower than documents a write defers arrive, counted over the
 # census's own window as the documents past the bound this database took, since those are the
 # only work this loop is given, and a loop below that rate grows an owed set without bound.

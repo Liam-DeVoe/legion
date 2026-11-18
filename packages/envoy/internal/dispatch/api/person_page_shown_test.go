@@ -17,7 +17,7 @@ import (
 )
 
 // TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee holds the person page to R15
-// of dispatch://INFRA-1149: GET /api/v1/people/{login}/nodes answers 200 only where that person
+// of this change: GET /api/v1/people/{login}/nodes answers 200 only where that person
 // holds at least one node the reader may see, or the reader is that person, and otherwise, byte
 // for byte, what a login nobody holds answers.
 //

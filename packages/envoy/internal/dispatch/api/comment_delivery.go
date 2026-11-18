@@ -1341,7 +1341,8 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 // answeredDelivery is what one answer makes of the attempt it answers: the session that attempt
 // names, the state the row recorded before the answer, and the thing the attempt carried as the
 // store addresses it. itemID is empty for a thing this child gives no node, which a message is
-// (dispatch://INFRA-1152 owns messages and their deliveries).
+// (the child that moves the inbox, the messages and the read state owns messages and their
+// deliveries).
 type answeredDelivery struct {
 	session  string
 	was      string

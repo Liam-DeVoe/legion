@@ -30,7 +30,7 @@ var untouchedBeforeTheNode = []string{"graph_tuples", "graph_erasures", "events"
 // row, `for update`, right after its node row (lockProjectionRows).
 const commentLockStatement = "select 1 from comments where node_kind = $1 and node_address = $2 order by id for update"
 
-// TestTheEraseTakesTheStoreLockOrder is the erase's half of dispatch://INFRA-1149's
+// TestTheEraseTakesTheStoreLockOrder is the erase's half of the check
 // c-lock-order. `envoy-dispatch erase` deletes graph_tuples and graph_nodes rows through
 // graphstore.EraseNode (apply), which graphstore's TestEveryStoreWriteCallSiteIsListed lists as
 // grapherase/erase.go#apply and leaves the proof of its lock steps to this package.

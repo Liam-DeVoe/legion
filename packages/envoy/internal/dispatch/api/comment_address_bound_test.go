@@ -11,7 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// TestACommentOwnedByALongRefKeyLeavesOutItsTuple is dispatch://INFRA-1149's R2 at the bound for a
+// TestACommentOwnedByALongRefKeyLeavesOutItsTuple is this change's R2 at the bound for a
 // comment's relations. An artifact's ref_key is bounded only by its own key's index, at
 // maxNewArtifactKeyBytes (2,692), which is wider than a tuple key holds beside the comment's own
 // address: a comment owned by such a document would key a graph_tuples entry past the roughly 2,704
@@ -92,7 +92,7 @@ func TestACommentOwnedByALongRefKeyLeavesOutItsTuple(t *testing.T) {
 	requireGraphEdge(t, database, graphstore.KindComment, commentID, graphstore.TupleOwnedBy, refKey)
 }
 
-// TestACommentWhoseAuthorIsASessionPastTheBoundLeavesOutItsNode is dispatch://INFRA-1149's R2 at
+// TestACommentWhoseAuthorIsASessionPastTheBoundLeavesOutItsNode is this change's R2 at
 // the bound for a comment's author. A session id carries no length bound, so a comment whose author
 // is a session past the store's address bound names an author the store cannot key: AuthorFacts
 // writes no session node, no authored_by tuple and no alias, and the comment keeps its own row.

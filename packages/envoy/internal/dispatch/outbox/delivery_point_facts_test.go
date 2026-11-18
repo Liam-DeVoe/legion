@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestDeliveredToIsAPointFactTheFenceDoesNotDrop is the outbox half of dispatch://INFRA-1149's
+// TestDeliveredToIsAPointFactTheFenceDoesNotDrop is the outbox half of the check
 // c-revision-fence, its point-fact paragraph: a delivered_to tuple takes no revision fence. The
 // fence of R23 refuses a write older than the revision a document's row holds, which is right
 // for a document's parent, where the newer edit replaced the older one. A delivery replaces

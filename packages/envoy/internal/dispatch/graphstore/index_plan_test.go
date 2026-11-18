@@ -616,7 +616,7 @@ func planHolds(t *testing.T, plan json.RawMessage, nodeType string) bool {
 
 // reportBytesARow prints what one tuple costs the database at this size: the row count, the
 // table with its indexes and TOAST (pg_total_relation_size), and the quotient. The growth
-// projection of dispatch://INFRA-1149 is read off this figure, so the test prints all three
+// projection of this change is read off this figure, so the test prints all three
 // rather than the quotient alone.
 func reportBytesARow(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()

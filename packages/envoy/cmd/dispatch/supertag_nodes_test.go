@@ -39,7 +39,7 @@ var typeMigrations = []string{
 const blockSchemaFile = "../../internal/dispatch/pmdoc/schema/blocks.json"
 
 // closedSupertags is the root's closed list of types, twenty-seven names
-// (dispatch://INFRA-1098/spec, R21; dispatch://INFRA-1149/spec, R6): `proposed` is a value of a
+// (R21 of the parent change's specification and R6 of this change's): `proposed` is a value of a
 // node's state and no type, and the role is the agent, so neither is a supertag. The store holds
 // one supertag node for each, and beyond them only an entry an approved document of this tree
 // creates (authorisedSupertags), so this list is written here as the test's own copy: a seed that
@@ -54,7 +54,8 @@ var closedSupertags = []string{
 // authorisedSupertags is every supertag the closed list does not name that an approved document
 // of this tree creates, each with the reference of the document that creates it. A bare
 // prohibition would refuse a correct store: the root's own c-derived requires the entries below
-// once dispatch://INFRA-1950 and dispatch://INFRA-1253 seed them, so a test that allowed the
+// once the child that moves lenses and lens kinds and the child that moves issues and their
+// documents seed them, so a test that allowed the
 // closed list alone would fail the build that requirement asks for. What the check is for is a
 // supertag nobody authorised, so an entry
 // beyond the closed list passes only where this list names its document, and the run prints
@@ -63,9 +64,9 @@ var closedSupertags = []string{
 // The reference is written here rather than read: these checks run where no Dispatch is
 // reachable, so a test that called one could not run at all.
 var authorisedSupertags = map[string]string{
-	"lens_kind":     "dispatch://INFRA-1950/spec R7",
-	"query":         "dispatch://INFRA-1253/spec",
-	"query version": "dispatch://INFRA-1253/spec",
+	"lens_kind":     "R7 of the specification of the child that moves lenses and lens kinds",
+	"query":         "the specification of the child that moves issues and their documents",
+	"query version": "the specification of the child that moves issues and their documents",
 }
 
 // TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt proves that a type is data: the seed
