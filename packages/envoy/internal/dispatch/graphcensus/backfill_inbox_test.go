@@ -3,19 +3,26 @@ package graphcensus
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // The tests of dispatch://INFRA-1152's backfill (backfill_inbox.go, backfill_inbox_threads.go).
@@ -538,6 +545,71 @@ func TestTheBackfillStatesAnOlderBuildsDeliveryAttempts(t *testing.T) {
 	requireASecondRunAppendsNothing(t, writes.database)
 }
 
+// The attempt pass reads what its rows hold once per writer of a batch, not once per row
+// (graphstore.AttemptFactsAsWritten takes every attempt of one writer at once). A batch of four
+// comment attempts - the first attempts of alice's two comments to three sessions, and a later
+// attempt the delivery machinery opened - reads the comment_deliveries rows twice, once for alice
+// and once for the machinery, and each attempt's facts still carry its own comment's event.
+func TestTheAttemptPassReadsItsRowsOncePerWriter(t *testing.T) {
+	writes := newAddressingWrites(t)
+	writes.createIssue(t, "CENS-1", 1, "U", alice)
+	ctx := context.Background()
+	first := writeAsAnOlderBuild(t, writes, "comment.created", alice, `
+		insert into comments (issue_key, author, body) values ('CENS-1', $1, 'For two agents.')
+		returning id::text, created_at`, actorJSON(t, alice))
+	second := writeAsAnOlderBuild(t, writes, "comment.created", alice, `
+		insert into comments (issue_key, author, body) values ('CENS-1', $1, 'For a third.')
+		returning id::text, created_at`, actorJSON(t, alice))
+	backfillInboxOnce(t, writes.database)
+	attempts := []struct {
+		comment olderWrite
+		target  string
+		attempt int
+	}{{first, "session:s1", 1}, {first, "session:s2", 1}, {second, "session:s3", 1}, {first, "session:s1", 2}}
+	for _, written := range attempts {
+		if _, err := writes.database.Pool.Exec(ctx, `
+			insert into comment_deliveries (comment_id, target, attempt, delivery, state) values ($1::uuid, $2, $3, 'aside', 'pending')
+		`, written.comment.id, written.target, written.attempt); err != nil {
+			t.Fatalf("write attempt %d at %s as the release before does: %v", written.attempt, written.target, err)
+		}
+	}
+
+	recorder := &storetest.StatementRecorder{}
+	traced := storetest.Reopened(t, writes.database, func(config *pgxpool.Config) { config.ConnConfig.Tracer = recorder })
+	done, err := runInboxPass(ctx, traced, attemptsPass(commentAttempts))
+	if err != nil {
+		t.Fatalf("run the comment attempt pass: %v", err)
+	}
+	if done.Rows != 4 || !done.Complete {
+		t.Errorf("the comment attempt pass reports %#v, want the 4 attempts and nothing left", done)
+	}
+	reads := 0
+	for _, statement := range recorder.Statements() {
+		if strings.Contains(statement, "join comment_deliveries d") && strings.Contains(statement, "named (comment_id, target, attempt)") {
+			reads++
+		}
+	}
+	if reads != 2 {
+		t.Errorf("the pass read the comment_deliveries rows %d times for a batch of 4 attempts of 2 writers, want once per writer", reads)
+	}
+	attempt := func(written int) string {
+		key := graphstore.CommentAttempt(attempts[written].comment.id, attempts[written].target, attempts[written].attempt)
+		return graphstore.KindDeliveryAttempt + ":" + key.ID()
+	}
+	want := []innerTuple{}
+	for written, event := range []int64{first.event, first.event, second.event, graphstore.NoEvent} {
+		var at time.Time
+		if err := writes.database.Pool.QueryRow(ctx, `
+			select created_at from comment_deliveries where comment_id = $1::uuid and target = $2 and attempt = $3
+		`, attempts[written].comment.id, attempts[written].target, attempts[written].attempt).Scan(&at); err != nil {
+			t.Fatalf("read the moment of attempt %d: %v", written, err)
+		}
+		want = append(want, innerTuple{from: attempt(written), kind: graphstore.AttemptState, to: "value:pending", event: event, at: at})
+	}
+	requireTuples(t, writes.database, "the four attempts' states", []string{graphstore.AttemptState},
+		[]string{attempt(0), attempt(1), attempt(2), attempt(3)}, want...)
+}
+
 // Three asks, written as the release before this one writes them. An open one, created with no
 // marker on an issue carol holds: its asker takes part under its ask.opened, and carol, whom it
 // waits on, takes part and is delivered it, at its created_at, and its asker is delivered nothing.
@@ -634,6 +706,95 @@ func TestTheBackfillStatesWhatAnOlderBuildsAsksAnswersAndDeclinesOwe(t *testing.
 	requireMarkedAtItsVersion(t, writes.database, "dave", answered.id, 1)
 	requireMarkedAtItsVersion(t, writes.database, "bob", answered.id, 0)
 	requireASecondRunAppendsNothing(t, writes.database)
+}
+
+// An ask an older build created whose log holds no ask.opened owes its create's tuples whichever
+// of this release's two writers of them reaches it first, and both state them alike: under the
+// store's sentinel and at the ask's created_at - its asker's participates_in, and the participates_in
+// and the delivered_to of the person it waits on. The backfill states them for one such ask
+// (askOpenedOf answers the sentinel); this release's answer to another states them as its catch-up
+// (inboxwrite's owedBy), and the answer's update marks that ask, so the backfill would state its
+// create by nothing afterwards.
+func TestTheAnswerAndTheBackfillStateACreateWithNoEventAlike(t *testing.T) {
+	writes := newAddressingWrites(t)
+	writes.createIssue(t, "CENS-1", 1, "U", alice)
+	ctx := context.Background()
+	olderAsk := func(question string) (string, time.Time) {
+		t.Helper()
+		var id string
+		var at time.Time
+		if err := writes.database.Pool.QueryRow(ctx, `
+			insert into asks (issue_key, author, question, asked_of) values ('CENS-1', $1, $2, 'dana')
+			returning id::text, created_at
+		`, actorJSON(t, alice), question).Scan(&id, &at); err != nil {
+			t.Fatalf("write an ask as the release before does, with no event: %v", err)
+		}
+		return id, at
+	}
+	backfilled, backfilledAt := olderAsk("Which day?")
+	answered, answeredAt := olderAsk("Which colour?")
+
+	tx, err := writes.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the answer: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	ask, err := inboxwrite.ReadAsk(ctx, tx, answered)
+	if err != nil {
+		t.Fatalf("read the ask before its answer: %v", err)
+	}
+	var at time.Time
+	if err := tx.QueryRow(ctx, `
+		update asks set state = 'answered',
+		       answer = jsonb_build_object('user', 'bob', 'selected', '[]'::jsonb, 'text', 'Blue.', 'at', clock_timestamp())
+		where id = $1::uuid
+		returning (answer->>'at')::timestamptz
+	`, answered).Scan(&at); err != nil {
+		t.Fatalf("answer the ask: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `update asks set tuples_stored_at = $2 where id = $1::uuid`, answered, at); err != nil {
+		t.Fatalf("mark the ask at its answer: %v", err)
+	}
+	text := "Blue."
+	if err := inboxwrite.Record(ctx, tx, inboxwrite.Answered(ask, model.AskAnswer{User: "bob", Selected: []string{}, Text: &text, At: at}, bob), graphstore.NoEvent); err != nil {
+		t.Fatalf("record the answer: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the answer: %v", err)
+	}
+	backfillInboxOnce(t, writes.database)
+
+	created := func(id string, created time.Time) []innerTuple {
+		node := graphstore.KindAsk + ":" + id
+		return []innerTuple{
+			{from: graphstore.KindPerson + ":alice", kind: graphstore.TupleParticipatesIn, to: node, event: graphstore.NoEvent, at: created},
+			{from: graphstore.KindPerson + ":dana", kind: graphstore.TupleParticipatesIn, to: node, event: graphstore.NoEvent, at: created},
+			{from: node, kind: graphstore.TupleDeliveredTo, to: graphstore.KindPerson + ":dana", event: graphstore.NoEvent, at: created},
+		}
+	}
+	createdOf := func(id string, created time.Time) []string {
+		var stated []string
+		for _, tuple := range storedTuplesTouching(t, writes.database, []string{graphstore.TupleParticipatesIn, graphstore.TupleDeliveredTo}, graphstore.KindAsk+":"+id) {
+			if strings.Contains(tuple, " @0 at "+created.UTC().Format(time.RFC3339Nano)) {
+				stated = append(stated, tuple)
+			}
+		}
+		return stated
+	}
+	for _, ask := range []struct {
+		what string
+		id   string
+		at   time.Time
+	}{{"the backfilled ask", backfilled, backfilledAt}, {"the ask this release answered", answered, answeredAt}} {
+		var want []string
+		for _, tuple := range created(ask.id, ask.at) {
+			want = append(want, tuple.String())
+		}
+		slices.Sort(want)
+		if got := createdOf(ask.id, ask.at); !slices.Equal(got, want) {
+			t.Errorf("%s's create holds\n  %s\nwant\n  %s", ask.what, joinLines(got), joinLines(want))
+		}
+	}
 }
 
 // The six read-state tables' rows, written as the release before this one writes them: no
@@ -752,4 +913,305 @@ func TestTheBackfillStatesAnOlderBuildsReadStateRows(t *testing.T) {
 	}
 	requireMarkedAtItsVersion(t, writes.database, "alice", thread.id, 1)
 	requireASecondRunAppendsNothing(t, writes.database)
+}
+
+// A thread row this release holds dismissed, which an older build then put back in the Inbox: that
+// build's "Move to Inbox" sets the row's dismissed_at to null and states nothing (inbox_dismiss.go's
+// inboxRestoreThreads at 99e9da45abf1), and the marker trigger takes the row's mark off (migration
+// 20261116160000), so the row comes back to the thread pass with the dismissed tuple still standing.
+// The pass marks the row again and retracts that dismissal, at the moment it reads the row and at
+// the sentinel, so the store no longer says dismissed where the row does not; a second run appends
+// nothing.
+func TestTheBackfillRetractsADismissalAnOlderBuildRestored(t *testing.T) {
+	writes := newAddressingWrites(t)
+	writes.createIssue(t, "CENS-1", 1, "U", alice)
+	ctx := context.Background()
+	thread := writeAsAnOlderBuild(t, writes, "comment.created", alice, `
+		insert into comments (issue_key, author, body) values ('CENS-1', $1, 'Is the copy final?')
+		returning id::text, created_at`, actorJSON(t, alice))
+	var dismissedAt time.Time
+	if err := writes.database.Pool.QueryRow(ctx, `
+		update user_threads set dismissed_at = clock_timestamp()
+		where login = 'alice' and thread_id = $1::uuid
+		returning dismissed_at
+	`, thread.id).Scan(&dismissedAt); err != nil {
+		t.Fatalf("dismiss alice's thread: %v", err)
+	}
+	backfillInboxOnce(t, writes.database)
+	newestDismissal := func() (asserted bool, at time.Time, event int64) {
+		t.Helper()
+		if err := writes.database.Pool.QueryRow(ctx, `
+			select asserted, at, source_event from graph_tuples
+			where from_kind = $1 and from_id = 'alice' and kind = $2 and to_kind = $3 and to_id = $4
+			order by seq desc limit 1
+		`, graphstore.KindPerson, graphstore.TupleDismissed, graphstore.KindComment, thread.id).Scan(&asserted, &at, &event); err != nil {
+			t.Fatalf("read alice's newest dismissed tuple into the thread: %v", err)
+		}
+		return asserted, at, event
+	}
+	if asserted, at, _ := newestDismissal(); !asserted || !at.Equal(dismissedAt) {
+		t.Fatalf("after the first run alice's dismissal reads asserted %t at %s, want it standing at %s, so this test would prove nothing",
+			asserted, at, dismissedAt)
+	}
+
+	updateAsAnOlderBuild(t, writes.database, "move alice's thread back to the Inbox as the release before does", `
+		update user_threads set dismissed_at = null where login = 'alice' and thread_id = $1::uuid and dismissed_at is not null
+	`, thread.id)
+	if row := readThreadRow(t, writes.database, "alice", thread.id); row.markedSeq != nil {
+		t.Fatalf("the older build's restore left alice's row marked at %d, so the thread pass would not read it", *row.markedSeq)
+	}
+
+	report := backfillInboxOnce(t, writes.database)
+	if done := reportedKind(t, report, "user_threads"); done.Rows != 1 {
+		t.Errorf("the user_threads pass reports %#v, want alice's row marked again", done)
+	}
+	if asserted, at, event := newestDismissal(); asserted || !at.After(dismissedAt) || event != graphstore.NoEvent {
+		t.Errorf("after the restore alice's newest dismissed tuple reads asserted %t at %s under %d, want a retraction after %s at the sentinel",
+			asserted, at, event, dismissedAt)
+	}
+	requireMarkedAtItsVersion(t, writes.database, "alice", thread.id, 0)
+	requireASecondRunAppendsNothing(t, writes.database)
+}
+
+// updateAsAnOlderBuild runs sql as a build of the release before runs its update: in a transaction
+// whose connection does not carry this build's marker writer setting (store.StoreMarkerWriterSetting),
+// so each marker trigger takes the mark off the rows it writes.
+func updateAsAnOlderBuild(t *testing.T, database *store.Store, what, sql string, args ...any) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin %s: %v", what, err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `select set_config($1, 'off', true)`, store.StoreMarkerWriterSetting); err != nil {
+		t.Fatalf("take this build's marker writer setting off %s: %v", what, err)
+	}
+	if _, err := tx.Exec(ctx, sql, args...); err != nil {
+		t.Fatalf("%s: %v", what, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit %s: %v", what, err)
+	}
+}
+
+// A comment on a document of issue CENS-1 is a thread whose user_threads rows name the document
+// alone, as user_threads_record keeps the comment's own null issue_key, while every writer of that
+// thread takes the issue's owner row (commentOwners). The thread pass's batch over alice's row of
+// it takes the same row: while the batch's transaction is open, a writer of the issue cannot take
+// it, so no reply into the thread lands between the batch's catch-up and its row lock.
+func TestTheThreadPassTakesTheIssueOfADocumentsCommentThread(t *testing.T) {
+	writes := newAddressingWrites(t)
+	writes.createIssue(t, "CENS-1", 1, "U", alice)
+	ctx := context.Background()
+	var document, thread string
+	if err := writes.database.Pool.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ('CENS-1', 'CENS', 'spec', 'spec.md', 'doc', false, $1)
+		returning id::text
+	`, actorJSON(t, alice)).Scan(&document); err != nil {
+		t.Fatalf("create CENS-1's document: %v", err)
+	}
+	if err := writes.database.Pool.QueryRow(ctx, `
+		insert into comments (artifact_id, author, body) values ($1::uuid, $2, 'Is the copy final?') returning id::text
+	`, document, actorJSON(t, alice)).Scan(&thread); err != nil {
+		t.Fatalf("comment on the document as the release before does: %v", err)
+	}
+	backfillInboxOnce(t, writes.database)
+	updateAsAnOlderBuild(t, writes.database, "read alice's thread as the release before does", `
+		update user_threads set read_through = clock_timestamp() where login = 'alice' and thread_id = $1::uuid
+	`, thread)
+
+	tx, err := writes.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the batch: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	wrote, err := writeUserThreads(ctx, tx, [][]string{{thread, "alice"}})
+	if err != nil {
+		t.Fatalf("write the batch of alice's row: %v", err)
+	}
+	if wrote.rows != 1 {
+		t.Errorf("the batch marked %d rows, want alice's", wrote.rows)
+	}
+	writer, err := writes.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin a writer of CENS-1: %v", err)
+	}
+	defer writer.Rollback(ctx)
+	_, err = writer.Exec(ctx, `select 1 from issues where key = 'CENS-1' for no key update nowait`)
+	var refused *pgconn.PgError
+	if !errors.As(err, &refused) || refused.Code != "55P03" {
+		t.Errorf("a writer of CENS-1 took the issue's row beside the open batch (err %v), want it held by the batch", err)
+	}
+}
+
+// The thread pass's catch-up reads the comments of a batch's threads the pointer pass still owes
+// through the comments' indexes - the key, comments_reply_to and comments_ask_id, one for each
+// column a comment's thread is read from - and never the whole table, which it would read once a
+// batch of 200 rows. The statement explained is the one the batch sends (writeUserThreads,
+// recorded), over a comments table of 2,000 rows this release stated and analysed, as a
+// deployment's is: every row names its node, so naming a node narrows nothing, and only the
+// thread's own columns pick the few rows a batch owes.
+func TestTheThreadCatchUpReadsCommentsThroughTheirIndexes(t *testing.T) {
+	writes := newAddressingWrites(t)
+	writes.createIssue(t, "CENS-1", 1, "U", alice)
+	ctx := context.Background()
+	var ids []string
+	if err := writes.database.Pool.QueryRow(ctx, `select array_agg(gen_random_uuid()::text) from generate_series(1, 2000)`).Scan(&ids); err != nil {
+		t.Fatalf("draw the comments' ids: %v", err)
+	}
+	nodes := make([]graphstore.Node, 0, len(ids))
+	for _, id := range ids {
+		nodes = append(nodes, graphstore.Node{
+			Kind: graphstore.KindComment, ID: id, Supertag: graphstore.KindComment, Visibility: graphstore.VisibilityProject,
+			State: graphstore.StateLive, Project: "CENS", MadeAt: time.Now().UTC(), MadeBy: alice, SourceEvent: graphstore.NoEvent,
+		})
+	}
+	tx, err := writes.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the comments' nodes: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := graphstore.Write(ctx, tx, nodes, nil); err != nil {
+		t.Fatalf("write the comments' nodes: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into comments (id, issue_key, author, body, node_kind, node_address, tuples_stored)
+		select id::uuid, 'CENS-1', $2, 'Stated.', 'comment', id, true from unnest($1::text[]) as id
+	`, ids, actorJSON(t, alice)); err != nil {
+		t.Fatalf("write the comments' rows: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the comments: %v", err)
+	}
+	if _, err := writes.database.Pool.Exec(ctx, `analyze comments`); err != nil {
+		t.Fatalf("analyse comments: %v", err)
+	}
+
+	recorder := &storetest.StatementRecorder{}
+	traced := storetest.Reopened(t, writes.database, func(config *pgxpool.Config) { config.ConnConfig.Tracer = recorder })
+	batch, err := traced.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the batch: %v", err)
+	}
+	defer batch.Rollback(ctx)
+	if _, err := writeUserThreads(ctx, batch, [][]string{{ids[0], "alice"}}); err != nil {
+		t.Fatalf("write a batch of the thread pass: %v", err)
+	}
+	var catchUp string
+	for _, statement := range recorder.Statements() {
+		if strings.Contains(statement, "from comments c") && strings.Contains(statement, "not c.tuples_stored") {
+			catchUp = statement
+		}
+	}
+	if catchUp == "" {
+		t.Fatalf("the batch read no comments its threads still owe: %q", recorder.Statements())
+	}
+	plan := planWithoutSeqScans(t, writes.database, catchUp, []string{ids[0]})
+	if explaintest.SeqScansRelation(t, plan, "comments") {
+		t.Errorf("the catch-up reads comments whole: %s", plan)
+	}
+	read := map[string]bool{}
+	for _, scan := range explaintest.IndexScans(t, plan) {
+		if strings.HasPrefix(scan.Index, "comments") && strings.Contains(scan.Cond, "ANY") {
+			read[scan.Index] = true
+		}
+	}
+	for _, index := range []string{"comments_pkey", "comments_reply_to", "comments_ask_id"} {
+		if !read[index] {
+			t.Errorf("the catch-up reads comments through no keyed scan of %s (it keys %v): %s", index, read, plan)
+		}
+	}
+}
+
+// roundTrips records every round trip a pool's connections make: a statement sent on its own, or
+// one pgx batch with every statement it carried (pgx.BatchTracer).
+type roundTrips struct {
+	mu    sync.Mutex
+	trips [][]string
+}
+
+func (r *roundTrips) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.trips = append(r.trips, []string{data.SQL})
+	return ctx
+}
+
+func (r *roundTrips) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (r *roundTrips) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.trips = append(r.trips, []string{})
+	return ctx
+}
+
+func (r *roundTrips) TraceBatchQuery(_ context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	last := len(r.trips) - 1
+	r.trips[last] = append(r.trips[last], data.SQL)
+}
+
+func (r *roundTrips) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
+func (r *roundTrips) since(start int) [][]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.trips[start:])
+}
+
+func (r *roundTrips) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.trips)
+}
+
+// A reply an older build wrote is recorded (inboxwrite.RecordOlder) with the lock of the rows it
+// reached and the read of the dismissals it ended in one round trip: the two hang on who it
+// reached and not on each other, so they go as one pgx batch, the lock first. bob's reply to
+// alice's comment reached alice: recording it again takes five round trips - its thread, who it
+// reached, that batch, and the two of the deliveries' store write (graphstore.ToPerson reads the
+// nodes a tuple may not run from, then appends) - where it took six with the lock and the read
+// sent one by one.
+func TestRecordOlderLocksAndReadsTheDismissalsInOneRoundTrip(t *testing.T) {
+	writes := newAddressingWrites(t)
+	writes.createIssue(t, "CENS-1", 1, "U", alice)
+	ctx := context.Background()
+	thread := writeAsAnOlderBuild(t, writes, "comment.created", alice, `
+		insert into comments (issue_key, author, body) values ('CENS-1', $1, 'Is the copy final?')
+		returning id::text, created_at`, actorJSON(t, alice))
+	reply := writeAsAnOlderBuild(t, writes, "comment.created", bob, `
+		insert into comments (issue_key, author, body, reply_to) values ('CENS-1', $1, 'Nearly.', $2)
+		returning id::text, created_at`, actorJSON(t, bob), thread.id)
+	backfillInboxOnce(t, writes.database)
+
+	trips := &roundTrips{}
+	traced := storetest.Reopened(t, writes.database, func(config *pgxpool.Config) { config.ConnConfig.Tracer = trips })
+	tx, err := traced.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	start := trips.count()
+	issue := "CENS-1"
+	if _, err := inboxwrite.RecordOlder(ctx, tx, inboxwrite.Comment(reply.id, bob, reply.at, &issue, nil, ""), reply.event); err != nil {
+		t.Fatalf("record bob's reply: %v", err)
+	}
+	recorded := trips.since(start)
+	batches := 0
+	for _, trip := range recorded {
+		if len(trip) != 1 || strings.Contains(trip[0], "for no key update") {
+			batches++
+			if len(trip) != 2 || !strings.Contains(trip[0], "for no key update") || !strings.Contains(trip[1], "current.from_id") {
+				t.Errorf("a round trip of the record carried %q, want one batch of the row lock and then the dismissals' read", trip)
+			}
+		}
+	}
+	if batches != 1 || len(recorded) != 5 {
+		t.Errorf("recording bob's reply took %d round trips, %d of them a batch or a lone lock: %q; want 5 with the lock and the read in one batch",
+			len(recorded), batches, recorded)
+	}
 }

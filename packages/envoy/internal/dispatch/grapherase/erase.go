@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // eraseApplicationName is how the erase appears in pg_stat_activity, as the census names itself:
@@ -77,13 +78,18 @@ var itemPartTables = []string{
 }
 
 // connect opens the erase's one connection, named in pg_stat_activity (eraseApplicationName). The
-// erase uses no pool and migrates nothing: the schema it works on is the deployment's own.
+// erase uses no pool and migrates nothing: the schema it works on is the deployment's own. The
+// connection carries this build's marker writer setting (store.StoreMarkerWriterSetting), as a
+// process that updates this build's marked rows on a connection of its own does: the user_threads
+// rows a removed reply reached are rewritten with the store's change (rewriteRepliedRows), so they
+// keep their mark.
 func connect(ctx context.Context, databaseURL string) (*pgx.Conn, error) {
 	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse Postgres URL: %w", err)
 	}
 	config.RuntimeParams["application_name"] = eraseApplicationName
+	config.RuntimeParams[store.StoreMarkerWriterSetting] = "on"
 	conn, err := pgx.ConnectConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
@@ -114,10 +120,13 @@ func ParseNode(value string) (kind, id string, err error) {
 // document whose margin record holds its body, and its rows of the six read-state tables, which
 // mirror tuples from a person to what the mark is about: a person's every row, and an item's the
 // rows that name it (readStateTables). The run deletes those, or rewrites them with the
-// marker where it may take no row away. Every other row that holds the same bytes derives from
-// another node and is that node's text - a sibling block of the same document among them: the
-// run lists it with its address and changes nothing in it, and an operator erases that node by a
-// run of its own.
+// marker where it may take no row away. A comment or a message that is a reply in another thread
+// is counted and named by that thread's user_threads rows it reached, which are their people's
+// and stay: the run rewrites each one's version, last_reply_id and replied_at to what the store
+// says once the reply's deliveries are gone (readRepliedRows). Every other row that holds the
+// same bytes derives from another node and is that node's text - a sibling block of the same
+// document among them: the run lists it with its address and changes nothing in it, and an
+// operator erases that node by a run of its own.
 //
 // confirm is the digest of a listing. With none the run reads everything it would delete,
 // rewrite, redact or leave in a read-only transaction, which takes no write lock and waits on no
@@ -225,7 +234,8 @@ func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStore
 // order the foreign keys allow. Before anything goes it reads the keys of the display trees of
 // the texts it removes or rewrites (treeSums) and deletes the node's embedding rows
 // (forgetEmbeddings). Then go the whole text of the node's block, the rows that cannot exist
-// without a projection row, the projection rows, the node's read-state rows (deleteReadState),
+// without a projection row, the projection rows, the node's read-state rows (deleteReadState) -
+// with the user_threads rows a removed reply reached rewritten beside them (rewriteRepliedRows) -
 // and the approvals and the versions they stood on. Then it rewrites what it may not remove - the
 // blocks holding the node's block and the mentions whose excerpt was cut from it, the events about
 // it, the search vectors that stood on a version that went, the embedding rows of what it leaves
@@ -270,6 +280,9 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 		e.removed(held.Table, tag.RowsAffected())
 	}
 	if err := e.deleteReadState(ctx, tx, read); err != nil {
+		return err
+	}
+	if err := e.rewriteRepliedRows(ctx, tx, read); err != nil {
 		return err
 	}
 	if len(read.artifacts) > 0 {

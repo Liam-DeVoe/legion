@@ -260,6 +260,15 @@ export const meInboxDismissedQuery = () =>
     getNextPageParam: (last: MeInboxResponse) => last.next_cursor,
   });
 
+/** The newest run of the Inbox comparison (`GET /api/v1/inbox/comparison`), which the comparison
+ *  page draws. Its key sits outside `["inbox"]`: every optimistic write over the Inbox's asks
+ *  patches each read under that prefix as a list of rows, and this answer is no list. */
+export const inboxComparisonQuery = () =>
+  queryOptions({
+    queryKey: ["inbox-comparison"],
+    queryFn: () => api.getInboxComparison(),
+  });
+
 /** One session's stored conversations: the direct messages and issue messages sent to it, with
  *  their replies. The Agents page row and the live view read this one key. */
 export const agentMessagesQuery = (sessionId: string) =>

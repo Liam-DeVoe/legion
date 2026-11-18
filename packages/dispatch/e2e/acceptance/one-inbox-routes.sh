@@ -693,10 +693,15 @@ gate_uncovered_section() {
 }
 
 gate_met_section() {
-  local section=gate_met earlier
-  query "$section" "read the mismatch run's row before the clean run" "
-    select difference_count || ' ' || md5(differences::text) from inbox_comparison_runs where id = $(run_id mismatch)"
-  earlier="$answer"
+  local section=gate_met earlier="" mismatch
+  # The clean run's gate is judged whether or not the mismatch run stored a row: a missing row
+  # fails the one check that reads it, after the gate's own.
+  mismatch="$(run_id mismatch)"
+  if [[ -n "$mismatch" ]]; then
+    query "$section" "read the mismatch run's row before the clean run" "
+      select difference_count || ' ' || md5(differences::text) from inbox_comparison_runs where id = $mismatch"
+    earlier="$answer"
+  fi
   compare clean
   [[ "$compared" == 0 && "$(summary clean gate)" == met ]] ||
     fail "$section" "the gate is met over the corpus with nobody excluded and the mismatch cleared" \
@@ -704,8 +709,10 @@ gate_met_section() {
   [[ "$(summary clean difference_count) $(summary clean people_uncovered) $(summary clean missing_shapes)" == "0 0 none" ]] ||
     fail "$section" "the clean run reads 0 differences, 0 uncovered and every shape" "$(tail -n 1 "$work/clean.out")"
   pass "$section" "the gate is met: 0 differences, 0 of $(summary clean people_checked) people uncovered, every shape held"
+  [[ -n "$mismatch" ]] ||
+    fail "$section" "the clean run leaves the earlier mismatch's row as it was" "the mismatch run stored no row: $work/mismatch.out names no run="
   query "$section" "read the mismatch run's row after the clean run" "
-    select difference_count || ' ' || md5(differences::text) from inbox_comparison_runs where id = $(run_id mismatch)"
+    select difference_count || ' ' || md5(differences::text) from inbox_comparison_runs where id = $mismatch"
   [[ "$answer" == "$earlier" ]] || fail "$section" "the clean run leaves the earlier mismatch's row as it was" "'$earlier' then '$answer'"
   pass "$section" "the earlier mismatch's row stands as it was written"
 }
@@ -748,14 +755,17 @@ default_section() {
   pass "$section" "no commit of this checkout carries Inbox-Default: one-read: the Inbox's default is the three reads"
   request anonymous GET /
   [[ "$status" == 200 ]] || fail "$section" "read the dashboard the server serves" "HTTP $status"
-  assets="$(grep -o '/assets/[^"]*\.js' "$work/body" | LC_ALL=C sort -u)"
+  assets="$(grep -o '/assets/[^"]*\.js' "$work/body" | LC_ALL=C sort -u)" ||
+    fail "$section" "read the dashboard's scripts" "index.html names none"
   [[ -n "$assets" ]] || fail "$section" "read the dashboard's scripts" "index.html names none"
   : >"$work/bundle.js"
   for asset in $assets; do
     curl -sS "$base$asset" >>"$work/bundle.js" 2>"$work/curl" || fail "$section" "read $asset" "$(<"$work/curl")"
   done
   # The entry imports its lazy chunks by their names, which index.html does not list.
-  grep -o 'assets/[A-Za-z0-9_.-]*\.js' "$work/bundle.js" | LC_ALL=C sort -u >"$work/chunks"
+  grep -o 'assets/[A-Za-z0-9_.-]*\.js' "$work/bundle.js" >"$work/chunk-names" ||
+    fail "$section" "read the dashboard's lazy chunks" "its scripts name none"
+  LC_ALL=C sort -u "$work/chunk-names" >"$work/chunks"
   while read -r asset; do
     curl -sS "$base/$asset" >>"$work/bundle.js" 2>"$work/curl" || fail "$section" "read /$asset" "$(<"$work/curl")"
   done <"$work/chunks"

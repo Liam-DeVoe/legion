@@ -84,6 +84,14 @@ func threadOf(ctx context.Context, tx pgx.Tx, w Write) (thread, error) {
 	return root, nil
 }
 
+// ThreadRoot is the root of the thread the node kind/id is written in, as (kind, id), read as
+// Record reads a write's (threadOf): the erase reads it of a reply it removes, whose thread's rows
+// that reply reached (grapherase's readRepliedRows).
+func ThreadRoot(ctx context.Context, tx pgx.Tx, kind, id string) (string, string, error) {
+	root, err := threadOf(ctx, tx, Write{NodeKind: kind, NodeID: id})
+	return root.kind, root.id, err
+}
+
 // member is one person a thread holds: a row of user_threads it locked, a participant, or a
 // person whose dismissal of it stands, or several of those.
 type member struct {

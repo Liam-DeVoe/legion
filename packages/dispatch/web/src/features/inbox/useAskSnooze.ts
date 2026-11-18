@@ -6,6 +6,13 @@ import { inboxQuery } from "../../api/queries";
 import type { InboxRow } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { plainWrite, useWrites } from "../writes/write-store";
+import {
+  cancelMeInbox,
+  invalidateMeInbox,
+  meInboxSnapshot,
+  patchMeInboxAsks,
+  restoreMeInbox,
+} from "./one-read-cache";
 
 export interface AskSnoozeWrite {
   /** The server's reason after a refused save, until the next attempt. */
@@ -25,10 +32,11 @@ export interface AskSnoozeWrite {
 }
 
 /**
- * The one way the SPA writes a row's snooze. The new moment lands on every inbox cache at once,
- * so the row drops into `Later` (or climbs back out) on the click, rolls back if the server
- * refuses, and the list refetches once the save settles - the same shape as the issue field
- * writes, without their cross-surface caches: a snooze is on the ask and shows nowhere else.
+ * The one way the SPA writes a row's snooze. The new moment lands on every inbox cache at once -
+ * the Inbox read and, behind its opt-in, the one read (`one-read-cache.ts`) - so the row drops
+ * into `Later` (or climbs back out) on the click, rolls back if the server refuses, and the list
+ * refetches once the save settles - the same shape as the issue field writes, without their
+ * cross-surface caches: a snooze is on the ask and shows nowhere else.
  */
 export function useAskSnooze(askId: string): AskSnoozeWrite {
   const queryClient = useQueryClient();
@@ -42,20 +50,29 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
     inline: true,
     label: (until) => (until === null ? "Ask brought back now" : "Ask snoozed"),
     onMutate: async (until) => {
-      await queryClient.cancelQueries({ queryKey: inboxKey });
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: inboxKey }),
+        cancelMeInbox(queryClient),
+      ]);
       const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
+      const oneRead = meInboxSnapshot(queryClient);
+      const snoozed = (row: InboxRow): InboxRow =>
+        row.id === askId ? { ...row, snoozed_until: until } : row;
       queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-        current?.map((row) => (row.id === askId ? { ...row, snoozed_until: until } : row))
+        current?.map(snoozed)
       );
-      return previous;
+      patchMeInboxAsks(queryClient, snoozed);
+      return { inbox: previous, oneRead };
     },
     onError: (_error, _until, previous) => {
-      for (const [key, data] of previous ?? []) {
+      for (const [key, data] of previous?.inbox ?? []) {
         queryClient.setQueryData(key, data);
       }
+      restoreMeInbox(queryClient, previous?.oneRead);
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: inboxKey });
+      invalidateMeInbox(queryClient);
     },
   });
   return {
@@ -110,12 +127,22 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
       // id, so this is where that stays true rather than a case to handle.
       const writeOf = ids.map((id) => ({ id, request: askSnoozeRequest(id, until) }));
       setPending((count) => count + 1);
-      await queryClient.cancelQueries({ queryKey: inboxKey });
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: inboxKey }),
+        cancelMeInbox(queryClient),
+      ]);
       const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
+      // What each marked row of the one read held before, as each Inbox read's rows are kept.
+      const oneReadBefore = new Map<string, string | null | undefined>();
       const marked = new Set(ids);
       queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
         current?.map((row) => (marked.has(row.id) ? { ...row, snoozed_until: until } : row))
       );
+      patchMeInboxAsks(queryClient, (row) => {
+        if (!marked.has(row.id)) return row;
+        oneReadBefore.set(row.id, row.snoozed_until);
+        return { ...row, snoozed_until: until };
+      });
       const results = await Promise.allSettled(
         writeOf.map(({ id, request }) =>
           writes.run({
@@ -144,7 +171,13 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
           )
         );
       }
+      if (refused.size > 0) {
+        patchMeInboxAsks(queryClient, (row) =>
+          refused.has(row.id) ? { ...row, snoozed_until: oneReadBefore.get(row.id) ?? null } : row
+        );
+      }
       void queryClient.invalidateQueries({ queryKey: inboxKey });
+      invalidateMeInbox(queryClient);
       setPending((count) => count - 1);
       return { failed };
     },

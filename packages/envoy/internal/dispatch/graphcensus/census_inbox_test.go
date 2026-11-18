@@ -438,6 +438,40 @@ func TestTheReadStateCensusTellsItsPopulationsAndAnOlderDelete(t *testing.T) {
 	}
 }
 
+// An Agent thread's dismissal is a user_agent_thread_dismissed row, and the route of the release
+// before that deletes one - "Move to Inbox" on an Agent row - appends user_agent_state.updated
+// (dismissInboxAgentThreads at 99e9da45abf1), the type every write of a person's Agent state
+// appends and this release's dismissal and restore of one state their marks under. alice's
+// dismissal is a row this release marked under that event; erin dismissed the same root through
+// this release and a build of the release before put it back, deleting her row and stating
+// nothing. Her mark is the figure left_by_an_older_delete, and no difference.
+func TestTheAgentDismissalCensusTellsAnOlderRestore(t *testing.T) {
+	f := newInboxCensus(t)
+	erin := model.Actor{Kind: "user", ID: "erin"}
+	var root string
+	if err := f.writes.database.Pool.QueryRow(context.Background(), `
+		insert into messages (author, body, target) values ($1, 'Can you look?', 'session:s1') returning id::text
+	`, actorJSON(t, alice)).Scan(&root); err != nil {
+		t.Fatalf("write the Agent thread's root: %v", err)
+	}
+	f.state(t, []graphstore.Node{f.node(graphstore.KindMessage, root, "")}, nil)
+	dismissedAt := f.at()
+	dismissed := f.event(t, "user_agent_state.updated", alice, map[string]any{"login": "alice", "session_id": "s1"})
+	f.state(t, nil, []graphstore.Tuple{tuple(graphstore.KindPerson, "alice", graphstore.TupleDismissed, graphstore.KindMessage, root, dismissedAt, dismissed)})
+	f.exec(t, `
+		insert into user_agent_thread_dismissed (login, message_id, dismissed_at, tuples_stored_at) values ('alice', $1::uuid, $2, $2)
+	`, root, dismissedAt)
+	erinDismissed := f.event(t, "user_agent_state.updated", erin, map[string]any{"login": "erin", "session_id": "s1"})
+	f.state(t, nil, []graphstore.Tuple{tuple(graphstore.KindPerson, "erin", graphstore.TupleDismissed, graphstore.KindMessage, root, f.at(), erinDismissed)})
+	f.event(t, "user_agent_state.updated", erin, map[string]any{"login": "erin", "session_id": "s1"})
+
+	report, _ := f.census(t, "over the Agent dismissals")
+	kind := requireKindAgrees(t, report, "user_agent_thread_dismissed", 0, 1)
+	if got := narrowed(t, kind, "left_by_an_older_delete"); got != 1 {
+		t.Errorf("user_agent_thread_dismissed reads %d mark(s) an older build's restore left standing, want erin's", got)
+	}
+}
+
 // A table whose rows record their creation splits its populations at the moment this release's
 // first migration was applied: a messages row written before it is the release before's. The
 // message kind holds each marked row to its node's relations - part_of its issue, authored_by its

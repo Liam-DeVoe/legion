@@ -1,8 +1,9 @@
 import { useQueryClient } from "@tanstack/react-query";
 
-import { projectDefaultAssigneesQuery } from "../../api/queries";
+import { projectDefaultAssigneesQuery, whoAmIQuery } from "../../api/queries";
 import type { InboxRow, IssueDetails, IssueSummary } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
+import { patchMeInboxAsks } from "../inbox/one-read-cache";
 import { inboxKey, projectListsKey, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 export interface IssueAssigneeWrite {
@@ -33,6 +34,11 @@ export interface IssueAssigneeWrite {
  * client has it; where it does not, the row keeps the person it waited on until the refetch names
  * the default. It never names nobody: every project names a default, so no row the server
  * answers does, and one written so would read as an ask no person waits on.
+ *
+ * The one read behind the Inbox's opt-in, which the reader's own asks are drawn from, takes the
+ * same move, and a row the write makes wait on the reader joins its Inbox answer where it held no
+ * entry (`patchMeInboxAsks`): without it, taking an unassigned ask would take the row out of the
+ * old read's list and put it in no other.
  */
 export function useIssueAssignee(issueKey: string): IssueAssigneeWrite {
   const queryClient = useQueryClient();
@@ -53,14 +59,21 @@ export function useIssueAssignee(issueKey: string): IssueAssigneeWrite {
       queryClient
         .getQueryData(projectDefaultAssigneesQuery().queryKey)
         ?.find((entry) => entry.project === project)?.assignee;
+    const assigned = (row: InboxRow): InboxRow => {
+      if (row.issue_key !== issueKey || row.issue === undefined) return row;
+      const moved = { ...row, issue: { ...row.issue, assignee } };
+      if (row.asked_of !== null && row.asked_of !== undefined) return moved;
+      return person === undefined ? moved : { ...moved, waiting_on_person: person };
+    };
     queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-      current?.map((row) => {
-        if (row.issue_key !== issueKey || row.issue === undefined) return row;
-        const moved = { ...row, issue: { ...row.issue, assignee } };
-        if (row.asked_of !== null && row.asked_of !== undefined) return moved;
-        return person === undefined ? moved : { ...moved, waiting_on_person: person };
-      })
+      current?.map(assigned)
     );
+    const viewer = queryClient.getQueryData(whoAmIQuery().queryKey)?.login;
+    const joined = (queryClient.getQueryData<InboxRow[]>(inboxKey) ?? []).filter(
+      (row) =>
+        row.issue_key === issueKey && viewer !== undefined && row.waiting_on_person === viewer
+    );
+    patchMeInboxAsks(queryClient, assigned, joined);
   };
   return useIssueFieldWrite<string | null>(issueKey, {
     label: (assignee) => `${issueKey} assigned to ${assignee ?? "nobody"}`,

@@ -34,7 +34,7 @@ type Ask struct {
 	// node of states no citation (refs' replaceRefsOf).
 	node *model.Actor
 	// opened is the ask's own create event, ask.opened, and answered the ask.answered event of the
-	// older answer it holds, each 0 where it owes nothing or the log holds none.
+	// older answer it holds, each graphstore.NoEvent where it owes nothing or the log holds none.
 	opened, answered int64
 }
 
@@ -124,12 +124,18 @@ type owed struct {
 // which reaches no asker by their own ask); and the ask's citations, taken from the ask's own refs
 // rows as they are stored rather than by indexing the question again - a fresh index resolves
 // bare keys against the database as it stands (refs' Reader), and an answer rewrites no question
-// - each row marked tuples_stored as its mentions tuple is stated (markCitations). Where the ask
-// holds an answer whose moment the marker does not hold, that older build's answer owes, under
-// its own ask.answered event and at its own moment, its answerer's participates_in and one
-// delivered_to to each person it reached (reachedBefore). Each tuple carries the event of the
-// write it belongs to, so the repeat key keeps it once beside the backfill's, which writes the
-// same tuple under the same event.
+// - each row marked tuples_stored as its mentions tuple is stated (markCitations). An ask whose
+// log holds no ask.opened still owes them: its row is the record that it was created, by whom and
+// when, and the answer's update marks it, so a create left unstated here would be stated by
+// nothing. Those tuples go under the store's sentinel (graphstore.NoEvent), the event the
+// backfill states the same create under where the log holds none (askOpenedOf), so the two
+// writers of one create agree on it whichever runs first. Where the ask holds an answer whose
+// moment the marker does not hold, that older build's answer owes, under its own ask.answered
+// event and at its own moment, its answerer's participates_in and one delivered_to to each person
+// it reached (reachedBefore); an answer the log holds no ask.answered of is one the backfill
+// states nothing of either, since it reads an older answer from its event alone, so neither
+// writer states it. Each tuple carries the event of the write it belongs to, so the repeat key
+// keeps it once beside the backfill's, which writes the same tuple under the same event.
 func owedBy(ctx context.Context, tx pgx.Tx, ask *Ask) (owed, error) {
 	var tuples owed
 	if ask == nil {
@@ -154,7 +160,7 @@ func owedBy(ctx context.Context, tx pgx.Tx, ask *Ask) (owed, error) {
 			At: at, Who: who, SourceEvent: event, Asserted: true,
 		})
 	}
-	if ask.createOwed && ask.opened != graphstore.NoEvent {
+	if ask.createOwed {
 		if kind, id, named := graphstore.AuthorOf(ask.author); named && graphstore.AddressFits(id) {
 			takesPart(kind, id, ask.createdAt, ask.author, ask.opened)
 		}

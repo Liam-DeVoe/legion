@@ -927,11 +927,15 @@ func (table attemptTable) writeAttempts(ctx context.Context, tx pgx.Tx, keys [][
 	if err != nil {
 		return inboxWrote{}, fmt.Errorf("read the %s naming no node: %w", table.table, err)
 	}
+	// writer is who wrote the attempt as its row stores them - the item's author column for a first
+	// attempt, which Postgres gives back in one spelling for one actor, and empty for the delivery
+	// machinery - the key its facts are read under (AttemptFactsAsWritten).
 	type attempt struct {
-		key   graphstore.AttemptKey
-		who   model.Actor
-		at    time.Time
-		event int64
+		key    graphstore.AttemptKey
+		who    model.Actor
+		writer string
+		at     time.Time
+		event  int64
 	}
 	var read []attempt
 	width := len(keys[0])
@@ -958,6 +962,7 @@ func (table attemptTable) writeAttempts(ctx context.Context, tx pgx.Tx, keys [][
 				rows.Close()
 				return inboxWrote{}, fmt.Errorf("read the author of %s: %w", held.key.ID(), err)
 			}
+			held.writer = string(author)
 		}
 		read = append(read, held)
 	}
@@ -981,14 +986,33 @@ func (table attemptTable) writeAttempts(ctx context.Context, tx pgx.Tx, keys [][
 	`, args...); err != nil {
 		return inboxWrote{}, fmt.Errorf("name the nodes of a batch of %s on their rows: %w", table.table, err)
 	}
-	var facts []graphstore.Tuple
+	// What the rows hold is read once per writer rather than once per row: AttemptFactsAsWritten
+	// states the attempts of one writer in two statements however many it names, and a batch's
+	// attempts have few writers - each item's author for its first attempt and the delivery
+	// machinery for every later one. Each fact then carries the event of the attempt it is out of.
+	var writers []string
+	byWriter := map[string][]attempt{}
+	eventOf := make(map[string]int64, len(read))
 	for _, held := range read {
-		stated, err := graphstore.AttemptFactsAsWritten(ctx, tx, held.who, held.key)
+		if _, seen := byWriter[held.writer]; !seen {
+			writers = append(writers, held.writer)
+		}
+		byWriter[held.writer] = append(byWriter[held.writer], held)
+		eventOf[held.key.ID()] = held.event
+	}
+	var facts []graphstore.Tuple
+	for _, writer := range writers {
+		group := byWriter[writer]
+		named := make([]graphstore.AttemptKey, len(group))
+		for index, held := range group {
+			named[index] = held.key
+		}
+		stated, err := graphstore.AttemptFactsAsWritten(ctx, tx, group[0].who, named...)
 		if err != nil {
 			return inboxWrote{}, err
 		}
 		for index := range stated {
-			stated[index].SourceEvent = held.event
+			stated[index].SourceEvent = eventOf[stated[index].FromID]
 		}
 		facts = append(facts, stated...)
 	}

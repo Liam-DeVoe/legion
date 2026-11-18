@@ -5,6 +5,14 @@ import type { WriteBounds } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { InboxRow } from "../../api/types";
 import { type KeyedWriteResult, useKeyedWrite } from "../writes/useKeyedWrite";
+import {
+  cancelMeInbox,
+  invalidateMeInbox,
+  type MeInboxSnapshot,
+  meInboxSnapshot,
+  patchMeInboxAsks,
+  restoreMeInbox,
+} from "./one-read-cache";
 
 /**
  * The asks whose answer the reader has sent and the server has not decided, by ask id: the write
@@ -47,10 +55,13 @@ export function resetOutstandingAnswers(): void {
   outstanding.clear();
 }
 
-/** The rows the Inbox read held before the write took its ask's row out, kept so a refused write
- *  puts them back. Undefined where the write left the Inbox alone - a change to an answer the
- *  server has already recorded, whose ask has no open row there - and so kept nothing. */
-type InboxRowsBefore = { readonly rows: InboxRow[] | undefined } | undefined;
+/** The rows the Inbox read held before the write took its ask's row out, and every cached read of
+ *  the one read behind the Inbox's opt-in (`one-read-cache.ts`), kept so a refused write puts them
+ *  back. Undefined where the write left the Inbox alone - a change to an answer the server has
+ *  already recorded, whose ask has no open row there - and so kept nothing. */
+type InboxRowsBefore =
+  | { readonly rows: InboxRow[] | undefined; readonly oneRead: MeInboxSnapshot }
+  | undefined;
 
 /** What an answer or a decline is written with, beyond what the hold itself does. */
 export interface OutstandingAnswerWriteOptions<TData, TVariables> {
@@ -70,8 +81,9 @@ export interface OutstandingAnswerWriteOptions<TData, TVariables> {
 
 /**
  * The reader's own answer to an ask, or their decline of it, as one write: it takes the ask's
- * row out of the Inbox the moment it goes, puts it back where the server refuses it, and holds
- * the ask here for as long as the answer is theirs to finish.
+ * row out of the Inbox - the Inbox read and the one read behind its opt-in - the moment it goes,
+ * puts it back where the server refuses it, holds the ask here for as long as the answer is theirs
+ * to finish, and reads the one read again once the server has decided.
  *
  * The order is the point, and it is why the two writes share this rather than each keeping its
  * own copy. The hold is registered before the row goes, never a commit after it: the reading
@@ -105,21 +117,30 @@ export function useOutstandingAnswerWrite<TData, TVariables>({
     onMutate: async () => {
       if (removesRow !== undefined && !removesRow()) return undefined;
       markAnswerOutstanding(askId, true);
-      await queryClient.cancelQueries({ queryKey: inboxQuery().queryKey });
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: inboxQuery().queryKey }),
+        cancelMeInbox(queryClient),
+      ]);
       const rows = queryClient.getQueryData<InboxRow[]>(inboxQuery().queryKey);
+      const oneRead = meInboxSnapshot(queryClient);
       queryClient.setQueryData<InboxRow[]>(inboxQuery().queryKey, (current) =>
         current?.filter((row) => row.id !== askId)
       );
-      return { rows };
+      patchMeInboxAsks(queryClient, (row) => (row.id === askId ? undefined : row));
+      return { oneRead, rows };
     },
     onError: (error, variables, before) => {
       if (before !== undefined) {
         queryClient.setQueryData(inboxQuery().queryKey, before.rows);
+        restoreMeInbox(queryClient, before.oneRead);
         void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
       }
       onError?.(error, variables, before);
     },
-    onSettled,
+    onSettled: () => {
+      invalidateMeInbox(queryClient);
+      onSettled?.();
+    },
     onSuccess,
   });
   const live = mutation.isPending || mutation.isError;

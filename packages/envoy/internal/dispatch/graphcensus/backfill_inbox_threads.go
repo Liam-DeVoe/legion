@@ -276,6 +276,20 @@ var userThreadsOwed = `
 // reply's own event, which the pass over that reply states too, so the repeat key keeps one; then,
 // under the row's lock, marked_version = version and marked_seq at the log's position, above each
 // tuple of the row.
+//
+// A row this release marked comes back to the pass when an older build updates it (migration
+// 20261116160000's trigger nulls its marker), and of the marks the row stood for, only a dismissal
+// can be gone from it while its tuple stands: the row always says its person takes part and reads
+// through a moment, but an older build's "Move to Inbox" sets dismissed_at to null and states no
+// retraction (inbox_dismiss.go's inboxRestoreThreads at 99e9da45abf1). So where the person's
+// dismissed tuple into the root stands and the row holds no dismissed_at, the pass retracts it, at
+// the moment it reads the row, the first the store learns the dismissal ended; a dismissal an
+// older build's reply ended is retracted under that reply's event by the catch-up before the row
+// is read (inboxwrite.RecordOlder's lockReachedAndReadCleared), so it no longer stands here. The
+// read of the person's tuples that decides this, as the one of their participates_in beside it,
+// is made for the rows the marker test passes alone - an older build's write, under the row's lock
+// - and never for a marked row, so it restates what such a row says and mends nothing this
+// release's writer stated.
 func userThreadsPass() inboxPass {
 	return inboxPass{
 		kind: "user_threads",
@@ -287,19 +301,39 @@ func userThreadsPass() inboxPass {
 	}
 }
 
-// writeUserThreads takes the owner rows of the batch's threads first, under which no write into
-// them runs, and then catches each thread up: every comment, message and ask of those threads the
-// marker test still passes - one an older build wrote after the passes above read the thread - is
-// stated, with what it owed, before any row of the thread is marked, so each delivery it owed lands
-// at or below the mark (writeCommentPointers, writeMessages, writeAsksOwed). It then locks the
-// batch's rows `for no key update`, in ascending login within each thread, and states and marks them.
+// threadOwners is the owner the user_threads rows of the threads $1 stand under, as (thread,
+// issue, document) for lockOwnersOf, as commentOwners reads a comment's: the issue a row names,
+// else the issue of the document it names, else that document. A comment thread on an issue's
+// document names the document alone (user_threads_record takes the comment's own issue_key, which
+// such a comment leaves null), and every writer of that thread takes the document's issue's row.
+const threadOwners = `
+	select u.thread_id::text, coalesce(u.issue_key, a.issue_key, ''),
+	       case when coalesce(u.issue_key, a.issue_key) is null then coalesce(u.artifact_id::text, '') else '' end
+	from user_threads u left join artifacts a on a.id = u.artifact_id
+	where u.thread_id = any($1::uuid[])`
+
+// threadCommentsOwed is the catch-up's read of the comments of the threads $1 the pointer pass
+// still owes. A comment's thread is coalesce(ask_id, reply_to, id) (user_threads_comment), which no
+// index answers, so the read names each of the three columns through its own index - the key,
+// comments_reply_to and comments_ask_id - and keeps the coalesce to drop a comment one of them
+// names whose thread is another.
+var threadCommentsOwed = `select c.id::text ` + commentPointersOwed + `
+	  and (c.id = any($1::uuid[]) or c.reply_to = any($1::uuid[]) or c.ask_id = any($1::uuid[]))
+	  and coalesce(c.ask_id, c.reply_to, c.id) = any($1::uuid[])`
+
+// writeUserThreads takes the owner rows of the batch's threads first (threadOwners), under which
+// no write into them runs, and then catches each thread up: every comment, message and ask of
+// those threads the marker test still passes - one an older build wrote after the passes above
+// read the thread - is stated, with what it owed, before any row of the thread is marked, so each
+// delivery it owed lands at or below the mark (writeCommentPointers, writeMessages,
+// writeAsksOwed). It then locks the batch's rows `for no key update`, in ascending login within
+// each thread, and states and marks them. The store's tuples it reads of a row's person - whether
+// their participates_in and their dismissed into the thread stand - it reads of the rows the
+// marker test passes alone (userThreadsOwed, read again under the lock), to state what each such
+// row says, a dismissal it no longer holds retracted; it reads none of a marked row.
 func writeUserThreads(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWrote, error) {
 	threads, logins := column(keys, 0), column(keys, 1)
-	if err := lockOwnersOf(ctx, tx, `
-		select u.thread_id::text, coalesce(u.issue_key, ''), case when u.issue_key is null then coalesce(u.artifact_id::text, '') else '' end
-		from user_threads u
-		where u.thread_id = any($1::uuid[])
-	`, threads); err != nil {
+	if err := lockOwnersOf(ctx, tx, threadOwners, threads); err != nil {
 		return inboxWrote{}, err
 	}
 	var wrote inboxWrote
@@ -310,7 +344,7 @@ func writeUserThreads(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWro
 		{`select k.id::text ` + asksOwed + ` and k.id = any($1::uuid[])`, writeAsksOwed},
 		{`select m.id::text ` + messagesOwed + ` and m.issue_key in (
 		      select u.issue_key from user_threads u where u.thread_id = any($1::uuid[]) and u.kind = 'message')`, writeMessages},
-		{`select c.id::text ` + commentPointersOwed + ` and coalesce(c.ask_id, c.reply_to, c.id) = any($1::uuid[])`, writeCommentPointers},
+		{threadCommentsOwed, writeCommentPointers},
 	} {
 		rows, err := tx.Query(ctx, catchUp.read, threads)
 		if err != nil {
@@ -346,7 +380,12 @@ func writeUserThreads(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWro
 		           select 1 from (`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.asserted`,
 		`t.from_kind = '`+graphstore.KindPerson+`' and t.from_id = u.login and t.kind = '`+graphstore.TupleParticipatesIn+`'
 		                and t.to_kind = u.kind and t.to_id = u.thread_id::text`)+`) taking
-		           where taking.asserted)
+		           where taking.asserted),
+		       exists (
+		           select 1 from (`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.asserted`,
+		`t.from_kind = '`+graphstore.KindPerson+`' and t.from_id = u.login and t.kind = '`+graphstore.TupleDismissed+`'
+		                and t.to_kind = u.kind and t.to_id = u.thread_id::text`)+`) dismissal
+		           where dismissal.asserted)
 		`+userThreadsOwed+`
 		  and (u.thread_id, u.login) in (select * from unnest($1::uuid[], $2::text[]))
 		order by u.thread_id, u.login
@@ -355,7 +394,7 @@ func writeUserThreads(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWro
 	if err != nil {
 		return inboxWrote{}, fmt.Errorf("read the user_threads rows naming no mark: %w", err)
 	}
-	var reached, marks []graphstore.Tuple
+	var reached, marks, restored []graphstore.Tuple
 	var markedThreads, markedLogins []string
 	for rows.Next() {
 		var login, thread, kind string
@@ -363,8 +402,8 @@ func writeUserThreads(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWro
 		var dismissed, replied *time.Time
 		var lastReply *string
 		var replyEvent *int64
-		var takesPart bool
-		if err := rows.Scan(&login, &thread, &kind, &readThrough, &dismissed, &replied, &lastReply, &replyEvent, &takesPart); err != nil {
+		var takesPart, dismissalStands bool
+		if err := rows.Scan(&login, &thread, &kind, &readThrough, &dismissed, &replied, &lastReply, &replyEvent, &takesPart, &dismissalStands); err != nil {
 			rows.Close()
 			return inboxWrote{}, fmt.Errorf("read a user_threads row naming no mark: %w", err)
 		}
@@ -401,6 +440,12 @@ func writeUserThreads(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWro
 				ToKind: kind, ToID: thread,
 				At: *dismissed, Who: person, SourceEvent: graphstore.NoEvent, Asserted: true,
 			})
+		} else if dismissalStands {
+			restored = append(restored, graphstore.Tuple{
+				FromKind: graphstore.KindPerson, FromID: login, Kind: graphstore.TupleDismissed,
+				ToKind: kind, ToID: thread,
+				Who: person, SourceEvent: graphstore.NoEvent, Asserted: false,
+			})
 		}
 		markedThreads, markedLogins = append(markedThreads, thread), append(markedLogins, login)
 	}
@@ -415,6 +460,10 @@ func writeUserThreads(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWro
 	if err := tx.QueryRow(ctx, `select now()`).Scan(&now); err != nil {
 		return inboxWrote{}, fmt.Errorf("read the time of a batch of user_threads rows: %w", err)
 	}
+	for i := range restored {
+		restored[i].At = now
+	}
+	marks = append(marks, restored...)
 	if err := graphstore.ToPerson(ctx, tx, reached); err != nil {
 		return inboxWrote{}, fmt.Errorf("state who a batch of user_threads rows names: %w", err)
 	}

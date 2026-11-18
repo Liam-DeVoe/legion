@@ -70,9 +70,11 @@ type erasedRead struct {
 	tupleSeqs []int64
 	// readState are the node's rows of the six read-state tables, by table, and readStateScope
 	// the predicate that found them (readReadState): a person's every row, an item's the rows
-	// that name it.
+	// that name it. replied are the user_threads rows a reply the erase removes reached in the
+	// thread it was written in, as the erase rewrites them (readRepliedRows).
 	readState      []readStateRows
 	readStateScope readStateScope
+	replied        []repliedRow
 	artifacts      []string
 	numbers        []int32
 	events         []redactedEvent

@@ -61,6 +61,11 @@ const tables = [
   "priority_tuples",
   "priority_nodes",
   "user_sessions",
+  // The comparison's stored runs (dispatch://INFRA-1152, migration 20261117132340), which no
+  // foreign key reaches: a run an earlier corpus stored would be the newest run the comparison
+  // page and GET /api/v1/inbox/comparison answer over the next one. The branch that drops the
+  // table takes this line out with it.
+  "inbox_comparison_runs",
 ];
 
 // The node and tuple store (migration 20261109013400), which the closure above never reaches:

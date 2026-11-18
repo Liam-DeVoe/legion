@@ -11,7 +11,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -219,6 +221,124 @@ func TestTheEraseOfAPersonTakesTheirReadStateRows(t *testing.T) {
 			person, theirs, erins, erinsBefore)
 	}
 	requireCensusZero(t, database, "after the erase")
+}
+
+// A reply is no thread of its own, so no read-state row is its to delete, but it is counted and
+// named by the user_threads rows of the thread it was written in that it reached (R6). alice's
+// comment and bob's reply to it are written as the release before writes them and backfilled, so
+// alice's row is marked at version 1 naming bob's reply; then carol replies through this
+// release's writer (inboxwrite.Record), which delivers her reply to alice and bob above their
+// marks and moves both rows to name it. The erase of carol's reply lists both rows as rewritten,
+// and leaves alice's at version 1 naming bob's reply again and bob's at version 0 naming none,
+// each still marked, so the census reads zero after it.
+func TestTheEraseOfAReplyMendsTheRowsItReached(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seedPreStoreDocument(t, database)
+	var root, first string
+	var firstAt time.Time
+	if err := database.Pool.QueryRow(ctx, `
+		insert into comments (issue_key, author, body) values ('CORE-1', '{"kind":"user","id":"alice"}', 'Is the copy final?')
+		returning id::text`).Scan(&root); err != nil {
+		t.Fatalf("write alice's comment: %v", err)
+	}
+	if err := database.Pool.QueryRow(ctx, `
+		insert into comments (issue_key, author, body, reply_to) values ('CORE-1', '{"kind":"user","id":"bob"}', 'Nearly.', $1::uuid)
+		returning id::text, created_at`, root).Scan(&first, &firstAt); err != nil {
+		t.Fatalf("write bob's reply: %v", err)
+	}
+	if _, err := graphcensus.Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("backfill the store: %v", err)
+	}
+
+	const second = "00000000-0000-4000-8000-000000008152"
+	carol := model.Actor{Kind: "user", ID: "carol"}
+	writeReplyAsThisBuild(t, database, second, root, carol)
+	for login, want := range map[string]int64{"alice": 2, "bob": 1} {
+		if row := readRepliedRow(t, database, login, root); row.version != want || !row.marked || row.lastReply == nil || *row.lastReply != second {
+			t.Fatalf("before the erase %s's row reads %+v, want version %d, marked, naming carol's reply, so this test would prove nothing", login, row, want)
+		}
+	}
+	requireCensusZero(t, database, "before the erase")
+
+	listing := dryRun(t, database, graphstore.KindComment, second)
+	for _, login := range []string{"alice", "bob"} {
+		if line := "rewrite user_threads (login, thread_id)=(" + login + "," + root + ")"; !listed(listing, line) {
+			t.Errorf("the erase of comment:%s lists\n\t%s\nwith no line %q", second, joinedListing(listing), line)
+		}
+	}
+	requireErased(t, database, graphstore.KindComment, second)
+	if row := readRepliedRow(t, database, "alice", root); row.version != 1 || !row.marked || row.lastReply == nil || *row.lastReply != first ||
+		row.repliedAt == nil || !row.repliedAt.Equal(firstAt) {
+		t.Errorf("after the erase alice's row reads %+v, want version 1, marked, naming bob's reply %s at %s", row, first, firstAt)
+	}
+	if row := readRepliedRow(t, database, "bob", root); row.version != 0 || !row.marked || row.lastReply != nil || row.repliedAt != nil {
+		t.Errorf("after the erase bob's row reads %+v, want version 0, marked, naming no reply", row)
+	}
+	requireCensusZero(t, database, "after the erase")
+}
+
+// writeReplyAsThisBuild writes comment id, by author, replying to root on issue CORE-1, as this
+// release's createComment writes one at the sentinel: its node and the facts its row projects
+// with its pointers, its row naming the node with tuples_stored, its authored_by, and its thread
+// (inboxwrite.Record).
+func writeReplyAsThisBuild(t *testing.T, database *store.Store, id, root string, author model.Actor) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the reply: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	var at time.Time
+	if err := tx.QueryRow(ctx, `select now()`).Scan(&at); err != nil {
+		t.Fatalf("read the reply's moment: %v", err)
+	}
+	node, tuples := graphstore.CommentFacts(nil, id, author, at, graphstore.NoEvent, "", "", "CORE", nil)
+	tuples, _ = graphstore.CommentPointerFacts(tuples, id, graphstore.CommentPointers{ReplyTo: root}, author, at, graphstore.NoEvent)
+	written, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{node}, tuples)
+	if err != nil {
+		t.Fatalf("write the reply's node: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into comments (id, issue_key, author, body, reply_to, created_at, node_kind, node_address, tuples_stored)
+		values ($1::uuid, 'CORE-1', $2, 'Final.', $3::uuid, $4, 'comment', $1, true)
+	`, id, `{"kind":"user","id":"`+author.ID+`"}`, root, at); err != nil {
+		t.Fatalf("write the reply's row: %v", err)
+	}
+	if err := graphstore.Caused(ctx, tx, written, graphstore.NoEvent); err != nil {
+		t.Fatalf("state the reply: %v", err)
+	}
+	if err := graphstore.Authored(ctx, tx, graphstore.KindComment, id, author, at, graphstore.NoEvent); err != nil {
+		t.Fatalf("state who wrote the reply: %v", err)
+	}
+	issue := "CORE-1"
+	if err := inboxwrite.Record(ctx, tx, inboxwrite.Comment(id, author, at, &issue, nil, "CORE"), graphstore.NoEvent); err != nil {
+		t.Fatalf("record the reply's thread: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the reply: %v", err)
+	}
+}
+
+// repliedThreadRow is what one user_threads row says of the replies it counted: its version,
+// whether it is marked, and the reply it names.
+type repliedThreadRow struct {
+	version   int64
+	marked    bool
+	lastReply *string
+	repliedAt *time.Time
+}
+
+func readRepliedRow(t *testing.T, database *store.Store, login, thread string) repliedThreadRow {
+	t.Helper()
+	var row repliedThreadRow
+	if err := database.Pool.QueryRow(context.Background(), `
+		select version, marked_seq is not null, last_reply_id::text, replied_at from user_threads where login = $1 and thread_id = $2::uuid
+	`, login, thread).Scan(&row.version, &row.marked, &row.lastReply, &row.repliedAt); err != nil {
+		t.Fatalf("read %s's row of thread %s: %v", login, thread, err)
+	}
+	return row
 }
 
 // joinedListing is an erasure's listing as one block of text, for a failure to print.

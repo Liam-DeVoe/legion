@@ -3,9 +3,15 @@ import { useRef } from "react";
 
 import { issuePatchRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { inboxQuery } from "../../api/queries";
+import { inboxQuery, meInboxKey } from "../../api/queries";
 import type { InboxRow, IssueDetails, IssueSummary, UpdateIssueInput } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import {
+  invalidateMeInbox,
+  type MeInboxSnapshot,
+  meInboxSnapshot,
+  restoreMeInbox,
+} from "../inbox/one-read-cache";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 export interface IssueFieldWrite<Value> {
@@ -25,6 +31,8 @@ interface Snapshot {
   details: IssueDetails | undefined;
   inbox: [QueryKey, InboxRow[] | undefined][];
   lists: [QueryKey, IssueSummary[] | undefined][];
+  /** The one read the Inbox draws the reader's own asks from behind its opt-in. */
+  oneRead: MeInboxSnapshot;
 }
 
 export const projectListsKey = ["issues", "project"] as const;
@@ -33,11 +41,12 @@ export const inboxKey = inboxQuery().queryKey;
 /**
  * The optimistic write engine behind every single-field issue write (priority, assignee). The
  * caller supplies `patch`, the request body for a value, and `show`, which lands the value in
- * the issue detail, every project issue list and every inbox row that shows the issue. The engine
- * snapshots those caches before showing a pick, rolls them back on failure, merges the server's
- * answer on success, and refetches once the save settles. Requests go one at a time, so the
- * server sees picks in the order they were made: a pick during a save is queued behind it, and
- * the in-flight answer is not merged over a newer pick the reader can already see.
+ * the issue detail, every project issue list, every inbox row that shows the issue and every ask
+ * of the one read behind the Inbox's opt-in (`one-read-cache.ts`). The engine snapshots those
+ * caches before showing a pick, rolls them back on failure, merges the server's answer on success,
+ * and refetches once the save settles. Requests go one at a time, so the server sees picks in the
+ * order they were made: a pick during a save is queued behind it, and the in-flight answer is not
+ * merged over a newer pick the reader can already see.
  */
 export function useIssueFieldWrite<Value>(
   issueKey: string,
@@ -59,6 +68,7 @@ export function useIssueFieldWrite<Value>(
     details: queryClient.getQueryData<IssueDetails>(detailKey),
     inbox: queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey }),
     lists: queryClient.getQueriesData<IssueSummary[]>({ queryKey: projectListsKey }),
+    oneRead: meInboxSnapshot(queryClient),
   });
   // The control says why its save was refused and offers Retry where the reader just picked, so
   // the shell's indicator shows the save only while it is out. Every write to the issue's fields
@@ -71,7 +81,7 @@ export function useIssueFieldWrite<Value>(
     request: (value: Value) => issuePatchRequest(issueKey, field.patch(value)),
     onMutate: async (value): Promise<Snapshot> => {
       await Promise.all(
-        [detailKey, projectListsKey, inboxKey].map((queryKey) =>
+        [detailKey, projectListsKey, inboxKey, meInboxKey].map((queryKey) =>
           queryClient.cancelQueries({ queryKey })
         )
       );
@@ -93,6 +103,7 @@ export function useIssueFieldWrite<Value>(
       for (const [key, data] of snapshot.inbox) {
         queryClient.setQueryData(key, data);
       }
+      restoreMeInbox(queryClient, snapshot.oneRead);
       if (queued.current !== null) {
         // The cache is back at this save's base, which is now the queued pick's base too.
         queued.current.snapshot = snapshot;
@@ -119,6 +130,7 @@ export function useIssueFieldWrite<Value>(
       void queryClient.invalidateQueries({ queryKey: detailKey });
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
       void queryClient.invalidateQueries({ queryKey: inboxKey });
+      invalidateMeInbox(queryClient);
     },
   });
   return {

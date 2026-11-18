@@ -70,11 +70,13 @@ type readStateMarks struct {
 // captured version. It reads the read mark and the Clear, stored under two spellings, from one
 // person node, and the person's state of that conversation holding the Clear. Then a reply by
 // somebody else into the dismissed thread retracts the dismissal rather than overwriting it and
-// raises the row's version by one, by the equation of R6; a delivery that is no reply, the person
-// made the one an open ask waits on, raises nothing; a dismissal held to the older version is
-// refused; and replied_at and last_reply_id are the newest reply-caused delivery's. Last, no node
-// of a read-state kind exists, and each of the six tables holds exactly the marks its tuples
-// project.
+// raises the row's version by one, by the equation of R6; a dismissal held to the older version is
+// refused, answered 200 with nothing dismissed; replied_at and last_reply_id are the newest
+// reply-caused delivery's; and a delivery that is no reply - the person made the one an open ask
+// waits on, on whose thread she holds a marked row - leaves that row's version where it stood.
+// This build writes the other half of the marks, the six kinds again, each read back as a tuple
+// from the person at its row's moment. Last, no node of a read-state kind exists, and each of the
+// six tables - the base build's rows and this build's - holds exactly the marks its tuples project.
 func TestReadStateIsTuplesFromThePersonAndSixProjections(t *testing.T) {
 	ctx := context.Background()
 	databaseURL := baselineDatabaseURL(t, readStateDatabaseEnv, readStateDatabase)
@@ -120,6 +122,9 @@ func TestReadStateIsTuplesFromThePersonAndSixProjections(t *testing.T) {
 	})
 	t.Run("a reply retracts a dismissal and counts once, a move of who an ask waits on counts nothing", func(t *testing.T) {
 		requireAReplyRetractsTheDismissal(t, handler, database, marks)
+	})
+	t.Run("this build writes the other half of the marks, each a tuple from the person", func(t *testing.T) {
+		requireThisBuildsHalfIsTuples(t, handler, database, marks)
 	})
 	t.Run("no node is a mark, and each table is what its tuples project", func(t *testing.T) {
 		requireNoMarkNode(t, database)
@@ -494,7 +499,8 @@ func requireAReplyRetractsTheDismissal(t *testing.T, handler http.Handler, datab
 			thread, repliedAt, lastReply, newestAt, newestFrom, reply.ID)
 	}
 
-	// A dismissal held to the version the row stood at before the reply is refused.
+	// A dismissal held to the version the row stood at before the reply is refused: the route
+	// answers 200 and dismisses nothing, and the row stays undismissed.
 	stale := postInboxDismiss(t, handler, "alice", map[string]any{
 		"threads":      []string{inboxDismissReplyPrefix + thread},
 		"seen_replies": map[string]any{inboxDismissReplyPrefix + thread: map[string]any{"version": before}},
@@ -503,21 +509,99 @@ func requireAReplyRetractsTheDismissal(t *testing.T, handler http.Handler, datab
 	if err := database.Pool.QueryRow(ctx, `select dismissed_at from user_threads where login = 'alice' and thread_id = $1::uuid`, thread).Scan(&dismissedAt); err != nil {
 		t.Fatalf("read alice's dismissal of thread %s: %v", thread, err)
 	}
-	if dismissedAt != nil || (stale.Code == http.StatusOK && dismissedBy(t, stale) != 0) {
-		t.Errorf("a dismissal held to version %d answered %d %s and left the row dismissed at %v, want it refused",
+	if stale.Code != http.StatusOK || dismissedBy(t, stale) != 0 || dismissedAt != nil {
+		t.Errorf("a dismissal held to version %d answered %d %s and left the row dismissed at %v, want 200 dismissing nothing",
 			before, stale.Code, stale.Body.String(), dismissedAt)
 	}
 
-	// Handing an open ask to alice delivers it to her and raises no version.
+	// Handing an open ask to alice delivers it to her and raises no version. Her comment on the
+	// ask gives her a marked row of the ask's own thread, the row a delivery from the ask reaches,
+	// which the hand-on's delivery - no reply - must leave at the version it stood at (P13).
 	asked := createPersonAsk(t, handler, marks.issue, "bob", "Who signs off?")
+	createThreadComment(t, handler, marks.issue, map[string]any{"body": "I can look.", "ask_id": asked.ID}, "alice")
+	requireVersionCountsReplies(t, database, "alice", graphstore.KindAsk, asked.ID)
+	held := threadRowVersion(t, database, "alice", asked.ID)
 	handAskOn(t, handler, asked.ID, "alice", "bob")
 	if _, asserted, found := currentDelivery(t, database, asked.ID, "alice"); !found || !asserted {
 		t.Errorf("handing ask %s to alice delivered it to her %t (asserting %t), want a delivered_to", asked.ID, found, asserted)
 	}
-	if moved := threadRowVersion(t, database, "alice", thread); moved != after {
-		t.Errorf("alice's row of thread %s moved to version %d when an ask was handed to her, want %d", thread, moved, after)
+	if moved := threadRowVersion(t, database, "alice", asked.ID); moved != held {
+		t.Errorf("alice's row of ask %s moved to version %d when the ask was handed to her, want %d", asked.ID, moved, held)
 	}
-	requireVersionCountsReplies(t, database, "alice", graphstore.KindComment, thread)
+	requireVersionCountsReplies(t, database, "alice", graphstore.KindAsk, asked.ID)
+}
+
+// requireThisBuildsHalfIsTuples writes the six kinds of mark again, through this build, after the
+// base build wrote its half: a thread alice reads, a thread she dismisses, a reply of session s2
+// she reads by its id, s2's read mark and its Clear, an Agent thread of s2 she dismisses, and an
+// ask she snoozes. Each is a tuple from her person node to the thread's root, the reply, the
+// session, the root message or the ask, at the moment its row holds, caused by the event the write
+// appended, and the row marked at that moment. A session of its own keeps these marks apart from
+// the base build's of s1.
+func requireThisBuildsHalfIsTuples(t *testing.T, handler http.Handler, database *store.Store, marks readStateMarks) {
+	t.Helper()
+	comments := func(input map[string]any, login string) model.Comment {
+		return createThreadComment(t, handler, marks.issue, input, login)
+	}
+	read := comments(map[string]any{"body": "Ship it on Monday?"}, "alice")
+	answer := comments(map[string]any{"body": "Monday works.", "reply_to": read.ID}, "bob")
+	if marked := markThreadRead(t, handler, "alice", read.ID, answer.CreatedAt); marked.Code != http.StatusNoContent {
+		t.Fatalf("read the thread through this build: status=%d body=%s", marked.Code, marked.Body.String())
+	}
+	requireMarkMatchesRow(t, database, graphstore.TupleReadThrough, graphstore.KindComment+":"+read.ID,
+		newestEventOf(t, database, "user_thread_state.updated", "alice"), threadRowMark(t, database, "read_through", read.ID))
+
+	dismissed := comments(map[string]any{"body": "Is the banner final?"}, "alice")
+	comments(map[string]any{"body": "It is.", "reply_to": dismissed.ID}, "bob")
+	if count := dismissRows(t, handler, database, "alice", inboxDismissReplyPrefix+dismissed.ID); count != 1 {
+		t.Fatalf("dismissed %d threads through this build, want alice's", count)
+	}
+	requireMarkMatchesRow(t, database, graphstore.TupleDismissed, graphstore.KindComment+":"+dismissed.ID,
+		newestEventOf(t, database, "user_thread_state.updated", "alice"), threadRowMark(t, database, "dismissed_at", dismissed.ID))
+
+	conversation := func(body, answer string) (model.Message, model.Message) {
+		created := postAgentMessage(t, handler, "s2", map[string]any{"body": body, "delivery": "aside"}, "alice")
+		if created.Code != http.StatusCreated {
+			t.Fatalf("message s2 through this build: status=%d body=%s", created.Code, created.Body.String())
+		}
+		root := decodeBody[model.Message](t, created)
+		replied := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+root.ID+"/reply", map[string]any{
+			"actor": map[string]any{"kind": "session", "id": "s2"}, "attempt": 1, "body": answer,
+		})
+		if replied.Code != http.StatusCreated {
+			t.Fatalf("s2's reply through this build: status=%d body=%s", replied.Code, replied.Body.String())
+		}
+		return root, decodeBody[model.Message](t, replied)
+	}
+	_, looked := conversation("Can you look at the banner?", "Looking.")
+	putAgentState(t, handler, "alice", "s2", map[string]any{"read_replies": []string{looked.ID}})
+	requireMarkMatchesRow(t, database, graphstore.TupleReplyRead, graphstore.KindMessage+":"+looked.ID,
+		newestEventOf(t, database, "user_agent_state.updated", "alice"),
+		storedMarks(t, database, `select tuples_stored_at, tuples_stored_at from user_agent_reply_read where login = 'alice' and reply_id = $1::uuid`, looked.ID))
+	putAgentState(t, handler, "alice", "s2", map[string]any{"cleared_before": looked.CreatedAt})
+	requireMarkMatchesRow(t, database, graphstore.TupleCleared, graphstore.KindSession+":s2", newestEventOf(t, database, "user_agent_state.updated", "alice"),
+		storedMarks(t, database, `select cleared_before, tuples_stored_at from user_agent_state where login = 'alice' and session_id = 's2'`))
+	putAgentState(t, handler, "alice", "s2", map[string]any{"read_through": looked.CreatedAt})
+	requireMarkMatchesRow(t, database, graphstore.TupleReadThrough, graphstore.KindSession+":s2", newestEventOf(t, database, "user_agent_state.updated", "alice"),
+		storedMarks(t, database, `select read_through, tuples_stored_at from user_agent_read where login = 'alice' and session_id = 's2'`))
+
+	agent, _ := conversation("And the build?", "Green.")
+	if count := dismissRows(t, handler, database, "alice", inboxDismissAgentPrefix+agent.ID); count != 1 {
+		t.Fatalf("dismissed %d Agent threads through this build, want alice's", count)
+	}
+	requireMarkMatchesRow(t, database, graphstore.TupleDismissed, graphstore.KindMessage+":"+agent.ID,
+		newestEventOf(t, database, "user_agent_state.updated", "alice"),
+		storedMarks(t, database, `select dismissed_at, tuples_stored_at from user_agent_thread_dismissed where login = 'alice' and message_id = $1::uuid`, agent.ID))
+
+	snoozed := createPersonAsk(t, handler, marks.issue, "bob", "Should we wait?")
+	if written := dispatchRequest(t, handler, http.MethodPut, "/api/v1/me/asks/"+snoozed.ID+"/snooze", map[string]any{
+		"snoozed_until": time.Now().UTC().Add(48 * time.Hour).Truncate(time.Second).Format(time.RFC3339),
+	}, "alice"); written.Code != http.StatusOK {
+		t.Fatalf("snooze through this build: status=%d body=%s", written.Code, written.Body.String())
+	}
+	requireMarkMatchesRow(t, database, graphstore.TupleSnoozed, graphstore.KindAsk+":"+snoozed.ID,
+		newestEventOf(t, database, "user_state.updated", "alice"),
+		storedMarks(t, database, `select snoozed_until, tuples_stored_at from user_ask_snooze where login = 'alice' and ask_id = $1::uuid`, snoozed.ID))
 }
 
 func threadRowVersion(t *testing.T, database *store.Store, login, thread string) int64 {

@@ -676,7 +676,8 @@ export function Inbox({
   // The asks this list holds, from the read the opt-in names (`useInboxAsks`, `one-read.ts`, which
   // `useInboxThreadRows` below follows for the threads); a refetch can land while a pointer
   // travels between rows, so it is adopted once that pointer settles.
-  const adoptedInbox = useMotionHold(useInboxAsks(inbox.data), listRef);
+  const inboxAsks = useInboxAsks(inbox.data);
+  const adoptedInbox = useMotionHold(inboxAsks.asks, listRef);
   // The credential requests the Inbox lists above its asks: the section, the banner and the empty
   // state all read this one answer.
   const credentials = useCredentialRequests();
@@ -1418,10 +1419,13 @@ export function Inbox({
     },
   ]);
 
-  if (inbox.isPending || whoAmI.isPending) {
+  // Behind the opt-in the reader's own asks are the one read's, so the list waits for that read
+  // as it waits for the Inbox read, and says it could not load where that read failed, rather
+  // than drawing a list without them.
+  if (inbox.isPending || whoAmI.isPending || inboxAsks.pending) {
     return <LoadingSkeleton label="Loading your inbox" />;
   }
-  if (inbox.isError || viewer === undefined || place === undefined) {
+  if (inbox.isError || inboxAsks.failed || viewer === undefined || place === undefined) {
     return <p className={dangerText}>Could not load your inbox.</p>;
   }
 

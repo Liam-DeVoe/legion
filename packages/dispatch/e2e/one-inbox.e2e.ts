@@ -485,6 +485,10 @@ test("an answered ask stays in the threads a person takes part in", async ({ bro
     );
     await page.goto(address("/"));
     const drawn = pageRowIds(((await (await answered).json()) as MeInboxResponse).entries);
+    // The list the page draws once both its reads have answered - rows or its empty state - is
+    // there before the rows are compared: an empty answer would otherwise match the page before
+    // it drew anything.
+    await expect(page.getByTestId("inbox-list"), "the Inbox page drew its list").toBeAttached();
     await expect.poll(async () => (await listedRows(page)).sort()).toEqual([...drawn].sort());
     expect(drawn, "the rows the page draws").not.toContain(replyRowId(thread.id));
   } finally {

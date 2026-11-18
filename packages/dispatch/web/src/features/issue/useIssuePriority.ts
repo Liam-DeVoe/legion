@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 
 import type { InboxRow, IssueDetails, IssuePriority, IssueSummary } from "../../api/types";
+import { patchMeInboxAsks } from "../inbox/one-read-cache";
 import { inboxKey, projectListsKey, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 export interface IssuePriorityWrite {
@@ -17,8 +18,9 @@ export interface IssuePriorityWrite {
 /**
  * The one way the SPA writes an issue's priority. Every surface that renders it (issue header,
  * board cards, list rows, inbox rows) shares this: the new value lands optimistically in the
- * issue detail, every project issue list and every inbox query that shows the issue, rolls back
- * on failure, and the lists refetch once the server has answered (see `useIssueFieldWrite`).
+ * issue detail, every project issue list, every inbox query that shows the issue and the asks of
+ * the one read behind the Inbox's opt-in, rolls back on failure, and the lists refetch once the
+ * server has answered (see `useIssueFieldWrite`).
  */
 export function useIssuePriority(issueKey: string): IssuePriorityWrite {
   const queryClient = useQueryClient();
@@ -30,9 +32,12 @@ export function useIssuePriority(issueKey: string): IssuePriorityWrite {
     queryClient.setQueriesData<IssueSummary[]>({ queryKey: projectListsKey }, (current) =>
       current?.map((issue) => (issue.key === issueKey ? { ...issue, priority } : issue))
     );
+    const prioritized = (row: InboxRow): InboxRow =>
+      row.issue_key === issueKey ? { ...row, priority } : row;
     queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-      current?.map((row) => (row.issue_key === issueKey ? { ...row, priority } : row))
+      current?.map(prioritized)
     );
+    patchMeInboxAsks(queryClient, prioritized);
   };
   const write = useIssueFieldWrite<IssuePriority | null>(issueKey, {
     label: (priority) => `${issueKey} set to ${priority === null ? "no priority" : `P${priority}`}`,

@@ -2,7 +2,7 @@ import { type UseQueryResult, useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { inboxComparisonQuery } from "../../api/queries";
 import type { InboxComparisonResponse } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import {
@@ -45,10 +45,7 @@ function counted(count: number, noun: string): string {
  *  The branch that adds this page deletes it with the comparison, before a release. */
 export function ComparisonPage(): ReactNode {
   useDocumentTitle("Inbox comparison · Dispatch");
-  const comparison = useQuery({
-    queryFn: () => api.getInboxComparison(),
-    queryKey: ["inbox", "comparison"],
-  });
+  const comparison = useQuery(inboxComparisonQuery());
 
   return (
     <section aria-label="Inbox comparison">

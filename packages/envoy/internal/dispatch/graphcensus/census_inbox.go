@@ -845,8 +845,12 @@ var readStateKinds = []readStateKind{
 	// reading, which is its tuple's.
 	{table: "user_agent_reply_read", kind: graphstore.TupleReplyRead, toKind: graphstore.KindMessage, toID: `r.reply_id::text`,
 		moment: `r.tuples_stored_at`, deleter: "user_agent_state.updated", note: "a session's reply a person read by its id"},
+	// The release before's "Move to Inbox" of an Agent row deletes the row and appends the
+	// user_agent_state.updated every write of a person's Agent state appends
+	// (dismissInboxAgentThreads at 99e9da45abf1), the type this release's dismissal and restore of
+	// one state their marks under too.
 	{table: "user_agent_thread_dismissed", kind: graphstore.TupleDismissed, toKind: graphstore.KindMessage, toID: `r.message_id::text`,
-		moment: `r.dismissed_at`, deleter: "user_thread_state.updated", note: "a person's dismissal of an Agent thread's root",
+		moment: `r.dismissed_at`, deleter: "user_agent_state.updated", note: "a person's dismissal of an Agent thread's root",
 		// A dismissed into an issue message's root is a Reply thread's, which user_threads projects.
 		toFilter: `exists (select 1 from messages m
 			where pg_input_is_valid(held.to_id, 'uuid') and m.id = held.to_id::uuid and m.issue_key is null)`},
