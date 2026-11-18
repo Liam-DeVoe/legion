@@ -58,13 +58,13 @@
 //
 // One pass is bound at the interval its loop runs it on (Reconciler.PassTimeout, Interval when
 // the caller sets none), so it always ends before the pass after it is due and always logs its
-// one line. The pass walks one stable order -- the mapped repositories, and within each its open
-// pull requests by number -- from the first repository to the last page of the last one, and
-// keeps a cursor in it. A pass cut off by its bound or by a rate limit leaves the cursor at the
-// first page or REST head it did not finish and the pass after it takes up there; a pass that
-// reaches the end of the order ends there rather than beginning again, and leaves the cursor at
-// the start of the order for the pass after it. No head starves behind the heads the order holds
-// before it.
+// one line. The pass walks one stable order -- the repositories covered() answers, the ones
+// repo_projects maps and the ones an issue names as its own, and within each its open pull
+// requests by number -- from the first repository to the last page of the last one, and keeps a
+// cursor in it. A pass cut off by its bound or by a rate limit leaves the cursor at the first
+// page or REST head it did not finish and the pass after it takes up there; a pass that reaches
+// the end of the order ends there rather than beginning again, and leaves the cursor at the start
+// of the order for the pass after it. No head starves behind the heads the order holds before it.
 //
 // One sweep from the start of the order to the end of it is a cycle, which takes as many passes
 // as their bounds leave them, and what the Reconciler keeps of a head is forgotten only where a
@@ -95,9 +95,22 @@ const (
 	// Lease names the lease one pass runs under. It is not what makes the pass safe to run twice
 	// -- every write it makes is a compare-and-swap that applies an observation GitHub already
 	// holds, so two passes at once write one record -- it is the GitHub budget: each pass reads
-	// every open pull request of every mapped repository, and N processes passing is N times those
+	// every open pull request of every covered repository, and N processes passing is N times those
 	// reads for one result.
 	Lease = "ci-reconcile"
+
+	// AbsentAppRecheck is how long a pass holds GitHub's answer that the App is not installed
+	// on a repository before it asks again. A pass runs every Interval and the answer changes
+	// only when a person installs the App, so asking every pass is twelve requests an hour, for
+	// good, about each repository an issue names that the App will never be on.
+	//
+	// The hold has a cost. After an operator installs Dispatch's App on a repository, the repair
+	// of that repository can lag by up to an hour. That is accepted because the live webhook
+	// path carries the repository's new events to the listener from the moment the App is
+	// installed, so what waits out the hold is only the repair of a webhook GitHub never
+	// delivered. The hold is an hour because a shorter one saves little against a pass every
+	// five minutes, and a longer one makes that lag longer.
+	AbsentAppRecheck = time.Hour
 )
 
 // Reconciler reads GitHub for the CI observations the listener's records lack and writes them.
@@ -105,7 +118,8 @@ const (
 // own. One Reconciler runs one pass at a time: it remembers between passes the ETags GitHub
 // answered with and the pages they belong to, and nothing guards that memory.
 type Reconciler struct {
-	// Pool reads repo_projects, the repositories Dispatch is mapped to.
+	// Pool reads the repositories a pass covers: the ones repo_projects maps to a project, and
+	// the ones issues name as their own (covered).
 	Pool *store.Pool
 	// GitHub reads the repositories, their open pull requests and each head's check objects, as
 	// the App the listener's webhook is of (R5: no credential of its own).
@@ -139,9 +153,10 @@ type Reconciler struct {
 	// limitRecordTimeout (5 s), so a pass's last write can end that much past PassTimeout.
 	PassTimeout time.Duration
 	// Clock is the time a pass's bound (PassTimeout), the gap it leaves between two REST
-	// requests (Pace) and the wait each query earns (graphQLPace) run on: clock.Real when nil,
-	// and a test's clocktest.Fake, which ends the pass's bound or a wait only when the test moves
-	// it. A rate limit's end stays on the wall clock, since it is GitHub's own reset, which the
+	// requests (Pace), the wait each query earns (graphQLPace) and the hold of an answer that
+	// the App is not installed (AbsentAppRecheck) run on: clock.Real when nil, and a test's
+	// clocktest.Fake, which ends the pass's bound, a wait or a hold only when the test moves it.
+	// A rate limit's end stays on the wall clock, since it is GitHub's own reset, which the
 	// ledger every process shares holds.
 	Clock clock.Clock
 	// Instance answers this process's row in the registry of live server processes, the id
@@ -159,6 +174,11 @@ type Reconciler struct {
 	// name it read it under, which two mappings renamed onto one repository share as one entry:
 	// the ETag of GitHub's answer about it, and the name and id that answer gave.
 	rows map[string]rowState
+	// absent is the repositories GitHub said the App is not installed on, keyed as rows is,
+	// each with when a pass asks about it again (AbsentAppRecheck). githubapp remembers only an
+	// installation it found, so without this every pass would ask again about a repository an
+	// issue names and the App is not on, which is no fault and never mends (resolve).
+	absent map[string]absentApp
 	// pulls is each repository's open pull request pages as the last pass read them over REST,
 	// keyed by the id GitHub gave the repository, so two rows naming one repository share one
 	// listing. Only a repository a query was refused a page of is listed over REST at all

@@ -189,8 +189,8 @@ func newCarriedCleanup(t *testing.T, opened bool) *carriedCleanup {
 			Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
 			BootTimeout:  rigBootTimeout, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: 100 * time.Millisecond, ProbeInterval: rigProbeInterval, AdoptTimeout: rigAdoptTimeout,
 			Clock:  boots.clock,
-			Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, logger),
-			ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, logger),
+			Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, logger),
+			ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, logger),
 			GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: logger,
 			RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories,
 		})

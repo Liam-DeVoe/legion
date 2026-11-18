@@ -310,7 +310,7 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 	// build's report rather than for startDaemonLogging, which returns only once the boot settles.
 	addressed := make(chan string, 1)
 	build := o.runtime
-	o.runtime = func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
+	o.runtime = func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
 		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
 		rt, err := build(ctx, listener, address, apps, repository, st, mapped)
 		select {

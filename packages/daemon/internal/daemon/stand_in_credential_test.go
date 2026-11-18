@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -198,8 +197,8 @@ func TestAStandInFailsItsTestOnlyOnTheDaemonsOwnRequests(t *testing.T) {
 	if got := recorded.reported(); len(got) != 0 {
 		t.Fatalf("a request without a lease made the stand-in report %q, want nothing", got)
 	}
-	// The implement App's lease as roleTokens mints it for acme/elsewhere.
-	lease, err := roleTokens{}.Token(t.Context(), appauth.Implement, ghrepo.MustParse("acme/elsewhere"))
+	// The implement App's lease as roleTokens mints it for acme/elsewhere's owner.
+	lease, err := roleTokens{}.Token(t.Context(), appauth.Implement, "acme")
 	if err != nil {
 		t.Fatalf("mint the implement App's lease: %v", err)
 	}
