@@ -25,9 +25,10 @@ const reportedDifferences = 20
 //
 // rows is a select of (row_label, node_kind, node_address, digest): one row per projection row,
 // naming the node that row says it projects and digesting the fields the row and its node
-// share. nodes is a select of (id, digest): one row per live node of the kind, digesting the
-// same fields as the store holds them. The census holds the two against each other in both
-// directions, so a row with no node and a node with no row are each a difference.
+// share. nodes is a select of (id, digest): one row per node of the kind, at any state,
+// digesting the same fields as the store holds them; the census reads those not gone
+// (presentNodes). The census holds the two against each other in both directions, so a row with
+// no node and a node with no row are each a difference.
 //
 // A kind with no projection table takes the set of actors the projected tables name as its rows
 // (people and agents below), which is the side that exists for it; a role takes the roles the
@@ -60,8 +61,8 @@ type projection struct {
 	pastBound string
 }
 
-// KindReport is one kind's census: how many rows and how many live nodes it read, and what the
-// two said about each other.
+// KindReport is one kind's census: how many rows and how many nodes not gone it read, and what
+// the two said about each other.
 type KindReport struct {
 	Kind, NodeKind, Table, Note string
 	Rows, Nodes                 int64
@@ -690,7 +691,7 @@ func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Co
 	return kinds, nil
 }
 
-// censusOfKind reads one kind: how many rows and live nodes there are, and the differences in
+// censusOfKind reads one kind: how many rows and nodes not gone there are, and the differences in
 // each direction with the first reportedDifferences of them. args are what the kind's rows bind,
 // none but for a kind that binds its names (projection.names).
 //
