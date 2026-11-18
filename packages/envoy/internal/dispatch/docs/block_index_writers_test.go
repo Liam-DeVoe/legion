@@ -552,14 +552,19 @@ var indexPasses = map[string]string{
 	"api/broadcasts.go#writeBroadcast":           "each copy the broadcast stores and the event it appended for it",
 	// The nodes of the reasoning kinds - a lens, its findings, a risk and a
 	// constraint - written with their tuples and their author in one store write (graphstore.Write)
-	// from the request alone: they have no projection row, so there is no side of one to read.
-	"api/reasoning_write.go#writeReasoningNodes": "the request's nodes and tuples, its credential and the project of the issue it names",
+	// from the request alone: they have no projection row, so there is no side of one to read. It
+	// reads each parent's row again under the issue's row only to refuse a parent gone since the
+	// route found it (refuseGoneParents), which decides no fact it writes.
+	"api/reasoning_write.go#writeReasoningNodes": "the request's nodes and tuples, its credential, the project of the issue it names and the state of each node it writes under",
 	// One pointer tuple out of a node of an issue, appended, retracted or retargeted through the
-	// store's writer from the request alone: the tuple has no projection row either.
+	// store's writer from the request alone: the tuple has no projection row either. It reads the
+	// node's row again under the issue's row only to refuse a node gone since the route found it.
 	"api/reasoning_write.go#writeReasoningPointer": "the request's tuple, the node it goes out of and the far ends it names",
 	// One node's state, written or settled through the store's writer from the request and the
-	// node's own row: the state is a base attribute of the node, which no projection row holds.
-	"api/reasoning_write.go#writeNodeState": "the request's state, the node's own row and the issue it stands under",
+	// node's own row: the state is a base attribute of the node, which no projection row holds. A
+	// lens taken gone takes the findings and the risks under it gone in the same write, each from
+	// its own row, which the write reads through their current part_of tuples (nodesUnderLens).
+	"api/reasoning_write.go#writeNodeState": "the request's state, the node's own row, the rows of the findings and the risks under a lens it takes gone, and the issue it stands under",
 	// An issue's own field write made for a run: the issue's node, restated from the PATCH and the
 	// issue's row it locked, and caused by the issue's own event, so the run's change of the issue
 	// is named (changed_by_run). It reads no row of either side to decide what the other says.
@@ -570,18 +575,18 @@ var indexPasses = map[string]string{
 	// Neither reads a row of either side to decide what the other should say.
 	"api/going.go#recordGoingRequest": "the POST's question, its project and the credential it proved",
 	"api/going.go#appendGoingEvent":   "the frame its writer hands it and the run's last sequence",
-	// The backfill's writer for one run a pod of the release before recorded with no node: its
-	// input is that going_requests row's own content and the run's going_events rows, as the other
-	// backfill passes read each pre-store row's own, and a run whose node is already written it
-	// leaves alone rather than mending.
-	"graphcensus/interactions.go#writeRun": "one going_requests row an earlier build recorded with no node, and that run's going_events rows",
 	// The backfill's passes over what a process of the release before writes of a run during a
 	// roll: the frames it appended with no value, whose input is each going_events row's own
 	// content, found by an anti-join with the run's frame values and stated from the row, never
 	// read back; and a run whose row it deleted, whose input is that the row is gone and the node
 	// as the store holds it, of which it moves the state alone, never mending a row from the store.
-	"graphcensus/backfill.go#writeRunFrames": "each going_events row an earlier build appended with no frame value, and the run's node row it takes first",
-	"graphcensus/backfill.go#writeGoneRun":   "the interaction node whose going_requests row an earlier build deleted, and that the row is gone",
+	// Beside them, the retraction of each prevented_by a process of the release before left
+	// asserted at a check it dropped or at a check of a document it retired: the store's own
+	// relations, read as the store reads them now (refs.CurrentPreventionsSQL), with no projection
+	// read to mend another.
+	"graphcensus/backfill.go#writeRunFrames":        "each going_events row an earlier build appended with no frame value, and the run's node row it takes first",
+	"graphcensus/backfill.go#writeGoneRun":          "the interaction node whose going_requests row an earlier build deleted, and that the row is gone",
+	"graphcensus/backfill.go#writeEndedPreventions": "the prevented_by tuples the store asserts now at a check whose block node is gone or whose document is retired",
 	// A document's retirement states its artifact node gone, keeping every other fact of the
 	// node, retracts each prevented_by the store asserts at a block of the document - the store's
 	// own relations, which no projection holds, retracted because nobody runs a retired document's
@@ -739,7 +744,7 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // SessionRecorded writes a session's node through arms of its own, and a pass that wrote the
 // store through it alone would otherwise be read as no writer at all, and FillScopes is the
 // backfill's fill of the project of a node stored with none.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|SessionRecorded|WriteArms|WriteArmsUncaused|EraseNode|FillScopes|Retarget|QueueFrameTuple)\b`)
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|SessionRecorded|WriteArms|WriteArmsUncaused|EraseNode|FillScopes|Retarget|QueueFrameTuple|WriteChangedForRun)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

@@ -91,10 +91,17 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 		var marks, tests int
 		for index, statement := range read.statements {
 			statementMarks := strings.Count(statement, VisibilityMarker)
-			// The column every loader selects to answer a node's stored state and visibility
-			// (storedNode) reads `visibility` once and tests nothing, and the registry opens it
-			// with a marker of its own; every other `visibility` a statement reads is a test.
-			statementTests := strings.Count(statement, ".visibility") - strings.Count(statement, StoredNodeMarker)
+			// The column every loader selects to answer a node's stored visibility, beside its
+			// stored state (StoredRowOf), reads `visibility` once and tests nothing, and the
+			// registry opens it with a marker of its own; every other `visibility` a statement
+			// reads is a test. A marker is subtracted only where it opens that column, named
+			// stored_visibility, so a marker set beside a test excuses nothing.
+			columns := len(storedVisibilityColumn.FindAllStringIndex(statement, -1))
+			if markers := strings.Count(statement, StoredNodeMarker); markers != columns {
+				t.Errorf("statement %d of the %s read opens %d marker of a stored state and visibility and %d of them opens a stored_visibility column: the marker opens that column alone\n%s",
+					index+1, read.call, markers, columns, statement)
+			}
+			statementTests := strings.Count(statement, ".visibility") - columns
 			marks, tests = marks+statementMarks, tests+statementTests
 			// A statement may bind no predicate where another statement of its read filters
 			// its rows, but a test of `visibility` that no marker opens is a rule the
@@ -265,6 +272,11 @@ func markedKinds(statement string) []string {
 	}
 	return kinds
 }
+
+// storedVisibilityColumn is the one read of `visibility` StoredNodeMarker opens: the column a
+// loader selects to answer a node's stored visibility, named stored_visibility beside the column
+// stored_state (StoredRowOf).
+var storedVisibilityColumn = regexp.MustCompile(regexp.QuoteMeta(StoredNodeMarker) + `\w+\.visibility as stored_visibility\b`)
 
 // graphRead is one call of a read of the graph: the exported function that made it, the call
 // as a failure names it, and every statement the call issued, in order.

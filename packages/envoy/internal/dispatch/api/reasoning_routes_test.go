@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -319,6 +320,25 @@ func TestTheReasoningRoutesRefuseAndStoreNothing(t *testing.T) {
 		http.StatusBadRequest, "POINTER_INPUT", "part_of")
 	requireRefused(t, "a finding under a block", rig.post(nodePath(rig.requirementNode, "findings"), map[string]any{"text": "Misplaced."}, "alice"),
 		http.StatusBadRequest, "INVALID_POINTER", "a finding stands under a lens")
+}
+
+// TestThePointerRouteKindEnumIsTheStoresPointerKinds holds the enum pointerInput's Kind spells,
+// which the OpenAPI document and every client generated from it read, to the kinds the store's
+// type rules hold (graphstore.PointerKinds), the list the route reads: a struct tag cannot read a
+// variable, so a kind the store's table gains or drops fails here until the tag says the same.
+func TestThePointerRouteKindEnumIsTheStoresPointerKinds(t *testing.T) {
+	field, ok := reflect.TypeFor[pointerInput]().FieldByName("Kind")
+	if !ok {
+		t.Fatal("pointerInput holds no Kind field")
+	}
+	enum, want := strings.Split(field.Tag.Get("enum"), ","), graphstore.PointerKinds()
+	t.Logf("pointerInput's Kind enum %v, the store's pointer kinds %v", enum, want)
+	if !slices.Equal(enum, want) {
+		t.Errorf("pointerInput's Kind enum is %v, want the store's pointer kinds %v, in that order", enum, want)
+	}
+	if !slices.Equal(pointerKinds, want) {
+		t.Errorf("the pointer route writes the kinds %v, want the store's %v", pointerKinds, want)
+	}
 }
 
 // TestAPointerRetargetMovesTheKindAndKeepsThePlace: a has_kind retarget of a lens that is no
@@ -731,4 +751,95 @@ func TestALensOnABlockOfACommentStandsOnItWhereEveryReaderKeysIt(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestAChildIsNeverWiderThanItsParent: a node written under or on a node reserved for its author
+// is reserved for that author too (spec requirement r-node-visibility). A risk written with no
+// visibility under alice's author-only pre-mortem reads author, and so does a lens written with
+// none on her author-only constraint and one on the finding of her author-only lens. A risk
+// written with `project` under that pre-mortem, a lens written with `project` on that constraint,
+// on that pre-mortem and on its finding are each the store's 400 VISIBILITY_WIDER_THAN_PARENT,
+// whose words name the node the write drew and the node it would stand under or on, each by its
+// address, and the store holds after each what it held before.
+func TestAChildIsNeverWiderThanItsParent(t *testing.T) {
+	rig := newReasoningRig(t)
+	hidden := rig.invoke(rig.spec, graphstore.LensKindPreMortem, "alice", map[string]any{
+		"visibility": graphstore.VisibilityAuthor, "findings": []string{"Her own finding."},
+	})
+	if hidden.Visibility != graphstore.VisibilityAuthor || len(hidden.Findings) != 1 || hidden.Findings[0].Visibility != graphstore.VisibilityAuthor {
+		t.Fatalf("alice's pre-mortem answers %+v, want it and its finding at author", hidden)
+	}
+	finding := hidden.Findings[0].Address
+	private := rig.post("/constraints", map[string]any{"standard": "A rule she keeps", "reference": "her notes", "visibility": graphstore.VisibilityAuthor}, "alice")
+	if private.Code != http.StatusCreated {
+		t.Fatalf("write alice's constraint: status=%d body=%s", private.Code, private.Body.String())
+	}
+	constraint := decodeBody[constraintRead](t, private)
+	risk := map[string]any{"lens": hidden.Address, "heading": "A failure.", "early_warning": "A sign.", "prevention": "A guard."}
+	stored := func(kind, id string) string {
+		t.Helper()
+		var visibility string
+		if err := rig.database.Pool.QueryRow(context.Background(),
+			`select visibility from graph_nodes where kind = $1 and id = $2`, kind, id).Scan(&visibility); err != nil {
+			t.Fatalf("read the stored visibility of %s %s: %v", kind, id, err)
+		}
+		return visibility
+	}
+
+	defaulted := rig.post("/risks", risk, "alice")
+	if defaulted.Code != http.StatusCreated {
+		t.Fatalf("write a risk with no visibility under alice's pre-mortem: status=%d body=%s", defaulted.Code, defaulted.Body.String())
+	}
+	written := decodeBody[riskWritten](t, defaulted)
+	t.Logf("a risk with no visibility under %s: %s at %s", hidden.Address, written.Address, written.Visibility)
+	if written.Visibility != graphstore.VisibilityAuthor || stored(graphstore.KindRisk, written.ID) != graphstore.VisibilityAuthor {
+		t.Errorf("the risk with no visibility under alice's pre-mortem answers %q and is stored %q, want author",
+			written.Visibility, stored(graphstore.KindRisk, written.ID))
+	}
+	for _, on := range []string{constraint.Address, finding} {
+		lens := rig.invoke(on, "botec", "alice", nil)
+		t.Logf("a lens with no visibility on %s: %s at %s", on, lens.Address, lens.Visibility)
+		if lens.Visibility != graphstore.VisibilityAuthor || stored(graphstore.KindLens, lens.ID) != graphstore.VisibilityAuthor {
+			t.Errorf("the lens with no visibility on %s answers %q and is stored %q, want author", on, lens.Visibility, stored(graphstore.KindLens, lens.ID))
+		}
+	}
+
+	project := map[string]any{"visibility": graphstore.VisibilityProject}
+	for _, refused := range []struct {
+		name, path string
+		body       map[string]any
+		child      string
+		parent     string
+	}{
+		{"a project risk under alice's pre-mortem", "/risks", withBody(risk, project), "dispatch://risk/", hidden.Address},
+		{"a project lens on alice's constraint", "/lenses", withBody(map[string]any{"on": constraint.Address, "kind": "botec"}, project), "dispatch://lens/", constraint.Address},
+		{"a project lens on alice's pre-mortem", "/lenses", withBody(map[string]any{"on": hidden.Address, "kind": "botec"}, project), "dispatch://lens/", hidden.Address},
+		{"a project lens on the finding of alice's pre-mortem", "/lenses", withBody(map[string]any{"on": finding, "kind": "botec"}, project), "dispatch://lens/", finding},
+	} {
+		risks, places := rig.counts(graphstore.KindRisk, graphstore.TuplePartOf)
+		lenses, _ := rig.counts(graphstore.KindLens, graphstore.TuplePartOf)
+		answer := requireRefused(t, refused.name, rig.post(refused.path, refused.body, "alice"),
+			http.StatusBadRequest, codeVisibilityWiderThanParent, "cannot stand under or on "+refused.parent+", which is reserved for its author")
+		if !strings.HasPrefix(answer.Error, refused.child) {
+			t.Errorf("%s is refused %q, want it to name the node it drew, %s<uuid>, first", refused.name, answer.Error, refused.child)
+		}
+		risksAfter, placesAfter := rig.counts(graphstore.KindRisk, graphstore.TuplePartOf)
+		lensesAfter, _ := rig.counts(graphstore.KindLens, graphstore.TuplePartOf)
+		if risksAfter != risks || lensesAfter != lenses || placesAfter != places {
+			t.Errorf("after %s the store holds %d risks, %d lenses and %d part_of tuples, and held %d, %d and %d before",
+				refused.name, risksAfter, lensesAfter, placesAfter, risks, lenses, places)
+		}
+	}
+}
+
+// withBody is body with every field of extra set on a copy of it.
+func withBody(body, extra map[string]any) map[string]any {
+	merged := make(map[string]any, len(body)+len(extra))
+	for key, value := range body {
+		merged[key] = value
+	}
+	for key, value := range extra {
+		merged[key] = value
+	}
+	return merged
 }

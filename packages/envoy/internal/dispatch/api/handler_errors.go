@@ -248,6 +248,12 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, codeInvalidPointer, http.StatusBadRequest, message)
 		return
 	}
+	// A node every reader may see placed under or on one reserved for its author (graphstore's
+	// checkPlacedVisibility): the words name both nodes by address, and nothing was stored.
+	if message, refused := widerThanParentWords(err); refused {
+		writeError(w, codeVisibilityWiderThanParent, http.StatusBadRequest, message)
+		return
+	}
 	// A second has_kind of a lens, or a pre-mortem's retargeted away from pre-mortem: one body
 	// for each, whatever hangs under the lens.
 	if message, refused := refusalWords[*graphstore.PointerAlreadyAssertedError](err, graphstore.ErrPointerAlreadyAsserted); refused {

@@ -1696,16 +1696,18 @@ func RemovedBlockNode(ctx context.Context, q Queryer, document model.GraphNode, 
 	var removedBy []byte
 	var removedAt *time.Time
 	var held *int
-	var stored []string
+	var stored StoredNode
 	documentID := document.ID
+	storedJoin, storedColumns := storedNode(BlockNodeKind, "$4")
 	if err := q.QueryRow(ctx, `
 		select `+blockFirstColumns("first")+`, removed.authors, removed.created_at,
 		       (select max(i.version) from document_indexed_versions i where i.artifact_id = b.artifact_id and i.version < $3),
-		       `+storedNode(BlockNodeKind, "$4")+`
+		       `+storedColumns+`
 		from (select $1::uuid as artifact_id, $2::text as block_id) b
 		`+blockFirstVersion("first", "b.artifact_id", "b.block_id")+`
 		left join artifact_versions removed on removed.artifact_id = b.artifact_id and removed.number = $3
-	`, documentID, blockID, removedVersion, nodeID).Scan(append(first.targets(), &removedBy, &removedAt, &held, &stored)...); err != nil {
+		`+storedJoin+`
+	`, documentID, blockID, removedVersion, nodeID).Scan(append(first.targets(), &removedBy, &removedAt, &held, &stored.State, &stored.Visibility)...); err != nil {
 		return model.GraphNode{}, fmt.Errorf("read the facts of removed block %q of %s: %w", blockID, documentID, err)
 	}
 	madeBy, madeAt, err := first.maker()
@@ -1731,9 +1733,7 @@ func RemovedBlockNode(ctx context.Context, q Queryer, document model.GraphNode, 
 		Parent:        &model.NodeParent{Kind: "artifact", ID: documentID, Ref: document.Ref},
 		ParentVersion: held,
 	}
-	if err := setStored(&node, stored); err != nil {
-		return model.GraphNode{}, err
-	}
+	setStored(&node, stored)
 	return node, nil
 }
 

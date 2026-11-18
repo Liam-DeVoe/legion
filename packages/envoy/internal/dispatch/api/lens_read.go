@@ -112,7 +112,12 @@ type lensRead struct {
 	// reader may see, which no writer of a lens leaves.
 	Kind *lensReadKind `json:"kind"`
 	// On is the address of the node the lens stands on, the far end of its part_of tuple, which
-	// is the log of its invocation; null where the reader may not see that node.
+	// is the log of its invocation; null only where no read answers that node now, a block no
+	// current version of its document holds among them. It is never null for a node the reader
+	// may not see: a reader who may see the lens may see the node it stands on, since the store
+	// refuses a lens every reader may see on a node reserved for its author
+	// (graphstore.VisibilityWiderThanParentError), and the release before that rule wrote no node
+	// reserved for its author.
 	On *string `json:"on"`
 	// Author is the person or the session its authored_by tuple names, the writer
 	// graphstore.AuthorOf names of its made_by: the session its body named for a lens written on
@@ -244,7 +249,7 @@ var lensFindingsQuery = `
 			and t.from_kind = '`+refs.BlockNodeKind+`' and t.to_kind <> '`+graphstore.KindValue+`'`) + `
 	) placed
 	join graph_nodes held on held.kind = '` + refs.BlockNodeKind + `' and held.id = placed.from_id
-	where placed.asserted and held.id like '` + graphstore.KindLens + `/%#%' and held.state <> $2
+	where placed.asserted and ` + graphstore.FindingIDSQL("held.id") + ` and held.state <> $2
 		and ` + refs.VisibleKindRow(graphstore.KindLensBlock, "held", "$3") + `
 	order by placed.to_id, placed.seq`
 
@@ -330,16 +335,12 @@ func scanLensRows(rows pgx.Rows, err error) ([]lensRow, error) {
 	for rows.Next() {
 		var row lensRow
 		var parentKind, parentID, kindID, kindWords, authorKind, authorID *string
-		var stored, triggeredBy, triggered []string
-		if err := rows.Scan(&row.id, &row.invoked, &parentKind, &parentID, &row.read.CreatedAt, &stored, &row.read.Verdict,
-			&kindID, &kindWords, &authorKind, &authorID, &triggeredBy, &triggered); err != nil {
+		var triggeredBy, triggered []string
+		if err := rows.Scan(&row.id, &row.invoked, &parentKind, &parentID, &row.read.CreatedAt, &row.read.State, &row.read.Visibility,
+			&row.read.Verdict, &kindID, &kindWords, &authorKind, &authorID, &triggeredBy, &triggered); err != nil {
 			return nil, fmt.Errorf("scan a lens: %w", err)
 		}
-		state, visibility, err := refs.StoredStateOf("lens "+row.id, stored)
-		if err != nil {
-			return nil, err
-		}
-		row.read.Address, row.read.State, row.read.Visibility = lensAddress(row.id), state, visibility
+		row.read.Address = lensAddress(row.id)
 		row.read.CreatedAt = row.read.CreatedAt.UTC()
 		if parentKind != nil && parentID != nil {
 			row.placed, row.parent = true, storedEnd{kind: *parentKind, id: *parentID}
@@ -505,18 +506,12 @@ func lensChildren(ctx context.Context, q refs.Queryer, viewer any, ids []string)
 	for rows.Next() {
 		var lens, id string
 		var finding lensFindingRead
-		var stored []string
-		if err := rows.Scan(&lens, &id, &finding.Rank, &finding.Text, &stored); err != nil {
+		if err := rows.Scan(&lens, &id, &finding.Rank, &finding.Text, &finding.State, &finding.Visibility); err != nil {
 			rows.Close()
 			return nil, nil, nil, fmt.Errorf("scan a finding of a lens: %w", err)
 		}
-		state, visibility, err := refs.StoredStateOf("finding "+id, stored)
-		if err != nil {
-			rows.Close()
-			return nil, nil, nil, err
-		}
-		_, blockID, _ := strings.Cut(id, "#")
-		finding.Address, finding.State, finding.Visibility = refs.BlockRef(lensAddress(lens), blockID), state, visibility
+		_, blockID, _ := graphstore.ParseFindingID(id)
+		finding.Address = refs.BlockRef(lensAddress(lens), blockID)
 		findings[lens] = append(findings[lens], finding)
 	}
 	rows.Close()
@@ -530,17 +525,12 @@ func lensChildren(ctx context.Context, q refs.Queryer, viewer any, ids []string)
 	for rows.Next() {
 		var lens, id string
 		var risk riskRead
-		var stored, prevented []string
-		if err := rows.Scan(&lens, &id, &risk.Heading, &risk.EarlyWarning, &risk.Prevention, &stored, &prevented); err != nil {
+		var prevented []string
+		if err := rows.Scan(&lens, &id, &risk.Heading, &risk.EarlyWarning, &risk.Prevention, &risk.State, &risk.Visibility, &prevented); err != nil {
 			rows.Close()
 			return nil, nil, nil, fmt.Errorf("scan a risk of a lens: %w", err)
 		}
-		state, visibility, err := refs.StoredStateOf("risk "+id, stored)
-		if err != nil {
-			rows.Close()
-			return nil, nil, nil, err
-		}
-		risk.Address, risk.State, risk.Visibility = "dispatch://"+graphstore.KindRisk+"/"+id, state, visibility
+		risk.Address = "dispatch://" + graphstore.KindRisk + "/" + id
 		checks[risk.Address] = prevented
 		risks[lens] = append(risks[lens], risk)
 	}
@@ -615,11 +605,10 @@ func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address st
 		return nodeLenses{}, err
 	}
 	// The place of each lens that stands elsewhere than the node read. A lens standing on a lens
-	// the read holds a row of names that lens's address: the row passed the reader's predicate and
-	// is not gone, which is what the lens's own loader asks of its parent. Any other lens is read
-	// through its own loader, which answers its parent only where the reader may see that parent;
-	// the node itself, where it is a lens, carries its own already. And the checks each risk
-	// names, through theirs.
+	// the read holds a row of names that lens's address. Any other lens is read through its own
+	// loader, which names the node it stands on, every reader of the lens being one who may see
+	// that node (lensRead's On); the node itself, where it is a lens, carries its own already. And
+	// the checks each risk names, through theirs.
 	onAHeldLens := func(row *lensRow) *lensRow {
 		if row.parent.kind != graphstore.KindLens {
 			return nil

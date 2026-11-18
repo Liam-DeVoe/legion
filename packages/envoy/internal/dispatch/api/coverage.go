@@ -145,10 +145,11 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, 
 // requirementStatesQuery reads the node state of each requirement block whose node id is in $1
 // (`<ref_key>#<block id>`, kind block) for a reader ($2), in one statement: each block through the
 // block kind's predicate (refs.VisibleKind), with the state and the visibility the store holds of
-// it (refs.StoredNodeOf), null where the store holds no row of it.
+// it (refs.StoredNodeJoin), null where the store holds no row of it.
 var requirementStatesQuery = `
-	select requirement.id, ` + refs.StoredNodeOf(`'`+refs.BlockNodeKind+`'`, `requirement.id`) + `
+	select requirement.id, ` + refs.StoredColumnsOf("stored_row") + `
 	from unnest($1::text[]) as requirement(id)
+	` + refs.StoredNodeJoin("stored_row", `'`+refs.BlockNodeKind+`'`, `requirement.id`) + `
 	where ` + refs.VisibleKind(refs.BlockNodeKind, `requirement.id`, `$2`)
 
 // queueRequirementStates queues, in b, the read of the node state of each requirement of the spec
@@ -164,14 +165,11 @@ func queueRequirementStates(b *pgx.Batch, who model.Actor, refKey string, requir
 	b.Queue(requirementStatesQuery, ids, refs.VisibilityArg(who)).Query(func(rows pgx.Rows) error {
 		for rows.Next() {
 			var id string
-			var stored []string
-			if err := rows.Scan(&id, &stored); err != nil {
+			var stored refs.StoredNode
+			if err := rows.Scan(&id, &stored.State, &stored.Visibility); err != nil {
 				return fmt.Errorf("read the node state of the requirements of %s: %w", refKey, err)
 			}
-			state, _, err := refs.StoredStateOf("requirement "+id, stored)
-			if err != nil {
-				return err
-			}
+			state, _ := refs.StoredStateAndVisibility(stored)
 			states[strings.TrimPrefix(id, refKey+"#")] = state
 		}
 		if err := rows.Err(); err != nil {

@@ -14,7 +14,8 @@ package api
 // learns of one of these nodes by reading it. A repeat of a request under its Idempotency-Key is
 // answered from the key and writes nothing (keyedWrites). The type rules of the pointers and of
 // a risk's place, the project and the document of a risk's prevented_by and the order of a
-// triggered_by are the store's (graphstore's pointerRules): a route keeps none of its own, and
+// triggered_by are the store's (graphstore's pointerRules), and so is the list of the kinds the
+// pointer route writes (graphstore.PointerKinds): a route keeps no type rule of its own, and
 // answers the store's refusals, 400 INVALID_POINTER and 409 POINTER_ALREADY_ASSERTED, as they are,
 // naming a check of another project or of a retired document, and both lenses of a triggered_by
 // to a lens not invoked before its own, by the addresses the caller read them at (refusalNamed).
@@ -46,16 +47,19 @@ import (
 // id the catalogue does not hold names.
 const lensCatalogueRead = "GET /api/v1/schema/blocks lists the catalogue's kinds under lens_kinds"
 
-// Codes of the reasoning routes' refusals of a body, and INVALID_POINTER, a far end of the wrong
-// type, which a route answers as the store's pointer rules answer it (writeHandlerError).
+// Codes of the reasoning routes' refusals of a body; INVALID_POINTER, a far end of the wrong
+// type, which a route answers as the store's pointer rules answer it (writeHandlerError); and
+// VISIBILITY_WIDER_THAN_PARENT, a node every reader may see placed under or on one reserved for
+// its author, which every route answers as the store refuses it (widerThanParentWords).
 const (
-	codeLensKindRequired = "LENS_KIND_REQUIRED"
-	codeLensInput        = "LENS_INPUT"
-	codeFindingInput     = "FINDING_INPUT"
-	codeRiskInput        = "RISK_INPUT"
-	codeConstraintInput  = "CONSTRAINT_INPUT"
-	codePointerInput     = "POINTER_INPUT"
-	codeInvalidPointer   = "INVALID_POINTER"
+	codeLensKindRequired          = "LENS_KIND_REQUIRED"
+	codeLensInput                 = "LENS_INPUT"
+	codeFindingInput              = "FINDING_INPUT"
+	codeRiskInput                 = "RISK_INPUT"
+	codeConstraintInput           = "CONSTRAINT_INPUT"
+	codePointerInput              = "POINTER_INPUT"
+	codeInvalidPointer            = "INVALID_POINTER"
+	codeVisibilityWiderThanParent = "VISIBILITY_WIDER_THAN_PARENT"
 )
 
 // reasoningAuthor is the writer a reasoning node's authored_by tuple names, the one
@@ -172,6 +176,19 @@ func refusalNamed(err error, ends ...namedEnd) (refusal error, named bool) {
 	return invalid, true
 }
 
+// widerThanParentWords is the words of the store's refusal of a part_of out of a node every reader
+// may see at one reserved for its author (graphstore.VisibilityWiderThanParentError), naming each
+// of the two by its dispatch:// address (refs.StoreRef): a node of these kinds, and the node a
+// lens stands on where that is one of them too, since only such a node is ever reserved for its
+// author. ok is false for any other err.
+func widerThanParentWords(err error) (words string, ok bool) {
+	var wider *graphstore.VisibilityWiderThanParentError
+	if !errors.As(err, &wider) {
+		return "", false
+	}
+	return wider.Named(refs.StoreRef(wider.ChildKind, wider.ChildID), refs.StoreRef(wider.ParentKind, wider.ParentID)), true
+}
+
 // farEndOf is the kind and the id a tuple whose far end is node names it by, where address is what
 // named it (decodeNodeAddress): the node's own kind and id, but for a document, whose node answers
 // its uuid and which a tuple names by its ref_key, the id its address decodes to, and for a block
@@ -245,13 +262,16 @@ type lensInvocationInput struct {
 	Findings []string `json:"findings,omitempty"`
 	// TriggeredBy is the address of the lens of this issue whose finding asked for this one.
 	TriggeredBy *string `json:"triggered_by,omitempty"`
-	// Visibility is who the lens and its findings are for: project, the default, or author.
+	// Visibility is who the lens and its findings are for: author, or project. With none the lens
+	// takes the visibility of the node it is invoked on, so a lens on a node reserved for its
+	// author is reserved for that author too; project on such a node is 400
+	// VISIBILITY_WIDER_THAN_PARENT.
 	Visibility string `json:"visibility" enum:"project,author"`
 }
 
 // lensFinding is one finding of a lens as a write answers it: a block node under the lens whose
-// id names the lens, `lens/<uuid>#<block id>`, the block id a random one, and whose address is
-// the lens's with that block id, `dispatch://lens/<uuid>#b-<block id>`. Its rank among the lens's
+// id names the lens (graphstore.FindingID), the block id a random one, and whose address is the
+// lens's with that block id, `dispatch://lens/<uuid>#b-<block id>`. Its rank among the lens's
 // children is the order of its part_of tuple and no value of its own.
 type lensFinding struct {
 	Address    string           `json:"address"`
@@ -281,13 +301,61 @@ type lensInvoked struct {
 	Findings    []lensFinding    `json:"findings"`
 }
 
+// newLens is the lens id of the catalogue kind whose id is kind, invoked on the node on, at the
+// visibility its writer gives it (the empty string being project; the rule of a visibility the
+// request leaves out is the route's), with its verdict where verdict is not nil: a node under on
+// whose row carries the verdict, and its one has_kind tuple to the kind's lens_kind node. The
+// lens route appends its triggered_by where the request names one. The lens route and the
+// pre-mortem conversion build each lens here.
+func newLens(id, kind string, on storedEnd, visibility string, verdict *string) reasoningNode {
+	lens := reasoningNode{
+		kind: graphstore.KindLens, id: id, visibility: visibility,
+		parentKind: on.kind, parentID: on.id,
+		tuples: []graphstore.Tuple{{
+			FromKind: graphstore.KindLens, FromID: id, Kind: graphstore.TupleHasKind,
+			ToKind: graphstore.KindLensKind, ToID: kind,
+		}},
+	}
+	if verdict != nil {
+		lens.attributes = map[string]any{graphstore.AttributeVerdict: *verdict}
+	}
+	return lens
+}
+
+// newRisk is the risk id under the lens lens, at the visibility its writer gives it (the empty
+// string being project; the rule of a visibility the request leaves out is the route's), naming
+// the failure heading, the sign it is seen coming by earlyWarning and what keeps it from happening
+// prevention, the three attributes of its row, with one prevented_by tuple to each of checks, in
+// order. The risk route and the pre-mortem conversion build each risk here.
+func newRisk(id string, lens storedEnd, visibility, heading, earlyWarning, prevention string, checks ...storedEnd) reasoningNode {
+	risk := reasoningNode{
+		kind: graphstore.KindRisk, id: id, visibility: visibility,
+		parentKind: lens.kind, parentID: lens.id,
+		attributes: map[string]any{
+			graphstore.AttributeHeading:      heading,
+			graphstore.AttributeEarlyWarning: earlyWarning,
+			graphstore.AttributePrevention:   prevention,
+		},
+	}
+	if len(checks) > 0 {
+		risk.tuples = make([]graphstore.Tuple, 0, len(checks))
+	}
+	for _, check := range checks {
+		risk.tuples = append(risk.tuples, graphstore.Tuple{
+			FromKind: graphstore.KindRisk, FromID: id, Kind: graphstore.TuplePreventedBy,
+			ToKind: check.kind, ToID: check.id,
+		})
+	}
+	return risk
+}
+
 // lensAddress is the address of the lens whose id is id.
 func lensAddress(id string) string { return refs.StoreRef(graphstore.KindLens, id) }
 
 // newFinding is a finding of the lens whose id is lens, holding text, at the visibility asked
 // for: a block node at a random block id, under the lens, whose text is its `text` value tuple.
 func newFinding(lens, visibility, text string) reasoningNode {
-	id := graphstore.KindLens + "/" + lens + "#" + uuid.NewString()
+	id := graphstore.FindingID(lens, uuid.NewString())
 	return reasoningNode{
 		kind: refs.BlockNodeKind, id: id, visibility: visibility,
 		parentKind: graphstore.KindLens, parentID: lens,
@@ -300,7 +368,7 @@ func newFinding(lens, visibility, text string) reasoningNode {
 
 // findingWritten is the answer for a finding the write wrote as node, holding text.
 func findingWritten(node graphstore.Node, text string) lensFinding {
-	lens, blockID, _ := strings.Cut(strings.TrimPrefix(node.ID, graphstore.KindLens+"/"), "#")
+	lens, blockID, _ := graphstore.ParseFindingID(node.ID)
 	return lensFinding{
 		Address: refs.StoreRef(graphstore.KindLensBlock, node.ID), ID: node.ID, BlockID: blockID,
 		Lens: lensAddress(lens), Text: text, Author: writtenAuthor(node),
@@ -311,12 +379,15 @@ func findingWritten(node graphstore.Node, text string) lensFinding {
 // invokeLens is POST /api/v1/issues/{key}/lenses: one lens of one kind of the catalogue, invoked
 // on one node under the issue, with its verdict, its findings and the lens that triggered it. A
 // body with no kind is 400 LENS_KIND_REQUIRED, an id no lens_kind node holds 400 INVALID_POINTER,
-// a node or a triggering lens the caller may not see under the issue 404 NOT_FOUND, and `author`
-// on a credential that proves no author 403 AUTHOR_NAMES_NOBODY; each stores nothing. A second
-// has_kind cannot be asked for here, since the kind is one field, and the lens this writes cannot
-// trigger itself or a lens invoked after it, since its id is drawn here and its part_of, in the
-// same write, stands after every lens the store holds; the store holds every rule all the same,
-// and a refusal of its trigger names both lenses by address (refusalNamed).
+// a node or a triggering lens the caller may not see under the issue 404 NOT_FOUND, `author` on a
+// credential that proves no author 403 AUTHOR_NAMES_NOBODY, and `project` on a node reserved for
+// its author the store's 400 VISIBILITY_WIDER_THAN_PARENT, naming the lens and that node; each
+// stores nothing. A body that names no visibility gives the lens and its findings the visibility
+// of the node it is invoked on. A second has_kind cannot be asked for here, since the kind is one
+// field, and the lens this writes cannot trigger itself or a lens invoked after it, since its id
+// is drawn here and its part_of, in the same write, stands after every lens the store holds; the
+// store holds every rule all the same, and a refusal of its trigger names both lenses by address
+// (refusalNamed).
 func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 	var input lensInvocationInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -359,7 +430,7 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	on, onEnd, err := findEndUnderIssue(ctx, tx, reader, key, input.On)
+	on, onEnd, err := findWrittenNode(ctx, tx, reader, key, input.On)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -371,19 +442,13 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 	}
 	id := uuid.NewString()
 	address := lensAddress(id)
-	lens := reasoningNode{
-		kind: graphstore.KindLens, id: id, visibility: input.Visibility,
-		parentKind: onEnd.kind, parentID: onEnd.id,
-		tuples: []graphstore.Tuple{{
-			FromKind: graphstore.KindLens, FromID: id, Kind: graphstore.TupleHasKind,
-			ToKind: graphstore.KindLensKind, ToID: kind.ID,
-		}},
-	}
+	// A lens with no visibility of its own is no wider than the node it stands on.
+	visibility := cmp.Or(input.Visibility, on.Visibility)
 	var verdict *string
 	if input.Verdict != nil && !blankText(*input.Verdict) {
 		verdict = input.Verdict
-		lens.attributes = map[string]any{graphstore.AttributeVerdict: *verdict}
 	}
+	lens := newLens(id, kind.ID, onEnd, visibility, verdict)
 	var triggeredBy *string
 	// The lens a refusal of the lens's triggered_by names after the lens; a lens invoked with no
 	// trigger leaves it the zero end, whose empty address NamedAt reads as not named.
@@ -403,7 +468,7 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 	}
 	nodes := []reasoningNode{lens}
 	for _, text := range input.Findings {
-		nodes = append(nodes, newFinding(id, input.Visibility, text))
+		nodes = append(nodes, newFinding(id, visibility, text))
 	}
 	written, err := writeReasoningNodes(ctx, tx, reasoningWrite{
 		reasoningCaller: caller, issue: key, at: at, nodes: nodes,
@@ -479,7 +544,7 @@ func (s *server) addLensFinding(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	lens, _, err := findEndUnderIssue(ctx, tx, caller.reader(), key, r.PathValue("id"))
+	lens, _, err := findWrittenNode(ctx, tx, caller.reader(), key, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -524,7 +589,9 @@ type riskInput struct {
 	// PreventedBy is the address of a check block that covers the risk, of any issue of the
 	// issue's project.
 	PreventedBy *string `json:"prevented_by,omitempty"`
-	// Visibility is who the risk is for: project, the default, or author.
+	// Visibility is who the risk is for: author, or project. With none the risk takes its lens's,
+	// so a risk under a lens reserved for its author is reserved for that author too; project
+	// under such a lens is 400 VISIBILITY_WIDER_THAN_PARENT.
 	Visibility string `json:"visibility" enum:"project,author"`
 }
 
@@ -550,7 +617,9 @@ type riskWritten struct {
 // route reads one (pointerEnd). The store holds a risk to a lens of kind pre-mortem: a risk under
 // any other lens, or under a node that is no lens, is its 400 INVALID_POINTER, which says a risk
 // belongs under a pre-mortem, and a prevented_by to a block that is no check is the same, as is
-// one to a check of another project or of a retired document, naming the check. A lens the caller
+// one to a check of another project or of a retired document, naming the check. A body that names
+// no visibility gives the risk its lens's, and `project` under a lens reserved for its author is
+// the store's 400 VISIBILITY_WIDER_THAN_PARENT, naming the risk and the lens. A lens the caller
 // may not see under the issue, and a check the caller may not see wherever it stands, are 404
 // NOT_FOUND. Each stores nothing. A risk that names a prevented_by takes the issue's row and the
 // owner row of the check's document before it reads either (its race with a retirement or an
@@ -597,36 +666,26 @@ func (s *server) writeRisk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	lens, lensEnd, err := findEndUnderIssue(ctx, tx, reader, key, input.Lens)
+	lens, lensEnd, err := findWrittenNode(ctx, tx, reader, key, input.Lens)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	id := uuid.NewString()
-	risk := reasoningNode{
-		kind: graphstore.KindRisk, id: id, visibility: input.Visibility,
-		parentKind: lensEnd.kind, parentID: lensEnd.id,
-		attributes: map[string]any{
-			graphstore.AttributeHeading:      input.Heading,
-			graphstore.AttributeEarlyWarning: input.EarlyWarning,
-			graphstore.AttributePrevention:   input.Prevention,
-		},
-	}
 	preventedBy := []string{}
 	var check model.GraphNode
 	var checkEnd storedEnd
+	var checks []storedEnd
 	if input.PreventedBy != nil {
 		check, checkEnd, err = pointerEnd(ctx, tx, reader, key, graphstore.TuplePreventedBy, *input.PreventedBy)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		risk.tuples = append(risk.tuples, graphstore.Tuple{
-			FromKind: graphstore.KindRisk, FromID: id, Kind: graphstore.TuplePreventedBy,
-			ToKind: checkEnd.kind, ToID: checkEnd.id,
-		})
+		checks = []storedEnd{checkEnd}
 		preventedBy = append(preventedBy, check.Ref)
 	}
+	risk := newRisk(id, lensEnd, cmp.Or(input.Visibility, lens.Visibility), input.Heading, input.EarlyWarning, input.Prevention, checks...)
 	written, err := writeReasoningNodes(ctx, tx, reasoningWrite{
 		reasoningCaller: caller, issue: key, at: at, nodes: []reasoningNode{risk},
 	})
@@ -661,7 +720,9 @@ type constraintInput struct {
 	Measurement string `json:"measurement"`
 	Value       string `json:"value"`
 	TakenWhere  string `json:"taken_where"`
-	// Visibility is who the constraint is for: project, the default, or author.
+	// Visibility is who the constraint is for: project, the default, or author. A constraint
+	// stands under its issue, which every reader of the project sees, so it takes project where
+	// the body names none.
 	Visibility string `json:"visibility" enum:"project,author"`
 }
 
@@ -863,18 +924,12 @@ func (s *server) listIssueConstraints(w http.ResponseWriter, r *http.Request) {
 	read := issueConstraints{Issue: key, Constraints: []constraintRead{}}
 	for rows.Next() {
 		var constraint constraintRead
-		var stored []string
 		var authorKind, authorID *string
 		if err := rows.Scan(&constraint.ID, &constraint.CreatedAt, &constraint.Standard, &constraint.Reference,
-			&constraint.Measurement, &constraint.Value, &constraint.TakenWhere, &stored, &authorKind, &authorID); err != nil {
+			&constraint.Measurement, &constraint.Value, &constraint.TakenWhere, &constraint.State, &constraint.Visibility,
+			&authorKind, &authorID); err != nil {
 			rows.Close()
 			s.writeHandlerError(w, fmt.Errorf("scan a constraint of %s: %w", key, err))
-			return
-		}
-		constraint.State, constraint.Visibility, err = refs.StoredStateOf(graphstore.KindConstraint+" "+constraint.ID, stored)
-		if err != nil {
-			rows.Close()
-			s.writeHandlerError(w, err)
 			return
 		}
 		constraint.Address = refs.StoreRef(graphstore.KindConstraint, constraint.ID)
@@ -899,11 +954,11 @@ func (s *server) listIssueConstraints(w http.ResponseWriter, r *http.Request) {
 
 // --- POST /api/v1/issues/{key}/nodes/{id}/pointers ----------------------------------------------
 
-// pointerKinds are the tuple kinds the pointer route writes out of a node. A part_of tuple is a
-// node's place, which no pointer route moves.
-var pointerKinds = []string{
-	graphstore.TupleHasKind, graphstore.TupleTriggeredBy, graphstore.TupleConstrainedBy, graphstore.TuplePreventedBy,
-}
+// pointerKinds are the tuple kinds the pointer route writes out of a node, the store's
+// (graphstore.PointerKinds), read once. A part_of tuple is a node's place, which no pointer route
+// moves. pointerInput's Kind enum spells the same list, which
+// TestThePointerRouteKindEnumIsTheStoresPointerKinds holds it to.
+var pointerKinds = graphstore.PointerKinds()
 
 // pointerInput is the body of one pointer tuple's write out of the node {id} names.
 type pointerInput struct {
@@ -1044,7 +1099,7 @@ func (s *server) writePointer(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	node, nodeEnd, err := findEndUnderIssue(ctx, tx, reader, key, r.PathValue("id"))
+	node, nodeEnd, err := findWrittenNode(ctx, tx, reader, key, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

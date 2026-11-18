@@ -3,16 +3,18 @@ package api
 // going_catalogue.go holds the catalogue of operations an agent may propose on Dispatch's
 // graph, and serves it at GET /api/v1/going/catalogue.
 //
-// The catalogue is the dispatch tools that write, all but three: the specs in
+// The catalogue is the dispatch tools that write, all but four: the specs in
 // packages/contracts/src/dispatch-tools.ts that agents already operate Dispatch with all day,
 // each carried whole through contracts.DispatchTools — its own curated description, which is
 // what a model chooses on, and its own argument schema. The list is read whole: nothing searches
 // it, and no second schema is authored per route. How a model's choice among the actions holds up
-// as the list grows is unmeasured. The three the catalogue leaves out are left out on purpose.
-// Two record a person's decision: dispatch_review records an approval or a changes request in a
-// person's name, and dispatch_settle, written by a person's credential, records that the person
-// settled a proposal, which is the person's own call (spec requirement r-proposed).
-// The third, dispatch_premortem_convert, retires a document once, through docs.RetireDocument,
+// as the list grows is unmeasured. The four the catalogue leaves out are left out on purpose.
+// Three record or undo a person's decision: dispatch_review records an approval or a changes
+// request in a person's name; dispatch_settle, written by a person's credential, records that the
+// person settled a proposal, which is the person's own call (spec requirement r-proposed); and
+// dispatch_state moves a node out of settled, undoing such a settle, or into gone, which is final,
+// and the caller rule a person's credential passes for those moves is the settle's own. The fourth,
+// dispatch_premortem_convert, retires a document once, through docs.RetireDocument,
 // and moves its address to the lens it writes in its place
 // (spec requirement r-premortem-nodes). The loop that proposes operations on
 // Dispatch's graph must never propose any of them, so goingToolRoutes names no row for them.
@@ -24,9 +26,9 @@ package api
 // or a relation in neither edge family refuses to mount (register). The other direction is a
 // report rather than a refusal, since a write no tool in the catalogue performs is not an error:
 // most are work still to do, and the two review routes, the document header's and the one
-// dispatch_review performs, the settle dispatch_settle performs and the pre-mortem conversion
-// dispatch_premortem_convert performs are kept out on purpose.
-// TestTheMutatingRoutesNoToolSpecNames names every one of them.
+// dispatch_review performs, the settle dispatch_settle performs, the state write dispatch_state
+// performs and the pre-mortem conversion dispatch_premortem_convert performs are kept out on
+// purpose. TestTheMutatingRoutesNoToolSpecNames names every one of them.
 //
 // Nothing here decides anything: the catalogue says what an action is and what it takes, and
 // GoingCaller performs one an agent already chose. The loop that chooses is not in this package.
@@ -81,11 +83,12 @@ type goingToolRoute struct {
 // name, and so the tools the catalogue holds. A tool this map does not name is not in the
 // catalogue: the read tools, `dispatch_constraints`, `dispatch_lenses` and `dispatch_proposed`
 // among them; `dispatch_related`, whose POST row writes nothing (it runs the related-item check and
-// records none of it); and `dispatch_review`, `dispatch_settle` and `dispatch_premortem_convert`,
-// which write and are left out on purpose. A review records an approval or a changes request in a
-// person's name, a settle written by a person's credential records that the person settled a
-// proposal, and the pre-mortem conversion retires a document once: the loop that proposes
-// operations on Dispatch's graph must never propose any of them, so none gets a row here.
+// records none of it); and `dispatch_review`, `dispatch_settle`, `dispatch_state` and
+// `dispatch_premortem_convert`, which write and are left out on purpose. A review records an
+// approval or a changes request in a person's name, a settle written by a person's credential
+// records that the person settled a proposal, a state write moves a node out of settled or into
+// gone, and the pre-mortem conversion retires a document once: the loop that proposes operations
+// on Dispatch's graph must never propose any of them, so none gets a row here.
 //
 // The rows of one tool are tried in order, so the row a call performs is the first whose guard
 // it satisfies and whose placeholders it fills: a document write names its issue, else its
@@ -286,12 +289,10 @@ var goingToolRoutes = map[string][]goingToolRoute{
 		Path:      map[string]string{"key": "issue", "id": "node"},
 		Relations: []string{"has_kind", "triggered_by", "constrained_by", "prevented_by"},
 	}},
-	// A node's state, a value of the node and no relation: the state row writes no edge. The
-	// settle (dispatch_settle) has no row, for the reason the catalogue's header gives.
-	"dispatch_state": {{
-		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/nodes/{id}/state",
-		Path: map[string]string{"key": "issue", "id": "node"},
-	}},
+	// A node's state (dispatch_state) has no row, and neither has its settle (dispatch_settle):
+	// the state route moves a node out of settled, undoing a settle, and into gone, which is
+	// final, and a person's credential passes the settle's caller rule for both, so the loop that
+	// proposes operations must never propose either, for the reason the catalogue's header gives.
 }
 
 // GoingRoute is one row of the server's table an action writes, as the catalogue serves it.
@@ -492,8 +493,8 @@ type goingCatalogueBody struct {
 	Actions []GoingAction `json:"actions"`
 }
 
-// getGoingCatalogue serves the catalogue whole. Twenty-six actions is a list a reader scans, so
-// there is nothing to search and nothing to page.
+// getGoingCatalogue serves the catalogue whole. Its actions are a list a reader scans, so there is
+// nothing to search and nothing to page.
 func (s *server) getGoingCatalogue(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

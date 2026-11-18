@@ -736,7 +736,7 @@ function reasoningVisibility<E extends SchemaNode<E>>(z: SchemaApi<E>, what: str
   return z
     .enum(NODE_VISIBILITIES)
     .describe(
-      `Who ${what} for: project (the default), or author, which keeps it to you alone and is refused with 403 AUTHOR_NAMES_NOBODY under the deployment's shared agent token, which proves no author.`
+      `Who ${what} for: project or author. Left out, it is the visibility of the node it is written under or on, and project where there is none; project under or on a node reserved for its author is refused with 400 VISIBILITY_WIDER_THAN_PARENT, naming both nodes. author keeps it to you alone and is refused with 403 AUTHOR_NAMES_NOBODY under the deployment's shared agent token, which proves no author.`
     )
     .optional();
 }
@@ -2375,7 +2375,8 @@ export const dispatchToolSpecs = [
     description:
       "Invoke a lens on one node of an issue: one analysis, of one kind of the lens catalogue, " +
       `logged under the node it looks at. ${LENS_KIND_RULE}, and a call naming no kind with 400 ` +
-      `LENS_KIND_REQUIRED. on is ${NODE_UNDER_ISSUE}. verdict is what the analysis concluded. ` +
+      `LENS_KIND_REQUIRED. on is ${NODE_UNDER_ISSUE}; an on that is gone is refused with 409 ` +
+      "NODE_GONE, naming it. verdict is what the analysis concluded. " +
       "Each findings item is one finding of the lens, in order; add one later with dispatch " +
       "finding. A pre-mortem's findings are its risks: write each with dispatch risk. " +
       "triggered_by is the dispatch://lens/<uuid> address of the lens of the issue whose " +
@@ -2413,7 +2414,8 @@ export const dispatchToolSpecs = [
       "Add one finding to a lens invoked with dispatch lens: one block of the lens's finding, " +
       "after every finding it holds, at an address of its own, dispatch://lens/<uuid>#b-<id>. " +
       "lens is the lens's dispatch://lens/<uuid> address; a lens outside the issue, or one you " +
-      "may not see, is 404 NOT_FOUND, and a node that is no lens is 400 INVALID_POINTER. The " +
+      "may not see, is 404 NOT_FOUND, a gone lens is 409 NODE_GONE, naming it, and a node that " +
+      "is no lens is 400 INVALID_POINTER. The " +
       "finding is for whoever the lens is for, unless visibility is author. A pre-mortem's " +
       "findings are its risks: write each with dispatch risk. The result names the finding's " +
       `address. ${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
@@ -2451,8 +2453,9 @@ export const dispatchToolSpecs = [
       "(dispatch://KEY-1/artifact/verification-md#b-<id>); a block that is no check, a check " +
       "of another project and a check of a retired document are 400 INVALID_POINTER, the last " +
       "two naming the check. Add a second check, or move one, with dispatch pointer. A lens " +
-      "outside the issue, and a lens or a check you may not see, are 404 NOT_FOUND. The result " +
-      "names the risk's dispatch://risk/<uuid> address. " +
+      "outside the issue, and a lens or a check you may not see, are 404 NOT_FOUND, and a gone " +
+      "lens is 409 NODE_GONE, naming it. The result names the risk's dispatch://risk/<uuid> " +
+      "address. " +
       `${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
@@ -2550,8 +2553,10 @@ export const dispatchToolSpecs = [
       "POINTER_ALREADY_ASSERTED. A node outside the issue, a far end outside it (but a " +
       "has_kind's lens_kind, a constrained_by's constraint of the catalogue, which stand under " +
       "no issue, and a prevented_by's check of another issue of the project), one you may not " +
-      "see, and a pointer to retract or retarget that the node does not hold are 404 NOT_FOUND. " +
-      `No pointer moves a node to another parent. ${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
+      "see, and a pointer to retract or retarget that the node does not hold are 404 NOT_FOUND; " +
+      "a gone far end answers the same, and a gone node, the one the pointer goes out of, is 409 " +
+      "NODE_GONE, naming it. No pointer moves a node to another " +
+      `parent. ${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
       node: z.string({ min: 1 }).describe(`The node the pointer goes out of: ${NODE_UNDER_ISSUE}.`),
@@ -2617,17 +2622,23 @@ export const dispatchToolSpecs = [
       "Write the state of one node of an issue. proposed marks it a question still open: a " +
       "proposed requirement raises no coverage gap, and dispatch proposed lists the issue's " +
       "proposed nodes. overtaken marks it outdated by later work, live puts it back, and gone " +
-      "takes a lens, a finding, a risk or a constraint out of every read; a block of a document " +
-      "is removed by editing its document. A state the node cannot take is refused with 409 " +
-      "NODE_STATE_NOT_WRITABLE, naming the node's kind, its state and the value: gone on a " +
-      "block of a document, an issue, a document, an ask, a comment or a message, any state " +
-      "on a gone node, and any state on a block of an ask, a comment or a message, which the " +
-      "store keeps no node of and every read answers live. Settle a proposal with dispatch " +
-      "settle. Any other move into or out of proposed or settled takes the settle's rule: a " +
-      "person makes it on any node, and an agent only on a node whose author is the author " +
-      "its credential proves; any other is refused with 403 STATE_NOT_PERMITTED, so the " +
-      "deployment's shared agent token makes no such move, and ends no proposal. The result " +
-      "names the node's state before and after. " +
+      "takes a lens, a finding, a risk or a constraint out of every read for good: a lens " +
+      "taken gone takes each finding and each risk under it gone with it, and a block of a " +
+      "document is removed by editing its document. gone is final, so any write on a gone " +
+      "node is refused with 409 NODE_GONE, naming the node. A state the node cannot take is " +
+      "refused with 409 NODE_STATE_NOT_WRITABLE, naming the node's kind, its state and the " +
+      "value: gone on a block of a document, an issue, a document, an ask, a comment or a " +
+      "message, and any state on a block of an ask, a comment or a message, which the store " +
+      "keeps no node of and every read answers live. Settle a proposal with dispatch settle. " +
+      "A lens taken gone takes everything under it, so a person alone takes a lens to gone: " +
+      "any other caller, the lens's own author included, is refused with 403 " +
+      "STATE_NOT_PERMITTED naming the lens, whatever it holds, and an agent marks a lens it " +
+      "wrote overtaken instead. Any other move into or out of proposed or settled, and a move " +
+      "of a finding, a risk or a constraint into gone, takes the settle's rule: a person makes " +
+      "it on any node, and an agent only on a node whose author is the author its credential " +
+      "proves; any other is refused with 403 STATE_NOT_PERMITTED, naming the node, so the " +
+      "deployment's shared agent token makes no such move, ends no proposal and takes nothing " +
+      "out. The result names the node's state before and after. " +
       `${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
@@ -2651,7 +2662,8 @@ export const dispatchToolSpecs = [
       "that names a person, the same session for a broker session that names none, the same " +
       "workload for a pod's service-account token. Any other is refused with 403 " +
       "SETTLE_NOT_PERMITTED; the deployment's shared agent token proves no author, so it " +
-      "settles nothing. A node that is not proposed is refused with 409 NODE_NOT_PROPOSED. " +
+      "settles nothing. A gone node is refused with 409 NODE_GONE, and any other node that is " +
+      "not proposed with 409 NODE_NOT_PROPOSED. " +
       "dispatch proposed lists the issue's proposed nodes. " +
       `${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({

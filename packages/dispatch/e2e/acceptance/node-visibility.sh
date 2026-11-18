@@ -4,12 +4,13 @@
 # A direct read refused proves nothing of the graph's other routes, so the driver hangs the hidden
 # nodes among public neighbours. On one issue the first person (DEV_SIGNIN_LOGIN, `alice`) writes,
 # under a spec every person reads, a public trade-off analysis that triggered a pre-mortem reserved
-# for her, which triggered a public inversion, so a chain of three runs through it; a risk reserved
-# for her under that pre-mortem, prevented by a public check of the issue's verification document;
-# and a public comment written under the run of a question she asked the command bar (the
-# Dispatch-Going-Run header), so a changed_by_run tuple runs from the comment to her interaction. A
-# second issue, the twin, is seeded the same way without the hidden nodes: no pre-mortem, no risk,
-# and its comment written under no run.
+# for her, which triggered a public inversion, so a chain of three runs through it; a risk under that
+# pre-mortem, written with no visibility so that it takes the pre-mortem's and is reserved for her
+# too, prevented by a public check of the issue's verification document; and a public comment
+# written under the run of a question she asked the command bar (the Dispatch-Going-Run header), so
+# a changed_by_run tuple runs from the comment to her interaction. A second issue, the twin, is
+# seeded the same way without the hidden nodes: no pre-mortem, no risk, and its comment written
+# under no run.
 #
 # The second person, bob, owns none of it and reads every surface that can disclose one of these
 # kinds, on both issues: the chain read of the spec (GET /api/v1/lenses?on=) first, with each chain
@@ -44,8 +45,13 @@
 # trade-off analysis, is absent from both ends, and the trade-off analysis counts the lenses it
 # triggered as it did before the pre-mortem was written. A third person who has written nothing
 # writes a lens reserved for them, and bob reads their page before and after that write as a login
-# nobody holds, while they find the lens on their own page. Last the first person writes `gone` on the
-# hidden pre-mortem, and bob's read of its address is byte for byte the one he read before.
+# nobody holds, while they find the lens on their own page. The first person then writes, under or
+# on her hidden nodes, a second risk with visibility `project` under the pre-mortem, a lens with
+# visibility `project` on the pre-mortem and one on its finding: each is refused 400
+# VISIBILITY_WIDER_THAN_PARENT, its words naming the node the write drew and the hidden node, and
+# stores nothing, so no node a reader may see stands under or on one they may not. Last the first
+# person writes `gone` on the hidden pre-mortem, and bob's read of its address is byte for byte the
+# one he read before.
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key) and DEV_SIGNIN_LOGIN (the first person,
@@ -166,12 +172,13 @@ lens_body() {
 # holding one check, and as the first person a trade-off analysis and an inversion on the spec, each
 # with one finding, and a comment on the issue, all three public. WITH=hidden also writes, as
 # the first person, the pre-mortem reserved for her between the two lenses, triggered by the
-# trade-off analysis and triggering the inversion, with one finding; the risk reserved for her under
-# it, prevented by the check; and one question of the command bar, under whose run the comment is
-# written. Before the pre-mortem is written, bob reads what the trade-off analysis answers of the
-# lenses it triggered, and the tuples in both directions at $lens_kind, the pre-mortem's has_kind
-# far end, which no twin stands for. It sets $key, $spec, $check, $tradeoff, $inversion and
-# $comment_id, and with WITH=hidden $premortem, $finding, $risk and $run_id.
+# trade-off analysis and triggering the inversion, with one finding; a risk under it written with no
+# visibility, which takes the pre-mortem's (C2 reads it at author), prevented by the check; and one
+# question of the command bar, under whose run the comment is written. Before the pre-mortem is
+# written, bob reads what the trade-off analysis answers of the lenses it triggered, and the tuples
+# in both directions at $lens_kind, the pre-mortem's has_kind far end, which no twin stands for. It
+# sets $key, $spec, $check, $tradeoff, $inversion and $comment_id, and with WITH=hidden $premortem,
+# $finding, $risk and $run_id.
 seed() {
   local section="setup:$1" document trigger="" read
   request agent POST /api/v1/issues "$(jq -cn --arg p "$project" --arg s "$spec_text" --argjson a "$(actor)" \
@@ -225,12 +232,14 @@ seed() {
   if [[ "$1" == hidden ]]; then
     request "cookie:$first" POST "/api/v1/issues/$key/risks" "$(jq -cn --arg l "$premortem" --arg c "$check" --arg w "$risk_word" \
       '{lens: $l, heading: "A risk only its author reads: \($w)", early_warning: "The first sign of \($w)",
-        prevention: "What keeps \($w) from happening", prevented_by: $c, visibility: "author"}')"
-    want_status 201 "$section" "$first writes the risk reserved for her under the pre-mortem, prevented by the check"
+        prevention: "What keeps \($w) from happening", prevented_by: $c}')"
+    want_status 201 "$section" "$first writes a risk with no visibility under the pre-mortem, prevented by the check"
     risk="$(jq -er '.address' "$work/body")" || fail "$section" "write the risk" "no address: $(body)"
-    expect "$section" "the risk is reserved for $first, under the pre-mortem and prevented by the public check $check" \
-      "$(jq -cnS --arg p "$premortem" --arg c "$check" '{lens: $p, prevented_by: [$c], visibility: "author"}')" \
-      '{lens, prevented_by, visibility}'
+    # Its visibility is read after bob's reads of her page (C2), so a risk that took `project`
+    # fails there, as the second person reads it.
+    expect "$section" "the risk $risk, written with no visibility, stands under the pre-mortem and is prevented by the public check $check" \
+      "$(jq -cnS --arg p "$premortem" --arg c "$check" '{lens: $p, prevented_by: [$c]}')" \
+      '{lens, prevented_by}'
 
     request "cookie:$first" POST /api/v1/going/requests "$(jq -cn --arg p "$project" --arg w "$run_word" \
       '{words: "Which run changed the comment, \($w)?", project: $p}')"
@@ -400,13 +409,7 @@ expect C1 "$first's read of the spec lists the pre-mortem between the public len
 # A lens is listed by the lens read of the node it stands on, a risk by the lens read of its
 # pre-mortem, and the person page lists what a person wrote of every kind. Bob's lens read of the
 # spec above lists no risk: the risk stands under the pre-mortem, which he reads as nobody's (C3).
-expect C2 "$first's lens read of the spec lists her risk under the pre-mortem, prevented by the public check" \
-  "$(jq -cnS --arg r "$risk" --arg c "$check" '[{address: $r, prevented_by: [$c], visibility: "author"}]')" \
-  --arg p "$premortem" '[.lenses[] | select(.address == $p) | .risks[] | {address, prevented_by, visibility}]'
-expect C2 "$first's lens read of the spec lists the pre-mortem's finding, reserved for her" \
-  "$(jq -cnS --arg f "$finding" '[{address: $f, visibility: "author"}]')" \
-  --arg p "$premortem" '[.lenses[] | select(.address == $p) | .findings[] | {address, visibility}]'
-
+#
 # The person page is newest first: this run's rows are the newest of the first person's, within a
 # page of 200. A row of a lens, a finding, a risk or a comment names the issue it opens at in its
 # href. A run of the command bar stands under no issue and opens nothing, so its row's href is
@@ -417,6 +420,11 @@ readonly page_rows='[.rows[] | select(.href == "/issues/\($k)" or (.href | start
 request "cookie:$second" GET "/api/v1/people/$(q "$first")/nodes?limit=200"
 want_status 200 C2 "$second reads $first's page"
 cp "$work/body" "$work/bob.page.json"
+# Her risk was written with no visibility under her hidden pre-mortem, so it takes the pre-mortem's
+# and is no row of his: a risk that took `project` would stand on her page, and in every read of it,
+# under a lens he may not see, and so tell him that lens exists.
+expect C2 "$second's read of $first's page lists no risk of $key: her risk $risk, written with no visibility under $premortem, the pre-mortem reserved for her, takes its visibility" \
+  '[]' --arg k "$key" --argjson runs '[]' "$page_rows | [.[] | select(.kind == \"risk\") | .id]"
 no_leak C2 "$second's read of $first's page lists no hidden node and carries none of their words" "$work/bob.page.json"
 got="$(jq -cS --arg k "$key" --argjson runs "[\"$run_id\"]" "$page_rows | [.[].kind] | sort" "$work/bob.page.json")" ||
   fail C2 "count the rows of $first's page on $key" "unreadable: $(head -c 600 "$work/bob.page.json")"
@@ -428,6 +436,13 @@ want="$(jq -cS --arg k "$twin_key" --argjson runs '[]' "$page_rows | [.[].kind] 
 pass C2 "$second's read of $first's page counts of each kind on $key what it counts on $twin_key, which holds no hidden node: $got"
 expect C2 "$second's read of $first's page lists no run of the command bar, her run $run_id among them: a run is listed to the credential that asked it alone" \
   '[]' '[.rows[] | select(.kind == "interaction") | .id]'
+as_first C2 "$first reads the lenses on the spec $spec" "/api/v1/lenses?on=$(q "$spec")"
+expect C2 "$first's lens read of the spec lists her risk under the pre-mortem at author, its lens's visibility, though it was written with none, prevented by the public check" \
+  "$(jq -cnS --arg r "$risk" --arg c "$check" '[{address: $r, prevented_by: [$c], visibility: "author"}]')" \
+  --arg p "$premortem" '[.lenses[] | select(.address == $p) | .risks[] | {address, prevented_by, visibility}]'
+expect C2 "$first's lens read of the spec lists the pre-mortem's finding, reserved for her" \
+  "$(jq -cnS --arg f "$finding" '[{address: $f, visibility: "author"}]')" \
+  --arg p "$premortem" '[.lenses[] | select(.address == $p) | .findings[] | {address, visibility}]'
 as_first C2 "$first reads her own page" "/api/v1/people/$(q "$first")/nodes?limit=200"
 expect C2 "$first's own page lists her pre-mortem, its finding, her risk and her run on $key, each reserved for her" \
   "$(jq -cnS --arg p "$premortem_id" --arg f "lens/$premortem_id#$finding_id" --arg r "$risk_id" --arg i "$run_id" \
@@ -711,25 +726,59 @@ expect C8 "$third finds the lens and its finding on their own page, each reserve
   "$(jq -cnS --arg i "$third_lens_id" --arg f "$third_finding" '{rows: [["lens", $i, "author"], ["lens_block", $f, "author"]], total: 2}')" \
   '{rows: ([.rows[] | [.kind, .id, .visibility]] | sort), total}'
 
-# --- C9: the hidden lens gone -------------------------------------------------------------------
+# --- C9: a node under or on a hidden node -------------------------------------------------------
+
+# wider WHAT PATH BODY DRAWN PARENT: the first person's write of BODY to PATH is refused 400
+# VISIBILITY_WIDER_THAN_PARENT, its words naming first the node the write drew, an address that
+# begins DRAWN, and then PARENT, the node reserved for her that it would stand under or on; and
+# that drawn address answers her 404, as an address nobody wrote does: nothing was stored.
+wider() {
+  local drawn
+  request "cookie:$first" POST "$2" "$3"
+  want_status 400 C9 "$1 is refused"
+  expect C9 "$1 is refused with VISIBILITY_WIDER_THAN_PARENT, naming $5, reserved for $first, as the node it would stand under or on" \
+    true --arg p "$5" '.code == "VISIBILITY_WIDER_THAN_PARENT" and (.error | contains("cannot stand under or on \($p), which is reserved for its author"))'
+  drawn="$(jq -er --arg d "$4" '.error | split(" ")[0] | select(startswith($d))' "$work/body")" ||
+    fail C9 "$1 is refused naming first the node it drew, $4<uuid>" "$(body)"
+  request "cookie:$first" GET "/api/v1/references?to=$(q "$drawn")"
+  want_status 404 C9 "the node the refused write drew, $drawn, answers $first as no node, since nothing was stored"
+  pass C9 "$1 is refused 400 VISIBILITY_WIDER_THAN_PARENT naming $drawn and $5, and $drawn answers $first HTTP 404"
+}
+
+wider "$first's second risk, written with visibility project under her pre-mortem $premortem" "/api/v1/issues/$key/risks" \
+  "$(jq -cn --arg l "$premortem" '{lens: $l, heading: "A project risk under a hidden lens", early_warning: "A sign of it",
+    prevention: "A guard against it", visibility: "project"}')" "dispatch://risk/" "$premortem"
+wider "$first's lens written with visibility project on her pre-mortem $premortem" "/api/v1/issues/$key/lenses" \
+  "$(jq -cn --arg on "$premortem" '{on: $on, kind: "botec", visibility: "project"}')" "dispatch://lens/" "$premortem"
+wider "$first's lens written with visibility project on $finding, the finding of her pre-mortem" "/api/v1/issues/$key/lenses" \
+  "$(jq -cn --arg on "$finding" '{on: $on, kind: "botec", visibility: "project"}')" "dispatch://lens/" "$finding"
+as_first C9 "$first reads the lenses on the spec $spec" "/api/v1/lenses?on=$(q "$spec")"
+expect C9 "the pre-mortem holds her one risk $risk still, so the refused risk was not stored" "[\"$risk\"]" \
+  --arg p "$premortem" '[.lenses[] | select(.address == $p) | .risks[].address]'
+for on in "$premortem" "$finding"; do
+  as_first C9 "$first reads the lenses on $on" "/api/v1/lenses?on=$(q "$on")"
+  expect C9 "no lens stands on $on, so the refused lens was not stored" '[]' '[.lenses[].address]'
+done
+
+# --- C10: the hidden lens gone ------------------------------------------------------------------
 
 request "cookie:$first" POST "/api/v1/issues/$key/nodes/$(q "lens/$premortem_id")/state" '{"state":"gone"}'
-want_status 200 C9 "$first writes gone on $premortem"
-expect C9 "the write answers $premortem moved from live to gone" \
+want_status 200 C10 "$first writes gone on $premortem"
+expect C10 "the write answers $premortem moved from live to gone" \
   "$(jq -cnS --arg a "$premortem" '{address: $a, previous: "live", state: "gone"}')" \
   '{address: .node.address, previous, state: .node.state}'
 for read in to from on; do
   path="$(address_read "$premortem" "$read")"
   request "cookie:$second" GET "$path"
   same_answer "bob.premortem.$read" "$premortem_id" "$premortem_id" ||
-    fail C9 "$second's read GET $path after the gone is the one he read before, byte for byte" \
+    fail C10 "$second's read GET $path after the gone is the one he read before, byte for byte" \
       "HTTP $status, Content-Type $content_type: $(body); before: $(<"$work/bob.premortem.$read.head"): $(<"$work/bob.premortem.$read.json")"
-  pass C9 "$second's read GET $path after the gone is the one he read before, byte for byte: HTTP $status, Content-Type $content_type"
+  pass C10 "$second's read GET $path after the gone is the one he read before, byte for byte: HTTP $status, Content-Type $content_type"
   # The write took: the same read of the author moves from the node to no node.
   request "cookie:$first" GET "$path"
   [[ "$status" == 404 ]] ||
-    fail C9 "$first's read GET $path no longer answers the gone lens" "HTTP $status: $(body)"
-  pass C9 "$first's read GET $path, which answered the lens before, answers HTTP 404 now it is gone"
+    fail C10 "$first's read GET $path no longer answers the gone lens" "HTTP $status: $(body)"
+  pass C10 "$first's read GET $path, which answered the lens before, answers HTTP 404 now it is gone"
 done
 
 pass "$driver" complete

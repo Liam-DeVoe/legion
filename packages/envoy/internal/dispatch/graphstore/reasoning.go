@@ -20,9 +20,9 @@ import (
 // stands is its TuplePartOf tuple, so a move changes no address.
 //
 // A finding of a lens is no kind of its own. It is a node of kind and supertag block whose id
-// names its lens, `lens/<uuid>#<block id>`, as a comment's body is blocks of the comment, and
-// KindLensBlock is its address form: the from_kind graph_edges writes for it and the key the read
-// registry knows it by (refs' nodeRegistry).
+// names its lens, `lens/<uuid>#<block id>` (FindingID), as a comment's body is blocks of the
+// comment, and KindLensBlock is its address form: the from_kind graph_edges writes for it and the
+// key the read registry knows it by (refs' nodeRegistry).
 //
 // A read answers a node of these kinds through the loader, the predicate and the backlink arms
 // refs' registry holds for its kind, as it answers nothing of a kind the registry does not know.
@@ -90,10 +90,13 @@ const (
 // AddressKind is the kind the graph addresses a node of the store's kind and id by: the key the
 // read registry knows the node by, and the kind a node reserved for its author is admitted or
 // refused under (AdmitAuthorOnly). A finding of a lens is a node of kind block whose id names its
-// lens, `lens/<uuid>#<block id>`, and is addressed KindLensBlock, as the registry reads an item's
-// block by its item's block kind; a block of a document, and every other node, is its own kind.
+// lens (ParseFindingID), and is addressed KindLensBlock, as the registry reads an item's block by
+// its item's block kind; a block of a document, and every other node, is its own kind.
 func AddressKind(kind, id string) string {
-	if kind == blockKind && strings.HasPrefix(id, KindLens+"/") {
+	if kind != blockKind {
+		return kind
+	}
+	if _, _, finding := ParseFindingID(id); finding {
 		return KindLensBlock
 	}
 	return kind
@@ -102,8 +105,35 @@ func AddressKind(kind, id string) string {
 // AddressKindSQL is AddressKind over a node whose kind and id are SQL expressions of a read's own
 // query.
 func AddressKindSQL(kindExpr, idExpr string) string {
-	return `(case when ` + kindExpr + ` = '` + blockKind + `' and ` + idExpr + ` like '` + KindLens + `/%' then '` +
+	return `(case when ` + kindExpr + ` = '` + blockKind + `' and ` + FindingIDSQL(idExpr) + ` then '` +
 		KindLensBlock + `' else ` + kindExpr + ` end)`
+}
+
+// FindingID is the store id of the finding blockID of the lens whose uuid is lens: the id of a
+// node of kind block that names its lens, `lens/<uuid>#<block id>`. It is the one rule of that
+// id: ParseFindingID reads it back, and FindingIDSQL tells it in SQL, so the author-only
+// admission, the erase, the census and every read of a finding tell a finding from any other
+// block by the same test. Migration 20261117020856 spells the same test in its own text.
+func FindingID(lens, blockID string) string { return KindLens + "/" + lens + "#" + blockID }
+
+// ParseFindingID is the uuid of the lens and the block id that the id of a block node names
+// where it is a finding's (FindingID), and false for the id of any other block. A block of a
+// document is `<ref_key>#<block id>`, and a ref_key begins with an issue's or a project's key,
+// which is upper case, or with `agent/` (ArtifactRefKey), so no block of a document reads as a
+// finding; nor does a block of an ask, a comment or a message, whose id begins with its own kind.
+func ParseFindingID(id string) (lens, blockID string, ok bool) {
+	named, ok := strings.CutPrefix(id, KindLens+"/")
+	if !ok {
+		return "", "", false
+	}
+	lens, blockID, _ = strings.Cut(named, "#")
+	return lens, blockID, true
+}
+
+// FindingIDSQL is true of the id of a block node, the SQL expression idExpr, that is a finding's,
+// as ParseFindingID reads one: a node's own id column, or the from_id of a tuple out of it.
+func FindingIDSQL(idExpr string) string {
+	return `(` + idExpr + ` like '` + KindLens + `/%')`
 }
 
 // pointerEnd is one type of node an end of a pointer tuple may be: a kind of node, or a block of
@@ -149,9 +179,12 @@ type pointerRule struct {
 // pointerRules are the type rules of the four pointer tuples and of a risk's place, the one table
 // of them (spec requirement r-constraint-risk). Every write of this store holds each
 // relation it appends whose kind is here to its rule, in the write's own transaction, before it
-// appends anything (checkPointers, from Write and Caused), so no route keeps a rule of its own
-// and a move through cybermonklabs/legion#4180's `/parent` meets the same one. A kind that is not here
-// is let through to any node.
+// appends anything (checkPointers, from Write and Caused), so no route keeps a type rule of its
+// own and a move through cybermonklabs/legion#4180's `/parent` meets the same one; the pointer
+// route reads the kinds it writes from here too (PointerKinds). A route keeps only what no type
+// rule says: api's pointerEnd answers a constraint of another issue as no far end of this one, a
+// 404, and a write that asserts a prevented_by takes the owner row of its check's document before
+// it reads a node (api's lockReasoningOwners). A kind that is not here is let through to any node.
 //
 // The table rules the types, the place of a triggered_by's far end in the order lenses were
 // invoked, and the project and the document of a risk's prevented_by: a check of any issue of the
@@ -173,6 +206,20 @@ var pointerRules = [...]pointerRule{
 		ownProject: true, unretired: true},
 	{kind: TuplePartOf, from: []pointerEnd{{kind: KindRisk}}, to: []pointerEnd{{kind: KindLens}},
 		placement: true, underKind: LensKindPreMortem},
+}
+
+// PointerKinds is the kind of each pointer tuple pointerRules holds, in the table's order:
+// has_kind, triggered_by, constrained_by and prevented_by, the tuples the pointer route appends,
+// retracts and retargets out of a node. A part_of is a node's place, which the table rules for a
+// risk and no pointer route moves, so it is none of them. Each call answers a slice of its own.
+func PointerKinds() []string {
+	kinds := make([]string, 0, len(pointerRules))
+	for _, rule := range pointerRules {
+		if !rule.placement {
+			kinds = append(kinds, rule.kind)
+		}
+	}
+	return kinds
 }
 
 // InvokedSeqSQL is where the lens whose id the SQL expression idExpr names stands in the order
@@ -338,23 +385,143 @@ var (
 // it from (Retarget).
 var ErrPointerNotHeld = errors.New("the node holds no such pointer to retarget")
 
-// errPointerInArms refuses a relation pointerRules rules handed to WriteArms: an arm spliced into
-// a caller's statement runs with no read of the nodes its rule names, so a ruled tuple is
+// errPointerInArms refuses a relation pointerRules rules handed to WriteArms, and a part_of at a
+// node of a kind that takes a node reserved for its author (checkPlacedVisibility): an arm spliced
+// into a caller's statement runs with no read of the nodes its rule names, so such a tuple is
 // appended only through Write or Caused, which check it in their transaction.
-var errPointerInArms = errors.New("a pointer tuple is checked against its type rule in the write's own transaction, " +
-	"by the store's Write or Caused, and never in the arms of a caller's statement")
+var errPointerInArms = errors.New("a pointer tuple, and a part_of at a kind that takes a node reserved for its author, " +
+	"is checked against its rule in the write's own transaction, by the store's Write or Caused, and never in the arms " +
+	"of a caller's statement")
 
 // refusePointersInArms is errPointerInArms for the first ruled relation or claim a WriteArms call
 // holds.
 func refusePointersInArms(tuples []Tuple, claims []Claim) error {
 	for index := range tuples {
-		if tuple := &tuples[index]; tuple.ToKind != KindValue && pointerRuleOf(tuple.Kind, tuple.FromKind) != nil {
+		if tuple := &tuples[index]; tuple.ToKind != KindValue && (pointerRuleOf(tuple.Kind, tuple.FromKind) != nil ||
+			placesUnderAuthorOnly(tuple.Kind, tuple.ToKind, tuple.ToID)) {
 			return fmt.Errorf("%w: %s out of %s", errPointerInArms, tuple.Kind, tuple.FromKind)
 		}
 	}
 	for index := range claims {
-		if claim := &claims[index]; claim.ToKind != KindValue && pointerRuleOf(claim.Kind, claim.FromKind) != nil {
+		if claim := &claims[index]; claim.ToKind != KindValue && (pointerRuleOf(claim.Kind, claim.FromKind) != nil ||
+			placesUnderAuthorOnly(claim.Kind, claim.ToKind, claim.ToID)) {
 			return fmt.Errorf("%w: %s out of %s", errPointerInArms, claim.Kind, claim.FromKind)
+		}
+	}
+	return nil
+}
+
+// ErrVisibilityWiderThanParent is a write that places a node every reader of its project may see
+// under or on a node reserved for its author: a part_of tuple out of a node that is not reserved
+// for its author at one that is. Such a node would tell each reader who may not see its parent
+// that the parent exists - a lens on a node they cannot open, a risk under a lens they cannot list
+// - so the store refuses it in the write of that tuple, whichever writer appends it, a move to a
+// new parent among them (spec requirement r-node-visibility). A pointer of any other kind - a
+// triggered_by, a constrained_by, a prevented_by - at a node a reader may not see is no such
+// place: each read leaves it out at both ends. It is a sentinel so a route can answer it as the
+// caller's refusal, 400 VISIBILITY_WIDER_THAN_PARENT; what a write is refused with is a
+// VisibilityWiderThanParentError, which wraps it and names both nodes.
+var ErrVisibilityWiderThanParent = errors.New("a node every reader may see never stands under or on a node reserved for its author")
+
+// VisibilityWiderThanParentError is ErrVisibilityWiderThanParent for one part_of tuple: the node
+// it goes out of, which is not reserved for its author, and the node it points at, which is, each
+// by the kind the graph addresses it by (AddressKind) and the id the store keys it by.
+type VisibilityWiderThanParentError struct {
+	ChildKind, ChildID, ParentKind, ParentID string
+}
+
+func (e *VisibilityWiderThanParentError) Error() string {
+	return e.Named("the "+e.ChildKind+" "+e.ChildID, "the "+e.ParentKind+" "+e.ParentID)
+}
+
+func (e *VisibilityWiderThanParentError) Unwrap() error { return ErrVisibilityWiderThanParent }
+
+// Named is the refusal's words with its two nodes named child and parent: by kind and store id,
+// as Error names them, or by the dispatch:// address a route names each by. The writer read the
+// parent for its caller before it placed anything there, so the words name nothing that caller
+// may not see.
+func (e *VisibilityWiderThanParentError) Named(child, parent string) string {
+	return child + " is visible to every reader of its project and cannot stand under or on " + parent +
+		", which is reserved for its author: write it with visibility author, or with none, which takes its parent's"
+}
+
+// placesUnderAuthorOnly is whether a relation of kind at the node toKind and toID name places a
+// node under one whose kind takes a node reserved for its author (AdmitAuthorOnly): a part_of,
+// which places a lens on the node it was invoked on and a finding or a risk under its lens, at a
+// lens, a finding, a risk, a constraint or an interaction. checkPlacedVisibility holds each such
+// tuple to the visibility of both its ends; a part_of at a node of any other kind - a block under
+// its document, a comment's block under its comment - is at a node no write reserves for its
+// author, and is read for nothing.
+func placesUnderAuthorOnly(kind, toKind, toID string) bool {
+	if kind != TuplePartOf {
+		return false
+	}
+	_, admitted := authorOnlyKinds[AddressKind(toKind, toID)]
+	return admitted
+}
+
+// storedKindOf is the kind graph_nodes keys the node a tuple names by kind and id under: the kind
+// itself, but for a finding of a lens, which a tuple may name lens_block, the kind the graph
+// addresses it by, and the store keys as a block (AddressKind).
+func storedKindOf(kind string) string {
+	if kind == KindLensBlock {
+		return blockKind
+	}
+	return kind
+}
+
+// checkPlacedVisibility holds every part_of tuple of tuples the write asserts at a node of a kind
+// that takes a node reserved for its author (placesUnderAuthorOnly) to the visibility of its two
+// ends, before the write appends anything: a tuple out of a node that is not reserved for its
+// author, at a node that is, is a VisibilityWiderThanParentError naming both. A lens stands on the
+// node it was invoked on, a finding and a risk under their lens and a constraint under its issue
+// through that one tuple, so this one rule holds every route that places one, and a move to a new
+// parent, which asserts a new part_of. An end the write states is read as the write leaves its
+// row, since Write and Caused call this once the write's nodes are written; an end the store holds
+// no row of is visible to every reader, as every read answers one (refs.VisibleKind). Both ends of
+// every such tuple are read in one statement, and a write that asserts none - every write of a
+// block, a comment or any node no reasoning route writes - sends none. It takes no lock: no writer
+// of these kinds writes a node again at another visibility (a write of a node's state keeps the
+// row's own), so the visibility it reads is the one each end keeps.
+func checkPlacedVisibility(ctx context.Context, tx pgx.Tx, tuples []Tuple) error {
+	var placed []int
+	var kinds, ids []string
+	for index := range tuples {
+		tuple := &tuples[index]
+		if !tuple.Asserted || tuple.ToKind == KindValue || !placesUnderAuthorOnly(tuple.Kind, tuple.ToKind, tuple.ToID) {
+			continue
+		}
+		placed = append(placed, index)
+		kinds = append(kinds, storedKindOf(tuple.FromKind), storedKindOf(tuple.ToKind))
+		ids = append(ids, tuple.FromID, tuple.ToID)
+	}
+	if len(placed) == 0 {
+		return nil
+	}
+	rows, err := tx.Query(ctx, `
+		select distinct held.kind, held.id from graph_nodes held
+		join unnest($1::text[], $2::text[]) as named(kind, id) on named.kind = held.kind and named.id = held.id
+		where held.visibility = $3
+	`, kinds, ids, VisibilityAuthor)
+	if err != nil {
+		return fmt.Errorf("read the visibility of the nodes a part_of places and its parents: %w", err)
+	}
+	reserved := map[pointerTarget]bool{}
+	var end pointerTarget
+	if _, err := pgx.ForEachRow(rows, []any{&end.kind, &end.id}, func() error {
+		reserved[end] = true
+		return nil
+	}); err != nil {
+		return fmt.Errorf("read the visibility of the nodes a part_of places and its parents: %w", err)
+	}
+	for _, index := range placed {
+		tuple := &tuples[index]
+		if reserved[pointerTarget{kind: storedKindOf(tuple.ToKind), id: tuple.ToID}] &&
+			!reserved[pointerTarget{kind: storedKindOf(tuple.FromKind), id: tuple.FromID}] {
+			return &VisibilityWiderThanParentError{
+				ChildKind: AddressKind(tuple.FromKind, tuple.FromID), ChildID: tuple.FromID,
+				ParentKind: AddressKind(tuple.ToKind, tuple.ToID), ParentID: tuple.ToID,
+			}
 		}
 	}
 	return nil
@@ -401,8 +568,10 @@ func (a invocation) before(b invocation) bool {
 
 // checkPointers holds every relation of tuples that pointerRules rules to its rule, in the write's
 // transaction, before the write appends a tuple, and answers the first breach: an
-// InvalidPointerError, or ErrLensKindAsserted or ErrLensKindKept. nodes are the nodes the write
-// writes (Write) or wrote (Caused), whose rows it holds already, and made which of them, by
+// InvalidPointerError, or ErrLensKindAsserted or ErrLensKindKept. It then holds every part_of the
+// write asserts at a node of a kind that takes a node reserved for its author to the visibility of
+// both its ends (checkPlacedVisibility): a VisibilityWiderThanParentError. nodes are the nodes the
+// write writes (Write) or wrote (Caused), whose rows it holds already, and made which of them, by
 // position, the write's own insert made (writeNodes; nil where none, or unknown), which hold no
 // tuple of the store yet, so their kinds are read off this write alone. A write no rule holds a
 // tuple of - every write of this store but those of the reasoning kinds above - sends no
@@ -433,14 +602,16 @@ func checkPointers(ctx context.Context, tx pgx.Tx, nodes []Node, made []bool, tu
 			ruled = append(ruled, index)
 		}
 	}
-	if len(ruled) == 0 {
-		return nil
+	if len(ruled) > 0 {
+		ends, err := readPointerEnds(ctx, tx, nodes, made, tuples, ruled)
+		if err != nil {
+			return err
+		}
+		if err := ends.check(tuples, ruled); err != nil {
+			return err
+		}
 	}
-	ends, err := readPointerEnds(ctx, tx, nodes, made, tuples, ruled)
-	if err != nil {
-		return err
-	}
-	return ends.check(tuples, ruled)
+	return checkPlacedVisibility(ctx, tx, tuples)
 }
 
 // readPointerEnds reads what the ruled tuples' rules ask of their ends: one statement for the

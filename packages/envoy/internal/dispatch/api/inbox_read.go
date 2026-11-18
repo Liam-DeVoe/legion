@@ -531,7 +531,7 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // `for no key update` first, in a transaction of its own (appendGoingEvent, which the answer, a
 // reader at the deadline and the sweep all write through), so two frames of one run queue at that
 // row and the second reads the sequence the first took. A run a pod of the release before
-// recorded with no node gets its node there first: graphcensus.WriteRun takes the run's
+// recorded with no node gets its node there first: graphstore.WriteRun takes the run's
 // going_requests row `for no key update`, writes the node and its tuples in one graphstore.Write,
 // and the frame then takes the node's row, which is its own and no other transaction's. Where
 // another write committed the node in between and another transaction holds it - an erase of the
