@@ -100,8 +100,9 @@ func TestATopicPublishWhoseAckTheDropLostCostsOne(t *testing.T) {
 //
 // The controls: this row with the route publishing every message through PublishAckWithin, as it
 // publishes one its sender limit counts, where the publish is sent once and answers 503; and the
-// caller-key row with envelopeMsgID giving such a key no id, where the second send stores a second
-// copy.
+// caller-key row with envelopeMsgID giving such a key no id, where the bus sends the publish once,
+// as it sends every write with no id (sendStored), so the route answers 503 and the stream holds
+// the one copy the first send stored.
 func TestATopicPublishNoLimitCountsAnswersItsStoredCopyAcrossALostAck(t *testing.T) {
 	for _, row := range []struct {
 		name   string

@@ -1351,7 +1351,11 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// (PublishAckWithin), which the bus sends once and answers a lost answer as the 503 it
 		// costs one for. Any other is published as the route always published it (PublishWithin):
 		// a publish whose answer a lost connection took is sent again on the new connection, the
-		// stream stores it once under its key, and the 200 names the stored copy's event.
+		// stream stores it once under its message id (bus.envelopeMsgID), and the 200 names the
+		// copy this request's first send stored. A caller's repeat under a key that names its
+		// event (such as an idempotency_key in the form the clients mint) is a new request: the
+		// stream drops its copy as the earlier request's duplicate, and its 200 names the repeat's
+		// own new event_id, which names no stored copy.
 		var ack bus.StoredAck
 		var err error
 		if charge != nil {

@@ -48,6 +48,7 @@ type connectOpts struct {
 	reconnectWaitTick           func()
 	beforeRequestFlush          func()
 	lifeEndGate                 func()
+	beforeStoredSend            func()
 	background                  bool
 	silentCutDetection          bool
 	lossAtOnce                  bool
@@ -290,6 +291,13 @@ type Client struct {
 	// nats.go's answer for its connection's close, the order nats.go gives when close clears the
 	// pending requests before its status report reaches the client.
 	lifeEndGate func()
+	// beforeStoredSend, when not nil, runs in sendStored between its read of the client's
+	// JetStream context and its first send on that context, on the goroutine that sends. It is nil
+	// outside tests: a test sets it (withBeforeStoredSend, session_resume_closed_test.go) to close
+	// the client's connection and have the client replace it there, so the send goes out on the
+	// JetStream context of a connection the client has just replaced, which nats.go answers with
+	// its close.
+	beforeStoredSend func()
 	// lossAtOnce is withLossAtOnce's: a request made while the connection is reconnecting answers
 	// ErrConnectionLost without waiting for it (connForRequest).
 	lossAtOnce bool
@@ -501,6 +509,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		reconnectWaitTick:           opts.reconnectWaitTick,
 		beforeRequestFlush:          opts.beforeRequestFlush,
 		lifeEndGate:                 opts.lifeEndGate,
+		beforeStoredSend:            opts.beforeStoredSend,
 		lossAtOnce:                  opts.lossAtOnce,
 		stopCh:                      make(chan struct{}),
 	}
@@ -2155,19 +2164,22 @@ func unacknowledged(err error, mayHold bool) error {
 // (Reconnected), since the stream stores it once under that id; on a client every caller of which
 // retries a lost request itself (withLossAtOnce) it answers the loss instead. The closed
 // connection's own error comes back from a client that was stopped (lostOrClosed), and from the
-// JetStream context of a connection the client replaced as the send began, and such a publish is
-// sent again on the connection ensureConnWithContext serves: the replacement, or the one Drain
-// still drains.
+// JetStream context of a connection the client replaced as the send began, which nats.go refuses
+// before it writes anything (nats.go v1.53.1 nats.go:4573-4576), and such a publish is sent again
+// on the connection ensureConnWithContext serves, whichever client it is: the replacement, or the
+// one Drain still drains. The session resume record is such a publish, under a message id each
+// write draws for its own sends (SessionConsumers.recordResumeFloorAt).
 //
 // Every other publish is sent once and answers the error. One with no message id, whatever its
 // caller asks, since nothing would let the stream tell a second send of one that landed from a
-// second message: it would store a second copy (a raw write, publishStoredRaw, and an envelope with
-// no event id, envelopeMsgID). And one its caller asks to be sent once, since a second send of a
-// write that landed answers what the first send's landing made true, not what its caller asks: a
-// write under an expected last sequence (PublishCursorAt) would be refused as the cursor having
-// moved, and one under a Nats-Msg-Id whose caller reads the duplicate verdict (publishJetStreamOn)
-// would be answered as a duplicate of its own copy. Its caller reads the state again instead and
-// decides from what is stored, or answers the loss as a request the bus did not answer.
+// second message: it would store a second copy (a raw write given none, publishStoredRaw, and an
+// envelope with no event id, envelopeMsgID). And one its caller asks to be sent once, since a
+// second send of a write that landed answers what the first send's landing made true, not what its
+// caller asks: a write under an expected last sequence (PublishCursorAt) would be refused as the
+// cursor having moved, and one under a Nats-Msg-Id whose caller reads the duplicate verdict
+// (publishJetStreamOn) would be answered as a duplicate of its own copy. Its caller reads the state
+// again instead and decides from what is stored, or answers the loss as a request the bus did not
+// answer.
 //
 // A failure after a send that may have reached the stream wraps ErrUnacknowledged: ctx was live
 // as the send was made, read just before it, and what came back was no answer (sendUnanswered).
@@ -2180,9 +2192,13 @@ func (c *Client) sendStored(ctx context.Context, subject string, data []byte, ms
 		options = append(options, nats.MsgId(msgID))
 	}
 	once = once || msgID == ""
+	js := c.JS()
+	if c.beforeStoredSend != nil {
+		c.beforeStoredSend()
+	}
 	sentAt := time.Now()
 	live := ctx.Err() == nil
-	ack, err := c.JS().Publish(subject, data, options...)
+	ack, err := js.Publish(subject, data, options...)
 	mayHold := live && sendUnanswered(err)
 	resend := false
 	switch {
@@ -2239,7 +2255,7 @@ var ErrCursorMoved = errors.New("the cursor moved under this write")
 // cursor having moved. Such a write may have landed, so the caller reads the cursor back to learn
 // which (cmd/listener's roleKeepLaneCursor.confirm).
 func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byte, expected uint64) (uint64, error) {
-	ack, err := c.publishStoredRaw(ctx, subject, data, nats.ExpectLastSequencePerSubject(expected))
+	ack, err := c.publishStoredRaw(ctx, subject, data, "", nats.ExpectLastSequencePerSubject(expected))
 	if err != nil {
 		return 0, cursorMoved(err)
 	}
@@ -2247,20 +2263,24 @@ func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byt
 }
 
 // publishStoredRaw publishes the raw bytes data to the notification stream on subject - bytes of
-// the caller's own rather than an envelope - under precondition, the write's one precondition, or
-// none when it is nil, and returns the server's acknowledgement. It is the body of every raw write
-// of the stored path: the subject check, the acknowledgement bound, the connect and the send
-// (sendStored). A raw write carries no message id, so it is sent once, with a precondition or
-// without: a second send of one with none would store a second copy. Its callers name their own
-// failures, since what a refusal means is theirs: PublishCursorAt, which writes under a
-// precondition and reads a refused one as ErrCursorMoved, and SessionConsumers.recordResumeFloorAt,
-// which writes a record whose one writer keeps no sequence to write against, so the newest write
-// stands, and whose client answers a loss to the caller that retries it (withLossAtOnce).
+// the caller's own rather than an envelope - under Nats-Msg-Id msgID, none when it is empty, and
+// under precondition, the write's one precondition, or none when it is nil, and returns the
+// server's acknowledgement. It is the body of every raw write of the stored path: the subject
+// check, the acknowledgement bound, the connect and the send (sendStored). A write under a
+// precondition is sent once, since a second send of one that landed would be refused for it, and
+// so is one with no message id, since a second send of one that landed would store a second copy;
+// one under a message id and no precondition is sent again as sendStored says, and the stream
+// stores it once. Its callers name their own failures, since what a refusal means is theirs:
+// PublishCursorAt, which writes under a precondition and no id and reads a refused one as
+// ErrCursorMoved, and SessionConsumers.recordResumeFloorAt, which writes a record whose one writer
+// keeps no sequence to write against, so the newest write stands, under an id it draws for that
+// write alone, and whose client answers a lost connection to the caller that retries it
+// (withLossAtOnce).
 //
 // precondition is one option rather than a variadic list because each caller has exactly one or
 // none: a list would have the caller build a slice and this method append to it, where the two
 // sends below build sendStored's own variadic slice once, exactly as each caller built it before.
-func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []byte, precondition nats.PubOpt) (StoredAck, error) {
+func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []byte, msgID string, precondition nats.PubOpt) (StoredAck, error) {
 	if err := checkSubject(subject); err != nil {
 		return StoredAck{}, err
 	}
@@ -2270,9 +2290,9 @@ func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []by
 		return StoredAck{}, err
 	}
 	if precondition == nil {
-		return c.sendStored(ctx, subject, data, "", true, nats.Context(ctx))
+		return c.sendStored(ctx, subject, data, msgID, false, nats.Context(ctx))
 	}
-	return c.sendStored(ctx, subject, data, "", true, nats.Context(ctx), precondition)
+	return c.sendStored(ctx, subject, data, msgID, true, nats.Context(ctx), precondition)
 }
 
 // cursorMoved names the server's refusal of a publish whose expected last sequence per subject did
@@ -2326,17 +2346,17 @@ func (c *Client) PublishCoreContext(ctx context.Context, subject string, item co
 	return c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: data}, conn.PublishMsg)
 }
 
-// ForwardMsgID is the Nats-Msg-Id of an envelope whose dedupe key is dedupeKey
-// sent to subject: the key, a colon, the subject. A publish and a window's
-// JetStream send stamp an envelope that earns a MsgId with it
-// (publishJetStream, window.sendJetStream), so each topic one upstream event
-// is published on keeps its own copy, and a forward passes it to
-// StartRequestStoredTo as the forward's Nats-Msg-Id. A stream that captures
-// subject stores a forward sent again to the same subject once, within its
-// duplicate window, and one sent to another subject again, as a message of its
-// own there.
-func ForwardMsgID(dedupeKey, subject string) string {
-	return dedupeKey + ":" + subject
+// ForwardMsgID is the Nats-Msg-Id of an envelope sent to subject under key: the key, a colon, the
+// subject. key is the envelope's dedupe key, or its event id where the sender stamps by the event
+// id because that dedupe key names no event (contracts.DedupeKeyNamesTheUpstreamEvent:
+// envelopeMsgID, cmd/listener's roleForward.msgID). A publish and a window's send of every
+// envelope that has an event id stamp it with this id (publishJetStream, window.PublishAsync), so
+// each topic one upstream event is published on keeps its own copy, and a forward passes it to
+// StartRequestStoredTo as the forward's Nats-Msg-Id. A stream that captures subject stores a
+// forward sent again to the same subject once, within its duplicate window, and one sent to another
+// subject again, as a message of its own there.
+func ForwardMsgID(key, subject string) string {
+	return key + ":" + subject
 }
 
 // KeptMsgID is the Nats-Msg-Id of the kept copy of a role message whose dedupe key is dedupeKey:
