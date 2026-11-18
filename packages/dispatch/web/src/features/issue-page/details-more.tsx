@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQueries } from "@tanstack/react-query";
 import {
   type FocusEvent,
   type ReactNode,
@@ -6,7 +6,6 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -14,23 +13,28 @@ import { useLocation, useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
+import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
 import type { IssueDetails, UserState } from "../../api/types";
 import { pageInkText, pageRowBorder } from "../../theme/classes";
+import { issueDecisionsQuery } from "../doc/spec-marks";
 import { stateForIssue } from "../issue/pins";
 import { SubscribedAgents } from "../issue/SubscribedAgents";
-import { buildIssuePath, parseIssuePath } from "../refs/routes";
+import { refetchFailedOnFocus } from "../refs/reference-target";
+import { buildIssuePath, type IssueRoute, parseIssuePath } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
+import { useAddressFallback, useAddressTarget } from "./address-target";
 import { DetailsErrorLine, useSaidFailure } from "./details-error";
 import { DETAILS_ROW_ATTRIBUTE, type DetailsRow, useOpenDetailsAt } from "./details-rows";
 import { FocusedNodeFacts } from "./FocusedNodeFacts";
 import { type FocusedNode, useFocusedNode } from "./focused-node";
 import { IssueCollaboratorList } from "./IssueCollaboratorList";
 import { HISTORY_HEADING_LANDED_EVENT, IssueHistory } from "./IssueHistory";
-import { agentsOnlyItem, issueAddress } from "./issue-address";
+import { type IssueAddress, issueAddress, outlineItemRoute } from "./issue-address";
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, issueStatusWord, STATE_LINES } from "./page-words";
 import { useIssueSubscribers } from "./useIssueSubscribers";
+import { useIssueTree } from "./useIssueTree";
 
 /** What each of Details' three places below is handed: the issue as the details slot reads it,
  *  and the reader's own state of every issue. */
@@ -223,8 +227,10 @@ export function DetailsFocusedNode({ issue, state }: DetailsMoreProps): ReactNod
  * they open.
  *
  * The history's log is read only while Details is open or an address opens it, so a load that
- * leaves Details shut costs no request for it. The comments, messages and asks an item's
- * address is told by are the outline's own reads, under its keys.
+ * leaves Details shut costs no request for it. Whether an item's address names a turn of a
+ * thread agents wrote among themselves is the outline's own landing's answer
+ * (`AgentsOnlyTurn`), so Details opens at that turn exactly when the outline lands on the turn's
+ * nearest drawn ancestor and says there that the thread is the agents' alone.
  */
 export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   const { hash, key, pathname, search } = useLocation();
@@ -232,44 +238,19 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   const route = parseIssuePath(pathname);
   const addressed =
     route === undefined ? undefined : issueAddress(route, search, hash, primarySpec(issue)?.slug);
-  // An address naming a comment or a message, and opening no document.
-  const namesItem = addressed?.document === undefined && addressed?.target?.kind === "item";
-  // The outline's reads, never stale here, as the history holds them (`IssueHistory.tsx`), so
-  // an address that names an item reads the cache however long ago the outline read it.
-  const comments = useQuery({
-    enabled: namesItem,
-    queryFn: () => api.listComments(issue.key),
-    queryKey: ["comments", issue.key],
-    staleTime: Number.POSITIVE_INFINITY,
-  });
-  const messages = useQuery({
-    enabled: namesItem,
-    queryFn: () => api.listIssueMessages(issue.key),
-    queryKey: ["issue-messages", issue.key],
-    staleTime: Number.POSITIVE_INFINITY,
-  });
-  // The asks tell a reply under a question, which the outline draws, from one under an approval
-  // request, which it does not (`agents-only.ts`).
-  const asks = useQuery({
-    enabled: namesItem,
-    queryFn: () => api.listIssueAsks(issue.key, "all"),
-    queryKey: ["asks", issue.key],
-    staleTime: Number.POSITIVE_INFINITY,
-  });
+  // An address naming an ask, a comment or a message of the outline, and opening no document:
+  // the one address the outline's landing can take for a turn only agents wrote in.
+  const namesItem =
+    route !== undefined &&
+    addressed !== undefined &&
+    outlineItemRoute(route, search, addressed) !== undefined;
   // A comment or message an agent wrote outside every thread a person wrote in is no row of the
-  // outline: it is an entry of the history, which Details opens at, with the entry marked.
-  // The outline's own ask input (`tree-drafts.ts`), so an address names the same turns it does.
-  const named = namesItem ? addressed?.target?.id : undefined;
-  const item = useMemo(
-    () =>
-      named === undefined
-        ? undefined
-        : agentsOnlyItem({ id: named, kind: "item" }, comments.data, messages.data, [
-            ...(issue.open_asks ?? []),
-            ...(asks.data ?? []),
-          ]),
-    [asks.data, comments.data, issue.open_asks, messages.data, named]
-  );
+  // outline: it is an entry of the history, which Details opens at, with the entry marked. The
+  // entry is the turn `AgentsOnlyTurn` told for this arrival at the address; until it tells, the
+  // one it told for the arrival before - at another address, maybe a row's - is no answer here.
+  const itemArrival = namesItem ? arrivalAt(key, `${pathname}${search}`) : undefined;
+  const [turn, setTurn] = useState<AgentsTurn | undefined>(undefined);
+  const item = turn !== undefined && turn.arrival === itemArrival ? turn.id : undefined;
   const opensHistory = route?.kind === "activity" || item !== undefined;
   const opensCollaborators = route?.kind === "collaborators";
   const drawer = useMarginDrawer();
@@ -339,16 +320,117 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
       },
     },
   ]);
-  if (!drawsHistory) return null;
   return (
-    <IssueHistory
-      activityAddress={route?.kind === "activity" ? panelAddress : undefined}
-      issue={issue}
-      item={item}
-      state={state}
-      visitMark={visitMark.current?.issue === issue.key ? visitMark.current.seq : lastReadSeq}
-    />
+    <>
+      {namesItem && itemArrival !== undefined ? (
+        <AgentsOnlyTurn
+          address={addressed}
+          arrival={itemArrival}
+          issue={issue}
+          onTurn={setTurn}
+          route={route}
+          search={search}
+        />
+      ) : null}
+      {drawsHistory ? (
+        <IssueHistory
+          activityAddress={route?.kind === "activity" ? panelAddress : undefined}
+          issue={issue}
+          item={item}
+          state={state}
+          visitMark={visitMark.current?.issue === issue.key ? visitMark.current.seq : lastReadSeq}
+        />
+      ) : null}
+    </>
   );
+}
+
+/** The turn of a thread only agents wrote in that one arrival at an address names
+ *  (`AgentsOnlyTurn`), with that arrival (`arrivalAt`). */
+interface AgentsTurn {
+  readonly arrival: string;
+  readonly id: string;
+}
+
+/** What each read the outline lands by takes, as `slots/body.tsx` reads them: events keep a
+ *  read fresh and its age never does, and window focus fetches again only a read in error. */
+const OUTLINE_READ = {
+  refetchOnWindowFocus: refetchFailedOnFocus,
+  staleTime: Number.POSITIVE_INFINITY,
+} as const;
+
+/**
+ * Tells `onTurn` the turn of a thread only agents wrote in that `address` names, for `arrival`,
+ * as the outline lands on it: the outline's own decision (`address-target.ts`'s
+ * `useAddressFallback`, its `agents-only` kind), over the same tree and the same reads
+ * `slots/body.tsx` hands it, so it is told once every read the tree is built from has answered,
+ * as the outline lands on the turn's nearest drawn ancestor, and taken back as the outline lets
+ * go of it. Every read is under the outline's own key and with its options, so this costs no
+ * request of its own.
+ *
+ * Drawn only while the address names an ask, a comment or a message of the outline, the only
+ * address that can name such a turn, so the tree is built here only then. It draws nothing.
+ */
+function AgentsOnlyTurn({
+  address,
+  arrival,
+  issue,
+  onTurn,
+  route,
+  search,
+}: {
+  address: IssueAddress;
+  arrival: string;
+  issue: IssueDetails;
+  onTurn: (turn: AgentsTurn | undefined) => void;
+  route: IssueRoute;
+  search: string;
+}): null {
+  const key = issue.key;
+  const { blocksHeld, root } = useIssueTree(issue);
+  // Whether every read the tree's nodes come from holds its answer, as `slots/body.tsx` reads it
+  // for its landing: until then the turn's thread may not have arrived.
+  const reads = useQueries({
+    combine: (answers) => {
+      const [, , , asks, comments, messages] = answers;
+      return {
+        asks: asks.data,
+        comments: comments.data,
+        held: answers.every((answer) => answer.data !== undefined),
+        messages: messages.data,
+      };
+    },
+    queries: [
+      { ...issueCoverageQuery(key), ...OUTLINE_READ },
+      { ...issueDecisionsQuery(key, true), ...OUTLINE_READ },
+      { ...issueResultsQuery(key), ...OUTLINE_READ },
+      { queryFn: () => api.listIssueAsks(key, "all"), queryKey: ["asks", key], ...OUTLINE_READ },
+      { queryFn: () => api.listComments(key), queryKey: ["comments", key], ...OUTLINE_READ },
+      {
+        queryFn: () => api.listIssueMessages(key),
+        queryKey: ["issue-messages", key],
+        ...OUTLINE_READ,
+      },
+    ],
+  });
+  const { reveal } = useAddressTarget(root, address);
+  const fallback = useAddressFallback({
+    address,
+    issue,
+    reads,
+    readsHeld: reads.held && blocksHeld,
+    reveal,
+    root,
+    route,
+    search,
+  });
+  const id = fallback?.kind === "agents-only" ? fallback.id : undefined;
+  useEffect(() => {
+    if (id === undefined) return;
+    onTurn({ arrival, id });
+    return () => onTurn(undefined);
+  }, [arrival, id, onTurn]);
+  return null;
 }
 
 /**

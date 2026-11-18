@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { type LegionRole, roleToken } from "@legion/contracts";
 
 import type { DispatchEvent } from "../web/src/api/types";
-import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
+import { KEY_REPORTS, PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
   ANSWER_LINES,
   CONTROL_LABELS,
@@ -80,7 +80,7 @@ import {
   tree,
   unfoldEveryBranch,
 } from "./issue-page-g";
-import { detailsRow, marginSectionDisclosure } from "./issue-page-h";
+import { detailsRow, marginSectionDisclosure, pinsList } from "./issue-page-h";
 import { focusedNodeId, focusInside, openEveryDeeperBranch } from "./issue-page-i";
 import {
   askFacts,
@@ -2810,6 +2810,95 @@ test("t v and t o open Details at the history and at the collaborators, and an a
     await expect(marginShell(page), "the comment's link did not open Details").toBeVisible();
     await expect(arrival).toHaveAttribute("aria-current", "true");
     await expect(arrival).toBeInViewport();
+  });
+});
+
+/** An issue whose one row is a person's comment, with a thread only an agent wrote in: one
+ *  message, which the outline draws no row for and the history draws (`agents-only.ts`). */
+async function seedPinnedAgentsTurn(): Promise<{
+  comment: string;
+  key: string;
+  message: string;
+}> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "An agents' turn a pin names" });
+  const comment = await createComment(issue.key, {
+    body: "A person's comment, the outline's one row.",
+  });
+  const message = await createMessage(
+    issue.key,
+    { body: "The agents' turn the reader pinned." },
+    attentionSession
+  );
+  return { comment: comment.id, key: issue.key, message: message.id };
+}
+
+// A pin's link to a turn of a thread only agents wrote in. The new page gives such a turn no Pin
+// of its own: the outline draws no row for it, so no row's facts hold its Pin, and the history's
+// Pin on a line of it pins that line's event, whose link in Pinned opens `/activity` and names no
+// turn. Today's page pins it - its Conversation card's Pin, under the thread's own
+// `message:<id>` - and Pinned on the new page links that pin to the turn's address
+// (`IssuePins.tsx`). Followed, the address lands the outline on the turn's nearest drawn
+// ancestor - the issue here, which is no row, so the outline's tab stop, the person's comment -
+// with the note that the thread is the agents' alone, and opens Details at the history with the
+// turn marked, by one decision (`address-target.ts`'s `useAddressFallback`).
+test("a pin's link to an agents' turn lands the outline on its nearest drawn ancestor with the note and opens Details at the turn marked", async ({
+  browser,
+}) => {
+  await phase(browser, seedPinnedAgentsTurn, async (page, seeded) => {
+    // The reader pins the turn on today's page, in a context of their own that leaves the new
+    // page off, and the pin is stored before the new page reads the reader's state.
+    const tabs = await asUser(browser, "alice");
+    try {
+      const today = await tabs.newPage();
+      await today.goto(`/issues/${seeded.key}/conversation`);
+      const card = today.locator(`[data-turn="message:${seeded.message}"]`);
+      const stored = today.waitForResponse(
+        (response) =>
+          response.request().method() === "PUT" &&
+          new URL(response.url()).pathname === `/api/v1/me/issues/${seeded.key}/state`
+      );
+      await card.getByRole("button", { exact: true, name: "Pin" }).click();
+      expect((await stored).ok(), "today's page did not store the pin").toBe(true);
+      await expect(card.getByRole("button", { exact: true, name: "Unpin" })).toHaveAttribute(
+        "aria-pressed",
+        "true"
+      );
+    } finally {
+      await tabs.close();
+    }
+
+    const address = `/issues/${seeded.key}/messages/${seeded.message}`;
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expect(tree(page)).toBeVisible();
+    await openDetails(page);
+    const link = pinsList(page).locator(`[data-pin="message:${seeded.message}"]`).getByRole("link");
+    await expect(link, "Pinned does not link the agents' turn's address").toHaveAttribute(
+      "href",
+      address
+    );
+    await link.click();
+    await expect(page).toHaveURL(new RegExp(`${address}$`));
+
+    // The outline lands on the tab stop and says there that the thread is the agents' alone.
+    await expect
+      .poll(() => focusedNodeId(page), "the pin's link landed the outline on no row")
+      .toBe(seeded.comment);
+    await expect(
+      nodeRow(page, seeded.comment).first().locator("[data-row-report]"),
+      "the outline's landing did not say at its row that the thread is the agents' alone"
+    ).toHaveText(KEY_REPORTS.agents_thread);
+    // Read once the outline has landed for this address, so it has drawn its rows for it.
+    await expect(nodeRow(page, seeded.message), "the outline drew the agents' turn").toHaveCount(0);
+
+    // Details, left open by the link, is at the history with the turn marked and on screen.
+    await expect(marginShell(page), "the pin's link closed Details").toBeVisible();
+    const turn = historyItem(page, seeded.message);
+    await expect(turn, "the pin's link did not mark the agents' turn").toHaveAttribute(
+      "aria-current",
+      "true"
+    );
+    await expect(turn).toBeInViewport();
   });
 });
 

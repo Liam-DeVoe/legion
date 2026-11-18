@@ -8,11 +8,12 @@ import { MemoryRouter, type NavigateFunction, useNavigate } from "react-router-d
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
-import { userStateQuery } from "../../api/queries";
+import { issueResultsQuery, userStateQuery } from "../../api/queries";
 import type {
   Comment,
   CommentDelivery,
   DispatchEvent,
+  IssueCoverage,
   IssueDetails,
   MessageDelivery,
   MessageRead,
@@ -25,6 +26,7 @@ import { buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
+import { issueDetails } from "./decisions-filter/decisions-fixtures";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { type FocusedNode, FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
 import { DETAILS_ATTRIBUTE, type MarginDrawer, MarginSlotProvider } from "./margin-slot";
@@ -1103,8 +1105,9 @@ interface DrawerHold {
 }
 
 /** The history in Details as the page draws it: inside the drawer, which starts shut, over the
- *  reader's state of the issue, read through its second event. */
-function HistoryInDrawer({ hold }: { hold: DrawerHold }): ReactNode {
+ *  reader's state of the issue, read through its second event. `of` is the issue, the fixture's
+ *  `issue` unless a case gives one. */
+function HistoryInDrawer({ hold, of = issue }: { hold: DrawerHold; of?: IssueDetails }): ReactNode {
   const [open, setOpen] = useState(false);
   const [state, setState] = useState(() => readTo(2));
   hold.open = setOpen;
@@ -1112,7 +1115,7 @@ function HistoryInDrawer({ hold }: { hold: DrawerHold }): ReactNode {
   const drawer: MarginDrawer = { open, setOpen, setPage: () => undefined };
   return (
     <MarginSlotProvider drawer={drawer}>
-      <DetailsHistory issue={issue} state={state} />
+      <DetailsHistory issue={of} state={state} />
     </MarginSlotProvider>
   );
 }
@@ -1178,6 +1181,72 @@ test("the line that says what is new holds across a close and an open of Details
     view.unmount();
     getIssueEvents.mockRestore();
     for (const read of outlineReads) read.mockRestore();
+  }
+});
+
+/** A thread only an agent wrote in, one message written a minute ago: no row of the outline,
+ *  an entry of the history (`agents-only.ts`). */
+const AGENTS_THREAD: MessageRead = {
+  message: {
+    author: { id: "planner", kind: "session" },
+    body: "The agents' own words.",
+    broadcast_id: null,
+    created_at: new Date(Date.now() - 60_000).toISOString(),
+    deliveries: [],
+    id: "message-agents",
+    in_reply_to: null,
+    issue_key: KEY,
+    reply_block: null,
+    target: "role:legion-p-core-1-reviewer",
+  },
+  replies: [],
+};
+
+// The address of a turn only agents wrote in opens Details at the history with that turn marked
+// by the outline's own decision (`address-target.ts`'s `useAddressFallback`): once every read the
+// outline's tree is built from has answered, as the outline lands on the turn's nearest drawn
+// ancestor. While one of those reads is out the outline has landed nowhere, and Details stays
+// shut. Details used to decide from the comments and the messages alone, and opened at the turn
+// while the outline still waited.
+test("an agents' turn's address opens Details at it once every read the outline lands by has answered", async () => {
+  const coverage = Promise.withResolvers<IssueCoverage>();
+  const getIssueCoverage = spyOn(api, "getIssueCoverage").mockImplementation(
+    () => coverage.promise
+  );
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const client = readsHeld();
+  client.setQueryData(["issue-messages", KEY], [AGENTS_THREAD]);
+  client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
+  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
+  const id = AGENTS_THREAD.message.id;
+  const view = render(
+    <MemoryRouter initialEntries={[buildIssuePath({ id, key: KEY, kind: "message" })]}>
+      <QueryClientProvider client={client}>
+        <HistoryInDrawer hold={{}} of={{ ...issueDetails(), artifacts: [] }} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    // `render` ran the first commit's effects, where Details is opened; one more turn of the
+    // loop draws what a state they set asks for, and lets the reads they started settle.
+    await act(async () => {});
+    expect(
+      screen.queryByTestId("issue-history"),
+      "Details opened at the agents' turn while a read the outline lands by was out"
+    ).toBeNull();
+    expect(getIssueCoverage, "nothing read the outline's coverage").toHaveBeenCalledTimes(1);
+
+    await act(async () => coverage.resolve({ requirements: [] } as never));
+    await waitFor(() =>
+      expect(
+        document.querySelector(`[data-history-item="${id}"]`)?.getAttribute("aria-current"),
+        "the agents' turn's address did not open Details with the turn marked"
+      ).toBe("true")
+    );
+  } finally {
+    view.unmount();
+    for (const spy of [getIssueCoverage, getIssueEvents, names]) spy.mockRestore();
   }
 });
 
