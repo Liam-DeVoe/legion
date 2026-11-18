@@ -1,12 +1,15 @@
 package horizontest
 
 import (
+	"context"
 	"log"
 	"log/slog"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -297,6 +300,84 @@ func TestVerdictOfKeysTheWaitOnTheStallWarning(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAWatchReadsTheHolderBehindAWarningThatNamesNone: the horizon keeps warning inside
+// Extension, but each warning's diagnosis failed (warnStall's diagnosis_error arm), so none names
+// a holder the own-hold rule could judge. The watch reads the instance's holder itself, as it does
+// once the horizon falls silent, and fails the wait on a transaction of the test's own database
+// that has stood OwnHoldBound (dispatch://INFRA-636); a foreign holder, or a transaction of that
+// database that began a moment ago, still extends the wait. A watch that read the holder only
+// when the horizon fell silent waited the first row out for as long as the failed diagnoses kept
+// coming. It needs no server and no Postgres: the probe is a fake.
+func TestAWatchReadsTheHolderBehindAWarningThatNamesNone(t *testing.T) {
+	t.Parallel()
+	const ownDatabase = "dispatch_test_ab"
+	diagnosisFailed := FromLine(stallWarningHead(2*OwnHoldBound) + ` diagnosis_error="timeout: context deadline exceeded"`)
+	for _, row := range []struct {
+		name     string
+		database string
+		held     time.Duration
+		ownHold  bool
+	}{
+		{"a transaction of the test's own database that has stood the own-hold bound fails the wait", ownDatabase, 2 * OwnHoldBound, true},
+		{"a transaction of the test's own database that began a moment ago extends it", ownDatabase, 100 * time.Millisecond, false},
+		{"a foreign holder extends it however long it has stood", "postgres", 2 * OwnHoldBound, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			var warnings []Warning
+			probe := &holderProbe{database: row.database, held: row.held}
+			watch := NewWatch(t, func() []Warning { return warnings }, ownDatabase, probe)
+			warnings = append(warnings, diagnosisFailed, diagnosisFailed)
+			failure := watch.Failure("the event feed's events_start")
+			if probe.reads != 1 {
+				t.Errorf("the watch read the holder %d times behind a warning that named none, want once", probe.reads)
+			}
+			switch {
+			case !row.ownHold && failure != "":
+				t.Errorf("Failure = %q, want the wait to go on: the holder read is no hold of the test's own database that has stood %v", failure, OwnHoldBound)
+			case row.ownHold && !strings.Contains(failure, "a client of the test's own database "+ownDatabase):
+				t.Errorf("Failure = %q after warnings whose diagnosis failed, with the instance's holder a transaction of %s that has stood %v; want the own-hold failure", failure, ownDatabase, row.held)
+			case row.ownHold && !strings.Contains(failure, "diagnosis_error="):
+				t.Errorf("Failure = %q, want it to name the horizon's newest warning, whose diagnosis failed, beside the holder the watch read", failure)
+			}
+		})
+	}
+}
+
+// holderProbe is a Querier whose every read of the holder (readHolder) finds a transaction of
+// database that began held before the read, and counts the reads.
+type holderProbe struct {
+	database string
+	held     time.Duration
+	reads    int
+}
+
+func (p *holderProbe) QueryRow(context.Context, string, ...any) pgx.Row {
+	p.reads++
+	return holderRow{database: p.database, held: p.held}
+}
+
+// holderRow is the row holderProbe answers, in the columns readHolder scans: kind, pid, started,
+// state, application_name, database, query and the database's clock.
+type holderRow struct {
+	database string
+	held     time.Duration
+}
+
+func (r holderRow) Scan(dest ...any) error {
+	at := time.Now().Round(0) // a time read from Postgres carries no monotonic reading
+	started := at.Add(-r.held)
+	*dest[0].(*string) = "backend"
+	*dest[1].(*int32) = 4242
+	*dest[2].(**time.Time) = &started
+	*dest[3].(*string) = "idle in transaction"
+	*dest[4].(*string) = ""
+	*dest[5].(*string) = r.database
+	*dest[6].(*string) = "insert into events (type) values ($1)"
+	*dest[7].(*time.Time) = at
+	return nil
 }
 
 // TestFromLineMatchesTheWholeDatabaseField holds the trap a field read exists to avoid: a prefix

@@ -32,15 +32,15 @@ import (
 // serveTokenExchange adds the broker's token endpoint to f, minting a launcher credential of
 // its own for each trade, for the machine key the helper proves. The credential of an earlier
 // trade stays in f.credentials, so a proof signed with it still verifies and only the broker's
-// scripted refusal refuses it. It answers how many trades have been made.
-func serveTokenExchange(t *testing.T, f *enrolBroker, mux *http.ServeMux, thumbprint string) func() int {
+// scripted refusal refuses it. It answers when each trade was answered, oldest first.
+func serveTokenExchange(t *testing.T, f *enrolBroker, mux *http.ServeMux, thumbprint string) func() []time.Time {
 	t.Helper()
 	var mu sync.Mutex
-	trades := 0
+	var answered []time.Time
 	mux.HandleFunc("POST /v1/oauth/token", func(w http.ResponseWriter, _ *http.Request) {
 		mu.Lock()
-		trades++
-		id := "credential-of-trade-" + strconv.Itoa(trades)
+		id := "credential-of-trade-" + strconv.Itoa(len(answered)+1)
+		answered = append(answered, time.Now())
 		mu.Unlock()
 		f.mu.Lock()
 		f.credentials[id] = thumbprint
@@ -50,10 +50,10 @@ func serveTokenExchange(t *testing.T, f *enrolBroker, mux *http.ServeMux, thumbp
 			"credential_id": id, "credential_expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
 		})
 	})
-	return func() int {
+	return func() []time.Time {
 		mu.Lock()
 		defer mu.Unlock()
-		return trades
+		return append([]time.Time(nil), answered...)
 	}
 }
 
@@ -98,13 +98,16 @@ func TestADroppedCredentialInIdentityModeIsTradedAgainAtOnce(t *testing.T) {
 	t.Cleanup(b.Close)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	began := time.Now()
 	if err := b.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	started := time.Since(began)
 	if !b.HasCredential() {
-		t.Fatal("the helper listens with no credential, so this test proves nothing about dropping one")
+		t.Fatalf("the helper listens with no credential, so this test proves nothing about dropping one: Start returned %v after it began, against the %v it waits for the first trade (defaultStartRefreshBound); the trades the token endpoint answered, counted from Start's beginning: %s",
+			started.Round(time.Millisecond), defaultStartRefreshBound, sinceBegan(began, trades()))
 	}
-	first := trades()
+	first := len(trades())
 
 	f.mu.Lock()
 	f.enrolRefusals, f.enrolStatus, f.enrolCode = 1, http.StatusUnauthorized, "LAUNCHER_INVALID"
@@ -118,11 +121,11 @@ func TestADroppedCredentialInIdentityModeIsTradedAgainAtOnce(t *testing.T) {
 	deadline := time.Now().Add(eventWait)
 	for !b.HasCredential() {
 		if time.Now().After(deadline) {
-			t.Fatalf("the helper held no credential %v after the drop; it traded %d times, want the drop to wake the trade loop rather than leave every register answering NO_CREDENTIAL until the token's own renewal", eventWait, trades()-first)
+			t.Fatalf("the helper held no credential %v after the drop; it traded %d times, want the drop to wake the trade loop rather than leave every register answering NO_CREDENTIAL until the token's own renewal", eventWait, len(trades())-first)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if again := trades() - first; again != 1 {
+	if again := len(trades()) - first; again != 1 {
 		t.Fatalf("the trade loop traded %d times after the drop, want exactly one", again)
 	}
 }

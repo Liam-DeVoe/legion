@@ -142,7 +142,7 @@ func TestAHelperRestartedAfterAFailedSaveAsksNothing(t *testing.T) {
 		t.Fatalf("login-status after the restart: %+v; want none", ls)
 	}
 	f.mu.Lock()
-	arrivals := f.refreshArrivals
+	arrivals := len(f.refreshArrivals)
 	f.mu.Unlock()
 	if arrivals != 1 {
 		t.Fatalf("token requests by then = %d; want only the first refresh's", arrivals)

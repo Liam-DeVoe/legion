@@ -121,10 +121,11 @@ type fakeBroker struct {
 	refreshes      int               // refresh grants answered
 	tokens         int               // tokens minted, for unique values
 	// refreshGate, when set, holds every refresh grant until the test closes it, and
-	// refreshArrivals counts every refresh grant on arrival, before the gate, so a test can hold a
-	// refresh in flight for exactly as long as it needs.
+	// refreshArrivals is when each refresh grant arrived, before the gate, so a test can hold a
+	// refresh in flight for exactly as long as it needs, and a failure can say whether a refresh
+	// reached the fake inside the bound the helper put on it.
 	refreshGate     chan struct{}
-	refreshArrivals int
+	refreshArrivals []time.Time
 
 	// refuseRenewNext answers the next N renews 401. renewRefusalCode defaults to
 	// ENROLLMENT_NOT_LIVE, the current broker's terminal renewal verdict; a test names
@@ -412,7 +413,7 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		f.mu.Lock()
 		gate := f.refreshGate
 		if r.PostForm.Get("grant_type") == "refresh_token" {
-			f.refreshArrivals++
+			f.refreshArrivals = append(f.refreshArrivals, time.Now())
 		} else {
 			gate = nil
 		}
@@ -759,6 +760,28 @@ func waitFor(t *testing.T, cond func() bool) {
 	if !testwait.Holds(eventWait, 5*time.Millisecond, cond) {
 		t.Fatal("condition never became true")
 	}
+}
+
+// waitForAccounted is waitFor for a condition whose failure must say why it never held: it fails
+// naming what it waited for and eventWait, then account's answer, read as it fails.
+func waitForAccounted(t *testing.T, what string, cond func() bool, account func() string) {
+	t.Helper()
+	if !testwait.Holds(eventWait, 5*time.Millisecond, cond) {
+		t.Fatalf("%s did not happen within %v; %s", what, eventWait, account())
+	}
+}
+
+// sinceBegan is each of times as how long after began it came, oldest first, or "none", for a
+// failure message that has to say whether a call came inside a bound counted from began.
+func sinceBegan(began time.Time, times []time.Time) string {
+	if len(times) == 0 {
+		return "none"
+	}
+	offsets := make([]string, len(times))
+	for i, at := range times {
+		offsets[i] = at.Sub(began).Round(time.Millisecond).String()
+	}
+	return strings.Join(offsets, ", ")
 }
 
 func TestLoginHoldsTheKeyAndEnrollSignsLauncherProofs(t *testing.T) {

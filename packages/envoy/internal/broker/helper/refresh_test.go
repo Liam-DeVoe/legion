@@ -6,6 +6,7 @@ package helper
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -34,6 +35,20 @@ func keptLogin(t *testing.T, f *fakeBroker) (path string, kept *MachineFile) {
 	return b.MachineFile, kept
 }
 
+// refreshAccount is what a failed assertion on a Broker's refresh of a kept login prints: how many
+// refresh grants the fake answered and when each arrived, counted from began (the moment the test
+// called Start), beside the bound Start puts on its refresh (startRefreshBound), with the Broker's
+// login-status and everything it logged into logs. A refresh that bound cut before the fake took
+// it shows as no arrival, or one past the bound, and the log holds the helper's warning that the
+// refresh did not reach the broker.
+func refreshAccount(f *fakeBroker, b *Broker, logs *syncBuffer, began time.Time) string {
+	f.mu.Lock()
+	answered, arrived := f.refreshes, sinceBegan(began, f.refreshArrivals)
+	f.mu.Unlock()
+	return fmt.Sprintf("the fake answered %d refresh grants; their arrivals, counted from Start's beginning: %s; Start's refresh bound (startRefreshBound): %v; login-status %+v; the helper logged:\n%s",
+		answered, arrived, b.startRefreshBoundOrDefault(), b.LoginStatus(), logs.String())
+}
+
 // TestALoginIsKeptOnDiskAndAStartResumesIt: an approved login is saved to the machine file before
 // the helper installs it, and a new Broker started on that file holds the same credential at once,
 // reports it issued, and refreshes it right away: the refresh spends the kept refresh token, and
@@ -53,31 +68,35 @@ func TestALoginIsKeptOnDiskAndAStartResumesIt(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	resumed := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: b.OperatorFile, MachineFile: b.MachineFile, HTTP: f.srv.Client()}
+	var logs syncBuffer
+	resumed := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: b.OperatorFile, MachineFile: b.MachineFile, HTTP: f.srv.Client(),
+		Log: slog.New(slog.NewTextHandler(&logs, nil))}
 	t.Cleanup(resumed.Close)
+	began := time.Now()
+	account := func() string { return refreshAccount(f, resumed, &logs, began) }
 	if err := resumed.Start(ctx); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Start: %v; %s", err, account())
 	}
 	if ls := resumed.LoginStatus(); ls.State != "issued" || !ls.CredentialHeld || ls.Code != "" {
-		t.Fatalf("login-status of a helper started on the machine file: %+v; want issued and held, with no code", ls)
+		t.Fatalf("login-status of a helper started on the machine file: %+v; want issued and held, with no code; %s", ls, account())
 	}
 	if got := resumed.cred.Load(); got.id != held.id {
-		t.Fatalf("resumed credential %s; want %s", got.id, held.id)
+		t.Fatalf("resumed credential %s; want %s; %s", got.id, held.id, account())
 	}
-	waitFor(t, func() bool {
+	waitForAccounted(t, "the fake's one refresh of the kept login", func() bool {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		return f.refreshes == 1
-	})
-	waitFor(t, func() bool {
+	}, account)
+	waitForAccounted(t, "the machine file naming the rotated refresh token the helper holds", func() bool {
 		now, err := LoadMachineFile(b.MachineFile)
 		return err == nil && now.RefreshToken != kept.RefreshToken && now.RefreshToken == resumed.cred.Load().refreshToken
-	})
+	}, account)
 	f.mu.Lock()
 	_, spent := f.refreshTokens[kept.RefreshToken]
 	f.mu.Unlock()
 	if spent {
-		t.Fatal("the kept refresh token is still live after the refresh spent it")
+		t.Fatalf("the kept refresh token is still live after the refresh spent it; %s", account())
 	}
 }
 
@@ -312,7 +331,7 @@ func heldRefresh(t *testing.T, f *fakeBroker, b *Broker) (release func() error) 
 	waitFor(t, func() bool {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		return f.refreshArrivals == 1
+		return len(f.refreshArrivals) == 1
 	})
 	return func() error {
 		close(gate)
@@ -411,23 +430,27 @@ func TestAStartRefreshesTheKeptLoginBeforeItHoldsIt(t *testing.T) {
 	path, kept := keptLogin(t, f)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: path, HTTP: f.srv.Client()}
+	var logs syncBuffer
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: path, HTTP: f.srv.Client(),
+		Log: slog.New(slog.NewTextHandler(&logs, nil))}
 	t.Cleanup(b.Close)
+	began := time.Now()
+	account := func() string { return refreshAccount(f, b, &logs, began) }
 	if err := b.Start(ctx); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Start: %v; %s", err, account())
 	}
 	f.mu.Lock()
 	refreshes := f.refreshes
 	f.mu.Unlock()
 	held := b.cred.Load()
 	if refreshes != 1 || held == nil || held.refreshToken == kept.RefreshToken || held.id != kept.CredentialID {
-		t.Fatalf("as Start returns: %d refreshes, holding %+v; want the kept login %s refreshed once", refreshes, held, kept.CredentialID)
+		t.Fatalf("as Start returns: %d refreshes, holding %+v; want the kept login %s refreshed once; %s", refreshes, held, kept.CredentialID, account())
 	}
 	if now, err := LoadMachineFile(path); err != nil || now.RefreshToken != held.refreshToken {
-		t.Fatalf("the machine file as Start returns: %+v %v; want the rotated login", now, err)
+		t.Fatalf("the machine file as Start returns: %+v %v; want the rotated login; %s", now, err, account())
 	}
 	if ls := b.LoginStatus(); ls.State != "issued" || !ls.CredentialHeld {
-		t.Fatalf("login-status: %+v; want issued and held", ls)
+		t.Fatalf("login-status: %+v; want issued and held; %s", ls, account())
 	}
 }
 
@@ -444,16 +467,20 @@ func TestAStartWhoseRefreshIsRefusedHoldsNothing(t *testing.T) {
 	f.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: path, HTTP: f.srv.Client()}
+	var logs syncBuffer
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: path, HTTP: f.srv.Client(),
+		Log: slog.New(slog.NewTextHandler(&logs, nil))}
 	t.Cleanup(b.Close)
+	began := time.Now()
+	account := func() string { return refreshAccount(f, b, &logs, began) }
 	if err := b.Start(ctx); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Start: %v; %s", err, account())
 	}
 	if ls := b.LoginStatus(); ls.CredentialHeld || ls.State != "expired" || ls.Dropped != dropRefreshRefused {
-		t.Fatalf("login-status as Start returns: %+v; want expired, dropped for %q", ls, dropRefreshRefused)
+		t.Fatalf("login-status as Start returns: %+v; want expired, dropped for %q; %s", ls, dropRefreshRefused, account())
 	}
 	if _, err := LoadMachineFile(path); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the machine file as Start returns: %v; want it deleted", err)
+		t.Fatalf("the machine file as Start returns: %v; want it deleted; %s", err, account())
 	}
 }
 
@@ -586,19 +613,30 @@ func TestAStartWhoseSaveFailsRetriesWithinTheRetryInterval(t *testing.T) {
 	restore := unwritable(t, path)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: path, HTTP: f.srv.Client(), refreshRetry: 50 * time.Millisecond}
+	var logs syncBuffer
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: path, HTTP: f.srv.Client(), refreshRetry: 50 * time.Millisecond,
+		Log: slog.New(slog.NewTextHandler(&logs, nil))}
 	t.Cleanup(b.Close)
+	began := time.Now()
+	account := func() string { return refreshAccount(f, b, &logs, began) }
 	if err := b.Start(ctx); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Start: %v; %s", err, account())
 	}
+	// Read as Start returns, before the loop's first retry (refreshRetry) can refresh again.
+	held := b.cred.Load()
 	if now, err := LoadMachineFile(path); err != nil || now.RefreshToken != kept.RefreshToken {
-		t.Fatalf("the machine file after the failed save: %+v %v; want the kept login unchanged", now, err)
+		t.Fatalf("the machine file after the failed save: %+v %v; want the kept login unchanged; %s", now, err, account())
 	}
-	if !b.HasCredential() {
-		t.Fatal("the helper must hold the rotated login whose save failed")
+	// A held login still naming the kept refresh token is a refresh Start's bound cut before the
+	// broker answered it: nothing was saved, so no save failed, and the loop's own retry below
+	// would then pass this test without its subject ever happening.
+	if held == nil || held.refreshToken == kept.RefreshToken || held.id != kept.CredentialID {
+		t.Fatalf("as Start returns the helper holds %+v; want the rotated login %s whose save failed, its refresh token other than the kept one: a login still naming the kept one is a refresh Start's bound cut before the broker answered it, which saved nothing; %s",
+			held, kept.CredentialID, account())
 	}
 	restore()
-	waitFor(t, func() bool { return fileHoldsTheHeldLogin(b, kept.RefreshToken) })
+	waitForAccounted(t, "the machine file naming the login the helper holds, once the disk takes writes again",
+		func() bool { return fileHoldsTheHeldLogin(b, kept.RefreshToken) }, account)
 }
 
 // TestALauncherRefusalWhoseSettlementSaveFailsIsRetried: the settlement refresh a 401
