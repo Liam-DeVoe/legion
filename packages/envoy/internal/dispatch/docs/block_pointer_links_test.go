@@ -162,7 +162,7 @@ func TestABrowserWrittenPointerToADisallowedTypeIsStoredAndNotListed(t *testing.
 	state.mu.Lock()
 	generation := state.roomGeneration
 	state.mu.Unlock()
-	service.settleRoom(checks, generation)
+	service.settleRoom(context.Background(), checks, generation)
 
 	var versions int
 	if err := database.Pool.QueryRow(context.Background(), `select count(*) from artifact_versions where artifact_id = $1`, checks).Scan(&versions); err != nil {

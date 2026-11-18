@@ -3370,7 +3370,7 @@ func blockAskHarness(t *testing.T) (*Service, string, string, func(), func() int
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, askFixture+"\nContext ends with no drift.\n")
-	service.settleRoom(artifactID, 0)
+	service.settleRoom(context.Background(), artifactID, 0)
 	var askID string
 	if err := service.store.Pool.QueryRow(context.Background(), `
 		select id::text from asks where block_artifact_id = $1 and block_id = 'decision'
@@ -3514,7 +3514,7 @@ func TestAnEditIsRefusedForTheOpenAsksOfTheBlocksItDropsItself(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, askFixture+"\n"+second+"\nContext ends with no drift.\n")
-	service.settleRoom(artifactID, 0)
+	service.settleRoom(context.Background(), artifactID, 0)
 	// The row of the second ask is made an orphan: it stays open, pointing at a block the
 	// document does not hold, which is what a block removed in a person's editor leaves until
 	// settlement retracts its ask.

@@ -26,7 +26,7 @@ func TestSettlementVersionsARepairTheRoomAlreadyHolds(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n\n- Yes: Monday.\n- No: Later.\n:::\n\nContext before.\n")
-	service.settleRoom(artifactID, 0)
+	service.settleRoom(context.Background(), artifactID, 0)
 	answer := answerBlockAsk(t, service, artifactID)
 	ask := blockAskOn(t, service, artifactID, "ask-block")
 	// A content edit, so the settlement has something to version.

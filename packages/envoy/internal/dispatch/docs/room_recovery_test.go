@@ -692,7 +692,7 @@ func TestASettlementHoldingTheRoomLockFailsFastOnItsFailedRoom(t *testing.T) {
 	}
 	settled := make(chan struct{})
 	go func() {
-		service.settleRoom(artifactID, 0)
+		service.settleRoom(context.Background(), artifactID, 0)
 		close(settled)
 	}()
 	select {

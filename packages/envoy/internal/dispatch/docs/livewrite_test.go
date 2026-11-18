@@ -37,7 +37,7 @@ func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
 	settled := make(chan struct{})
 	go func() {
 		defer close(settled)
-		service.settleRoom(artifactID, generation)
+		service.settleRoom(context.Background(), artifactID, generation)
 	}()
 	t.Cleanup(func() {
 		select {

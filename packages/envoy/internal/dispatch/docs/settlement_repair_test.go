@@ -29,7 +29,7 @@ func TestSettlementRepairKeepsAnEditMadeAfterItsRead(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")
-	service.settleRoom(artifactID, 0)
+	service.settleRoom(context.Background(), artifactID, 0)
 	answer := answerBlockAsk(t, service, artifactID)
 
 	var edited atomic.Bool
@@ -86,7 +86,7 @@ func TestSettlementWhoseRoomWasReplacedLeavesTheDocumentToTheReplacement(t *test
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")
-	service.settleRoom(artifactID, 0)
+	service.settleRoom(context.Background(), artifactID, 0)
 	answer := answerBlockAsk(t, service, artifactID)
 	editAsPeer(t, service, artifactID, replaceRun("Context before.", "Context after."))
 
@@ -130,7 +130,7 @@ func TestSettlementRepairCreditsTheAuthorOfAnEditItsVersionHolds(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")
-	service.settleRoom(artifactID, 0)
+	service.settleRoom(context.Background(), artifactID, 0)
 	answerBlockAsk(t, service, artifactID)
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	service.addConnection(artifactID, 1, bob)
@@ -166,7 +166,7 @@ func TestSettlementWritesNoVersionOfATreeAnEditLandedOnWhileItRendered(t *testin
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")
-	service.settleRoom(artifactID, 0)
+	service.settleRoom(context.Background(), artifactID, 0)
 	answer := answerBlockAsk(t, service, artifactID)
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	service.addConnection(artifactID, 1, bob)
@@ -239,7 +239,7 @@ func TestSettlementStoresAnEditItsRepairedVersionHoldsBeforeTheRepair(t *testing
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")
-	service.settleRoom(artifactID, 0)
+	service.settleRoom(context.Background(), artifactID, 0)
 	answer := answerBlockAsk(t, service, artifactID)
 
 	var edited atomic.Bool
@@ -290,7 +290,7 @@ func TestSettlementRepairOfAnAskAPeerDeletedWritesNothing(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext.\n")
-	service.settleRoom(artifactID, 0)
+	service.settleRoom(context.Background(), artifactID, 0)
 	answerBlockAsk(t, service, artifactID)
 	versionsBefore := latestVersionNumber(t, service, artifactID)
 
@@ -438,7 +438,7 @@ func TestSettlementThatStampsAndRepairsReleasesItsSlots(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n")
-	service.settleRoom(artifactID, 0)
+	service.settleRoom(context.Background(), artifactID, 0)
 	for round := range 3 {
 		answerBlockAsk(t, service, artifactID)
 		paragraph := fmt.Sprintf("round %d", round)
@@ -632,7 +632,7 @@ func settleUnderPause(t *testing.T, service *Service, pause *repairCommitPause, 
 	settled := make(chan struct{})
 	go func() {
 		defer close(settled)
-		service.settleRoom(artifactID, generation)
+		service.settleRoom(context.Background(), artifactID, generation)
 	}()
 	select {
 	case <-pause.held:

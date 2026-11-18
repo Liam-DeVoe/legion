@@ -22,7 +22,7 @@ func TestCloseGatesDoNotOutliveTheirRooms(t *testing.T) {
 	service.settle = time.Hour
 	ctx := context.Background()
 	generation := owedStamp(t, service, first)
-	service.settleRoom(first, generation) // a repair (applySuppressed)
+	service.settleRoom(context.Background(), first, generation) // a repair (applySuppressed)
 	if err := service.srv.CloseRoom(first, true); err != nil {
 		t.Fatalf("close the settled room: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestARepairRefusesRatherThanWaitsForACloseUnderWay(t *testing.T) {
 	settled := make(chan struct{})
 	go func() {
 		defer close(settled)
-		service.settleRoom(artifactID, generation)
+		service.settleRoom(context.Background(), artifactID, generation)
 	}()
 	select {
 	case <-settled:

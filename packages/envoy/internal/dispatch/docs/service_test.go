@@ -166,7 +166,7 @@ func TestSettlementIndexesRetractsAndRestoresTypedAskBlocks(t *testing.T) {
 	const askMarkdown = ":::ask{#ask-block multiple=\"false\" state=\"open\" urgency=\"high\"}\nWhich transport should we expose?\n\n- REST: Matches the existing platform\n- gRPC: Adds streaming\n:::\n"
 	seedServiceText(t, service, artifactID, askMarkdown)
 
-	service.settleRoom(artifactID, 0)
+	service.settleRoom(context.Background(), artifactID, 0)
 	var askID, question, urgency, state, blockID string
 	var multiple bool
 	if err := service.store.Pool.QueryRow(context.Background(), `
@@ -439,7 +439,7 @@ func TestSettlementWritingNoVersionNamesTheOneItLeavesTheDocumentAt(t *testing.T
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShould we ship?\n\n- Ship: Release it\n- Hold: Wait for review\n:::\n")
-	service.settleRoom(artifactID, 0)
+	service.settleRoom(context.Background(), artifactID, 0)
 	waitForDocumentVersion(t, service.store, artifactID, 2)
 
 	// A browser leaves an option without a label, which settlement cannot parse, and a human
@@ -476,7 +476,7 @@ func TestSettlementRepairsServerOwnedAskAttributesOncePerVersion(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n")
-	service.settleRoom(artifactID, 0)
+	service.settleRoom(context.Background(), artifactID, 0)
 	var askID string
 	if err := service.store.Pool.QueryRow(context.Background(), `
 		select id::text from asks where block_artifact_id = $1
@@ -521,7 +521,7 @@ func TestSettlementRecordsMalformedAskAndRepairsIt(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = 10 * time.Millisecond
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShould we ship?\n\n- Ship: Release it\n- Hold: Wait for review\n:::\n")
-	service.settleRoom(artifactID, 0)
+	service.settleRoom(context.Background(), artifactID, 0)
 	waitForDocumentVersion(t, service.store, artifactID, 2)
 
 	var askID string
@@ -4130,7 +4130,7 @@ func TestSettleStampsPersistedLegacyProofDocument(t *testing.T) {
 		}
 	})
 
-	service.settleRoom(artifactID, 0)
+	service.settleRoom(context.Background(), artifactID, 0)
 
 	loaded, err := NewPgVersioned(database).Load(context.Background(), artifactID)
 	if err != nil {
@@ -4201,7 +4201,7 @@ func TestSettleCapturesOnlyItsOwnIdentityUpdate(t *testing.T) {
 	state.mu.Lock()
 	armed := state.roomGeneration
 	state.mu.Unlock()
-	service.settleRoom(artifactID, armed)
+	service.settleRoom(context.Background(), artifactID, armed)
 	<-foreignApplied
 	if foreignErr != nil {
 		t.Fatalf("apply foreign update during identity settlement: %v", foreignErr)
@@ -4235,7 +4235,7 @@ func TestSettleCapturesOnlyItsOwnIdentityUpdate(t *testing.T) {
 		t.Fatalf("generation after foreign update = %d, the one the settlement was armed with: the update armed none", generation)
 	}
 	waitForPersistedProofText(t, database, artifactID, "foreign\n")
-	service.settleRoom(artifactID, generation)
+	service.settleRoom(context.Background(), artifactID, generation)
 	waitForDocumentVersion(t, database, artifactID, 2)
 }
 
@@ -4256,7 +4256,7 @@ func TestSettleStampsLegacyChangeInExactlyOneVersion(t *testing.T) {
 	state.mu.Lock()
 	generation := state.roomGeneration
 	state.mu.Unlock()
-	service.settleRoom(artifactID, generation)
+	service.settleRoom(context.Background(), artifactID, generation)
 
 	waitForDocumentVersion(t, database, artifactID, 2)
 	var versions int
@@ -4323,7 +4323,7 @@ func TestSettleDiscardsIdentityUpdateWhenItsRepairTransactionFails(t *testing.T)
 	state.mu.Lock()
 	generation := state.roomGeneration
 	state.mu.Unlock()
-	service.settleRoom(artifactID, generation)
+	service.settleRoom(context.Background(), artifactID, generation)
 
 	waitForRoomFailure(t, service, artifactID)
 	if repairs := pmdoc.BlockIDRepairCount(persistedProofTree(t, database, artifactID)); repairs == 0 {
@@ -4341,7 +4341,7 @@ func TestSettleDiscardsIdentityUpdateWhenItsRepairTransactionFails(t *testing.T)
 	if err := service.awaitRoomRecovery(context.Background(), artifactID); err != nil {
 		t.Fatalf("await room recovery: %v", err)
 	}
-	service.settleRoom(artifactID, 0)
+	service.settleRoom(context.Background(), artifactID, 0)
 
 	waitForDocumentVersion(t, database, artifactID, 2)
 	if repairs := pmdoc.BlockIDRepairCount(persistedProofTree(t, database, artifactID)); repairs != 0 {
@@ -4384,7 +4384,7 @@ func TestFailedSettlementDoesNotDiscardSuccessorRoomUpdate(t *testing.T) {
 	state.mu.Lock()
 	generation := state.roomGeneration
 	state.mu.Unlock()
-	service.settleRoom(artifactID, generation)
+	service.settleRoom(context.Background(), artifactID, generation)
 	if persistence.released.CompareAndSwap(false, true) {
 		close(release)
 	}
@@ -5009,7 +5009,7 @@ func settleNow(service *Service, artifactID string) {
 	state.mu.Lock()
 	generation := state.roomGeneration
 	state.mu.Unlock()
-	service.settleRoom(artifactID, generation)
+	service.settleRoom(context.Background(), artifactID, generation)
 }
 
 // appendBlocks returns a live edit that appends the blocks parsed from markdown, stamped with
@@ -5091,7 +5091,7 @@ func TestSupersededSettleGenerationDoesNotWrite(t *testing.T) {
 	current := state.roomGeneration
 	state.mu.Unlock()
 
-	service.settleRoom(artifactID, stale)
+	service.settleRoom(context.Background(), artifactID, stale)
 	var versions int
 	if err := service.store.Pool.QueryRow(context.Background(), `select count(*) from artifact_versions where artifact_id = $1`, artifactID).Scan(&versions); err != nil {
 		t.Fatalf("count versions after stale settle: %v", err)
@@ -5099,7 +5099,7 @@ func TestSupersededSettleGenerationDoesNotWrite(t *testing.T) {
 	if versions != 1 {
 		t.Fatalf("versions after stale settle = %d, want 1", versions)
 	}
-	service.settleRoom(artifactID, current)
+	service.settleRoom(context.Background(), artifactID, current)
 	waitForDocumentVersion(t, service.store, artifactID, 2)
 }
 
@@ -5367,7 +5367,7 @@ func TestAdversarialSettlementDoesNotMissAppendAfterClassConsume(t *testing.T) {
 	generation := state.roomGeneration
 	service.settle = 10 * time.Millisecond
 	state.mu.Unlock()
-	service.settleRoom(artifactID, generation)
+	service.settleRoom(context.Background(), artifactID, generation)
 	if persistence.released.CompareAndSwap(false, true) {
 		close(release)
 	}
@@ -5582,7 +5582,7 @@ func TestSettleCapturesAuthorsAtSnapshotTime(t *testing.T) {
 	}
 	settled := make(chan struct{})
 	go func() {
-		service.settleRoom(artifactID, generation)
+		service.settleRoom(context.Background(), artifactID, generation)
 		close(settled)
 	}()
 	waitForDatabaseLock(t, service.store)

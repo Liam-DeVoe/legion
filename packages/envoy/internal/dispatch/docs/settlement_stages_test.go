@@ -125,7 +125,7 @@ func reconciledStagePass(t *testing.T, settle *settlement, parent context.Contex
 func seedAnsweredAskBlock(t *testing.T, service *Service, artifactID string) string {
 	t.Helper()
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext.\n")
-	service.settleRoom(artifactID, 0)
+	service.settleRoom(context.Background(), artifactID, 0)
 	answer := answerBlockAsk(t, service, artifactID)
 	return ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"alice\" answered_at=\"" +
 		answer.At.Format(time.RFC3339Nano) + "\" selected=\"[]\"}\nShip it?\n:::\n\nContext.\n"

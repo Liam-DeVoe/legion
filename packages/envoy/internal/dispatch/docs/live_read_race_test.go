@@ -219,7 +219,7 @@ func TestReadsOfALiveDocumentRunBesideItsPeers(t *testing.T) {
 			generation := state.roomGeneration
 			state.mu.Unlock()
 			read.Store(0)
-			service.settleRoom(artifactID, generation)
+			service.settleRoom(context.Background(), artifactID, generation)
 			return read.Load() > taken.Load()
 		})
 	})

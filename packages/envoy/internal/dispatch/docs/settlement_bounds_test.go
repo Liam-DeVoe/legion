@@ -153,6 +153,85 @@ func TestASettlementPastItsDeadlineRollsBackStaysOwedAndCountsNoFailure(t *testi
 	requireLatestVersionMarkdown(t, service, artifactID, "after\n")
 }
 
+// The settlement a room's last browser leaving runs in its timer's place (settleLastPeer) is held
+// to the deadline a timer's is (settleRoom, settleTimeout), besides carrying the mark a room its
+// warm-up loads is known by (withSettlementLoad). Here another transaction holds the document's
+// owner row past that deadline: the settlement rolls back at it, leaving the document owed and
+// counting no failure, and the departing browser's socket, which ends only once that settlement
+// has returned, ends then rather than once the owner row is let go.
+func TestTheSettlementALastBrowserLeavingRunsIsHeldToItsDeadline(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	seedServiceText(t, service, artifactID, "before")
+	settleCurrentGeneration(t, service, artifactID)
+	ended := make(chan struct{}, 1)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		service.ServeHTTP(w, r)
+		if socketRoom(r) == artifactID {
+			ended <- struct{}{}
+		}
+	}))
+	t.Cleanup(httpServer.Close)
+	browser := connectPeer(t, httpServer.URL, artifactID, "alice")
+	if err := browser.WaitForText(peerMarkdown, "before\n", roomWait(t)); err != nil {
+		t.Fatal(err)
+	}
+	// The edit, once stored, arms the room's settlement, which the settle delay of an hour keeps
+	// armed until the browser's leaving takes it (takeSettleTimer).
+	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
+	awaitRoomAppends(t, service, artifactID, "become durable", service.waitForDurableAppends)
+	waitFor(t, roomWait(t), "the stored edit to arm the room's settlement", func() bool {
+		return settlementUnderway(service, artifactID)
+	})
+	versions := latestVersionNumber(t, service, artifactID)
+
+	ctx := context.Background()
+	hold, err := service.store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the owner row's holder: %v", err)
+	}
+	defer hold.Rollback(ctx)
+	if _, err := hold.Exec(ctx, `select key from issues where key = 'DOC-1' for no key update`); err != nil {
+		t.Fatalf("hold the document's owner row: %v", err)
+	}
+	const deadline = 300 * time.Millisecond
+	service.settleTimeout = deadline
+	closed := time.Now()
+	browser.Close()
+	// The socket ends within the bound a timer's settlement past its deadline returns within
+	// (TestASettlementPastItsDeadlineRollsBackStaysOwedAndCountsNoFailure), far inside the idle
+	// bound that ends the holder's transaction (store.RequestIdleInTransactionTimeout), after which
+	// a settlement held to no deadline takes the owner row and commits.
+	select {
+	case <-ended:
+	case <-time.After(deadline + 5*time.Second):
+		t.Fatalf("the departing browser's socket had not ended %v after it left, with the document's owner row held: the settlement its leaving ran is held to no deadline", time.Since(closed).Round(time.Millisecond))
+	}
+	if took := time.Since(closed); took < deadline {
+		t.Fatalf("the departing browser's socket ended %v after it left, before the settlement's %v deadline: that settlement never waited on the held owner row, so nothing here is tested", took, deadline)
+	}
+	if settlementUnderway(service, artifactID) {
+		t.Fatal("a settlement of the document is armed or running once the departing browser's socket has ended, want none: the browser's leaving took the armed one and ran it to its deadline")
+	}
+	owes, err := settlementPending(ctx, service.store.Pool, artifactID)
+	if err != nil {
+		t.Fatalf("read the document's pending settlement: %v", err)
+	}
+	if !owes {
+		t.Fatal("the document's pending-settlement row is gone, want it kept for the resumption")
+	}
+	state := service.room(artifactID)
+	state.mu.Lock()
+	failures, failed := state.settleFailures, state.failed
+	state.mu.Unlock()
+	if failures != 0 || failed != nil {
+		t.Fatalf("settlement failures = %d, room failure = %v; want none for a deadline", failures, failed)
+	}
+	if latest := latestVersionNumber(t, service, artifactID); latest != versions {
+		t.Fatalf("latest version = %d, want %d: no settlement past its deadline commits", latest, versions)
+	}
+}
+
 // A settlement whose transaction finds every connection of the settlements pool taken for the
 // pool's whole acquire bound is refused it (store.ErrPoolBusy) and rolls back: the document stays
 // owed, its room stays resident, and the refusal counts as no settlement failure however often it
@@ -510,7 +589,7 @@ func TestASettlementRendersWithoutHoldingItsDocumentsOwnerRow(t *testing.T) {
 	settled := make(chan struct{})
 	go func() {
 		defer close(settled)
-		service.settleRoom(artifactID, generation)
+		service.settleRoom(context.Background(), artifactID, generation)
 	}()
 	select {
 	case <-rendering:
@@ -548,7 +627,7 @@ func TestARepairingSettlementRendersNothingUnderItsDocumentsOwnerRow(t *testing.
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")
-	service.settleRoom(artifactID, 0)
+	service.settleRoom(context.Background(), artifactID, 0)
 	answer := answerBlockAsk(t, service, artifactID)
 	editLiveTree(t, service, artifactID, appendUnidentifiedBlocks(t, "Added."))
 	versions := latestVersionNumber(t, service, artifactID)
@@ -648,7 +727,7 @@ func TestADocumentNeedingRepairsGetsThemInOneCommitAndItsVersionInTheNext(t *tes
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")
-	service.settleRoom(artifactID, 0)
+	service.settleRoom(context.Background(), artifactID, 0)
 	answer := answerBlockAsk(t, service, artifactID)
 	editAsPeer(t, service, artifactID, replaceRun("Context before.", "Context after."))
 	generation := roomGeneration(t, service, artifactID)
@@ -665,7 +744,7 @@ func TestADocumentNeedingRepairsGetsThemInOneCommitAndItsVersionInTheNext(t *tes
 		headAtLast.Store(storedHead(t, service.store, artifactID))
 		versionAtLast.Store(int64(latestVersionNumber(t, service, artifactID)))
 	}
-	service.settleRoom(artifactID, generation)
+	service.settleRoom(context.Background(), artifactID, generation)
 	service.beforeSettleRender = nil
 	if renders.Load() < 3 {
 		t.Fatalf("the settlement rendered the document %d time(s), want its repairs planned and committed and its version written by passes of their own", renders.Load())
