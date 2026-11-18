@@ -16,6 +16,15 @@ interface Snapshot extends AnchorRow {
   top: number;
 }
 
+/** The reader's place as `held` keeps it. */
+interface HeldPlace {
+  focus: { element: Element; top: number } | null;
+  group: string | null;
+  id: string;
+  scrollTop: number;
+  top: number;
+}
+
 export interface ViewportAnchorProps {
   as?: "div" | "section";
   children: ReactNode;
@@ -143,8 +152,8 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *
    *  Kept only where the host names a `scroller`. Where the rows scroll in the document the
    *  browser's own scroll anchoring covers that drift, and a cached place there would only undo
-   *  a scroll whose event has not arrived yet; in a named box the browser does not cover it,
-   *  which is what `contentResized` stands in for.
+   *  a scroll whose event has not arrived yet. In a named box `contentResized` stands in for it,
+   *  and the browser's own anchoring is turned off there while a place is kept (`keepPlace`).
    *
    *  Where the focus is on a control inside the row, the place is that control's own (`focus`):
    *  the control and its viewport top then. A long row whose head is above the view is read at
@@ -158,13 +167,15 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  A different `scrollTop` means the view moved without this component hearing of it, and a
    *  different `group` means the row was relocated rather than shifted. On either the top no
    *  longer says where the reader's place is, and the commit measures the row instead. */
-  private held: {
-    focus: { element: Element; top: number } | null;
-    group: string | null;
-    id: string;
-    scrollTop: number;
-    top: number;
-  } | null = null;
+  private held: HeldPlace | null = null;
+  /** The box whose own scroll anchoring this anchor turned off while it keeps a place there
+   *  (`keepPlace`), the `overflow-anchor` the box's own style gave it before, and the box's
+   *  children outside the root this anchor watches change height meanwhile. */
+  private ownedBox: { anchoring: string; element: HTMLElement; watched: Element[] } | null = null;
+  /** The box's offset where this anchor last found it: as it kept a place, after a scroll of
+   *  its own, and as a change of height found the box off the offset the place was kept at. A
+   *  scroll event that finds the box there reports no move of the view (`viewScrolled`). */
+  private seenAt: number | null = null;
   private contentSize: ResizeObserver | null = null;
   /** Where this anchor's own last scroll left the box (the window's `scrollY` where the document
    *  scrolls the rows), and the frame asked for to end the mark. The scroll event that scroll
@@ -220,6 +231,45 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     return group === undefined ? null : row.getAttribute(group);
   }
 
+  /** Keeps `place` as the reader's (`held`), or none. While a place is kept in the box the host
+   *  named, this anchor alone anchors that box, and the browser's own scroll anchoring is
+   *  turned off there (`overflow-anchor: none`) until none is kept. The browser anchors on a
+   *  node of its own choosing near the top of the view, not on the reader's row, so content
+   *  between the two that changes height moves the row all the same, and the browser's move of
+   *  the box for that node reads as a scroll this anchor did not make: where the frame observes
+   *  the change after that move, the place no longer holds and nothing is put back, and where
+   *  the move's scroll event comes first, the place is recorded where the change left the row.
+   *  Measured in Details: the page's typeface arriving after Load older landed moved the box
+   *  39,180 px, and the control the page had handed the focus to 1,492 px up, out of the view.
+   *  Since the browser then keeps the view for no change in that box, this anchor watches the
+   *  box's other children for one as it watches its own root. */
+  private keepPlace(place: HeldPlace | null): void {
+    this.held = place;
+    const box = place === null ? null : this.scrollerElement();
+    const owned = this.ownedBox;
+    if (owned !== null && owned.element === box) return;
+    this.releaseBox();
+    if (box === null) return;
+    const watched = [...box.children].filter((child) => child !== this.root);
+    for (const child of watched) this.contentSize?.observe(child);
+    this.ownedBox = {
+      anchoring: box.style.getPropertyValue("overflow-anchor"),
+      element: box,
+      watched,
+    };
+    box.style.setProperty("overflow-anchor", "none");
+  }
+
+  /** Gives the box whose scroll anchoring `keepPlace` turned off its own back, and stops
+   *  watching its other children. */
+  private releaseBox(): void {
+    const owned = this.ownedBox;
+    if (owned === null) return;
+    this.ownedBox = null;
+    owned.element.style.setProperty("overflow-anchor", owned.anchoring);
+    for (const child of owned.watched) this.contentSize?.unobserve(child);
+  }
+
   /** Records where the hand's row sits now as the place to keep it, with the box offset and the
    *  group that place belongs to, and, where a control inside the row holds the focus, that
    *  control and where it sits. Called where the view is the reader's own: the pointer moving
@@ -227,15 +277,16 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  moved it. A host whose rows scroll in the document keeps nothing. */
   private readonly rememberHeld = (): void => {
     const scroller = this.scrollerElement();
+    this.seenAt = scroller?.scrollTop ?? null;
     const current = scroller === null ? null : this.interacted();
     if (scroller === null || current === null) {
-      this.held = null;
+      this.keepPlace(null);
       return;
     }
     // A row chosen by the focus has the focus within it; the row itself holding it says no more
     // than the row's own top.
     const active = current.via === "focus" ? document.activeElement : null;
-    this.held = {
+    this.keepPlace({
       focus:
         active === null || active === current.row
           ? null
@@ -244,7 +295,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
       id: current.id,
       scrollTop: scroller.scrollTop,
       top: current.row.getBoundingClientRect().top,
-    };
+    });
   };
 
   /** The kept top of the row `id` (with a focused control kept in it, the row's top that puts
@@ -303,6 +354,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     else scroller.scrollTop += delta;
     const at = scrolledBy(scroller);
     if (at === before) return;
+    this.seenAt = at;
     this.endOwnScroll();
     const frame = window.requestAnimationFrame(() => {
       this.ownScroll = null;
@@ -318,9 +370,11 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
 
   /** A scroll of the box this anchor owns. It is this anchor's own only where the box stands at
    *  the offset its last scroll left it at, within the frame that reports that scroll
-   *  (`ownScroll`), and then records nothing: the place was just put back. Any other is the
-   *  reader's, or the page's, and the place is recorded where the view now shows it. The mark
-   *  ends here either way: a frame raises one scroll event for the box, whatever moved it. */
+   *  (`ownScroll`), and then records nothing: the place was just put back. One that finds the
+   *  box where this anchor last found it (`seenAt`) records nothing either: the view did not
+   *  move. Any other is the reader's, or the page's, and the place is recorded where the view
+   *  now shows it. The mark ends here either way: a frame raises one scroll event for the box,
+   *  whatever moved it. */
   private readonly viewScrolled = (event: Event): void => {
     const scroller = this.scrollerElement();
     const mine = scroller === null ? event.target === document : event.target === scroller;
@@ -337,15 +391,23 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     const held = this.held;
     if (held !== null && scroller !== null && this.pulledBack(held.scrollTop, scroller)) {
       this.contentResized();
+    } else if (held !== null && scrolledBy(scroller) === this.seenAt) {
+      // Recording the place at an event that moved nothing would keep the row wherever a change
+      // of height not yet observed moved it, and the observation would then find nothing to put
+      // back. Measured in Details: as the page's typeface arrived after Load older landed, the
+      // box's scroll event came at the offset the place was kept at, before the frame observed
+      // the rows laid out again in it, which had moved the focused control 38,600 px down.
+      return;
     }
     this.rememberHeld();
   };
 
-  /** The root's content changed height outside a commit of this component's. Puts the hand's
-   *  row back where the reader last saw it, or, where a control inside it is kept with the
-   *  place, that control (`held`), in the box the host named; with no such box the document's
-   *  own scroll anchoring owns this and nothing here runs. The kept place is used under the
-   *  same conditions a commit uses it under, the row's group included. */
+  /** The root's content, or the box's outside the root while a place is kept there
+   *  (`keepPlace`), changed height outside a commit of this component's. Puts the hand's row
+   *  back where the reader last saw it, or, where a control inside it is kept with the place,
+   *  that control (`held`), in the box the host named; with no such box the document's own
+   *  scroll anchoring owns this and nothing here runs. The kept place is used under the same
+   *  conditions a commit uses it under, the row's group included. */
   private readonly contentResized = (): void => {
     const held = this.held;
     const root = this.root;
@@ -356,11 +418,15 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
       `[${this.props.item}="${CSS.escape(held.id)}"]`
     );
     if (element === null) {
-      this.held = null;
+      this.keepPlace(null);
       return;
     }
     const top = this.heldTop(held.id, this.groupOf(element));
-    if (top === null) return;
+    if (top === null) {
+      // The box stands off the offset the place was kept at, and this is where it was found.
+      this.seenAt = this.scrollerElement()?.scrollTop ?? null;
+      return;
+    }
     const at = element.getBoundingClientRect().top;
     // While the kept control still holds the focus inside the row, the row goes where that
     // control is back at its own top, and that is the row's kept top from then on: the row's
@@ -393,6 +459,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     window.removeEventListener("pointercancel", this.pressEnded, true);
     this.endOwnScroll();
     window.clearTimeout(this.pressEnds);
+    this.releaseBox();
     this.contentSize?.disconnect();
     this.contentSize = null;
   }
@@ -483,6 +550,9 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
       this.root.removeEventListener("keydown", this.readerPressed, true);
       this.root.removeEventListener("pointerdown", this.pointerPressed, true);
     }
+    // A place kept among the old root's rows goes with them, and the box gets its own scroll
+    // anchoring back (`keepPlace`).
+    this.keepPlace(null);
     this.contentSize?.disconnect();
     this.contentSize = null;
     this.root = node;

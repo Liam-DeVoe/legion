@@ -1116,3 +1116,104 @@ test("once the frame of the anchor's own scroll has ended, the reader scrolling 
     box.unmount();
   }
 });
+
+// While a place is kept in the box the host named, the anchor alone keeps that box's scroll: the
+// browser's own scroll anchoring is turned off there, and comes back as the box's own style had
+// it once no place is kept. The browser anchors on a node of its own choosing near the top of the
+// view, not on the reader's row. As the page's typeface arrived after Load older landed, the turns
+// laid out again in it moved that node and the focused control apart: the browser scrolled
+// Details by 39,180 px to keep its node, the control the page had handed the focus to went
+// 1,492 px up, and the anchor, which had not made that scroll, put nothing back. A pull-back of
+// the box to its end then left the control 364 px above the view.
+test("a place kept in a named box turns the box's own scroll anchoring off until no place is kept", () => {
+  const view = render(<List rows={ids(12)} scroller={scrollerRef} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (scroller === null) throw new Error("scroller missing");
+    scroller.style.setProperty("overflow-anchor", "auto");
+    const row = document.querySelector<HTMLElement>('[data-row="r3"]');
+    if (row === null) throw new Error("r3 missing");
+    fireEvent.pointerOver(row, { clientX: 20, clientY: 220 });
+    expect(chosen()).toEqual({ id: "r3", via: "pointer" });
+    expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("none");
+
+    // The pointer leaves the rows, and with it the place.
+    fireEvent.pointerOut(row, { clientX: 20, clientY: 900, relatedTarget: document.body });
+    expect(chosen()).toBeNull();
+    expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("auto");
+  } finally {
+    view.unmount();
+  }
+});
+
+// With its own anchoring off, the browser keeps the view in that box for no change, and content of
+// the box outside the rows, a section above them, can change height too: while a place is kept,
+// the anchor watches the box's other children as it watches its own root, and stops once none is.
+test("while a place is kept in a named box, the anchor watches the box's other children change height", () => {
+  const RealResizeObserver = globalThis.ResizeObserver;
+  const watched = new Set<Element>();
+  globalThis.ResizeObserver = class {
+    disconnect() {
+      watched.clear();
+    }
+    observe(target: Element) {
+      watched.add(target);
+    }
+    unobserve(target: Element) {
+      watched.delete(target);
+    }
+  } as unknown as typeof ResizeObserver;
+  const view = render(
+    <div data-scroller="" ref={scrollerRef}>
+      <section data-above="">Above the rows</section>
+      <ViewportAnchor item="data-row" ref={anchor} scroller={scrollerRef}>
+        {ids(12).map((id) => (
+          <div data-row={id} key={id}>
+            {id}
+          </div>
+        ))}
+      </ViewportAnchor>
+    </div>
+  );
+  try {
+    const above = document.querySelector("[data-above]");
+    const root = scrollerRef.current?.lastElementChild ?? null;
+    const row = document.querySelector<HTMLElement>('[data-row="r3"]');
+    if (above === null || root === null || row === null) throw new Error("box missing");
+    expect(watched.has(root)).toBe(true);
+    expect(watched.has(above)).toBe(false);
+
+    fireEvent.pointerOver(row, { clientX: 20, clientY: 220 });
+    expect(watched.has(above)).toBe(true);
+
+    fireEvent.pointerOut(row, { clientX: 20, clientY: 900, relatedTarget: document.body });
+    expect(watched.has(above)).toBe(false);
+    expect(watched.has(root)).toBe(true);
+  } finally {
+    view.unmount();
+    globalThis.ResizeObserver = RealResizeObserver;
+  }
+});
+
+// A scroll event that finds the box where the anchor last found it reports no move of the view,
+// and records nothing. As the page's typeface arrived after Load older landed, with the browser's
+// own anchoring off in Details, the browser raised a scroll event for the box at the offset the
+// place was kept at, before the frame observed the rows laid out again in it. Recording the place
+// at that event kept the focused control where the new typeface had moved it, 38,600 px down, and
+// the observation that followed found nothing to put back.
+test("a scroll event that finds the box where the anchor last found it leaves the place for the change of height observed after it", () => {
+  const box = drawFrameByFrame(ids(30));
+  try {
+    readerOnR10(box.scroller);
+    // Content above the rows grows by 400 px in no commit of the anchor's, and the box raises a
+    // scroll event at the offset it stood at, before the frame observes the root's new size.
+    listTop += 400;
+    expect(controlTop("r10")).toBe(680);
+    fireEvent.scroll(box.scroller);
+    box.resized();
+    expect(controlTop("r10")).toBe(280);
+    expect(box.scroller.scrollTop).toBe(700);
+  } finally {
+    box.unmount();
+  }
+});
