@@ -132,7 +132,7 @@ func (p Planted) input(ds *Dataset, c *Case, session claude.SessionText) GradeIn
 	}
 	switch p.Judgement {
 	case JAnswered:
-		in.Answer, in.Original, in.Text = p.Output, original, original
+		in.Answer, in.Text = p.Output, original
 	case JFirstParagraph:
 		in.Answer = p.Output
 	case JDefine:

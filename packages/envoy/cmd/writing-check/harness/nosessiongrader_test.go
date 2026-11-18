@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/claude"
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/llm"
 	"github.com/sjawhar/envoy/internal/dispatch/modeltest"
@@ -129,17 +130,10 @@ func TestAFoundryGraderWithReadersFromSendsNoSessionPart(t *testing.T) {
 		t.Errorf("the answered system prompt is\n%s\nwant grade-answered's for a case with no session part", system)
 	}
 
-	data, err := os.ReadFile(filepath.Join(out, "run.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var params RunParams
-	if err := json.Unmarshal(data, &params); err != nil {
-		t.Fatal(err)
-	}
-	if params.GraderFamily != llm.FamilyFoundry || params.SessionPart != "none" || params.Models[RoleGrader] != foreignGrader ||
+	params := readRunParams(t, out)
+	if params.GraderFamily != llm.FamilyFoundry || params.SessionPart != sessionPartNone || params.Models[RoleGrader] != foreignGrader ||
 		params.Models[RoleGraderFallback] != "" || params.ReadersFrom != claudeRun || params.SessionsSHA != "" || len(params.SkippedJudgements) != 0 {
-		t.Errorf("run.json records %s", data)
+		t.Errorf("run.json records %+v", params)
 	}
 	md, err := os.ReadFile(filepath.Join(out, "scores.md"))
 	if err != nil {
@@ -149,14 +143,8 @@ func TestAFoundryGraderWithReadersFromSendsNoSessionPart(t *testing.T) {
 		t.Errorf("scores.md records no grader_family and session_part:\n%s", md)
 	}
 
-	claudeResults, err := readResults(filepath.Join(claudeRun, "cases.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	results, err := readResults(filepath.Join(out, "cases.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	claudeResults := readLines(t, claudeRun)
+	results := readLines(t, out)
 	if len(results) != len(claudeResults) {
 		t.Fatalf("the run graded %d cases, want the %d of --readers-from", len(results), len(claudeResults))
 	}
@@ -213,14 +201,8 @@ func TestAFoundryGraderSamplesTheCasesOfReadersFrom(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("the Foundry grader's run = %d:\n%s", code, stderr)
 	}
-	results, err := readResults(filepath.Join(out, "cases.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	claudeResults, err := readResults(filepath.Join(claudeRun, "cases.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	results := readLines(t, out)
+	claudeResults := readLines(t, claudeRun)
 	if len(results) == 0 || len(results) > len(claudeResults) {
 		t.Fatalf("the sample holds %d cases", len(results))
 	}
@@ -362,5 +344,30 @@ func TestAFoundryGraderIsRefusedWhereItsRunWouldCallAnotherModel(t *testing.T) {
 	}
 	if n := len(stand.Requests()); n != 0 {
 		t.Errorf("the refused runs made %d model calls, want none", n)
+	}
+}
+
+// A grader of another family refuses a request that carries a session part, and calls no model.
+// No request it builds holds one (context), so the refusal is R2's guard against code that
+// would build one: session text never reaches a Foundry deployment. The same request with no
+// session part reaches the deployment, so the stand-in would have seen a call.
+func TestAFoundryGraderRefusesARequestWithASessionPart(t *testing.T) {
+	stand := modeltest.New(t, modeltest.Rule{Model: foreignGrader, Reply: modeltest.Reply{Text: "graded"}})
+	tokens := func(context.Context) (string, error) { return "stand-in-token", nil }
+	g := NewNoSessionGrader(llm.NewFoundry(llm.FoundryConfig{Endpoint: stand.URL + "/models"}, tokens, foreignGrader, "", agentloop.Price{}, &llm.Runner{}), FinalInputs)
+	session := changeSessions(t)["question/ask:k1@11"]
+	r := gradeRequest{req: llm.Request{Purpose: "grade:" + string(JAnswered), System: "Grade the answer.", User: tag("question", goldenQuestion)}, session: session}
+	if _, _, err := g.call(t.Context(), r); err == nil || !strings.Contains(err.Error(), "a grader of another family reads no session part") {
+		t.Errorf("the call with a session part answered %v, want the refusal", err)
+	}
+	if n := len(stand.Requests()); n != 0 {
+		t.Fatalf("the refused call reached the deployment with %d requests, want none", n)
+	}
+	r.session = claude.SessionText{}
+	if _, _, err := g.call(t.Context(), r); err != nil {
+		t.Fatalf("the call with no session part: %v", err)
+	}
+	if n := len(stand.Requests()); n != 1 {
+		t.Errorf("the call with no session part made %d requests, want 1", n)
 	}
 }

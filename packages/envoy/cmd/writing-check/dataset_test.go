@@ -218,21 +218,26 @@ func firstVersion(f *dsFixture, artifact string) *string {
 	return nil
 }
 
-func readDatasetCases(t *testing.T, dir string) []dsCase {
+// readGzipJSONL reads each line of a gzipped JSONL file into a T.
+func readGzipJSONL[T any](t *testing.T, path string) []T {
 	t.Helper()
-	var out []dsCase
-	err := eachGzipLine(filepath.Join(dir, "cases.jsonl.gz"), func(line []byte) error {
-		var c dsCase
-		if err := json.Unmarshal(line, &c); err != nil {
+	var out []T
+	if err := eachGzipLine(path, func(line []byte) error {
+		var v T
+		if err := json.Unmarshal(line, &v); err != nil {
 			return err
 		}
-		out = append(out, c)
+		out = append(out, v)
 		return nil
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatal(err)
 	}
 	return out
+}
+
+func readDatasetCases(t *testing.T, dir string) []dsCase {
+	t.Helper()
+	return readGzipJSONL[dsCase](t, filepath.Join(dir, "cases.jsonl.gz"))
 }
 
 // The same snapshot, verdicts and seed build the same bytes, and each of the four groups and

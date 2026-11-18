@@ -33,7 +33,7 @@ go run ./cmd/writing-check dataset followups --from <bundle> --cases <build dir>
 go run ./cmd/writing-check dataset named (--doc <issue>/<document>@<version>[,<version>...] | --ask <issue>/<ask id>)... --out <dir>
 cmd/writing-check/export-sessions.sh --sessions <sessions.tsv> --exclude <exclude.txt> --out <dir>
 go run ./cmd/writing-check harness probe [--calls 20] [--out <file>] <model flags>
-go run ./cmd/writing-check harness score --cases <build dir> --sessions <dir> --out <dir> [--change <change> [--model <id> | --models <id>,<id>...] | --texts-from <run dir>] [--part development|held_out] [--sample N --sample-seed S] [--grader <model> [--grader-no-session] [--grader-timeout <d>]] [--grader-inputs final|full|trimmed[,j=mode]...] [--added-grader old|inputs-first|verify|inputs-first-verify] [--readers-from <dir>] [--grades-from <dir>[,<dir>...]] [--vocabulary <owner-texts.jsonl.gz>] [--judgements j,...] [--repeatability <file>] <model flags>
+go run ./cmd/writing-check harness score --cases <build dir> [--sessions <dir>] --out <dir> [--change <change> [--model <id> | --models <id>,<id>...] | --texts-from <run dir>] [--part development|held_out] [--sample N --sample-seed S] [--grader <model> [--grader-no-session]] [--grader-timeout <d>] [--grader-inputs final|full|trimmed[,j=mode]...] [--added-grader old|inputs-first|verify|inputs-first-verify] [--readers-from <dir>] [--grades-from <dir>[,<dir>...]] [--vocabulary <owner-texts.jsonl.gz>] [--judgements j,...] [--repeatability <file>] <model flags>
 go run ./cmd/writing-check harness grader-test --planted <file> --cases <build dir> --sessions <dir> --out <dir> [--grader <model>] [--grader-inputs ...] [--added-grader old|inputs-first|verify|inputs-first-verify] <model flags>
 go run ./cmd/writing-check harness compare --a <run dir> --b <run dir> --out <repeatability.json>
 go run ./cmd/writing-check harness phrases-labels --labels <labeller round dir> --out <dir> <model flags>
@@ -1434,8 +1434,8 @@ with the reason, and `scores.md` says so. Each grade's `input_sha256` names the 
 `--grades-from` never takes a Claude grade for it. `run.json` records `grader_family: foundry`
 and `session_part: none`, and `scores.md` says so. Such a run grades the cases of the run
 `--readers-from` names, which `--sample` then draws from, so it can grade a sample of a sample
-run; it refuses the held-out part, a candidate's own texts (R2), and a `--grader-timeout` below
-10 minutes (its default).
+run; it refuses the held-out part, texts it wrote itself as a candidate (R2), and a
+`--grader-timeout` below 10 minutes (its default).
 
 A case's session part is its session's rows before the case's place, the newest
 `--session-chars` bytes (default 30,000). It keeps what the people and agents said, what the
@@ -1773,11 +1773,12 @@ On the fitting half, today's prompts agreed with what he did on 66.7% (74 of 111
 of the 21 explanations he did not follow. These prompts agree on 69.4% (77), 95% cluster
 bootstrap [60.2%, 79.8%], and catch 16 of 21 (76.2%). Most of the catch comes from `not_plain`,
 and that check also fails 20 of the 35 explanations he understood after a general complaint.
-Giving the grader his own words (`--vocabulary`) passed 3 of the 16 explanations he did not
-follow, and the run agreed less (67.6%, catch 52.4%), so `answered` does not read them. The
-bar of INFRA-3231, agreement of at least 80% with its interval's lower end at least 70%, and a
-catch of at least 70%, is not met on the fitting half. The measuring half is measured once, on
-these prompts.
+Giving the grader his own words (`--vocabulary`) passed 7 of the 16 explanations he did not
+follow that these prompts catch, and failed 2 of the 5 that they pass, so it caught 11 of 21
+(52.4%); the run also agreed less (67.6%, 75 of 111), so `answered` does not read them. The bar
+of INFRA-3231, agreement of at least 80% with its interval's lower end at least 70%, and a catch
+of at least 70%, is not met on the fitting half. The measuring half is measured once, on these
+prompts.
 
 ### The owner's own words
 

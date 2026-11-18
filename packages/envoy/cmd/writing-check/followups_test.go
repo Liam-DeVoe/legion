@@ -55,23 +55,6 @@ func followupsFixture() *dsFixture {
 	return f
 }
 
-// readGzipJSONL reads each line of a gzipped JSONL file into a T.
-func readGzipJSONL[T any](t *testing.T, path string) []T {
-	t.Helper()
-	var out []T
-	if err := eachGzipLine(path, func(line []byte) error {
-		var v T
-		if err := json.Unmarshal(line, &v); err != nil {
-			return err
-		}
-		out = append(out, v)
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	return out
-}
-
 // nextKeys is the keys and the places of a followup's next texts.
 func nextKeys(f dsFollowup) []string {
 	var out []string

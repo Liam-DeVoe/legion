@@ -213,16 +213,13 @@ func (c Config) WithGrader(id string, candidate bool) (Config, error) {
 // WithNoSessionGrader is the config with the Foundry deployment id as its grader, for one run
 // whose grader reads no session part (score --grader-no-session): a model of another family,
 // which session text never reaches (R2, after INFRA-3189). It has no fallback, so every grade of
-// the run is the deployment's, and it sets no effort, as a Foundry candidate that names none. It
-// refuses a model that prices.yaml does not price as a Foundry deployment. A candidate may grade
+// the run is the deployment's, and it sets no effort, as a Foundry candidate that names none. The
+// caller has checked that prices.yaml prices id as a Foundry deployment. A candidate may grade
 // so; score refuses the texts it wrote (R2).
-func (c Config) WithNoSessionGrader(id string) (Config, error) {
-	if p, ok := c.Prices.Prices[id]; !ok || p.Family != llm.FamilyFoundry {
-		return c, fmt.Errorf("--grader %q has no Foundry price in prices.yaml: the grader of --grader-no-session is a Foundry deployment", id)
-	}
+func (c Config) WithNoSessionGrader(id string) Config {
 	c.Models.Roles.Grader = ModelEntry{Family: llm.FamilyFoundry, ID: id}
 	c.Models.Roles.GraderFallbacks = nil
-	return c, nil
+	return c
 }
 
 // IsCandidate is whether id is the model of a candidate of candidates.yaml, at any effort.

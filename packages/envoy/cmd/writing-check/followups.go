@@ -10,8 +10,6 @@ package main
 
 import (
 	"cmp"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -372,22 +370,22 @@ func (fx *dsFollowupIndex) acts(s *dsText) []dsFollowupAct {
 func (fx *dsFollowupIndex) nextText(at time.Time, p dsPick) dsNextText {
 	t := p.text
 	v := fx.verdicts[t.tid()]
-	words := v.Words
-	if words == nil {
-		words = []string{}
-	}
 	return dsNextText{Key: t.Key, EventID: t.EventID, Time: t.Time, Kind: t.Kind, Text: wordrecords.Clip(t.Text, dsNextChars),
-		Verdict: v.Verdict, Words: words, RepliesToSubject: p.where == dsFoundReplyChain, Where: p.where,
+		Verdict: v.Verdict, Words: nonNil(v.Words), RepliesToSubject: p.where == dsFoundReplyChain, Where: p.where,
 		SecondsAfter: fx.owner[t].Sub(at).Seconds()}
 }
 
 // caseVerdict is a verdict as a case holds it.
 func caseVerdict(v dsVerdict) *dsCaseVerdict {
-	words := v.Words
-	if words == nil {
-		words = []string{}
+	return &dsCaseVerdict{Verdict: v.Verdict, Words: nonNil(v.Words), Model: v.Model, PromptSHA256: v.PromptSHA256}
+}
+
+// nonNil is list, or an empty list where it is nil, so its JSON is [] and not null.
+func nonNil(list []string) []string {
+	if list == nil {
+		return []string{}
 	}
-	return &dsCaseVerdict{Verdict: v.Verdict, Words: words, Model: v.Model, PromptSHA256: v.PromptSHA256}
+	return list
 }
 
 // dsCaseLine is the part of a case followups reads.
@@ -406,37 +404,9 @@ type dsCaseLine struct {
 // index as build does, and refuses a case whose texts the snapshot does not hold.
 func writeFollowups(in dsInputs, casesPath, out string) (dsFollowupsResult, error) {
 	res := dsFollowupsResult{rows: map[string]map[string]*dsFollowupRow{}}
-	ix, err := loadIndex(in.Snapshot)
-	if err != nil {
-		return res, err
-	}
-	verdicts, err := readVerdicts(in.Verdicts)
-	if err != nil {
-		return res, err
-	}
-	// The document versions among the candidates hold their text, as build reads them.
-	candidates := ix.candidates()
-	keep := map[dsVerKey]bool{}
-	for _, t := range candidates {
-		for _, k := range ix.textVersions(t) {
-			keep[k] = true
-		}
-	}
-	if err := ix.loadVersions(in.Snapshot, keep); err != nil {
-		return res, err
-	}
-	for _, t := range candidates {
-		ix.fillVersionText(t)
-	}
-	fx, err := newDSFollowupIndex(ix, verdicts)
-	if err != nil {
-		return res, err
-	}
-
-	if info, err := os.Stat(casesPath); err == nil && info.IsDir() {
-		casesPath = filepath.Join(casesPath, "cases.jsonl.gz")
-	}
-	casesSHA, err := dsFileSHA256(casesPath)
+	// The cases first: a wrong --cases fails before the snapshot is read.
+	casesPath = dsCasesFile(casesPath)
+	casesSHA, err := fileSHA256(casesPath)
 	if err != nil {
 		return res, err
 	}
@@ -455,6 +425,23 @@ func writeFollowups(in dsInputs, casesPath, out string) (dsFollowupsResult, erro
 		return res, err
 	}
 	slices.SortFunc(cases, func(a, b dsCaseLine) int { return strings.Compare(a.ID, b.ID) })
+
+	ix, err := loadIndex(in.Snapshot)
+	if err != nil {
+		return res, err
+	}
+	verdicts, err := readVerdicts(in.Verdicts)
+	if err != nil {
+		return res, err
+	}
+	// The document versions among the candidates hold their text, as build reads them.
+	if err := ix.loadCandidateVersions(in.Snapshot); err != nil {
+		return res, err
+	}
+	fx, err := newDSFollowupIndex(ix, verdicts)
+	if err != nil {
+		return res, err
+	}
 
 	ec := dsExplanationCounts{End: ix.end, Owner: ix.owner, NamingIssue: ix.namingIssue, Seed: in.Seed, FromCasesSHA256: casesSHA,
 		Parts: map[string]int{}, SHA256: map[string]string{}}
@@ -511,15 +498,13 @@ func writeFollowups(in dsInputs, casesPath, out string) (dsFollowupsResult, erro
 			}
 			row.SubjectFound++
 		}
-		switch {
-		case len(f.Next) > 0 && len(f.Acts) > 0:
+		if len(f.Next) > 0 {
 			row.WithNext++
+		}
+		if len(f.Acts) > 0 {
 			row.WithAct++
-		case len(f.Next) > 0:
-			row.WithNext++
-		case len(f.Acts) > 0:
-			row.WithAct++
-		default:
+		}
+		if len(f.Next) == 0 && len(f.Acts) == 0 {
 			row.WithNeither++
 		}
 		lines = append(lines, f)
@@ -561,15 +546,9 @@ func writeFollowups(in dsInputs, casesPath, out string) (dsFollowupsResult, erro
 	if ec.SHA256["cases.jsonl.gz"], err = dsWriteGzipJSONL(filepath.Join(dir, "cases.jsonl.gz"), explanations); err != nil {
 		return res, err
 	}
-	docs := map[dsVerKey]bool{}
 	asCases := make([]*dsCase, len(explanations))
 	for i, e := range explanations {
 		asCases[i] = &e.dsCase
-		for _, d := range e.Record.Documents {
-			if !d.Missing {
-				docs[dsVerKey{d.ArtifactID, d.Version}] = true
-			}
-		}
 		ec.Parts[e.Part]++
 		if len(e.OfQuestion) > 1 {
 			ec.OfSeveral++
@@ -581,6 +560,7 @@ func writeFollowups(in dsInputs, casesPath, out string) (dsFollowupsResult, erro
 			ec.CasesWithSession++
 		}
 	}
+	docs := dsRecordDocuments(asCases)
 	if ec.SHA256["documents.jsonl.gz"], err = ix.writeDocuments(in.Snapshot, filepath.Join(dir, "documents.jsonl.gz"), docs); err != nil {
 		return res, err
 	}
@@ -594,18 +574,4 @@ func writeFollowups(in dsInputs, casesPath, out string) (dsFollowupsResult, erro
 	}
 	res.explanations = ec
 	return res, nil
-}
-
-// dsFileSHA256 is the hex SHA-256 of a file's bytes.
-func dsFileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }

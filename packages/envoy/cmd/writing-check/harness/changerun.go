@@ -135,11 +135,8 @@ func (m *modelFlags) candidateModel(cfg Config, name string, runner *llm.Runner)
 		c, err := m.claudeClient(cfg, entry, runner)
 		return c, nil, err
 	}
-	tokens, err := m.foundryConfig().Tokens()
-	if err != nil {
-		return nil, nil, err
-	}
-	return nil, llm.NewFoundry(m.foundryConfig(), tokens, entry.ID, entry.Effort, cfg.Prices.Prices[entry.ID].agentloop(), runner), nil
+	f, err := m.foundryClient(cfg, entry, runner)
+	return nil, f, err
 }
 
 // connect gives the run what its lanes share: the writer, the local Dispatch, its fake Envoy and

@@ -1416,6 +1416,25 @@ func (ix *dsIndex) loadVersions(path string, keep map[dsVerKey]bool) error {
 	})
 }
 
+// loadCandidateVersions reads the snapshot's versions again, keeping the Markdown of the document
+// versions among the candidates, and fills each candidate version's text from it.
+func (ix *dsIndex) loadCandidateVersions(path string) error {
+	candidates := ix.candidates()
+	keep := map[dsVerKey]bool{}
+	for _, t := range candidates {
+		for _, k := range ix.textVersions(t) {
+			keep[k] = true
+		}
+	}
+	if err := ix.loadVersions(path, keep); err != nil {
+		return err
+	}
+	for _, t := range candidates {
+		ix.fillVersionText(t)
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------------------------
 // fetch
 
@@ -2722,18 +2741,8 @@ func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
 	}
 
 	// The document versions among the candidates hold their text in the snapshot's versions.
-	candidates := ix.candidates()
-	keep := map[dsVerKey]bool{}
-	for _, t := range candidates {
-		for _, k := range ix.textVersions(t) {
-			keep[k] = true
-		}
-	}
-	if err := ix.loadVersions(snapshotPath, keep); err != nil {
+	if err := ix.loadCandidateVersions(snapshotPath); err != nil {
 		return res, err
-	}
-	for _, t := range candidates {
-		ix.fillVersionText(t)
 	}
 
 	counts := dsCounts{
@@ -3011,14 +3020,7 @@ func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
 	if res.casesSHA, err = dsWriteGzipJSONL(filepath.Join(out, "cases.jsonl.gz"), list); err != nil {
 		return res, err
 	}
-	docs := map[dsVerKey]bool{}
-	for _, c := range list {
-		for _, d := range c.Record.Documents {
-			if !d.Missing {
-				docs[dsVerKey{d.ArtifactID, d.Version}] = true
-			}
-		}
-	}
+	docs := dsRecordDocuments(list)
 	if res.documentSHA, err = ix.writeDocuments(snapshotPath, filepath.Join(out, "documents.jsonl.gz"), docs); err != nil {
 		return res, err
 	}
@@ -3274,6 +3276,19 @@ func dsWriteGzipJSONL[T any](path string, values []T) (string, error) {
 		return "", err
 	}
 	return sha256Hex(buf.Bytes()), nil
+}
+
+// dsRecordDocuments is the set of document versions the cases' records name and Dispatch served.
+func dsRecordDocuments(cases []*dsCase) map[dsVerKey]bool {
+	docs := map[dsVerKey]bool{}
+	for _, c := range cases {
+		for _, d := range c.Record.Documents {
+			if !d.Missing {
+				docs[dsVerKey{d.ArtifactID, d.Version}] = true
+			}
+		}
+	}
+	return docs
 }
 
 // writeDocuments writes the document versions keep names to a gzipped JSONL file, in the
@@ -3775,6 +3790,15 @@ func dsStoreTime(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("%q is not a time", s)
 }
 
+// dsCasesFile is the cases file a --cases flag names: the path itself, or the cases.jsonl.gz in it
+// when the path is a directory.
+func dsCasesFile(path string) string {
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return filepath.Join(path, "cases.jsonl.gz")
+	}
+	return path
+}
+
 // ingestSessions checks every part of the session export against its manifest, joins the rows
 // to the cases by writer session, and writes each case's place in its session: the last row at
 // or before the case's write time. It refuses a part whose SHA-256 differs from the manifest, an
@@ -3815,9 +3839,7 @@ func ingestSessions(manifestPath, casesPath, out string) (dsSessionCounts, error
 		}
 	}
 
-	if info, err := os.Stat(casesPath); err == nil && info.IsDir() {
-		casesPath = filepath.Join(casesPath, "cases.jsonl.gz")
-	}
+	casesPath = dsCasesFile(casesPath)
 	type caseRow struct {
 		ID            string `json:"id"`
 		WriterSession string `json:"writer_session"`

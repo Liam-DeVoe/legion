@@ -597,7 +597,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	unedited := fs.String("unedited", uneditedRewrite, "change 3 with no writer session: what posts, as DISPATCH_REVIEWER_UNEDITED says: rewrite or as_written")
 	writerOrder := fs.String("writer-order", writerSessionLast, "the order of the writer's user message: session-last, Dispatch's record, the writer's text and Dispatch's message, then the session part; or session-first, the record and the session part, then the text and the message")
 	casesDir := fs.String("cases", "", "the dataset build directory: cases.jsonl.gz and documents.jsonl.gz (required)")
-	sessionsDir := fs.String("sessions", "", "the directory `writing-check dataset sessions` wrote: session-rows.jsonl.gz, places.jsonl, sessions-counts.json (required)")
+	sessionsDir := fs.String("sessions", "", "the directory `writing-check dataset sessions` wrote: session-rows.jsonl.gz, places.jsonl, sessions-counts.json (required; optional under --grader-no-session)")
 	out := fs.String("out", "", "the run's output directory, or under --models the directory of each model's run; a run continues the cases it holds no result for (required; keep it under $TMPDIR)")
 	part := fs.String("part", PartDevelopment, "the part to score: development, or held_out, which the exposure log records")
 	groupsFlag := fs.String("groups", strings.Join(Groups, ","), "the case groups to score, comma-separated")
@@ -788,9 +788,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	var skipped map[Judgement]string
 	if foreign {
-		if cfg, err = cfg.WithNoSessionGrader(*graderFlag); err != nil {
-			return usage(err.Error())
-		}
+		cfg = cfg.WithNoSessionGrader(*graderFlag)
 		for _, src := range sources {
 			if m, ok := cfg.Candidate(src.params.Model); ok && m.ID == *graderFlag {
 				return usage(fmt.Sprintf("--grader %q wrote the texts of --texts-from %s: a grader grades no output it wrote (R2)", *graderFlag, src.dir))

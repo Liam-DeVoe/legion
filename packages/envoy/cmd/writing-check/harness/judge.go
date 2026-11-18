@@ -657,7 +657,8 @@ func (g *Grader) request(spec judgementSpec, in GradeInput) (gradeRequest, error
 	inputsFirst := inputsFirstLayout(g.addedGrader(in.Judgement))
 	r.data = promptData{
 		HasQuestion: r.parts.Question, HasText: r.parts.Text, HasRecord: r.parts.Record, HasSession: r.parts.Session, WriterAnswer: r.parts.WriterAnswer,
-		HasOwnWords: in.ownWords(), Reply: in.Reply, Phrases: g.phrases, LostKinds: inputsFirst && in.Judgement == JLost,
+		HasOwnWords: in.ownWords(), Reply: in.Reply, FirstParagraph: in.Judgement == JFirstParagraph, Phrases: g.phrases,
+		LostKinds: inputsFirst && in.Judgement == JLost,
 	}
 	if r.parts.Session {
 		r.session = in.Session
@@ -679,12 +680,13 @@ func (g *Grader) request(spec judgementSpec, in GradeInput) (gradeRequest, error
 // digest is the requestDigest of a call that the grader's models may make: the Foundry
 // deployment of a grader that reads no session part, else the Claude model and its fallbacks.
 func (g *Grader) digest(req llm.Request, session claude.SessionText, extra ...string) string {
-	models := []digestModel{g.Foundry}
-	if g.Foundry == nil {
-		models = []digestModel{g.Model}
-		for _, f := range g.Fallbacks {
-			models = append(models, f)
-		}
+	if g.Foundry != nil {
+		return requestDigest([]digestModel{g.Foundry}, req, session, extra...)
+	}
+	models := make([]digestModel, 0, 1+len(g.Fallbacks))
+	models = append(models, g.Model)
+	for _, f := range g.Fallbacks {
+		models = append(models, f)
 	}
 	return requestDigest(models, req, session, extra...)
 }

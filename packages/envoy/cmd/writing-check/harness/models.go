@@ -86,15 +86,26 @@ func (m *modelFlags) claudeClient(cfg Config, model ModelEntry, runner *llm.Runn
 // stand-in's, which signs in nowhere.
 var foundryTokens = llm.FoundryConfig.Tokens
 
+// foundryClient is the client of a Foundry deployment of the config, at its effort and the price
+// of its id.
+func (m *modelFlags) foundryClient(cfg Config, model ModelEntry, runner *llm.Runner) (*llm.Foundry, error) {
+	account := m.foundryConfig()
+	tokens, err := foundryTokens(account)
+	if err != nil {
+		return nil, err
+	}
+	return llm.NewFoundry(account, tokens, model.ID, model.Effort, cfg.Prices.Prices[model.ID].agentloop(), runner), nil
+}
+
 // grader is the grader of the config, with its fallbacks, reading the context inputs give. A
 // Foundry grader (Config.WithNoSessionGrader) is a grader that reads no session part, with none.
 func (m *modelFlags) grader(cfg Config, inputs GraderInputs, runner *llm.Runner) (*Grader, error) {
 	if g := cfg.Models.Roles.Grader; g.Family == llm.FamilyFoundry {
-		tokens, err := foundryTokens(m.foundryConfig())
+		f, err := m.foundryClient(cfg, g, runner)
 		if err != nil {
 			return nil, err
 		}
-		return NewNoSessionGrader(llm.NewFoundry(m.foundryConfig(), tokens, g.ID, g.Effort, cfg.Prices.Prices[g.ID].agentloop(), runner), inputs), nil
+		return NewNoSessionGrader(f, inputs), nil
 	}
 	model, err := m.claudeClient(cfg, cfg.Models.Roles.Grader, runner)
 	if err != nil {
