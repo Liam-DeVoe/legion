@@ -1708,9 +1708,13 @@ export const dispatchToolSpecs = [
       "or merged, in a repository that Dispatch's GitHub App is installed on and can read, adds " +
       "the repository of that pull request. One record reads at most 10 linked pull requests. A " +
       "commit that none of these repositories holds is 400 RESULT_COMMIT_UNKNOWN, which names the " +
-      "commit and each owner/repo that Dispatch asked, and says how many linked pull requests it " +
-      "left unread past that bound. Record the result after the commit is pushed. A linked " +
-      "repository that the App is not installed on or cannot read does not count. Where a read of " +
+      "commit and each owner/repo that Dispatch asked. It also names each linked pull request that " +
+      "Dispatch could not read, or in whose repository it could not read the commit, with its " +
+      "reason (owner/repo#n (repository_unreadable)), at most 10 and a count of the rest, and says " +
+      "to grant Dispatch's GitHub App that repository or to link a readable pull request. It says " +
+      "how many linked pull requests it left unread past that bound. Record the result after the " +
+      "commit is pushed. A linked repository that the App is not installed on or cannot read does " +
+      "not count. Where a read of " +
       "a linked pull request or of a linked repository does not answer, and no repository is shown " +
       "to hold the commit, the record is 502 GITHUB_UNREADABLE and nothing is recorded: record the " +
       "result again, after the wait the refusal names for a rate limit. Where the issue has no " +

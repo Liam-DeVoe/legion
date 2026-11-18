@@ -85,7 +85,7 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 		c.mappingsSkipped++
 		if mapped {
 			r.Logger.Warn("ci reconcile skipped a repository whose name is not an owner/name GitHub allows",
-				"repository", row, "removed_by", mappingRemoval(row))
+				append([]any{"repository", row}, r.mappingRepairs(ctx, row)...)...)
 			return reconciled{}, nil
 		}
 		r.Logger.Warn("ci reconcile skipped a repository whose name is not an owner/name GitHub allows", "repository", row)
@@ -363,27 +363,78 @@ func (r *Reconciler) openPullRequests(ctx context.Context, id int64, owner, name
 
 // splitRepo is the owner and the name of an `owner/name`, and false for anything that is not
 // one GitHub allows (refs.SplitGitHubRepo, the one rule every place that builds a GitHub path
-// reads): no slash, a side of it empty, a character GitHub's names do not take, or a name of `.`
-// or `..` before or after a trailing `.git` is trimmed. A mapping or a renamed_to stored before
-// the settings route held it to that rule is such a name, and `..` in a path would ask GitHub
-// about the one above the repository's, so the pass skips it before it asks GitHub anything.
+// reads): no slash, a side of it empty, a character GitHub's names do not take, a name past 100
+// characters, or a name of `.` or `..` before or after a trailing `.git` is trimmed. A mapping or
+// a renamed_to stored before the settings route held it to that rule is such a name, and `..` in
+// a path would ask GitHub about the one above the repository's, so the pass skips it before it
+// asks GitHub anything.
 func splitRepo(full string) (owner, name string, ok bool) {
 	owner, name, err := refs.SplitGitHubRepo(full)
 	return owner, name, err == nil
 }
 
-// mappingRemoval is the request that removes a mapping stored under row, a name splitRepo
-// refuses, which the pass names beside its skip so the person reading the WARN can mend it. The
-// settings route's DELETE reads its path as every mapping's was read before the route held it to
-// GitHub's names (api's storedRepoProjectPath), but a browser, and with it the dashboard's
-// delete, resolves a `.` or `..` segment away before the request is sent, as curl does without
-// --path-as-is, so such a segment is written percent-encoded: a mapping stored under `acme/..`
-// before the route held names to that rule is removed by
-// `DELETE /api/v1/settings/repo-projects/acme/%2E%2E`. A row that is a mapping's renamed_to
-// rather than its own name is mended by that mapping's PUT instead.
-func mappingRemoval(row string) string {
-	owner, name, _ := strings.Cut(row, "/")
-	return "DELETE /api/v1/settings/repo-projects/" + rawSegment(owner) + "/" + rawSegment(name)
+// mappingRepairs is what the pass names beside its skip of row, a name splitRepo refuses that a
+// mapping names, so the person reading the WARN can mend it. covered names a mapping by its
+// canonical name, which is its renamed_to where it names one, so row is one of two kinds: a
+// mapping stored under row, which its removal mends (`removed_by`, mappingRemoval), or the
+// renamed_to of a mapping stored under another name, which no mapping is stored under, so a
+// removal of row removes nothing, and which that mapping's PUT mends instead, with a renamed_to
+// GitHub allows or `""`, which clears it (`mended_by`, mappingRename). Both are read from
+// repo_projects here, where the WARN is written, rather than carried through every pass for a
+// row that is almost never refused. A read that fails is named in their place.
+func (r *Reconciler) mappingRepairs(ctx context.Context, row string) []any {
+	rows, err := r.Pool.Query(ctx, `select repo, renamed_to is not null from repo_projects
+		where lower(coalesce(renamed_to, repo)) = lower($1) order by repo`, row)
+	if err != nil {
+		return []any{"error", fmt.Errorf("read the mappings that name it: %w", err)}
+	}
+	defer rows.Close()
+	var removedBy, mendedBy []string
+	for rows.Next() {
+		var repo string
+		var renamed bool
+		if err := rows.Scan(&repo, &renamed); err != nil {
+			return []any{"error", fmt.Errorf("read a mapping that names it: %w", err)}
+		}
+		if renamed {
+			mendedBy = append(mendedBy, mappingRename(repo))
+		} else {
+			removedBy = append(removedBy, mappingRemoval(repo))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return []any{"error", fmt.Errorf("read the mappings that name it: %w", err)}
+	}
+	var repairs []any
+	if len(removedBy) > 0 {
+		repairs = append(repairs, "removed_by", strings.Join(removedBy, ", "))
+	}
+	if len(mendedBy) > 0 {
+		repairs = append(repairs, "mended_by", strings.Join(mendedBy, ", "))
+	}
+	return repairs
+}
+
+// mappingRemoval is the request that removes a mapping stored under repo. The settings route's
+// DELETE reads its path as every mapping's was read before the route held it to GitHub's names
+// (api's storedRepoProjectPath), but a browser, and with it the dashboard's delete, resolves a
+// `.` or `..` segment away before the request is sent, as curl does without --path-as-is, so
+// such a segment is written percent-encoded: a mapping stored under `acme/..` before the route
+// held names to that rule is removed by `DELETE /api/v1/settings/repo-projects/acme/%2E%2E`.
+func mappingRemoval(repo string) string {
+	return "DELETE " + mappingPath(repo)
+}
+
+// mappingRename is the request that mends the renamed_to of the mapping stored under repo: its
+// PUT, which takes the mapping's project and a renamed_to GitHub allows, or `""` to clear it.
+func mappingRename(repo string) string {
+	return `PUT ` + mappingPath(repo) + ` with its project and a renamed_to GitHub allows, or "" to clear it`
+}
+
+// mappingPath is the settings route's path of the mapping stored under repo.
+func mappingPath(repo string) string {
+	owner, name, _ := strings.Cut(repo, "/")
+	return "/api/v1/settings/repo-projects/" + rawSegment(owner) + "/" + rawSegment(name)
 }
 
 // rawSegment is segment as a request path carries it: escaped, and `.` and `..` written as `%2E`

@@ -37,14 +37,16 @@ import (
 // commit at most once. Ten leaves room for an issue whose work spans several repositories, or
 // carries a few links that name no pull request at all, and holds one record to at most ten such
 // calls and ten commit reads. A link past the bound is left unread, and a refusal says how many
-// were.
+// were. A refusal names at most this many of the linked pull requests Dispatch could not read,
+// and counts the rest (linkedReads.couldNotRead).
 const linkedPullRequestReads = 10
 
 // refuseUnknownCommit refuses a result at a commit that no repository the result may name a
 // commit of holds: 400 RESULT_COMMIT_UNKNOWN, naming the commit and every `owner/repo` GitHub
-// said holds no such commit, and each linked pull request in a repository Dispatch cannot read,
-// with its reason and what mends it (linkedReads.couldNotRead): the issue already links such a
-// pull request, so a refusal that left it out would tell the caller to link what it has linked.
+// said holds no such commit, and what Dispatch could not read of each linked repository it
+// cannot read — a linked pull request, or the commit in the repository of one it read — with its
+// reason and what mends it (linkedReads.couldNotRead): the issue already links such a pull
+// request, so a refusal that left it out would tell the caller to link what it has linked.
 // It answers the repository the result's commit is taken to be of, which the read-through after
 // the write reads (readThroughPullRequests) and recordCheckResult keeps with the row where it is
 // a linked repository.
@@ -220,39 +222,81 @@ func joinAnd(items []string) string {
 
 // linkedReads is what one record has left of its bound on the linked pull requests it reads
 // (linkedPullRequestReads), how many linked pull requests the bound left unread, and each
-// repository Dispatch cannot read (delivery.RepositoryUnreadable) with its linked pull requests,
-// each named `owner/repo#n (repository_unreadable)`, in the order the record met them.
+// repository Dispatch cannot read (delivery.RepositoryUnreadable), in the order the record met
+// them: unreadRepos names each, unreadPulls each linked pull request of a repository whose read of
+// a pull request's state answered so, and unreadCommits the pull request read open or merged of a
+// repository whose commit read answered so, each pull request named
+// `owner/repo#n (repository_unreadable)`.
 type linkedReads struct {
-	left, unread int
-	unreadRepos  []string
-	unreadPulls  []string
+	left, unread  int
+	unreadRepos   []string
+	unreadPulls   []string
+	unreadCommits []string
 }
 
-// cannotRead keeps link, a repository whose read answered err, and all its linked pull requests,
-// where err says Dispatch cannot read that repository: the answer is about the whole repository,
-// so none of its pull requests can be read until someone grants the App it.
+// cannotRead keeps link, a repository whose read of a linked pull request's state answered err,
+// and all its linked pull requests, where err says Dispatch cannot read that repository: the
+// answer is about the whole repository, so none of its pull requests can be read until someone
+// grants the App it.
 func (r *linkedReads) cannotRead(link linkedRepository, err error) {
 	if !delivery.RepositoryUnreadable(err) {
 		return
 	}
 	r.unreadRepos = append(r.unreadRepos, link.repo)
 	for _, number := range link.numbers {
-		r.unreadPulls = append(r.unreadPulls, fmt.Sprintf("%s#%d (%s)", link.repo, number, model.ReasonRepositoryUnreadable))
+		r.unreadPulls = append(r.unreadPulls, unreadPull(link.repo, number))
 	}
 }
 
-// couldNotRead is the clause a refusal names the linked pull requests Dispatch could not read
-// with, each with its reason, and says how to mend; "" where it met no repository it cannot read.
-func (r linkedReads) couldNotRead() string {
-	switch len(r.unreadPulls) {
-	case 0:
-		return ""
-	case 1:
-		return fmt.Sprintf("; Dispatch could not read the linked pull request %s: grant Dispatch's GitHub App %s, or link a readable pull request",
-			r.unreadPulls[0], r.unreadRepos[0])
+// cannotReadCommit keeps link, a repository whose linked pull request number read open or merged
+// and whose commit read then answered err, where err says Dispatch cannot read that repository:
+// the pull request was read, and what Dispatch could not read is the commit in its repository.
+func (r *linkedReads) cannotReadCommit(link linkedRepository, number int, err error) {
+	if !delivery.RepositoryUnreadable(err) {
+		return
 	}
-	return fmt.Sprintf("; Dispatch could not read the linked pull requests %s: grant Dispatch's GitHub App %s, or link a readable pull request",
-		joinAnd(r.unreadPulls), joinAnd(r.unreadRepos))
+	r.unreadRepos = append(r.unreadRepos, link.repo)
+	r.unreadCommits = append(r.unreadCommits, unreadPull(link.repo, number))
+}
+
+// unreadPull is a linked pull request of a repository Dispatch cannot read as a refusal names it.
+func unreadPull(repo string, number int) string {
+	return fmt.Sprintf("%s#%d (%s)", repo, number, model.ReasonRepositoryUnreadable)
+}
+
+// couldNotRead is the clause a refusal names what Dispatch could not read of the linked
+// repositories with, each with its reason, and says how to mend; "" where it met no repository it
+// cannot read. A linked pull request whose read of its state answered so is named as a pull
+// request Dispatch could not read; where that read answered and the commit read of its repository
+// did not, the clause names the commit in the repository of that pull request instead. The pull
+// requests of the first kind are named up to linkedPullRequestReads and the rest counted, since a
+// repository Dispatch cannot read lists every pull request the issue links in it, which are as
+// many as a person writes; each of the second kind spent one of those reads, so the bound holds
+// them already.
+func (r linkedReads) couldNotRead() string {
+	var parts []string
+	if pulls := r.unreadPulls; len(pulls) > 0 {
+		noun := "the linked pull request "
+		if len(pulls) > 1 {
+			noun = "the linked pull requests "
+		}
+		if more := len(pulls) - linkedPullRequestReads; more > 0 {
+			pulls = append(pulls[:linkedPullRequestReads:linkedPullRequestReads], fmt.Sprintf("%d more", more))
+		}
+		parts = append(parts, noun+joinAnd(pulls))
+	}
+	switch len(r.unreadCommits) {
+	case 0:
+	case 1:
+		parts = append(parts, "the commit in the repository of the linked pull request "+r.unreadCommits[0])
+	default:
+		parts = append(parts, "the commit in the repositories of the linked pull requests "+joinAnd(r.unreadCommits))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; Dispatch could not read %s: grant Dispatch's GitHub App %s, or link a readable pull request",
+		strings.Join(parts, ", and "), joinAnd(r.unreadRepos))
 }
 
 // leftUnread is the clause a refusal ends with where the bound left links unread, and "" where
@@ -340,7 +384,7 @@ func (s *server) linkedRepositoryHolds(ctx context.Context, link linkedRepositor
 		case open:
 			held, err = delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, link.repo, sha)
 			if linkCannotCount(err) {
-				reads.cannotRead(link, err)
+				reads.cannotReadCommit(link, number, err)
 				return false, false, nil
 			}
 			return true, held, err
