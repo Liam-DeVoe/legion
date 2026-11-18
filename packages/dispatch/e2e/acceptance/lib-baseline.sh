@@ -58,14 +58,14 @@
 #       holds for both.
 #
 #       The database is the run's when the run gives one. `c-decisions-converted` and `c-derived`
-#       each drop and create an empty database of their own (`infra_1098_decisions`,
-#       `infra_1098_census`) and hand it to their driver as DATABASE_URL, so with DATABASE_URL set
-#       this harness boots on that database, creates none, and drops none: the run that made it
-#       owns it. Creating a second one here would either collide with the run's or quietly leave
-#       the check reading a different database than the one the servers wrote. With DATABASE_URL
-#       unset, as under --selftest, the harness creates a database named for this run alone on the
-#       server LEGION_TEST_PG_DSN names, connecting to the database that DSN names only to create
-#       and drop its own, and drops it again in baseline_stop.
+#       each drop and create an empty database of their own and hand it to their driver as
+#       DATABASE_URL, so with DATABASE_URL set this harness boots on that database, creates none,
+#       and drops none: the run that made it owns it. Creating a second one here would either
+#       collide with the run's or quietly leave the check reading a different database than the
+#       one the servers wrote. With DATABASE_URL unset, as under --selftest, the harness creates a
+#       database named for this run alone on the server LEGION_TEST_PG_DSN names, connecting to
+#       the database that DSN names only to create and drop its own, and drops it again in
+#       baseline_stop.
 #
 #       The agent bearer is the run's when the run gives one. The two checks pass
 #       DISPATCH_TOKEN=e2e-token and boot every server with DISPATCH_AGENT_TOKEN set to that bearer,
@@ -389,19 +389,23 @@ baseline_boot() {
   : >"$baseline_log" || baseline_fail "could not write $baseline_log"
   (
     set +x
+    # shellcheck disable=SC2031 # this shell's own PATH, which lib.sh's subshell never changed
     local variable saved_path="$PATH"
     local -a exported
     mapfile -t exported < <(compgen -e)
     for variable in "${exported[@]}"; do
       unset "$variable" 2>/dev/null || true
     done
+    # shellcheck disable=SC2031 # the PATH saved above, which lib.sh's subshell never changed
     export PATH="$saved_path"
+    # shellcheck disable=SC2031 # the server's HOME, set here; lib.sh's subshell sets its own
     export HOME=/nonexistent
     export XDG_CACHE_HOME=/nonexistent
     export XDG_CONFIG_HOME=/nonexistent
     export XDG_DATA_HOME=/nonexistent
     # shellcheck disable=SC2030 # the server's TMPDIR is this run's own work directory; the shell
     # that started it keeps the caller's, which the line in baseline_start below reads
+    # shellcheck disable=SC2031 # the server's TMPDIR, set here; lib.sh's subshell sets its own
     export TMPDIR="$baseline_work"
     # shellcheck disable=SC2030 # the server's DATABASE_URL is the database it serves; the shell
     # that started it keeps the run's, which baseline_start below reads before any server boots
