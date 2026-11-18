@@ -277,8 +277,9 @@ test("a cut row's own resize at its width measures nothing, and a new width or a
 });
 
 // A row that goes away from the screen keeps the cut it last had, with no read; the page's
-// typeface arriving measures the rows near the screen again, and only those.
-test("a row that goes away keeps its cut, and the typeface's arrival measures the near rows again", () => {
+// typeface arriving measures again every row cut before it, the one away included, and no row
+// never measured.
+test("a row that goes away keeps its cut, and the typeface's arrival measures again every row measured before it, and only those", () => {
   const fonts = new EventTarget();
   const { cut, cutWhenRead, frames, near, runFrame, words } = drawRows({ fonts });
   const [away, stays] = words;
@@ -298,7 +299,10 @@ test("a row that goes away keeps its cut, and the typeface's arrival measures th
   });
   expect(frames, "the typeface's arrival asked for no batch").toHaveLength(1);
   runFrame();
-  expect(cutWhenRead.at(-1), "the typeface did not measure the near row alone").toHaveLength(1);
+  expect(
+    cutWhenRead.at(-1),
+    "the typeface did not measure again the two rows measured before it alone"
+  ).toHaveLength(2);
   expect([cut(away), cut(stays)]).toEqual([true, true]);
 });
 
@@ -307,14 +311,18 @@ test("a row that goes away keeps its cut, and the typeface's arrival measures th
  * another, each `whole` px while its words are whole, or its cut and a 24 px "more" once cut, and
  * `window.scrollBy` moves the page. The page mounts scrolled a screen above its first row, so the
  * mount's own pass, which `mountPass` lets run, finds no row in view, and every cut is a batch's.
- * `read` holds the place of every row whose box, or whose words' box, was read; `scrolls` holds
- * each scroll, with how many rows were drawn cut when it was made.
+ * A row's words lay out `whole` px tall until `typefaceArrives` lays them out taller in the
+ * page's typeface, which tells in the count a cut holds back (`hiddenOf`) which face it was
+ * measured on. `read` holds the place of every row whose box, or whose words' box, was read;
+ * `scrolls` holds each scroll, with how many rows were drawn cut when it was made.
  */
 function stackRows(whole: number) {
   const MORE = 24;
   let words: HTMLElement[] = [];
   let rows: Element[] = [];
   let scrolled = -window.innerHeight;
+  let laidOut = whole;
+  const fonts = new EventTarget();
   const read = new Set<number>();
   const wordsHeight = (element: HTMLElement | undefined) => {
     const cut = Number.parseFloat(element?.style.maxHeight ?? "");
@@ -333,7 +341,7 @@ function stackRows(whole: number) {
     box: (element) => {
       // A block is laid out whole from its words' top, as the words would draw it uncut.
       const block = words.indexOf(element.parentElement as HTMLElement);
-      if (block >= 0) return new DOMRect(0, topOf(block), 600, whole);
+      if (block >= 0) return new DOMRect(0, topOf(block), 600, laidOut);
       const at = words.indexOf(element);
       if (at >= 0) {
         read.add(at);
@@ -344,6 +352,7 @@ function stackRows(whole: number) {
       read.add(row);
       return new DOMRect(0, topOf(row), 600, heightOf(row));
     },
+    fonts,
   });
   words = drawn.words;
   rows = [...drawn.view.container.querySelectorAll("[data-node-row]")];
@@ -369,6 +378,12 @@ function stackRows(whole: number) {
   return {
     cutCount,
     drawn,
+    /** How many words row `at`'s cut holds back, or `undefined` where it is drawn whole. */
+    hiddenOf: (at: number) => {
+      const more = rows[at]?.querySelector("[data-node-more]")?.textContent ?? "";
+      const count = /(\d+)/u.exec(more)?.[1];
+      return count === undefined ? undefined : Number(count);
+    },
     /** Lets the pass the rows' mount asked for run: it finds no row in view. */
     mountPass: () => act(async () => {}),
     near,
@@ -379,6 +394,13 @@ function stackRows(whole: number) {
     },
     scrolls,
     topOf,
+    /** The page's typeface arrives, in which every row's words lay out `height` px tall. */
+    typefaceArrives: (height: number) => {
+      laidOut = height;
+      act(() => {
+        fonts.dispatchEvent(new Event("loadingdone"));
+      });
+    },
   };
 }
 
@@ -542,4 +564,48 @@ test("the rows in view as they mount are cut before the page is painted, every r
     drawn.cutWhenRead.flat(),
     "a row in view was read other than once, or a read came after a cut"
   ).toEqual([0, 0, 0]);
+});
+
+// The typeface's arrival marks stale every row whose cut was measured on the fallback face. A
+// stale row outside the view is measured in the next batch wherever it stands, the one left far
+// behind included; a stale row in view keeps its cut until a scroll leaves it wholly outside the
+// view; a row never measured is not read. The words hold back 52 words cut on the fallback face,
+// where they lay out 300 px tall, and 76 on the typeface, where they lay out 600 px tall.
+test("the typeface's arrival measures again every row cut on the fallback face: one outside the view at once, near or far, and one in view once a scroll leaves it wholly outside the view", async () => {
+  const { drawn, hiddenOf, mountPass, near, pageTop, scrollTo, typefaceArrives } = stackRows(300);
+  await mountPass();
+  const hidden = (rows: number[]) => rows.map((at) => hiddenOf(at));
+  // Row 43 is cut as it stands just under the view, then left far behind.
+  scrollTo(pageTop(40));
+  near(43, 44, true);
+  drawn.runFrame();
+  near(43, 44, false);
+  // Rows 3 to 5 are cut under the view at the page's top; then the page scrolls until rows 3
+  // and 4 stand in view and row 5 just under it.
+  scrollTo(0);
+  near(3, 6, true);
+  drawn.runFrame();
+  scrollTo(400);
+  expect(hidden([3, 4, 5, 43]), "a row was not cut on the fallback face").toEqual([52, 52, 52, 52]);
+
+  typefaceArrives(600);
+  expect(drawn.frames, "the typeface's arrival asked for no batch").toHaveLength(1);
+  drawn.runFrame();
+  expect(
+    hidden([3, 4, 5, 43]),
+    "a stale row outside the view kept its cut on the fallback face, or one in view was cut again"
+  ).toEqual([52, 52, 76, 76]);
+  expect(
+    [0, 1, 2, 40].map((at) => drawn.cut(drawn.words[at])),
+    "a row never measured was measured"
+  ).toEqual([false, false, false, false]);
+
+  // A scroll leaves row 3 wholly above the view; row 4 stays in it.
+  scrollTo(pageTop(4) + 10);
+  document.dispatchEvent(new Event("scroll"));
+  drawn.runFrame();
+  expect(
+    hidden([3, 4]),
+    "a stale row the scroll left outside the view kept its cut on the fallback face"
+  ).toEqual([76, 52]);
 });
