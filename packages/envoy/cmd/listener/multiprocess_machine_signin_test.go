@@ -12,8 +12,6 @@ package main
 import (
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -23,33 +21,12 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 )
 
-// mpBrokerOrigin is the public origin both pods of a broker row are given: a proof's 'htu' is
-// checked against this and the request's path, never against the port the request arrived on
-// (brokertoken.Verifier.atOrigin), so one signed proof is the same presentation whichever pod of
-// the machine it is sent to.
-const mpBrokerOrigin = "http://127.0.0.1:9020"
-
-// mpBrokerEnv is the four variables that turn the broker-token credential on, for every pod of a
-// row: the stub broker's URL, this listener's own account token, and the origin above.
-func mpBrokerEnv(t *testing.T, broker *brokertokentest.StubBroker) []string {
-	t.Helper()
-	accountFile := filepath.Join(t.TempDir(), "account-token")
-	if err := os.WriteFile(accountFile, []byte("listener-account-token\n"), 0o600); err != nil {
-		t.Fatalf("write the listener's own account token: %v", err)
-	}
-	return []string{
-		EnvBrokerURL + "=" + broker.Server.URL,
-		EnvBrokerAccountTokenFile + "=" + accountFile,
-		EnvPublicURL + "=" + mpBrokerOrigin,
-	}
-}
-
 // mpSignedCall sends one POST to the pod presenting token under the DPoP scheme, with a proof
 // this caller signs fresh for it, as a client holding a broker token does. The proof names
-// mpBrokerOrigin, which both pods are configured with.
+// listenerBrokerOrigin, which both pods are configured with (brokerProcessEnv).
 func mpSignedCall(t *testing.T, p *mpPod, caller *brokertokentest.Caller, token, path, body string) mpAnswer {
 	t.Helper()
-	signed := caller.Signed(t, http.MethodPost, mpBrokerOrigin+path, token)
+	signed := caller.Signed(t, http.MethodPost, listenerBrokerOrigin+path, token)
 	start := time.Now()
 	request, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+strconv.Itoa(p.port)+path, strings.NewReader(body))
 	if err != nil {
@@ -90,7 +67,7 @@ func TestTwoPodsAMachineSignInIsAnsweredByTheActivePodAndTheStandby(t *testing.T
 	broker.Says(signedIn, serviceAnswer(machineSession, "example-fleet", caller.JKT()))
 	body := mpOnConsumer(t, `{"session_id":"`+machineSession+`","topics":[]}`)
 
-	a, b := mpStartPair(t, binary, uri, mpBrokerEnv(t, broker)...)
+	a, b := mpStartPair(t, binary, uri, brokerProcessEnv(t, broker)...)
 
 	for _, pod := range []*mpPod{a, b} {
 		answer := mpSignedCall(t, pod, caller, signedIn, route, body)

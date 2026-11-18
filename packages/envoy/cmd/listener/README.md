@@ -234,8 +234,8 @@ A lease left unreleased (the budget ran out) is taken by a standby once it expir
 `/healthz` takes no credential and answers within 5 s (`healthzDeadline`): a check that has not answered by then makes the answer `503 {"status":"unhealthy"}`.
 
 - `503 {"status":"starting"}`:
-  Until the pod can serve: NATS connected, the webhook and `/v1` gates open over warm caches, the receive loop started and, with an OIDC issuer or a Google audience configured, each issuer's discovery succeeded.
-  A NATS or issuer that does not answer keeps the pod here, up and retrying; it never exits for that.
+  Until the pod can serve: NATS connected, with broker access tokens configured the spent-proof bucket open, the webhook and `/v1` gates open over warm caches, the receive loop started and, with an OIDC issuer or a Google audience configured, each issuer's discovery succeeded.
+  A NATS or issuer that does not answer keeps the pod here, up and retrying, and so does a NATS grant that refuses the spent-proof bucket (`openSpentProofBucket`); it never exits for any of them.
 
 - `200 {"status":"healthy","role":"active",…}`:
   The pod receives the durable.

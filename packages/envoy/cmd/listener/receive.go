@@ -139,10 +139,10 @@ const (
 	// durableGrantRefusedLine is the ERROR a term logs at each retry of a durable request the
 	// NATS grant refused (durableReceiver.prepare), with the refused subject and the server's text.
 	durableGrantRefusedLine = "durable consumer refused by the NATS grant; retrying"
-	// durableRefusedRetryCap is the longest wait between two tries of a durable request the NATS
-	// grant refused: the waits start at bindPoll and double up to it. 30 s writes at most two of
-	// those ERROR lines a minute once the cap is reached, and a grant fixed meanwhile is used
-	// within 30 s.
+	// durableRefusedRetryCap is the longest wait between two tries of a request the NATS grant
+	// refused, a durable's or the start's open of the spent-proof bucket: the waits start at
+	// bindPoll and double up to it (nextRefusedWait). 30 s writes at most two of those ERROR lines
+	// a minute once the cap is reached, and a grant fixed meanwhile is used within 30 s.
 	durableRefusedRetryCap = 30 * time.Second
 	// holderLoopsStopWait bounds how long the end of a term waits for a pass of the holder-only
 	// loops in flight, measured from when they were told to stop.
@@ -736,7 +736,7 @@ func (r *durableReceiver) prepare(ctx context.Context, correct bool) (*nats.Cons
 		wait := r.timing.bindPoll
 		switch {
 		case errors.Is(err, bus.ErrPublishDenied):
-			wait, refusedWait = refusedWait, min(2*refusedWait, durableRefusedRetryCap)
+			wait, refusedWait = refusedWait, nextRefusedWait(refusedWait)
 			r.logger.Error(durableGrantRefusedLine,
 				slog.String("consumer", r.consumer),
 				slog.String("subject", refusedSubject(err)),
@@ -763,6 +763,14 @@ func refusedSubject(err error) string {
 		return match[1]
 	}
 	return ""
+}
+
+// nextRefusedWait is the wait before the next try of a request the NATS grant refused, after a
+// wait of previous: twice it, up to durableRefusedRetryCap. The durable's requests (prepare, from
+// bindPoll) and the start's open of the spent-proof bucket (openSpentProofBucket, from
+// durableBindPoll) back off by it.
+func nextRefusedWait(previous time.Duration) time.Duration {
+	return min(2*previous, durableRefusedRetryCap)
 }
 
 // awaitUnbound waits, polling the durable every bindPoll without writing it, until no subscriber

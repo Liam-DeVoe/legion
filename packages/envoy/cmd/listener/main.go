@@ -1017,9 +1017,10 @@ func listenerInstance() (string, error) {
 }
 
 // startRetry is how long a start waits between attempts to reach NATS while it cannot answer: the
-// connect (connectListener), each store's buckets (openStartStore) and the listener state bucket
-// (openDeliveryLease). /healthz answers 503 "starting" meanwhile, and a SIGTERM or SIGINT ends the
-// process at once, since the start has installed no handler for either yet.
+// connect (connectListener), the spent-proof bucket (openSpentProofBucket), each store's buckets
+// (openStartStore) and the listener state bucket (openDeliveryLease). /healthz answers 503
+// "starting" meanwhile, and a SIGTERM or SIGINT ends the process at once, since the start has
+// installed no handler for either yet.
 const startRetry = 2 * time.Second
 
 // listenerGrant names the grant that gives the listener's NATS user its KV buckets, for the line
@@ -1111,6 +1112,67 @@ func openStartStore[T any](client *bus.Client, logger *logging.Logger, what stri
 			slog.String("error", err.Error()),
 		)
 		time.Sleep(startRetry)
+	}
+}
+
+// spentProofBucketRefusedLine is the ERROR the start logs at each try of the spent-proof bucket's
+// open that the NATS grant refused (openSpentProofBucket), with the refused subject and the
+// server's text.
+const spentProofBucketRefusedLine = "spent-proof bucket refused by the NATS grant; retrying"
+
+// openSpentProofBucket opens the spent-proof bucket of tokens, the broker-token credential
+// (brokerTokens.open), on client's connection, and returns once it is open; nil tokens, a listener
+// that takes no broker token, has no bucket to open. Neither a NATS that does not answer the open
+// nor a grant that refuses it ends the process, as a refused durable does not
+// (durableReceiver.prepare): the start waits here, so /healthz answers 503 "starting", /livez 204
+// and /v1 stays unopened, and every broker-token presentation is answered 503 "service starting"
+// until the bucket is open (brokerTokens.verify), so no token is accepted without the check that
+// refuses a proof another replica already spent.
+//
+// An open that fails for want of NATS (natsConnectionError) is tried again every startRetry, as
+// openStartStore tries one, with a WARN each time. An open the NATS grant refuses
+// (bus.ErrPublishDenied, which bus.EnsureKeyValue returns as the server's refusal arrives) is tried
+// again after a wait that starts at durableBindPoll and doubles up to durableRefusedRetryCap
+// (nextRefusedWait), each try logging spentProofBucketRefusedLine at ERROR with the refused subject
+// and the server's text: every pod of the machine connects as the same NATS user and would be
+// refused the same way, so an exit would only send each into a crash loop, while a pod that stays
+// up uses a grant fixed meanwhile within 30 s. Any other failure is a deployment error no try gets
+// past, a setting the server refuses (more copies than the cluster has servers) or an origin
+// brokertoken.New refuses, and ends the process after one ERROR naming it, as openStartStore does.
+func openSpentProofBucket(ctx context.Context, client *bus.Client, logger *logging.Logger, tokens *brokerTokens, replicas int) {
+	if tokens == nil {
+		return
+	}
+	refusedWait := durableBindPoll
+	for {
+		conn := client.Conn
+		err := tokens.open(ctx, conn, replicas)
+		switch {
+		case err == nil:
+			return
+		case errors.Is(err, bus.ErrPublishDenied):
+			wait := refusedWait
+			refusedWait = nextRefusedWait(refusedWait)
+			logger.Error(spentProofBucketRefusedLine,
+				slog.String("bucket", bus.DPoPProofBucket),
+				slog.String("grant", listenerGrant),
+				slog.String("subject", refusedSubject(err)),
+				slog.String("error", err.Error()),
+				slog.String("retry_in", wait.String()),
+			)
+			time.Sleep(wait)
+		case natsConnectionError(err):
+			logger.Warn("spent-proof bucket open failed; retrying",
+				slog.String("bucket", bus.DPoPProofBucket),
+				slog.String("retry_in", startRetry.String()),
+				slog.String("error", err.Error()),
+			)
+			time.Sleep(startRetry)
+		default:
+			logger.Error("spent-proof bucket open failed", slog.String("bucket", bus.DPoPProofBucket), slog.String("error", err.Error()))
+			conn.Close()
+			os.Exit(1)
+		}
 	}
 }
 
@@ -1578,19 +1640,21 @@ func main() {
 	// bus.EnsureKeyValue call (bus's startHangGuard, three times the slowest wait measured under
 	// load from a raise's answer until its stream had a leader and every copy was current). An open
 	// the guard ends failed for want of NATS (natsConnectionError reads the guard's
-	// context.DeadlineExceeded), so openStartStore and openDeliveryLease try it again every
-	// startRetry while /healthz answers 503 "starting". A signal needs no context here: this
-	// process installs no handler for SIGTERM or SIGINT until signal.NotifyContext makes stopping
-	// below, so until then the signal's default action ends the process at once, wherever the
-	// start is. Making stopping here instead would change that for the whole start, the NATS
+	// context.DeadlineExceeded), so openSpentProofBucket, openStartStore and openDeliveryLease try
+	// it again every startRetry while /healthz answers 503 "starting". A signal needs no context
+	// here: this process installs no handler for SIGTERM or SIGINT until signal.NotifyContext makes
+	// stopping below, so until then the signal's default action ends the process at once, wherever
+	// the start is. Making stopping here instead would change that for the whole start, the NATS
 	// connect and the cache warm-ups included, into an ordered shutdown of a start not yet serving.
 	starting := context.Background()
-	// The spent-proof bucket, before anything of /v1 can be served: a listener configured to take
-	// broker access tokens on a bus that cannot open it refuses to start, naming the setting,
-	// rather than recording spent proofs where its own replicas cannot see them.
-	if err := brokerTokenAuth.open(starting, client.Conn, cfg.NATSReplicas); err != nil {
-		log.Fatalf("open the spent-proof bucket for broker access tokens: %v", err)
-	}
+	// The spent-proof bucket, before anything of /v1 can be served. A listener configured to take
+	// broker access tokens waits here until the bucket is open, whether NATS does not answer its
+	// open or the NATS grant refuses it, and never exits for either (openSpentProofBucket):
+	// /healthz answers 503 "starting" and /livez 204 meanwhile, /v1 stays unopened, and every
+	// broker-token presentation is answered 503 "service starting" (brokerTokens.verify), so no
+	// token is accepted without the check of its proof, and no spent proof is recorded anywhere
+	// this listener's other replicas cannot see it.
+	openSpentProofBucket(starting, client, logger, brokerTokenAuth, cfg.NATSReplicas)
 	consumer := bus.ListenerDurable(cfg.MachineID)
 	// The durable is checked here, before the cache warm-ups below (up to 30 s each), so a refused
 	// one ends the start within the NATS connect: no pod could receive from it, and nothing serves
