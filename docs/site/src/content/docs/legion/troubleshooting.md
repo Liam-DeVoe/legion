@@ -158,6 +158,13 @@ cluster and the image:
   - `Succeeded without checking the capability list (its legion CLI predates the check)`: the image's
     `legion` is older than this daemon's capability check. Build the image from this daemon's
     commit.
+  - `… does not take --session-id (omp-session-id=absent …)`, `… could not read whether its Oh My
+    Pi … takes --session-id …` or `… its legion CLI predates the omp-session-id mark …`:
+    `runtime.kubernetes.agent_secrets.exchange_audience` is set, so the daemon starts each new Oh My
+    Pi role with `--session-id <id>`, and the image's Oh My Pi does not take that flag, or nothing
+    shows that it does. Use a worker image built from this daemon's release or a later one, with an
+    Oh My Pi that takes `--session-id` (the cybermonklabs/oh-my-pi releases from
+    `v18.18.6-sami.20261117-074351`), or unset `exchange_audience`.
   - `… refused role <role>'s Oh My Pi overlays: <file> cannot be read: …` (or `Oh My Pi refuses
     <file>: error: …`, quoting Oh My Pi's own error): a file `role_config_files` names for that
     role is not in the mount you gave it, or Oh My Pi cannot parse it. Add the key to the ConfigMap

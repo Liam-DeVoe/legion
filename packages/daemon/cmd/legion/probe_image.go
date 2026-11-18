@@ -63,9 +63,13 @@ var digits = regexp.MustCompile(`^[0-9]+$`)
 // whether the image's Oh My Pi falls back to another model (capabilities.ReadModelFallback): a
 // failure to read it is not a refusal — the probe writes the failure to stderr and carries on
 // with the mark bootprobe.ModelFallbackUnread, so the deployment's capability report shows that
-// row open rather than the probe's own line going missing. When every check passes, it prints
-// bootprobe.OKLine with the capabilities and model-fallback marks; a failed capability is the
-// probe's message, exit 1, so a broken image never publishes. Unlike the
+// row open rather than the probe's own line going missing. It then reads the image's Oh My Pi's
+// version and whether its help lists --session-id (capabilities.ReadOmpVersion and
+// ReadSessionIDFlag) onto the OK line's omp-version and omp-session-id marks, each `unread` with
+// the failure on stderr when it cannot be read, since only a daemon that sets an exchange audience
+// needs the flag and refuses the image without it. When every check passes, it prints
+// bootprobe.OKLine with the capabilities, model-fallback, omp-version and omp-session-id marks; a
+// failed capability is the probe's message, exit 1, so a broken image never publishes. Unlike the
 // TypeScript command, the contract is always checked:
 // with none named, against this binary's own DaemonAPIVersion, which the plugin packed from the
 // same commit must declare. The load probe also holds every task agent the
@@ -290,6 +294,20 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 		fmt.Fprintf(stderr, "legion probe-image: model-fallback not read; the deployment's capability report shows the row open: %v\n", err)
 		modelFallback = bootprobe.ModelFallbackUnread
 	}
+	// Which Oh My Pi the image carries, and whether it takes the --session-id a daemon under an
+	// exchange audience starts each new role with. Neither failure refuses the run: the marks say
+	// unread, and the daemon that reads them decides.
+	ompVersion, err := capabilities.ReadOmpVersion(ctx, img)
+	if err != nil {
+		fmt.Fprintf(stderr, "legion probe-image: Oh My Pi's version not read; the OK line says omp-version=%s: %v\n", bootprobe.OmpVersionUnread, err)
+		ompVersion = bootprobe.OmpVersionUnread
+	}
+	sessionIDFlag, err := capabilities.ReadSessionIDFlag(ctx, img)
+	if err != nil {
+		fmt.Fprintf(stderr, "legion probe-image: whether Oh My Pi takes --session-id not read; the OK line says omp-session-id=%s, which a daemon that sets runtime.kubernetes.agent_secrets.exchange_audience refuses: %v\n",
+			bootprobe.SessionIDFlagUnread, err)
+		sessionIDFlag = bootprobe.SessionIDFlagUnread
+	}
 	// Each role's own overlays, read as that role's Oh My Pi will start on them, after the table so
 	// the log still reads as the declared list first.
 	roleImage := capabilities.Image{Launch: invocation, Env: environ, WorkDir: workDir}
@@ -310,7 +328,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	if natsUser != "" {
 		fmt.Fprintln(stdout, bootprobe.NATSUserLine(natsUser))
 	}
-	fmt.Fprintln(stdout, bootprobe.OKLine(invocation, expected, agentModels, checked, modelFallback))
+	fmt.Fprintln(stdout, bootprobe.OKLine(invocation, expected, agentModels, checked, modelFallback, ompVersion, sessionIDFlag))
 	return 0
 }
 
