@@ -758,5 +758,7 @@ test.skipIf(!onLinux)(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
+  // The row waits for a claimer, a `bun` child, to print its claim, and for one start's sweep,
+  // another `bun` child; a stuck child waits out its own 600 s at most.
   600_000
 );
