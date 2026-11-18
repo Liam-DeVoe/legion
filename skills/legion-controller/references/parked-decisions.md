@@ -116,7 +116,7 @@ that is not the root's primary one.
    under that same session, so the author alone does not show your own hold. A decision older than
    the park is no reason to run: the park is the later word. When that run reaches the oldest such
    line `Events:` shows, read the root's events through the API, which keeps more than 10: the
-   `curl` of [Triage a root](skill://legion-controller/references/triage.md#triage-a-root) step 2, whose
+   `dispatch api` read of [Triage a root](skill://legion-controller/references/triage.md#triage-a-root) step 2, whose
    events carry `type`, `actor`, `created_at` and `payload.status` or `payload.body`. When the run
    still reaches the oldest event you read, the park is that line or an older one, and you cannot
    read who parked it: judge only the events newer than it, and name in your summary each older
@@ -230,9 +230,9 @@ At every start (step 4 of the start procedure) and on each `tick`:
    same time. It is that
    handover when all three hold: the root's `parent` is `null`; the event's `payload.artifact_id`
    is the root's `primary_artifact_id`; and its `payload.reason` does not begin `Carried forward
-   from the approval of version`. The events `curl` of
+   from the approval of version`. The events read of
    [Triage a root](skill://legion-controller/references/triage.md#triage-a-root) step 2 shows the
-   payload, and the same `curl` of `/api/v1/issues/<root>` shows `parent` and
+   payload, and `dispatch api --path /api/v1/issues/<root>` shows `parent` and
    `primary_artifact_id`, the fields the daemon reads. When that read fails, skip nothing: judge
    the approval. Judge every other approval as a decision. For any other ask or a comment, find
    the item: `Open asks:` names an ask still open, and `dispatch search` finds an ask or a comment

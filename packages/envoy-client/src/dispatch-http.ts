@@ -1195,6 +1195,15 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "limits"]);
   }
 
+  /** `GET <path>`, for `dispatch api`: one read of a route no method here names. `path` begins
+   *  `/api/v1` and may carry a query, and the contract's rule for it (`dispatch_api`) refuses a
+   *  scheme, a host and a dot segment, so it resolves under this client's server as every other
+   *  route does (`#url`). Answers Dispatch's JSON as `#response` reads it. */
+  async readRoute(path: string): Promise<unknown> {
+    const url = new URL(path.slice(1), `${this.#baseUrl}/`).toString();
+    return this.#noRoute(async () => this.#response("GET", url, await this.#send("GET", url)));
+  }
+
   /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's
    *  own order (the owning issue's priority, then whose turn it is, then the latest activity),
    *  which no reader re-sorts. `me` is the caller, and keeps the rows waiting on them — the asks

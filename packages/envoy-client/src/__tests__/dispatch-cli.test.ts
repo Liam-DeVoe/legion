@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
 import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { forgetBrokerClients } from "../broker-credential";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
@@ -1614,6 +1615,125 @@ describe("the dispatch CLI", () => {
     expect(code).toBe(0);
     expect(stdout).toBe("CORE Core\nSMOKE684 Smoke\n");
     expect(requests).toEqual([{ method: "GET", path: "/api/v1/projects", body: undefined }]);
+  });
+});
+
+// `dispatch api`: one GET of a route under /api/v1, with the session's own credential, Dispatch's
+// JSON answer printed as `jq` reads it. Its own Dispatch records the Authorization each request
+// carried, which the server above does not, and a broker of its own answers a pod's trade.
+describe("dispatch api", () => {
+  interface Asked {
+    readonly method: string;
+    readonly path: string;
+    readonly authorization: string;
+  }
+  const asked: Asked[] = [];
+  const dispatch = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch(request) {
+      const { pathname, search } = new URL(request.url);
+      asked.push({
+        method: request.method,
+        path: `${pathname}${search}`,
+        authorization: request.headers.get("Authorization") ?? "",
+      });
+      if (pathname === "/api/v1/issues/DSP-1") {
+        return Response.json({
+          key: "DSP-1",
+          claim: { actor: { kind: "session", id: "ses-architect" }, at: "2026-11-18T05:00:00Z" },
+        });
+      }
+      return Response.json(
+        { code: "NOT_FOUND", error: `issue ${pathname.split("/")[4]} not found` },
+        { status: 404 }
+      );
+    },
+  });
+  /** The session each trade asked the broker to write under, as its `session` form field. */
+  const trades: string[] = [];
+  const broker = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    async fetch(request) {
+      trades.push(new URLSearchParams(await request.text()).get("session") ?? "no session");
+      return Response.json({
+        access_token: `access-token-not-a-secret-${trades.length}`,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 600,
+        credential_id: "cred-1",
+      });
+    },
+  });
+  afterAll(() => {
+    dispatch.stop(true);
+    broker.stop(true);
+  });
+  beforeEach(() => {
+    asked.length = 0;
+    trades.length = 0;
+    forgetBrokerClients();
+  });
+  const session = { ...omp, DISPATCH_URL: `http://127.0.0.1:${dispatch.port}` };
+
+  test("reads a route with the session's bearer and prints Dispatch's JSON", async () => {
+    const { code, stdout } = await run(["api", "--path", "/api/v1/issues/DSP-1?events=0"], session);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout).claim.actor.id).toBe("ses-architect");
+    expect(asked).toEqual([
+      { method: "GET", path: "/api/v1/issues/DSP-1?events=0", authorization: "Bearer test-token" },
+    ]);
+  });
+
+  test("under DISPATCH_TOKEN_BROKER=1, reads a route with a broker token traded for this session", async () => {
+    const projected = join(stateDir, "projected-token");
+    writeFileSync(projected, "projected.service.account.token\n");
+    // A pod launched under the setting: the bearer the environment still holds is never read.
+    const { code, stdout } = await run(["api", "--path", "/api/v1/issues/DSP-1"], {
+      ...session,
+      DISPATCH_TOKEN_BROKER: "1",
+      AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
+      AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+      AGENT_SECRETS_MACHINE_TOKEN_FILE: projected,
+    });
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout).key).toBe("DSP-1");
+    expect(trades).toEqual(["ses-1"]);
+    expect(asked).toEqual([
+      {
+        method: "GET",
+        path: "/api/v1/issues/DSP-1",
+        authorization: "DPoP access-token-not-a-secret-1",
+      },
+    ]);
+  });
+
+  test("refuses a path outside /api/v1, naming it, exit 2, and sends nothing", async () => {
+    const outside = [
+      "https://dispatch.internal.example/api/v1/issues/DSP-1",
+      "//dispatch.internal.example/api/v1/issues/DSP-1",
+      "/api/v2/issues/DSP-1",
+      "/api/v1/../../healthz",
+      "/api/v1/%2E%2e/healthz",
+      "/api/v1/issues\\..\\..\\healthz",
+    ];
+    for (const path of outside) {
+      const { code, stdout } = await run(["api", "--path", path], session);
+      expect(code, path).toBe(2);
+      expect(stdout, path).toStartWith("dispatch api was not called: 1 problem\n");
+      expect(stdout, path).toContain(`path ${JSON.stringify(path)} `);
+    }
+    expect(asked).toEqual([]);
+  });
+
+  test("exits 1 on Dispatch's 404, printing its error and code", async () => {
+    const { code, stdout } = await run(["api", "--path", "/api/v1/issues/DSP-404"], session);
+    expect(code).toBe(1);
+    expect(stdout).toBe("NOT_FOUND: issue DSP-404 not found\n");
+    expect(asked).toEqual([
+      { method: "GET", path: "/api/v1/issues/DSP-404", authorization: "Bearer test-token" },
+    ]);
   });
 });
 

@@ -1,9 +1,9 @@
 # How the controller session runs
 
 Read this when you need to know who launched you, what `read_state` returns, how to read a pull
-request, when `gh` or `curl` fails, when `set_status` answers 403, or when a person takes the
-controller over by hand. The `How this controller runs` part of your system prompt says who
-launched you.
+request, when `gh` or a read of Dispatch's API fails, when `set_status` answers 403, or when a
+person takes the controller over by hand. The `How this controller runs` part of your system prompt
+says who launched you.
 
 ## Launched by the operator (`controller: operator`, the default)
 
@@ -75,13 +75,15 @@ fails, report `<KEY>: pull request <url> unreadable: <gh's first stderr line>` a
 of the three. Text of any other shape is never a command argument: report
 `<KEY>: pull request <text> unreadable: not a pull-request URL`.
 
-## `curl` against Dispatch
+## Reading Dispatch's API
 
-Each `curl` in these references reads `DISPATCH_URL` and `DISPATCH_TOKEN_FILE`. `legion controller
-start` sets them only when `controller.yaml` names `dispatch_url`; the daemon's pod sets
-`DISPATCH_URL` when the daemon has one. When they are unset, every `curl` fails: act on nothing it
-would decide and name it in your summary. Each passes its token as a header file (`-H @<(…)`), so
-that no process's arguments hold it: run it in bash, because `sh` refuses that form.
+Each read of Dispatch's API in these references is `dispatch api --path <route>`: it sends this
+session's own credential, as every `dispatch` command does, and exits 1 when Dispatch refuses the
+read. Quote a path that carries a query (`'…/events?limit=200'`), because the shell reads `?` and
+`&` itself. `legion controller start` sets `DISPATCH_URL` only when `controller.yaml` names
+`dispatch_url`; the daemon's pod sets it when the daemon has one. When `dispatch` finds no
+Dispatch configured, it says so and exits 2: act on nothing the read would decide and name it in
+your summary.
 
 ## Taking the controller over by hand
 

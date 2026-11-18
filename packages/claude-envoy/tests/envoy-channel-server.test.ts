@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
+import { forgetBrokerClients } from "@legion/envoy-client/broker-credential"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
@@ -18,6 +19,7 @@ import {
   MCP_SERVER_INFO,
   sessionCapabilities,
   startChannelSession,
+  userTurnDispatchClient,
 } from "../src/envoy-channel-server"
 import { modSession } from "../src/mod-session"
 import { roleStateFile, SessionIdentity } from "../src/session-identity"
@@ -728,6 +730,91 @@ test("drops a malformed targeted frame that has no reply address", async () => {
 
   expect(notifier.notifications).toEqual([])
   expect(delivery.inbox()).toEqual([])
+})
+
+/** The variables a pod's broker trade reads beside DISPATCH_URL, which `isolatePaneEnvironment`
+ *  leaves alone: each test that sets one restores the process's own value after it. */
+const brokerVariables = [
+  "DISPATCH_TOKEN_BROKER",
+  "AGENT_SECRETS_URL",
+  "AGENT_SECRETS_MACHINE_IDENTITY",
+  "AGENT_SECRETS_MACHINE_TOKEN_FILE",
+  "AGENT_SECRETS_MACHINE_AUDIENCE",
+  "AGENT_SECRETS_KEY_DIR",
+  "AGENT_SECRETS_SESSION",
+  "AGENT_SECRETS_PROJECTS",
+  "AGENT_SECRETS_SIGNIN_DIR",
+  "AGENT_SECRETS_PERSON",
+  "PERSON_SIGNIN_TRADE",
+] as const
+
+test("the user-turn router's Dispatch client trades under the session's id", async () => {
+  const original = brokerVariables.map((name) => [name, process.env[name]] as const)
+  const servers: Server<undefined>[] = []
+  try {
+    // The session each trade asked the broker to write under, as its `session` form field.
+    const trades: string[] = []
+    servers.push(
+      Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch: async (request) => {
+          const form = new URLSearchParams(await request.text())
+          trades.push(form.get("session") ?? "no session")
+          return Response.json({
+            access_token: `access-token-not-a-secret-${trades.length}`,
+            issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+            token_type: "DPoP",
+            expires_in: 600,
+            credential_id: "cred-1",
+          })
+        },
+      }),
+    )
+    const schemes: string[] = []
+    servers.push(
+      Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch: (request) => {
+          schemes.push((request.headers.get("authorization") ?? "").split(" ")[0] ?? "")
+          return Response.json({ kind: "agent", owner: null, service: null })
+        },
+      }),
+    )
+    const [broker, dispatch] = servers
+    // A pod launched under the broker setting: a projected token to trade, no bearer, and no
+    // AGENT_SECRETS_SESSION, which no pod sets.
+    const home = temporaryHome("router-dispatch")
+    const projected = join(home, "token")
+    await writeFile(projected, "projected.service.account.token\n")
+    for (const name of brokerVariables) delete process.env[name]
+    process.env["DISPATCH_URL"] = `http://127.0.0.1:${dispatch?.port}`
+    process.env["DISPATCH_TOKEN_BROKER"] = "1"
+    process.env["AGENT_SECRETS_URL"] = `http://127.0.0.1:${broker?.port}`
+    process.env["AGENT_SECRETS_MACHINE_IDENTITY"] = "kubernetes"
+    process.env["AGENT_SECRETS_MACHINE_TOKEN_FILE"] = projected
+    // Nobody signed in, so the trade is the pod's own.
+    process.env["AGENT_SECRETS_SIGNIN_DIR"] = join(home, "signins")
+
+    const client = userTurnDispatchClient(
+      new SessionIdentity("ses_claude", home),
+      sessionConfigFile("claude", process.env),
+      5_000,
+    )
+    if (client === undefined) throw new Error("Dispatch is off for the router")
+    await client.whoami()
+
+    expect(trades).toEqual(["ses_claude"])
+    expect(schemes).toEqual(["DPoP"])
+  } finally {
+    forgetBrokerClients()
+    for (const server of servers) server.stop(true)
+    for (const [name, value] of original) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+  }
 })
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
