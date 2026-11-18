@@ -3314,8 +3314,11 @@ for signal in TERM INT; do
   [ -z "$left" ] ||
     fail "SIG$signal left the local ssh that carries the step's load running: $left"
   # And nothing of the step's own is left reading Dispatch: this driver asks that machine for
-  # nothing, so an ssh of this pod to it would be a fetch brought back (case (g) above).
-  left=$(pgrep -af -- "timeout .*debug/pprof" | tr '\n' ';' || true)
+  # nothing, so an ssh of this pod to it would be a fetch brought back (case (g) above). The
+  # match is this run's, by the run directory every ssh of the run names for its key and its
+  # known_hosts, as every match of this case is: the words alone are those of the same pgrep in
+  # another run of this suite on the same machine, which they matched.
+  left=$(pgrep -af -- "timeout .*$(run_dir)/.*debug/pprof" | tr '\n' ';' || true)
   [ -z "$left" ] ||
     fail "SIG$signal left an ssh of this pod reading Dispatch's profiling port: $left. The driver reads nothing of that port, and a read it does make falls inside the window loadgen is measuring"
   # And the stop reads as a stop: the status a shell killed by that signal has, and a line
