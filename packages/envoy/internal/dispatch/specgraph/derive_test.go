@@ -363,6 +363,13 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 				in.Results = append(in.Results, Result{Check: q.ID, CheckDigest: q.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
 					Deploy: "d1", Job: q.Test.Job, Leg: new("linux"), TestCommit: "c1", At: checkStateRun, Seq: 3})
 			}, want: `specgraph: result 3: it sets the leg "linux", and job run 1 of its job "production-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
+		{name: `a run result of a program check of the graph in a named leg where the runs of its job at its test_commit are of the leg ""`,
+			add: []Check{checkStateGraphProgram}, change: func(in *Input) {
+				g := checkStateGraphProgram
+				in.JobRuns = []JobRun{{Job: g.Test.Job, Leg: new(""), Commit: "c1", Ended: new(true)}}
+				in.Results = append(in.Results, Result{Check: g.ID, CheckDigest: g.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
+					GraphTx: "tx1", Job: g.Test.Job, Leg: new("linux"), TestCommit: "c1", At: checkStateRun, Seq: 3})
+			}, want: `specgraph: result 3: it sets the leg "linux", and job run 1 of its job "graph-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
 		{name: `control: a run result of a query of production that names that job and test_commit c1, in a named leg`,
 			add: []Check{checkStateProduction}, change: func(in *Input) {
 				in.JobRuns = []JobRun{{Job: "production-checks", Leg: new(""), Commit: "c1", Ended: new(true)}}
@@ -390,6 +397,11 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 						Deploy: "d1", Job: q.Test.Job, Leg: new(leg), TestCommit: "c1", At: checkStateRun, Seq: int64(3 + i)})
 				}
 			}},
+		{name: `a run result of an older text of a check of the code in a named leg where the runs of its job at its commit are of the leg ""`, change: func(in *Input) {
+			in.JobRuns = []JobRun{{Job: "go-checks", Leg: new(""), Commit: "c1", Ended: new(true)}}
+			in.Results = append(in.Results, Result{Check: checkStateCheck.ID, CheckDigest: "an-older-text", Kind: ResultRun, Outcome: OutcomePass,
+				Commit: "c1", Job: "go-checks", Leg: new("linux"), At: checkStateRun, Seq: 3})
+		}, want: `specgraph: result 3: it sets the leg "linux", and job run 1 of its job "go-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
 		// A run result that names no job, or no commit of its job's run, is a record of no job at one
 		// commit: the rule reads none of them. Each is of an older text, so no rule of its text asks a
 		// job or a commit of it.

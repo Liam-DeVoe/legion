@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
+	"github.com/sjawhar/envoy/internal/dispatch/specgraph/specgraphtest"
 )
 
 // The kind of a check, its procedure and its subject, decides whether its results count at a
@@ -19,52 +21,36 @@ import (
 const graphCheck = "the-graph-holds-a-delivery-of-each-message"
 
 // readsNoCommit is each kind of check that reads no commit, as production-and-graph's query of the
-// graph is written in it (writtenAs): its texts changed, and whether it reads production.
+// graph is written in it (scenarioAs).
 var readsNoCommit = []struct {
-	kind       string
-	production bool
-	texts      [][2]string
+	kind      string
+	procedure specgraph.Procedure
+	subject   specgraph.Subject
 }{
-	{"a query of the graph", false, nil},
-	{"an agent of the graph", false, [][2]string{{`procedure="query"`, `procedure="agent"`}, {"Procedure: The query reads", "Procedure: An agent reads"}}},
-	{"a query of production", true, [][2]string{{`subject="graph"`, `subject="production"`}}},
-	{"an agent of production", true, [][2]string{{`procedure="query"`, `procedure="agent"`}, {"Procedure: The query reads", "Procedure: An agent reads"},
-		{`subject="graph"`, `subject="production"`}}},
+	{"a query of the graph", specgraph.ProcedureQuery, specgraph.SubjectGraph},
+	{"an agent of the graph", specgraph.ProcedureAgent, specgraph.SubjectGraph},
+	{"a query of production", specgraph.ProcedureQuery, specgraph.SubjectProduction},
+	{"an agent of production", specgraph.ProcedureAgent, specgraph.SubjectProduction},
 }
 
-// writtenAs writes the check id of the scenario at dir as another kind of check: each pair of
-// texts replaced in each approved version of its block and in each spec file, and, for a check of
-// production, each result of it that read a transaction of the graph reading the deploy d1
-// instead, as a result of production reads a deploy. The test fails when a text is not there, so
-// that no row passes on a change that changed nothing.
-func writtenAs(t *testing.T, dir, id string, production bool, texts [][2]string) {
+// scenarioAs is a copy of the scenario name in a directory of the test's own, with its check id
+// written as a check of procedure and subject by the one conversion that specgraph's sweeps read
+// their bases through too (specgraphtest.As): its block in each approved version and in each spec
+// file, and for a check of production each result of it that read a transaction of the graph
+// reading the deploy d1 instead, as a result of production reads a deploy. The test fails when the
+// scenario does not hold the check's block as As reads it, so that no row passes on a change that
+// changed nothing.
+func scenarioAs(t *testing.T, name, id string, procedure specgraph.Procedure, subject specgraph.Subject) string {
 	t.Helper()
-	editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
-		n := approvedNode(t, nodes, id)
-		for i := range n.Versions {
-			for _, text := range texts {
-				if !strings.Contains(n.Versions[i].Block, text[0]) {
-					t.Fatalf("version %d of %s does not hold %q", n.Versions[i].Version, id, text[0])
-				}
-				n.Versions[i].Block = strings.Replace(n.Versions[i].Block, text[0], text[1], 1)
-			}
-		}
-		return nodes
-	})
-	for _, text := range texts {
-		editSpecFiles(t, dir, text[0], text[1])
+	fsys, err := specgraphtest.As(os.DirFS(fixture(t, "scenarios", name)), id, string(procedure), string(subject))
+	if err != nil {
+		t.Fatalf("%s with %s written with procedure %q and subject %q: %v", name, id, procedure, subject, err)
 	}
-	if production {
-		var results []map[string]any
-		readJSONFile(t, filepath.Join(dir, "results.json"), &results)
-		for _, r := range results {
-			if r["check"] == id && r["graph_tx"] != nil {
-				delete(r, "graph_tx")
-				r["deploy"] = "d1"
-			}
-		}
-		writeJSONFile(t, filepath.Join(dir, "results.json"), results)
+	dir := filepath.Join(t.TempDir(), name)
+	if err := os.CopyFS(dir, fsys); err != nil {
+		t.Fatal(err)
 	}
+	return dir
 }
 
 // editResults changes the results of the scenario at dir by change.
@@ -93,8 +79,7 @@ func TestTheLegRuleReadsNoCommitOfACheckThatReadsNoCommit(t *testing.T) {
 			t.Parallel()
 			var got [2]result
 			for i, testCommit := range []string{"", "c1"} {
-				dir := copyScenario(t, "production-and-graph")
-				writtenAs(t, dir, graphCheck, k.production, k.texts)
+				dir := scenarioAs(t, "production-and-graph", graphCheck, k.procedure, k.subject)
 				editResults(t, dir, func(results []map[string]any) {
 					for _, r := range results {
 						if r["check"] == graphCheck && r["kind"] == "run" {
@@ -147,8 +132,7 @@ func TestARefusalAtATestCommitTakesOutNoResultOfACheckThatReadsNoCommit(t *testi
 			t.Parallel()
 			var got [2]result
 			for i, refused := range []bool{false, true} {
-				dir := copyScenario(t, "production-and-graph")
-				writtenAs(t, dir, graphCheck, k.production, k.texts)
+				dir := scenarioAs(t, "production-and-graph", graphCheck, k.procedure, k.subject)
 				editResults(t, dir, func(results []map[string]any) {
 					for _, r := range results {
 						if r["check"] == graphCheck && r["kind"] == "run" && r["outcome"] == "fail" {
@@ -169,7 +153,7 @@ func TestARefusalAtATestCommitTakesOutNoResultOfACheckThatReadsNoCommit(t *testi
 			}
 			want := []string{"statement messages-reach-sessions: unknown (check " + graphCheck + ": disagree)",
 				"  check " + graphCheck + ": unknown (disagree)"}
-			if k.production {
+			if k.subject == specgraph.SubjectProduction {
 				want = []string{"statement messages-reach-sessions: not met (check " + graphCheck + " is false)",
 					"  check " + graphCheck + ": false (failed, counted from d1)"}
 			}
@@ -186,41 +170,55 @@ func TestARefusalAtATestCommitTakesOutNoResultOfACheckThatReadsNoCommit(t *testi
 // result at one commit also counts at another commit when no code that the check runs changed
 // between the two." An agent or a query of the code reads the commit of its results, as a program
 // check of the code does, so the results of a commit where CI refused it count nowhere, at it or
-// where R8 would carry them. Each row: refusal with its check of the code written as the row's
-// kind, whose pass and caught failing example at c1 count at c2 and at m2. With CI's refusal at
-// c2, as the scenario holds it, the check reads true at m2 (the control); with the refusal at c1
-// instead, it reads unknown (uncited) at c2 and at m2.
+// where R8 would carry them: its runs and its failing examples alike. Each row: refusal with its
+// check of the code written as the row's kind, its caught failing example at c1 and its pass at c1
+// or at c2, each of which counts at c2 and at m2, and CI's refusal at one commit or at none. The
+// runs: with the pass at c1 and CI's refusal at c2, as the scenario holds it, the check reads true
+// at m2 (the control); with the refusal at c1 instead, its pass counts nowhere, and it reads
+// unknown (uncited) at c2 and at m2. The failing examples: with the pass at c2 and no refusal, it
+// reads true at both (the control); with the refusal at c1, the pass of c2 counts and the failing
+// example of c1 counts nowhere, so it reads unknown (no_failing_example) at both.
 func TestARefusalOfAnAgentOrAQueryOfTheCodeTakesOutTheResultsOfItsCommit(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
 	const check = "a-restart-loses-no-message"
-	const program = ` procedure="program" runner="go" selector="github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage" job="go-checks"`
 	for _, k := range []struct {
-		kind  string
-		texts [][2]string
+		kind      string
+		procedure specgraph.Procedure
 	}{
-		{"an agent of the code", [][2]string{{program, ` procedure="agent"`}, {"Procedure: The program stores", "Procedure: An agent stores"}}},
-		{"a query of the code", [][2]string{{program, ` procedure="query"`}, {"Procedure: The program stores", "Procedure: The query stores"}}},
+		{"an agent of the code", specgraph.ProcedureAgent},
+		{"a query of the code", specgraph.ProcedureQuery},
 	} {
 		t.Run(k.kind, func(t *testing.T) {
 			t.Parallel()
 			for _, row := range []struct {
-				refused string
-				want    map[string]string // the line of the check at each subject
+				pass, refused string            // the commit of the pass, and the commit of CI's refusal, "" for none
+				want          map[string]string // the line of the check at each subject
 			}{
-				{"c2", map[string]string{"c2, the head of listener-restart": "unknown (uncited)", "m2, the head of main": "true (passed, counted from c1)"}},
-				{"c1", map[string]string{"c2, the head of listener-restart": "unknown (uncited)", "m2, the head of main": "unknown (uncited)"}},
+				{"c1", "c2", map[string]string{"c2, the head of listener-restart": "unknown (uncited)", "m2, the head of main": "true (passed, counted from c1)"}},
+				{"c1", "c1", map[string]string{"c2, the head of listener-restart": "unknown (uncited)", "m2, the head of main": "unknown (uncited)"}},
+				{"c2", "", map[string]string{"c2, the head of listener-restart": "true (passed, counted from c2)", "m2, the head of main": "true (passed, counted from c2)"}},
+				{"c2", "c1", map[string]string{"c2, the head of listener-restart": "unknown (no_failing_example)", "m2, the head of main": "unknown (no_failing_example)"}},
 			} {
-				dir := copyScenario(t, "refusal")
-				writtenAs(t, dir, check, false, k.texts)
-				writeJSONFile(t, filepath.Join(dir, "uncited.json"), map[string]any{row.refused: map[string]any{check: "test-not-in-code"}})
+				dir := scenarioAs(t, "refusal", check, k.procedure, specgraph.SubjectCode)
+				editResults(t, dir, func(results []map[string]any) {
+					if r := results[0]; r["check"] != check || r["kind"] != "run" || r["outcome"] != "pass" || r["commit"] != "c1" {
+						t.Fatalf("result 1 of refusal is no pass of %s at c1: %v", check, r)
+					}
+					results[0]["commit"] = row.pass
+				})
+				uncited := map[string]any{}
+				if row.refused != "" {
+					uncited[row.refused] = map[string]any{check: "test-not-in-code"}
+				}
+				writeJSONFile(t, filepath.Join(dir, "uncited.json"), uncited)
 				got := runBinary(t, binary, "", "state", "--scenario", dir)
 				if got.code != 0 || got.stderr != "" {
-					t.Fatalf("CI's refusal at %s: exit %d, stderr %q; want exit 0 and nothing on stderr", row.refused, got.code, got.stderr)
+					t.Fatalf("its pass at %s, CI's refusal at %q: exit %d, stderr %q; want exit 0 and nothing on stderr", row.pass, row.refused, got.code, got.stderr)
 				}
 				for subject, want := range row.want {
 					if line := "  check " + check + ": " + want; !slices.Contains(subjectLines(got.stdout, subject), line) {
-						t.Errorf("CI's refusal at %s: at subject %s %q, want the line %q", row.refused, subject, subjectLines(got.stdout, subject), line)
+						t.Errorf("its pass at %s, CI's refusal at %q: at subject %s %q, want the line %q", row.pass, row.refused, subject, subjectLines(got.stdout, subject), line)
 					}
 				}
 			}

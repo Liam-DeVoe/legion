@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/sjawhar/envoy/internal/dispatch/specgraph/specgraphtest"
 )
 
 // sweepMaps is each object of the JSON files of a scenario whose names its writer picks, as the
@@ -211,41 +213,14 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	bases["wait-cycle with a second, passing check of a-message-survives-a-restart"] = withSecondCheck(t, bases["wait-cycle"])
 	const graph = "the-graph-holds-a-delivery-of-each-message"
 	// written is production-and-graph with its check of the graph written as a check of procedure
-	// and subject, which reads no commit either: its text in the approved spec and in the files at
-	// m2, and for a check of production each run of it that read the transaction tx1 reading the
-	// deploy d1 of the subject instead, as a check of production reads a deploy.
+	// and subject, which reads no commit either, by the one conversion that the command's tests
+	// read it through too (specgraphtest.As): its text in the approved spec and in the files at m2,
+	// and for a check of production each run of it that read the transaction tx1 reading the deploy
+	// d1 of the subject instead, as a check of production reads a deploy.
 	written := func(procedure Procedure, subject Subject) fstest.MapFS {
-		var pairs []string
-		if procedure == ProcedureAgent {
-			pairs = append(pairs, `procedure="query"`, `procedure="agent"`, "Procedure: The query reads", "Procedure: An agent reads")
-		}
-		if subject == SubjectProduction {
-			pairs = append(pairs, `subject="graph"`, `subject="production"`)
-		}
-		as := strings.NewReplacer(pairs...)
-		fsys := maps.Clone(bases["production-and-graph"])
-		editTree(t, fsys, "approved.json", func(v any) any {
-			for _, n := range v.(map[string]any)["nodes"].([]any) {
-				if n := n.(map[string]any); n["id"] == graph {
-					for _, version := range n["versions"].([]any) {
-						version := version.(map[string]any)
-						version["block"] = as.Replace(version["block"].(string))
-					}
-				}
-			}
-			return v
-		})
-		fsys["files/m2/spec.md"] = &fstest.MapFile{Data: []byte(as.Replace(string(fsys["files/m2/spec.md"].Data)))}
-		if subject == SubjectProduction {
-			editTree(t, fsys, "results.json", func(v any) any {
-				for _, r := range v.([]any) {
-					if r := r.(map[string]any); r["check"] == graph && r["graph_tx"] != nil {
-						delete(r, "graph_tx")
-						r["deploy"] = "d1"
-					}
-				}
-				return v
-			})
+		fsys, err := specgraphtest.As(bases["production-and-graph"], graph, string(procedure), string(subject))
+		if err != nil {
+			t.Fatalf("production-and-graph with %s written with procedure %q and subject %q: %v", graph, procedure, subject, err)
 		}
 		is := func(c Check) bool { return c.ID == graph && c.Procedure == procedure && c.Subject == subject }
 		s, err := ReadScenario(fsys)

@@ -150,9 +150,9 @@ func (s *checkCase) productionProgram(changed, testCommit string) {
 
 // programPass is the case of the program check q of production or of the graph, with C's tie: a
 // pass of its test at runCommit, under deploy d2 or at the transaction tx1, and a failing example
-// that its test at c2 caught; subject c2 under deploy d2 at tx1, where c2 differs from c1 outside
-// the tie.
-func (s *checkCase) programPass(q Check, runCommit string) {
+// that its test at faultCommit caught; subject c2 under deploy d2 at tx1, where c2 differs from c1
+// outside the tie.
+func (s *checkCase) programPass(q Check, runCommit, faultCommit string) {
 	s.t.Helper()
 	s.add(q)
 	s.tieLikeC(q.ID)
@@ -164,7 +164,7 @@ func (s *checkCase) programPass(q Check, runCommit string) {
 	} else {
 		run.Deploy = "d2"
 	}
-	s.Results = append(s.Results, run, Result{Check: q.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, TestCommit: "c2",
+	s.Results = append(s.Results, run, Result{Check: q.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, TestCommit: faultCommit,
 		At: checkStateRun.Add(65 * time.Minute), FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
 }
 

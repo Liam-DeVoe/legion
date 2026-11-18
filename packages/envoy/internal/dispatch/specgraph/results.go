@@ -60,9 +60,13 @@ type Result struct {
 	FaultAuthor string   `json:"fault_author" input:"zero: it names no author, so a failing example of a program check reads fault_by_test_author"`
 	TestAuthors []string `json:"test_authors" input:"zero: it names no author, so a failing example of a program check reads fault_by_test_author"`
 	// TestCommit is the commit of the test that ran, for a run or a failing example of a program
-	// check whose subject is production or the graph. A result of any other check may name one, and
-	// no rule reads it there: resultCommit reads a result's Commit first, and a query or an agent of
-	// production or of the graph reads no commit (countsAtACommit). A result of a program check of
+	// check whose subject is production or the graph. A result of any other check may name one; no
+	// rule of the state reads it there, and the leg rule groups no run result by it (jobCommit):
+	// resultCommit reads a result's Commit first, and a query or an agent of production or of the
+	// graph reads no commit (countsAtACommit). One rule reads it on every result, the rule of a name
+	// (nameFault): like each name that a result sets, it holds a letter or a digit, since a value of
+	// neither names no commit, and the reader and the entry refuse such a value with a line that names
+	// the record, as they refuse each other name of nothing. A result of a program check of
 	// production or of the graph counts only while no file of the check's tie differs between
 	// TestCommit and the subject's commit (R7: the procedure is "the code that runs it" too; R9: "its
 	// test, as it is now").

@@ -390,35 +390,60 @@ func TestCheckState(t *testing.T) {
 		// test as its failing examples do, so a refusal there takes them out too, at c2, where the
 		// results of c1 count.
 		{name: "control: a program check of production whose pass ran the test of c1, which counts at c2", change: func(c *checkCase) {
-			c.programPass(checkStateProductionProgram, "c1")
+			c.programPass(checkStateProductionProgram, "c1", "c2")
 		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "true", Reason: "passed", From: "d2"}},
 		{name: "R48, a refusal of a program check of production at the commit of the test of its pass takes out that run", change: func(c *checkCase) {
-			c.programPass(checkStateProductionProgram, "c1")
+			c.programPass(checkStateProductionProgram, "c1", "c2")
 			c.Uncited = map[string]map[string]string{"c1": {checkStateProductionProgram.ID: "test-not-in-code"}}
 		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "unknown", Reason: "uncited", Detail: "test-not-in-code"}},
 		{name: "control: a program check of the graph whose pass ran the test of c1, which counts at c2", change: func(c *checkCase) {
-			c.programPass(checkStateGraphProgram, "c1")
+			c.programPass(checkStateGraphProgram, "c1", "c2")
 		}, want: CheckState{ID: checkStateGraphProgram.ID, State: "true", Reason: "passed", From: "tx1"}},
 		{name: "R48, a refusal of a program check of the graph at the commit of the test of its pass takes out that run", change: func(c *checkCase) {
-			c.programPass(checkStateGraphProgram, "c1")
+			c.programPass(checkStateGraphProgram, "c1", "c2")
 			c.Uncited = map[string]map[string]string{"c1": {checkStateGraphProgram.ID: "test-not-in-code"}}
 		}, want: CheckState{ID: checkStateGraphProgram.ID, State: "unknown", Reason: "uncited", Detail: "test-not-in-code"}},
+		// With its pass of the test of c2, the failing example that the test of c1 caught decides:
+		// a refusal at c1 takes that example out at c2, as it does for a program check of production.
+		{name: "control: a program check of the graph whose pass ran the test of c2 and whose failing example the test of c1 caught", change: func(c *checkCase) {
+			c.programPass(checkStateGraphProgram, "c2", "c1")
+		}, want: CheckState{ID: checkStateGraphProgram.ID, State: "true", Reason: "passed", From: "tx1"}},
+		{name: "R48, a refusal of a program check of the graph at the commit of the test that caught its fault takes out that example", change: func(c *checkCase) {
+			c.programPass(checkStateGraphProgram, "c2", "c1")
+			c.Uncited = map[string]map[string]string{"c1": {checkStateGraphProgram.ID: "test-not-in-code"}}
+		}, want: CheckState{ID: checkStateGraphProgram.ID, State: "unknown", Reason: "no_failing_example"}},
 		// An agent or a query of the code counts its results at their commit, as C does
-		// (countsAtACommit): a refusal there takes them out at c2, where they count.
+		// (countsAtACommit): a refusal there takes them out at c2, where they count, its runs and its
+		// failing examples alike. With its pass at c1 the refusal at c1 takes out the run; with its
+		// pass at c2 the failing example of c1 decides, and the refusal takes out that example.
 		{name: "control: an agent of the code whose results at c1 count at c2", change: func(c *checkCase) {
-			c.codeResults(checkStateCodeAgent)
+			c.codeResults(checkStateCodeAgent, "c1")
 		}, want: CheckState{ID: checkStateCodeAgent.ID, State: "true", Reason: "passed", From: "c1"}},
 		{name: "R48, a refusal of an agent of the code at c1, the commit of its results, takes them out at c2, where they count", change: func(c *checkCase) {
-			c.codeResults(checkStateCodeAgent)
+			c.codeResults(checkStateCodeAgent, "c1")
 			c.Uncited = map[string]map[string]string{"c1": {checkStateCodeAgent.ID: "test-not-in-code"}}
 		}, want: CheckState{ID: checkStateCodeAgent.ID, State: "unknown", Reason: "uncited", Detail: "test-not-in-code"}},
+		{name: "control: an agent of the code whose pass at c2 and failing example at c1 count at c2", change: func(c *checkCase) {
+			c.codeResults(checkStateCodeAgent, "c2")
+		}, want: CheckState{ID: checkStateCodeAgent.ID, State: "true", Reason: "passed", From: "c2"}},
+		{name: "R48, a refusal of an agent of the code at c1, the commit of its failing example, takes that example out at c2, where it counts", change: func(c *checkCase) {
+			c.codeResults(checkStateCodeAgent, "c2")
+			c.Uncited = map[string]map[string]string{"c1": {checkStateCodeAgent.ID: "test-not-in-code"}}
+		}, want: CheckState{ID: checkStateCodeAgent.ID, State: "unknown", Reason: "no_failing_example"}},
 		{name: "control: a query of the code whose results at c1 count at c2", change: func(c *checkCase) {
-			c.codeResults(checkStateCodeQuery)
+			c.codeResults(checkStateCodeQuery, "c1")
 		}, want: CheckState{ID: checkStateCodeQuery.ID, State: "true", Reason: "passed", From: "c1"}},
 		{name: "R48, a refusal of a query of the code at c1, the commit of its results, takes them out at c2, where they count", change: func(c *checkCase) {
-			c.codeResults(checkStateCodeQuery)
+			c.codeResults(checkStateCodeQuery, "c1")
 			c.Uncited = map[string]map[string]string{"c1": {checkStateCodeQuery.ID: "test-not-in-code"}}
 		}, want: CheckState{ID: checkStateCodeQuery.ID, State: "unknown", Reason: "uncited", Detail: "test-not-in-code"}},
+		{name: "control: a query of the code whose pass at c2 and failing example at c1 count at c2", change: func(c *checkCase) {
+			c.codeResults(checkStateCodeQuery, "c2")
+		}, want: CheckState{ID: checkStateCodeQuery.ID, State: "true", Reason: "passed", From: "c2"}},
+		{name: "R48, a refusal of a query of the code at c1, the commit of its failing example, takes that example out at c2, where it counts", change: func(c *checkCase) {
+			c.codeResults(checkStateCodeQuery, "c2")
+			c.Uncited = map[string]map[string]string{"c1": {checkStateCodeQuery.ID: "test-not-in-code"}}
+		}, want: CheckState{ID: checkStateCodeQuery.ID, State: "unknown", Reason: "no_failing_example"}},
 		{name: "R9, the job ended with no result", change: func(c *checkCase) {
 			c.commit("c2", "c1", "packages/envoy/cmd/listener/main.go")
 			c.Subject.Commit = "c2"
@@ -831,15 +856,16 @@ func (s *checkCase) tieLikeC(id string) {
 	}
 }
 
-// codeResults is the case of k, a query or an agent of the code, with C's tie: a pass at c1 and a
-// failing example there that failed, as it must; subject c2, which differs from c1 outside the tie.
-func (s *checkCase) codeResults(k Check) {
+// codeResults is the case of k, a query or an agent of the code, with C's tie: a pass at runCommit,
+// c1 or c2, and a failing example at c1 that failed, as it must; subject c2, which differs from c1
+// outside the tie.
+func (s *checkCase) codeResults(k Check, runCommit string) {
 	s.t.Helper()
 	s.add(k)
 	s.tieLikeC(k.ID)
 	s.commit("c2", "c1", "docs/x.md")
 	s.Subject.Commit = "c2"
-	s.Results = append(s.Results, Result{Check: k.ID, Kind: ResultRun, Outcome: OutcomePass, Commit: "c1", At: checkStateRun},
+	s.Results = append(s.Results, Result{Check: k.ID, Kind: ResultRun, Outcome: OutcomePass, Commit: runCommit, At: checkStateRun},
 		Result{Check: k.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, Commit: "c1", At: checkStateRun.Add(5 * time.Minute)})
 }
 
