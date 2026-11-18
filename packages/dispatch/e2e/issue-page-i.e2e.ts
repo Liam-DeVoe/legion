@@ -181,6 +181,8 @@ async function visibleIds(page: Page): Promise<string[]> {
 /** Where the keys have left the reader: the row holding the focus, or the one the tree names with
  *  `aria-activedescendant`. */
 async function focusedRow(page: Page): Promise<string | null> {
+  // Where the keys left the reader at this instant is what this answers, by the focus or else
+  // by the row the tree names: a caller that waits for a row polls this whole function.
   return (await focusedNodeId(page)) ?? (await treeActiveDescendant(page));
 }
 
@@ -719,6 +721,8 @@ test("with no filter the page is the conversation, each node edited once, folded
     // task, and each child under the issue - read by node id against the server's own reads,
     // and a row for nothing else.
     await unfoldEveryBranch(page);
+    // Every fold was pressed open above, and the ids read here are held to every node of the
+    // conversation below, so a read short of a row fails there before the loop at the foot.
     const whole = await drawnRows(page);
     expectNoIssueNodeRows(whole, outline.slugs, "the page with every branch open");
     // The memo callout is the head's three sentences and no row of the outline.
@@ -848,6 +852,8 @@ function branchMoreIndent(width: number): { readonly inset: number; readonly ste
  * words, so it covers none of them, and it stays inside the page.
  */
 async function expectPhoneBulletGaps(page: Page, spec: string, where: string): Promise<void> {
+  // Its one caller waited for the rows it reads to draw, and this reads their layout as it stands
+  // now: the two counts at the foot fail a reading that holds no row of either kind.
   const layouts = await rowLayouts(page, spec);
   const bullets = await bulletBoxes(page);
   expect(
@@ -965,6 +971,8 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
         })
         .toBeGreaterThan(0);
       const { inset, step } = branchMoreIndent(width);
+      // The poll above waited until the opened branch drew its deeper lines, so this read walks
+      // at least one of them.
       for (const line of await branchMoreIndents(page)) {
         expect(
           line.padding,
@@ -1210,12 +1218,16 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
   // thread of `seedReplyNesting` is four levels deep - its head, the answer to it, the answer to
   // that answer, and a third answer under that - and `phase` opens it at 1440 by 900 px.
   await phase(browser, seedReplyNesting, async (page, seeded) => {
+    const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectLoadSettled(settling);
     await expect(nodeRow(page, seeded.head), "the thread's head draws no row").toHaveCount(1);
     // The thread's folds are opened by their fold controls alone: `unfoldEveryBranch` also
     // presses the line that counts a deeper branch, which is what this reading reads shut.
     const folds = nodeRows(page).getByRole("button", { exact: true, name: CONTROL_LABELS.unfold });
+    // The load went quiet above, so the first count reads the folds the page settled on, and
+    // each press draws the branch it opens before its click resolves.
     for (let pressed = 0; pressed < 20 && (await folds.count()) > 0; pressed += 1) {
       await folds.first().click();
     }
@@ -2029,6 +2041,8 @@ test("a crumb draws its node's first line, cut at a word @phone @phone-only", as
     await page.keyboard.press(".");
     const crumbs = tree(page).locator("xpath=..").locator("[data-crumb]");
     await expect.poll(() => crumbs.count(), { message: "no crumb is drawn" }).toBeGreaterThan(1);
+    // The poll above waited until the zoom drew more than one crumb, so this read holds the
+    // thread's crumb and the loop below walks at least it.
     const texts = (await crumbs.allInnerTexts()).map((crumb) => crumb.trim());
     expect(texts[0], "the issue's crumb repeats its title").toBe(seeded.key);
     expect(texts[1], "the thread's crumb is not its stored first line").toBe(
@@ -2088,6 +2102,7 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
   // than a card takes to open elsewhere: half a second of absence each, on top of its own walk.
   test.setTimeout(120_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
 
     // One body is drawn: the focused node's.
@@ -2207,9 +2222,12 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
       await nodeBodies(page).count(),
       "a body is drawn with the keyboard focus on no control"
     ).toBe(0);
+    await expectLoadSettled(settling);
     const resting = REF_PREVIEW_OPEN_DELAY_MS + 200;
     const before = await treeText(page);
     const rows = nodeRows(page);
+    // Every read the page made went quiet above, after Conversation drew the outline again, so
+    // this count is every row the outline draws.
     const count = await rows.count();
     for (let index = 0; index < count; index += 1) {
       await rows.nth(index).hover();
@@ -2251,6 +2269,8 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
     const links = issuePage(page).locator(
       "a[href]:visible, [data-dispatch-ref]:visible, [data-dispatch-href]:visible"
     );
+    // The page's reads went quiet before the walk over the rows, and the poll above saw the
+    // pinned decision draw the links in its words, so one count holds every link drawn.
     const linkCount = await links.count();
     for (let index = 0; index < linkCount; index += 1) {
       await links.nth(index).hover();
@@ -2295,6 +2315,8 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
     await page.emulateMedia({ forcedColors: "active" });
     const forced = await drawnRows(page);
     expectRowVocabulary(forced, await rowTags(page));
+    // The rows were drawn and read just above with the colours forced, and the assertion below
+    // holds this read to those rows before the loop walks them.
     const painted = await shapesPainted(page);
     expect(
       painted.map((row) => row.id),
@@ -2691,6 +2713,8 @@ test("the tree answers the WAI-ARIA tree pattern's roles and properties", async 
 
     // The tree is one tab stop: it roves with one tabbable row, or it names the row it is on.
     const tabbable = rows.filter((row) => row.tabIndex === 0);
+    // One state is the claim, the one the rows above were read in with no key pressed since, and
+    // the ternaries below only spell this answer for the assertion.
     const named = await treeActiveDescendant(page);
     expect(
       `${tabbable.length}/${named === null ? "none" : "named"}`,
@@ -2745,17 +2769,19 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
       uncontrolled?.results?.[0]?.negative_control,
       "the seed's uncontrolled check's latest result records a negative control"
     ).toBe("");
-    const drawnGaps = async () => {
-      const drawn = new Map<string, string[]>();
-      for (const row of await drawnRows(page)) {
-        if (row.gapKinds.length > 0) drawn.set(row.id ?? "", [...row.gapKinds]);
-      }
-      return Object.fromEntries([...drawn].sort());
-    };
     await expect
-      .poll(drawnGaps, {
-        message: "the page draws a gap on a node it does not tell apart, or none on one it does",
-      })
+      .poll(
+        async () => {
+          const drawn = new Map<string, string[]>();
+          for (const row of await drawnRows(page)) {
+            if (row.gapKinds.length > 0) drawn.set(row.id ?? "", [...row.gapKinds]);
+          }
+          return Object.fromEntries([...drawn].sort());
+        },
+        {
+          message: "the page draws a gap on a node it does not tell apart, or none on one it does",
+        }
+      )
       .toEqual(Object.fromEntries([...wanted].sort()));
     await expect
       .poll(async () => rowsByKind(await drawnRows(page)), {
@@ -2986,6 +3012,8 @@ test("Enter puts the caret in a node, and Escape gives the row back", async ({ b
       const until = Date.now() + 30_000;
       for (let inBlock = 0; inBlock < 3 && Date.now() < until; ) {
         await page.keyboard.press("Delete");
+        // The instant is the claim: each Delete goes out without waiting, and this read counts
+        // the presses that found the caret standing in the statement.
         if (await caretInRowBlock(page, requirementBlockId(2))) inBlock += 1;
       }
     } finally {
@@ -3096,16 +3124,35 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
       // ProseMirror writes its own selection back over the page's 20 ms after it takes the focus
       // (prosemirror-view's focus handler), undoing a caret move it has not read yet: an arrow
       // pressed in that window is put back, and the key after it acts at the old place. A reader
-      // is never that quick, so the row waits that window out before its first key, on the page's
-      // own clock: a wait in this process lets the next key go out while that timer is still
-      // queued, and a busy page runs a queued key before a timer already due, while a timer the
-      // page sets after ProseMirror's runs after it, so the key is sent only once the write is
-      // made.
-      await page.evaluate(() => {
-        const waited = Promise.withResolvers<void>();
-        setTimeout(waited.resolve, 50);
-        return waited.promise;
-      });
+      // is never that quick, so the row waits that window out before its first key. The page can
+      // drop the editable's focus and give it back some 45 ms after the caret goes in, which
+      // arms that write again, so the wait is a quiet spell: it ends once 50 ms have passed with
+      // no `focusin` anywhere in the document, starting again at each one, or at 2 s whatever
+      // moves. It runs on the page's own clock: a wait in this process lets the next key go out
+      // while that timer is still queued, and a busy page runs a queued key before a timer
+      // already due, while a timer the page sets after ProseMirror's runs after it, so the key
+      // is sent only once the write is made.
+      await page.evaluate(
+        ({ boundMs, quietMs }) => {
+          const waited = Promise.withResolvers<void>();
+          let quiet = 0;
+          const end = () => {
+            window.clearTimeout(quiet);
+            window.clearTimeout(bound);
+            document.removeEventListener("focusin", restart, true);
+            waited.resolve();
+          };
+          const restart = () => {
+            window.clearTimeout(quiet);
+            quiet = window.setTimeout(end, quietMs);
+          };
+          const bound = window.setTimeout(end, boundMs);
+          document.addEventListener("focusin", restart, true);
+          restart();
+          return waited.promise;
+        },
+        { boundMs: 2_000, quietMs: 50 }
+      );
     };
     /** One edit through the row `focus` focuses: Enter, `keys` pressed, `paste` pasted as a
      *  browser sends a paste, a `Y` typed and Escape. The document `artifactId` then stores
