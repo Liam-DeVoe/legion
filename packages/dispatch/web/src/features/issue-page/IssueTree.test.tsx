@@ -1,7 +1,7 @@
 import { afterEach, expect, jest, setSystemTime, spyOn, test } from "bun:test";
 import { macBaseKeymap } from "@milkdown/kit/prose/commands";
 import { Schema } from "@milkdown/kit/prose/model";
-import { EditorState } from "@milkdown/kit/prose/state";
+import { EditorState, TextSelection } from "@milkdown/kit/prose/state";
 import { EditorView } from "@milkdown/kit/prose/view";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
@@ -30,7 +30,7 @@ import { IssueTree, LANDING_WAIT_MS, ZOOMED_TREE_QUERY } from "./IssueTree";
 import { CLEARANCE, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
 import * as nodeCaret from "./node-caret";
-import { EDITOR_BOX_ATTRIBUTE } from "./node-caret";
+import { EDITOR_BOX_ATTRIBUTE, MAC_PLATFORM } from "./node-caret";
 import {
   OutlineRequestProvider,
   useAskOutline,
@@ -50,7 +50,7 @@ import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
 import { addressesAsShortForms } from "./tree-drafts";
 import { issueTreeQuery } from "./tree-read/tree-read";
-import type { OnEditing, RowEditor } from "./useNodeEditing";
+import type { OnEditing, OnEditor } from "./useNodeEditing";
 
 /**
  * What a reader does to the tree with the keyboard alone.
@@ -160,7 +160,7 @@ function FocusedNodeProbe({ seen }: { seen: { node?: FocusedNode } }): ReactNode
 /** What stands in for the editor of the document a row is editing in: a plain element, or what
  *  takes how to hand the row its editor (`onEditing`) and draws one - the document's own
  *  (`LiveEditor`), or one that hands the row nothing. */
-type StandInEditor = ReactNode | ((onEditor: (editor: RowEditor | undefined) => void) => ReactNode);
+type StandInEditor = ReactNode | ((onEditor: OnEditor) => ReactNode);
 
 /** What a page whose tree hands it nothing to take the editor with hands the editor to. */
 const takesNoEditor = () => {};
@@ -184,7 +184,7 @@ function HandedStandIn({
   onEditor,
 }: {
   children: ReactNode;
-  onEditor: (editor: RowEditor | undefined) => void;
+  onEditor: OnEditor;
 }): ReactNode {
   useEffect(() => {
     const view = standInView();
@@ -208,9 +208,9 @@ function EditedDocument({
   editor: StandInEditor;
   held: { set?: OnEditing };
 }): ReactNode {
-  const [edited, setEdited] = useState<
-    { artifactId: string; onEditor?: (editor: RowEditor | undefined) => void } | undefined
-  >(undefined);
+  const [edited, setEdited] = useState<{ artifactId: string; onEditor?: OnEditor } | undefined>(
+    undefined
+  );
   held.set = (artifactId, onEditor) =>
     setEdited(artifactId === undefined ? undefined : { artifactId, onEditor });
   const onEditor = edited?.onEditor ?? takesNoEditor;
@@ -444,6 +444,16 @@ async function nextFrame(): Promise<void> {
   const frame = Promise.withResolvers<void>();
   requestAnimationFrame(() => frame.resolve());
   await act(async () => frame.promise);
+}
+
+/** Lets `ms` pass inside `act`, after `first` where given, and React draw what changed by then. */
+function waitInAct(ms: number, first?: () => void): Promise<void> {
+  return act(async () => {
+    first?.();
+    const waited = Promise.withResolvers<void>();
+    setTimeout(waited.resolve, ms);
+    await waited.promise;
+  });
 }
 
 /** Holds every frame asked for from here on until `run` runs them - the ones named, or every one
@@ -1368,7 +1378,7 @@ async function editStatement(
   editor: StandInEditor = <div contentEditable suppressContentEditableWarning />,
   blocks: StatementBlocks = STATEMENT_BLOCKS
 ): Promise<HTMLElement> {
-  const editable = await enterStatement(user, editor);
+  const { editable } = await enterStatement(user, editor);
   await drawStatementBlocks(editable, blocks);
   await waitFor(
     () =>
@@ -1381,15 +1391,21 @@ async function editStatement(
   return editable;
 }
 
-/** A comment and then a statement of the spec, with Enter pressed on the statement's row, once
- *  the row holds its editor, `editor`. Answers the editor's editable. The document's own editor
- *  (`LiveEditor`) loads its library on its first use, which can take more than a second. */
-async function enterStatement(user: UserEvent, editor: StandInEditor): Promise<HTMLElement> {
+/** A comment and then a statement of the spec, and `after` under them where given, with Enter
+ *  pressed on the statement's row, once the row holds its editor, `editor`. Answers the tree and
+ *  the editor's editable. The document's own editor (`LiveEditor`) loads its library on its first
+ *  use, which can take more than a second. */
+async function enterStatement(
+  user: UserEvent,
+  editor: StandInEditor,
+  after: readonly TreeNode[] = []
+) {
   const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
   const root = node({
     children: [
       node({ id: "comment-1", text: "The first words.", type: "comment" }),
       node({ id: "spec#b-r1", text: "A statement of the spec.", type: "requirement" }),
+      ...after,
     ],
     id: KEY,
     type: "issue",
@@ -1409,7 +1425,7 @@ async function enterStatement(user: UserEvent, editor: StandInEditor): Promise<H
     },
     { timeout: 10_000 }
   );
-  return found as HTMLElement;
+  return { editable: found as HTMLElement, view };
 }
 
 /** Draws `blocks` of the statement's document in the row's `editable`, as its editor does once it
@@ -1567,30 +1583,11 @@ async function enterBeforeDrawn(
   user: UserEvent,
   editor: StandInEditor = <div contentEditable suppressContentEditableWarning />
 ) {
-  const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
-  const root = node({
-    children: [
-      node({ id: "comment-1", text: "The first words.", type: "comment" }),
-      node({ id: "spec#b-r1", text: "A statement of the spec.", type: "requirement" }),
-      node({ id: "comment-2", text: "The last words.", type: "comment" }),
-    ],
-    id: KEY,
-    type: "issue",
-  });
-  const view = renderTree(root, { artifacts: [spec], editor });
-  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-  await user.keyboard("j");
-  await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-r1"));
-  await user.keyboard("{Enter}");
-  let found: HTMLElement | null | undefined;
-  await waitFor(() => {
-    found = rowsFor(view.container, "spec#b-r1")[0]?.querySelector<HTMLElement>(
-      '[contenteditable="true"]'
-    );
-    expect(found, "the row took no editor").toBeTruthy();
-  });
+  const entered = await enterStatement(user, editor, [
+    node({ id: "comment-2", text: "The last words.", type: "comment" }),
+  ]);
   await nextFrame();
-  return { editable: found as HTMLElement, view };
+  return entered;
 }
 
 // A key the reader presses after Enter and before the row's editor has drawn the document, which
@@ -1919,12 +1916,8 @@ test("a caret the editor drops or moves goes back to the node's block until the 
   // The reader presses a key: the caret is where the editor leaves it inside the node's block
   // from then on, five characters into the statement, and not put back at the block's start.
   await user.keyboard("{Shift}");
-  const statement = editable.querySelector('[data-block-id="r1"]')?.firstChild;
-  if (statement === null || statement === undefined) throw new Error("the editor draws no r1");
-  await act(async () => {
-    window.getSelection()?.collapse(statement, 5);
-    document.dispatchEvent(new Event("selectionchange"));
-  });
+  const statement = wordsOf(editable, "r1");
+  await select(statement, 5);
   expect(
     window.getSelection()?.anchorOffset,
     "the caret was moved back after the reader acted"
@@ -1951,15 +1944,11 @@ test("a focus the editor drops while the reader writes comes back at their caret
   // Something outside the outline that takes no focus.
   const outside = "Words outside the outline";
   const plain = render(<p>{outside}</p>).getByText(outside);
-  const statement = editable.querySelector('[data-block-id="r1"]')?.firstChild;
-  if (statement === null || statement === undefined) throw new Error("the editor draws no r1");
+  const statement = wordsOf(editable, "r1");
 
   // The reader presses a key and moves the caret five characters into the statement.
   await user.keyboard("{Shift}");
-  await act(async () => {
-    window.getSelection()?.collapse(statement, 5);
-    document.dispatchEvent(new Event("selectionchange"));
-  });
+  await select(statement, 5);
   await wrapAgain(editable);
   await waitFor(() =>
     expect(document.activeElement, "the focus the editor dropped did not come back").toBe(editable)
@@ -2039,14 +2028,10 @@ test("a focus the editor drops after it redrew the reader's caret and took the n
   setViewport(1440);
   const user = userEvent.setup();
   const editable = await editStatement(user);
-  const words = editable.querySelector('[data-block-id="r1"]')?.firstChild;
-  if (words === null || words === undefined) throw new Error("the editor draws no r1");
+  const words = wordsOf(editable, "r1");
   // The reader presses a key and moves the caret five characters into the statement.
   await user.keyboard("{Shift}");
-  await act(async () => {
-    window.getSelection()?.collapse(words, 5);
-    document.dispatchEvent(new Event("selectionchange"));
-  });
+  await select(words, 5);
   const frames = framesByHand();
   try {
     await wrapAgain(editable);
@@ -2080,8 +2065,7 @@ test("the caret a dropped focus comes back at is the editor's own in the task th
   const own: { block?: string | null; offset?: number } = {};
   try {
     const editable = await editStatement(user, <ReportReadingEditor own={own} />);
-    const words = editable.querySelector('[data-block-id="r1"]')?.firstChild;
-    if (words === null || words === undefined) throw new Error("the editor draws no r1");
+    const words = wordsOf(editable, "r1");
     // The reader presses a key and moves the caret five characters into the statement, and the
     // focus drops before the browser reports the move.
     await user.keyboard("{Shift}");
@@ -2158,9 +2142,10 @@ function pressIn(editable: HTMLElement, key: string, modifiers: KeyboardEventIni
 }
 
 /** A block of a document as the room holds it, in ProseMirror's JSON: its type, its attributes -
- *  its `blockId` among them - and what it holds. */
+ *  its `blockId` among them, and a typed block's `block[]` pointers as the array they are - and
+ *  what it holds. */
 interface LiveBlock {
-  readonly attrs?: Readonly<Record<string, string | number>>;
+  readonly attrs?: Readonly<Record<string, string | number | readonly string[]>>;
   readonly content?: readonly (LiveBlock | LiveText)[];
   readonly type: string;
 }
@@ -2176,7 +2161,7 @@ interface LiveText {
  *  heading's level as the number it is, where its own types name strings alone. */
 function roomBlock(block: LiveBlock): Y.XmlElement {
   const element = new Y.XmlElement(block.type);
-  const attributes = element as Y.XmlElement<Record<string, string | number>>;
+  const attributes = element as Y.XmlElement<Record<string, string | number | readonly string[]>>;
   for (const [name, value] of Object.entries(block.attrs ?? {})) {
     attributes.setAttribute(name, value);
   }
@@ -2244,7 +2229,7 @@ function LiveEditor({
   room,
 }: {
   blocks: readonly LiveBlock[];
-  onEditor: (editor: RowEditor | undefined) => void;
+  onEditor: OnEditor;
   room: LiveRoom;
 }): ReactNode {
   const root = useRef<HTMLDivElement | null>(null);
@@ -2620,80 +2605,51 @@ test("the keys that would change the node's heading's level or lines leave it as
 // the page only once the browser reports a move of the caret, a task later. Measured in a Job like
 // CI's, Backspace pressed right after ArrowRight at a heading's start acted at the start, where
 // Milkdown lowers the heading a level: the editor refused that (`holdEditsToBlock`), and the
-// letter before the caret stayed. The row has the editor read the caret first (`confineKey`), so
-// Backspace there is the browser's delete of that letter. happy-dom moves no caret for an arrow
-// and deletes nothing for Backspace, so the case makes each move and each delete the browser
-// would, and drops happy-dom's report of a move made inside the call that makes it. It moves the
-// caret and presses the key in one task: a timer the editor set as the caret went in, which a
-// reader's first keys come long after, could otherwise run between them, and read the move, or
-// write the editor's own selection back over it (its focus handler's, 20 ms on).
-test("Backspace right after ArrowRight at the node's heading's start deletes the letter before the caret", async () => {
-  setViewport(1440);
-  const user = userEvent.setup();
-  const { editable, view } = await editLive(user, liveBlocks(heading("r1", 2, "YA heading")));
-  const before = blocksOf(view);
-  const restore = dropSelectionReports();
-  try {
-    const words = wordsOf(editable, "r1");
-    const ownOffset = () => view.state.selection.$head.parentOffset;
-    expect(
-      [caretBlock(), ownOffset()],
-      "the editor's own caret is not at the heading's start"
-    ).toEqual(["r1", 0]);
-    expect(pressIn(editable, "ArrowRight"), "ArrowRight was not left to the browser").toBe(true);
-    window.getSelection()?.collapse(words, 1);
-    expect(ownOffset(), "the editor read the move before the browser reported it").toBe(0);
-    if (pressIn(editable, "Backspace")) {
-      await changePage(() => {
-        words.deleteData(0, 1);
-        window.getSelection()?.collapse(words, 0);
-      });
+// letter before the caret stayed. Milkdown lowers a heading a level for Delete at its start too
+// (DowngradeHeading), so a Delete the editor answered on its own caret would be that lowering, and
+// the letter after the caret would stay. The row has the editor read the caret first
+// (`confineKey`), so each key there is the browser's delete of its letter, and the heading keeps
+// its level. happy-dom moves no caret for an arrow and deletes nothing for either key, so each
+// case makes each move and each delete the browser would, and drops happy-dom's report of a move
+// made inside the call that makes it. It moves the caret and presses the key in one task: a timer
+// the editor set as the caret went in, which a reader's first keys come long after, could
+// otherwise run between them, and read the move, or write the editor's own selection back over it
+// (its focus handler's, 20 ms on).
+for (const [key, side, at, remaining] of [
+  ["Backspace", "before", 0, "A heading"],
+  ["Delete", "after", 1, "Y heading"],
+] as const) {
+  test(`${key} right after ArrowRight at the node's heading's start deletes the letter ${side} the caret`, async () => {
+    setViewport(1440);
+    const user = userEvent.setup();
+    const { editable, view } = await editLive(user, liveBlocks(heading("r1", 2, "YA heading")));
+    const before = blocksOf(view);
+    const restore = dropSelectionReports();
+    try {
+      const words = wordsOf(editable, "r1");
+      const ownOffset = () => view.state.selection.$head.parentOffset;
+      expect(
+        [caretBlock(), ownOffset()],
+        "the editor's own caret is not at the heading's start"
+      ).toEqual(["r1", 0]);
+      expect(pressIn(editable, "ArrowRight"), "ArrowRight was not left to the browser").toBe(true);
+      window.getSelection()?.collapse(words, 1);
+      expect(ownOffset(), "the editor read the move before the browser reported it").toBe(0);
+      if (pressIn(editable, key)) {
+        await changePage(() => {
+          words.deleteData(at, 1);
+          window.getSelection()?.collapse(words, at);
+        });
+      }
+      expect(
+        blocksOf(view),
+        `${key} right after ArrowRight did not delete the letter ${side} the caret`
+      ).toEqual(withWords(before, "r1", remaining));
+    } finally {
+      restore();
     }
-    expect(
-      blocksOf(view),
-      "Backspace right after ArrowRight did not delete the letter before the caret"
-    ).toEqual(withWords(before, "r1", "A heading"));
-  } finally {
-    restore();
-  }
-});
-
-// Milkdown lowers a heading a level for Delete at its start, as for Backspace (DowngradeHeading),
-// so a Delete the editor answered on its own caret, still at the start right after ArrowRight,
-// would be that lowering, which the editor refuses (`holdEditsToBlock`), and the letter after the
-// caret would stay. The row has the editor read the caret first (`confineKey`), so Delete there is
-// the browser's delete of that letter, and the heading keeps its level. The case makes each move
-// and each delete the browser would, as the Backspace case above does.
-test("Delete right after ArrowRight at the node's heading's start deletes the letter after the caret", async () => {
-  setViewport(1440);
-  const user = userEvent.setup();
-  const { editable, view } = await editLive(user, liveBlocks(heading("r1", 2, "YA heading")));
-  const before = blocksOf(view);
-  const restore = dropSelectionReports();
-  try {
-    const words = wordsOf(editable, "r1");
-    const ownOffset = () => view.state.selection.$head.parentOffset;
-    expect(
-      [caretBlock(), ownOffset()],
-      "the editor's own caret is not at the heading's start"
-    ).toEqual(["r1", 0]);
-    expect(pressIn(editable, "ArrowRight"), "ArrowRight was not left to the browser").toBe(true);
-    window.getSelection()?.collapse(words, 1);
-    expect(ownOffset(), "the editor read the move before the browser reported it").toBe(0);
-    if (pressIn(editable, "Delete")) {
-      await changePage(() => {
-        words.deleteData(1, 1);
-        window.getSelection()?.collapse(words, 1);
-      });
-    }
-    expect(
-      blocksOf(view),
-      "Delete right after ArrowRight did not delete the letter after the caret"
-    ).toEqual(withWords(before, "r1", "Y heading"));
-  } finally {
-    restore();
-  }
-});
+  });
+}
 
 // Milkdown bolds the selection for Ctrl+B (Meta+B on a Mac, `Mod-b`), the editor's own: right
 // after Shift+ArrowRight selected two letters, before the browser reported the last move, the bold
@@ -2736,7 +2692,7 @@ test("Ctrl+B right after Shift+ArrowRight in the node's paragraph bolds the lett
     ).not.toEqual([0, 2]);
     // `Mod-b` is the key of the platform the editor's keymap read as it loaded
     // (`prosemirror-keymap`).
-    const mod = /Mac|iP(hone|[oa]d)/.test(navigator.platform) ? "metaKey" : "ctrlKey";
+    const mod = MAC_PLATFORM.test(navigator.platform) ? "metaKey" : "ctrlKey";
     pressIn(editable, "b", { [mod]: true });
     expect(editor.getMarkdown(), "Ctrl+B did not bold the two letters selected").toBe(
       before.replace("Bold the", "**Bo**ld the")
@@ -2799,6 +2755,45 @@ test("a key pressed in a composition has the row's editor read no caret, and Bac
     document.removeEventListener("selectionchange", count);
     restore();
   }
+});
+
+// The row has its editor read the caret before a key the editor answers (`confineKey`), and that
+// read is the document's `selectionchange`, which every listener on the page hears. The editor's
+// action bar reads each one on a touch selection as the reader's new selection, which it hides and
+// shows again 400 ms later (`@legion/proof-editor`'s `dispatch-action-bar.ts`): read before every
+// key, the bar blinked at each Ctrl+C on a touch device with a keyboard. The read is made only
+// where the page's selection is not the editor's own, so Ctrl+C on a selection the editor holds
+// leaves the bar showing. The bar reads a selection as a touch one from the reader's last touch on
+// the editable, which the case makes as the browser reports it, before the selection.
+test("Ctrl+C on a touch selection the row's editor holds leaves its action bar showing", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await editLive(user);
+  const words = wordsOf(editable, "r1");
+  await act(async () => {
+    editable.dispatchEvent(new Event("touchstart", { bubbles: true }));
+    editable.dispatchEvent(new Event("touchend", { bubbles: true }));
+  });
+  await select(words, 2, words, 11);
+  const { $anchor, $head } = view.state.selection;
+  expect(
+    [$anchor.parentOffset, $head.parentOffset],
+    "the editor did not take the reader's selection as its own"
+  ).toEqual([2, 11]);
+  // The bar is drawn beside the editable, and drawn again as the editor's plugins change.
+  const bar = () =>
+    editable.parentElement?.querySelector<HTMLElement>(":scope > .dispatch-action-bar")?.style
+      .display;
+  await waitFor(
+    () => expect(bar(), "the action bar did not show the touch selection").toBe("flex"),
+    {
+      timeout: 2_000,
+    }
+  );
+  // `Mod-c` is the platform's own (`prosemirror-keymap`).
+  const mod = MAC_PLATFORM.test(navigator.platform) ? "metaKey" : "ctrlKey";
+  pressIn(editable, "c", { [mod]: true });
+  expect(bar(), "Ctrl+C on the selection the editor holds hid the action bar").toBe("flex");
 });
 
 // Milkdown's block shortcuts make the block the caret is in another: Ctrl+Alt+1 a heading,
@@ -2923,6 +2918,272 @@ test("Tab right after the caret moved to the next item of the node's list sinks 
     ]);
   } finally {
     restore();
+  }
+});
+
+/** A plan task `blockId` of `words`, which serves the words above the statement: the editor draws
+ *  its header `contenteditable="false"`, with a link to the block it serves
+ *  (`typed-block-drawing.ts`'s `renderTypedBlock`), where the browser stops for Tab. */
+function taskServing(blockId: string, words: string): LiveBlock {
+  return {
+    attrs: { blockId, serves: [`dispatch://${KEY}/spec#b-r0`] },
+    content: [{ content: [{ text: words, type: "text" }], type: "paragraph" }],
+    type: "plan_task",
+  };
+}
+
+/** The link the plan task `blockId` of the row's `editable` draws in its header. */
+function linkOf(editable: HTMLElement, blockId: string): HTMLElement {
+  const link = editable.querySelector<HTMLElement>(`[data-block-id="${blockId}"] header a[href]`);
+  if (link === null) throw new Error(`the editor draws no link in ${blockId}`);
+  return link;
+}
+
+/** Whether `row`, which held the editor, has let go of it - the editing ended - and draws neither
+ *  its body nor its focused look, as a row the focus left the outline from. */
+function rowLetGo(row: HTMLElement): boolean {
+  return (
+    row.querySelector('[contenteditable="true"]') === null &&
+    row.querySelector("[data-node-body]") === null &&
+    row.querySelector("[data-node-card]")?.className.includes(pageFocusedRow) !== true
+  );
+}
+
+// Milkdown answers Tab in a list item alone, and the browser moved the focus on from the row's
+// editor to the next control the editor draws: driving a preview, another block's, and the
+// editor's box scrolled to it, away from the node's block. Tab from the row's editor goes past
+// every control the editor draws outside the node's block, to the first tab stop after its box,
+// here a control of the page below the outline, and the editing ends as a Tab out of the outline
+// does: the row lets go of the editor, its body and its focused look. The document stays as it
+// was.
+test("Tab from the row's editor goes past a control another block draws to the first tab stop after its box, and ends the editing", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await editLive(user, [
+    paragraph("r0", "The words above the statement."),
+    paragraph("r1", "A statement of the spec."),
+    taskServing("t2", "The task below the statement."),
+  ]);
+  const outside = controlOutside();
+  const link = linkOf(editable, "t2");
+  const row = editable.closest<HTMLElement>("[data-node-row]");
+  if (row === null) throw new Error("the statement's row does not hold the editor");
+  const before = blocksOf(view);
+  await user.tab();
+  expect(document.activeElement === link, "Tab stopped on the link the next block draws").toBe(
+    false
+  );
+  expect(
+    document.activeElement === outside.control,
+    "Tab from the row's editor did not go to the first tab stop after its box"
+  ).toBe(true);
+  expect(blocksOf(view), "Tab changed the document").toEqual(before);
+  await waitFor(() =>
+    expect(rowLetGo(row), "the row kept its editing, its body or its focused look").toBe(true)
+  );
+});
+
+// Shift+Tab from the row's editor goes past every control the editor draws outside the node's
+// block to the row, the outline's one tab stop, and the editing ends there as Escape's does, the
+// focus staying on the row. The document stays as it was.
+test("Shift+Tab from the row's editor goes to the row past a control another block draws, and ends the editing", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await editLive(user, [
+    taskServing("t0", "The task above the statement."),
+    paragraph("r1", "A statement of the spec."),
+    taskServing("t2", "The task below the statement."),
+  ]);
+  const row = editable.closest<HTMLElement>("[data-node-row]");
+  if (row === null) throw new Error("the statement's row does not hold the editor");
+  const before = blocksOf(view);
+  await user.tab({ shift: true });
+  expect(
+    document.activeElement === row,
+    "Shift+Tab from the row's editor did not go to the row"
+  ).toBe(true);
+  expect(blocksOf(view), "Shift+Tab changed the document").toEqual(before);
+  await waitFor(() =>
+    expect(row.querySelector('[contenteditable="true"]') === null, "the editing did not end").toBe(
+      true
+    )
+  );
+  await nextFrame();
+  expect(document.activeElement === row, "the focus left the row as the editing ended").toBe(true);
+});
+
+// What the node's own block draws is the node's: from the caret in a plan task's words, Tab stops
+// at the link the task's header draws, as the browser would, and the editing stays. Tab from that
+// link goes on past the controls the editor draws outside the block, to the first tab stop after
+// its box, and ends the editing.
+test("Tab from the row's editor stops at a link the node's own block draws, and the editing stays", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable } = await editLive(user, [
+    paragraph("r0", "The words above the statement."),
+    taskServing("r1", "A statement of the spec."),
+    taskServing("t2", "The task below the statement."),
+  ]);
+  const outside = controlOutside();
+  const row = editable.closest<HTMLElement>("[data-node-row]");
+  if (row === null) throw new Error("the statement's row does not hold the editor");
+  await user.tab();
+  expect(
+    document.activeElement === linkOf(editable, "r1"),
+    "Tab did not stop at the link the node's block draws"
+  ).toBe(true);
+  await nextFrame();
+  expect(
+    row.querySelector('[contenteditable="true"]') === editable,
+    "the editing ended at a link of the node's block"
+  ).toBe(true);
+  await user.tab();
+  expect(
+    document.activeElement === outside.control,
+    "Tab from the node's link did not go to the first tab stop after the editor's box"
+  ).toBe(true);
+  await waitFor(() =>
+    expect(rowLetGo(row), "the row kept its editing, its body or its focused look").toBe(true)
+  );
+});
+
+// The editor draws its action bar beside the editable, outside every block, but the bar's
+// Comment, Suggest and Ask act on the selection, which the row holds inside the node's block: while
+// the bar shows, Tab from the row's editor stops at each of its controls in turn, as it did before
+// the editor's other controls were passed over, and the editing stays. Tab from the bar's last
+// control goes on by the same rule, past the box, and ends the editing. The selection is a touch
+// one, as the Ctrl+C case above makes it.
+test("Tab from the row's editor stops at each control of the action bar its selection shows, and the editing stays", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable } = await editLive(user, [
+    paragraph("r0", "The words above the statement."),
+    paragraph("r1", "A statement of the spec."),
+    taskServing("t2", "The task below the statement."),
+  ]);
+  const outside = controlOutside();
+  const row = editable.closest<HTMLElement>("[data-node-row]");
+  if (row === null) throw new Error("the statement's row does not hold the editor");
+  const words = wordsOf(editable, "r1");
+  await act(async () => {
+    editable.dispatchEvent(new Event("touchstart", { bubbles: true }));
+    editable.dispatchEvent(new Event("touchend", { bubbles: true }));
+  });
+  await select(words, 2, words, 11);
+  await waitFor(
+    () =>
+      expect(
+        editable.parentElement?.querySelector<HTMLElement>(":scope > .dispatch-action-bar")?.style
+          .display,
+        "the action bar did not show the touch selection"
+      ).toBe("flex"),
+    { timeout: 2_000 }
+  );
+  for (const name of ["Comment", "Suggest", "Ask"]) {
+    await user.tab();
+    const focused = document.activeElement;
+    expect(
+      focused?.closest(".dispatch-action-bar") !== null && focused?.textContent === name,
+      `Tab did not stop at the action bar's ${name}`
+    ).toBe(true);
+    expect(
+      row.querySelector('[contenteditable="true"]') === editable,
+      `the editing ended at the action bar's ${name}`
+    ).toBe(true);
+  }
+  await user.tab();
+  expect(
+    document.activeElement === outside.control,
+    "Tab from the action bar did not go to the first tab stop after the editor's box"
+  ).toBe(true);
+  await waitFor(() =>
+    expect(rowLetGo(row), "the row kept its editing, its body or its focused look").toBe(true)
+  );
+});
+
+// A document draws a button for each block with comments or asks on it, which shows them and puts
+// the reader in that block, in an aside of its own beside the editor, outside every block
+// (`doc/ProofDocument.tsx`'s "Block references", each marked with its block's id). The node's own
+// block's button is the node's: Tab from the row's editor stops at it, and the editing stays;
+// Shift+Tab from it goes back to the editable, and the next Tab from there to it again, and on to
+// the first tab stop after the box, which ends the editing. Another block's button, before the
+// node's in the aside and after it, is never a stop either way. The editor here is the document's
+// own (`LiveEditor`), which draws no aside, so the case draws one beside it as the page does.
+test("Tab from the row's editor stops at the references button of the node's own block, and at no other block's", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable } = await editLive(user, [
+    paragraph("r0", "The words above the statement."),
+    paragraph("r1", "A statement of the spec."),
+    taskServing("t2", "The task below the statement."),
+  ]);
+  const outside = controlOutside();
+  const row = editable.closest<HTMLElement>("[data-node-row]");
+  const box = editable.closest<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
+  if (row === null || box === null) throw new Error("the statement's row does not hold the editor");
+  const aside = document.createElement("aside");
+  aside.setAttribute("aria-label", "Block references");
+  for (const id of ["r0", "r1", "t2"]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("aria-label", `1 references on block ${id}`);
+    button.setAttribute("data-block-references", id);
+    aside.append(button);
+  }
+  box.append(aside);
+  /** The block whose references button holds the focus, the editable, or `elsewhere`. */
+  const focused = () => {
+    const active = document.activeElement;
+    if (active === editable) return "the editable";
+    return active?.getAttribute("data-block-references") ?? "elsewhere";
+  };
+
+  await user.tab();
+  expect(focused(), "Tab did not stop at the node's block's references button").toBe("r1");
+  await nextFrame();
+  expect(
+    row.querySelector('[contenteditable="true"]') === editable,
+    "the editing ended at the node's block's references button"
+  ).toBe(true);
+  await user.tab({ shift: true });
+  expect(
+    focused(),
+    "Shift+Tab from the node's references button did not go back to the editable"
+  ).toBe("the editable");
+  await user.tab();
+  expect(focused(), "Tab did not stop at the node's block's references button again").toBe("r1");
+  await user.tab();
+  expect(
+    document.activeElement === outside.control,
+    `Tab from the node's references button went to ${focused()}, not the first tab stop after the editor's box`
+  ).toBe(true);
+  await waitFor(() =>
+    expect(rowLetGo(row), "the row kept its editing, its body or its focused look").toBe(true)
+  );
+});
+
+// A comment's quote is anchored to the innermost block that holds it: driving the page, a comment
+// on a statement's words named the paragraph inside the statement's typed block, by the id the
+// editor gave that paragraph, and the references button named the same. So a button that names a
+// block inside the node's block is the node's too, and Tab from the row's editor stops at it; one
+// that names a block beside the node's, or a block the editor does not draw, is not.
+test("a references button of a block inside the node's block is a tab stop of the row's editor, and one of a block beside it is not", () => {
+  const row = document.createElement("div");
+  const buttons = ["r0", "p1", "r1", "gone", "t2"]
+    .map((id) => `<button data-block-references="${id}" type="button">1</button>`)
+    .join("");
+  row.innerHTML = `<div ${EDITOR_BOX_ATTRIBUTE}><div contenteditable="true"><p data-block-id="r0">Above.</p><section data-block-id="r1"><p data-block-id="p1">The statement.</p></section><p data-block-id="t2">Below.</p></div><aside>${buttons}</aside></div>`;
+  document.body.append(row);
+  try {
+    const editable = row.querySelector('[contenteditable="true"]');
+    if (editable === null) throw new Error("the stand-in draws no editable");
+    const stops = nodeCaret.tabStopsFrom(row, "r1", editable, false) ?? [];
+    expect(
+      stops.flatMap((stop) => stop.getAttribute("data-block-references") ?? []),
+      "the references buttons Tab stops at are not those of the node's block and the block in it"
+    ).toEqual(["p1", "r1"]);
+  } finally {
+    row.remove();
   }
 });
 
@@ -3193,7 +3454,7 @@ test("the caret goes into the row's editor only once the editor holds its edits 
   try {
     const room = liveRoom();
     const blocks = liveBlocks();
-    const editable = await enterStatement(user, (onEditor) => (
+    const { editable } = await enterStatement(user, (onEditor) => (
       <LiveEditor blocks={blocks} onEditor={onEditor} room={room} />
     ));
     const row = editable.closest<HTMLElement>("[data-node-row]");
@@ -3234,6 +3495,70 @@ test("the caret goes into the row's editor only once the editor holds its edits 
   }
 });
 
+// A change of the editor's plugins makes ProseMirror make every plugin's view again, and
+// y-prosemirror's then draws the whole document again from the room. The tree lets go of its hold
+// as it goes, on an editor the page is about to destroy, so a hold let go leaves its plugin on the
+// editor (`holdEditsToBlock`), and the plugin refuses no edit from then, as no plugin did.
+test("a hold let go changes none of its editor's plugins, and refuses no edit from then", async () => {
+  const room = liveRoom();
+  room.server.getXmlFragment("prosemirror").insert(0, liveBlocks().map(roomBlock));
+  const root = document.createElement("div");
+  document.body.append(root);
+  const handle = await createEditor(root, {
+    awareness: null,
+    blockSchema: compiledBlockSchema,
+    onAskBlockHosts: () => {},
+    user: { color: "#f59e0b", name: "alice" },
+    watchPicture: () => () => {},
+    ydoc: room.browser,
+  });
+  const { view } = handle;
+  // An `X` put at the start of block `id`, with the caret after it, as an edit of the editor's
+  // own: answers the blocks after it.
+  const typeAtStart = (id: string) => {
+    let at = -1;
+    view.state.doc.descendants((node, position) => {
+      if (node.attrs.blockId === id) at = position + 1;
+      return at < 0;
+    });
+    const typed = view.state.tr.insertText("X", at);
+    view.dispatch(typed.setSelection(TextSelection.create(typed.doc, at + 1)));
+    return blocksOf(view);
+  };
+  try {
+    const held = Promise.withResolvers<void>();
+    const letGo = nodeCaret.holdEditsToBlock(
+      view,
+      () => "r1",
+      nodeCaret.loadEditsHold(),
+      held.resolve
+    );
+    await held.promise;
+    const before = blocksOf(view);
+    expect(before, "the editor did not draw the document").toHaveLength(3);
+    expect(typeAtStart("r0"), "the hold let in an edit outside its block").toEqual(before);
+
+    let changes = 0;
+    const updateState = view.updateState.bind(view);
+    const updates = spyOn(view, "updateState").mockImplementation((next) => {
+      if (next.plugins !== view.state.plugins) changes += 1;
+      updateState(next);
+    });
+    try {
+      letGo();
+      expect(typeAtStart("r0"), "the hold let go refused an edit outside its block").toEqual(
+        withWords(before, "r0", "XThe words above the statement.")
+      );
+    } finally {
+      updates.mockRestore();
+    }
+    expect(changes, "letting go of the hold changed the editor's plugins").toBe(0);
+  } finally {
+    await handle.destroy();
+    root.remove();
+  }
+});
+
 // Until the editor's hold is on, no caret goes in, and a Tab from the row stops in the editable,
 // where the editor's own selection is wherever it was - here in the second item of a list above
 // the node's block. Milkdown sinks that item into the one before it for Tab and lifts it out of
@@ -3262,7 +3587,7 @@ for (const [name, modifiers] of [
         },
         paragraph("r1", "A statement of the spec."),
       ];
-      const editable = await enterStatement(user, (onEditor) => (
+      const { editable } = await enterStatement(user, (onEditor) => (
         <LiveEditor blocks={blocks} onEditor={onEditor} room={room} />
       ));
       await waitFor(() => wordsOf(editable, "r1"));
@@ -3289,12 +3614,7 @@ for (const [name, modifiers] of [
 /** Fails the load of what the hold is built of, held back so far, with `reject`, and waits a
  *  task on: a rejection nothing handled is reported then, and fails the case it happens in. */
 function failLoad(reject: (reason: Error) => void): Promise<void> {
-  return act(async () => {
-    reject(new Error("the hold's parts did not load"));
-    const reported = Promise.withResolvers<void>();
-    setTimeout(reported.resolve, 20);
-    await reported.promise;
-  });
+  return waitInAct(20, () => reject(new Error("the hold's parts did not load")));
 }
 
 // What the hold is built of can fail to load - a chunk the network did not bring. No hold goes on
@@ -3422,7 +3742,7 @@ test("a page that hands the row no editor gets no caret: the editing ends and th
 test("an editor that has drawn the node's block microtasks before the page hands it over takes the caret", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  let handOver: ((editor: RowEditor | undefined) => void) | undefined;
+  let handOver: OnEditor | undefined;
   const { editable, view } = await enterBeforeDrawn(user, (onEditor) => {
     handOver = onEditor;
     return <div contentEditable suppressContentEditableWarning />;
@@ -3443,11 +3763,7 @@ test("an editor that has drawn the node's block microtasks before the page hands
       ).toBe(true)
     );
     // The task after, in which the row reads whether it was handed an editor.
-    await act(async () => {
-      const read = Promise.withResolvers<void>();
-      setTimeout(read.resolve, 20);
-      await read.promise;
-    });
+    await waitInAct(20);
     expect(view.edited.at(-1), "the editing ended").toBe("artifact-spec");
     expect(rowReport(view.container), "the row said its editor could not open").toBeUndefined();
   } finally {
@@ -3481,7 +3797,7 @@ function RemadeStandIn({ remake }: { remake: Remake }): ReactNode {
 test("an editor made again while the row is edited takes the caret back only once it holds its edits", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  let handOver: ((editor: RowEditor | undefined) => void) | undefined;
+  let handOver: OnEditor | undefined;
   const remake: Remake = {};
   const { editable, view } = await enterBeforeDrawn(user, (onEditor) => {
     handOver = onEditor;
@@ -3536,7 +3852,7 @@ test("an editor made again while the row is edited takes the caret back only onc
 test("an editor that draws the node's block and goes unhanded leaves the row waiting for the next one, which takes the caret", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  let handOver: ((editor: RowEditor | undefined) => void) | undefined;
+  let handOver: OnEditor | undefined;
   const remake: Remake = {};
   const { editable, view } = await enterBeforeDrawn(user, (onEditor) => {
     handOver = onEditor;
@@ -3545,12 +3861,7 @@ test("an editor that draws the node's block and goes unhanded leaves the row wai
   const [row] = rowsFor(view.container, "spec#b-r1");
   const handed = standInView();
   // More than a task on: the row has read by then whether it was handed an editor.
-  const aTaskOn = () =>
-    act(async () => {
-      const on = Promise.withResolvers<void>();
-      setTimeout(on.resolve, 20);
-      await on.promise;
-    });
+  const aTaskOn = () => waitInAct(20);
   try {
     // The refused connection's editor draws the statement, the row's watch on the drawing looks
     // at the row, and the editor goes, all in one task.
@@ -3599,12 +3910,7 @@ test("an editor that draws the node's block and goes unhanded leaves the row wai
 /** Makes `change` to the page inside the row's editor, as the browser makes an edit there, and
  *  waits for the editor to read the change back (its `MutationObserver`). */
 async function changePage(change: () => void): Promise<void> {
-  await act(async () => {
-    change();
-    const read = Promise.withResolvers<void>();
-    setTimeout(read.resolve, 50);
-    await read.promise;
-  });
+  await waitInAct(50, change);
 }
 
 // While the editor's document holds no block of the node's - before the room has sent it - no
@@ -3617,7 +3923,7 @@ test("no edit of the editor's own goes in while its document holds no block of t
   const room = liveRoom();
   // Drawn as one list, so the editor is made once whatever draws the row again.
   const blocks = [paragraph("r0", "The words above the statement.")];
-  const editable = await enterStatement(user, (onEditor) => (
+  const { editable } = await enterStatement(user, (onEditor) => (
     <LiveEditor blocks={blocks} onEditor={onEditor} room={room} />
   ));
   const view = await waitFor(() => {
@@ -3769,11 +4075,7 @@ test("a drop into the row's editor outside the node's block, and a drag of its w
     expect(blocksOf(view), "words dragged out of the statement moved").toEqual(before);
     // The editor's drop indicator hides itself 30 ms after a drop, which it is let do while the
     // editor stands.
-    await act(async () => {
-      const hidden = Promise.withResolvers<void>();
-      setTimeout(hidden.resolve, 50);
-      await hidden.promise;
-    });
+    await waitInAct(50);
   } finally {
     points.mockRestore();
   }
@@ -6129,11 +6431,7 @@ test("the outline mounted again past 30 s reads none of the reads it waits on ag
     setSystemTime(Date.now() + 31_000);
     view.rerender(draw(true));
     // Long enough for a read the mount started to have been sent.
-    await act(async () => {
-      const waited = Promise.withResolvers<void>();
-      setTimeout(waited.resolve, 50);
-      await waited.promise;
-    });
+    await waitInAct(50);
     expect(sent(), "the outline mounted again read again what it waits on").toBe(loaded);
   } finally {
     setSystemTime();
