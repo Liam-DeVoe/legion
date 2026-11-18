@@ -233,7 +233,8 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  the host's, or found none to record, after a scroll of its own, and as a change of height
    *  found the place no longer holding. Read only where the host takes the box over
    *  (`ownsScrollAnchoring`): with the browser's own anchoring off there, a scroll event that
-   *  finds the box at this offset reports no move of the view (`viewScrolled`). */
+   *  finds the box at this offset, with the place kept at it, reports no move of the view
+   *  (`viewScrolled`). */
   private seenAt: number | null = null;
   private contentSize: ResizeObserver | null = null;
   /** Where this anchor's own last scroll left the box (the window's `scrollY` where the document
@@ -473,10 +474,11 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  anchor's own only where the box stands at the offset its last scroll left it at, within the
    *  frame that reports that scroll (`ownScroll`), and then records nothing: the place was just
    *  put back. Where the host takes the box over (`ownsScrollAnchoring`), one that finds the box
-   *  where this anchor last found it (`seenAt`) records nothing either: the view did not move.
-   *  Any other is the reader's, or the page's, and the place is recorded where the view now
-   *  shows it; a pull-back of the box to its end first puts the place back (`pulledBack`). The
-   *  mark ends here either way: a frame raises one scroll event for the box, whatever moved it. */
+   *  where this anchor last found it (`seenAt`), with the place kept at that offset, records
+   *  nothing either: the view did not move. Any other is the reader's, or the page's, and the
+   *  place is recorded where the view now shows it; a pull-back of the box to its end first puts
+   *  the place back (`pulledBack`). The mark ends here either way: a frame raises one scroll
+   *  event for the box, whatever moved it. */
   private readonly viewScrolled = (event: Event): void => {
     const scroller = this.scrollerElement();
     const mine = scroller === null ? event.target === document : event.target === scroller;
@@ -502,6 +504,16 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     } else if (
       this.props.ownsScrollAnchoring === true &&
       held !== null &&
+      // A place kept at another offset than the one this anchor last found the box at no longer
+      // holds: a change of height found the box moved by a scroll another made in that frame's
+      // resize observations, ahead of this anchor's, and put nothing back (`contentResized`), as
+      // Details' hold of the place a key landed the focus at scrolls there (`details-more.tsx`).
+      // The event of that scroll records the place where the view now shows it. Dropped as a
+      // move of nothing, it left a place that never held again, in a box whose own anchoring
+      // stays off while a place is kept: once the focus had left the hold's control, which ends
+      // the hold and scrolls nothing, a row above the view that grew moved every row in view down
+      // by as much.
+      held.scrollTop === this.seenAt &&
       scrolledBy(scroller) === this.seenAt
     ) {
       // With the browser's own anchoring off, recording the place at an event that moved nothing
@@ -542,7 +554,8 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     const top = this.heldTop(held.id, this.groupOf(element));
     if (top === null) {
       // The place no longer holds: the box stands off the offset it was kept at, or the row is
-      // in another group. This is where the box was found.
+      // in another group. This is where the box was found; the event of a scroll that moved it
+      // there records the place again (`viewScrolled`).
       this.seenAt = this.scrollerElement()?.scrollTop ?? null;
       return;
     }

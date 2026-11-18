@@ -1624,3 +1624,66 @@ test("a row a commit draws between a focused row wholly outside the view and the
     }
   }
 });
+
+// A host that takes its box over keeps the reader's place there, the pointer resting on a row,
+// while a hold of the page's own keeps a control outside the list where a key landed the focus:
+// Details' hold (`details-more.tsx`), which scrolls the box in its own resize observation, ahead
+// of the anchor's, as content above both grows. The anchor finds the box off the place it kept
+// and puts nothing back, and the event of that scroll records the place where the view now shows
+// it. Then the focus moves off the hold's control to another outside the list, which ends the
+// hold, or the reader turns the wheel at the box's end, which scrolls nothing; neither raises a
+// scroll event, and content above the view grows again: the rows in view stay. Dropping that
+// event as a move of nothing left a place that never held again, with the box's own anchoring
+// off, and the growth moved every row in view down by as much.
+for (const then of [
+  "the focus moves off the hold's control",
+  "a turn of the wheel scrolls nothing",
+] as const) {
+  test(`after another hold scrolls the box in its frame's observations and ${then}, content above the view that grows moves no row in view`, () => {
+    const box = drawFrameByFrame(ids(30), { ownsScrollAnchoring: true });
+    // The hold's control and another, both outside the list, as Details' Collaborators and
+    // Subscribers controls stand outside its history.
+    const [control, other] = [document.createElement("button"), document.createElement("button")];
+    document.body.append(control, other);
+    try {
+      control.focus();
+      box.scroller.scrollTop = 300;
+      // The reader's scroll, reported by the box's own scroll event, which user-event has no form for.
+      fireEvent.scroll(box.scroller);
+      // The pointer comes to rest on r10 at a place of its own, which user-event's hover cannot set.
+      fireEvent.pointerOver(rowOf("r10"), { clientX: 20, clientY: 260 });
+      expect(chosen()).toEqual({ id: "r10", via: "pointer" });
+      expect(viewportTop("r10")).toBe(250);
+
+      // Content above the rows grows by 400 px, and in the frame's resize observations the other
+      // hold scrolls the box by as much before the anchor's own observation runs.
+      listTop += 400;
+      box.scroller.scrollTop = 700;
+      box.resized();
+      expect(viewportTop("r10")).toBe(250);
+      // The next frame reports that scroll with the box's own scroll event, which user-event has no form for.
+      fireEvent.scroll(box.scroller);
+      box.frameEnds();
+
+      if (then === "the focus moves off the hold's control") {
+        other.focus();
+      } else {
+        // A wheel turn over the box that scrolls nothing raises no scroll event, which user-event cannot leave out.
+        fireEvent.wheel(box.scroller, { deltaY: 100 });
+      }
+
+      // Content above the view grows by 300 px more, in no commit of the anchor's.
+      listTop += 300;
+      box.resized();
+      expect(
+        viewportTop("r10"),
+        `after ${then}, content above the view grew and moved the row in view`
+      ).toBe(250);
+      expect(box.scroller.scrollTop).toBe(1000);
+    } finally {
+      box.unmount();
+      control.remove();
+      other.remove();
+    }
+  });
+}
