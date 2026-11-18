@@ -182,7 +182,14 @@ func skipUnreadableSettlement(room string, err error) bool {
 // reconciles the ask blocks (planRepairs), writes the repairs into the room and stores what it
 // wrote (commitRepairs), and commits, with the document's version when the document reads
 // differently from the latest one (commitVersion).
+//
+// A settlement is made for no run of the command bar (graphstore.WithRun): it saves what the
+// room's writers left in it, whoever they were, so it carries no run even when a request's context
+// starts it - an issue's close settles its documents first on the closer's (api's
+// settleIssueBeforeClose) - and none of its writes appends a changed_by_run tuple, as the room
+// timer's settlement on a background context appends none.
 func (s *Service) settleRoomWithin(parent context.Context, room string, generation uint64, mayLoad bool) settleOutcome {
+	parent = graphstore.WithRun(parent, "")
 	// A room entry point that takes a document's id resolves it first: a document converted into
 	// its issue's room settles as that room, whose settlement this one arms - outside a shutdown,
 	// which has stopped every timer and arms none (Shutdown) - and its own room's rows stay as they
@@ -544,6 +551,9 @@ func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcom
 	if err != nil {
 		return settleDone, st.abandon(err)
 	}
+	// What settlement writes of the answers it keeps in step while another build serves is weighed
+	// against the document as settlement read it, before any other repair is planned on it.
+	reconciliation.withholdAnswersWithoutRoom(st.room, st.reconciled, st.markdown)
 	if err := reconciliation.reconcileCICheckBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit.actor); err != nil {
 		return settleDone, st.abandon(err)
 	}
@@ -739,6 +749,21 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		return settleDone, st.abandon(err)
 	}
 	versioning := contentChanged && markdown != st.latest.markdown
+	// A retired document (RetireDocument) takes no new version: no list holds it and no reader
+	// looks for text in it. Typing a room took before the retirement closed it is still stored -
+	// this settlement commits the updates it read, as every settlement does - and logged, so it is
+	// kept rather than dropped, but no version of the retired document holds it.
+	if versioning {
+		retired, err := documentRetired(ctx, tx, room)
+		if err != nil {
+			return settleDone, st.abandon(err)
+		}
+		if retired {
+			slog.Warn("dispatch: settlement stores the updates of a retired document and writes no version of it",
+				"room", room, "latest_version", st.latest.Number)
+			versioning = false
+		}
+	}
 	settledVersion := st.latest.Number
 	// An issue room versions each of its documents on its own (roomFragments): a version of each
 	// document whose fragment reads differently from that document's latest version, the tree
@@ -927,7 +952,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	}
 	// The commit marks the in-flight credits the version listed consumed before it releases the
 	// room's state, and the room updates the settlement stored marked stored (commitSettlement); a
-	// settlement that writes no version takes out none.
+	// settlement that writes no version takes out none. The room forgets the author of each ask
+	// block the commit indexed under the same hold, so no reader that finds the block's ask row
+	// committed then finds the room still owing its author.
 	committed := authorCapture{state: state}
 	if versioning {
 		committed = st.credit.capture
@@ -936,7 +963,11 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		// This runs before the publish below, the order Ledger.Commit keeps for every other
 		// version write, so a subscriber acting on this version's artifact.version event acts
 		// after it.
-		if err == nil && state.roomGeneration == st.generation {
+		if err != nil {
+			return
+		}
+		st.credit.consumeAskAuthorsLocked(st.reconciliation.indexedAskBlocks)
+		if state.roomGeneration == st.generation {
 			state.settleFailures = 0
 			state.unsettled = len(state.inflight) > 0
 			if !state.unsettled {
@@ -946,7 +977,6 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	}); err != nil {
 		return settleDone, st.commitFailed(advanced, fmt.Errorf("commit document settlement: %w", err))
 	}
-	st.credit.consumeAskAuthors(st.reconciliation.indexedAskBlocks)
 	st.finishSlots()
 	for _, event := range st.published {
 		s.events.Publish(event)

@@ -46,6 +46,15 @@ const (
 	ValueReplaced          = "replaced"
 )
 
+// The two appends of a person's Keep on a decision's node (dispatch://INFRA-1150 R2), each under
+// its attribute's store name: kept_by ties the decision to the person who kept it, and
+// kept_text_sum holds the decision's text sum at the Keep, a value of its own because a tuple
+// holds one far end and nothing beside it. decision_keeps is their projection.
+const (
+	TupleKeptBy      = "kept_by"
+	ValueKeptTextSum = "kept_text_sum"
+)
+
 // typedKinds are the kinds of tie the typed-node pass states, whose block_refs rows it reconciles
 // on its own above the deferral bound (IndexDecisionNodes).
 var typedKinds = []string{graphstore.TupleDecidedBy, TupleFromAsk, TupleShaped}
@@ -63,7 +72,13 @@ var decisionValues = [...]string{ValueUncertainty, ValueUncertaintyReason, Value
 type TypedFacts struct {
 	// read is whether the version holds a decision, a reading or an ask block and its tree was
 	// read: the zero facts write every decision and reading as its type's node and no tie.
-	read     bool
+	read bool
+	// bare is a version whose tree was read and holds none of those, and unread its blocks, which
+	// facts that read nothing else keep for the typed-node pass above the deferral bound: each
+	// decision and reading node the store places in the document is one the version no longer
+	// holds as one (IndexDecisionNodes).
+	bare     bool
+	unread   []model.ArtifactBlock
 	document indexedDocument
 	// versions is the version of each document the facts were read of (DecisionFacts): the one
 	// document's, or each fragment's document's of an issue room, by id; artifactID is the
@@ -212,8 +227,11 @@ type heldTie struct {
 // included, moves nothing of it, and a version several people wrote names nobody it cannot tell
 // introduced the block. A reading's authored_by follows the same rule.
 func DecisionFacts(ctx context.Context, tx pgx.Tx, artifactID string, versions Versions, blocks []model.ArtifactBlock, tree *pmdoc.Node, pointers []Pointer, sources TypedSources) (TypedFacts, error) {
-	if tree == nil || !HoldsTypedBlocks(blocks) {
+	if tree == nil {
 		return TypedFacts{}, nil
+	}
+	if !HoldsTypedBlocks(blocks) {
+		return TypedFacts{bare: true, unread: blocks, versions: versions, artifactID: artifactID}, nil
 	}
 	lead, newest := versions.Newest(artifactID)
 	document, err := indexedVersionRecord(ctx, tx, artifactID, lead, newest.Number)
@@ -248,7 +266,7 @@ func DecisionFacts(ctx context.Context, tx pgx.Tx, artifactID string, versions V
 		if node.Type != decisionType && node.Type != askType {
 			return true
 		}
-		id := typedBlockID(node)
+		id := TypedBlockID(node)
 		if _, repeated := seen[id]; repeated || id == "" || types[id] != node.Type {
 			return true
 		}
@@ -262,7 +280,7 @@ func DecisionFacts(ctx context.Context, tx pgx.Tx, artifactID string, versions V
 		_, admitted := pmdoc.TypedContent(node)
 		holds := false
 		for _, child := range admitted {
-			reading := typedBlockID(child)
+			reading := TypedBlockID(child)
 			if _, repeated := seen[reading]; child.Type != readingType || repeated || reading == "" || types[reading] != readingType {
 				continue
 			}
@@ -335,9 +353,22 @@ func HoldsTypedBlocks(blocks []model.ArtifactBlock) bool {
 	return false
 }
 
-// typedBlockID is a typed block's id as the block index keys it: a U+0000 reads as U+FFFD, as the
+// DecisionWords is a decision's own words, the text its text sum covers (dispatch://INFRA-1150
+// R2): decision, a decision block node, rendered alone with the readings it closes with left out
+// (pmdoc.TypedContent). A reading never changes the decision it reads, so the decision's words,
+// and the sum a Keep records over them, are the same whether readings hang under it or not. The
+// attributes a markdown rendering never carries - decided_by, kept_by, kept_text_sum - are none
+// of its words.
+func DecisionWords(decision *pmdoc.Node) (string, error) {
+	content, _ := pmdoc.TypedContent(decision)
+	own := *decision
+	own.Children = content
+	return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{&own}})
+}
+
+// TypedBlockID is a typed block's id as the block index keys it: a U+0000 reads as U+FFFD, as the
 // rendering writes it (pmdoc.BlockPointers).
-func typedBlockID(node *pmdoc.Node) string {
+func TypedBlockID(node *pmdoc.Node) string {
 	id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
 	return strings.ReplaceAll(id, "\x00", "\uFFFD")
 }
@@ -659,16 +690,38 @@ func (f TypedFacts) typedScope() *pairScope {
 //
 // indexed says refs.IndexBlocks indexed this version in the same transaction: that pass then
 // wrote the node of every block whose text the version moved, stated each typed node's part_of
-// and reconciled every block_refs row of the document with the facts' ties among them. Above the
-// deferral bound (docs.IndexDocumentReferences) no block index runs in the request, and this pass
-// does both for its own blocks alone: it states the part_of of each decision and reading where
-// the store places it elsewhere (reconcileBlockParents), and reconciles the rows of its own kinds
-// held by its own blocks (typedScope), deleting no other row of the document. The block-index
+// and reconciled every block_refs row of the document with the facts' ties among them, and
+// stated gone each block the version no longer holds. Above the deferral bound
+// (docs.IndexDocumentReferences) no block index runs in the request, and this pass does those for
+// its own blocks alone: it states the part_of of each decision and reading where the store places
+// it elsewhere (reconcileBlockParents), reconciles the rows of its own kinds held by its own
+// blocks (typedScope), deleting no other row of the document, and states each decision and
+// reading node the store places in the document that the version no longer holds as one
+// (unheldTypedNodes): gone where the version holds no such block, and a node of the supertag block
+// where it holds the block under another type. So a decision a deferred version removes leaves the
+// Decisions read in that version's transaction (dispatch://INFRA-1150 R4). The block-index
 // reconciliation indexes the document later with the same facts, and its pairs hold these same
 // ties, so it moves none of them (TestTheReconcilerMovesNoRowTheTypedPassWrote).
 func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, facts TypedFacts, indexed bool) ([]Target, graphstore.Uncaused, error) {
 	if !facts.read {
-		return nil, graphstore.Uncaused{}, nil
+		if indexed || !facts.bare {
+			return nil, graphstore.Uncaused{}, nil
+		}
+		lead, newest := facts.versions.Newest(artifactID)
+		document, err := indexedVersionRecord(ctx, tx, artifactID, lead, newest.Number)
+		if err != nil {
+			return nil, graphstore.Uncaused{}, err
+		}
+		blocks, _, _ := uniqueBlocks(facts.unread)
+		unheld, err := unheldTypedNodes(ctx, tx, artifactID, document, newest.At, blocks, nil)
+		if err != nil || len(unheld) == 0 {
+			return nil, graphstore.Uncaused{}, err
+		}
+		write, err := graphstore.WriteUncaused(ctx, tx, unheld, nil)
+		if err != nil {
+			return nil, graphstore.Uncaused{}, fmt.Errorf("state the decisions and readings version %d of %s no longer holds: %w", newest.Number, lead, err)
+		}
+		return nil, write, nil
 	}
 	document := facts.document
 	refKey, writer := document.refKey, document.writer
@@ -679,7 +732,7 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, facts
 		}
 		address := blockNodeAddress(refKey, id)
 		held, holds := facts.heldNodes[address]
-		if holds && held.supertag == facts.supertags[id] && held.state == graphstore.StateLive {
+		if holds && held.supertag == facts.supertags[id] && held.state != graphstore.StateGone {
 			continue
 		}
 		if !holds && indexed {
@@ -690,18 +743,27 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, facts
 		// The typed pass moves a node's supertag or state and no block's words, so it marks no
 		// node changed (blockNode): the block index marks each block whose words the version
 		// moved.
-		nodes = append(nodes, blockNode(address, document, facts.versionOf(id).At, graphstore.StateLive, facts.supertags[id], false))
+		nodes = append(nodes, blockNode(address, document, document.writer, facts.versionOf(id).At, graphstore.StateLive, facts.supertags[id], false))
+	}
+	if !indexed {
+		_, newest := facts.versions.Newest(artifactID)
+		unheld, err := unheldTypedNodes(ctx, tx, artifactID, document, newest.At, facts.nodes, facts.supertags)
+		if err != nil {
+			return nil, graphstore.Uncaused{}, err
+		}
+		nodes = append(nodes, unheld...)
 	}
 	var tuples []graphstore.Tuple
 	// Each author's node and the aliases the server proved of it are stated once however many
 	// blocks name it, since one write of the store takes each node once.
-	authors := map[string]struct{}{}
+	authors := map[Target]struct{}{}
 	author := func(address string, actor model.Actor, at time.Time) []graphstore.Tuple {
 		authorNodes, stated, named := graphstore.AuthorFacts(BlockNodeKind, address, actor, at, graphstore.NoEvent)
 		if !named {
 			return nil
 		}
-		if key := authorNodes[0].Kind + ":" + authorNodes[0].ID; !mapHas(authors, key) {
+		key := Target{Kind: authorNodes[0].Kind, ID: authorNodes[0].ID}
+		if _, written := authors[key]; !written {
 			authors[key] = struct{}{}
 			nodes = append(nodes, authorNodes...)
 			tuples = append(tuples, stated[1:]...)
@@ -744,7 +806,7 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, facts
 	for _, id := range facts.typed {
 		only[id] = struct{}{}
 	}
-	_, parents, err := reconcileBlockParents(ctx, tx, artifactID, document, facts.nodes, facts.fits, facts.askParents, only)
+	_, parents, err := reconcileBlockParents(ctx, tx, artifactID, document, facts.nodes, facts.fits, facts.askParents, only, authoredSources{})
 	if err != nil {
 		return nil, graphstore.Uncaused{}, err
 	}
@@ -757,10 +819,101 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, facts
 	return moved, write, nil
 }
 
-// mapHas reports whether set holds key.
-func mapHas(set map[string]struct{}, key string) bool {
-	_, held := set[key]
-	return held
+// unheldTypedNodes is the node of each decision and reading the store holds present in document
+// artifactID, at any state but gone (dispatch://INFRA-1950's R12: a proposed, settled or overtaken
+// node is as present as a live one), that the version's blocks no longer hold as one, written at
+// versionAt: stated gone, with the supertag it holds, where the version holds no block of its id,
+// and restated with the supertag block where it holds the block under another type, as
+// refs.IndexBlocks writes the node of a retyped block, which keeps the state it holds (blockNode).
+// supertags is each block the version holds as a decision or a reading (TypedFacts.supertags),
+// whose node the typed-node pass writes itself.
+//
+// It reads only what the store places in the document, each by its own key: the decisions and
+// readings its document_blocks rows hold, the block nodes whose current part_of is the document's
+// own node (graph_tuples_inbound) and those its block_refs rows name, which is where the typed-node
+// pass above the deferral bound places them; and the readings whose current part_of is one of
+// those decisions or an ask whose block the document holds. A node outside the document - the
+// reading of a copy of one of its asks on another document - is no node of it.
+func unheldTypedNodes(ctx context.Context, tx pgx.Tx, artifactID string, document indexedDocument, versionAt time.Time, blocks []model.ArtifactBlock, supertags map[string]string) ([]graphstore.Node, error) {
+	refKey := document.refKey
+	rows, err := tx.Query(ctx, `
+		with candidates as (
+			select d.node_address as id from document_blocks d
+			where d.artifact_id = $1::uuid and d.node_kind = $3 and d.type = any($4::text[])
+			union
+			select part.from_id from (`+graphstore.CurrentTupleRead(`t.kind, t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
+		`t.to_kind = 'artifact' and t.to_id = $2 and t.kind = '`+graphstore.TuplePartOf+`'`)+`) part
+			where part.asserted and part.from_kind = $3
+			union
+			select r.node_address from block_refs r where r.artifact_id = $1::uuid and r.node_kind = $3
+		),
+		typed as (
+			select node.id, node.supertag from candidates c
+			cross join lateral (
+				select g.id, g.supertag from graph_nodes g
+				where g.kind = $3 and g.id = c.id and g.state <> $5 and g.supertag = any($4::text[])
+				offset 0
+			) node
+		),
+		holders as (
+			select $3::text as kind, id from typed where supertag = $6
+			union all
+			select $7::text, q.id::text from asks q where q.block_artifact_id = $1::uuid
+		)
+		select id, supertag from typed
+		union
+		select node.id, node.supertag from holders h
+		cross join lateral (`+graphstore.CurrentTupleRead(`t.kind, t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
+		`t.to_kind = h.kind and t.to_id = h.id and t.kind = '`+graphstore.TuplePartOf+`' and t.to_kind <> '`+graphstore.KindValue+`'`)+`) part
+		cross join lateral (
+			select g.id, g.supertag from graph_nodes g
+			where g.kind = $3 and g.id = part.from_id and g.state <> $5 and g.supertag = $8
+			offset 0
+		) node
+		where part.asserted and part.from_kind = $3
+	`, artifactID, refKey, BlockNodeKind, []string{DecisionSupertag, ReadingSupertag}, graphstore.StateGone,
+		DecisionSupertag, graphstore.KindAsk, ReadingSupertag)
+	if err != nil {
+		return nil, fmt.Errorf("read the decisions and readings the store places in %s: %w", refKey, err)
+	}
+	held := map[string]string{}
+	for rows.Next() {
+		var address, supertag string
+		if err := rows.Scan(&address, &supertag); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan a decision or a reading the store places in %s: %w", refKey, err)
+		}
+		if strings.HasPrefix(address, refKey+"#") {
+			held[address] = supertag
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the decisions and readings the store places in %s: %w", refKey, err)
+	}
+	if len(held) == 0 {
+		return nil, nil
+	}
+	present := make(map[string]string, len(blocks))
+	for _, block := range blocks {
+		if blockIDFits(refKey, block.ID) {
+			present[blockNodeAddress(refKey, block.ID)] = block.ID
+		}
+	}
+	// The block index marks the blocks a version dropped or whose words it moved changed
+	// (blockNode's changed); this pass states only what the store placed here and the version no
+	// longer holds as a decision or a reading, so it marks none.
+	var nodes []graphstore.Node
+	for _, address := range slices.Sorted(maps.Keys(held)) {
+		id, holds := present[address]
+		switch {
+		case !holds:
+			nodes = append(nodes, blockNode(address, document, document.writer, versionAt, graphstore.StateGone, held[address], false))
+		case supertags[id] == "":
+			nodes = append(nodes, blockNode(address, document, document.writer, versionAt, graphstore.StateLive, BlockSupertag, false))
+		}
+	}
+	return nodes, nil
 }
 
 // IndexOpenedAskTies states the shaped ties of blocks, ask blocks of the versions facts were read
@@ -787,6 +940,9 @@ func IndexOpenedAskTies(ctx context.Context, tx pgx.Tx, artifactID string, at ti
 			opened[block] = struct{}{}
 		}
 	}
+	if len(opened) == 0 {
+		return nil, graphstore.Uncaused{}, nil
+	}
 	var pairs []blockPair
 	for _, pair := range facts.typedPairs() {
 		if _, own := opened[pair.blockID]; own && pair.kind == TupleShaped {
@@ -794,9 +950,6 @@ func IndexOpenedAskTies(ctx context.Context, tx pgx.Tx, artifactID string, at ti
 		}
 	}
 	scope := &pairScope{kinds: []string{TupleShaped}, blocks: slices.Sorted(maps.Keys(opened))}
-	if len(scope.blocks) == 0 {
-		return nil, graphstore.Uncaused{}, nil
-	}
 	versionOf := func(id string) Version { return Version{Number: facts.versionOf(id).Number, At: at} }
 	moved, tuples, err := replaceBlockRefs(ctx, tx, artifactID, facts.document.refKey, versionOf, facts.document.writer, false, pairs, scope)
 	if err != nil {

@@ -640,3 +640,111 @@ func TestATickWithNothingOwedReadsNoTableWhole(t *testing.T) {
 		t.Errorf("the step's count reads %+v after a project stored a list of gated steps holding decisions, want gated_steps_lists 1 and total 1", owed)
 	}
 }
+
+// specVersions is how many versions document holds.
+func specVersions(t *testing.T, database *store.Store, document string) int {
+	t.Helper()
+	var count int
+	if err := database.Pool.QueryRow(context.Background(), `select count(*) from artifact_versions where artifact_id = $1`, document).Scan(&count); err != nil {
+		t.Fatalf("count the versions of %s: %v", document, err)
+	}
+	return count
+}
+
+// A tick runs no pass of phase 3 after a catch-up that failed (dispatch://INFRA-1150, "The step"):
+// the restore's finder reads an ask's answer from its node, which an answer of another build that
+// the catch-up did not state there leaves unanswered, so the restore waits for a tick whose
+// catch-up went through, as RunByHand refuses to run it after one that failed.
+//
+// An answered ask's block left issue DOC-1's spec, which phase 3 owes, and the previous build
+// answers an ask of another issue that this build marked, whose catch-up's one write of the asks
+// row fails once. The first tick's catch-up fails, and the tick writes no version of the spec; the
+// next tick's catch-up goes through, and its phase 3 restores the ask.
+func TestATickRunsNoRestoreAfterACatchUpThatFailed(t *testing.T) {
+	ctx := context.Background()
+	issue := newRestoreIssue(t, "# Spec\n\n:::ask{#q-tick urgency=\"med\" multiple=\"false\"}\nWhich build writes the corpus?\n:::\n")
+	issue.answer(issue.spec, "q-tick", "The base release.")
+	issue.replace(issue.spec, "# Spec\n\nThe corpus.\n")
+	caught, other := seedCatchUpAsk(t, issue.database, "CATCH")
+	answered := answerAsThePreviousBuild(t, issue.database, other, caught, "Ship")
+	if _, err := issue.database.Pool.Exec(ctx, failFirstAskWrite); err != nil {
+		t.Fatalf("install the trigger that fails the first write of an asks row: %v", err)
+	}
+	before := specVersions(t, issue.database, issue.spec)
+	step := NewDecisionStep(issue.database, catchUpCommit, nil)
+	step.UseDocuments(issue.service)
+
+	if err := step.Tick(ctx); err != nil {
+		t.Fatalf("run the tick whose catch-up fails: %v", err)
+	}
+	if _, event := newestAnswerState(t, issue.database, caught); event == answered {
+		t.Fatalf("the first tick's catch-up stated the previous build's ask.answered %d, want its write to have failed", answered)
+	}
+	if owed := step.Owed(); owed == nil || owed.AnswersLeftSpec != 1 {
+		t.Fatalf("the step's count reads %+v, want the spec's answer that left it owed", owed)
+	}
+	if got := specVersions(t, issue.database, issue.spec); got != before {
+		t.Fatalf("the tick whose catch-up failed wrote the spec %d versions, want none: no restore after a failed catch-up", got-before)
+	}
+	if err := step.Tick(ctx); err != nil {
+		t.Fatalf("run the tick after the failed catch-up: %v", err)
+	}
+	if state, event := newestAnswerState(t, issue.database, caught); state != asks.StateAnswered || event != answered {
+		t.Fatalf("the next tick's catch-up left answer_state %q under event %d, want answered under the previous build's ask.answered %d", state, event, answered)
+	}
+	if spec := issue.latest(issue.spec); !strings.Contains(spec, "#q-tick urgency=") {
+		t.Fatalf("the tick after a catch-up that went through restored no ask:\n%s", spec)
+	}
+}
+
+// A booting process waits for the step's lock, so every process has phase 1 behind it before it
+// serves, and for nothing else of the step's (dispatch://INFRA-1150, "The step"; cmd/dispatch's
+// boot): a pass of phase 3 - every issue the restore and the conversion owe, one transaction each
+// - holds a lock of its own (decisionRestoreLock) and not the step's, which a tick lets go of
+// once phases 1 and 2 are behind it.
+//
+// A tick's pass of phase 3 queues behind issue DOC-1's row, which the test's own transaction
+// holds. A second process's boot answers within ten seconds while the pass still waits, and once
+// the row is let go the pass restores the issue's answered ask.
+func TestABootWaitsForNoPassOfTheThirdPhase(t *testing.T) {
+	ctx := context.Background()
+	issue := newRestoreIssue(t, "# Spec\n\n:::ask{#q-boot urgency=\"med\" multiple=\"false\"}\nWhich build writes the corpus?\n:::\n")
+	issue.answer(issue.spec, "q-boot", "The base release.")
+	issue.replace(issue.spec, "# Spec\n\nThe corpus.\n")
+	holder, err := issue.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that holds the issue: %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+	if _, err := holder.Exec(ctx, `select 1 from issues where key = 'DOC-1' for no key update`); err != nil {
+		t.Fatalf("take the issue's row: %v", err)
+	}
+	step := NewDecisionStep(issue.database, catchUpCommit, nil)
+	step.UseDocuments(issue.service)
+	ticked := make(chan error, 1)
+	go func() { ticked <- step.Tick(ctx) }()
+	storetest.WaitForLockWaiters(t, holder, 1, 30*time.Second)
+
+	booting := NewDecisionStep(issue.database, catchUpCommit, nil)
+	bootCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	started := time.Now()
+	if err := booting.Boot(bootCtx); err != nil {
+		t.Fatalf("a boot while a pass of phase 3 waits answered %v after %s, want it to wait for no part of that pass", err, time.Since(started))
+	}
+	t.Logf("the boot answered in %s while the pass of phase 3 waited on the issue", time.Since(started))
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatalf("let the issue go: %v", err)
+	}
+	select {
+	case err := <-ticked:
+		if err != nil {
+			t.Fatalf("the tick answered %v", err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("the tick answered nothing 60s after the issue was let go")
+	}
+	if spec := issue.latest(issue.spec); !strings.Contains(spec, "#q-boot urgency=") {
+		t.Fatalf("the pass restored no ask once the issue was let go:\n%s", spec)
+	}
+}

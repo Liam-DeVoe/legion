@@ -8,10 +8,13 @@ import {
 
 import type { Actor, ArtifactUploadResponse } from "../web/src/api/types";
 import {
+  BLOCK_TYPE_NAMES,
   CONTROL_LABELS,
+  GLYPH_TOKENS,
   NODE_TYPE_NAMES,
   type NodeType,
 } from "../web/src/features/issue-page/page-words";
+import { buildDispatchReference } from "../web/src/features/refs/routes";
 import {
   answerAsk,
   baseUrl,
@@ -28,16 +31,16 @@ import {
   recordCheckResult,
   userHeaders,
 } from "./api";
-import { blockId } from "./editor";
+import { decisionBlock, decisionsPart, shapedAttribute } from "./issue-layout-seed-text";
 import { withIssuePage } from "./issue-page-option";
 import type { Box } from "./layout";
 import { ONE_PIXEL_PNG } from "./sends";
 import { asUser } from "./users";
 
 /**
- * What the rows of part G of dispatch://INFRA-1196 (`e2e/issue-page-g.e2e.ts`) read of the new
+ * What the rows of part G (`e2e/issue-page-g.e2e.ts`) read of the new
  * issue page, and the one issue they seed. A later part imports these readers and does not copy
- * them (decision 2 of dispatch://INFRA-1196/artifact/part-decisions-md).
+ * them (decision 2 of the parts).
  *
  * The page is the one the reader turns on (`withIssuePage`), opened at the issue's own address
  * with `page.goto`; the body is G's `ConversationRows.tsx`, every branch unfolded at load, and
@@ -455,7 +458,8 @@ export interface RowLayout {
   readonly bylineColor: string | null;
   /** The left of the bullet's dot, its computed fill, and the fill its kind's token resolves to.
    *  The dot, not its box: on a phone a fold control's box reaches past the bullet's column on
-   *  both sides (`NODE_ROW_LAYOUT.foldControl`), and its dot stands where every bullet's does. */
+   *  both sides (`NODE_ROW_LAYOUT.foldControl`), and its dot stands where every bullet's does.
+   *  A requirement's kind is a statement's in the spec alone, and a block's anywhere else. */
   readonly bullet: { readonly fill: string; readonly kindFill: string; readonly left: number };
   /** The row's own box: its height, which a one-line row holds to 29 px at 1440 px. */
   readonly height: number;
@@ -473,7 +477,12 @@ export interface RowLayout {
   readonly quiet: string;
   /** Whether the ink rule is drawn at the content's leading edge. */
   readonly rule: boolean;
+  /** Whether the row is a statement: a `requirement` block of the spec. A requirement of any
+   *  other document is a block and nothing more (decision 246). */
+  readonly statement: boolean;
+  /** The kind's tag: its box, its words, and the shape it draws, by its glyph token. */
   readonly tag: {
+    readonly glyph: string | null;
     readonly left: number;
     readonly right: number;
     readonly text: string;
@@ -489,9 +498,11 @@ export interface RowLayout {
   readonly wordsLeft: number;
 }
 
-/** Every visible row's layout, in document order. */
-export function rowLayouts(page: Page): Promise<RowLayout[]> {
-  return page.evaluate((selectors) => {
+/** Every visible row's layout, in document order. `spec` is the slug of the issue's spec, the one
+ *  document whose requirements are statements. */
+export function rowLayouts(page: Page, spec: string): Promise<RowLayout[]> {
+  const given = { selectors: SELECTORS, spec };
+  return page.evaluate(({ selectors, spec }) => {
     const computed = (property: "backgroundColor" | "color", token: string): string => {
       const probe = document.createElement("i");
       probe.style[property] = `var(--color-${token})`;
@@ -517,10 +528,18 @@ export function rowLayouts(page: Page): Promise<RowLayout[]> {
       .filter((row) => row.getClientRects().length > 0)
       .map((row) => {
         const type = row.getAttribute("data-node-type") ?? "";
+        const id = row.getAttribute("data-node-id") ?? "";
+        const statement = type === "requirement" && id.startsWith(`${spec}#`);
         const author = row.querySelector(selectors.nodeAuthor);
+        // A requirement outside the spec is drawn as a block, in a block's colour: a callout's
+        // (decision 246).
         const kindToken =
-          KIND[type] ??
-          (author?.getAttribute("data-author-kind") === "person" ? "page-person" : "page-bullet");
+          type === "requirement" && !statement
+            ? "page-issue"
+            : (KIND[type] ??
+              (author?.getAttribute("data-author-kind") === "person"
+                ? "page-person"
+                : "page-bullet"));
         const content = row.querySelector("[data-node-content]");
         const words =
           row.querySelector(selectors.nodeWords) ??
@@ -571,7 +590,7 @@ export function rowLayouts(page: Page): Promise<RowLayout[]> {
                     "",
                 },
           height: card.getBoundingClientRect().height,
-          id: row.getAttribute("data-node-id") ?? "",
+          id,
           line: {
             bottom: Math.max(...first.map((rect) => rect.bottom), top),
             right: Math.max(...first.map((rect) => rect.right), 0),
@@ -582,10 +601,12 @@ export function rowLayouts(page: Page): Promise<RowLayout[]> {
           own: content?.hasAttribute("data-node-own") === true,
           quiet,
           rule: content !== null && getComputedStyle(content).boxShadow.includes("inset"),
+          statement,
           tag:
             tag === null || tagBox === undefined
               ? null
               : {
+                  glyph: tag.querySelector("svg[data-glyph]")?.getAttribute("data-glyph") ?? null,
                   left: tagBox.left,
                   right: tagBox.right,
                   text: (tag.textContent ?? "").trim(),
@@ -598,7 +619,7 @@ export function rowLayouts(page: Page): Promise<RowLayout[]> {
           wordsLeft: words?.getBoundingClientRect().left ?? -1,
         };
       });
-  }, SELECTORS);
+  }, given);
 }
 
 /** The kinds of node that draw no tag: what somebody said. */
@@ -610,7 +631,10 @@ const UNTYPED_KINDS: readonly string[] = ["comment", "message"];
  * behind their ink rule; nothing stands between a bullet and its words; a node that holds others
  * has its bullet as its fold control; the bullet is its kind's colour; a typed kind draws one tag
  * naming it - a child issue's is its key - with its author and its time after it, in grey, and a
- * turn draws none. At 761 px and above the tag stands at the right end of the words' first line.
+ * turn draws none. A requirement is a statement in the spec alone, with the statement's colour,
+ * word and shape; one of any other document is a block, in a block's colour, whose tag says
+ * "requirement" and draws no shape (decision 246). At 761 px and above the tag stands at the
+ * right end of the words' first line.
  */
 export function expectRowLayouts(
   layouts: readonly RowLayout[],
@@ -658,8 +682,20 @@ export function expectRowLayouts(
       expect(row.tag, `${at} draws a tag, which a turn of the conversation has none of`).toBeNull();
     } else {
       expect(row.tag?.text, `${at} does not name its kind on one tag`).toBe(
-        row.type === "child_issue" ? row.id : NODE_TYPE_NAMES[row.type as NodeType]
+        row.type === "child_issue"
+          ? row.id
+          : row.type === "requirement" && !row.statement
+            ? BLOCK_TYPE_NAMES.requirement
+            : NODE_TYPE_NAMES[row.type as NodeType]
       );
+      if (row.type === "requirement") {
+        expect(
+          row.tag?.glyph ?? null,
+          row.statement
+            ? `${at} draws no statement's shape on its tag`
+            : `${at} draws a statement's shape on its tag, and it is no statement`
+        ).toBe(row.statement ? GLYPH_TOKENS.types.requirement : null);
+      }
       if (row.line.right > 0 && width > 760) {
         expect(
           row.tag?.left ?? -1,
@@ -921,8 +957,8 @@ export const ONE_LINE_WORDS = "The page draws one row per node.";
 /** What the seed wrote, by the ids the page draws its rows under. */
 export interface RowSeed {
   readonly key: string;
-  /** The slug of each document the issue holds: its spec, its notes, its plan, its
-   *  Verification document and its decisions. */
+  /** The slug of each document the issue holds: its spec, its notes, its plan and its
+   *  Verification document; `decisions` is the spec's, whose blocks the decisions are. */
   readonly slugs: {
     readonly decisions: string;
     readonly notes: string;
@@ -983,17 +1019,17 @@ async function uploadPicture(key: string, name: string): Promise<string> {
 
 /**
  * One issue holding every node part G's rows read (c-row-layout, c-cut, c-author, c-writer of
- * dispatch://INFRA-3947/artifact/verification-md): a child with a blocker and a session's
+ * part G's Verification document): a child with a blocker and a session's
  * claim; the reader's comment; an agent's message with a link and "UTF-16", and the reader's
  * reply to each of the agent's messages; the statement `r-cites`, citing `notes.md` and the
  * child, with bold words and two paragraphs (a `requirement` holds paragraphs and no list,
  * `blocks.json`); a one-line statement `r-one`; the statement `r-ties`, whose words cite `r-one`'s
  * block by its address (a requirement takes no attribute, so the citation is the tie);
  * a plan task that needs one opening "**1\. Stand"; a check, with a result an untitled session
- * recorded; a decision that shaped a statement, one opening "Unsure:" that cites `t1`, one
- * holding `:::requirement{#r1}` and a block's address, and one a person asked to change; a
- * picture; an open question with two options waiting on the reader, an answered one, and the
- * long texts c-cut reads. It is at most three levels deep (`DRAWN_LEVELS`).
+ * recorded; the spec's decisions: one that shaped a statement, one marked unsure that cites
+ * `t1`, one holding `:::requirement{#r1}` and a block's address, and one a person asked to
+ * change; a picture; an open question with two options waiting on the reader, an answered one,
+ * and the long texts c-cut reads. It is at most three levels deep (`DRAWN_LEVELS`).
  */
 export async function seedRows(): Promise<RowSeed> {
   await createProject({ key: PROJECT, name: "Rows" });
@@ -1054,11 +1090,15 @@ export async function seedRows(): Promise<RowSeed> {
       `when="before_merge"}\nEach node is one row.\n:::\n`,
     name: "verification.md",
   });
+  // A pass of a before_merge check names the negative control that would have caught its
+  // failure: a server that holds that rule refuses one with none `400 NEGATIVE_CONTROL_REQUIRED`,
+  // and one that does not stores it as it is given.
   const recorded = await recordCheckResult(
     key,
     {
       check: "c1",
       commit: "a".repeat(40),
+      negative_control: "Drew one node as two rows and the run failed.",
       observed: "One row per node.",
       role: "tester",
       verdict: "pass",
@@ -1094,26 +1134,67 @@ export async function seedRows(): Promise<RowSeed> {
     asPlanner
   );
 
-  const headings = {
-    changed: "Name every node from one read",
-    raw: "Keep the source out of the rows",
-    shaping: "Draw a statement on one line",
-    unsure: "Fold to the frontier and not to a depth",
+  // The four decisions are blocks of the spec's `## Decisions` part, which
+  // the planner writes, so each is an agent's. The unsure one keeps its citation of `t1` in its
+  // words, where a row draws it as a chip, and gives the rest of its `Unsure:` paragraph as its
+  // reason. A decision's content is any block (`blocks.json`), so `raw` holds a requirement.
+  const decided = {
+    changed: "d-changed",
+    raw: "d-raw",
+    shaping: "d-shaping",
+    unsure: "d-unsure",
   };
-  const decisions = await createIssueArtifact(key, {
-    content: [
-      `## ${headings.shaping}\n\nShapes ${spec("r-one")}.`,
-      `## ${headings.changed}\n\n${CHANGED_DECISION_WORDS} Shapes ${spec("r-cites")}.`,
-      `## ${headings.unsure}\n\nUnsure: a reader who never finds the newest question would change this. ` +
-        `It follows dispatch://${key}/artifact/${plan.artifact.slug}#b-t1.`,
-      `## ${headings.raw}\n\nIt names ${spec("r-one")}.\n\n:::requirement{#r1}\nThe page draws no raw source.\n:::`,
-    ].join("\n\n"),
-    name: "decisions.md",
-  });
+  await editArtifact(
+    issue.primary_artifact_id,
+    {
+      ops: [
+        {
+          after: "end",
+          markdown: decisionsPart([
+            decisionBlock(
+              decided.shaping,
+              [shapedAttribute(key, ["r-one"])],
+              ["Draw a statement on one line", `Shapes ${spec("r-one")}.`]
+            ),
+            decisionBlock(
+              decided.changed,
+              [shapedAttribute(key, ["r-cites"])],
+              [
+                "Name every node from one read",
+                `${CHANGED_DECISION_WORDS} Shapes ${spec("r-cites")}.`,
+              ]
+            ),
+            decisionBlock(
+              decided.unsure,
+              [
+                'uncertainty="high"',
+                'uncertainty_reason="a reader who never finds the newest question would change this."',
+              ],
+              [
+                "Fold to the frontier and not to a depth",
+                `It follows dispatch://${key}/artifact/${plan.artifact.slug}#b-t1.`,
+              ]
+            ),
+            decisionBlock(
+              decided.raw,
+              [shapedAttribute(key, ["r-one"])],
+              [
+                "Keep the source out of the rows",
+                `It names ${spec("r-one")}.`,
+                ":::requirement{#r1}\nThe page draws no raw source.\n:::",
+              ]
+            ),
+          ]),
+          op: "insert",
+        },
+      ],
+    },
+    asPlanner
+  );
   // A person asks to change one decision, by a comment anchored to its words after they last
-  // changed (decision 45: the anchor names the document by its id).
+  // changed (the anchor names the document by its id), which only `changed` holds.
   const change = await createComment(key, {
-    anchor: { artifact: decisions.artifact.id, quote: CHANGED_DECISION_WORDS },
+    anchor: { artifact: issue.primary_artifact_id, quote: CHANGED_DECISION_WORDS },
     body: "Name them from the tree instead.",
   });
 
@@ -1138,17 +1219,13 @@ export async function seedRows(): Promise<RowSeed> {
     body: `The layout at 1440 px:\n\n![The layout at 1440 px](dispatch://${key}/artifact/${picture})`,
   });
 
-  const decisionsSlug = decisions.artifact.slug;
-  // A decision is addressed by its heading block, whose id the server gives.
-  const decision = async (heading: string) =>
-    blockNode(decisionsSlug, await blockId(decisions.artifact.id, `## ${heading}`));
   return {
     answered: answered.id,
     answeredLong: answeredLong.id,
     answerWords,
     blocker: blocker.key,
     change: change.id,
-    changed: await decision(headings.changed),
+    changed: blockNode(specSlug, decided.changed),
     child: child.key,
     childTitle,
     comment: comment.id,
@@ -1159,18 +1236,96 @@ export async function seedRows(): Promise<RowSeed> {
     openQuestion: openQuestion.id,
     picture,
     pictured: pictured.id,
-    raw: await decision(headings.raw),
+    raw: blockNode(specSlug, decided.raw),
     replies,
     result: recorded.result.id,
-    shaping: await decision(headings.shaping),
+    shaping: blockNode(specSlug, decided.shaping),
     slugs: {
-      decisions: decisionsSlug,
+      decisions: specSlug,
       notes: notes.artifact.slug,
       plan: plan.artifact.slug,
       spec: specSlug,
       verification: verification.artifact.slug,
     },
-    unsure: await decision(headings.unsure),
+    unsure: blockNode(specSlug, decided.unsure),
     waitingLong: waitingLong.id,
+  };
+}
+
+/** How many long rows of the planner's `seedLongRows` writes: whole, at 1440 px, more than ten
+ *  screens of them. */
+export const LONG_ROWS = 60;
+
+/** How many of the planner's rows stand above the reader's own run of long rows, which is a
+ *  third of the way down the page: well away from both the middle and the rows drawn at load. */
+const ROWS_ABOVE_OWN = 20;
+
+/** How many long rows of the reader's own `seedLongRows` writes: more than fill a screen. */
+const OWN_ROWS = 6;
+
+/** What `seedLongRows` wrote: the issue; the planner's long rows by node id, top to bottom; the
+ *  reader's own long rows, top to bottom; the planner's row right above the reader's; and the
+ *  planner's long statement, the first row of the body. */
+export interface LongRowsSeed {
+  readonly key: string;
+  readonly rows: readonly string[];
+  readonly own: readonly string[];
+  readonly aboveOwn: string;
+  readonly statement: string;
+}
+
+/**
+ * One issue whose spec opens with one long statement the planner wrote, which a check of its
+ * Verification document serves and no result proves, and whose conversation is the reader's
+ * comment and, under it, `LONG_ROWS` replies of the planner's of 160 short words each, which a
+ * row cuts at six lines at either width and draws whole shorter than a phone's screen, with a
+ * run of `OWN_ROWS` replies of the reader's own of the same words after the first
+ * `ROWS_ABOVE_OWN`, which no cut ever shortens. Drawn whole they make a page many screens tall,
+ * so a jump into it lands on rows no batch measured. The statement is the body's first row, and
+ * the check nothing proves keeps it open in an outline folded to what is open.
+ */
+export async function seedLongRows(): Promise<LongRowsSeed> {
+  await createProject({ key: PROJECT, name: "Rows" });
+  const issue = await createIssue({
+    force: true,
+    project: PROJECT,
+    title: "A conversation of long rows",
+  });
+  const key = issue.key;
+  const body = longWords("w", 160);
+  await editArtifact(
+    issue.primary_artifact_id,
+    { ops: [{ after: "end", markdown: `:::requirement{#r-long}\n${body}\n:::\n`, op: "insert" }] },
+    asPlanner
+  );
+  const serves = buildDispatchReference({ block: { id: "r-long" }, key, kind: "spec" });
+  await createIssueArtifact(key, {
+    content:
+      `:::check{#c-long serves="${serves}" surface="browser" run="bun run e2e" ` +
+      `when="before_merge"}\nThe long statement holds.\n:::\n`,
+    name: "verification.md",
+  });
+  const specSlug =
+    ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary)?.slug ?? "";
+  // A question that waits on the reader, which an outline that opens with the focus on such a
+  // question focuses in place of its first row, so the statement keeps its cut.
+  await createAsk(key, { question: "At which width is the cut read?", urgency: "high" }, asPlanner);
+  const head = await createComment(key, { body: "Each reply under this one is long." });
+  const rows: string[] = [];
+  const own: string[] = [];
+  for (let at = 0; at < LONG_ROWS; at += 1) {
+    if (at === ROWS_ABOVE_OWN) {
+      for (let mine = 0; mine < OWN_ROWS; mine += 1) {
+        own.push((await createComment(key, { body, reply_to: head.id })).id);
+      }
+    }
+    rows.push((await createComment(key, { body, reply_to: head.id }, asPlanner)).id);
+  }
+  return {
+    aboveOwn: rows[ROWS_ABOVE_OWN - 1] ?? "",
+    key,
+    own,
+    rows,
+    statement: blockNode(specSlug, "r-long"),
   };
 }

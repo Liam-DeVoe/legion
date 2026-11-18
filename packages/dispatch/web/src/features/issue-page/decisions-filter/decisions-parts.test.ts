@@ -430,8 +430,8 @@ test("closed asks stand by the time each closed, newest first", () => {
 });
 
 // R2: a decision a person kept reads "Kept by" with their name, and stands among the reader's
-// own decisions by the time it was kept. One whose words changed after it was kept waits again
-// (dispatch://INFRA-1150 R2), so it is back in the review list.
+// own decisions by the time it was kept. One whose words changed after it was kept waits again,
+// so it is back in the review list.
 test("a kept decision names who kept it, and one changed since waits again", () => {
   const keep = {
     artifact_id: "artifact-spec",

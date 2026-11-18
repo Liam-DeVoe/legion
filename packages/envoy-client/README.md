@@ -245,9 +245,13 @@ attempt was refused: the message may or may not have arrived. The error names it
 is, a resend under that key inside the 72-hour duplicate window is dropped as a repeat if the
 first copy arrived (`DELIVERY_DUPLICATE_WINDOW_MS` names the rare cases a recipient that restarted
 still sees it twice). A send
-refused with a 4xx on every attempt stays an `EnvoyApiError`. Listener error responses preserve their
-`error` and optional `expected` fields. The listener's bearer is the `token` the client is given
-(`envoySettings`); without one it sends no `Authorization` header.
+refused with a 4xx on every attempt stays an `EnvoyApiError`. An `EnvoyApiError` keeps the
+listener's `error` as its message, with ` (reason: <reason>)` after it where the body names one,
+and keeps the body's `code`, `reason` and `expected`, and the `retry_after_seconds` of a refusal
+for the sender's rate as `retryAfterSeconds`. A 429 is not sent again: the client throws it at
+once, and the caller decides whether to wait `retryAfterSeconds` and send the message again. The
+listener's bearer is the `token` the client is given (`envoySettings`); without one it sends no
+`Authorization` header.
 
 Every call whose body names the session it acts for — `subscribe`, `unsubscribe`,
 `unregisterSession`, `setRole`, and a `send` or `publish` with a `sourceSessionID` —
@@ -321,7 +325,9 @@ has nothing to retry either way.
 
 `subscribe`'s answer carries the registration's `delivery` field; a registration the listener can
 give no consumer is refused by name, and its reason is on `EnvoyApiError`, under the one canonical
-list of them (`ErrorWireSchema.reason` in `src/transport.ts`).
+list of them (`ErrorWireSchema.reason` in `src/transport.ts`). The same list holds
+`sender_rate_limited`, the reason of the 429 a send or a publish gets when its agent session has
+sent faster than the listener lets one session send: the message was not stored.
 
 ## envoy.json
 
@@ -652,7 +658,7 @@ the issue's messages for the reason, then close with one that points at it). The
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec
-with no decision blocks, three or more session writes without a human response (with stronger
+with no ask blocks, three or more session writes without a human response (with stronger
 wording from six), a write while the issue is still in triage, and up to two still-open asks owned
 by the session. Ask replies do not trigger the write-cadence pointer and suppress an open-ask
 pointer when replying to that ask; a status-setting issue update does not trigger the triage
@@ -898,7 +904,7 @@ a PATCH that fails after the post names the posted message. The result is one li
 server refusal keeps its `code` (`INVALID_STATUS`, `ISSUE_CLOSED`, `EXTERNAL_LINK_TAKEN`) at the
 head of the thrown message.
 `dispatch request-approval` refuses, before it sends anything, while the version the request would
-name (the document's latest, `approval.latest_version`) holds a decision block open. It reads the
+name (the document's latest, `approval.latest_version`) holds an ask block open. It reads the
 live document's `ask` blocks (`GET /api/v1/artifacts/{id}/blocks`), then that version's markdown
 and the owner's asks (the issue's for an issue document, since the artifact route refuses those),
 and judges each block by its `state` on every line of the version that opens it, so a line quoting

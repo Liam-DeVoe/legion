@@ -64,9 +64,6 @@ func TestAPinnedReadOfABlockHiddenFromTheReaderAnswersWhatNobodyHolds(t *testing
 	}
 
 	author := model.Actor{Kind: "user", ID: "alice"}
-	if _, err := graphstore.VisibilityFor(graphstore.VisibilityAuthor, author); err != nil {
-		t.Fatalf("reserve the blocks for their author: %v", err)
-	}
 	seedExec(t, database, "the private block's row", `
 		insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
 		values ($1::uuid, 'private', $2, 'paragraph', '', $3, 1, now())

@@ -197,7 +197,7 @@ func TestTheBlockCensusReadsNoFindingAndNoTupleTheBlockIndexDoesNotProject(t *te
 		constraintID = "00000000-0000-4000-8000-0000000000c1"
 		lensID       = "00000000-0000-4000-8000-0000000000c2"
 	)
-	finding := lensBlockPrefix + lensID + "#b-x"
+	finding := graphstore.KindLens + "/" + lensID + "#b-x"
 	at := time.Now().UTC()
 	node := func(kind, id, supertag string) graphstore.Node {
 		return graphstore.Node{
@@ -223,12 +223,12 @@ func TestTheBlockCensusReadsNoFindingAndNoTupleTheBlockIndexDoesNotProject(t *te
 	}
 	defer tx.Rollback(ctx)
 	if err := graphstore.Write(ctx, tx, []graphstore.Node{
-		node("constraint", constraintID, "constraint"),
-		node("lens", lensID, "lens"),
+		node(graphstore.KindConstraint, constraintID, graphstore.KindConstraint),
+		node(graphstore.KindLens, lensID, graphstore.KindLens),
 		node(refs.BlockNodeKind, finding, refs.BlockSupertag),
 	}, []graphstore.Tuple{
-		tuple(seeded.inner, "constrained_by", "constraint", constraintID),
-		tuple(finding, graphstore.TuplePartOf, "lens", lensID),
+		tuple(seeded.inner, graphstore.TupleConstrainedBy, graphstore.KindConstraint, constraintID),
+		tuple(finding, graphstore.TuplePartOf, graphstore.KindLens, lensID),
 		tuple(finding, graphstore.TupleAuthoredBy, graphstore.KindPerson, "alice"),
 	}); err != nil {
 		t.Fatalf("write the constraint, the lens and its finding: %v", err)

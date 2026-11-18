@@ -181,10 +181,12 @@ export function changesOf(
   const asked = decisionNodeChanges(tree);
   for (const decision of decisions) {
     const comment = asked.get(decision.node.id);
-    // A Change is a person's comment (`decisionNodeChanges`), so it always has an author.
-    if (comment === undefined || comment.author === null) continue;
+    // A Change is a person's comment (`decisionNodeChanges`), so it always has an author: the
+    // first the read lists for it.
+    const author = comment?.author[0];
+    if (comment === undefined || author === undefined) continue;
     changes.set(decision.ref, {
-      author: comment.author,
+      author,
       body: comment.text,
       created_at: comment.made_at,
       id: comment.id,

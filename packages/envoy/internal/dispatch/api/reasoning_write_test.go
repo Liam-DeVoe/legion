@@ -12,20 +12,26 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// TestTheReasoningWriteStatesAnAuthorOnlyWhereTheCredentialProvesOne holds the one write path of
-// a lens, a finding, a risk and a constraint (writeReasoningNodes) to what it states of who wrote
-// each node (dispatch://INFRA-1950/spec#b-r-author, #b-r-node-visibility): a project node on a
-// cookie or a personal token is made by the recorded actor and holds its authored_by tuple to the
-// author graphstore.AuthorOf names of that actor, whose own node the write makes; an author-only
-// node is made by the credential that proved the caller; `author` on the shared bearer is refused
-// 403 AUTHOR_NAMES_NOBODY with nothing stored; and a project node on the shared bearer holds no
-// authored_by and makes no node of the session its body claims. Every node is live, in the
-// project of the issue the write names, and no write appends an event. A pointer the request
+// TestTheReasoningWriteStatesTheWriterItsRecordNames holds the one write path of a lens, a
+// finding, a risk and a constraint (writeReasoningNodes) to what it states of who wrote each node
+// (dispatch://INFRA-1950/spec#b-r-author, #b-r-node-visibility): a project node is made by the
+// recorded actor and holds its authored_by tuple to the writer graphstore.AuthorOf names of that
+// actor, whose own node the write makes, on a cookie, a personal token and the shared bearer
+// alike; an author-only node is made by the credential that proved the caller; `author` on the
+// shared bearer is refused 403 AUTHOR_NAMES_NOBODY with nothing stored; and a project node on the
+// shared bearer holds its authored_by to the session its body names, whose node the write makes,
+// while its made_by proves nobody (spec v46 R12: attribution is no proof). Every node is live, in
+// the project of the issue the write names, and no write appends an event. A pointer the request
 // states is held to its type rule by the store, so a lens of a kind that is no lens_kind is 400
 // INVALID_POINTER and a lens of two kinds 409 POINTER_ALREADY_ASSERTED, each with nothing stored.
-func TestTheReasoningWriteStatesAnAuthorOnlyWhereTheCredentialProvesOne(t *testing.T) {
+// Each attribute a node's row carries - a lens's verdict, a risk's heading, early warning and
+// prevention, a constraint's standard and reference or measurement, value and where it was taken
+// - is also one value tuple of the node, its whole history, as a finding's text is; and an append
+// of a pointer the node holds already writes nothing, under a run as under none.
+func TestTheReasoningWriteStatesTheWriterItsRecordNames(t *testing.T) {
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "RSN", "Reasoned work", "# Spec\n\nA passage.")
@@ -64,7 +70,7 @@ func TestTheReasoningWriteStatesAnAuthorOnlyWhereTheCredentialProvesOne(t *testi
 		}
 		defer tx.Rollback(ctx)
 		written, err := writeReasoningNodes(ctx, tx, reasoningWrite{
-			issue: issue.Key, proving: proving, recorded: recorded, at: time.Now().UTC(), nodes: nodes,
+			reasoningCaller: reasoningCaller{proving: proving, recorded: recorded}, issue: issue.Key, at: time.Now().UTC(), nodes: nodes,
 		})
 		if err != nil {
 			return nil, err
@@ -101,32 +107,6 @@ func TestTheReasoningWriteStatesAnAuthorOnlyWhereTheCredentialProvesOne(t *testi
 			t.Errorf("%s/%s is made by %+v, want %+v", kind, id, node.MadeBy, madeBy)
 		}
 		return node
-	}
-	farEnds := func(t *testing.T, kind, id, tupleKind string) []string {
-		t.Helper()
-		held, err := graphstore.CurrentOut(ctx, database.Pool, kind, id, []string{tupleKind})
-		if err != nil {
-			t.Fatalf("read the %s of %s/%s: %v", tupleKind, kind, id, err)
-		}
-		ends := make([]string, len(held))
-		for index, tuple := range held {
-			ends[index] = tuple.ToKind + "/" + tuple.ToID
-		}
-		return ends
-	}
-	requireFarEnds := func(t *testing.T, kind, id, tupleKind string, want ...string) {
-		t.Helper()
-		if ends := farEnds(t, kind, id, tupleKind); strings.Join(ends, " ") != strings.Join(want, " ") {
-			t.Errorf("%s/%s holds %s %v, want %v", kind, id, tupleKind, ends, want)
-		}
-	}
-	nodeHeld := func(t *testing.T, kind, id string) bool {
-		t.Helper()
-		_, found, err := graphstore.ReadNode(ctx, database.Pool, kind, id)
-		if err != nil {
-			t.Fatalf("read %s/%s: %v", kind, id, err)
-		}
-		return found
 	}
 	requireNothingStored := func(t *testing.T, kind, id string) {
 		t.Helper()
@@ -170,12 +150,12 @@ func TestTheReasoningWriteStatesAnAuthorOnlyWhereTheCredentialProvesOne(t *testi
 		}
 		requireNode(t, graphstore.KindLens, node.id, graphstore.VisibilityProject, recorded)
 		requireNode(t, "block", finding.id, graphstore.VisibilityProject, recorded)
-		requireFarEnds(t, graphstore.KindLens, node.id, graphstore.TuplePartOf, "issue/"+issue.Key)
-		requireFarEnds(t, graphstore.KindLens, node.id, graphstore.TupleHasKind, "lens_kind/trade-off")
-		requireFarEnds(t, "block", finding.id, graphstore.TuplePartOf, "lens/"+node.id)
-		requireFarEnds(t, graphstore.KindLens, node.id, graphstore.TupleAuthoredBy, "person/alice")
-		requireFarEnds(t, "block", finding.id, graphstore.TupleAuthoredBy, "person/alice")
-		if !nodeHeld(t, graphstore.KindPerson, "alice") {
+		requireFarEnds(t, database, graphstore.KindLens, node.id, graphstore.TuplePartOf, "issue/"+issue.Key)
+		requireFarEnds(t, database, graphstore.KindLens, node.id, graphstore.TupleHasKind, "lens_kind/trade-off")
+		requireFarEnds(t, database, "block", finding.id, graphstore.TuplePartOf, "lens/"+node.id)
+		requireFarEnds(t, database, graphstore.KindLens, node.id, graphstore.TupleAuthoredBy, "person/alice")
+		requireFarEnds(t, database, "block", finding.id, graphstore.TupleAuthoredBy, "person/alice")
+		if !nodeHeld(t, database, graphstore.KindPerson, "alice") {
 			t.Error("the write states alice's authored_by and holds no node of her")
 		}
 	})
@@ -183,7 +163,7 @@ func TestTheReasoningWriteStatesAnAuthorOnlyWhereTheCredentialProvesOne(t *testi
 	t.Run("a project lens on a personal token", func(t *testing.T) {
 		const session = "session-bob-0001"
 		proving, recorded := actorsOf(t, "Authorization", "Bearer "+bobsToken, session)
-		if nodeHeld(t, graphstore.KindSession, session) {
+		if nodeHeld(t, database, graphstore.KindSession, session) {
 			t.Fatalf("the store holds the session %s before any write of it", session)
 		}
 		node := lens("", "trade-off")
@@ -196,15 +176,15 @@ func TestTheReasoningWriteStatesAnAuthorOnlyWhereTheCredentialProvesOne(t *testi
 		if made.MadeBy.ID != session || made.MadeBy.Owner == nil || *made.MadeBy.Owner != "bob" {
 			t.Errorf("the lens is made by %+v, want session %s of bob's token", made.MadeBy, session)
 		}
-		requireFarEnds(t, graphstore.KindLens, node.id, graphstore.TupleAuthoredBy, "session/"+session)
-		if !nodeHeld(t, graphstore.KindSession, session) {
+		requireFarEnds(t, database, graphstore.KindLens, node.id, graphstore.TupleAuthoredBy, "session/"+session)
+		if !nodeHeld(t, database, graphstore.KindSession, session) {
 			t.Errorf("the write states the lens's authored_by to %s and holds no node of it", session)
 		}
 	})
 
 	t.Run("an author-only lens on a personal token", func(t *testing.T) {
 		proving, recorded := actorsOf(t, "Authorization", "Bearer "+bobsToken, "session-bob-0002")
-		if nodeHeld(t, graphstore.KindPerson, "bob") {
+		if nodeHeld(t, database, graphstore.KindPerson, "bob") {
 			t.Fatal("the store holds bob's node before any write of his")
 		}
 		node := lens(graphstore.VisibilityAuthor, "trade-off")
@@ -216,8 +196,8 @@ func TestTheReasoningWriteStatesAnAuthorOnlyWhereTheCredentialProvesOne(t *testi
 		if made.MadeBy.ID != "" || made.MadeBy.Owner == nil || *made.MadeBy.Owner != "bob" {
 			t.Errorf("the author-only lens is made by %+v, want bob's token", made.MadeBy)
 		}
-		requireFarEnds(t, graphstore.KindLens, node.id, graphstore.TupleAuthoredBy, "person/bob")
-		if !nodeHeld(t, graphstore.KindPerson, "bob") {
+		requireFarEnds(t, database, graphstore.KindLens, node.id, graphstore.TupleAuthoredBy, "person/bob")
+		if !nodeHeld(t, database, graphstore.KindPerson, "bob") {
 			t.Error("the write states the lens's authored_by to bob and holds no node of him")
 		}
 	})
@@ -233,6 +213,9 @@ func TestTheReasoningWriteStatesAnAuthorOnlyWhereTheCredentialProvesOne(t *testi
 	t.Run("a project lens on the shared bearer", func(t *testing.T) {
 		const session = "session-shared-0002"
 		proving, recorded := actorsOf(t, "Authorization", "Bearer agent-token", session)
+		if nodeHeld(t, database, graphstore.KindSession, session) {
+			t.Fatalf("the store holds the session %s before any write of it", session)
+		}
 		node := lens("", "trade-off")
 		if _, err := write(t, proving, recorded, node); err != nil {
 			t.Fatalf("write the lens: %v", err)
@@ -241,9 +224,15 @@ func TestTheReasoningWriteStatesAnAuthorOnlyWhereTheCredentialProvesOne(t *testi
 		if made.MadeBy.Kind != "session" || made.MadeBy.ID != session {
 			t.Errorf("the lens is made by %+v, want the session %s its body names", made.MadeBy, session)
 		}
-		requireFarEnds(t, graphstore.KindLens, node.id, graphstore.TupleAuthoredBy)
-		if nodeHeld(t, graphstore.KindSession, session) {
-			t.Errorf("the shared bearer's write made a node of %s, the session its body merely claims", session)
+		// Attribution: the lens names the session its body names as its writer, as a comment
+		// written on the shared bearer does, and the write states that session's node.
+		requireFarEnds(t, database, graphstore.KindLens, node.id, graphstore.TupleAuthoredBy, "session/"+session)
+		if !nodeHeld(t, database, graphstore.KindSession, session) {
+			t.Errorf("the write states the lens's authored_by to %s and holds no node of it", session)
+		}
+		// Proof: the shared bearer proves no author, so the lens's made_by proves nobody.
+		if graphstore.ProvesAuthor(made.MadeBy) {
+			t.Errorf("the shared bearer's lens, made by %+v, proves an author", made.MadeBy)
 		}
 	})
 
@@ -265,7 +254,136 @@ func TestTheReasoningWriteStatesAnAuthorOnlyWhereTheCredentialProvesOne(t *testi
 		requireNothingStored(t, graphstore.KindLens, twoKinds.id)
 	})
 
+	t.Run("each attribute a row carries is a value tuple of its node", func(t *testing.T) {
+		proving, recorded := actorsOf(t, "X-Dispatch-User", "alice", "")
+		premortem := lens("", graphstore.LensKindPreMortem)
+		premortem.attributes = map[string]any{graphstore.AttributeVerdict: "Ship it with the index built first."}
+		risk := reasoningNode{
+			kind: graphstore.KindRisk, id: uuid.NewString(), parentKind: graphstore.KindLens, parentID: premortem.id,
+			attributes: map[string]any{
+				graphstore.AttributeHeading:      "The migration locks the table.",
+				graphstore.AttributeEarlyWarning: "Writes queue behind the build.",
+				graphstore.AttributePrevention:   "Build the index concurrently.",
+			},
+		}
+		standard := reasoningNode{
+			kind: graphstore.KindConstraint, id: uuid.NewString(), parentKind: graphstore.KindIssue, parentID: issue.Key,
+			attributes: map[string]any{graphstore.AttributeStandard: "RFC 9110", graphstore.AttributeReference: "section 15.5.20"},
+		}
+		measured := reasoningNode{
+			kind: graphstore.KindConstraint, id: uuid.NewString(), parentKind: graphstore.KindIssue, parentID: issue.Key,
+			attributes: map[string]any{
+				graphstore.AttributeMeasurement: "p95 read latency", graphstore.AttributeValue: "120 ms",
+				graphstore.AttributeTakenWhere: "the staging pod",
+			},
+		}
+		findingID := graphstore.KindLens + "/" + premortem.id + "#held"
+		finding := reasoningNode{
+			kind: "block", id: findingID, parentKind: graphstore.KindLens, parentID: premortem.id,
+			tuples: []graphstore.Tuple{{FromKind: "block", FromID: findingID,
+				Kind: graphstore.AttributeText, ToKind: graphstore.KindValue, ToID: "The index is the risk."}},
+		}
+		if _, err := write(t, proving, recorded, premortem, risk, standard, measured, finding); err != nil {
+			t.Fatalf("write the reasoning nodes: %v", err)
+		}
+		finding.attributes = map[string]any{graphstore.AttributeText: "The index is the risk."}
+		for _, node := range []reasoningNode{premortem, risk, standard, measured, finding} {
+			stored, found, err := graphstore.ReadNode(ctx, database.Pool, node.kind, node.id)
+			if err != nil || !found {
+				t.Fatalf("read %s/%s: found %t, %v", node.kind, node.id, found, err)
+			}
+			for attribute, value := range node.attributes {
+				if node.kind != "block" && stored.Attributes[attribute] != value {
+					t.Errorf("%s/%s's row carries %s %v, want %q", node.kind, node.id, attribute, stored.Attributes[attribute], value)
+				}
+				history, err := graphstore.History(ctx, database.Pool, node.kind, node.id, attribute)
+				if err != nil {
+					t.Fatalf("read the history of %s on %s/%s: %v", attribute, node.kind, node.id, err)
+				}
+				if len(history) != 1 || history[0].ToKind != graphstore.KindValue || history[0].ToID != value ||
+					!history[0].Asserted || !history[0].Who.SameCredential(recorded) || history[0].SourceEvent != graphstore.NoEvent {
+					t.Errorf("the history of %s on %s/%s is %+v, want one asserted value %q by the node's writer at the sentinel",
+						attribute, node.kind, node.id, history, value)
+				}
+			}
+		}
+	})
+
+	t.Run("an append of a pointer the node holds writes nothing", func(t *testing.T) {
+		proving, recorded := actorsOf(t, "X-Dispatch-User", "alice", "")
+		trigger, triggered := lens("", "trade-off"), lens("", "inversion")
+		if _, err := write(t, proving, recorded, trigger, triggered); err != nil {
+			t.Fatalf("write the two lenses: %v", err)
+		}
+		// Each append is made for a run of its own, so a second append that wrote anything would
+		// also name the lens changed by a second run.
+		pointer := graphstore.Tuple{
+			FromKind: graphstore.KindLens, FromID: triggered.id, Kind: graphstore.TupleTriggeredBy,
+			ToKind: graphstore.KindLens, ToID: trigger.id, At: time.Now().UTC(), Who: recorded, SourceEvent: graphstore.NoEvent, Asserted: true,
+		}
+		for attempt := range 2 {
+			tx, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin append %d: %v", attempt+1, err)
+			}
+			if err := writeReasoningPointer(graphstore.WithRun(ctx, uuid.NewString()), tx, reasoningPointer{issue: issue.Key, action: pointerAppend, pointer: pointer}); err != nil {
+				_ = tx.Rollback(ctx)
+				t.Fatalf("append %d of the triggered_by: %v", attempt+1, err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatalf("commit append %d: %v", attempt+1, err)
+			}
+		}
+		history, err := graphstore.History(ctx, database.Pool, graphstore.KindLens, triggered.id, graphstore.TupleTriggeredBy)
+		if err != nil {
+			t.Fatalf("read the triggered_by history: %v", err)
+		}
+		changed, err := graphstore.History(ctx, database.Pool, graphstore.KindLens, triggered.id, graphstore.TupleChangedByRun)
+		if err != nil {
+			t.Fatalf("read the changed_by_run history: %v", err)
+		}
+		if len(history) != 1 || len(changed) != 1 {
+			t.Errorf("two appends of one triggered_by left %d triggered_by and %d changed_by_run tuples, want one of each: %+v %+v",
+				len(history), len(changed), history, changed)
+		}
+		requireFarEnds(t, database, graphstore.KindLens, triggered.id, graphstore.TupleTriggeredBy, "lens/"+trigger.id)
+	})
+
 	if eventsAfter := countRows(t, database, `select count(*) from events`); eventsAfter != eventsBefore {
 		t.Errorf("the reasoning writes appended %d events, want none", eventsAfter-eventsBefore)
 	}
+}
+
+// farEnds is the far end of each current tupleKind tuple out of the node kind/id, in the order
+// graphstore.CurrentOut reads them, each written kind/id.
+func farEnds(t *testing.T, database *store.Store, kind, id, tupleKind string) []string {
+	t.Helper()
+	held, err := graphstore.CurrentOut(context.Background(), database.Pool, kind, id, []string{tupleKind})
+	if err != nil {
+		t.Fatalf("read the %s of %s/%s: %v", tupleKind, kind, id, err)
+	}
+	ends := make([]string, len(held))
+	for index, tuple := range held {
+		ends[index] = tuple.ToKind + "/" + tuple.ToID
+	}
+	return ends
+}
+
+// requireFarEnds holds the node kind/id to the far ends of its current tupleKind tuples
+// (farEnds): want, in that order, and none where want is empty.
+func requireFarEnds(t *testing.T, database *store.Store, kind, id, tupleKind string, want ...string) {
+	t.Helper()
+	if ends := farEnds(t, database, kind, id, tupleKind); strings.Join(ends, " ") != strings.Join(want, " ") {
+		t.Errorf("%s/%s holds %s %v, want %v", kind, id, tupleKind, ends, want)
+	}
+}
+
+// nodeHeld is whether the store holds the node kind/id, at any state.
+func nodeHeld(t *testing.T, database *store.Store, kind, id string) bool {
+	t.Helper()
+	_, found, err := graphstore.ReadNode(context.Background(), database.Pool, kind, id)
+	if err != nil {
+		t.Fatalf("read %s/%s: %v", kind, id, err)
+	}
+	return found
 }

@@ -25,9 +25,10 @@ import (
 // Visibility and state values, the two base attributes every node carries. A node is visible to
 // its project or to its author alone. Its state is live, which every node a write makes starts
 // in, gone, which a node no longer held is stated, or one of proposed, settled and overtaken,
-// which a write marks a node with (dispatch://INFRA-1950). Each attribute takes these values and
-// no other: a write stating any other is refused (InvalidAttributeValueError), since a node at a
-// value nobody declared is drawn by no view and counted by no census.
+// which a request's write of the node's state marks it with (api's writeNodeState). Each
+// attribute takes these values and no other: a write stating any other is refused
+// (InvalidAttributeValueError), since a node at a value nobody declared is drawn by no view and
+// counted by no census.
 const (
 	VisibilityProject = "project"
 	VisibilityAuthor  = "author"
@@ -131,10 +132,12 @@ type Node struct {
 	// writer that changes a node it writes as another write made it: the issue PATCH (api's
 	// patchIssue) writes the issue's node as the create and the backfill write it, made at the
 	// issue's created_at by its creator, while its tuple says that the PATCH changed the issue,
-	// then and by its writer. A writer sets both or neither: the zero ChangedAt leaves the tuple
-	// dated and signed as the node is, MadeAt and MadeBy, which is every other writer, since the
-	// zero actor names a writer of its own (the deployment's shared token) and so cannot say that
-	// ChangedBy is unset. No column holds either, and no read answers them.
+	// then and by its writer, and the edit of an ask's or a comment's words (api's editAsk and
+	// editComment) writes that node the same way, dated at the edit's edited_at. A writer sets
+	// both or neither: the zero ChangedAt leaves the tuple dated and signed as the node is, MadeAt
+	// and MadeBy, which is every other writer, since the zero actor names a writer of its own (the
+	// deployment's shared token) and so cannot say that ChangedBy is unset. No column holds
+	// either, and no read answers them.
 	ChangedAt time.Time
 	ChangedBy model.Actor
 }

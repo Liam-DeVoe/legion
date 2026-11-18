@@ -218,7 +218,7 @@ function treeNode(
 ): TreeAnswerNode {
   return {
     attributes: {},
-    author: null,
+    author: [],
     id,
     made_at: "2026-11-05T00:00:00Z",
     parent: KEY,
@@ -251,13 +251,13 @@ const statement = treeNode("r1", "requirement", {
 
 /** The issue's open asks as the tree read answers them, each under the issue. */
 const askNodes = (issue.open_asks ?? []).map((ask) =>
-  treeNode(ask.id, "ask", { author: ask.author, made_at: ask.created_at, text: ask.question })
+  treeNode(ask.id, "ask", { author: [ask.author], made_at: ask.created_at, text: ask.question })
 );
 
 /** A person's comment as the tree read answers it, under the node `parent`. */
 function commentNode(comment: Comment, parent: string): TreeAnswerNode {
   return treeNode(comment.id, "comment", {
-    author: comment.author,
+    author: [comment.author],
     made_at: comment.created_at,
     parent,
     text: comment.body,

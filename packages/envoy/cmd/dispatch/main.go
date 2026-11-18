@@ -477,6 +477,10 @@ func main() {
 		ServerURL: serverURL,
 	})
 	publishRoomFigures(documentService)
+	// The decisions step's third phase writes the issues' documents through this service: the
+	// restore of the answered asks that left their specs and the conversion of the decisions
+	// documents, on the step's tick below.
+	decisionStep.UseDocuments(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
 	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
 	// interval below. It appends events and takes no copy lock, so it runs after
@@ -914,8 +918,9 @@ func main() {
 	// a build indexed without the block grammar.
 	go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases)
 	// The decisions step's tick, for as long as the process runs: the backfill while a row the
-	// release before wrote stands unmarked, and the catch-up of what a process of another build
-	// writes while one lives.
+	// release before wrote stands unmarked, the catch-up of what a process of another build
+	// writes while one lives, and, once the fleet is this one build, the restore of the answered
+	// asks that left their specs and the conversion of every decisions document.
 	if !boot.HoldDecisionsStep {
 		go decisionStep.Run(ctx)
 	}
@@ -2047,18 +2052,19 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(struct {
-			OK                bool    `json:"ok"`
-			DB                bool    `json:"db"`
-			NATS              *bool   `json:"nats"`
-			Files             *bool   `json:"files"`
-			SignIn            *bool   `json:"signin"`
-			ServiceTokens     *bool   `json:"service_tokens"`
-			Commit            *string `json:"commit"`
-			FleetCommit       *string `json:"fleet_commit"`
-			SchemaVersion     *int    `json:"schema_version"`
-			OutboxPublisher   bool    `json:"outbox_publisher"`
-			IdempotencyKeys   bool    `json:"idempotency_keys"`
-			DecisionsStepOwed *int64  `json:"decisions_step_owed,omitempty"`
+			OK              bool    `json:"ok"`
+			DB              bool    `json:"db"`
+			NATS            *bool   `json:"nats"`
+			Files           *bool   `json:"files"`
+			SignIn          *bool   `json:"signin"`
+			ServiceTokens   *bool   `json:"service_tokens"`
+			Commit          *string `json:"commit"`
+			FleetCommit     *string `json:"fleet_commit"`
+			SchemaVersion   *int    `json:"schema_version"`
+			OutboxPublisher bool    `json:"outbox_publisher"`
+			IdempotencyKeys bool    `json:"idempotency_keys"`
+			// kept for one release: decisions-step
+			DecisionsStepOwed *int64 `json:"decisions_step_owed,omitempty"`
 		}{
 			OK: ok, DB: databaseOK, NATS: natsOK, Files: filesOK, SignIn: signInOK, ServiceTokens: serviceTokensOK,
 			Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,

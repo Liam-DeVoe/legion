@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -154,8 +156,11 @@ func seedByWriter(t *testing.T, service *Service, artifactID string, client crdt
 // a choice and its words, and a resolution are held on the ask's node and its row alone
 // (asks.Settle), and on a fleet of one build the routes write no byte of any document
 // (dispatch://INFRA-1150 R3, "Once the whole fleet runs this build, a person's answer changes no
-// byte of any document"). An agent reads each ask's state and answer on its block all the same,
-// rendered on read from the ask (TextWithAnswers), the words and the choice among them.
+// byte of any document"). An agent reads each ask's state on its block, rendered on read from the
+// ask (TextWithAnswers), and an answered block says who answered and when. What the text routes
+// answer is held to what one upload may hold, and this document has no room for the options chosen
+// or the words, so the block withholds them (answersWithRoom), as the release before wrote such a
+// block, and the ask keeps them whole.
 func TestTheAsksOfADocumentPastTheBoundCanStillBeAnsweredAndResolved(t *testing.T) {
 	service, _ := newTestService(t)
 	service.settle = time.Hour
@@ -192,12 +197,30 @@ func TestTheAsksOfADocumentPastTheBoundCanStillBeAnsweredAndResolved(t *testing.
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`{#chosen urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-03T00:00:00Z" selected="[&#x22;Yes&#x22;]"}`,
+		`{#chosen urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-03T00:00:00Z"}`,
 		`{#resolved urgency="med" multiple="false" state="resolved"}`,
-		`{#worded urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-03T00:00:00Z" selected="[&#x22;Yes&#x22;]" answer="Ship it now."}`,
+		`{#worded urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-03T00:00:00Z"}`,
 	} {
 		if !strings.Contains(shown, want) {
 			t.Errorf("the %d-byte document as an agent reads it holds no %s", len(shown), want)
 		}
+	}
+	wordsOf := func(text *string) string {
+		if text == nil {
+			return "none"
+		}
+		return fmt.Sprintf("%q", *text)
+	}
+	for block, text := range map[string]*string{"chosen": nil, "worded": &words} {
+		held := blockAskOn(t, service, artifactID, block)
+		answer := held.Answer
+		if held.State != "answered" || answer == nil || answer.User != "alice" || !answer.At.Equal(at) ||
+			!slices.Equal(answer.Selected, []string{"Yes"}) || !reflect.DeepEqual(answer.Text, text) {
+			t.Errorf("the ask of %s = %s %+v, want answered by alice at %s choosing Yes, with the words %s", block, held.State, answer, at, wordsOf(text))
+		}
+	}
+	if held := blockAskOn(t, service, artifactID, "resolved"); held.State != "resolved" || held.Resolution == nil ||
+		held.Resolution.Kind != "resolved" || held.Resolution.Reason != "Waived." {
+		t.Errorf("the ask of resolved = %s %+v, want resolved with the reason Waived.", held.State, held.Resolution)
 	}
 }

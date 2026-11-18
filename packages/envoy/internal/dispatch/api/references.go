@@ -55,9 +55,11 @@ const referencesSinceWait = time.Second
 // revision of its ask's parts or of its comment, also reads the block as that version or revision
 // recorded it (blockReferenceNode, itemBlockReferenceNode). A finding of a lens
 // (`dispatch://lens/<uuid>#b-<id>`) is the registry's lens_block node, read as a lens, a risk or a
-// constraint is (refs.Node). A ?kind= this build does not emit - a newer build's, during a
-// release - has no edges here, and the answer lists it in unknown_kinds rather than refusing the
-// read.
+// constraint is (refs.Node). A document's address that moved to a lens - the pre-mortem
+// conversion retires a document and moves its address to the lens it writes in its place - answers
+// that lens (movedDocumentNode), as a moved block's old address answers the block it moved to. A
+// ?kind= this build does not emit - a newer build's, during a release - has no edges here, and the
+// answer lists it in unknown_kinds rather than refusing the read.
 //
 // A since read keeps only mentions whose event is at or below the safe horizon
 // (events.Horizon), at or below which every event is final. A poller passes the highest
@@ -133,10 +135,18 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		var found bool
-		node, found, err = refs.Node(r.Context(), s.deps.Store.Pool, who, query.Kind, query.ID, query.Direction == "in")
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+		if query.Direction == "in" && ref.Kind == "artifact" {
+			if node, found, err = s.movedDocumentNode(r.Context(), who, query.ID); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		}
+		if !found {
+			node, found, err = refs.Node(r.Context(), s.deps.Store.Pool, who, query.Kind, query.ID, query.Direction == "in")
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
 		}
 		if !found {
 			s.writeHandlerError(w, errorf(http.StatusNotFound, "NOT_FOUND", "no %s at %s", query.Kind, query.ID))
@@ -161,6 +171,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	answerIssueWaitsAsNeeds(edges)
 	if query.Direction == "in" {
 		if err := s.documentMentionExcerpts(r.Context(), who, query, edges); err != nil {
 			s.writeHandlerError(w, err)
@@ -431,6 +442,24 @@ func (s *server) movedBlockNode(ctx context.Context, who model.Actor, address st
 	return node, err
 }
 
+// movedDocumentNode is the lens the address of the document stored at refKey moved to: the lens
+// the pre-mortem conversion wrote in the place of the document it retired (api.ConvertPremortem),
+// which the moved_to from the document's address reaches (graphstore.MovedTo). It is answered as a
+// moved block's old address answers the block it reached (movedBlockNode): the node the move
+// reaches, named by its own address, and the edges the read lists beside it are those at the
+// address asked, the citations of the document. found is false where the address moved to no lens
+// that stands, and where who may not see the lens, and the read then answers the address as it
+// would with no move - the document, or a retired document's issue (refs.loadArtifactNodes) - so
+// a move says nothing of a lens the reader may not see.
+func (s *server) movedDocumentNode(ctx context.Context, who model.Actor, refKey string) (model.GraphNode, bool, error) {
+	pool := s.deps.Store.Pool
+	lens, moved, err := graphstore.MovedTo(ctx, pool, refKey)
+	if err != nil || !moved {
+		return model.GraphNode{}, false, err
+	}
+	return refs.Node(ctx, pool, who, graphstore.KindLens, lens, true)
+}
+
 // documentAtAddress is the document stored at refKey, as a read of its blocks needs it: the node
 // refs.Node answers for the address, or, where the address is a retired document's, which refs
 // answers as the document's issue (refs.loadArtifactNodes), the document itself, read by its uuid,
@@ -588,7 +617,16 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 				continue
 			}
 			query.Kinds = append(query.Kinds, kind)
+			// An issue's wait on an issue is blocked_by in graph_edges through this release, the
+			// kind a process of the release before reads it by, and needs in this read's answer
+			// (answerIssueWaitsAsNeeds), so needs reads that edge as well as a plan node's needs,
+			// and blocked_by reads it too (R10 of dispatch://INFRA-1253).
+			if kind == model.EdgeKindNeeds {
+				query.Kinds = append(query.Kinds, blockedByMember)
+			}
 		}
+		slices.Sort(query.Kinds)
+		query.Kinds = slices.Compact(query.Kinds)
 	}
 	// An ask's inbound `replies_to` edges are its own clarification thread, which every ask
 	// surface renders inline, and its parts are each part_of it: "what references this ask" means
@@ -613,6 +651,18 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 		query.Since = &value
 	}
 	return query, ref, unknownKinds, nil
+}
+
+// answerIssueWaitsAsNeeds names each edge of an issue's wait on an issue needs, the one relation an
+// issue and a plan node wait by (R10 of dispatch://INFRA-1253): graph_edges names it blocked_by in
+// both its arms through this release, which a process of the release before reads, and this
+// build's references read answers it as the store states it.
+func answerIssueWaitsAsNeeds(edges []model.GraphEdge) {
+	for index := range edges {
+		if edges[index].Kind == blockedByMember {
+			edges[index].Kind = model.EdgeKindNeeds
+		}
+	}
 }
 
 // documentMentionExcerpts replaces the excerpt of every mention written by a document with the
@@ -692,6 +742,8 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		}
 		members = append(members, model.ReferenceMember{
 			Artifact: *artifact,
+			Kind:     closureMember.Kind,
+			Address:  closureMember.Address,
 			Depth:    closureMember.Depth,
 			Via:      closureMember.Via,
 		})
@@ -730,7 +782,8 @@ func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
 
 // referencesETag hashes what an issue references answer depends on. The trimmed answer
 // (latestOnly) hashes one more line naming its variant, so the full and trimmed answers of one
-// issue never share an ETag; the full answer hashes no such line.
+// issue never share an ETag; the full answer hashes no such line. Each member's line names its
+// address, which a document's conversion into a lens moves with no new version of it.
 func referencesETag(lastSeq int, members []model.ReferenceMember, truncated, latestOnly bool) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "%d\n%t\n", lastSeq, truncated)
@@ -738,7 +791,7 @@ func referencesETag(lastSeq int, members []model.ReferenceMember, truncated, lat
 		_, _ = io.WriteString(hash, "versions=latest\n")
 	}
 	for _, member := range members {
-		_, _ = fmt.Fprintf(hash, "%s@%d\n", member.Artifact.ID, member.Artifact.Versions[len(member.Artifact.Versions)-1].Number)
+		_, _ = fmt.Fprintf(hash, "%s@%d %s\n", member.Artifact.ID, member.Artifact.Versions[len(member.Artifact.Versions)-1].Number, member.Address)
 	}
 	return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -255,13 +256,17 @@ func conversationAttributes(schema pmdoc.BlockSchema) (declaring, from []string)
 	return declaring, from
 }
 
-// c-conversation-parent, its second test, the schema half (dispatch://INFRA-1253/spec R2: "The
-// tie is the parent tuple and nothing else"): the whole schema the store's type nodes build holds
+// c-conversation-parent, its second test (dispatch://INFRA-1253/spec R2: "The tie is the parent
+// tuple and nothing else"). The schema half: the whole schema the store's type nodes build holds
 // no attribute but parent that declares the conversation's kinds, and none called from. A planted
 // second attribute declaring them, and a planted from, in a copy of that schema, are found by the
-// same search that finds none in the real one.
+// same search that finds none in the real one. The walk-up half (T7 of dispatch://INFRA-1253's
+// plan): from a block whose parent is a comment's block, the walk up the chain the block index
+// climbs (refs.PartOfChains) reaches the comment and the words in it; with the block's stored
+// parent value cleared in the store and its part_of left, the same walk reaches the same comment,
+// so that production read climbs the tuple and no attribute.
 func TestNoAttributeTiesABlockToItsConversation(t *testing.T) {
-	_, database := blockIndexHandler(t)
+	handler, database := blockIndexHandler(t)
 	schema, err := schemanodes.Read(context.Background(), database.Pool)
 	if err != nil {
 		t.Fatalf("build the schema from the store's type nodes: %v", err)
@@ -283,4 +288,72 @@ func TestNoAttributeTiesABlockToItsConversation(t *testing.T) {
 	if !slices.Contains(declaring, "check.from") || !slices.Equal(from, []string{"check.from"}) {
 		t.Errorf("a planted check.from declaring comments is found as %v and %v, want the search to find it both ways", declaring, from)
 	}
+
+	ctx := context.Background()
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "The spec.\n")
+	const words = "I want the urgent asks first."
+	comment, block := personComment(t, handler, database, issue.Key, words+"\n\nThen the rest.")
+	created(t, "a criterion under the comment's first block", uploadChecks(t, handler, issue.Key, criterionUnder(block)))
+	criterion := issue.Key + "/checks-md#k1"
+	walk := func(when string) {
+		t.Helper()
+		parent := walkUp(t, database, criterion)
+		if parent.Parent == nil || parent.Parent.Kind != "comment" || parent.Parent.ID != comment {
+			t.Fatalf("%s, the walk up from the criterion reaches %+v, whose item is %+v, want a block of comment %s", when, parent, parent.Parent, comment)
+		}
+		said, err := refs.CurrentItemBlockText(ctx, database.Pool, refs.ItemComment, parent.ID)
+		if err != nil {
+			t.Fatalf("read the words of %s: %v", parent.ID, err)
+		}
+		if strings.TrimSpace(said) != words {
+			t.Errorf("%s, the walk up reaches the words %q, want %q", when, said, words)
+		}
+		if item, found, err := refs.Node(ctx, database.Pool, model.Actor{Kind: "user", ID: "alice"}, parent.Parent.Kind, parent.Parent.ID, false); err != nil || !found || item.ID != comment {
+			t.Errorf("%s, the walk up reaches no comment %s past its block: %+v, found %t, %v", when, comment, item, found, err)
+		}
+	}
+	walk("with the parent attribute stored")
+
+	// The block's stored parent value goes, by a retraction appended straight into the store and
+	// its block_refs row deleted beside it; its part_of tuple is left as it is.
+	held := currentTies(t, database, criterion, pmdoc.ParentAttribute)
+	if len(held) != 1 {
+		t.Fatalf("the criterion states the parent values %+v, want the one its attribute holds", held)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		with retracted as (
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
+			values ($1, $2, $3, $4, $5, clock_timestamp(), '{}', 0, false)
+		)
+		delete from block_refs where from_node = $2 and kind = $3
+	`, refs.BlockNodeKind, criterion, pmdoc.ParentAttribute, held[0].ToKind, held[0].ToID); err != nil {
+		t.Fatalf("clear the criterion's stored parent value: %v", err)
+	}
+	if cleared := currentTies(t, database, criterion, pmdoc.ParentAttribute); len(cleared) != 0 {
+		t.Fatalf("the criterion still states the parent values %+v after the retraction", cleared)
+	}
+	walk("with the parent attribute cleared from the store")
+}
+
+// walkUp is the node the block node address hangs under, the first far end of the chain the block
+// index climbs from it to keep a part_of cycle out (refs.PartOfChains), a production read that
+// picks the relation it follows itself, and read as the read registry loads that node: a walk up
+// the tree that reads no attribute of any node.
+func walkUp(t *testing.T, database *store.Store, address string) model.GraphNode {
+	t.Helper()
+	ctx := context.Background()
+	chains, err := refs.PartOfChains(ctx, database.Pool, []string{address})
+	if err != nil {
+		t.Fatalf("read the chain up from %s: %v", address, err)
+	}
+	chain := chains[address]
+	if len(chain) == 0 {
+		t.Fatalf("the chain up from %s climbs to no node", address)
+	}
+	node, found, err := refs.Node(ctx, database.Pool, model.Actor{Kind: "user", ID: "alice"}, chain[0].Kind, chain[0].ID, false)
+	if err != nil || !found {
+		t.Fatalf("read %s/%s, which %s hangs under: found %t, %v", chain[0].Kind, chain[0].ID, address, found, err)
+	}
+	return node
 }

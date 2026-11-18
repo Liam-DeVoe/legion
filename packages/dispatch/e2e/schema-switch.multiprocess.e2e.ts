@@ -32,6 +32,7 @@ import {
   applySupertagMigration,
   builtSchemaVersion,
   documentWithAddedType,
+  installedSchema,
   installedVersion,
   listeners,
   NEWER_TYPE,
@@ -40,7 +41,7 @@ import {
   servesAddedType,
   servesType,
 } from "./block-schema";
-import { connectedDot, documentEditor, typeAtEnd } from "./editor";
+import { connectedDot, countDocumentSockets, documentEditor, typeAtEnd } from "./editor";
 import {
   type DispatchProcess,
   dispatchProcesses,
@@ -72,8 +73,9 @@ async function contextOn(browser: Browser, target: DispatchProcess): Promise<Bro
   return context;
 }
 
-/** Uploads `markdown` as the issue's document `name` through one process, as the person alice.
- *  It answers the status and the body, so a refusal is read rather than thrown. */
+/** Uploads `markdown` as the issue's document `name` through one process, as the person alice,
+ *  whose sign-in, when it is not cached yet, goes to that process too. It answers the status and
+ *  the body, so a refusal is read rather than thrown. */
 async function uploadThrough(
   target: DispatchProcess,
   issueKey: string,
@@ -83,7 +85,7 @@ async function uploadThrough(
   const response = await fetch(new URL(`/api/v1/issues/${issueKey}/artifacts`, baseUrl), {
     body: JSON.stringify({ content: markdown, name }),
     headers: {
-      ...(await userHeaders("alice")),
+      ...(await userHeaders("alice", target)),
       ...pinnedTo(target),
       "Content-Type": "application/json",
     },
@@ -92,12 +94,23 @@ async function uploadThrough(
   return { body: await response.text(), status: response.status };
 }
 
-/** Types in one tab's editor and waits until the server it is pinned to holds the text. */
-async function typeAndStore(page: Page, artifact: string, text: string): Promise<void> {
+/** Types in one tab's editor and waits until `target`, the process the tab is pinned to, holds the
+ *  text. The read is pinned to `target` as well: an unpinned one goes to either process in turn.
+ *  `why` opens each failure's message, so it can name the process and what it held. */
+async function typeAndStore(
+  page: Page,
+  target: DispatchProcess,
+  artifact: string,
+  text: string,
+  why: string
+): Promise<void> {
   await typeAtEnd(page, text);
-  await expect(documentEditor(page)).toContainText(text);
+  await expect(documentEditor(page), `${why}; the tab's editor`).toContainText(text);
   await expect
-    .poll(async () => (await getArtifactText(artifact)).markdown, { timeout: 30_000 })
+    .poll(async () => (await getArtifactText(artifact, { process: target })).markdown, {
+      message: `${why}; the document's text as process ${target} reads it`,
+      timeout: 30_000,
+    })
     .toContain(text);
 }
 
@@ -157,16 +170,26 @@ test("two processes agree on the installed schema", async ({ browser }) => {
   const startedBefore = await processStartTimes();
   expect(startedBefore.split("\n")).toHaveLength(2);
 
-  // An editor socket on each process, open and connected before the change.
+  // An editor socket on each process, open and connected before the change. Each tab's document
+  // sockets are counted from before it opens, and the count it reached before the change is kept,
+  // so the last step can read a socket the tab opened after the switch. Each tab also holds a
+  // marker that a page load would drop, so that step can tell a tab that connected again from one
+  // that was reloaded.
   const contexts: Record<string, BrowserContext> = {};
   const pages: Record<string, Page> = {};
+  const sockets: Record<string, () => number> = {};
+  const socketsBefore: Record<string, number> = {};
   for (const target of dispatchProcesses) {
     contexts[target] = await contextOn(browser, target);
     const page = await contexts[target].newPage();
     pages[target] = page;
+    const opened = countDocumentSockets(page, artifact);
+    sockets[target] = opened;
     await page.goto(`/issues/${issue.key}/spec`);
     await expect(documentEditor(page)).toContainText("The first line.");
     await expect(connectedDot(page)).toHaveText("connected");
+    await page.evaluate(() => Object.assign(window, { __e2eNavMarker: true }));
+    socketsBefore[target] = opened();
   }
 
   try {
@@ -185,17 +208,26 @@ test("two processes agree on the installed schema", async ({ browser }) => {
     // inside that second, rather than once, which would race the install of the process that did
     // hear the notification. That read is a poll - both every 25 ms until they differ - so
     // nothing here spends a guessed number of milliseconds, and `held` carries what the reads
-    // settled on into the assertion below, which is what names the two when they never differ.
-    let held: Record<DispatchProcess, boolean> = { a: false, b: false };
+    // settled on - whether each process serves the added type, and the version it serves - into
+    // the assertion below, which is what names the two when they never differ.
+    let held: Record<DispatchProcess, { serves: boolean; version: number }> = {
+      a: { serves: false, version: 0 },
+      b: { serves: false, version: 0 },
+    };
     await expect
       .poll(
         async () => {
-          const [servesA, servesB] = await Promise.all([
-            servesAddedType("a"),
-            servesAddedType("b"),
-          ]);
-          held = { a: servesA, b: servesB };
-          return servesA !== servesB;
+          const [a, b] = await Promise.all(
+            dispatchProcesses.map(async (target) => {
+              const schema = await installedSchema(target);
+              return {
+                serves: schema.types.some((type) => type.name === ADDED_TYPE),
+                version: schema.version,
+              };
+            })
+          );
+          held = { a, b };
+          return a.serves !== b.serves;
         },
         {
           intervals: [25],
@@ -207,25 +239,31 @@ test("two processes agree on the installed schema", async ({ browser }) => {
         }
       )
       .toBe(true);
-    const behind = dispatchProcesses.filter((target) => !held[target]);
-    const ahead = dispatchProcesses.filter((target) => held[target]);
+    const behind = dispatchProcesses.filter((target) => !held[target].serves);
+    const ahead = dispatchProcesses.filter((target) => held[target].serves);
     expect(
       { ahead: ahead.length, behind: behind.length },
-      `after the migration process a served ${ADDED_TYPE} ${held.a} and b ${held.b}, want one of each`
+      `after the migration process a served ${ADDED_TYPE} ${held.a.serves} at version ` +
+        `${held.a.version} and b ${held.b.serves} at version ${held.b.version}, want one of each`
     ).toEqual({ ahead: 1, behind: 1 });
     const second = behind[0] as DispatchProcess;
-    const describe = (target: DispatchProcess) =>
-      held[target] ? `the schema holding ${ADDED_TYPE}` : `the schema before the migration`;
+    const describe = (target: DispatchProcess) => {
+      const schema = held[target].serves
+        ? `the schema holding ${ADDED_TYPE}`
+        : "the schema before the migration";
+      return `${schema} at version ${held[target].version}`;
+    };
 
     // The transition: the second process still holds the old schema, so a document holding a
     // block of the new type written through it is refused rather than stored under that schema.
     const lost = "A claim the second process has not learned.";
     const refused = await uploadThrough(second, issue.key, "notes.md", documentWithAddedType(lost));
-    // Every assertion from here names the process, the version it held at the transition and the
-    // write it took, so a failure says which process took what.
+    // Every assertion from here names a process, the schema and the version it held at the
+    // transition, and the write sent through the second process with its answer, so a failure
+    // says which process held what and how that write was answered.
     const took = (target: DispatchProcess, write: { body: string; status: number }) =>
-      `process ${target}, holding ${describe(target)}, answered the write ` +
-      `${write.status} ${write.body}`;
+      `process ${target}, holding ${describe(target)}; the write through process ${second} ` +
+      `answered ${write.status} ${write.body}`;
     // The stored versions are read before the answer is judged: a stale process that took the
     // write and dropped the block it cannot hold has stored a version without it, and the
     // failure then quotes the block that version lost rather than the status alone.
@@ -265,15 +303,24 @@ test("two processes agree on the installed schema", async ({ browser }) => {
         })
         .toBe(true);
     }
-    const [versionA, versionB] = await Promise.all([installedVersion("a"), installedVersion("b")]);
+    // The two processes are read at one instant, which is the agreement this check exists for:
+    // each at this build's own version, and the two serving one schema, every node, mark and type
+    // alike, which equal versions alone do not show.
+    const [schemaA, schemaB] = await Promise.all([installedSchema("a"), installedSchema("b")]);
     expect(
-      { a: versionA, b: versionB },
+      { a: schemaA.version, b: schemaB.version },
       `${took(second, refused)}; the installed versions once both read the store`
     ).toEqual({ a: builtSchemaVersion, b: builtSchemaVersion });
+    expect(
+      schemaB,
+      `${took(second, refused)}; process b's installed schema against process a's`
+    ).toEqual(schemaA);
     for (const target of dispatchProcesses) {
-      expect(await servesType(NEWER_TYPE, target), `process ${target} serves ${NEWER_TYPE}`).toBe(
-        false
-      );
+      expect(
+        await servesType(NEWER_TYPE, target),
+        `${took(target, refused)}; it serves ${NEWER_TYPE}, which a process of this build does ` +
+          "not install"
+      ).toBe(false);
     }
 
     // The same document written again through the second process stores the new block, in a
@@ -294,13 +341,34 @@ test("two processes agree on the installed schema", async ({ browser }) => {
     // Neither process restarted.
     expect(await processStartTimes(), took(second, taken)).toBe(startedBefore);
 
-    // The editor socket opened before the change writes again, with no reload: the tab lost its
-    // socket to the switch and connected again with the schema its build compiled, which the
-    // second process's admission takes as writable.
+    // The tab whose editor socket was open on the second process before the change writes again,
+    // with no reload: the switch closed that socket and the tab opened a new one, presenting the
+    // schema its build compiled, which the second process's admission takes as writable. The
+    // marker the tab was given as it opened is still there, so the new socket is the same page's
+    // and not a reloaded page's.
     const page = pages[second] as Page;
+    const openedBefore = socketsBefore[second];
+    await expect
+      .poll(sockets[second], {
+        message:
+          `${took(second, taken)}; the tab on process ${second} opened no document socket ` +
+          `after the switch, having opened ${openedBefore} before it`,
+      })
+      .toBeGreaterThan(openedBefore);
     await expect(connectedDot(page), took(second, taken)).toHaveText("connected");
-    await typeAndStore(page, artifact, `Typed on process ${second} after the switch.`);
+    await typeAndStore(
+      page,
+      second,
+      artifact,
+      `Typed on process ${second} after the switch.`,
+      took(second, taken)
+    );
     await expect(page.getByText("Reload to edit."), took(second, taken)).toHaveCount(0);
+    expect(
+      await page.evaluate(() => "__e2eNavMarker" in window),
+      `${took(second, taken)}; the tab on process ${second} was reloaded: the marker set as it ` +
+        "opened is gone"
+    ).toBe(true);
   } finally {
     for (const context of Object.values(contexts)) {
       await context.close();

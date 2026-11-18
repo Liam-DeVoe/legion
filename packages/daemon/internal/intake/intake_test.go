@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -588,6 +589,39 @@ func TestADispatchIssueEventCarriesTheKeysItIsBlockedBy(t *testing.T) {
 	}
 }
 
+// A Dispatch of dispatch://INFRA-1253's release on sends an issue's waits as needs beside
+// blocked_by on every issue event, and one of the release before sends blocked_by alone, which a
+// retained event or a new daemon beside an old Dispatch still delivers. The decoder reads needs
+// where the event carries it, whatever blocked_by holds beside it, and blocked_by where it does
+// not (dispatch.WaitsOf).
+func TestADispatchIssueEventReadsItsWaitsFromNeeds(t *testing.T) {
+	subject := "notifications.dispatch.issue.CAPTURE-3.issue.updated"
+	original := string(capturedIssueUpdatedEnvelope(t))
+	for _, tc := range []struct {
+		name    string
+		members string
+		want    []string
+	}{
+		{"needs alone", `\"needs\":[\"CAPTURE-9\",\"CAPTURE-2\"],`, []string{"CAPTURE-9", "CAPTURE-2"}},
+		{"blocked_by alone", `\"blocked_by\":[\"CAPTURE-9\",\"CAPTURE-2\"],`, []string{"CAPTURE-9", "CAPTURE-2"}},
+		{"both, naming different issues", `\"needs\":[\"CAPTURE-9\",\"CAPTURE-2\"],\"blocked_by\":[\"CAPTURE-7\"],`, []string{"CAPTURE-9", "CAPTURE-2"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := strings.Replace(original, `\"labels\":[]`, tc.members+`\"labels\":[]`, 1)
+			if data == original {
+				t.Fatal("captured issue.updated fixture has no empty labels field to widen")
+			}
+			got, err := decodeMessage(subject, "CAPTURE", capturedRepositories, []byte(data))
+			if err != nil {
+				t.Fatalf("decode issue.updated carrying %s: %v", tc.members, err)
+			}
+			if blockers := got.Fact.(DispatchIssue).Blockers; !reflect.DeepEqual(blockers, tc.want) {
+				t.Fatalf("an event carrying %s decodes to blockers %#v, want %#v", tc.members, blockers, tc.want)
+			}
+		})
+	}
+}
+
 // An issue event's labels say whether it is handed to Legion; decodeDispatchFact resolves that
 // once, into HandedOver, matching the label in any case among any others, never carrying the raw
 // list itself.
@@ -914,6 +948,10 @@ func TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer(t *testing.T) {
 				}
 				golden.Payload["head_ref"] = issueBranch
 				decoded = decode()
+			case "sub_issue":
+				if decoded.Fact != nil {
+					t.Fatalf("%s's sub-issue event decoded %#v, want no fact: the workflow reads no sub-issue", repository, decoded.Fact)
+				}
 			}
 			if (kind == "pr" || kind == "review" || kind == "push") && decoded.Fact == nil {
 				t.Fatalf("%s's %s event decoded no fact", repository, kind)
@@ -1132,6 +1170,35 @@ func TestConsumeTermsPoisonMessagesOnce(t *testing.T) {
 		t.Fatalf("poison logs after ack wait = %d, want 2", got)
 	}
 	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
+}
+
+// A GitHub envelope with no payload, as an Envoy listener published every commit status on its
+// repository's comment topic (testdata/github/status-no-payload.json is such a message's stored
+// bytes, with this test's repository and ids of its own), is terminated once with its ERROR line,
+// and the GitHub durable goes on: the push stored after it is applied, and nothing waits for an
+// acknowledgement.
+func TestConsumeTermsAGitHubEnvelopeWithNoPayloadAndAppliesTheNext(t *testing.T) {
+	pool := migratedPool(t)
+	createWrites(t, pool)
+	js, stream := testJetStream(t)
+	logs := &lockedBuffer{}
+	spec := consumerSpec(logs)
+	stop := startConsume(t, js, spec, pool, writeHandler("push", nil))
+	defer stop()
+
+	poison := publish(t, js, "notifications.github.sjawhar.legion.comment", capturedGitHubEnvelope(t, "status-no-payload.json"))
+	last := publish(t, js, "notifications.github.sjawhar.legion.push.branch.main", capturedGitHubEnvelope(t, "push-base.json"))
+	assertAcknowledgedThrough(t, stream, githubConsumerName(spec.Project), last)
+	if got := writeHandlers(t, pool); !slices.Equal(got, []string{"push"}) {
+		t.Fatalf("handler writes = %q, want the push after the poison applied", got)
+	}
+	requireLogLine(t, logs, "level=ERROR", "poison JetStream message", "Envoy envelope payload is not JSON",
+		"subject=notifications.github.sjawhar.legion.comment", "stream_seq="+strconv.FormatUint(poison.Sequence, 10))
+	time.Sleep(3 * spec.AckWait)
+	if got := strings.Count(logs.String(), "poison JetStream message"); got != 1 {
+		t.Fatalf("poison logs after ack wait = %d, want 1: a terminated message is not delivered again", got)
+	}
+	assertNoAckPending(t, stream, githubConsumerName(spec.Project))
 }
 
 // One NATS stream carries every Dispatch project's issue events. A daemon acts only on its own

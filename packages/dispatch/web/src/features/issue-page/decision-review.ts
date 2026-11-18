@@ -54,12 +54,12 @@ export function inReviewList(
 
 /**
  * Each Change of a decision node, by the comment's node, to the decision node it changes: every
- * comment a person wrote that the read hangs under a decision node that was not replaced, made
- * after the decision last changed and after it was last kept. The node a comment hangs under is
- * the one its `parent` names by the outline's rule (`parentsIn`), so a comment on a block of
- * another document that shares the decision's block id is no Change of it. An agent's comment
- * under it is no Change, and neither is one older than its words, which asked for a change the
- * words have since had.
+ * comment whose first maker - the first of the authors the read lists for it - is a person, that
+ * the read hangs under a decision node that was not replaced, made after the decision last
+ * changed and after it was last kept. The node a comment hangs under is the one its `parent`
+ * names by the outline's rule (`parentsIn`), so a comment on a block of another document that
+ * shares the decision's block id is no Change of it. An agent's comment under it is no Change,
+ * and neither is one older than its words, which asked for a change the words have since had.
  */
 function nodeChangeComments(tree: TreeAnswer): Map<TreeAnswerNode, TreeAnswerNode> {
   const changes = new Map<TreeAnswerNode, TreeAnswerNode>();
@@ -68,7 +68,7 @@ function nodeChangeComments(tree: TreeAnswer): Map<TreeAnswerNode, TreeAnswerNod
       parent.supertag === "decision" &&
       parent.replaced !== true &&
       node.supertag === "comment" &&
-      node.author?.kind === "user" &&
+      node.author[0]?.kind === "user" &&
       after(node.made_at, parent)
     ) {
       changes.set(node, parent);

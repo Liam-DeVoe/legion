@@ -179,6 +179,14 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	// inheriting, an object the mode and what it needs.
 	{reflect.TypeOf(createIssueInput{}), "components"}: rawField{GoType: issueComponentsInput{}, Nullable: true},
 	{reflect.TypeOf(updateIssueInput{}), "components"}: rawField{GoType: issueComponentsInput{}, Nullable: true},
+	// resolveDuplicateOf (issue_relations.go) reads create and update alike: null is no
+	// duplicate_of, a string the key of an issue of the issue's own project.
+	{reflect.TypeOf(createIssueInput{}), "duplicate_of"}: rawField{Fragment: openAPIIssueKey, Nullable: true},
+	{reflect.TypeOf(updateIssueInput{}), "duplicate_of"}: rawField{Fragment: openAPIIssueKey, Nullable: true},
+	// resolveFiledFrom (issue_relations.go) reads create and update alike: null is no filed_from,
+	// a string the canonical reference of a public ask, comment or message of the issue's project.
+	{reflect.TypeOf(createIssueInput{}), "filed_from"}: rawField{Fragment: openAPIConversationItemRef, Nullable: true},
+	{reflect.TypeOf(updateIssueInput{}), "filed_from"}: rawField{Fragment: openAPIConversationItemRef, Nullable: true},
 	// parseIssueParent (issue_parent.go): null is no parent, a string the parent's issue key.
 	{reflect.TypeOf(updateIssueInput{}), "parent"}: rawField{Fragment: openAPIIssueKey, Nullable: true},
 	// parseIssuePriority (issue_create.go), read by create and update alike.
@@ -222,6 +230,11 @@ var (
 	openAPIIssueKey = map[string]any{
 		"type":        "string",
 		"description": "an issue key, such as CORE-123",
+	}
+	openAPIConversationItemRef = map[string]any{
+		"type": "string",
+		"description": "the canonical reference of an ask, a comment or a message, dispatch://<KEY>/<ask|comment|message>/<uuid> " +
+			"or dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>",
 	}
 	openAPIIssuePriority = map[string]any{
 		"type": "integer", "minimum": 0, "maximum": 3,

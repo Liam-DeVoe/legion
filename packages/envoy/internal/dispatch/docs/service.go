@@ -116,10 +116,11 @@ type Deps struct {
 // its preflight load, and only while its head is still the one that load read. Load, ygo's, is a
 // room's load. Head is the version Load would fold up to now, which says whether a state loaded
 // earlier is still the stored one. DocumentStamp names the stored state a read of the document
-// meets now, and LoadDocument is that state decoded once with the stamp it was read under, which
-// a read of a document no room holds caches its rendering by (coldRead). compactRoom is the
-// compaction every path Dispatch compacts a document on runs (a room's close, the compaction
-// queue, the compaction sweep), under the tail rule; Compact, ygo's, is the keep-N rule only.
+// meets now, beside the room the document is edited in, and LoadDocument is that state decoded
+// once with the stamp it was read under, which a read of a document no room holds caches its
+// rendering by (coldRead). compactRoom is the compaction every path Dispatch compacts a document
+// on runs (a room's close, the compaction queue, the compaction sweep), under the tail rule;
+// Compact, ygo's, is the keep-N rule only.
 // pgVersioned is the PgVersioned the store is or wraps, which New hands the Service's
 // per-process values: its process id (Service.ProcessID), which every content-changing write's
 // announcement names (announceDocumentHead), and its note of each append and load
@@ -134,7 +135,7 @@ type VersionedStore interface {
 	AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string, update []byte, contentChanged bool) (persistence.Version, error)
 	RebuildTx(ctx context.Context, tx pgx.Tx, room string, loaded persistence.Version, seed []byte) (RebuildReport, error)
 	Head(ctx context.Context, room string) (persistence.Version, error)
-	DocumentStamp(ctx context.Context, room string) (DocumentStamp, error)
+	DocumentStamp(ctx context.Context, artifactID string) (room string, stamp DocumentStamp, err error)
 	LoadDocument(ctx context.Context, room string) (LoadedDocument, error)
 	compactRoom(ctx context.Context, room string, rule compactRule, wait bool) (compactResult, error)
 	pgVersioned() *PgVersioned
@@ -1677,8 +1678,8 @@ func stampBlockIDs(doc *crdt.Doc, layout roomLayout, origin any) (*pmdoc.Node, [
 // (settlementAuthors): that editor's text is in an earlier version, so the version itself names
 // SettlementActor (versionActor), while on an open issue the ask events that text causes, and the
 // move of an approval request from a version before the closed issue's versions, still name them.
-// state is the room the capture was taken from (consumeAskAuthors). askSources, copied once the
-// settlement holds the tree it reconciles, names who introduced each new ask block in it.
+// state is the room the capture was taken from (consumeAskAuthorsLocked). askSources, copied once
+// the settlement holds the tree it reconciles, names who introduced each new ask block in it.
 //
 // For an issue room, whose settlement writes a version of each document whose fragment changed,
 // documents is whom each document's version lists, by document (roomCredit): the authors of the
@@ -1899,19 +1900,15 @@ func settlementAuthors(state *roomState, owed map[string]model.Actor, recorded *
 	return credit
 }
 
-// consumeAskAuthors forgets the room's recorded author of each block a committed settlement indexed
-// or found indexed: its ask row names the author from then on. The settlement's transaction
-// deleted the durable record of the same authors (deleteSettledAskAuthors).
-func (credit settlementVersionCredit) consumeAskAuthors(blockIDs []string) {
-	if len(blockIDs) == 0 {
-		return
-	}
-	state := credit.state
-	state.mu.Lock()
+// consumeAskAuthorsLocked forgets the room's recorded author of each block a committed settlement
+// indexed or found indexed: its ask row names the author from then on. The settlement's transaction
+// deleted the durable record of the same authors (deleteSettledAskAuthors). The caller holds
+// credit.state.mu across the transaction's commit (commitConsuming), so the room never owes the
+// author of a block whose ask row a reader can already find.
+func (credit settlementVersionCredit) consumeAskAuthorsLocked(blockIDs []string) {
 	for _, blockID := range blockIDs {
-		delete(state.askAuthors, blockID)
+		delete(credit.state.askAuthors, blockID)
 	}
-	state.mu.Unlock()
 }
 
 // settleNext names what follows a settlement once settleRoomWithin has returned. The timer's

@@ -11,6 +11,7 @@ import {
   createProject,
   declineAsk,
   editArtifact,
+  getArtifact,
   getIssueDecisions,
   getIssueEvents,
   keepDecision,
@@ -20,7 +21,6 @@ import {
   resolveAsk,
   uploadIssueFile,
 } from "./api";
-import { blockId } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
   asPlanner,
@@ -33,26 +33,30 @@ import {
   seedIssueWithDocuments,
   seedSessions,
   WHOLE_REPO,
+  writeReading,
 } from "./issue-layout-seed-support";
 import {
   CITATION_BLOCK_ID,
   checkBlockId,
   citationRequirement,
+  decisionBlock,
+  decisionsPart,
   OPEN_QUESTION_BLOCK_ID,
   PLAN_ORDER_TASKS,
   planOrderDocument,
   planTaskBlockId,
   requirementBlockId,
   requirementText,
-  SPINE_ANSWERED_QUESTION,
+  SPINE_ASK_BLOCK_ID,
   SPINE_CHECK_BLOCK_ID,
-  SPINE_DECISION_HEADING,
+  SPINE_READING_BLOCK_ID,
   SPINE_REQUIREMENTS,
   SPINE_SPEC,
   SUMMARY_BLOCK_ID,
+  shapedAttribute,
   specBlockRef,
   specDocument,
-  spineDecisionsDocument,
+  spineDecisionBlocks,
   spineVerificationDocument,
 } from "./issue-layout-seed-text";
 import { ONE_PIXEL_PNG } from "./sends";
@@ -81,14 +85,14 @@ import { ONE_PIXEL_PNG } from "./sends";
  * - **`from` on a requirement.** `requirement` carries no attributes at all
  *   (`blocks.json:70-75`), so there is no `from` edge to seed and *every* seeded requirement's
  *   `from` is absent until the schema adds it. For the disagreement `c-spine` names,
- *   `seedSpineCases` seeds a decision whose block links one requirement while the answered
- *   question a reader would read as that requirement's origin is another node.
- * - **`shaped` on a decision, and a decision's author, uncertainty level and reason.** The
- *   decisions read answers `kind: "agent" | "person"` and a boolean `unsure`
- *   (`packages/contracts/src/dispatch-api.ts:2473-2497`); `shaped`, `uncertainty`,
- *   `uncertainty_reason` and `decided_by` arrive with pull request 2797. A decision's link to a
- *   requirement is seeded as the indexed `dispatch://` mention of that block, and one is a
- *   person's when it mentions an ask (`packages/envoy/internal/dispatch/api/decisions.go:25-28`).
+ *   `seedSpineCases` seeds an answered ask whose block's `shaped` ties one requirement while
+ *   that ask, which a reader would read as the requirement's origin, is another node.
+ * - **Decisions.** They are nodes of the spec: each agent's decision is a
+ *   `decision` block of the spec's `## Decisions` part, written by the planner, whose `shaped`
+ *   names the blocks it shaped, with `uncertainty` and `uncertainty_reason` on an unsure one and
+ *   `replaced` on a replaced one. A person's decision is an answered `ask` block of that part,
+ *   whose `shaped` names what the answer shaped, and the reading of the answer stands inside it,
+ *   written once a person answered (`issue-layout-seed-support.ts`'s `writeReading`).
  * - **Depth below a document.** `document_blocks` holds no parent and no ordinal
  *   (`packages/envoy/internal/dispatch/store/migrations/0121_block_graph.up.sql:16-27`, read
  *   2026-11-05), and a document is no node of the tree, so a typed block sits directly under the
@@ -116,7 +120,7 @@ import { ONE_PIXEL_PNG } from "./sends";
  */
 
 export interface WholeIssueSeed {
-  /** The answered question the decisions document names, which makes one decision a person's. */
+  /** The ask of the spec's answered ask block: the person's decision, which a person answered. */
   readonly answeredAskId: string;
   /** The checks of the Verification document, by the state each one is seeded in; `all` is
    *  every check, and `uncontrolled` is a pass whose result records no negative control. */
@@ -137,8 +141,10 @@ export interface WholeIssueSeed {
     readonly replies: readonly string[];
     readonly threads: readonly string[];
   };
-  /** The heading block of each decision, in document order; the last one is replaced. */
+  /** The block of each decision of the spec's `## Decisions` part, in document order: `[1]` is
+   *  the reading inside the answered ask, and the last one is replaced. */
   readonly decisions: readonly string[];
+  /** The document the decisions are blocks of: the spec. */
   readonly decisionsArtifactId: string;
   readonly documents: {
     /** The slug of the document a spec block cites, and that block. */
@@ -304,13 +310,14 @@ export async function seedWholeIssueAdvancing(): Promise<AdvancingIssueSeed> {
 }
 
 export interface SpineSeed {
-  /** The answered question a reader would read as `shapedElsewhere`'s origin. No `from` edge
-   *  names it, because the model holds none; see the doc comment. */
+  /** The ask of the answered ask block, which a reader would read as `shapedElsewhere`'s origin.
+   *  No `from` edge names it, because the model holds none; see the doc comment. */
   readonly answeredAskId: string;
   /** The check whose `serves` names both `servedTwiceA` and `servedTwiceB`. */
   readonly checkServingTwo: string;
-  /** The heading block of the decision that links `shapedElsewhere`. */
+  /** The reading inside the answered ask, whose block's `shaped` ties `shapedElsewhere`. */
   readonly decisionBlockId: string;
+  /** The document the decisions are blocks of: the spec. */
   readonly decisionsArtifactId: string;
   readonly key: string;
   readonly requirements: typeof SPINE_REQUIREMENTS;
@@ -318,8 +325,8 @@ export interface SpineSeed {
   readonly verificationArtifactId: string;
 }
 
-/** The spine's three cases: a requirement nothing explains, a requirement a decision links while
- *  the answered question names another node, and a check that serves two requirements. */
+/** The spine's three cases: a requirement nothing explains, a requirement an answered ask's block
+ *  ties while that ask is another node, and a check that serves two requirements. */
 export async function seedSpineCases(): Promise<SpineSeed> {
   await createProject({ key: PROJECT, name: "Issue layout" });
   const issue = await createIssue({
@@ -328,29 +335,38 @@ export async function seedSpineCases(): Promise<SpineSeed> {
     spec: SPINE_SPEC,
     title: "The spine places every node",
   });
+  const specArtifactId = issue.primary_artifact_id ?? "";
   await seedSessions(issue.key, [PLANNER]);
-  const answered = await createAsk(issue.key, { question: SPINE_ANSWERED_QUESTION }, asPlanner);
-  await answerAsk(answered.id, {
+  await editArtifact(
+    specArtifactId,
+    { ops: [{ after: "end", markdown: spineDecisionBlocks(issue.key, false), op: "insert" }] },
+    asPlanner
+  );
+  const answeredAskId = await awaitBlockAsk(issue.key, SPINE_ASK_BLOCK_ID);
+  await answerAsk(answeredAskId, {
     expected_edited_at: null,
     selected: [],
     text: "The issue itself.",
   });
-  const decisions = await createIssueArtifact(issue.key, {
-    content: spineDecisionsDocument(issue.key, answered.id),
-    name: "decisions.md",
+  await writeReading({
+    ask: SPINE_ASK_BLOCK_ID,
+    issueKey: issue.key,
+    markdown: `${SPINE_SPEC}\n${spineDecisionBlocks(issue.key, true)}`,
+    reading: SPINE_READING_BLOCK_ID,
+    specArtifactId,
   });
   const verification = await createIssueArtifact(issue.key, {
     content: spineVerificationDocument(issue.key),
     name: "verification.md",
   });
   return {
-    answeredAskId: answered.id,
+    answeredAskId,
     checkServingTwo: SPINE_CHECK_BLOCK_ID,
-    decisionBlockId: await blockId(decisions.artifact.id, SPINE_DECISION_HEADING),
-    decisionsArtifactId: decisions.artifact.id,
+    decisionBlockId: SPINE_READING_BLOCK_ID,
+    decisionsArtifactId: specArtifactId,
     key: issue.key,
     requirements: SPINE_REQUIREMENTS,
-    specArtifactId: issue.primary_artifact_id ?? "",
+    specArtifactId,
     verificationArtifactId: verification.artifact.id,
   };
 }
@@ -737,7 +753,7 @@ export async function seedDecisionsFilter(): Promise<DecisionsFilterSeed> {
     (one) => one.block_id === keptBlock
   );
   await keepDecision(seeded.decisionsArtifactId, keptBlock, row?.text_sha256 ?? "");
-  await editArtifact(seeded.decisionsArtifactId, {
+  await editArtifact(seeded.specArtifactId, {
     ops: [
       {
         find: "A document is a node under the block that cites it.",
@@ -757,6 +773,7 @@ export async function seedDecisionsFilter(): Promise<DecisionsFilterSeed> {
 
 /** Four agent decisions, by what each one's link names (c-review-list). */
 export interface ReviewListSeed {
+  /** The slug of the document the decisions are blocks of: the spec. */
   readonly decisionsSlug: string;
   readonly key: string;
   /** Tied to the second statement, and changed after the others: the newest of the list. */
@@ -782,22 +799,36 @@ export async function seedReviewList(): Promise<ReviewListSeed> {
   await patchIssue(issue.key, { assignee: "alice" });
   await awaitBlockAsk(issue.key, OPEN_QUESTION_BLOCK_ID);
   await createAsk(issue.key, { question: "Does the foot stay folded?", urgency: "med" }, asPlanner);
+  // The planner writes the four in the spec's `## Decisions` part, so each is an agent's.
   const ref = (block: string) => specBlockRef(issue.key, block);
-  const headings = [
-    "Tie the first statement",
-    "Tie the second statement",
-    "Tie the note",
-    "Tie nothing",
-  ];
-  const made = await createIssueArtifact(issue.key, {
-    content:
-      `## ${headings[0]}\n\nShapes ${ref(requirementBlockId(1))}.\n\n` +
-      `## ${headings[1]}\n\nShapes ${ref(requirementBlockId(2))}.\n\n` +
-      `## ${headings[2]}\n\nShapes ${ref(SUMMARY_BLOCK_ID)}.\n\n` +
-      `## ${headings[3]}\n\nA choice no statement rests on.\n`,
-    name: "decisions.md",
-  });
-  await editArtifact(made.artifact.id, {
+  const ids = {
+    tiedNewer: "d-tie-second",
+    tiedOlder: "d-tie-first",
+    tiedToNote: "d-tie-note",
+    untied: "d-tie-nothing",
+  };
+  const tie = (id: string, words: string, block: string) =>
+    decisionBlock(id, [shapedAttribute(issue.key, [block])], [words, `Shapes ${ref(block)}.`]);
+  const specArtifactId = issue.primary_artifact_id ?? "";
+  await editArtifact(
+    specArtifactId,
+    {
+      ops: [
+        {
+          after: "end",
+          markdown: decisionsPart([
+            tie(ids.tiedOlder, "Tie the first statement", requirementBlockId(1)),
+            tie(ids.tiedNewer, "Tie the second statement", requirementBlockId(2)),
+            tie(ids.tiedToNote, "Tie the note", SUMMARY_BLOCK_ID),
+            decisionBlock(ids.untied, [], ["Tie nothing", "A choice no statement rests on."]),
+          ]),
+          op: "insert",
+        },
+      ],
+    },
+    asPlanner
+  );
+  await editArtifact(specArtifactId, {
     ops: [
       {
         find: `Shapes ${ref(requirementBlockId(2))}.`,
@@ -806,17 +837,7 @@ export async function seedReviewList(): Promise<ReviewListSeed> {
       },
     ],
   });
-  const ids = await Promise.all(
-    headings.map((heading) => blockId(made.artifact.id, `## ${heading}`))
-  );
-  return {
-    decisionsSlug: made.artifact.slug,
-    key: issue.key,
-    tiedNewer: ids[1] ?? "",
-    tiedOlder: ids[0] ?? "",
-    tiedToNote: ids[2] ?? "",
-    untied: ids[3] ?? "",
-  };
+  return { decisionsSlug: (await getArtifact(specArtifactId)).slug, key: issue.key, ...ids };
 }
 
 export interface PlanOrderSeed {

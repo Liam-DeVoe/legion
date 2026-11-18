@@ -803,6 +803,9 @@ var graphViewArms = []graphViewArm{
 	{table: "issues", fromKind: "issue", kind: "child_of", toKind: "issue"},
 	{table: "issue_links", fromKind: "issue", kind: "blocked_by", toKind: "issue"},
 	{table: "artifacts", fromKind: "artifact", kind: "attached_to", toKind: "issue"},
+	// The arm over the artifacts that carry their node, answering each one's attached_to from its
+	// part_of tuple (migration 20261117140000).
+	{table: "artifacts", fromKind: "artifact", kind: "attached_to", toKind: "issue"},
 	{table: "asks", fromKind: "ask", kind: "anchored_to", toKind: "artifact"},
 	{table: "comments", fromKind: "comment", kind: "anchored_to", toKind: "artifact"},
 	{table: "asks", fromKind: "ask", kind: "owned_by", toKind: "artifact"},
@@ -821,7 +824,7 @@ var graphViewArms = []graphViewArm{
 	// mentionBacklinkArms reads graph_tuples for exactly that reason.
 	{table: "graph_tuples"},
 	// The store's arm over the relations out of a finding of a lens, which writes its from_kind,
-	// lens_block, as a literal and every other item as a column (migration 20261116160000): its
+	// lens_block, as a literal and every other item as a column (migration 20261117020856): its
 	// edges are counted by the arms of the store alone (storedFrom) that name a lens_block.
 	{table: "graph_tuples", fromKind: "lens_block"},
 	{table: "document_blocks", fromKind: "block", kind: "part_of", toKind: "artifact"},

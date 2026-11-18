@@ -31,7 +31,7 @@ var runProjections = []projection{{
 		from graph_nodes n where n.kind = '` + graphstore.KindInteraction + `'`,
 	mayBeEmpty: true,
 }, {
-	name:     "frame",
+	name:     graphstore.AttributeFrame,
 	nodeKind: graphstore.KindInteraction,
 	table:    "going_events",
 	note: "a row is one frame of a run and its node is the run's interaction, so several rows share one node: the" +
@@ -39,12 +39,12 @@ var runProjections = []projection{{
 		" rows of that run hold, each its sequence, name and data as graphstore.FrameValueSQL writes it, against" +
 		" every frame value its node holds",
 	rows: `
-		select 'frame ' || e.request_id::text || ' ' || e.sequence, '` + graphstore.KindInteraction + `',
-		       e.request_id::text, md5(run.frames)
+		select '` + graphstore.AttributeFrame + ` ' || e.request_id::text || ' ' || e.sequence, '` + graphstore.KindInteraction + `',
+		       e.request_id::text, run.digest
 		from going_events e
 		join (
 			select f.request_id,
-			       string_agg(` + graphstore.FrameValueSQL("f.sequence", "f.name", "f.data") + `, E'\n' order by f.sequence) as frames
+			       md5(string_agg(` + graphstore.FrameValueSQL("f.sequence", "f.name", "f.data") + `, E'\n' order by f.sequence)) as digest
 			from going_events f
 			group by f.request_id
 		) run on run.request_id = e.request_id`,

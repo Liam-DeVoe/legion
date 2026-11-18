@@ -8,7 +8,7 @@ import {
   NODE_STATE_WORDS,
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
-import { getArtifact, getAsk, getIssueDecisions, listComments } from "./api";
+import { getArtifact, getAsk, getIssue, getIssueDecisions, listComments } from "./api";
 import { seedDecisionsFilter, seedReviewList } from "./issue-layout-seed";
 import { OPEN_QUESTION_BLOCK_ID } from "./issue-layout-seed-text";
 import { gotoIssue, phase } from "./issue-page";
@@ -715,6 +715,8 @@ test("under Decisions a row draws the outline's layout, short names and the six-
   const sizes = test.info().project.name === "iphone" ? [PHONE] : [DESKTOP, PHONE];
   await phase(browser, seedDecisionsLayout, async (page, seeded) => {
     const addresses = new RegExp(`dispatch://|${seeded.key} \\S+( block)?$|-md\\b`, "u");
+    // The spec's slug, by which `rowLayouts` tells a statement from a block of another document.
+    const spec = (await getIssue(seeded.key)).artifacts?.find((one) => one.primary)?.slug ?? "";
     for (const size of sizes) {
       const where = `Decisions at ${size.width} px`;
       await page.setViewportSize(size);
@@ -749,7 +751,7 @@ test("under Decisions a row draws the outline's layout, short names and the six-
         .poll(() => decisionStatementNames(page), { message: `${where} names no statement` })
         .not.toEqual([]);
 
-      expectRowLayouts(await rowLayouts(page), where, false, size.width);
+      expectRowLayouts(await rowLayouts(page, spec), where, false, size.width);
       // The seed's linked question draws its link in its words, so the links' colours below are
       // read on at least one link.
       await expect
@@ -782,7 +784,7 @@ test("under Decisions a row draws the outline's layout, short names and the six-
             requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
             return frames.promise;
           });
-          return (await rowLayouts(page)).find((row) => row.id === question);
+          return (await rowLayouts(page, spec)).find((row) => row.id === question);
         };
         // The control that opens a cut text, in the page's own words: "more · N words".
         const more = new RegExp(
