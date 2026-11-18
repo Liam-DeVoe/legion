@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -398,7 +399,9 @@ func secureBearerEqual(expected [sha256.Size]byte, given string) bool {
 }
 
 // spawn creates the claim — or finds it, when it exists — and posts the launch to its machine,
-// then the task, so a claim the machine will not launch is given no task either.
+// then the task, so a claim the machine will not launch is given no task either. The claim of the
+// request's issue and role is the claim of the agent that works that role's step now
+// (workerToken), a keyed agent on a step of another role included.
 func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	var req SpawnRequest
 	if !s.readBody(w, r, &req, nil) || !requireFields(w,
@@ -416,7 +419,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody(fmt.Sprintf("role %q is not a role", req.Role)))
 		return
 	}
-	token, err := claim.NewToken(s.project, req.Issue, req.Role)
+	token, err := s.workerToken(r.Context(), req.Issue, req.Role)
 	if err != nil {
 		s.operatorFailure(w, "spawn", token, err)
 		return
@@ -461,6 +464,29 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	}
 	s.operatorDone(r, token)
 	writeJSON(w, status, s.operatorAnswer(ctx, m.Claim()))
+}
+
+// workerToken is the claim of the agent that works role's step of issue now (record.WorkerClaim),
+// read from the issue's phases rows in a read-only transaction of its own, as a completion reads
+// its position (handoffPosition): the claim the step's entry wrote on the role's row, and the
+// role's own token where that row runs no step of the plan. The operator's spawn and the
+// controller's recoveries name a claim by its issue and role, and so reach the claim that works
+// that role's step rather than a claim of the role's name that runs none.
+func (s *server) workerToken(ctx context.Context, issue string, role claim.Role) (claim.Token, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	rows, err := s.records.Phases(ctx, tx, issue)
+	if err != nil {
+		return "", err
+	}
+	token, err := record.WorkerClaim(s.project, issue, role, rows)
+	if err != nil {
+		return "", err
+	}
+	return token, tx.Commit(ctx)
 }
 
 // drawExperiments draws the tree-unit experiments the project declares for tree, for the open

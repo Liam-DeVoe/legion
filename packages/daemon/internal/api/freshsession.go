@@ -157,9 +157,10 @@ type controllerTarget struct {
 // operator. It answers every refusal of the body, the grant and the lookup itself, and reports
 // false when it has; only the effect behind it differs between the two.
 //
-// The controller is refused its own claim here and nowhere else: the token is built from the
-// issue and the role, and no issue's role spells the controller's token (claim.ControllerToken),
-// so a role this check takes can never name it.
+// The controller is refused its own claim here and nowhere else: the token is the claim of the
+// agent that works the role's step of the issue (workerToken), which the issue's role names, and
+// no issue's role spells the controller's token (claim.ControllerToken), so a role this check takes
+// can never name it.
 func (s *server) controllerClaim(w http.ResponseWriter, r *http.Request, op controllerOp) (controllerTarget, bool) {
 	var req ClaimRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
@@ -177,7 +178,7 @@ func (s *server) controllerClaim(w http.ResponseWriter, r *http.Request, op cont
 			roleList(), op.notTheController))
 		return controllerTarget{}, false
 	}
-	token, err := claim.NewToken(s.project, req.Issue, role)
+	token, err := s.workerToken(r.Context(), req.Issue, role)
 	if err != nil {
 		s.logFailure("api: build the claim token of "+op.name, "issue", req.Issue, "role", req.Role, "error", err)
 		writeFailure(w, http.StatusInternalServerError, "CLAIM_TOKEN_FAILED", err.Error())
