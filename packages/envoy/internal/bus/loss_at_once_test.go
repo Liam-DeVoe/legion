@@ -30,8 +30,8 @@ func TestASessionConsumerCallWhileTheConnectionIsDownAnswersAtOnce(t *testing.T)
 // unsent, rather than dialling the replacement first: its caller holds what the row above names,
 // and the dial lasts until a server answers, up to ten attempts a second apart
 // (connectWithContext), so it is made by the caller's retry with nothing held (Reconnected, which
-// dials a closed connection). Every call of the client a caller makes under a session's lock or a
-// relay's turn is a row: the shared stream read, a consumer create or update, a fenced filter
+// dials a closed connection). Each kind of request the client's calls make under a session's lock
+// or a relay's turn has a row: the shared stream read, a consumer create or update, a fenced filter
 // write, the list the sweep and the relays read, a pull, and a delete, whose first request is its
 // info read. Once the connection is back Reconnected dials the replacement and reports true only
 // then, so no retry spins on the closed connection, and the call answers.
