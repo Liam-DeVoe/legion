@@ -25,21 +25,24 @@ if (dispatchUrl === undefined || natsUrl === undefined || envoyUrl === undefined
 const origin = new URL(dispatchUrl).origin;
 
 /** How long after an event reaches its issue's topic the run reads which agent topics carried
- *  it, where a case is about a topic that must not carry it. The outbox publishes an event's
- *  destinations one after another on one connection, its issue's topic first, so a destination
- *  missing from that span is one this binary did not publish. A new comment's copy for a session
- *  its mention resolved to is the exception: while the mention's send is still pending the outbox
- *  holds that copy back, defers the event two seconds and re-checks it on its next five-second
- *  tick, so the mention case that reads an absence holds `mentionSpanMs` instead: one listener
- *  take-over window (`listenerTakeoverWindow`, 12 s, packages/envoy/internal/dispatch/api/
- *  envoy_resolve.go) with the listener client's five, then that defer and tick. */
+ *  it. The outbox publishes an event's destinations one after another on one connection, its
+ *  issue's topic first, so a destination missing from that span is one this binary did not
+ *  publish. A new comment's copy for a session its mention resolved to is the exception: while the
+ *  mention's send is still pending the outbox holds that copy back, defers the event two seconds
+ *  and re-checks it on its next five-second tick, so the mention cases hold `mentionSpanMs`
+ *  instead, whether the copy must be missing (the send landed) or present (it failed): one
+ *  listener take-over window (`listenerTakeoverWindow`, 12 s, packages/envoy/internal/dispatch/
+ *  api/envoy_resolve.go) with the listener client's five, then that defer and tick. */
 const settleMs = 2_000;
 const mentionSpanMs = 35_000;
-/** Why an absence is read off a span: nothing the run reads says an event's publish is done. The
- *  outbox records what it published in its own table, which no route answers, and it defers and
- *  holds back events past their owners' windows, so a later event's arrival does not follow an
- *  earlier event's last destination. */
-const absenceWhy =
+/** Why the agent topics are read off a span, both where a case is about a topic that must carry
+ *  the event and where it is about one that must not: nothing the run reads says an event's
+ *  publish is done. The outbox records what it published in its own table, which no route
+ *  answers, and it defers and holds back events past their owners' windows, so a later event's
+ *  arrival does not follow an earlier event's last destination. A wait for the topic itself would
+ *  wait out the proof's deadline on a binary that never publishes there, and fail every case after
+ *  it on that deadline rather than on its own verdict. */
+const spanWhy =
   "no route says which destinations the outbox published for an event, and a later event's " +
   "arrival does not follow an earlier one's last destination, since the outbox defers and holds " +
   "events back";
@@ -161,15 +164,8 @@ async function eventOf(
   return event;
 }
 
-/** The agent topics `dispatch-<id>` has reached so far, sorted. */
-function agentTopicsSeen(event: DispatchEvent): string[] {
-  return [...(seen.get(`dispatch-${event.id}`) ?? [])]
-    .filter((subject) => subject.startsWith(agentPrefix))
-    .sort();
-}
-
 /** The agent topics `dispatch-<id>` reached, once it reached its issue's topic, which the outbox
- *  publishes first, and `spanMs` more passed: what a case that reads an absence reads. */
+ *  publishes first, and `spanMs` more passed: what every case reads, sorted. */
 async function agentTopicsOf(event: DispatchEvent, spanMs = settleMs): Promise<string[]> {
   const envelopeId = `dispatch-${event.id}`;
   await until(`${envelopeId} (${event.type}) to reach its notifications.dispatch topic`, () =>
@@ -177,16 +173,10 @@ async function agentTopicsOf(event: DispatchEvent, spanMs = settleMs): Promise<s
       subject.startsWith("notifications.dispatch.")
     )
   );
-  await span(spanMs, absenceWhy);
-  return agentTopicsSeen(event);
-}
-
-/** The agent topics `dispatch-<id>` reached, once it reached `want`. */
-async function agentTopicsOnceOn(event: DispatchEvent, want: string): Promise<string[]> {
-  await until(`dispatch-${event.id} (${event.type}) to reach ${want}`, () =>
-    agentTopicsSeen(event).includes(want)
-  );
-  return agentTopicsSeen(event);
+  await span(spanMs, spanWhy);
+  return [...(seen.get(envelopeId) ?? [])]
+    .filter((subject) => subject.startsWith(agentPrefix))
+    .sort();
 }
 
 function note(line: string): void {
@@ -396,9 +386,9 @@ await runCase("case2-thread-reply", async () => {
   })) as Json;
   note(`the person replied in it, mentioning nobody: comment ${reply.id}`);
   const event = await eventOf(claimedKey, after, "comment.created", String(reply.id));
-  const topics = await agentTopicsOnceOn(event, topic(sessionP));
+  const topics = await agentTopicsOf(event);
   note(topicsLine(event, topics));
-  return undefined;
+  return topics.includes(topic(sessionP)) ? undefined : `expected ${topic(sessionP)} among them`;
 });
 
 await runCase("untargeted-message", async () => {
@@ -490,9 +480,9 @@ await runCase("mention-failed-claimant", async () => {
     );
     if (state !== "failed") return `expected the mention's delivery row failed, read ${state}`;
     // A failed send publishes the session's own copy as if the mention had not named it.
-    const topics = await agentTopicsOnceOn(event, topic(sessionP));
+    const topics = await agentTopicsOf(event, mentionSpanMs);
     note(topicsLine(event, topics));
-    return undefined;
+    return topics.includes(topic(sessionP)) ? undefined : `expected ${topic(sessionP)} among them`;
   } finally {
     await setSendStatus(sessionP, 200);
   }
@@ -521,9 +511,9 @@ await runCase("mention-failed-follower", async () => {
       ask_id: askId,
     });
     if (state !== "failed") return `expected the mention's delivery row failed, read ${state}`;
-    const topics = await agentTopicsOnceOn(event, topic(sessionC));
+    const topics = await agentTopicsOf(event, mentionSpanMs);
     note(topicsLine(event, topics));
-    return undefined;
+    return topics.includes(topic(sessionC)) ? undefined : `expected ${topic(sessionC)} among them`;
   } finally {
     await setSendStatus(sessionC, 200);
   }

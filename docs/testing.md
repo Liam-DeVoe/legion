@@ -56,7 +56,7 @@ The helpers:
 One exception holds no shared state.
 The `-omp` suites share one NATS server, which `LEGION_TEST_NATS_URL` names.
 That server runs without JetStream, so no suite can leave a stream on it, and each relay subject carries its session's own id.
-`skills/legion-worker/references/tools.md` starts it so in a pod, and CI's NATS services run so.
+CI's NATS services run so, and in a pod it is started the same way, `nats-server -p <port>` with no `-js` (`packages/pi-legion/AGENTS.md`), where the server of the "No Docker" item of `skills/legion-worker/references/tools.md` takes `-js` for the daemon's own tests.
 
 The opt-in measurement lane, `packages/envoy/internal/dispatch/benchtime`, reads `DISPATCH_BENCH_DATABASE_URL`.
 That variable names a seeded database on purpose, and CI never sets it.
@@ -397,8 +397,8 @@ These rules are how a file leaves nothing behind:
   Bun's own advice is to turn the cache off on a filesystem that does not last (https://bun.com/docs/runtime/environment-variables).
   The key goes to a process that is not Bun too (a shell, `python3`, `claude`), since a Bun it starts inherits it, and a HOME that does not exist (`/nonexistent-home-for-envoy-tests`) takes it as any other does.
   `bun scripts/bun-cache-census.ts -- <command>` runs a command under `strace` and names each Bun process it starts under a HOME or an `XDG_CACHE_HOME` of its own without `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`, and each cache file written outside the runner's own cache.
-  It is a measuring tool, run by hand over one test file at a time (`bun scripts/bun-cache-census.ts -- bun test <file>`), and no CI job runs it or its test:
-  CI's runner image has no `strace`, and a suite run under it slows until rows fail on time.
+  It is a measuring tool, run by hand over one test file at a time (`bun scripts/bun-cache-census.ts -- bun test <file>`), since a suite run under it slows until rows fail on time.
+  Its own test runs in CI's `test` job, which installs `strace` for it, as the runner image has none.
 
 - Take a port from the kernel: bind port 0, read back the port the listener reports, and hold that listener from the moment it binds, so nothing else on the machine can take the port between the question and the row that asks it (`stubBroker` in `packages/envoy-client/src/__tests__/broker-credential.test.ts`).
   Never write a port number into a test.

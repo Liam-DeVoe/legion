@@ -859,5 +859,6 @@ closed.
 for the real binary: every pane registers against a real NATS server, since a session with no relay subject takes no consumer and its claim boot ends it (INFRA-771).
 Pass these files the flags of the `test` script's second `bun test` command (its two `--preload`s and its `--timeout`), since a bare `bun test` gives each row and hook 5,000 ms.
 Pass any one test file of this package the two preloads as well: `./test/omp-logs.ts` gives Oh My Pi's logger a log directory the run owns, where a bare `bun test` has it write and prune the caller's own `~/.omp/logs`, whose size changes a row's timing (INFRA-3314).
-Start that NATS server without JetStream, as the "No Docker" item of `skills/legion-worker/references/tools.md` does: the `-omp` suites share it, and a server without JetStream keeps no state between them.
+Start that NATS server without JetStream (`nats-server -p <port>`, no `-js`), as CI's `pi-legion` job starts its `nats` service, whose image it passes no flag (`.github/workflows/ci-job-pi-legion.yaml`): the `-omp` suites share it, and a server without JetStream keeps no state between them.
+The "No Docker" item of `skills/legion-worker/references/tools.md` starts its server with `-js` because that one is for the daemon's tests, whose `packages/daemon/internal/testnats` serves one JetStream server per test binary.
 The phase reminder's own unit tests live beside the machine, in `packages/pi-shared` (`bun test` there).

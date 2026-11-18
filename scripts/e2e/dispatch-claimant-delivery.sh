@@ -41,10 +41,12 @@ evidence=''
 timeout_hook=''
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
-# Twice the longest green run on record, rounded up to the minute: 27 green e2e.yaml jobs (7 of
-# them in green runs) up to 2026-11-18, the longest proof step 190 s (run 44096585513), which the
-# 360 it had before held only 1.89 times.
-proof_guard 420
+# Twice the longest run on record, rounded up to the minute. 27 green e2e.yaml jobs (7 of them in
+# green runs) up to 2026-11-18 took at most 190 s (run 44096585513), before every case read its
+# topics off a span; with that, the two mention cases that need a topic hold 35 s each where they
+# stopped at the topic, and a builds Job at e976062e with that change (d2-claimant, no busy loops,
+# its envoy-dispatch and natsd built cold) passed in 221 s.
+proof_guard 480
 
 # DISPATCH_BIN is this script's input, read before the sweep below drops every DISPATCH_* variable.
 dispatch_bin=${DISPATCH_BIN:-}

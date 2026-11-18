@@ -54,7 +54,7 @@
       "bun": true,
       "evidence_variable": "",
       "timeout_minutes": 25,
-      "timeout_reading": "guard 420 s plus the longest green setup and upload of its 27 green e2e.yaml jobs up to 2026-11-18, 144 s: 564 s, in 25 minutes",
+      "timeout_reading": "guard 480 s plus the longest green setup and upload of its 27 green e2e.yaml jobs up to 2026-11-18, 144 s: 624 s, in 25 minutes",
       "why_hosted": "DATABASE_URL is required and must name a loopback host; its prerequisite loop takes go, bun, curl, psql and openssl, and it starts no container",
       "jj": false
     },
