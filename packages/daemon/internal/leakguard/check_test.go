@@ -293,10 +293,11 @@ func TestASharedCheckASignalEndedKeepsWhatItPrinted(t *testing.T) {
 // kill) fails naming the signal, with what it printed beneath, as the same read's failed exit
 // carries it: the gh visibility read, its GraphQL read, the curl read, the read with no credential,
 // a git read of a push's records, which quotes only git's standard error (gitSaid), never the
-// push's content on its standard output, and the token read, which quotes only its standard error,
-// never the password on its standard output. Each row's stand-in is the one program it names, first
-// on PATH, printing and killing itself; the curl read runs Guard.curl, never PATH's, so it is
-// pointed at the stand-in.
+// push's content on its standard output, and without the user and password of a URL in it
+// (withoutUserinfo), as a failed exit's quote is, and the token read, which quotes only its standard
+// error, never the password on its standard output. No read's failure holds the token. Each row's
+// stand-in is the one program it names, first on PATH, printing and killing itself; the curl read
+// runs Guard.curl, never PATH's, so it is pointed at the stand-in.
 func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
 	const slug = "invented-org/invented-repo"
 	killsItself := func(t *testing.T, name, script string, env ...string) *Guard {
@@ -311,22 +312,35 @@ func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
 	}
 	said := "error connecting to api.github.com for " + slug
 	toStderr := "echo '" + said + "' >&2"
+	// url is what a git read prints of a remote whose URL carries a token: a lazy fetch of a partial
+	// clone names its promisor remote. Its quote keeps every word of it but the user and password.
+	url := "fatal: unable to access https://user:" + theToken + "@example.invalid/x.git: Could not resolve host: example.invalid"
 	for _, row := range []struct {
 		name, program, script string
 		env                   []string
-		read                  func(g *Guard) error
+		// quotes is what the failure holds beneath the signal.
+		quotes string
+		read   func(g *Guard) error
 	}{
-		{"the gh visibility read", "gh", toStderr, nil, func(g *Guard) error { _, err := g.ghVisibility(bound(t), slug); return err }},
-		{"the GraphQL read", "gh", toStderr, nil, func(g *Guard) error { _, err := g.graphQLVisibility(bound(t), slug); return err }},
-		{"the curl read", "curl", toStderr, []string{"GH_TOKEN=" + theToken}, func(g *Guard) error { _, err := g.curlVisibility(bound(t), slug); return err }},
-		{"the read with no credential", "git", toStderr, nil, func(g *Guard) error { _, err := g.lsRemote(bound(t), githubOrigin, slug); return err }},
-		{"a git read of a push's records", "git", "echo '+the pushed line'\n" + toStderr, nil, func(g *Guard) error { _, err := g.git(bound(t), t.TempDir(), "rev-list", "HEAD"); return err }},
-		{"the token read", "gh", "echo 'password=" + theToken + "'\n" + toStderr, nil, func(g *Guard) error { _, err := g.ghToken(bound(t), slug); return err }},
+		{"the gh visibility read", "gh", toStderr, nil, said, func(g *Guard) error { _, err := g.ghVisibility(bound(t), slug); return err }},
+		{"the GraphQL read", "gh", toStderr, nil, said, func(g *Guard) error { _, err := g.graphQLVisibility(bound(t), slug); return err }},
+		{"the curl read", "curl", toStderr, []string{"GH_TOKEN=" + theToken}, said, func(g *Guard) error { _, err := g.curlVisibility(bound(t), slug); return err }},
+		{"the read with no credential", "git", toStderr, nil, said, func(g *Guard) error { _, err := g.lsRemote(bound(t), githubOrigin, slug); return err }},
+		{"a git read of a push's records", "git", "echo '+the pushed line'\n" + toStderr, nil, said, func(g *Guard) error { _, err := g.git(bound(t), t.TempDir(), "rev-list", "HEAD"); return err }},
+		{
+			"a git read of a push's records naming a URL with a token", "git", "echo '" + url + "' >&2\n" + toStderr, nil,
+			"fatal: unable to access https://example.invalid/x.git: Could not resolve host: example.invalid\n" + said,
+			func(g *Guard) error { _, err := g.git(bound(t), t.TempDir(), "rev-list", "HEAD"); return err },
+		},
+		{"the token read", "gh", "echo 'password=" + theToken + "'\n" + toStderr, nil, said, func(g *Guard) error { _, err := g.ghToken(bound(t), slug); return err }},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			err := row.read(killsItself(t, row.program, row.script, row.env...))
-			if want := "signal: killed\n" + said; err == nil || err.Error() != want {
+			if want := "signal: killed\n" + row.quotes; err == nil || err.Error() != want {
 				t.Errorf("read = %v, want %q", err, want)
+			}
+			if err != nil && strings.Contains(err.Error(), theToken) {
+				t.Errorf("read = %v, which holds the token %q", err, theToken)
 			}
 		})
 	}

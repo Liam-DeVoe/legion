@@ -755,16 +755,16 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 		env:       append([]string{"HOME=" + home, "LC_ALL=C"}, readsNoConfigFile...),
 		stderr:    &stderr,
 	})
-	masked := maskPath(slug)
-	said := strings.ReplaceAll(stderr.String()+listed, slug, masked)
-	if err != nil {
-		return "", procgroup.Said(err, withoutUserinfo(said))
-	}
-	if status == 0 && listsARef(listed) {
+	if err == nil && status == 0 && listsARef(listed) {
 		return Public, nil
 	}
+	masked := maskPath(slug)
+	quoted := strings.ReplaceAll(stderr.String()+listed, slug, masked)
+	if err != nil {
+		return "", procgroup.Said(err, gitSaid(withoutUserinfo(quoted)))
+	}
 	if status != 0 {
-		return "", gitExited("git ls-remote of "+masked, status, said)
+		return "", gitExited("git ls-remote of "+masked, status, quoted)
 	}
 	return "", fmt.Errorf("git ls-remote of %s exited 0 and listed no ref", masked)
 }

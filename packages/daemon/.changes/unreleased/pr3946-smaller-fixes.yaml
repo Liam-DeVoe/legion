@@ -1,10 +1,11 @@
 kind: Fixed
 body: |-
-  The leak guard's visibility read with no credential, which it makes when GitHub refuses its API
-  read for a rate limit, no longer reads a repository as public when `git ls-remote` exits 0 and
-  lists no ref: only a ref that git listed shows that it read the repository. An empty public
-  repository lists no ref, so a write to one is now refused while GitHub's secondary rate limit
-  refuses the guard's API read.
+  The leak guard's visibility read with no credential, wherever it makes it (after GitHub refuses
+  its API read for a rate limit, after gh fails on its connection to GitHub, and after `legion gh`
+  refuses the read of a repository of an owner the project does not serve), no longer reads a
+  repository as public when `git ls-remote` exits 0 and lists no ref: only a ref that git listed
+  shows that it read the repository. An empty public repository lists no ref, so a write to one
+  is now refused wherever that read is the one that answers.
   The pod launcher's install of the shared leak check now sets the modes of its files, its
   directories and its tag file whatever the umask, so every role can read and run the check when
   the launcher runs under `umask 077`.
@@ -31,3 +32,6 @@ body: |-
   other text, or cuts at its first zero byte, is read as the destination keeps it, at any offset;
   and so is each header of a commit or an annotated tag, its name among them, that holds a zero
   byte, which a destination that does not check what it receives keeps.
+  The guard's git show now writes UTF-8 whatever i18n.logOutputEncoding the repository's
+  configuration or a `git -c` on the push sets, so a merge or a root commit is read whole: under
+  UTF-16 a merge had been read as a commit of one parent, and neither had its files listed.

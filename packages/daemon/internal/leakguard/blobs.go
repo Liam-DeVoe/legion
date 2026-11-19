@@ -10,6 +10,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 // binaryHead is how much of a file git's diff reads to tell whether it is binary
@@ -71,7 +73,10 @@ func (g *Guard) readBlobs(ctx context.Context, dir string) (*blobBatch, error) {
 			stdout: into,
 			stderr: &stderr,
 		})
-		if err == nil && status != 0 {
+		switch {
+		case err != nil:
+			err = procgroup.Said(err, gitSaid(withoutUserinfo(stderr.String())))
+		case status != 0:
 			err = gitExited("git cat-file", status, stderr.String())
 		}
 		// A read past the last thing git wrote meets git's own failure, where it failed.

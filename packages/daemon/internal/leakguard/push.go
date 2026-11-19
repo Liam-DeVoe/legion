@@ -383,7 +383,7 @@ func (g *Guard) gitFed(ctx context.Context, dir string, env []string, input stri
 		stderr: &stderr,
 	})
 	if err != nil {
-		return "", procgroup.Said(err, gitSaid(stderr.String()))
+		return "", procgroup.Said(err, gitSaid(withoutUserinfo(stderr.String())))
 	}
 	if status != 0 {
 		return "", gitExited("git "+args[0], status, stderr.String())
