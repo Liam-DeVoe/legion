@@ -22,6 +22,16 @@ import {
 } from "node:fs/promises";
 import * as path from "node:path";
 
+/**
+ * What every omp a test starts carries in its environment beside its own: one Tokio worker thread
+ * for the natives. Their Tokio runtime starts one worker per CPU unless `TOKIO_WORKER_THREADS`
+ * names a number, so on a 288-CPU machine one omp held 1,177 threads, and a case that started one
+ * could not run under a limit of 512 tasks: omp exited with "Failed to start HTTP Client thread:
+ * EAGAIN". With one worker the same omp holds about 316. The harness's `spawnRpc` and
+ * `spawnInteractive` give it, and so does every other place a test runs the binary.
+ */
+export const OMP_THREADS_ENV = { TOKIO_WORKER_THREADS: "1" } as const;
+
 /** Each binary's one lookup in this process, since naming its cache reads the whole binary. */
 const caches = new Map<string, Promise<string>>();
 
@@ -89,7 +99,7 @@ export async function fillNativesCache(root: string, binary: string): Promise<st
       // Any command that loads the natives extracts them; this one reads a setting and calls nothing.
       const extract = Bun.spawn([binary, "config", "get", "compaction.remoteEndpoint", "--json"], {
         cwd: staging,
-        env: { HOME: home, PATH: "/usr/bin:/bin" },
+        env: { HOME: home, PATH: "/usr/bin:/bin", ...OMP_THREADS_ENV },
         stdout: "pipe",
         stderr: "pipe",
       });

@@ -6,6 +6,7 @@ import {
   cleanupEndsGroup,
   cleanupHook,
   deliveryFor,
+  OMP_THREADS_ENV,
   ompNatsGuard,
   ompRoot,
   type Request,
@@ -95,14 +96,15 @@ async function tmuxCommand(
 }
 
 /** The environment the case's tmux server, and with it every pane, runs under: the harness's own
- *  HOME and PATH, with tmux's directory first, since the reading runs `tmux` from inside the pane.
- *  `LD_LIBRARY_PATH` goes with it, as a tmux outside the system directories needs its libraries
- *  named the way whatever put it on PATH named them. */
+ *  HOME, PATH and Tokio worker count (`OMP_THREADS_ENV`), with tmux's directory first, since the
+ *  reading runs `tmux` from inside the pane. `LD_LIBRARY_PATH` goes with it, as a tmux outside the
+ *  system directories needs its libraries named the way whatever put it on PATH named them. */
 function paneEnvironment(home: string, binary: string): Record<string, string> {
   const named = process.env.LD_LIBRARY_PATH;
   return {
     HOME: home,
     PATH: [path.dirname(binary), "/usr/local/bin", "/usr/bin", "/bin"].join(":"),
+    ...OMP_THREADS_ENV,
     ...(named === undefined ? {} : { LD_LIBRARY_PATH: named }),
   };
 }

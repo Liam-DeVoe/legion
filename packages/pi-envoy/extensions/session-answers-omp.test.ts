@@ -15,6 +15,7 @@ import {
   cleanupHook,
   deliveryFor,
   messageStream,
+  OMP_THREADS_ENV,
   ompRoot,
   type Request,
   runCleanup,
@@ -358,7 +359,7 @@ async function runSession(
     // first keeps that host cost out of a case that times the answers read.
     const built = Bun.spawn([binary, "models", "refresh"], {
       cwd: workspace,
-      env: { HOME: home, PATH: "/usr/local/bin:/usr/bin:/bin" },
+      env: { HOME: home, PATH: "/usr/local/bin:/usr/bin:/bin", ...OMP_THREADS_ENV },
       stdout: "ignore",
       stderr: "pipe",
     });

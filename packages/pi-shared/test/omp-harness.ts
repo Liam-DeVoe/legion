@@ -26,7 +26,9 @@ import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
 import { Terminal } from "@xterm/headless";
 import type { Subprocess } from "bun";
-import { linkOmpNatives } from "./omp-natives";
+import { linkOmpNatives, OMP_THREADS_ENV } from "./omp-natives";
+
+export { OMP_THREADS_ENV };
 
 export interface Request {
   readonly path: string;
@@ -730,14 +732,16 @@ function ompFlags(options: {
 }
 
 /** The environment `spawnRpc` and `spawnInteractive` start omp with: `home` as HOME, `bin` first
- * on PATH. */
+ * on PATH, and one Tokio worker thread (`OMP_THREADS_ENV`). */
 function ompEnv(options: { readonly home: string; readonly bin?: string }): {
   HOME: string;
   PATH: string;
+  TOKIO_WORKER_THREADS: string;
 } {
   return {
     HOME: options.home,
     PATH: [options.bin, "/usr/local/bin:/usr/bin:/bin"].filter(Boolean).join(":"),
+    ...OMP_THREADS_ENV,
   };
 }
 
