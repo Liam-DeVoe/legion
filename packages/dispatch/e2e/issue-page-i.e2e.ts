@@ -44,6 +44,7 @@ import {
   listIssueMessages,
   listMyReplies,
   patchIssue,
+  resolveComment,
 } from "./api";
 import { countDocumentSockets, cursorLabel } from "./editor";
 import { nextFrames } from "./frames";
@@ -4293,6 +4294,62 @@ test("a statement of a document the server admits read-only shows no cue that it
       await rowCue(otherRow),
       "a statement of a document the room admitted read-only draws a cue under the pointer"
     ).toEqual({ background: TRANSPARENT, cursor: "auto" });
+  });
+});
+
+/** Whether the element that holds the focus is a row of the outline's tree. */
+function focusOnATreeRow(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const active = document.activeElement;
+    return active?.matches("[data-node-row]") === true && active.closest('[role="tree"]') !== null;
+  });
+}
+
+// The tester's finding at #4205's 2ff6850a: when a read of the issue's comments no longer holds
+// the comment whose row has the focus, that row leaves the tree and the focus falls to the page's
+// body, so the reader's place in the outline is lost and no row of the tree holds the focus. The
+// comments read is answered without that comment as the server's answer reaches the page, and a
+// real event of the issue - another comment resolved - makes the page read the comments again.
+// SLOW(>=2s): the whole issue seeded and loaded, then waited on until the read after the event
+// has drawn the outline without the comment.
+test("a read that drops the focused comment's row leaves the focus on a row of the tree", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const [gone = "", other = ""] = seeded.comments.threads;
+    expect(other, "the seed holds fewer than two comment threads").not.toBe("");
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await focusRow(page, gone);
+
+    await page.route(`**/api/v1/issues/${seeded.key}/comments*`, async (route) => {
+      const answer = await route.fetch();
+      const body = (await answer.json()) as unknown;
+      const without = (list: readonly { readonly id?: string }[]) =>
+        list.filter((comment) => comment.id !== gone);
+      let json: unknown = body;
+      if (Array.isArray(body)) json = without(body);
+      else if (typeof body === "object" && body !== null) {
+        const record = body as Record<string, unknown>;
+        for (const field of ["comments", "items"]) {
+          const list = record[field];
+          if (Array.isArray(list)) json = { ...record, [field]: without(list) };
+        }
+      }
+      await route.fulfill({ json, response: answer });
+    });
+    await resolveComment(other);
+    await expect(
+      nodeRow(page, gone),
+      "the read after the event still draws the comment its answer no longer holds"
+    ).toHaveCount(0);
+    await expect
+      .poll(() => focusOnATreeRow(page), {
+        message: "the focus left the tree when a read dropped the focused comment's row",
+      })
+      .toBe(true);
+    await expectFocusedRowClear(page, "a read that dropped the focused comment's row");
   });
 });
 
