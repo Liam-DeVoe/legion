@@ -225,13 +225,14 @@ func (g *Guard) rules(what string) (*RuleSet, error) {
 		})
 		return nil, nil
 	}
-	rules, bad := readRulesFile(path)
-	if bad != nil {
-		return nil, &SetupFailure{
-			What: what,
-			Why:  "the private-name rule file " + bad.path + ", which " + RulesFileVar + " names, " + bad.why,
-			Err:  bad.err,
-		}
+	named := "the private-name rule file " + path + ", which " + RulesFileVar + " names, "
+	content, err := ReadRulesContent(path)
+	if err != nil {
+		return nil, &SetupFailure{What: what, Why: named + err.Error()}
+	}
+	rules, err := LoadRules(content)
+	if err != nil {
+		return nil, &SetupFailure{What: what, Why: named + "is no rule file the guard can run", Err: err}
 	}
 	return rules, nil
 }

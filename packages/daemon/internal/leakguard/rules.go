@@ -35,16 +35,17 @@ const (
 )
 
 // MaxRulesFile is the most of a rule file the guard reads, and the most of the deployment's the
-// daemon reads at boot (internal/daemon's readPrivateNameRulesFile). A rule file is a page of
-// regular expressions: a deployment's runs to a few kilobytes. The bound is also one a launch must
-// be able to carry. The daemon hands the file's bytes to every launch as the launch secret
-// RulesSecret, and under `runtime: kubernetes` that secret rides the launch's start command: one
-// frame, which a launcher refuses past shimwire.MaxFrameBytes (internal/runtime/sandbox's
-// checkStartFrame), shared with the role's system prompt and the launch's other files, all of it
-// JSON-encoded, where each backslash of a regular expression doubles. A file near the frame's bound
-// would fail every launch (runtime.PromptTooLarge). 256 KiB is far past any deployment's file and
-// leaves that frame room, so no rule file meets the bound, and a pointer to a log or an image by
-// mistake is refused rather than read into memory whole.
+// daemon reads at boot (internal/daemon's readPrivateNameRulesFile), each through
+// ReadRulesContent. A rule file is a page of regular expressions: a deployment's runs to a few
+// kilobytes. The bound is also one a launch must be able to carry. The daemon hands the file's
+// bytes to every launch as the launch secret RulesSecret, and under `runtime: kubernetes` that
+// secret rides the launch's start command: one frame, which a launcher refuses past
+// shimwire.MaxFrameBytes (internal/runtime/sandbox's checkStartFrame), shared with the role's
+// system prompt and the launch's other files, all of it JSON-encoded, where each backslash of a
+// regular expression doubles. A file near the frame's bound would fail every launch
+// (runtime.PromptTooLarge). 256 KiB is far past any deployment's file and leaves that frame room,
+// so no rule file meets the bound, and a pointer to a log or an image by mistake is refused rather
+// than read into memory whole.
 const MaxRulesFile = 256 << 10
 
 // The bounds of a rule pass's report (RuleSet.scan), so that a report stays a page whatever the
@@ -63,13 +64,12 @@ const (
 // nothing of a scan, since Detect of a fragment answers its findings and holds none of them.
 type RuleSet struct {
 	detector *detect.Detector
-	count    int
 	sha256   string
 }
 
 // Count is the number of rules the set holds.
 func (r *RuleSet) Count() int {
-	return r.count
+	return len(r.detector.Config.Rules)
 }
 
 // SHA256 is the sha256, in hex, of the content the set was compiled from.
@@ -167,61 +167,31 @@ func compileRules(content []byte, sum string) (set *RuleSet, err error) {
 	// the cost is that a legitimate text holding those two words beside a name a rule matches is
 	// refused like any other, and its writer rewrites the name rather than exempting the line.
 	detector.IgnoreGitleaksAllow = true
-	return &RuleSet{detector: detector, count: len(cfg.Rules), sha256: sum}, nil
+	return &RuleSet{detector: detector, sha256: sum}, nil
 }
 
-// ReadRulesFile reads the rule file at path and compiles it (LoadRules). A file that cannot be
-// opened or read, one longer than MaxRulesFile, and one LoadRules refuses are each an error that
-// names the file.
-func ReadRulesFile(path string) (*RuleSet, error) {
-	set, bad := readRulesFile(path)
-	if bad != nil {
-		return nil, bad
-	}
-	return set, nil
-}
-
-// rulesFileError is a rule file the guard cannot use: the file, why in a phrase that follows the
-// file's name, and the failure beneath where there is one. It is a type so that the guard can say
-// which variable named the file between the file and the why (Guard.rules).
-type rulesFileError struct {
-	path, why string
-	err       error
-}
-
-func (e *rulesFileError) Error() string {
-	message := "the private-name rule file " + e.path + " " + e.why
-	if e.err != nil {
-		message += ": " + e.err.Error()
-	}
-	return message
-}
-
-func (e *rulesFileError) Unwrap() error {
-	return e.err
-}
-
-// readRulesFile is ReadRulesFile with its failure typed.
-func readRulesFile(path string) (*RuleSet, *rulesFileError) {
+// ReadRulesContent is the rule file at path, its bytes as they stand, which LoadRules compiles:
+// the one read of a rule file, the guard's (Guard.rules) and the daemon's at boot
+// (internal/daemon's readPrivateNameRulesFile) alike. A file that cannot be opened or read, and
+// one longer than MaxRulesFile, is an error whose message is a phrase that follows the file's
+// name — "could not be opened: <why>", "could not be read: <why>", "is longer than 262144
+// bytes" — so that each caller names the file, and what named it, in its own words.
+func ReadRulesContent(path string) ([]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, &rulesFileError{path: path, why: "could not be opened", err: withoutPath(err)}
+		return nil, fmt.Errorf("could not be opened: %w", withoutPath(err))
 	}
 	defer file.Close()
 	// One byte past the bound, so a file at the bound reads whole and a longer one is known to be
-	// longer without reading it.
+	// longer without reading it, never cut at the bound and compiled short.
 	content, err := io.ReadAll(io.LimitReader(file, MaxRulesFile+1))
 	if err != nil {
-		return nil, &rulesFileError{path: path, why: "could not be read", err: withoutPath(err)}
+		return nil, fmt.Errorf("could not be read: %w", withoutPath(err))
 	}
 	if len(content) > MaxRulesFile {
-		return nil, &rulesFileError{path: path, why: fmt.Sprintf("is longer than %d bytes", MaxRulesFile)}
+		return nil, fmt.Errorf("is longer than %d bytes", MaxRulesFile)
 	}
-	set, err := LoadRules(content)
-	if err != nil {
-		return nil, &rulesFileError{path: path, why: "is no rule file the guard can run", err: err}
-	}
-	return set, nil
+	return content, nil
 }
 
 // withoutPath is err reduced to what went wrong where it is a *fs.PathError, whose own message

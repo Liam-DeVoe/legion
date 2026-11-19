@@ -1637,7 +1637,7 @@ func TestGhRefusalShowsMatch(t *testing.T) {
 	args := []string{"pr", "create", "-R", "acme/widgets", "--title", "a title of no interest", "--body-file", body}
 	got := run(t, ghCheckAt(t, ghCheckPasses), "", args...)
 	want := "legion gh: LEAK CHECK: refusing the gh call: the deployment's private-name rules match it\n" +
-		"  " + refusalLine(body, leakguardtest.RulesHostClass, leakguardtest.RulesHost+" ", 2, line) + "\n"
+		"  " + leakguardtest.ReportLine(body, leakguardtest.RulesHostClass, leakguardtest.RulesHost+" ", 2, line) + "\n"
 	if got.code != 2 || got.stderr != want {
 		t.Errorf("legion gh %q = exit %d, stderr %q; want exit 2 and %q", args, got.code, got.stderr, want)
 	}

@@ -2,9 +2,7 @@ package daemon
 
 import (
 	"fmt"
-	"io"
 	"log/slog"
-	"os"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
@@ -21,25 +19,16 @@ const privateNameRulesNone = "daemon: the deployment names no private-name rule 
 // readPrivateNameRulesFile is the private-name rule file at path, its bytes verbatim: the launch
 // secret leakguard.RulesSecret (launchSecrets), which readBoot compiles (compilePrivateNameRules).
 // namedBy is the setting that named the file as the operator wrote it, `private_name_rules_file`
-// or LEGION_PRIVATE_NAME_RULES_FILE (config.Config.PrivateNameRulesNamedBy), and a file that
-// cannot be opened or read, or that is longer than leakguard.MaxRulesFile, is refused naming it and
-// the file. The bound is the guard's own, which a launch's start frame under `runtime: kubernetes`
-// leaves room for beside the role's system prompt. Nothing is trimmed, as a token's file is: the
-// rules a role runs are the bytes the operator wrote.
+// or LEGION_PRIVATE_NAME_RULES_FILE (config.Config.PrivateNameRulesNamedBy). The file is read as
+// the guard reads it (leakguard.ReadRulesContent), so a file that cannot be opened or read, or
+// that is longer than leakguard.MaxRulesFile, is refused naming namedBy and the file, and then
+// the guard's own phrase for why. The bound is the guard's own, which a launch's start frame
+// under `runtime: kubernetes` leaves room for beside the role's system prompt. Nothing is
+// trimmed, as a token's file is: the rules a role runs are the bytes the operator wrote.
 func readPrivateNameRulesFile(namedBy, path string) (string, error) {
-	file, err := os.Open(path)
+	content, err := leakguard.ReadRulesContent(path)
 	if err != nil {
-		return "", fmt.Errorf("%s names %s, which could not be read: %w", namedBy, path, err)
-	}
-	defer file.Close()
-	// One byte past the bound, so a file at the bound reads whole and a longer one is refused for
-	// its length here, never cut at the bound and compiled short.
-	content, err := io.ReadAll(io.LimitReader(file, leakguard.MaxRulesFile+1))
-	if err != nil {
-		return "", fmt.Errorf("%s names %s, which could not be read: %w", namedBy, path, err)
-	}
-	if len(content) > leakguard.MaxRulesFile {
-		return "", fmt.Errorf("%s names %s, which is longer than %d bytes, the most a private-name rule file may hold", namedBy, path, leakguard.MaxRulesFile)
+		return "", fmt.Errorf("%s names %s, which %w", namedBy, path, err)
 	}
 	return string(content), nil
 }

@@ -61,7 +61,7 @@ func TestANamedRuleFileRefusesAFixtureName(t *testing.T) {
 			guard := New(Options{
 				Check:      leakguardtest.Write(t, t.TempDir(), passes),
 				Visibility: answers(Public, &asked),
-				Env:        append(fixtureenv.Isolated(t.TempDir()), RulesFileVar+"="+leakguardtest.WriteRules(t, t.TempDir())),
+				Env:        withRules(t, fixtureenv.Isolated(t.TempDir())),
 			})
 			refused := refusal(t, write.write(bound(t), guard))
 			if refused.By != byRules {
@@ -131,16 +131,13 @@ func TestNoRuleFileRunsNoPrivateNameRule(t *testing.T) {
 	}
 }
 
-// paddedTo is content followed by one TOML comment line that brings it to exactly size bytes.
-func paddedTo(content string, size int) string {
-	return content + "# " + strings.Repeat("x", size-len(content)-len("# \n")) + "\n"
-}
-
 // A rule file the guard cannot use refuses the write as a setup failure that names the file,
 // before any visibility is read: a deployment that named rules meant them to run. Each way the
-// file can fail is one case, and ReadRulesFile, the daemon's read of the same file, names the file
-// in its error too. A file one byte past MaxRulesFile is refused for its length, and one at the
-// bound is read whole, so what refuses it is what it holds.
+// file can fail is one case. ReadRulesContent, the read the guard and the daemon's boot share,
+// refuses a file it cannot read, or one longer than MaxRulesFile, in a phrase that follows the
+// file's name, and answers every other file whole for the compile to refuse. A file one byte past
+// MaxRulesFile is refused for its length, and one at the bound is read whole, so what refuses it
+// is what it holds.
 func TestARuleFileTheGuardCannotReadRefusesTheWrite(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -148,16 +145,19 @@ func TestARuleFileTheGuardCannotReadRefusesTheWrite(t *testing.T) {
 		content string
 		// says is what the failure must say of why.
 		says string
+		// unread is whether ReadRulesContent itself refuses the file, its error then exactly says.
+		unread bool
 	}{
-		{name: "a missing file", says: "could not be opened: no such file or directory"},
+		{name: "a missing file", says: "could not be opened: no such file or directory", unread: true},
 		{
 			name:    "a file one byte past the bound",
-			content: paddedTo(leakguardtest.Rules, MaxRulesFile+1),
+			content: leakguardtest.PaddedTo(leakguardtest.Rules, MaxRulesFile+1),
 			says:    "is longer than 262144 bytes",
+			unread:  true,
 		},
 		{
 			name:    "a file at the bound with no rule",
-			content: paddedTo("title = \"no rules here\"\n", MaxRulesFile),
+			content: leakguardtest.PaddedTo("title = \"no rules here\"\n", MaxRulesFile),
 			says:    "hold no rule",
 		},
 		{name: "text that is no TOML", content: "this is = = no TOML [\n", says: "are not TOML"},
@@ -203,15 +203,16 @@ func TestARuleFileTheGuardCannotReadRefusesTheWrite(t *testing.T) {
 			if len(asked) != 0 {
 				t.Errorf("the visibility of %q was read, want none before the rules are read", asked)
 			}
-			read, err := ReadRulesFile(path)
-			if err == nil {
-				t.Fatalf("ReadRulesFile answered %d rules, want the file refused", read.Count())
-			}
-			if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), tc.says) {
-				t.Errorf("ReadRulesFile's error is %q, want it to name %s and say %q", err, path, tc.says)
-			}
-			if tc.content == "" && !errors.Is(err, fs.ErrNotExist) {
-				t.Errorf("ReadRulesFile's error %q is no fs.ErrNotExist", err)
+			content, err := ReadRulesContent(path)
+			switch {
+			case !tc.unread && err != nil:
+				t.Errorf("ReadRulesContent refused a file it can read: %v", err)
+			case !tc.unread && string(content) != tc.content:
+				t.Errorf("ReadRulesContent answered %d bytes, want the file's %d whole", len(content), len(tc.content))
+			case tc.unread && (err == nil || err.Error() != tc.says):
+				t.Errorf("ReadRulesContent's error is %v, want %q, a phrase that follows the file's name", err, tc.says)
+			case tc.content == "" && !errors.Is(err, fs.ErrNotExist):
+				t.Errorf("ReadRulesContent's error %q is no fs.ErrNotExist", err)
 			}
 		})
 	}
@@ -221,10 +222,7 @@ func TestARuleFileTheGuardCannotReadRefusesTheWrite(t *testing.T) {
 // daemon's branch create: it compiles the deployment's file at boot and hands the set in. They win
 // over a pointer the environment holds, here one to a file that is not there.
 func TestTheRulesFromOptionsNeedNoEnvironment(t *testing.T) {
-	rules, err := LoadRules([]byte(leakguardtest.Rules))
-	if err != nil {
-		t.Fatal(err)
-	}
+	rules := fixtureRules(t)
 	absent := RulesFileVar + "=" + filepath.Join(t.TempDir(), "absent.toml")
 	for _, tc := range []struct {
 		name string
@@ -264,7 +262,11 @@ func TestTheRulesAreCompiledOncePerContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	read, err := ReadRulesFile(leakguardtest.WriteRules(t, t.TempDir()))
+	content, err := ReadRulesContent(leakguardtest.WriteRules(t, t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := LoadRules(content)
 	if err != nil {
 		t.Fatal(err)
 	}

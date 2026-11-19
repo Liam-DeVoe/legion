@@ -246,25 +246,15 @@ func graphQLUnicode(s string) (rune, int, bool) {
 }
 
 // graphQLHex is the value of digits, hex digits of either case, and false for anything else or
-// for a value past the last code point, which is read no further than the digit that passes it.
+// for a value past the last code point. strconv reads no sign, prefix or underscore in base 16,
+// and an empty digits is an error of its own, which no caller hands it: graphQLUnicode refuses
+// `{}` and hands four digits otherwise.
 func graphQLHex(digits string) (rune, bool) {
-	var value rune
-	for _, digit := range []byte(digits) {
-		switch {
-		case '0' <= digit && digit <= '9':
-			value = value<<4 | rune(digit-'0')
-		case 'a' <= digit && digit <= 'f':
-			value = value<<4 | rune(digit-'a'+10)
-		case 'A' <= digit && digit <= 'F':
-			value = value<<4 | rune(digit-'A'+10)
-		default:
-			return 0, false
-		}
-		if value > utf8.MaxRune {
-			return 0, false
-		}
+	value, err := strconv.ParseUint(digits, 16, 32)
+	if err != nil || value > utf8.MaxRune {
+		return 0, false
 	}
-	return value, true
+	return rune(value), true
 }
 
 // graphQLBlockString is the value of the block string whose text, past its opening `"""`, begins

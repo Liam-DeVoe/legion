@@ -265,9 +265,25 @@ func TestTheFilesAGhCallWouldSend(t *testing.T) {
 			want: []GhFile{{Option: "-F", Path: "body.md"}},
 		},
 		{
+			// pflag reads `-F=<value>` as `-F <value>`, and so does this reader (ghFieldArg).
+			name: "a short -F with its value attached by an equals sign",
+			args: []string{"pr", "create", "-F=body.md"},
+			want: []GhFile{{Option: "-F", Path: "body.md"}},
+		},
+		{
 			name: "a field read from a file",
 			args: []string{"api", "repos/invented-org/invented-repo/pulls/1", "-F", "body=@body.md"},
 			want: []GhFile{{Option: "-F", Path: "body.md", Field: "body"}},
+		},
+		{
+			name: "a field read from a file, attached to -F by an equals sign",
+			args: []string{"api", "repos/invented-org/invented-repo/pulls/1", "-F=body=@notes.md"},
+			want: []GhFile{{Option: "-F", Path: "notes.md", Field: "body"}},
+		},
+		{
+			name: "a GraphQL query read from a file, attached to -F by an equals sign",
+			args: []string{"api", "graphql", "-F=query=@q.graphql"},
+			want: []GhFile{{Option: "-F", Path: "q.graphql", Field: "query"}},
 		},
 		{
 			name: "an attached --field read from a file",
@@ -286,6 +302,7 @@ func TestTheFilesAGhCallWouldSend(t *testing.T) {
 		},
 		{name: "a field whose value is a literal", args: []string{"api", "x", "-F", "body=text"}},
 		{name: "a raw field, which sends its value literally", args: []string{"api", "x", "-f", "body=@body.md"}},
+		{name: "an attached raw field, which sends its value literally", args: []string{"api", "x", "-f=body=@body.md"}},
 		{name: "a --field naming a project's field", args: []string{"project", "field-list", "1", "--field", "Status"}},
 		{name: "a body option whose value is standard input", args: []string{"pr", "comment", "1", "--body-file", "-"}, stdin: "--body-file"},
 		{name: "a field read from standard input", args: []string{"api", "x", "-F", "body=@-"}, stdin: "--field"},
@@ -308,13 +325,12 @@ func TestTheFilesAGhCallWouldSend(t *testing.T) {
 		{name: "a template of the repository", args: []string{"pr", "create", "--template", "pull_request_template.md"}},
 		{name: "a gist's positional files", args: []string{"gist", "create", "note.md"}},
 		{name: "a short option whose own value is F", args: []string{"gist", "create", "-dF", "note.md"}},
-		// The two shapes this reader cannot tell apart from a call that names no file, and the
-		// reason `legion gh` hands the files it parsed instead (GhRequest.Files): a short
-		// cluster's last letter is the option in `gh pr create` (`--draft --body-file`) and the
-		// value of the option before it in `gh gist create` (`--desc F`), and only the leaf's
-		// own help says which.
+		// The shape this reader cannot tell apart from a call that names no file, and the reason
+		// `legion gh` hands the files it parsed instead (GhRequest.Files): a short cluster's last
+		// letter is the option in `gh pr create` (`--draft --body-file`) and the value of the
+		// option before it in `gh gist create` (`--desc F`), and only the leaf's own help says
+		// which.
 		{name: "a short cluster whose last letter is the option", args: []string{"pr", "create", "-dF", "body.md"}},
-		{name: "a short option with its value attached by an equals sign", args: []string{"pr", "create", "-F=body.md"}},
 		{name: "an option past a double dash", args: []string{"repo", "clone", "invented-org/invented-repo", "--", "--body-file", "body.md"}},
 		{name: "standard input past a double dash", args: []string{"repo", "clone", "invented-org/invented-repo", "--", "--input", "-"}},
 		{name: "an option with no value at all", args: []string{"pr", "comment", "1", "--body-file"}},

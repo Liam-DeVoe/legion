@@ -3,6 +3,8 @@ package leakguardtest
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -15,9 +17,7 @@ import (
 
 // RulesHost is a Tailscale MagicDNS host of invented words, a machine of the fixture's invented
 // tailnet, which the host rule refuses. It is spelled in two pieces so that a source file holding
-// it passes .github/scripts/check-private-names.sh, which refuses any MagicDNS host written whole;
-// the same text is refused by the rules every Legion binary carried before the deployment's own,
-// which is what lets a check run an older binary over the very write a test of this one makes.
+// it passes .github/scripts/check-private-names.sh, which refuses any MagicDNS host written whole.
 const RulesHost = "amber-kite.still-meadow.ts" + ".net"
 
 // RulesHostClass is the description of the fixture's host rule.
@@ -98,4 +98,17 @@ func WriteRules(t testing.TB, dir string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// PaddedTo is content followed by one TOML comment line that brings it to exactly size bytes: a
+// rule file at a bound, or a byte past it, that holds content's rules and nothing else.
+func PaddedTo(content string, size int) string {
+	return content + "# " + strings.Repeat("x", size-len(content)-len("# \n")) + "\n"
+}
+
+// ReportLine is the whole line a rule pass's report writes of one finding: the record, the class
+// of the rule that matched, the text it matched and the text of the record's line it stands on,
+// line, with the match and that text quoted as Go quotes them.
+func ReportLine(record, class, match string, line int, text string) string {
+	return record + ": " + class + ": matched " + strconv.Quote(match) + " on line " + strconv.Itoa(line) + ": " + strconv.Quote(text)
 }

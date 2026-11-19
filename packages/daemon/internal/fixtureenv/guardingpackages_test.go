@@ -21,10 +21,7 @@ import (
 // the list when a test of it starts git or jj — as child processes, in-process through the code
 // under test, or both: in a Legion issue pod an unguarded one inherits the pod's own
 // LEGION_WORKSPACE, GIT_CONFIG_* and GitHub credential, and the shim's rescue test pushed the
-// pod's own workspace to the real origin that way. A package also joins when its code under test
-// reads a LEGION_ variable of the pod that its tests must not run under: internal/ghbranch's
-// Create runs the leak guard, which reads LEGION_PRIVATE_NAME_RULES_FILE, the pointer every role
-// in a pod holds to the deployment's own rule file. Every package's tests run in a process of
+// pod's own workspace to the real origin that way. Every package's tests run in a process of
 // their own, so each entry here is one process to guard, and a guard deleted from one of them is
 // invisible to every other package's tests.
 //
@@ -37,7 +34,6 @@ var guardingPackages = []string{
 	"internal/api",
 	"internal/daemon",
 	"internal/fixtureenv",
-	"internal/ghbranch",
 	"internal/launcher",
 	"internal/leakguard",
 	"internal/repocache",

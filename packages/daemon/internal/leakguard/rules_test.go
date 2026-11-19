@@ -155,7 +155,7 @@ func TestRefusalShowsMatchWithinItsBounds(t *testing.T) {
 			t.Fatalf("the text is %d bytes with its match at byte %d, want a mebibyte of one line with the match past byte 300", len(text), len(before))
 		}
 		shows(t, fixture(t), text,
-			matchLine("the body", leakguardtest.RulesHostClass, match, 1, "…"+strings.Repeat("a", 118)+" "+match+strings.Repeat("b", 119)+"…"))
+			leakguardtest.ReportLine("the body", leakguardtest.RulesHostClass, match, 1, "…"+strings.Repeat("a", 118)+" "+match+strings.Repeat("b", 119)+"…"))
 	})
 	t.Run("a match of 500 bytes", func(t *testing.T) {
 		match := leakguardtest.PairName + strings.Repeat("x", 483) + leakguardtest.PairWord
@@ -166,7 +166,7 @@ func TestRefusalShowsMatchWithinItsBounds(t *testing.T) {
 		// The line shows 120 bytes past the part of the match shown, which here is more of the
 		// match.
 		shows(t, fixture(t), "a note: "+match+" ends here",
-			matchLine("the body", leakguardtest.PairClass, shown+"…", 1, "a note: "+shown+strings.Repeat("x", 120)+"…"))
+			leakguardtest.ReportLine("the body", leakguardtest.PairClass, shown+"…", 1, "a note: "+shown+strings.Repeat("x", 120)+"…"))
 	})
 	t.Run("a match cut inside a rune", func(t *testing.T) {
 		match := leakguardtest.PairName + strings.Repeat("x", 191) + "é" + strings.Repeat("x", 290) + leakguardtest.PairWord
@@ -175,7 +175,7 @@ func TestRefusalShowsMatchWithinItsBounds(t *testing.T) {
 		}
 		shown := leakguardtest.PairName + strings.Repeat("x", 191)
 		shows(t, fixture(t), "a note: "+match+" ends here",
-			matchLine("the body", leakguardtest.PairClass, shown+"…", 1, "a note: "+shown+"é"+strings.Repeat("x", 118)+"…"))
+			leakguardtest.ReportLine("the body", leakguardtest.PairClass, shown+"…", 1, "a note: "+shown+"é"+strings.Repeat("x", 118)+"…"))
 	})
 	t.Run("sixty findings", func(t *testing.T) {
 		lines := make([]string, 60)
@@ -184,7 +184,7 @@ func TestRefusalShowsMatchWithinItsBounds(t *testing.T) {
 		}
 		want := make([]string, 0, 41)
 		for i := range 40 {
-			want = append(want, matchLine("the body", leakguardtest.RulesHostClass, host, i+1, lines[i]))
+			want = append(want, leakguardtest.ReportLine("the body", leakguardtest.RulesHostClass, host, i+1, lines[i]))
 		}
 		shows(t, fixture(t), strings.Join(lines, "\n"), append(want, "… and 20 more matches not shown")...)
 	})
@@ -220,16 +220,16 @@ func TestRefusalShowsMatchWithinItsBounds(t *testing.T) {
 		second := "…" + strings.Repeat("y", 120) + " " + word + " z"
 		match := " " + word + " "
 		shows(t, fixture(t), line+"\n"+line,
-			matchLine("the body", leakguardtest.WordClass, match, 1, first),
-			matchLine("the body", leakguardtest.WordClass, match, 1, second),
-			matchLine("the body", leakguardtest.WordClass, match, 2, first),
-			matchLine("the body", leakguardtest.WordClass, match, 2, second))
+			leakguardtest.ReportLine("the body", leakguardtest.WordClass, match, 1, first),
+			leakguardtest.ReportLine("the body", leakguardtest.WordClass, match, 1, second),
+			leakguardtest.ReportLine("the body", leakguardtest.WordClass, match, 2, first),
+			leakguardtest.ReportLine("the body", leakguardtest.WordClass, match, 2, second))
 	})
 	t.Run("a match that begins at the newline before its line", func(t *testing.T) {
 		// The word rule's match takes in the newline before the word, which the engine trims off
 		// the match and not off where it says the match starts.
 		shows(t, fixture(t), "a first line\n"+word+" starts the second",
-			matchLine("the body", leakguardtest.WordClass, word+" ", 2, word+" starts the second"))
+			leakguardtest.ReportLine("the body", leakguardtest.WordClass, word+" ", 2, word+" starts the second"))
 	})
 }
 

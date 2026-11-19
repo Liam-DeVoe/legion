@@ -203,7 +203,7 @@ func TestPushRefusalShowsMatch(t *testing.T) {
 				return commit(t, "a subject of no interest\n\nmoved the run to "+host+" this morning")
 			},
 			want: func(head string) []string {
-				return []string{matchLine("commit "+short(head)+" message", class, host+" ", 3, "moved the run to "+host+" this morning")}
+				return []string{leakguardtest.ReportLine("commit "+short(head)+" message", class, host+" ", 3, "moved the run to "+host+" this morning")}
 			},
 		},
 		{
@@ -215,8 +215,8 @@ func TestPushRefusalShowsMatch(t *testing.T) {
 			},
 			want: func(string) []string {
 				return []string{
-					matchLine("README.md", class, host, 5, "the runner answers at "+host),
-					matchLine("README.md", class, host, 9, "the spare answers at "+host),
+					leakguardtest.ReportLine("README.md", class, host, 5, "the runner answers at "+host),
+					leakguardtest.ReportLine("README.md", class, host, 9, "the spare answers at "+host),
 				}
 			},
 		},
@@ -240,7 +240,7 @@ func TestPushRefusalShowsMatch(t *testing.T) {
 				return head
 			},
 			want: func(string) []string {
-				return []string{matchLine("notes.md", class, host, 2, "the resolution answers at "+host)}
+				return []string{leakguardtest.ReportLine("notes.md", class, host, 2, "the resolution answers at "+host)}
 			},
 		},
 		{
@@ -252,7 +252,7 @@ func TestPushRefusalShowsMatch(t *testing.T) {
 			},
 			ref: "refs/heads/legion/" + host,
 			want: func(string) []string {
-				return []string{matchLine("the ref name", class, host, 1, "refs/heads/legion/"+host)}
+				return []string{leakguardtest.ReportLine("the ref name", class, host, 1, "refs/heads/legion/"+host)}
 			},
 		},
 	} {
@@ -320,13 +320,13 @@ func TestAPushReadsItsPathsAsPaths(t *testing.T) {
 			files: map[string]string{notes: "a line of ordinary prose\nand a second\n"},
 			want: []string{
 				notes + ": " + leakguardtest.WordPathClass + ": matched the path",
-				matchLine(notes, leakguardtest.WordClass, "/"+leakguardtest.Word+"-", 1, notes),
+				leakguardtest.ReportLine(notes, leakguardtest.WordClass, "/"+leakguardtest.Word+"-", 1, notes),
 			},
 		},
 		{
 			name:  "the vendored file's allowlist",
 			files: map[string]string{leakguardtest.AllowedPath: line + "\n", "vendor/glasswing/other.js": line + "\n"},
-			want:  []string{matchLine("vendor/glasswing/other.js", leakguardtest.WordClass, " "+leakguardtest.Word+" ", 1, line)},
+			want:  []string{leakguardtest.ReportLine("vendor/glasswing/other.js", leakguardtest.WordClass, " "+leakguardtest.Word+" ", 1, line)},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

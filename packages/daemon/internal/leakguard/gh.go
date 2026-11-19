@@ -488,11 +488,11 @@ var ghFileOptions = map[string]bool{
 //
 // This is the fallback, for a caller that hands the guard a bare argv (GhRequest.Files nil). The
 // caller that can do better does: `legion gh` parses the command with gh's own help of the leaf,
-// so it knows every option's arity and reads shapes no table can — a short cluster whose last
+// so it knows every option's arity and reads a shape no table can — a short cluster whose last
 // letter is the option (`-dF <path>`, which is `--draft --body-file <path>` in `gh pr create`
-// and `--desc F` in `gh gist create`), and an attached `-F=<path>` — and hands the files it
-// found. What is read here instead is ghFileOptions, each in its separate and its attached
-// spelling (`--body-file=<path>`), and two more shapes of one short option:
+// and `--desc F` in `gh gist create`) — and hands the files it found. What is read here instead
+// is ghFileOptions, each in its separate and its attached spelling (`--body-file=<path>`), and
+// two more shapes of one short option:
 //
 //   - `-F <value>`: gh gives -F to --body-file, --notes-file, --from-file and --field, and to
 //     nothing else (`grep -ho -- '-F, --[a-z-]*' testdata/gh-help/*.txt | sort -u`), so a -F is
@@ -503,10 +503,11 @@ var ghFileOptions = map[string]bool{
 //     no `=` names no file — `gh project field-list --field <name>` names a field of a project —
 //     so only the `@` shape is read.
 //
-// The attached short spelling `-F<value>` is read as well, and it is the only short cluster
-// read: a `-F` anywhere but the front of a short argument is the value of the option before it
-// (`-dF` is `--desc F`), and reading that as a file would refuse a call over a file nobody
-// named.
+// The attached short spellings `-F<value>` and `-F=<value>` are read as well, the two split as
+// ghArgRecords splits a field (ghFieldArg), which is how pflag reads them: `-F=body=@notes.md` is
+// the field body read from notes.md. They are the only short cluster read: a `-F` anywhere but
+// the front of a short argument is the value of the option before it (`-dF` is `--desc F`), and
+// reading that as a file would refuse a call over a file nobody named.
 //
 // This reads the argv with no gh to tell it which other options take a value, so an option's
 // value that itself begins with `-F` (a `--body` whose first word is `-Fixed`) is read as a -F
@@ -558,11 +559,15 @@ func ghFileArgs(args []string) ([]GhFile, string) {
 		if arg == "--" {
 			break
 		}
-		option, value, attached := arg, "", false
-		if strings.HasPrefix(arg, "-F") {
-			option, value, attached = "-F", arg[len("-F"):], len(arg) > len("-F")
-		} else if name, after, found := strings.Cut(arg, "="); found {
-			option, value, attached = name, after, true
+		// A field option is split as ghArgRecords splits it (ghFieldArg), and any other option at
+		// its first `=`. A -f or --raw-field then reads as neither --field nor a file option, and
+		// names no file.
+		option, value, attached := ghFieldArg(arg)
+		if option == "" {
+			option = arg
+			if name, after, found := strings.Cut(arg, "="); found {
+				option, value, attached = name, after, true
+			}
 		}
 		field := option == "-F" || option == "--field"
 		if !field && !ghFileOptions[option] {

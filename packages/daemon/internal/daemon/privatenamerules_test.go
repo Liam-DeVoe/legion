@@ -62,11 +62,6 @@ func rulesLines(t *testing.T, log, named string) (none, anyNamed, exactly int) {
 	return none, anyNamed, exactly
 }
 
-// rulesPaddedTo is content followed by one TOML comment line that brings it to exactly size bytes.
-func rulesPaddedTo(content string, size int) string {
-	return content + "# " + strings.Repeat("x", size-len(content)-len("# \n")) + "\n"
-}
-
 // A rule file the guard could not run refuses the boot before the store is touched, and `legion
 // config check` (CheckStart) refuses it in the same words: a file that is not there, one a byte
 // past leakguard.MaxRulesFile, one that is no TOML, one that extends another, and one that holds
@@ -81,16 +76,16 @@ func TestBootRefusesAPrivateNameRuleFileItCannotUse(t *testing.T) {
 		content string
 		want    string
 	}{
-		{name: "a missing file", want: "{named} names {file}, which could not be read: "},
-		{name: "a file one byte past the bound", content: rulesPaddedTo(leakguardtest.Rules, leakguard.MaxRulesFile+1),
-			want: "{named} names {file}, which is longer than 262144 bytes, the most a private-name rule file may hold"},
+		{name: "a missing file", want: "{named} names {file}, which could not be opened: no such file or directory"},
+		{name: "a file one byte past the bound", content: leakguardtest.PaddedTo(leakguardtest.Rules, leakguard.MaxRulesFile+1),
+			want: "{named} names {file}, which is longer than 262144 bytes"},
 		{name: "a file that is no TOML", content: "title = = [\n",
 			want: "{named} names {file}, which is no private-name rule file the guard can run: the rules are not TOML"},
 		{name: "an [extend] section", content: leakguardtest.Rules + "\n[extend]\nuseDefault = true\n",
 			want: "{named} names {file}, which is no private-name rule file the guard can run: the rules hold an [extend] section"},
 		{name: "no rule", content: "title = \"no rules at all\"\n",
 			want: "{named} names {file}, which is no private-name rule file the guard can run: the rules hold no rule"},
-		{name: "no rule in a file at the bound", content: rulesPaddedTo("title = \"no rules at all\"\n", leakguard.MaxRulesFile),
+		{name: "no rule in a file at the bound", content: leakguardtest.PaddedTo("title = \"no rules at all\"\n", leakguard.MaxRulesFile),
 			want: "{named} names {file}, which is no private-name rule file the guard can run: the rules hold no rule"},
 	} {
 		for _, named := range privateNameRulesNamers {

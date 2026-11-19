@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -315,13 +314,6 @@ func TestLeakCheckTextRunsTheGuardOverWhatItIsPiped(t *testing.T) {
 	}
 }
 
-// refusalLine is one line of a rule-pass refusal's report, as the guard writes it: the record,
-// the description of the rule that matched, the text it matched and the line that text stands
-// on, both quoted, and the line's number.
-func refusalLine(record, class, match string, n int, line string) string {
-	return record + ": " + class + ": matched " + strconv.Quote(match) + " on line " + strconv.Itoa(n) + ": " + strconv.Quote(line)
-}
-
 // A push the deployment's rules refuse shows, on standard error, what matched, so the agent that
 // wrote the commit sees what to change: the record, the commit's message; the description of the
 // rule; the text the rule matched, the fixture's host and the space after it; and the line of the
@@ -335,7 +327,7 @@ func TestLeakCheckPrePushRefusalShowsMatch(t *testing.T) {
 	code, printed := leakCheck(t, update, "pre-push", "origin", dir+".git")
 	commit := strings.Fields(update)[1][:7]
 	want := "LEAK CHECK: refusing the push to origin: the deployment's private-name rules match it\n" +
-		"  " + refusalLine("commit "+commit+" message", leakguardtest.RulesHostClass, leakguardtest.RulesHost+" ", 3, line) + "\n"
+		"  " + leakguardtest.ReportLine("commit "+commit+" message", leakguardtest.RulesHostClass, leakguardtest.RulesHost+" ", 3, line) + "\n"
 	if code != 3 || printed != want {
 		t.Errorf("legion leak-check pre-push = exit %d, stderr %q; want exit 3 and %q", code, printed, want)
 	}
@@ -343,9 +335,7 @@ func TestLeakCheckPrePushRefusalShowsMatch(t *testing.T) {
 
 // A text the deployment's rules refuse shows what matched the same way: the record, the body;
 // the rule's description; the fixture's host and the space after it; and the body's second
-// line, on which it stands. The text names leakguardtest.RulesHost, which the rules every Legion
-// binary embedded before the deployment's rule file refuse too, so a negative control can run an
-// older `legion` over this very text and read that its report named the class and no match.
+// line, on which it stands.
 func TestLeakCheckTextRefusalShowsMatch(t *testing.T) {
 	const (
 		kind = "the pull request body"
@@ -355,7 +345,7 @@ func TestLeakCheckTextRefusalShowsMatch(t *testing.T) {
 	t.Setenv(leakguard.RulesFileVar, leakguardtest.WriteRules(t, t.TempDir()))
 	code, printed := leakCheck(t, "a title of no interest\na first line of no interest\n"+line+"\n", "text", kind)
 	want := "LEAK CHECK: refusing " + kind + ": the deployment's private-name rules match it\n" +
-		"  " + refusalLine("the body", leakguardtest.RulesHostClass, leakguardtest.RulesHost+" ", 2, line) + "\n"
+		"  " + leakguardtest.ReportLine("the body", leakguardtest.RulesHostClass, leakguardtest.RulesHost+" ", 2, line) + "\n"
 	if code != 3 || printed != want {
 		t.Errorf("legion leak-check text = exit %d, stderr %q; want exit 3 and %q", code, printed, want)
 	}

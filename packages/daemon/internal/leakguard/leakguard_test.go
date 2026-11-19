@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -101,13 +100,6 @@ func reports(t *testing.T, lines []string, want ...string) {
 	if !same {
 		t.Errorf("the report is %q, want a line of each of %q", lines, want)
 	}
-}
-
-// matchLine is the whole line a rule pass's report writes of one finding: the record, the class,
-// the match and the line of the record it stands on, n, with the match and the line quoted as Go
-// quotes them.
-func matchLine(record, class, match string, n int, line string) string {
-	return record + ": " + class + ": matched " + strconv.Quote(match) + " on line " + strconv.Itoa(n) + ": " + strconv.Quote(line)
 }
 
 // namesClass is whether one line of a rule pass's report names class, whatever its record.

@@ -320,8 +320,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// call guarded whole keeps all three as they were, and so does a call the guard answered
 	// NoRules (leakguard.GhAnswer.NoRules): the deployment names no private-name rule, so there
 	// is no pass for it to go around, and what its pager or browser could write no pass would
-	// have read either. So the condition below is checkedOnly's, and a NoRules answer leaves it
-	// false.
+	// have read either.
 	var unset map[string]bool
 	if mode == ghRateLimitCall || mode == ghVisibilityCall || checkedOnly {
 		set["GH_PAGER"] = "cat"
