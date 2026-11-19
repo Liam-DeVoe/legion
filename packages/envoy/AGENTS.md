@@ -4735,13 +4735,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   — sends this route to the known-session store, while a read that did not answer is the `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1` that asks the sender to try the same route again.
   The `404 {"error":"no live session <id>"}` a sender routes around the pane on is answered only when neither store knows the id.
   The target read, the sender stamp, the connection probe and the publish share one 3.5 s budget (`sendRequestBudget`) taken from the request's own context, so a bus this listener cannot reach is answered inside the caller's attempt instead of spending it, and a publish the bus did not serve is that same 503.
-  The envelope's `sender` (on this route and the publish route alike) is stamped from the sender's interest record (`senderStamp`), whose cache miss is read through to the `envoy_interests` bucket within `senderStampReadTimeout` (1 s) of the same budget:
-  the stamp is only enrichment, so a read that does not answer leaves it the session id and the title this listener's session cache holds, and the publish that follows meets the silent bus itself and answers that 503.
-  The session it names is the message's sender (`messageSender`): the session a broker token proves, else the body's trimmed `source_session`.
-  So a message of a token's session carries the stamp whether its body names the session or not, and a message with neither carries none.
-  Its `machine` and `cwd` are the interest row's, which the session's latest registration wrote, so they name the listener the session is registered through now and the directory that registration sent (dispatch://INFRA-889;
-  before it, both named the listener the session first registered through).
-  The connection probe (below) runs beside that stamp on a goroutine of its own, under the same second (`connectionProbeTimeout`), so a send that both stamps and probes spends one second on the pair and the budget is unchanged by the probe.
+  The connection probe (below) runs beside the sender stamp (the next item) on a goroutine of its own, under the same second (`connectionProbeTimeout`), so a send that both stamps and probes spends one second on the pair and the budget is unchanged by the probe.
   The publish row's 403 for a denied publish reaches this route too:
   it publishes `contracts.LegacyAgentSubject(target)`, the target's agent subject in the old form, with no project (`contracts.AgentSubject` builds the new form, which no producer writes yet), and the stream's `notifications.agent.>` captures it, so the publish goes through JetStream, and a JetStream publish the server refuses under this listener's own grant is `bus.ErrPublishDenied` as a core one is (`deniedPublish`, `internal/bus/denials.go`), answered `403 {"error":"envoy: the message bus denied the publish under this listener's own permissions: <reason>"}` with no `Retry-After` (`writeBusUnavailable`) and recorded `outcome=publish_denied`.
   That was the retried `503` with `Retry-After: 1` before, so a sender that met it retried and now meets a refusal it must report instead.
@@ -4749,7 +4743,14 @@ Each item below names an endpoint and its method, then its contract, and an item
   the response is the envelope plus `recipient` with the full target session ID, `duplicate: true` when JetStream already held this message, and `recipient_state`, `state` and `last_seen` (below).
   Before it reads the target, a message of an agent session whose count under the operator's sender limit is empty is answered `429` and recorded `outcome=sender_rate_limited`, with nothing read, reported or stored ("Sender limit" above).
 
-- A 200 from this route carries `recipient_state`, the target's registry state, and `state`, what the connection probe found it to be, `connected` or `stopped` (`sendHandler`), with `last_seen` in unix milliseconds:
+- The envelope's `sender`, on `/v1/messages/send` and the publish route alike, is stamped from the sender's interest record (`senderStamp`), whose cache miss is read through to the `envoy_interests` bucket within `senderStampReadTimeout` (1 s) of the send's budget:
+  the stamp is only enrichment, so a read that does not answer leaves it the session id and the title this listener's session cache holds, and the publish that follows meets the silent bus itself and answers that 503.
+  The session it names is the message's sender (`messageSender`): the session a broker token proves, else the body's trimmed `source_session`.
+  So a message of a token's session carries the stamp whether its body names the session or not, and a message with neither carries none.
+  Its `machine` and `cwd` are the interest row's, which the session's latest registration wrote, so they name the listener the session is registered through now and the directory that registration sent (dispatch://INFRA-889;
+  before it, both named the listener the session first registered through).
+
+- A 200 from `/v1/messages/send` carries `recipient_state`, the target's registry state, and `state`, what the connection probe found it to be, `connected` or `stopped` (`sendHandler`), with `last_seen` in unix milliseconds:
   the entry's last registration, or for a target with no entry its known-session record's last write.
   `state` is a field of its own and not a fourth value of `recipient_state`, because every released plugin reads `recipient_state` as a closed list of `live`, `unresponsive` and `gone` and would fail to read an answer carrying a fourth;
   an older client drops `state`, and `stopped` is never a `session.State`.
