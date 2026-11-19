@@ -110,12 +110,12 @@ itself, whose tests import its sources by relative path.
 
 - A test that starts a process which loads `@oh-my-pi/pi-natives` gives it the environment
   `nativesEnvironment` of `@legion/test-fixtures/natives-environment` returns, which sets
-  `TOKIO_WORKER_THREADS` to 1 where the caller sets none. Such a process is a Bun process whose
-  modules import `@oh-my-pi/pi-utils` or `@oh-my-pi/pi-tui` (every extension of pi-envoy,
-  pi-legion and pi-shared does), or the `omp` binary, which embeds the addon. The addon's Tokio
-  runtime otherwise starts a worker for each CPU of the machine, 288 on a shared dev box, and
-  under a limit of tasks a second such process cannot start its threads: it exits 1 having
-  printed nothing.
+  `TOKIO_WORKER_THREADS` and `RAYON_NUM_THREADS` to 1 where the caller sets neither. Such a process
+  is a Bun process whose modules import `@oh-my-pi/pi-utils` or `@oh-my-pi/pi-tui` (every extension
+  of pi-envoy, pi-legion and pi-shared does), or the `omp` binary, which embeds the addon. The
+  addon's Tokio runtime starts a worker for each CPU as it loads, and its Rayon pool does the same
+  at its first parallel call, 288 each on a shared dev box. Under a limit of tasks a second such
+  process cannot start its threads: it exits 1 having printed nothing.
 
 - Put a variable back with `restoreEnvironment` or `captureEnvironment`
   (`@legion/test-fixtures/environment`), which set and delete the names themselves. A name that held
