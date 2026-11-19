@@ -7,8 +7,7 @@ import type { AgentPart } from "../refs/AgentName";
 import { ownWords } from "../threads/quote-reply";
 
 /** A session a broadcast would leave out, with its composer-facing reason named through
- *  `MODE_LABELS`. The server's stored diagnostic keeps the wire name
- *  (`packages/dispatch/AGENTS.md`). */
+ *  `MODE_LABELS`. The server's stored diagnostic keeps the wire name. */
 export interface BroadcastExclusionPlan {
   /** The live session the chosen mode leaves out; absent for a session a restored send does not
    *  name and the registry no longer holds. */

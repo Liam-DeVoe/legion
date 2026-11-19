@@ -313,6 +313,14 @@ func (s *server) keepWritingCheck(r *http.Request, event store.WritingCheckEvent
 	s.recordWritingCheck(r.Context(), event)
 }
 
+// dropWritingCheck drops the rows the writing check kept for r (keepWritingCheck), for a route that
+// answers 2xx for a write that does not take place, such as a result's dry run.
+func dropWritingCheck(r *http.Request) {
+	if kept, ok := r.Context().Value(writingCheckRowsKey{}).(*writingCheckRows); ok {
+		kept.events = nil
+	}
+}
+
 // recordTakenWrites is a write route's layer for the writing check's rows: it records the rows
 // the check kept for the write (keepWritingCheck) once handler answered it 2xx, which a route
 // answers only for a write that took place, a write the reviewer holds among them. A write the

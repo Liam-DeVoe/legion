@@ -431,6 +431,10 @@ type proseRouteCase struct {
 	wantStatus int
 }
 
+// proseDryRunRoutes are the routes that answer 2xx for a write that does not take place (a
+// result's dry run): the check reads its words as the write's, and the route records no row.
+var proseDryRunRoutes = map[string]bool{"POST /api/v1/issues/{key}/results/dry-run": true}
+
 func proseRouteCases() []proseRouteCase {
 	session := func(method, path func(f writingCheckFixture) string, body func(text string) map[string]any) func(*writingCheckRig, string) *httptest.ResponseRecorder {
 		return func(rig *writingCheckRig, text string) *httptest.ResponseRecorder {
@@ -480,6 +484,8 @@ func proseRouteCases() []proseRouteCase {
 		}, http.StatusCreated},
 		{"POST /api/v1/issues/{key}/results", "run", session(post, func(f writingCheckFixture) string { return "/api/v1/issues/" + f.issue + "/results" },
 			field("run", "check", "k1", "role", "tester", "commit", strings.Repeat("a", 40), "verdict", "pass")), 0},
+		{"POST /api/v1/issues/{key}/results/dry-run", "run", session(post, func(f writingCheckFixture) string { return "/api/v1/issues/" + f.issue + "/results/dry-run" },
+			field("run", "check", "k1", "role", "tester", "commit", strings.Repeat("a", 40), "verdict", "pass")), http.StatusOK},
 		{"POST /api/v1/results/{id}/retract", "reason", session(post, func(f writingCheckFixture) string {
 			return "/api/v1/results/" + f.result + "/retract"
 		}, field("reason")), 0},
@@ -570,7 +576,7 @@ func (rig *writingCheckRig) multipartUpload(target, name, contentType, content, 
 // with the rule, its field and its reader, and a clean one is recorded clean. A route whose text
 // no person reads (readerNone) writes the body, recorded exempt_no_reader. A write the route
 // refuses records nothing, as it writes nothing else (recordTakenWrites), and every route takes
-// at least one of its writes, which records exactly one row. The cases are held to the registry:
+// at least one of its writes, which records exactly one row; a dry run records none. The cases are held to the registry:
 // a route that starts to carry prose needs a case here. Every reader in the rig is alice: she
 // holds the issue, the project defaults to her, she wrote the comment and the message the replies
 // answer, and she opened the direct conversation.
@@ -590,6 +596,19 @@ func TestTheWritingCheckRecordsAndWritesOnEveryProseRoute(t *testing.T) {
 		t.Run(c.route, func(t *testing.T) {
 			rig.t = t
 			method, route, _ := strings.Cut(c.route, " ")
+			if proseDryRunRoutes[c.route] {
+				// A dry run writes nothing, so it records nothing, whatever its words break.
+				for _, text := range []string{badProse, cleanProse} {
+					rig.clearEvents()
+					if answered := c.call(rig, text); answered.Code != c.wantStatus {
+						t.Fatalf("%s: %d %s, want %d", c.route, answered.Code, answered.Body.String(), c.wantStatus)
+					}
+					if events := rig.events(); len(events) != 0 {
+						t.Errorf("the dry run recorded %+v, want no row", events)
+					}
+				}
+				return
+			}
 			taken := 0
 			// write writes text through the route and answers the one row a write that took place
 			// recorded, and false for a write the route refused, which must have recorded none.

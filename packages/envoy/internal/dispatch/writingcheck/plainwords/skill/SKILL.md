@@ -1,6 +1,6 @@
 ---
 name: plain-words
-description: "Use before you send or publish any text a person reads: an ask, a spec, a Dispatch comment, a message to a colleague, a pull-request body, a commit message, a report, a status update. Also use before you answer a question a person asked, and before a draft goes to a reviewer. It removes empty verb phrases and replaces each with the literal thing."
+description: "Use when you are about to send or publish text a person reads (an ask, spec, comment, message, pull-request body, commit message, report or status update), answer a person's question, or hand a draft to a reviewer."
 ---
 
 # Write without slop

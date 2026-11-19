@@ -81,6 +81,7 @@ var writingCheckReaderRules = map[string]readerRule{
 	"POST /api/v1/issues/{key}/artifacts/{slug}/versions": readerIssue,
 	"POST /api/v1/issues/{key}/asks":                      readerIssue,
 	"POST /api/v1/issues/{key}/results":                   readerIssue,
+	"POST /api/v1/issues/{key}/results/dry-run":           readerIssue,
 	"POST /api/v1/issues/{key}/comments":                  readerComment,
 	"POST /api/v1/issues/{key}/messages":                  readerMessage,
 
