@@ -102,7 +102,6 @@ create table plan_steps (
   role text not null constraint plan_steps_role_check check (role ~ '^[a-z][a-z0-9-]*$'),
   type text not null,
   agent_key text not null default '',
-  reviewed_head text not null default '',
   primary key (issue, generation, task, position),
   foreign key (issue, generation, task) references plan_tasks (issue, generation, task) on delete cascade
 );

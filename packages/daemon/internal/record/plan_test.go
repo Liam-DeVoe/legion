@@ -79,7 +79,6 @@ func TestPlanRowsRoundTrip(t *testing.T) {
 	tasks[0].State, tasks[0].StoppedReason = TaskStopped, "task a of LEGION-208 was stopped by its owner"
 	tasks[0].Place = TaskPlace{Kind: PlaceStep, Position: 2}
 	tasks[0].Counts = ReturnCounts{Pass: 3, Rounds: 2, ConflictRounds: 1, BackwardMoves: map[string]int{"reviewing-implementing": 2}, CapTold: 3}
-	steps[1].ReviewedHead = "1111111111111111111111111111111111111111"
 	early, earlyTasks, earlySteps := ownersPlan(unrecorded, 0, 1, otherOwner, planGivenAt.Add(time.Hour))
 
 	inTx(t, st, func(tx pgx.Tx) {
@@ -198,9 +197,9 @@ func TestANewGenerationClearsTheStepOfAPhaseRow(t *testing.T) {
 
 // A run of a child again, a person's todo on it and a re-admission of a root start the owner's plan
 // from its start (CarryPlan with carried false): the new generation holds the same versions and
-// the same steps, each task waiting at no act with every count 0, and no step's reviewed commit;
-// the old generation's rows stay as they were. The count of starts of each place is not the
-// plan's: it lives in step_starts alone (record.StepPlace), which the copy does not touch.
+// the same steps, each task waiting at no act with every count 0; the old generation's rows stay
+// as they were. The count of starts of each place is not the plan's: it lives in step_starts alone
+// (record.StepPlace), which the copy does not touch.
 func TestARerunCopiesTheOwnersPlanFresh(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -209,7 +208,6 @@ func TestARerunCopiesTheOwnersPlanFresh(t *testing.T) {
 	tasks[0].Task, steps[0].Task, steps[1].Task = "c", "c", "c"
 	tasks[0].State, tasks[0].Place = TaskRunning, TaskPlace{Kind: PlaceStep, Position: 2}
 	tasks[0].Counts = ReturnCounts{Pass: 2, Rounds: 1, BackwardMoves: map[string]int{"reviewing-implementing": 1}, CapTold: 1}
-	steps[1].ReviewedHead = "2222222222222222222222222222222222222222"
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, NewStore().PutIssue(ctx, tx, issue))
 		putPlan(t, tx, v, tasks, steps)
@@ -223,7 +221,7 @@ func TestARerunCopiesTheOwnersPlanFresh(t *testing.T) {
 	freshTask.Counts = ReturnCounts{}
 	var freshSteps []PlanStep
 	for _, step := range steps {
-		step.Generation, step.ReviewedHead = 2, ""
+		step.Generation = 2
 		freshSteps = append(freshSteps, step)
 	}
 	inTx(t, st, func(tx pgx.Tx) {
@@ -237,16 +235,15 @@ func TestARerunCopiesTheOwnersPlanFresh(t *testing.T) {
 }
 
 // A hand-over that carries its orphan's run (CarryPlan with carried true) carries where each task
-// stands: its state, its place and its counts, and each step's reviewed commit, so the orphan goes
-// on at the step it stood at. An issue that ran before the release has no plan rows, and the carry
-// writes none for it: it goes on as today.
+// stands: its state, its place and its counts, so the orphan goes on at the step it stood at. An
+// issue that ran before the release has no plan rows, and the carry writes none for it: it goes on
+// as today.
 func TestACarriedPlanKeepsWhereEachTaskStands(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
 	v, tasks, steps := ownersPlan(planIssue, 1, 2, planOwner, planGivenAt)
 	tasks[0].State, tasks[0].Place = TaskRunning, TaskPlace{Kind: PlaceStep, Position: 2}
 	tasks[0].Counts = ReturnCounts{Pass: 2, Rounds: 1, ConflictRounds: 1, BackwardMoves: map[string]int{"reviewing-implementing": 1}, CapTold: 1}
-	steps[1].ReviewedHead = "2222222222222222222222222222222222222222"
 	inTx(t, st, func(tx pgx.Tx) {
 		putPlan(t, tx, v, tasks, steps)
 		must(t, NewStore().CarryPlan(ctx, tx, planIssue, 1, 2, true))

@@ -171,11 +171,6 @@ func assertTakesOwnersPlan(t *testing.T, pool *pgxpool.Pool, key, root string, g
 	if got := stepRoles(stored, "a"); !reflect.DeepEqual(got, []string{"implementer", "reviewer"}) {
 		t.Fatalf("the steps of task a = %v, want implementer and reviewer", got)
 	}
-	for _, step := range stored.Steps["a"] {
-		if step.ReviewedHead != "" {
-			t.Fatalf("step %+v names the commit a review read, want none: the run starts from its start", step)
-		}
-	}
 	if got, want := workerStarts(t, pool, key), []string{fmt.Sprintf("implementer/implementing@%d", generation)}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the worker starts of %s = %v, want %v: the first step of the owner's plan, and no planner", key, got, want)
 	}

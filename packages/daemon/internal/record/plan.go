@@ -129,18 +129,16 @@ type PlanTask struct {
 	Counts         ReturnCounts
 }
 
-// PlanStep is one step of a task, at its place from 1: the role that runs it, the step's type, the
-// agent key the plan names for it ("" for none), and the commit the newest deciding review of this
-// step read ("" until one did).
+// PlanStep is one step of a task, at its place from 1: the role that runs it, the step's type and
+// the agent key the plan names for it ("" for none).
 type PlanStep struct {
-	Issue        string
-	Generation   uint64
-	Task         string
-	Position     int
-	Role         string
-	Type         string
-	AgentKey     string
-	ReviewedHead string
+	Issue      string
+	Generation uint64
+	Task       string
+	Position   int
+	Role       string
+	Type       string
+	AgentKey   string
 }
 
 // StoredPlan is the plan of an issue at one generation: the version in force, every task ordered by
@@ -210,9 +208,9 @@ func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks 
 		return fmt.Errorf("%s: %w", describe, err)
 	}
 	for _, step := range steps {
-		if _, err := tx.Exec(ctx, `insert into plan_steps (issue, generation, task, position, role, type, agent_key, reviewed_head)
-			values ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			v.Issue, int64(v.Generation), step.Task, step.Position, step.Role, step.Type, step.AgentKey, step.ReviewedHead); err != nil {
+		if _, err := tx.Exec(ctx, `insert into plan_steps (issue, generation, task, position, role, type, agent_key)
+			values ($1, $2, $3, $4, $5, $6, $7)`,
+			v.Issue, int64(v.Generation), step.Task, step.Position, step.Role, step.Type, step.AgentKey); err != nil {
 			return fmt.Errorf("%s: step %d of task %s: %w", describe, step.Position, step.Task, err)
 		}
 	}
@@ -241,7 +239,7 @@ func (s *Postgres) Plan(ctx context.Context, tx pgx.Tx, issue string, generation
 	if plan.Tasks, err = scanPlanTasks(rows); err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
-	steps, err := tx.Query(ctx, `select task, position, role, type, agent_key, reviewed_head
+	steps, err := tx.Query(ctx, `select task, position, role, type, agent_key
 		from plan_steps where issue = $1 and generation = $2 order by task, position`, issue, int64(generation))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
@@ -249,7 +247,7 @@ func (s *Postgres) Plan(ctx context.Context, tx pgx.Tx, issue string, generation
 	defer steps.Close()
 	for steps.Next() {
 		step := PlanStep{Issue: issue, Generation: generation}
-		if err := steps.Scan(&step.Task, &step.Position, &step.Role, &step.Type, &step.AgentKey, &step.ReviewedHead); err != nil {
+		if err := steps.Scan(&step.Task, &step.Position, &step.Role, &step.Type, &step.AgentKey); err != nil {
 			return nil, fmt.Errorf("%s: %w", describe, err)
 		}
 		plan.Steps[step.Task] = append(plan.Steps[step.Task], step)
@@ -384,11 +382,10 @@ func (s *Postgres) PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Is
 
 // CarryPlan copies the plan of issue at generation from to generation to: every version, every task
 // and every step. carried is a hand-over that carries its run, whose tasks go on where they stood,
-// so each task keeps its state, its place and its counts, and each step the commit its review read.
-// Without carried, the plan starts from its start: each task waits at no act with every count 0,
-// and no step holds a reviewed commit. Neither copies a count of starts, which step_starts keeps by
-// place alone. Where from has no plan rows it writes nothing, so an issue that ran before plans
-// goes on as it did; a generation to that holds a plan already is refused.
+// so each task keeps its state, its place and its counts. Without carried, the plan starts from its
+// start: each task waits at no act with every count 0. Neither copies a count of starts, which
+// step_starts keeps by place alone. Where from has no plan rows it writes nothing, so an issue that
+// ran before plans goes on as it did; a generation to that holds a plan already is refused.
 func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from, to uint64, carried bool) error {
 	describe := fmt.Sprintf("carry the plan of %s from generation %d to %d", issue, from, to)
 	if from == to {
@@ -408,21 +405,19 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 	tasks := `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default, state)
 		select issue, $3, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default, 'waiting'
 		from plan_tasks where issue = $1 and generation = $2`
-	reviewedHead := "''"
 	if carried {
 		tasks = `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
 			state, stopped_reason, running_kind, position, pass, rounds, conflict_rounds, backward_moves, cap_told)
 			select issue, $3, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
 			state, stopped_reason, running_kind, position, pass, rounds, conflict_rounds, backward_moves, cap_told
 			from plan_tasks where issue = $1 and generation = $2`
-		reviewedHead = "reviewed_head"
 	}
 	for _, statement := range []string{
 		`insert into issue_plans (issue, generation, version, source, artifact_id, given_by, given_at)
 			select issue, $3, version, source, artifact_id, given_by, given_at from issue_plans where issue = $1 and generation = $2`,
 		tasks,
-		`insert into plan_steps (issue, generation, task, position, role, type, agent_key, reviewed_head)
-			select issue, $3, task, position, role, type, agent_key, ` + reviewedHead + `
+		`insert into plan_steps (issue, generation, task, position, role, type, agent_key)
+			select issue, $3, task, position, role, type, agent_key
 			from plan_steps where issue = $1 and generation = $2`,
 	} {
 		if _, err := tx.Exec(ctx, statement, issue, int64(from), int64(to)); err != nil {
