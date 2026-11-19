@@ -828,15 +828,15 @@ func TestConfigCheckPrintsEachProjectsProductionCheck(t *testing.T) {
 	}
 }
 
-// --check-config prints each project's `default_steps` beside its `production_check`, in key
-// order: the steps the file names, and today's line up to the owner's acceptance for the project
-// that names none, each list as the file would write it.
-func TestStartCheckConfigPrintsEachProjectsDefaultSteps(t *testing.T) {
+// `legion config check` prints each project's `default_steps` beside its `production_check`, in
+// key order: the steps the file names, and today's line up to the owner's acceptance for the
+// project that names none, each list as the file would write it.
+func TestConfigCheckPrintsEachProjectsDefaultSteps(t *testing.T) {
 	legionState(t)
 	config := projectsConfig(t, "projects:\n  DEMO: {}\n  OTHER:\n    default_steps: [implementer, \"reviewer\"]\n")
 
 	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "start", "--config", config, "--check-config"}, &out, &errb)
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 	const runs = " — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan, runs these steps, then Legion's retro and merge\n"
 	want := "Config OK: project=DEMO design-gate-steps=spec\n" +
