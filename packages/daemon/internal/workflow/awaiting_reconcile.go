@@ -863,7 +863,7 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 		task.WriteString(" The daemon tells you when the step opens or its wait ends. Continue.")
 	case gateClosed && armed && endedByBasis:
 		fmt.Fprintf(&task, " Read that document before you register the %s step again. You can register the step on a later version of that document, "+
-			"as skill://legion-architect/references/design-gate.md says. Or you can request approval of your own %s and register that version with register_gate. "+
+			"with register_gate's basis. Or you can request approval of your own %s and register that version with register_gate. "+
 			"A request you hand to the person starts your next wait. Then end your turn.", step, document)
 	case gateClosed && armed:
 		fmt.Fprintf(&task, " When the %s is ready, hand the request back to the person: request approval again and register that version with register_gate", document)

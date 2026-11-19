@@ -239,7 +239,7 @@ func reparentedWords(issue, parent, tree, ran string, version int) string {
 	return stays + fmt.Sprintf(" It runs under its own architect. %s carries the legion label and marks requirement blocks in its primary document. "+
 		"A person approved version %d of that document, which is its latest version. So the architect of %s can write it as a view on %s. "+
 		"Then that architect can register the design gate of %s on that approval, with no approval of its own, "+
-		"as skill://legion-architect/references/design-gate.md says.", parent, version, issue, parent, issue)
+		"with register_gate's basis.", parent, version, issue, parent, issue)
 }
 
 // Adopt moves issue, a recorded root AdoptionRefusal found adoptable into root's live tree, into

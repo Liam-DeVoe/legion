@@ -189,8 +189,10 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "register_gate (issue, artifactId, version, step) may also name a basis, the ancestor's document for the same step, " +
   "with basisVersion and your reason, all three or none: the step then opens on the ancestor's approval, or waits on " +
   "the ancestor's open approval request, and no person is asked to approve your own document. " +
-  "Read skill://legion-architect/references/design-gate.md for when a root rests on a basis; the tool refuses one " +
-  "while your document holds an open decision block, as dispatch request-approval does. " +
+  "The daemon takes a basis only where your root's spec is a view on the nearest reviewed ancestor, which carries the " +
+  "legion label and is not accepted, and the version is that document's latest, approved by a person or asked of one in an " +
+  "open request, and refuses any other with a code that names what Dispatch shows; the tool refuses one while your " +
+  "document holds an open decision block, as dispatch request-approval does. " +
   "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
   "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
   "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +

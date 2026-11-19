@@ -268,7 +268,7 @@ func (r *personHandoverRig) linkUnder(root, parent scratchIssue, live bool) {
 	}
 	path := fmt.Sprintf("So the architect of %s can write it as a view on %s.", root.Key, parent.Key)
 	names := func(words string) bool {
-		return strings.Contains(words, path) && strings.Contains(words, "skill://legion-architect/references/design-gate.md") &&
+		return strings.Contains(words, path) && strings.Contains(words, "with register_gate's basis.") &&
 			!strings.Contains(words, "only through that tree's own issues")
 	}
 	testwait.Eventually(t, "the daemon to tell "+root.Key+" that it can be written as a view on "+parent.Key, func() bool {

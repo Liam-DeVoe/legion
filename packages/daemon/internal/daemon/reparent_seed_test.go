@@ -62,7 +62,7 @@ func TestTheReparentSeedNamesR1sPathOnlyWhereTheParentOpensIt(t *testing.T) {
 	path := stays + fmt.Sprintf(" It runs under its own architect. %s carries the legion label and marks requirement blocks in its primary document. "+
 		"A person approved version 7 of that document, which is its latest version. So the architect of %s can write it as a view on %s. "+
 		"Then that architect can register the design gate of %s on that approval, with no approval of its own, "+
-		"as skill://legion-architect/references/design-gate.md says.", reparentParent, reparentedRoot, reparentParent, reparentedRoot)
+		"with register_gate's basis.", reparentParent, reparentedRoot, reparentParent, reparentedRoot)
 	for _, tc := range []struct {
 		name     string
 		labels   []string
