@@ -33,9 +33,16 @@ func waitState() State {
 }
 
 // waitsServed is the `wait` of every claim view of a state body that carries one, raw, by the
-// issue and role whose claim it is. A view carrying no key is in no entry, because whether the key
-// is on the wire at all is what the strip is read by.
+// issue and role whose claim it is (claimKeyServed).
 func waitsServed(t *testing.T, body []byte) map[string]json.RawMessage {
+	t.Helper()
+	return claimKeyServed(t, body, "wait")
+}
+
+// claimKeyServed is key of every claim view of a state body that carries it, raw, by the issue
+// and role whose claim it is. A view carrying no key is in no entry, because whether the key is on
+// the wire at all is what the strip is read by.
+func claimKeyServed(t *testing.T, body []byte, key string) map[string]json.RawMessage {
 	t.Helper()
 	var state struct {
 		Issues map[string]struct {
@@ -49,13 +56,13 @@ func waitsServed(t *testing.T, body []byte) map[string]json.RawMessage {
 		t.Fatalf("decode state %s: %v", body, err)
 	}
 	served := map[string]json.RawMessage{}
-	for key, issue := range state.Issues {
-		if wait, carried := issue.Architect["wait"]; carried {
-			served[key+" architect"] = wait
+	for issueKey, issue := range state.Issues {
+		if value, carried := issue.Architect[key]; carried {
+			served[issueKey+" architect"] = value
 		}
 		for role, worker := range issue.Workers {
-			if wait, carried := worker.Claim["wait"]; carried {
-				served[key+" "+role] = wait
+			if value, carried := worker.Claim[key]; carried {
+				served[issueKey+" "+role] = value
 			}
 		}
 	}

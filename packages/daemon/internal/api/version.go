@@ -2405,20 +2405,24 @@ package api
 // with no end that no longer stands — a fresh session, a phase that moved — shows on no claim.
 // So `read_record`, which is the state's issue record, carries it, and the operator's plain
 // `legion state` prints one `waits:` line naming each.
+// The claim view of a merger also gains `hold` (`api.HoldView`: `step`, `artifactId` and
+// `version`) while the closed design gate holds that merger (workflow.HeldByDesignGate), so
+// `read_record` carries it, and the plain `legion state` prints one `holds:` line naming each.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 170 is served every claim view without the key (api's stateFor, withoutWait), as
-// a caller below 146, INFRA-2614's entry, is served the issues without their entry times
-// (withoutEntryTimes), and every older band as the rows of stateNarrowings list it; they compose,
-// and every reader from 170 on takes the key as optional (`packages/contracts/src/legion-api.ts`).
-// A plugin from 58 to 166 does not refuse it, since every answer-side schema of
+// contract below 170 is served every claim view without the two keys (api's stateFor,
+// withoutWait and withoutHold), as a caller below 146, INFRA-2614's entry, is served the issues
+// without their entry times (withoutEntryTimes), and every older band as the rows of
+// stateNarrowings list it; they compose, and every reader from 170 on takes each key as optional
+// (`packages/contracts/src/legion-api.ts`).
+// A plugin from 58 to 166 does not refuse either key, since every answer-side schema of
 // `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788. The strip
-// is still what serves such a caller: a reader that did not ask for the key is not given it, and a
+// is still what serves such a caller: a reader that did not ask for a key is not given it, and a
 // plugin built before #2788 is strict and would refuse the whole body for it.
 // The change carries two store migrations beside it: `20261119055500_claim_waits`, the table
 // that keeps each wait apart from the claim's per-launch columns so a relaunch keeps it, and
 // `20261119055600_outbox_kinds_with_the_wait_due`, the outbox kind of a wait's time. Neither is
 // part of this number: a migration moves the daemon's own record, and the shapes a caller reads
-// are the two routes and the key above.
+// are the two routes and the two keys above.
 // (This change declared 125, the lowest number above the base's 111 that no open pull request
 // declared, read on 2026-11-14 against main at b994309153eba441588f393cabf50d0200684c49. It took
 // 167 at the forward merge of 2026-11-19 that brought main in at 97b85d34a35d, and takes 170 at

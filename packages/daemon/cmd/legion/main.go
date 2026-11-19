@@ -575,6 +575,7 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	fmt.Fprintln(stdout, roundsSummary(state.Issues))
 	fmt.Fprintln(stdout, openCallsSummary(state.Issues))
 	fmt.Fprintln(stdout, waitsSummary(state.Issues))
+	fmt.Fprintln(stdout, holdsSummary(state.Issues))
 	fmt.Fprintln(stdout, entrySummary(state.Issues))
 	fmt.Fprintln(stdout, pendingSummary(state.PendingStatusWrites))
 	fmt.Fprintln(stdout, heldSummary(state.HeldOutboxRows))
@@ -1227,6 +1228,55 @@ func waitsSummary(issues map[string]api.Issue) string {
 			w.wait.WakeAt.UTC().Format(time.RFC3339), w.wait.DeclaredAt.UTC().Format(time.RFC3339), strconv.Quote(w.wait.WaitingOn))
 	}
 	return fmt.Sprintf("waits: %d — %s", len(waits), strings.Join(named, "; "))
+}
+
+// claimHold is one claim the closed design gate holds: the issue and role whose claim it is, and
+// the gate row that holds it (api.HoldView).
+type claimHold struct {
+	issue string
+	role  string
+	hold  api.HoldView
+}
+
+// standingHolds is every claim of the state the closed design gate holds, by issue and then
+// role. The daemon serves a claim view's `hold` only while the hold stands (api.ClaimView.Hold),
+// so every one the state carries is one, and only a merger's.
+func standingHolds(issues map[string]api.Issue) []claimHold {
+	var holds []claimHold
+	add := func(issue, role string, view api.ClaimView) {
+		if view.Hold != nil {
+			holds = append(holds, claimHold{issue: issue, role: role, hold: *view.Hold})
+		}
+	}
+	for key, issue := range issues {
+		if issue.Architect != nil {
+			add(key, string(legionclaim.RoleArchitect), *issue.Architect)
+		}
+		for role, worker := range issue.Workers {
+			add(key, string(role), worker.Claim)
+		}
+	}
+	slices.SortFunc(holds, func(a, b claimHold) int {
+		return cmp.Or(cmp.Compare(a.issue, b.issue), cmp.Compare(a.role, b.role))
+	})
+	return holds
+}
+
+// holdsSummary is the one line an operator reads for the mergers the closed design gate holds
+// (dispatch://INFRA-2040 R4): how many, and each by issue and role with the gated step that holds
+// it, the version of that step's document that is with its reviewer, and the document's id. While
+// the hold stands the daemon's silence sweep and backstop leave that merger alone, so this line
+// is what says why such a merger is quiet and what it waits for.
+func holdsSummary(issues map[string]api.Issue) string {
+	holds := standingHolds(issues)
+	if len(holds) == 0 {
+		return "holds: none"
+	}
+	named := make([]string, len(holds))
+	for i, h := range holds {
+		named[i] = fmt.Sprintf("%s %s held by %s v%d (%s)", h.issue, h.role, h.hold.Step, h.hold.Version, h.hold.ArtifactID)
+	}
+	return fmt.Sprintf("holds: %d — %s", len(holds), strings.Join(named, "; "))
 }
 
 // heldSummary is the one line an operator reads for the lifecycle rows the daemon holds behind

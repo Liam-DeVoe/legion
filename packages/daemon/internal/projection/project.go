@@ -38,7 +38,11 @@ import (
 // claims that stands now, by claim (workflow.StandingWaitsNow), handed in for the same reason:
 // whether a wait stands is the daemon's one rule over the record (workflow.WaitStands), which this
 // package may not read, and the caller reads it in the same transaction. A claim in it carries its
-// wait (api.ClaimView.Wait) and no other claim carries one; nil is no wait. reports is each
+// wait (api.ClaimView.Wait) and no other claim carries one; nil is no wait. holds is every merger
+// claim the design gate holds now, with the gate row that holds it, by claim
+// (workflow.HoldsNow), handed in for the same reason: the hold is the daemon's one rule over the
+// issue and its tree's gate rows (workflow.HeldByDesignGate). A claim in it carries its hold
+// (api.ClaimView.Hold) and no other claim carries one; nil is no hold. reports is each
 // claim's latest capability report, by claim (LEGION-663): a claim with one shows it whatever its
 // incarnation — the view carries the reporting process's, for a reader to compare with the
 // locator's — and a claim with none shows no capabilities. Nil is no reports. The role whose phase
@@ -47,7 +51,7 @@ import (
 // tree's own root, whose times are its architect's claim's in every phase
 // (supervise.Claim.Handshake). now is the instant the held rows are read at
 // (record.Store.HeldRows) and their waits are measured from.
-func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, experiments []config.Experiment, claims []supervise.Claim, stranded []supervise.Claim, waits map[claim.Token]record.ClaimWait, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
+func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, experiments []config.Experiment, claims []supervise.Claim, stranded []supervise.Claim, waits map[claim.Token]record.ClaimWait, holds map[claim.Token]record.DesignGate, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
 	issues, err := s.Issues(ctx, tx)
 	if err != nil {
 		return api.State{}, err
@@ -129,6 +133,11 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		// reader takes such a claim for waiting.
 		if wait, stands := waits[current.Token]; stands {
 			view.Wait = api.WaitViewOf(wait)
+		}
+		// The closed design gate that holds the claim's merger, only while it holds it: a merger
+		// whose gate opened, or whose issue left merging, is in no entry of holds.
+		if gate, held := holds[current.Token]; held {
+			view.Hold = api.HoldViewOf(gate)
 		}
 		claimViews[current.Token] = view
 	}

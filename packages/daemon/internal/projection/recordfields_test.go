@@ -293,7 +293,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		assignments: map[string][]record.Assignment{root: {drawn}},
 	}
 	state, err := Project(context.Background(), nil, store,
-		"LEGION", nil, nil, []supervise.Claim{current}, nil, nil, nil, projectedAt)
+		"LEGION", nil, nil, []supervise.Claim{current}, nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}

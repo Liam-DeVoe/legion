@@ -331,11 +331,18 @@ func (e *Engine) backstopHeld(ctx context.Context, tx pgx.Tx, key string, role c
 // It reads in batches, never per issue: the issues, then their trees' gate rows. An issue the
 // record does not hold is answered nothing, and its fact finds no claim to wake.
 func (e *Engine) HeldMergers(ctx context.Context, tx pgx.Tx, issues []string) (map[string]record.DesignGate, error) {
+	return heldMergers(ctx, tx, e.store, e.cfg.Project, e.cfg.Steps, issues)
+}
+
+// heldMergers is HeldMergers over store, for issues of project, under steps, the steps the
+// deployment gates. It is the one batched read of the hold, which the wake tick's filter and the
+// state's source (HoldsNow) both ask.
+func heldMergers(ctx context.Context, tx pgx.Tx, store record.Store, project string, steps []record.DesignStep, issues []string) (map[string]record.DesignGate, error) {
 	held := make(map[string]record.DesignGate)
 	if len(issues) == 0 {
 		return held, nil
 	}
-	read, err := e.store.IssuesOf(ctx, tx, e.cfg.Project, issues)
+	read, err := store.IssuesOf(ctx, tx, project, issues)
 	if err != nil {
 		return nil, err
 	}
@@ -343,16 +350,46 @@ func (e *Engine) HeldMergers(ctx context.Context, tx pgx.Tx, issues []string) (m
 	for _, issue := range read {
 		trees = append(trees, issue.Tree)
 	}
-	gates, err := e.store.Gates(ctx, tx, trees)
+	gates, err := store.Gates(ctx, tx, trees)
 	if err != nil {
 		return nil, err
 	}
 	for _, issue := range read {
-		if gate, holds := HeldByDesignGate(issue, claim.RoleMerger, record.TreeGate{Steps: e.cfg.Steps, Rows: gates[issue.Tree]}); holds {
+		if gate, holds := HeldByDesignGate(issue, claim.RoleMerger, record.TreeGate{Steps: steps, Rows: gates[issue.Tree]}); holds {
 			held[issue.Key] = gate
 		}
 	}
 	return held, nil
+}
+
+// HoldsNow is, of claims, every merger claim the design gate holds now (HeldByDesignGate), with
+// the closed gate's row that holds it, by the claim's token. It is what the state shows on each
+// claim (internal/projection's Project, which may not read this package and is handed it, as it
+// is handed StandingWaitsNow's waits), so a merger carries its hold on its view exactly while the
+// outbox's fence holds its phase start. Only a merger can be held, so the claims of every other
+// role read nothing, and a project with no merger claim costs no read at all.
+//
+// It reads in batches, never per claim: the mergers' issues, then their trees' gate rows
+// (heldMergers). project is the Dispatch project, and steps the steps the deployment gates. A
+// claim whose issue the record of project does not hold is held by nothing.
+func HoldsNow(ctx context.Context, tx pgx.Tx, store record.Store, project string, steps []record.DesignStep, claims []supervise.Claim) (map[claim.Token]record.DesignGate, error) {
+	var issues []string
+	for _, current := range claims {
+		if current.Role == claim.RoleMerger {
+			issues = append(issues, current.Issue)
+		}
+	}
+	held, err := heldMergers(ctx, tx, store, project, steps, issues)
+	if err != nil || len(held) == 0 {
+		return nil, err
+	}
+	holds := make(map[claim.Token]record.DesignGate, len(held))
+	for _, current := range claims {
+		if gate, found := held[current.Issue]; found && current.Role == claim.RoleMerger {
+			holds[current.Token] = gate
+		}
+	}
+	return holds, nil
 }
 
 // wakeReleased is the one act every wake of this file performs, and the one place the gates are

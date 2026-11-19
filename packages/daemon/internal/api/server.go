@@ -858,7 +858,8 @@ func statementBound(bound time.Duration) int64 {
 // as and the arms of the architect-stalled reading that hold for a root, is served it without
 // `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes); and a caller
 // below waitContract, the contract that added the wait a claim's worker declared, while it
-// stands, is served every claim view without `wait` (withoutWait).
+// stands, and the design gate's hold on a merger, is served every claim view without `wait`
+// (withoutWait) and without `hold` (withoutHold).
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
 // carrying none of the keys they strip, the line's own fields being fields of a view such a
@@ -988,6 +989,7 @@ var stateNarrowings = []stateNarrowing{
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
 	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
 	{waitContract, carriesWait, withoutWait, "the claim views' wait"},
+	{waitContract, carriesHold, withoutHold, "the claim views' hold"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1173,14 +1175,17 @@ const entryTimesContract = 146
 
 // waitContract is the daemon contract that added each claim view's `wait`, the wait the claim's
 // worker declared while it stands (version.go's 170, ClaimView.Wait), beside the two routes a
-// worker declares one and reports news through. A plugin below it is served every claim view
-// without the key: one built before sjawhar/legion#2788 reads the state with a strict schema and
-// would refuse the whole body for a key it does not name, and one built after strips the key
-// instead, so the strip is what keeps the wait from a caller that did not ask for it rather than
-// what keeps such a caller reading at all. entryTimesContract stands below it with no row of
-// stateNarrowings between the two, so a caller in a pod at or above entryTimesContract and below
-// this contract is served the entry times and no claim view's `wait`. It is the highest of the
-// bands, this daemon's own contract, so the only caller served the wait is one at it.
+// worker declares one and reports news through, and each merger's `hold`, the closed design gate
+// that holds it while the hold stands (ClaimView.Hold). A plugin below it is served every claim
+// view without either key: one built before sjawhar/legion#2788 reads the state with a strict
+// schema and would refuse the whole body for a key it does not name, and one built after strips
+// the key instead, so the strip is what keeps the wait and the hold from a caller that did not ask
+// for them rather than what keeps such a caller reading at all. The two keys have a row of
+// stateNarrowings each, so the log names what each strip took. entryTimesContract stands below
+// it with no row of stateNarrowings between the two, so a caller in a pod at or above
+// entryTimesContract and below this contract is served the entry times and no claim view's
+// `wait` or `hold`. It is the highest of the bands, this daemon's own contract, so the only
+// caller served the wait and the hold is one at it.
 const waitContract = 170
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
@@ -1782,19 +1787,36 @@ func withoutLeakCheckCause(state State) State {
 	})
 }
 
-// carriesWait is whether any claim view of state carries the key waitContract added: `wait`, the
-// wait the claim's worker declared, while it stands. Like the leak check's cause it is written
-// only where there is one, so this is asked of the state rather than answered true.
+// carriesWait is whether any claim view of state carries the first key waitContract added:
+// `wait`, the wait the claim's worker declared, while it stands. Like the leak check's cause it is
+// written only where there is one, so this is asked of the state rather than answered true.
 func carriesWait(state State) bool {
 	return anyClaimView(state, func(view ClaimView) bool { return view.Wait != nil })
 }
 
-// withoutWait is state with no claim view carrying `wait`, the one key waitContract added to this
-// route; the two routes that contract added are routes of their own. The state the source
-// answered is left as it was (mapClaimViews), as withoutLeakCheckCause leaves it.
+// withoutWait is state with no claim view carrying `wait`, one of the two keys waitContract added
+// to this route (withoutHold takes the other); the two routes that contract added are routes of
+// their own. The state the source answered is left as it was (mapClaimViews), as
+// withoutLeakCheckCause leaves it.
 func withoutWait(state State) State {
 	return mapClaimViews(state, func(view ClaimView) ClaimView {
 		view.Wait = nil
+		return view
+	})
+}
+
+// carriesHold is whether any claim view of state carries the other key waitContract added:
+// `hold`, the closed design gate that holds a merger, while the hold stands. Like the wait it is
+// written only where there is one, so this is asked of the state rather than answered true.
+func carriesHold(state State) bool {
+	return anyClaimView(state, func(view ClaimView) bool { return view.Hold != nil })
+}
+
+// withoutHold is state with no claim view carrying `hold`. The state the source answered is left
+// as it was (mapClaimViews), as withoutWait leaves it.
+func withoutHold(state State) State {
+	return mapClaimViews(state, func(view ClaimView) ClaimView {
+		view.Hold = nil
 		return view
 	})
 }

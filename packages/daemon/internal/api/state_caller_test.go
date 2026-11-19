@@ -311,12 +311,13 @@ func withoutLeakCheckCauses(t *testing.T, body []byte) []byte {
 	return withoutClaimViewKey(t, body, "leakCheckCause")
 }
 
-// withoutWaits is a state body with no claim view carrying `wait`, which is what a caller below
-// waitContract is served of a state that carries one (api's withoutWait). It serves the table
-// below as withoutLeakCheckCauses does.
+// withoutWaits is a state body with no claim view carrying `wait` or `hold`, which is what a
+// caller below waitContract is served of a state that carries them (api's withoutWait and
+// withoutHold, the two keys that contract added). It serves the table below as
+// withoutLeakCheckCauses does.
 func withoutWaits(t *testing.T, body []byte) []byte {
 	t.Helper()
-	return withoutClaimViewKey(t, body, "wait")
+	return withoutClaimViewKey(t, withoutClaimViewKey(t, body, "wait"), "hold")
 }
 
 // withoutClaimViewKey is a state body with no claim view — an issue's architect, or the claim of
@@ -399,15 +400,16 @@ func withoutAnswerKeys(t *testing.T, body []byte) []byte {
 // views' step record, the places in the admission line, the workers' counts of the moves back,
 // each issue's two entry numbers, the issues the record holds in the workflow, each issue's
 // tree quiet time, what each reviewing issue's round waits on from GitHub, each issue's
-// experiment assignments, the two times of each issue's entry task and each claim view's wait
-// among the keys it is served without, since such a pod is below every row of stateNarrowings.
-// The measure of a tree that has stopped is read in finer grain by quiet_time_test.go, the two
-// times by architect_handshake_test.go, and the wait by state_wait_test.go. A pod at this
+// experiment assignments, the two times of each issue's entry task, each claim view's wait and
+// each merger's hold among the keys it is served without, since such a pod is below every row of
+// stateNarrowings. The measure of a tree that has stopped is read in finer grain by
+// quiet_time_test.go, the two times by architect_handshake_test.go, the wait by state_wait_test.go
+// and the hold by state_hold_test.go. A pod at this
 // contract, and a caller in no pod — the operator's `legion state`, whose open-rounds line reads
-// both fields, whose queue line reads those wakes, whose tool-call line reads the step records
-// and whose waits line reads the waits — are served everything. The claims are the state
-// snapshot's own, so there is no readable state whose caller's contract is unknown: a snapshot
-// without them is no state, and the route refuses it.
+// both fields, whose queue line reads those wakes, whose tool-call line reads the step records,
+// whose waits line reads the waits and whose holds line reads the holds — are served everything.
+// The claims are the state snapshot's own, so there is no readable state whose caller's contract
+// is unknown: a snapshot without them is no state, and the route refuses it.
 func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(supervise.PodUpdateContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
@@ -469,8 +471,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// The three leave together (withoutEntryTimes), so one column answers for all of them.
 		times bool
 		// waiting is whether the caller is served a claim view's `wait`, the wait its worker
-		// declared while it stands (waitContract, the contract that added it, which is this
-		// daemon's own), so the only pod served the wait is one at it.
+		// declared while it stands, and a merger's `hold`, the design gate's hold on it
+		// (waitContract, the contract that added both, which is this daemon's own), so the only
+		// pod served either is one at it.
 		waiting bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -617,7 +620,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// with each issue's `assignments` gone, the experiment answers contract 141 added
 			// (withoutAssignments), with each issue's `entryQueuedAt`, `entryConfirmedAt` and
 			// `architectStalls` gone, the three keys entryTimesContract added (withoutEntryTimes),
-			// and with each claim view's `wait` gone, the key waitContract added (withoutWait).
+			// and with each claim view's `wait` and `hold` gone, the two keys waitContract added
+			// (withoutWait, withoutHold).
 			// Every row that reaches here is below all of them, so every one of them goes whatever
 			// the row is; contract 132's strip takes a word of the line's `kind` and no key, and
 			// this fixture stands no member of that kind.
@@ -676,7 +680,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					if !tc.stall {
 						delete(view, "step")
 					}
-					for _, key := range []string{"servingGeneration", "updateReasons", "providerErrorRun", "pendingTask", "failure", "pendingCause", "leakCheckCause", "wait"} {
+					for _, key := range []string{"servingGeneration", "updateReasons", "providerErrorRun", "pendingTask", "failure", "pendingCause", "leakCheckCause", "wait", "hold"} {
 						delete(view, key)
 					}
 				}

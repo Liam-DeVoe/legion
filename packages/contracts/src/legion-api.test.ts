@@ -1267,6 +1267,45 @@ test("a claim carries its standing wait", () => {
   expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
 });
 
+// Contract 170: a merger the closed design gate holds carries the hold on its view of the state,
+// which is what `read_record` reads an issue's record from: the gated step whose row holds it, the
+// document registered for that step, and the version of it that is with its reviewer. The schema
+// must name the key, since a key it does not name is stripped and the seat never sees it: the
+// golden carries it on LEGION-215's merger alone, and this reads it before the parse and after. A
+// daemon narrows it away for a caller below 170 (`api.withoutHold`), so a claim without it parses,
+// and a hold that names no gated step, or a version below 1, is refused.
+test("a held merger carries the design gate's hold", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { workers: Record<string, { claim: { hold?: unknown } }> }>;
+  };
+  const held = state.issues["LEGION-215"]?.workers.merger?.claim;
+  if (held === undefined) {
+    throw new Error("state fixture lacks LEGION-215's merger");
+  }
+  const hold = {
+    step: "spec" as const,
+    artifactId: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+    version: 7,
+  };
+  expect(held.hold).toEqual(hold);
+  const parsed = LegionStateResponse.parse(state);
+  expect(parsed.issues["LEGION-215"]?.workers.merger?.claim.hold).toEqual(hold);
+  const carrying = Object.entries(parsed.issues).flatMap(([key, issue]) => [
+    ...(issue.architect?.hold === undefined ? [] : [`${key} architect`]),
+    ...Object.entries(issue.workers)
+      .filter(([, worker]) => worker?.claim.hold !== undefined)
+      .map(([role]) => `${key} ${role}`),
+  ]);
+  expect(carrying).toEqual(["LEGION-215 merger"]);
+
+  held.hold = { ...hold, step: "design" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  held.hold = { ...hold, version: 0 };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  held.hold = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+});
+
 // The mark of the narrowing, the last key of contract 75: the body the daemon serves a caller at
 // or above the contract carries the two numbers — the contract the daemon declares and the one
 // the caller's own pod records — and the body it narrows for a caller below it carries no such
@@ -1340,7 +1379,7 @@ test("every request-side object refuses a key it does not name", () => {
 const waitRequest = {
   claimToken: "legion-legion-legion-208-implementer",
   sessionId: "ses_implementer_208",
-  secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+  secret: CLAIM_SECRET,
   waitingOn: "the review of LEGION-207's pull request",
   wakeAt: "2026-11-14T08:00:00Z",
 };
@@ -1350,7 +1389,7 @@ const waitRequest = {
 const waitNewsRequest = {
   claimToken: "legion-legion-legion-208-implementer",
   sessionId: "ses_implementer_208",
-  secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+  secret: CLAIM_SECRET,
   waitId: "3f6c2a9e-8b14-4d7a-9e25-1c0b7f4d2a68",
 };
 

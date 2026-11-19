@@ -1729,6 +1729,67 @@ func TestPlainStateNamesEachStandingWait(t *testing.T) {
 	}
 }
 
+// An operator reading plain `legion state` is told which mergers the closed design gate holds:
+// each by issue and role with the gated step that holds it, the version of that step's document
+// that is with its reviewer, and the document's id, read from each claim view's `hold`, which the
+// daemon serves only while the hold stands. A claim with no hold is in none, and with no hold
+// standing the line says so. The body the daemon's own golden test writes carries one, on
+// LEGION-215's merger, and the line names it from that body too.
+func TestPlainStateNamesEachHeldMerger(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+	specHold := `"hold":{"step":"spec","artifactId":"artifact-208","version":3}`
+	criteriaHold := `"hold":{"step":"criteria","artifactId":"artifact-210","version":2}`
+	// LEGION-211 is listed first, so the line's order is the issue's, never the order the body
+	// lists them in.
+	held := `{"LEGION-211":{"key":"LEGION-211","generation":1,"phase":"merging","status":"retro",` +
+		`"workers":{"merger":{"claim":{"session":"ses_m211","state":"suspended","pluginContract":0,` + criteriaHold + `},"rounds":0}}},` +
+		`"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"merging","status":"retro",` +
+		`"workers":{"merger":{"claim":{"session":"ses_m209","state":"idle","pluginContract":0,` + specHold + `},"rounds":0},` +
+		`"implementer":{"claim":{"session":"ses_i209","state":"idle","pluginContract":0},"rounds":1}}}}`
+	open := `{"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"merging","status":"retro",` +
+		`"workers":{"merger":{"claim":{"session":"ses_m209","state":"idle","pluginContract":0},"rounds":0}}}}`
+	golden, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", "state.json"))
+	if err != nil {
+		t.Fatalf("read the state fixture: %v", err)
+	}
+	for _, tc := range []struct {
+		name, served, want string
+	}{
+		{
+			name:   "two held mergers, beside a claim the gate holds nothing of",
+			served: "{" + daemon + `,"issues":` + held + "}",
+			want:   "holds: 2 — LEGION-209 merger held by spec v3 (artifact-208); LEGION-211 merger held by criteria v2 (artifact-210)\n",
+		},
+		{name: "no hold stands", served: "{" + daemon + `,"issues":` + open + "}", want: "holds: none\n"},
+		{name: "no issues", served: "{" + daemon + `,"issues":{}}`, want: "holds: none\n"},
+		{
+			name:   "the body the daemon's golden test writes",
+			served: string(golden),
+			want:   "holds: 1 — LEGION-215 merger held by spec v7 (d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093)\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
 // An operator reading plain `legion state` is told how many production checks are open and the
 // oldest: its issue, pull request and merge commit, the role working it, the look it is on with
 // what woke it and when, and when its next look is due — read from each issue record's `check`,

@@ -232,6 +232,11 @@ const legionPendingTaskView = z.object({
   lastSendError: nonEmptyString.optional(),
 });
 
+/** `record.DesignStep` — one step of a deployment's design gate, each naming one document of the
+ * root issue: `decisions` its decisions document, `criteria` its Verification document, `spec`
+ * its primary document. */
+const legionDesignStep = z.enum(GATED_STEPS);
+
 /** `api.WaitView` — one wait as the daemon recorded it: the id it minted, what the wait waits on
  * (trimmed), when its time comes, and when the daemon recorded the declaration, to the
  * microsecond. */
@@ -240,6 +245,15 @@ const legionWait = z.object({
   waitingOn: nonEmptyString,
   wakeAt: timestamp,
   declaredAt: timestamp,
+});
+
+/** `api.HoldView` — the closed design gate that holds a merger while the hold stands: the gated
+ * step whose row holds it, the document registered for that step, and the version of that document
+ * that is with its reviewer. */
+const legionHold = z.object({
+  step: legionDesignStep,
+  artifactId: nonEmptyString,
+  version: z.number().int().positive(),
 });
 
 /** `api.ClaimView` — `session` is empty until the claim's agent registers one, `locator` is
@@ -324,6 +338,13 @@ const legionClaimView = z.object({
    * contract below 170 is served the state with no such key at all (the daemon's `withoutWait`),
    * so every reader takes it as optional. */
   wait: legionWait.optional(),
+  /** The closed design gate that holds this merger while the hold stands — the same rule the
+   * outbox's fence reads, so it is present exactly while the daemon holds the merger's phase
+   * start. Absent for every other claim: another role's, a merger whose issue is not in
+   * `merging`, and a merger whose tree's gated steps stand open or have no registered row. A
+   * caller in a pod whose plugin declares a contract below 170 is served the state with no such
+   * key at all (the daemon's `withoutHold`), so every reader takes it as optional. */
+  hold: legionHold.optional(),
 });
 
 /** `api.HandoffRecordView` — the Dispatch handoff record a worker's completion of its current
@@ -441,11 +462,6 @@ const legionGateView = z.object({
   currentVersion: z.number().int().positive(),
   approvedVersion: z.number().int().positive().nullable(),
 });
-
-/** `record.DesignStep` — one step of a deployment's design gate, each naming one document of the
- * root issue: `decisions` its decisions document, `criteria` its Verification document, `spec`
- * its primary document. */
-const legionDesignStep = z.enum(GATED_STEPS);
 
 /** `api.GatedStepView` — one step of the deployment's design gate as one issue stands in it
  * (contract 55). `artifactId` and `currentVersion` are the document its architect registered for

@@ -62,7 +62,7 @@ func TestProjectShowsThePhaseEntryAndTheEntryTheRoleWasGiven(t *testing.T) {
 			Session: "ses_implementer_60", GivenEntry: 5},
 	}
 
-	got, err := Project(context.Background(), nil, store, project, nil, nil, claims, nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, project, nil, nil, claims, nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestProjectShowsARootsArchitectHandshake(t *testing.T) {
 		architect("LEGION-100", 1, supervise.EntryHandshake{}, nil),
 	}
 
-	got, err := Project(context.Background(), nil, store, project, nil, nil, claims, nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, project, nil, nil, claims, nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestARootCarriesItsArchitectHandshakeOfThisRunInEveryPhase(t *testing.T) {
 		held("LEGION-90", claim.RoleImplementer, 1, implementers),
 		held("LEGION-100", claim.RoleImplementer, 1, implementers),
 		held("LEGION-110", claim.RoleImplementer, 1, implementers),
-	}, nil, nil, nil, projectedAt)
+	}, nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}

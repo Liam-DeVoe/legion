@@ -121,7 +121,7 @@ func (r *mainPathRig) rootView() api.Issue {
 	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
 		var err error
 		state, err = projection.Project(r.ctx, tx, r.records, mainPathProject, config.DesignGateRootIssues.Steps(), nil,
-			[]supervise.Claim{r.machine().Claim()}, nil, nil, nil, time.Now().UTC())
+			[]supervise.Claim{r.machine().Claim()}, nil, nil, nil, nil, time.Now().UTC())
 		return err
 	}); err != nil {
 		r.t.Fatalf("project the state: %v", err)

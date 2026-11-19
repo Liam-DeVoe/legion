@@ -2985,7 +2985,16 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if err != nil {
 		return api.State{}, nil, err
 	}
-	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, s.experiments, claims, stranded, waits, s.reports(), now)
+	// Each merger the design gate holds, judged here for the same reason and in the same snapshot:
+	// the hold is the daemon's one rule over the issue and its tree's gate rows
+	// (workflow.HeldByDesignGate), the rule the outbox's fence reads, so a merger carries its hold
+	// on its view exactly while the fence holds its phase start. It is read in batches for the
+	// project's merger claims, never per claim.
+	holds, err := workflow.HoldsNow(ctx, tx, records, s.project, s.gatedSteps, claims)
+	if err != nil {
+		return api.State{}, nil, err
+	}
+	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, s.experiments, claims, stranded, waits, holds, s.reports(), now)
 	if err != nil {
 		return api.State{}, nil, err
 	}
