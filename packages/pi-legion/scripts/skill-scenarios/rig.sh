@@ -88,6 +88,13 @@
 #                                                  <dir> (read-only but for <dir>/<output> and
 #                                                  <dir>/sessions), output to <dir>/out.txt, the
 #                                                  model and thinking level to <dir>/judge-model.txt
+#   rig.sh class-search [<checkout>]               every class of defect INFRA-764's review
+#                                                  rounds found, each as a named check of the
+#                                                  checkout (this one, or <checkout>'s own
+#                                                  class-search.ts), each hit with its verdict by
+#                                                  the check's rule, the declared residuals apart
+#                                                  (class-search.ts); exits 0 when no check has an
+#                                                  instance outside them and none is stale
 #
 # A batch runs each run as `rig.sh run <scenario> <label> <n> <index> <start>`, which needs that
 # batch's services: <index> is the run's place in the batch and <start> the batch's start in epoch
@@ -4486,6 +4493,17 @@ cmd_world() {
   world_paths "$R" "$run_work" "$I" "$dir/pane.env" "$pin_dir" "$co"
 }
 
+# cmd_class_search [CHECKOUT] runs the class search (class-search.ts) over this script's own
+# checkout, or over CHECKOUT with the class-search.ts that checkout holds, so the search of a
+# commit is that commit's own command over that commit's tree.
+cmd_class_search() {
+  [ $# -le 1 ] || fail "usage: rig.sh class-search [<checkout>]"
+  local search=$here/class-search.ts
+  [ $# = 0 ] || search=$1/packages/pi-legion/scripts/skill-scenarios/class-search.ts
+  [ -f "$search" ] || fail "class-search: $search is not there, so ${1:-this checkout} has no class search"
+  bun "$search"
+}
+
 # Bash reads a script as it runs it, so the dispatch and its exit are one command line: a batch
 # outlives any edit to this file, and resuming at its old offset would run whatever lies there now.
 case "${1:-}" in
@@ -4496,6 +4514,7 @@ run) shift && cmd_run "$@" ;;
 score) shift && SKILL_SCENARIOS_WORK=$work bun "$here/score.ts" runs "$work/runs" "$@" ;;
 health) shift && SKILL_SCENARIOS_WORK=$work bun "$here/health.ts" "$@" ;;
 world) shift && cmd_world "$@" ;;
+class-search) shift && cmd_class_search "$@" ;;
 judge) shift && cmd_judge "$@" ;;
 judge-omp) shift && cmd_judge_omp "$@" ;;
 *) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' && exit 2 ;;

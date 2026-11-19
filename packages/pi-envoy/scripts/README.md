@@ -1622,3 +1622,74 @@ Stated limits, each known and kept so:
   `<run>/lib/public-leak-check.sh`, where a pod's names the check itself: the run that gives the
   check's own git the world's exec path (`<run>/lib/git-core`), so its `ls-remote` of origin's URL
   reads the world's heads.
+
+### The class search
+
+`rig.sh class-search [<checkout>]` runs every class of defect INFRA-764's review rounds found as a
+named check of a checkout, and judges each hit by the rule the check states (the architect's
+ruling of 2026-11-18T08:40Z). With no `<checkout>` it searches the checkout `rig.sh` lies in; with
+one it runs that checkout's own `class-search.ts` over that checkout's tree, so the search of a
+commit is that commit's own command. It needs bun, git, jq, ssh-keygen and go (each world gets the
+checkout's gh selectors, read by `gh-selectors.go` as `worker_boot` reads them), and takes about
+three minutes on a pod of two CPUs.
+
+For each check it prints the class, the reading it makes, its rule, the count of its hits, and each
+hit: `<file>:<line>` (or the world, route or read it names), its text cut, and its verdict,
+`INSTANCE` or `true` with the reason. Then it prints the findings outside the residuals, the
+residuals found with each one's ruling, the residuals no hit matches any more (stale), and the 46
+entries of the hand search of `f853f11b`. It exits 0 when no check has an instance outside the
+residuals and no residual is stale, 1 when one has or one is, and 2 when a check cannot run.
+
+The checks:
+
+- Writes. Every world `rig.sh`'s `worker_fixture` builds (each case of each worker scenario of
+  `run-names.ts`'s `SCENARIOS`) is built with the script's own functions; only `fixture_workspace`,
+  which writes no route, is left out. Each route of its `fixtures.json` that takes a write verb or
+  names none gets each write that reaches it, and each write command of gh v2.98.0
+  (`gh-writes.json`) is called, through the gh stand-in in a copy of the world. A refusal is no
+  finding. A success is modelled only where a read of the world (`gh pr view`, the reviews, the
+  review comments, the conversation, the review threads) answers otherwise after it. No route may
+  answer a call to a path where the world holds nothing.
+- Reads. Each GET the world serves (the gh world's `WORLD_ROUTES`, the GitHub stand-in's
+  `GITHUB_ROUTES`, the daemon stand-in's) must be asked by a pinned read of
+  `production-shapes.json`, which `gh-standin.test.ts`'s coverage row holds to a row, or be named
+  in this README from *Which of the world's answers are pinned* on. Each pinned gh read is made in
+  the approved world after a comment, a review and a reply: an HTTP refusal production gave that
+  the world does not give is an instance, and so is a field of production's answer that the
+  world's answer lacks. The check also finds the remote helper key on the world's clone and the
+  `gh auth` calls that print the token.
+- Readers. The code `health.ts`, `score.ts` and `judge.ts` can run, with the modules they import,
+  is read for TMPDIR, HOME, the working directory, LEGION_WORKSPACE, RIG_ROOT, the work directory,
+  `rig.sh world`, a profile or an install, and the reader's own checkout. A content-keyed cache, a
+  scratch directory of the reader's own, a program of the rig's own and a path under the run's
+  directory are no finding. Each text test of `score.ts` and `health.ts` against a world id is
+  listed, and one that tests a call's own text for what the world did with the call is an
+  instance.
+- An agent's world. A record that `rig.sh` copies into the top of a run's directory, whose writer
+  prints the rig's own directory, is an instance.
+- The hand search's greps, each with the rule its hits are judged by.
+
+`class-search.json` holds the residuals and the map of the hand search. Each residual names the
+check that finds it, the pattern of the hit it covers, the date of the architect's ruling, and
+this README's words for it. Each of the hand search's 46 entries names the checks that run it,
+the rows that hold it, or why no mechanical search can.
+
+What it does not check:
+
+- An entry of the hand search marked `notMechanical` in `class-search.json`, each with its reason
+  (a merge's history, a sentence's meaning, two programs read side by side, a mutant, CI), and the
+  part of an entry left to the rows its `held` names.
+- A write's effect that none of the five reads shows. Each route gets one write a verb, with a body
+  alone and with a review's fields. A route met in several worlds is written in the first, and a
+  gh write command no route serves is called in one world only.
+- A pinned answer's kinds and line shapes, which the rows of `gh-standin.test.ts` hold. The search
+  reports only an HTTP refusal and a missing field, and fills a pinned read's placeholders with
+  the world's values.
+- A reader's value under another name. The readers are read by their text: a definition is
+  reached where a reached part names it, so a name in a string reaches it too, and a value passed
+  under another name is not followed. `rig.test.ts`'s row that judges one archived run under two
+  environments is what runs the readers.
+- A record written straight into a run's directory. Only a `cp <file> "$R/<name>"` is read.
+- A text test whose pattern or subject is built far off. A pattern is read off the line or a
+  top-level const of its file, and a subject off the line or one assignment in the same
+  definition.
