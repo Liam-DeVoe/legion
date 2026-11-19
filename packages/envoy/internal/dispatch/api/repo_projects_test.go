@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -291,6 +292,87 @@ func TestRepoProjectMappingCanonicalizesRepositoryVariants(t *testing.T) {
 	if got := refs.ExternalRepo(" Owner ", " Repo.git "); got != "owner/repo" {
 		t.Fatalf("canonical repository whitespace: got %q", got)
 	}
+}
+
+// A DELETE removes the mapping stored under its path's own spelling, compared byte for byte as
+// every lookup of a mapping by its name is, before it reads the path as every mapping's path was
+// read before the PUT held names to GitHub's rule, lower-cased and one trailing `.git` trimmed. A
+// PUT of `acme/x.git.git` stores `acme/x.git`, and the DELETE of `acme/x.git` removes that row and
+// leaves `acme/x` beside it; `acme/x` alone is removed by its own name, as before; and
+// `acme/x.git.git`, which names no mapping as it is spelled, still reaches `acme/x.git` through
+// the second reading. Names only direct SQL stores are removed by their own spelling too:
+// `Acme/X`, which the second reading lower-cases into `acme/x`, and `acme/a b`, which it refuses.
+// A path that names no mapping answers as before: 204 for a name the second reading takes, 400
+// for one it refuses.
+//
+// The negative control is the DELETE reading its path the second way alone, as it did: its DELETE
+// of `acme/x.git` removes `acme/x` and leaves `acme/x.git`.
+func TestRepoProjectDeleteRemovesTheMappingItsPathSpellsBeforeTheOneItReadsAs(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "CORE", "name": "Core",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	mapPaths := func(paths ...string) {
+		t.Helper()
+		for _, path := range paths {
+			if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/"+path,
+				map[string]string{"project": "CORE"}, "alice"); response.Code != http.StatusOK {
+				t.Fatalf("map %s: status=%d body=%s", path, response.Code, response.Body.String())
+			}
+		}
+	}
+	// stored is every mapping's name the listing answers, in byte order.
+	stored := func() []string {
+		t.Helper()
+		listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/settings/repo-projects", nil, "alice")
+		if listed.Code != http.StatusOK {
+			t.Fatalf("list the mappings: status=%d body=%s", listed.Code, listed.Body.String())
+		}
+		var repos []string
+		for _, mapping := range decodeBody[[]repoProjectResponse](t, listed) {
+			repos = append(repos, mapping.Repo)
+		}
+		slices.Sort(repos)
+		return repos
+	}
+	deleteLeaving := func(path string, status int, want ...string) {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/settings/repo-projects/"+path, nil, "alice")
+		if response.Code != status {
+			t.Fatalf("DELETE %s: status=%d body=%s, want %d", path, response.Code, response.Body.String(), status)
+		}
+		if got := stored(); !slices.Equal(got, want) {
+			t.Fatalf("after DELETE %s the mappings are %q, want %q", path, got, want)
+		}
+	}
+
+	mapPaths("acme/x.git.git", "acme/x")
+	if got := stored(); !slices.Equal(got, []string{"acme/x", "acme/x.git"}) {
+		t.Fatalf("the PUTs stored %q, want acme/x and acme/x.git", got)
+	}
+	deleteLeaving("acme/x.git", http.StatusNoContent, "acme/x")
+	events := projectEvents(t, database, "CORE", "settings.repo_project.updated")
+	if removed := events[len(events)-1]; removed["deleted"] != true || removed["mapping"].(map[string]any)["repo"] != "acme/x.git" {
+		t.Fatalf("the DELETE's event = %v, want acme/x.git removed, deleted:true", removed)
+	}
+	deleteLeaving("acme/x", http.StatusNoContent)
+
+	mapPaths("acme/x.git.git", "acme/x")
+	deleteLeaving("acme/x.git.git", http.StatusNoContent, "acme/x")
+
+	for _, name := range []string{"Acme/X", "acme/a b"} {
+		if _, err := database.Pool.Exec(t.Context(), `
+			insert into repo_projects (repo, project, created_by) values ($1, 'CORE', '{"kind":"system","id":"test"}'::jsonb)
+		`, name); err != nil {
+			t.Fatalf("store the mapping %q by SQL: %v", name, err)
+		}
+	}
+	deleteLeaving("Acme/X", http.StatusNoContent, "acme/a b", "acme/x")
+	deleteLeaving("acme/a%20b", http.StatusNoContent, "acme/x")
+	deleteLeaving("acme/nothing", http.StatusNoContent, "acme/x")
+	deleteLeaving("acme/no%20thing", http.StatusBadRequest, "acme/x")
 }
 
 func TestExternalIssueUsesPersistedRepoProject(t *testing.T) {

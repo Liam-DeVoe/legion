@@ -84,9 +84,10 @@ func CanonicalRepo(ctx context.Context, q Queryer, repo string) (string, error) 
 // cannot import packages/daemon, and the two gates of one product must hold a repository to one
 // rule, so the rule is written out here with its source named, once for every package of the
 // server that reads a repository name: the API routes that take one (api's parseSourceRepo and
-// githubCouldHoldRepo), and the four that put a stored name's halves into GitHub paths
-// (delivery's and cireconcile's splitRepo, the architecture importer's resolve, and the results
-// read's CI read, api's readCIRuns). An owner is a letter or digit and then up to 38 letters,
+// githubCouldHoldRepo), and four of the five readers that put a stored name's halves into
+// GitHub paths (delivery's and cireconcile's splitRepo, the architecture importer's resolve, and
+// the results read's CI read, api's readCIRuns); the fifth, the Legion metrics' readMergeTimes,
+// does not, as below. An owner is a letter or digit and then up to 38 letters,
 // digits, hyphens and underscores, which is looser than GitHub's sign-up form on purpose: that
 // form's rule, single hyphens with none leading or trailing, binds new accounts alone, and GitHub
 // still serves a login with a doubled hyphen (`hello--world`, the organisation `foo--bar`), one
