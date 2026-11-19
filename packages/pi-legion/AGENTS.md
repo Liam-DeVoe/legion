@@ -722,8 +722,15 @@ a tool.
 
 In a phase-worker session (planner, implementer, tester, reviewer, merger: never an architect, the
 controller, a session with no Legion environment, or a `task` subagent), the worker is reminded at
-the end of every turn for as long as the daemon answers that its claim owes work, and nudged in
-words that name no phase and no operation when that answer does not arrive (`UNREAD_REMINDER`).
+the end of every turn for as long as the daemon answers that its claim owes work. The daemon
+answers that only while its record holds the work open for the claim's role, and only where the
+completion route would take that completion (`owedBy` in `packages/daemon/internal/api/owed.go`).
+So a role whose completion stands owes nothing, and so does a tester, reviewer or merger that a
+merge forward holds, and a claim behind its entry until the task of that entry arrives. When the
+answer does not arrive, no reminder goes out and the runner leaves no reminder wake armed
+(`UNREAD_CHECK`). The runner writes one `warn` line per claim per hour that names the cause, and
+the daemon's silence sweep sends a quiet worker that owes its phase its task again
+(dispatch://INFRA-2746).
 The plugin keeps no record of the phase: the phase-stall machine (`@legion/pi-shared/phase-stall`)
 keeps only the reminder's rhythm and a count of the reminders the worker did nothing about, and its
 runner (`@legion/pi-shared/phase-reminder`) asks the daemon what the claim owes
@@ -743,14 +750,18 @@ session id (queued across a branch or a session file's move-off, or a session ch
 At `session_stop` legion.ts hands the runner how the turn ended (`turnEndOf`). When the daemon
 answers that the claim owes work, the reminder names that work in the daemon's words and tells the
 worker to run `handoff_complete`, or to reply with a line starting WAITING that names what it waits
-on; that reply buys `LEGION_STALL_WAITING_MS` of quiet before the same reminder. The first reminder
-of a run is the host's own continuation (`{continue: true, additionalContext}`), one more turn of
-the same session; every later one is a timer's steered `legion-phase-reminder` message that starts
-a turn (`pi.sendMessage`), so the run settles and the daemon sees the turn end and can deliver a
-queued task. The `legion` tool's successful `ready_for_update` (`onUpdateAnswered`) starts the wait
-the daemon ends, in which nothing reminds the worker. A worker the daemon relaunched is reminded
-from a timer `LEGION_STALL_RESUME_MS` after its claim boots (`armResumeReminder`), if the daemon
-then answers that its claim owes work, since nothing else would wake it.
+on; that reply buys `LEGION_STALL_WAITING_MS` of quiet before the same reminder. It also tells the
+worker to do nothing more for that work when the daemon refuses its `handoff_complete`
+`HANDOFF_NOT_CURRENT_PHASE`, `HANDOFF_ALREADY_RECORDED`, `CHECK_NOT_OPEN` or
+`CHECK_LOOK_NOT_OPEN`, because the daemon sends any next task itself (`owedReminder`). The first
+reminder of a run is the host's own continuation (`{continue: true, additionalContext}`), one more
+turn of the same session; every later one is a timer's steered `legion-phase-reminder` message
+that starts a turn (`pi.sendMessage`), so the run settles and the daemon sees the turn end and can
+deliver a queued task. The `legion` tool's successful `ready_for_update` (`onUpdateAnswered`)
+starts the wait the daemon ends, in which nothing reminds the worker. A worker the daemon
+relaunched is reminded from a timer `LEGION_STALL_RESUME_MS` after its claim boots
+(`armResumeReminder`), if the daemon then answers that its claim owes work, since nothing else
+would wake it.
 
 The count climbs by one per delivered reminder and drops to zero when anything happens: an inbound
 message, or a real tool call in the settling message (`assistantRanTool`, read at `message_end`:
@@ -790,8 +801,8 @@ Code's own hooks over a state file (`packages/claude-envoy/AGENTS.md`).
 (`LEGION_TEST_OMP`) through the harness's `runLegionPane` (`@legion/pi-shared/test/omp-harness`),
 which hands both plugin entries to the Oh My Pi child by path: every turn reminded while the daemon
 answers that the claim owes work, the WAITING wait, the count's resets, the architect notice and its
-retry, nothing sent once the daemon answers that the claim owes nothing, and the nudge that names
-no phase and no operation when the daemon cannot be reached.
+retry, nothing sent once the daemon answers that the claim owes nothing, and nothing sent and no
+reminder wake reported when the daemon cannot be reached.
 
 ## Where to look
 

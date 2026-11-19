@@ -108,17 +108,38 @@ const TOOL_CALL_SHAPED = /<(?:[\w-]+:)?(?:function_calls\b|invoke\s+name\s*=|par
 
 /** What a worker whose turn ended with `work` owed is told, `work` being the daemon's own name for
  * it (`LegionOwed.work`: "the testing phase of LEGION-208", "the production check of
- * LEGION-208"). Both are finished by the `legion` tool's `handoff_complete`. This is the one copy,
- * read by both hosts: the Claude Code bridge kept its own (`packages/daemon/internal/claudebridge/
- * stall.go`, deleted with INFRA-220) until the bridge became pure transport. */
+ * LEGION-208"). It is sent only to a role whose answer says that it owes `work`
+ * (`src/phase-reminder.ts`): an answer that the claim owes nothing, and a read that fails
+ * (`UNREAD_CHECK`), send no reminder. So every sentence of it is true of a role that owes work.
+ *
+ * Both kinds of work are finished by the `legion` tool's `handoff_complete`, and the sentence on
+ * a refusal covers both. A phase's completion is refused `HANDOFF_NOT_CURRENT_PHASE` when the
+ * role no longer works that phase, and a completion or a check's report is refused
+ * `HANDOFF_ALREADY_RECORDED` when the daemon already received it
+ * (`packages/daemon/internal/api/handoff.go`). A report on a production check is refused
+ * `CHECK_NOT_OPEN` once the check is closed (`checkReport`, `packages/daemon/internal/api/
+ * handoff.go`), and `CHECK_LOOK_NOT_OPEN` once the look it names has ended (`checkReported`,
+ * `packages/daemon/internal/workflow/check.go`). Each of these refusals records nothing, and the
+ * daemon sends any next task itself, so the role does nothing more for that work
+ * (dispatch://INFRA-2746).
+ *
+ * The opening names the work, and the last sentence is the needle the live proofs match
+ * (`scripts/e2e/stage3-4b13b-acceptance.sh`, `scripts/e2e/stage4b-sandbox-tree.sh`,
+ * `scripts/e2e/lib/claude-transcript.sh`): keep both word for word. The sentence about a wait is
+ * dispatch://INFRA-2040's to change. This is the one copy, read by both hosts: the Claude Code
+ * bridge kept its own (`packages/daemon/internal/claudebridge/stall.go`, deleted with INFRA-220)
+ * until the bridge became pure transport. */
 export function owedReminder(work: string): string {
   return (
     `Your turn ended with ${work} still owed: the Legion daemon's record holds it open for your ` +
     "role. If that work is done, call the `legion` tool now with op `handoff_complete` and the " +
     "fields your role's instructions give. If you are waiting on something (CI, a review, a " +
     "person), reply with a line starting WAITING that names what you are waiting on: that buys a " +
-    "quiet wait, and then this reminder comes again. This reminder repeats at the end of every " +
-    "turn for as long as the daemon's record holds that work open."
+    "quiet wait, and then this reminder comes again. If the daemon refuses your " +
+    "`handoff_complete` `HANDOFF_NOT_CURRENT_PHASE`, `HANDOFF_ALREADY_RECORDED`, " +
+    "`CHECK_NOT_OPEN` or `CHECK_LOOK_NOT_OPEN`, do nothing more for that work: the daemon " +
+    "sends you any next task itself. This reminder repeats at the end of every turn for as " +
+    "long as the daemon's record holds that work open."
   );
 }
 

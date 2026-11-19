@@ -140,14 +140,23 @@ Dispatch asks stay on Dispatch.
 ## The Legion phase reminder
 
 A Legion phase worker is reminded at the end of every turn for as long as the daemon answers that
-its claim owes work (`POST /legion/v1/claims/owed`), and nudged in words that name no phase and no
-operation when that answer cannot be read. The machine is not this package's: `@legion/pi-shared`
-holds it once for both harnesses (`phase-stall.ts`, the reminder's rhythm and the count, nothing
-of the phase; `phase-reminder.ts`, the runner that asks the daemon what the claim owes, delivers
-each reminder and tells the architect; `stall-limits.ts`, the four numbers), `@sjawhar/pi-legion`
-drives it from Oh My Pi's session hooks (`packages/pi-legion/AGENTS.md`), `src/legion-phase-hook.ts`
-drives it here from Claude Code's own hooks, and `legion claude-bridge` is transport that holds no
-copy of it (`packages/daemon/internal/claudebridge`). Nothing of the machine is re-decided here.
+its claim owes work (`POST /legion/v1/claims/owed`). The daemon answers that only while its record
+holds the work open for the claim's role, and only where the completion route would take that
+completion (`owedBy` in `packages/daemon/internal/api/owed.go`): a role whose completion stands, a
+tester, reviewer or merger that a merge forward holds, and a claim behind its entry until the task
+of that entry arrives each owe nothing. When that answer cannot be read, no reminder goes out, no
+`Stop` is blocked and no reminder wake stays armed (`UNREAD_CHECK`). The reminder tells the worker
+to do nothing more for that work when the daemon refuses its `handoff_complete`
+`HANDOFF_NOT_CURRENT_PHASE`, `HANDOFF_ALREADY_RECORDED`, `CHECK_NOT_OPEN` or
+`CHECK_LOOK_NOT_OPEN`, because the daemon sends any next task itself (`owedReminder`).
+
+The machine is not this package's: `@legion/pi-shared` holds it once for both harnesses
+(`phase-stall.ts`, the reminder's rhythm and the count, nothing of the phase; `phase-reminder.ts`,
+the runner that asks the daemon what the claim owes, delivers each reminder and tells the
+architect; `stall-limits.ts`, the four numbers), `@sjawhar/pi-legion` drives it from Oh My Pi's
+session hooks (`packages/pi-legion/AGENTS.md`), `src/legion-phase-hook.ts` drives it here from
+Claude Code's own hooks, and `legion claude-bridge` is transport that holds no copy of it
+(`packages/daemon/internal/claudebridge`). Nothing of the machine is re-decided here.
 
 **The hooks.** `scripts/build.ts`'s `LEGION_HOOKS` generates five entries into
 `legion/hooks/hooks.json`, each an `mcp_tool` hook on the server `legion` — the pane's own MCP

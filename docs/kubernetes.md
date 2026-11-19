@@ -2986,7 +2986,13 @@ It takes the claim token, session and secret that `claims/activity` takes, and a
 That architect is the issue's own architect while its claim holds its role, else the nearest architect above the issue whose claim holds its role, else the tree root's, which is the architect the daemon's own notices of the issue reach.
 `architect` is present for a phase worker on an issue the daemon records, whether or not the claim owes work, and absent for an architect, the controller, a failed claim and an issue the daemon does not record.
 The reminder's architect notice and the stall watch's notice of a stuck call go to the architect it names.
-The end-of-turn reminder of both harnesses asks it at each turn's end and keeps no phase of its own ([Idle release](#idle-release) says when a reminder is due).
+The claim owes work only while the record holds that work open for the claim's role, and only where the completion route would take the claim's completion of it (`owedBy`, `packages/daemon/internal/api/owed.go`).
+So a role whose completion stands owes nothing.
+A tester, reviewer or merger that the daemon told to wait while the implementer merges the base forward owes nothing until that merge lands.
+A claim behind the entry its phase is on, or serving no run of the issue's current generation, owes nothing until the task of that entry reaches it.
+The end-of-turn reminder of both harnesses asks this route at each turn's end and keeps no phase of its own ([Idle release](#idle-release) says when a reminder is due).
+It reminds only a claim the answer says owes work, and a read that fails or gets no answer within 3 seconds reminds no one (`UNREAD_CHECK`, `packages/pi-shared/src/phase-reminder.ts`).
+The reminder tells a worker whose `handoff_complete` the daemon refuses `HANDOFF_NOT_CURRENT_PHASE`, `HANDOFF_ALREADY_RECORDED`, `CHECK_NOT_OPEN` or `CHECK_LOOK_NOT_OPEN` to do nothing more for that work, since the daemon sends any next task itself (`owedReminder`, `packages/pi-shared/src/phase-stall.ts`).
 A plugin below 175 calls no such route, and nothing else of the claim wire changes.
 `packages/contracts/src/legion-api.ts` holds the two bodies as `LegionOwedRequest` and `LegionOwedResponse`.
 
@@ -6410,7 +6416,9 @@ An issue pod that no role is using is released: the daemon ends it and starts an
 A pod qualifies once it has had no turn in progress and no turn due for the idle period, `runtime.kubernetes.idle_release.idle_minutes` (10 minutes by default).
 A turn is due when the next phase reminder of a phase worker whose phase the daemon's record holds open falls inside the idle period:
 the worker's session reports when its next reminder timer is due, and the daemon reads from its own record whether the phase is open.
-The reminder keeps no phase of its own: when its timer is due it asks the daemon what the claim owes (`POST /legion/v1/claims/owed`), and it reminds only when the answer says the claim owes work, or when no answer arrives within 3 seconds (`OWED_READ_BOUND_MS`), when it nudges in words that name no phase.
+The reminder keeps no phase of its own: when its timer is due it asks the daemon what the claim owes (`POST /legion/v1/claims/owed`), and it reminds only when the answer says the claim owes work.
+When the answer is that the claim owes nothing, or the read fails or gets no answer within 3 seconds (`OWED_READ_BOUND_MS`), the timer sends no reminder and clears the next reminder the session reports, so that reminder holds no pod.
+A worker that owes its phase and goes quiet is sent its task again by the daemon's silence sweep, not by a reminder.
 A phase worker whose phase is open is reminded five minutes after a turn that did not complete it, and fifteen minutes after one whose reply opened with a `WAITING` line or that ended with background work of its own still running (`reminderMs` and `waitingMs`, `packages/pi-shared/src/stall-limits.ts`), so of the workers in an open phase only one that said what it waits on is released.
 Each live claim of the pod must also have reported to the daemon, after its last turn, that it runs no background work, and the pod must run the image the daemon's configuration names with every live claim on the daemon's current contract.
 The pod of a root that waits on a person's answer in `awaiting_person` is kept until that answer comes; its children are not.
