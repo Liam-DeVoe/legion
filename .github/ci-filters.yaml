@@ -926,6 +926,8 @@ go_test_step_expansion_test: &go_test_step_expansion_test
   - '.github/scripts/go_build_tags.py'
   - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
   - '.github/workflows/ci-job-envoy-go-docs-finalizers.yaml'
+  - '.github/workflows/ci-job-envoy-go.yaml'
+  - '.github/workflows/ci-job-envoy-go-race-api.yaml'
   - 'packages/envoy/scripts/database-skips.sh'
   - '.github/scripts/ci_job_reads.py'
 
@@ -1579,6 +1581,8 @@ envoy_go:
   - '.github/actions/pull-test-images/**'
   - '.github/scripts/go-tagged-tests.sh'
   - '.github/scripts/pg-connection-ceiling.sh'
+  - 'packages/envoy/scripts/database-skips.sh'
+  - 'packages/envoy/scripts/database-skips.test.sh'
   - 'packages/daemon/docker/legion-testpg'
   # why: .github/ci-notes/ci.md#envoy_go-the-three-jobs-whose-tag-steps-lean-on-this-jobs-untagged
   - '.github/workflows/ci-job-dispatch-memory.yaml'
@@ -2622,6 +2626,7 @@ envoy_go_race_api:
   - *ci_filters_data
   - '.github/workflows/ci-job-envoy-go-race-api.yaml'
   - *go_workspace
+  - 'packages/envoy/scripts/database-skips.sh'
   - 'packages/envoy/brokeraddr/*'
   - 'packages/envoy/going/*'
   - 'packages/envoy/going/goingtest/*'

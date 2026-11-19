@@ -1,5 +1,12 @@
 import { messageFor } from "@legion/envoy-client/errors"
-import { type CodexInboxItem, putInbox, takeInbox, takenBy, withdrawWaiting } from "./codex-inbox"
+import {
+  type CodexInboxItem,
+  inboxItemName,
+  putInbox,
+  takeInbox,
+  takenBy,
+  withdrawWaiting,
+} from "./codex-inbox"
 
 /**
  * Puts a line into a Codex session's conversation.
@@ -19,11 +26,12 @@ import { type CodexInboxItem, putInbox, takeInbox, takenBy, withdrawWaiting } fr
  * the Envoy frame it carries is not answered and the listener sends it again.
  *
  * Every write settles, because the session's frames are written one behind another and one that
- * never settled would hold back every later one: a line the hook did not take is queued at the
- * turn's end, and, while no turn runs, by a sweep every `pollMs`; a sweep looks at the inbox of
- * every session a line still waits in, so a `/new` that moves the session to another id while a
- * line waits for the old one queues it for the new one; and a sweep that fails is logged and
- * tried again rather than ending the ones after it.
+ * never settled would hold back every later one: a write's waiter is in place before its line can
+ * be seen, so whatever takes the line, a sweep or the hook, finds the write to settle; a line the
+ * hook did not take is queued at the turn's end, and, while no turn runs, by a sweep every
+ * `pollMs`; a sweep looks at the inbox of every session a line still waits in, so a `/new` that
+ * moves the session to another id while a line waits for the old one queues it for the new one;
+ * and a sweep that fails is logged and tried again rather than ending the ones after it.
  */
 export interface CodexDeliveryOptions {
   /** The session the `codex` process runs now, as its record names it. */
@@ -60,10 +68,9 @@ export interface CodexDelivery {
   /** Whether a turn runs, as the transcript last said. */
   turnRunning(): boolean
   /** Stops watching waiting lines; a write still waiting rejects. Resolves once every waiting line
-   *  is withdrawn or found taken. A write that stop() overtakes, one still putting its line into
-   *  the inbox, ends in deliver() after stop() has resolved, and its line may already be gone
-   *  then. That is safe: the server answers every frame still unsettled at its shutdown `nak`, so
-   *  Envoy sends that message again whatever its write does. */
+   *  is withdrawn or found taken: a line still being written is withdrawn once it is in place, and
+   *  a sweep already running first settles the writes of the lines it takes. No sweep starts after
+   *  this. */
   stop(): Promise<void>
 }
 
@@ -72,6 +79,9 @@ const WAITING_POLL_MS = 250
 interface Waiter {
   readonly directory: string
   readonly item: CodexInboxItem
+  /** Whether the line's file is in place: false when writing it failed, and the write then rejects
+   *  with that failure itself. */
+  readonly landed: Promise<boolean>
   readonly resolve: () => void
   readonly reject: (error: Error) => void
 }
@@ -106,6 +116,9 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
     }
   }
   const sweep = (): Promise<void> => {
+    // Once stop() has run, every line left is stop()'s to withdraw or find taken: a sweep that
+    // queued one now would leave stop() a line it cannot withdraw and whose queueing it never saw.
+    if (stopped) return sweeping
     sweeping = sweeping.then(sweepOnce).catch((error: unknown) => {
       options.warn(`the Codex inbox could not be swept, and will be again: ${messageFor(error)}`)
     })
@@ -120,20 +133,6 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
       options.taken?.(waiter.item)
       waiter.resolve()
     }
-  }
-  /** Ends the write of a line still in `directory` once delivery has stopped. A refused write
-   *  leaves its Envoy frame unanswered, so Envoy sends it again: the line is withdrawn before the
-   *  write is refused, so the hook cannot deliver it as well. A line the hook took first was
-   *  delivered, and its write resolves. */
-  const endStopped = async (
-    directory: string,
-    name: string,
-    item: CodexInboxItem,
-  ): Promise<void> => {
-    if (await withdrawWaiting(directory, name)) {
-      throw new Error("the Codex session's delivery stopped before the message was taken")
-    }
-    if ((await takenBy(directory, name)) === "hook") options.taken?.(item)
   }
   const timer = setInterval(() => {
     if (waiting.size === 0) return
@@ -156,16 +155,33 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
         return
       }
       const directory = options.inboxDirectory(options.sessionId())
-      const name = await putInbox(directory, item)
-      // stop() ran while the line was being written, after it ended the writes it knew of: this
-      // one ends the same way, or it would never settle.
-      if (stopped) return endStopped(directory, name, item)
-      const written = new Promise<void>((resolve, reject) => {
-        waiting.set(name, { directory, item, reject, resolve })
+      // The waiter is in place before the write of its line starts. A waiter registered only once
+      // the write returned missed a sweep or a stop() that came between: the sweep queued the line
+      // with no write to settle, or stop() did not see it, and the write never settled.
+      const name = inboxItemName()
+      const written = Promise.withResolvers<void>()
+      // A sweep can settle the write before putInbox returns; the write is awaited below.
+      written.promise.catch(() => undefined)
+      const landed = Promise.withResolvers<boolean>()
+      waiting.set(name, {
+        directory,
+        item,
+        landed: landed.promise,
+        resolve: written.resolve,
+        reject: written.reject,
       })
-      // The turn may have ended while the line was being written, after its sweep ran.
-      if (!running) void sweep()
-      await written
+      try {
+        await putInbox(directory, item, name)
+        landed.resolve(true)
+      } catch (error) {
+        landed.resolve(false)
+        waiting.delete(name)
+        throw error
+      }
+      // The turn may have ended while the line was being written, after its sweep ran. A session
+      // that ended meanwhile gets the line once it runs again, as the poll waits for that too.
+      if (!running && !ended) void sweep()
+      await written.promise
     },
     turnStarted() {
       running = true
@@ -192,13 +208,30 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
     stop() {
       stopped = true
       clearInterval(timer)
-      const left = [...waiting]
-      waiting.clear()
-      return Promise.all(
-        left.map(([name, waiter]) =>
-          endStopped(waiter.directory, name, waiter.item).then(waiter.resolve, waiter.reject),
-        ),
-      ).then(() => undefined)
+      // A refused write leaves its Envoy frame unanswered, so Envoy sends it again. Each line is
+      // withdrawn before its write is refused, so the hook cannot deliver it as well; a line the
+      // hook took first was delivered, and its write resolves. A sweep that already started
+      // settles the writes of the lines it takes, so stop() takes what is left only once it ends.
+      return sweeping
+        .then(() => {
+          const left = [...waiting]
+          waiting.clear()
+          return Promise.all(
+            left.map(async ([name, waiter]) => {
+              // A write whose line never landed rejects with its own failure.
+              if (!(await waiter.landed)) return
+              if (await withdrawWaiting(waiter.directory, name)) {
+                waiter.reject(
+                  new Error("the Codex session's delivery stopped before the message was taken"),
+                )
+              } else {
+                if ((await takenBy(waiter.directory, name)) === "hook") options.taken?.(waiter.item)
+                waiter.resolve()
+              }
+            }),
+          )
+        })
+        .then(() => undefined)
     },
   }
 }
