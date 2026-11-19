@@ -1117,9 +1117,9 @@ type MemoryGuardKill struct {
 
 func (MemoryGuardKill) isFact() {}
 
-// ClaimReady is a claim ready to be prompted, from either of two sources: the supervision
-// observation of a launch's ready, its agent having taken its Envoy role and said it can be
-// prompted (workflowRuntime.applyTerminal), and a start the outbox runs that finds an architect
+// ClaimReady is a claim ready to take its task, from either of two sources: the supervision
+// observation of a launch's ready, its agent having taken its Envoy role and said it is ready to
+// take one (workflowRuntime.applyTerminal), and a start the outbox runs that finds an architect
 // already running, whose launch has no second ready (the outbox's start). Launch is the claim's
 // launch generation the ready belongs to, the running one for the second source.
 type ClaimReady struct {

@@ -153,12 +153,12 @@ func TestAClaimRoundTripsWithItsLocatorAndDelivery(t *testing.T) {
 	sameClaim(t, onlyClaim(t, store), want)
 }
 
-// The record of this task's sends that never reached a turn round-trips with the delivery: how
-// many failed, when the last of them failed and the error it failed with. A restart rebuilds
-// every claim from this table, so a record lost here is a claim that has waited days on a send
-// which never lands and says nothing of it after the next restart (INFRA-1480). The last
-// failure's time is compared as an instant: Postgres hands a timestamptz back in the session's
-// zone, not the one it was written in.
+// The record of this task's takes whose adoption of the working copy failed round-trips with the
+// delivery: how many failed, when the last of them failed and the error it failed with. A restart
+// rebuilds every claim from this table, so a record lost here is a claim that has waited days on
+// an adoption which never lands and says nothing of it after the next restart (INFRA-1480). The
+// last failure's time is compared as an instant: Postgres hands a timestamptz back in the
+// session's zone, not the one it was written in.
 func TestADeliverysFailedSendsRoundTripAndItsConfirmationClearsThem(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -182,7 +182,7 @@ func TestADeliverysFailedSendsRoundTripAndItsConfirmationClearsThem(t *testing.T
 	}
 	if got.SendFailures != failing.SendFailures || !got.LastSendFailureAt.Equal(failing.LastSendFailureAt) ||
 		got.LastSendError != failing.LastSendError {
-		t.Fatalf("delivery read back = %+v, want %d failed sends, the last at %v, with its error",
+		t.Fatalf("delivery read back = %+v, want %d failed adoptions, the last at %v, with its error",
 			got, failing.SendFailures, failing.LastSendFailureAt)
 	}
 

@@ -1571,12 +1571,12 @@ func TestAnOperatorAnswerWhoseStepReadFailsCarriesNoRecordRatherThanTheMachinesC
 	}
 }
 
-// A claim's view carries the record of the sends of its task that never reached a turn — how
-// many failed, when the last of them failed and the error it failed with — beside the queued and
-// confirmed times. Without it, a claim that has waited days on a send which never lands says so
-// only in a log line inside its own pod (INFRA-1480). The three are omitempty, and the accepted
-// take clears them (supervise's accept), so a task no send has failed for carries none of them on
-// the wire.
+// A claim's view carries the record of the takes of its task whose adoption of the working copy
+// failed — how many failed, when the last of them failed and the error it failed with — beside the
+// queued and confirmed times. Without it, a claim that has waited days on an adoption which never
+// lands says so only in a log line inside its own pod (INFRA-1480). The three are omitempty, and
+// the accepted take clears them (supervise's accept), so a task no adoption has failed for carries
+// none of them on the wire.
 func TestClaimViewCarriesTheSendFailures(t *testing.T) {
 	h := newHarness(t)
 	token := claim.Token("legion-legion-legion-209-implementer")
@@ -1603,7 +1603,7 @@ func TestClaimViewCarriesTheSendFailures(t *testing.T) {
 	pending := got.Claims[0].Pending
 	if pending.SendFailures != failing.SendFailures || pending.LastSendFailureAt == nil ||
 		!pending.LastSendFailureAt.Equal(failedAt) || pending.LastSendError != failing.LastSendError {
-		t.Fatalf("pending %+v, want %d failed sends, the last at %v, with its error", pending, failing.SendFailures, failedAt)
+		t.Fatalf("pending %+v, want %d failed adoptions, the last at %v, with its error", pending, failing.SendFailures, failedAt)
 	}
 	if !pending.QueuedAt.Equal(queued) || pending.ConfirmedAt != nil {
 		t.Fatalf("pending %+v, want the record beside the two times, of which only the queue has happened", pending)

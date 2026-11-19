@@ -72,7 +72,8 @@ func TestTaskCostPrintsTheDaemonsOwnReading(t *testing.T) {
 // A window that holds no evidence of the take model, of the claim asked for, is judged by nothing:
 // one that holds no daemon line — an empty standard input, as a wrong kubectl selector pipes, a
 // window the log does not reach, a claim no line names — and one whose daemon lines hold no task
-// value written and no take answered, as the log of a daemon from before the task value does.
+// value written, no take answered and no fail carried into the window, as the log of a daemon from
+// before the task value does.
 // `legion task-cost` prints the reading, with the line that says why it judges nothing and each of
 // its three verdicts as "no evidence", none as a pass, and exits 1, so a check reading the command
 // cannot take a reading of nothing, or of a daemon the change has not reached, for three passes.
@@ -81,17 +82,17 @@ func TestTaskCostPrintsTheDaemonsOwnReading(t *testing.T) {
 // The negative control is the window that holds the three lines: the command exits 0, and its
 // verdicts are judged, each a pass.
 func TestTaskCostExitsOneWhenTheWindowHoldsNoDaemonLine(t *testing.T) {
-	const window = "daemon lines in the window: 0\n"
+	const noLine = "daemon lines in the window: 0\n"
 	for _, tc := range []struct {
 		name, stdin string
 		args        []string
 		// says is what the output says of the window's lines.
 		says string
 	}{
-		{"an empty standard input", "", []string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z"}, window},
-		{"a window the log does not reach", taskCostLog, []string{"--from", "2026-11-13T09:00:00Z", "--to", "2026-11-13T10:00:00Z"}, window},
+		{"an empty standard input", "", []string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z"}, noLine},
+		{"a window the log does not reach", taskCostLog, []string{"--from", "2026-11-13T09:00:00Z", "--to", "2026-11-13T10:00:00Z"}, noLine},
 		{"a claim no line names", taskCostLog, []string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z",
-			"--claim", "legion-infra-infra-2811-implementer"}, window},
+			"--claim", "legion-infra-infra-2811-implementer"}, noLine},
 		{"daemon lines with no task value written and no take answered", taskCostPushPathLog,
 			[]string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z"},
 			"daemon lines in the window: 4, the first at 2026-11-14T09:00:01.000Z, the last at 2026-11-14T09:01:35.000Z\n" +

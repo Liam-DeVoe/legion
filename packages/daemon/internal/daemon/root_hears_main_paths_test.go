@@ -45,8 +45,8 @@ type rootHearsCall struct {
 	hears    bool
 }
 
-// rootHearsCalls records every such question, so a test can hold the prompt it allowed to the
-// answer that allowed it.
+// rootHearsCalls records every such question, so a test can hold each task the architect took to
+// the answer that allowed it.
 type rootHearsCalls struct {
 	mu    sync.Mutex
 	calls []rootHearsCall
@@ -338,7 +338,7 @@ func (r *mainPathRig) bringUp() {
 	}
 	r.waitMachine()
 	if got := machine.Claim().State; !supervise.SaidReady(got) {
-		r.t.Fatalf("the architect after its ready = %s, want a claim that can be prompted", got)
+		r.t.Fatalf("the architect after its ready = %s, want a claim that can take its task", got)
 	}
 }
 
@@ -416,7 +416,8 @@ func (r *mainPathRig) prompts() []acceptedTake {
 // phase, which is the only delivery Deps.RootHears is asked about.
 type mainPath struct {
 	name string
-	// run drives the path and returns the text the one prompt it causes must carry.
+	// run drives the path and returns the text the one task it causes the architect to take must
+	// carry.
 	run func(r *mainPathRig) string
 }
 

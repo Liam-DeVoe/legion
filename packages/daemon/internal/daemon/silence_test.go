@@ -263,12 +263,12 @@ func (r *podUpdateRig) takesRelaunchSentence(role claim.Role, says string) {
 }
 
 // A phase worker whose pod was replaced comes back with its session and nothing to do: the round
-// that replaced the pod retired every task it held, the pod round is over, and no timer of the
-// daemon's and none of the worker's own process will prompt it again. The sweep is what finds
-// it, and every link of the chain is asserted here, not only the last: the fact writes the start
-// row, the lifecycle lane carries that row's task to the worker's connection, and the turn that
-// task starts moves the claim from ready to working. The other half of that truth — that the
-// end of the round itself prompts nobody — is
+// that replaced the pod retired every task it held, the pod round is over, and neither a timer of
+// the daemon's nor the worker's own process will give it a task to take again. The sweep is what
+// finds it, and every link of the chain is asserted here, not only the last: the fact writes the
+// start row, the lifecycle lane carries that row's task to the worker's connection, and the turn
+// that task starts moves the claim from ready to working. The other half of that truth — that the
+// end of the round itself gives nobody a task — is
 // TestPodUpdateTellsItsWorkerNothingHoweverTheRoundEnds.
 //
 // Beside the silent worker stands one the sweep must leave alone: the issue's tester, which
@@ -1027,7 +1027,7 @@ func TestWorkerBackgroundOfARoleWhoseCompletionWasAcceptedTellsNobody(t *testing
 // back in a replacement process that reports nothing until its first turn ends: a Claude Code
 // worker reports its activity at the Stop hook alone (packages/claude-envoy/src/legion-phase-hook.ts,
 // sendActivity). Here the replacement's one turn is the relaunch's own sentence, at whose end
-// this rig reports nothing, and nothing else prompts it. The report the dead process left is then
+// this rig reports nothing, and it gets no other task. The report the dead process left is then
 // the claim's only activity record, and it describes a job the pod replacement killed. The
 // worker is the one this issue is about — up, between turns, holding no task, quiet past the
 // bound — so the sweep sends it its phase's task again, well inside the background bound: a
