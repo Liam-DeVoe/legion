@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const wordQuestionsVersion = 20261115061524
+const wordQuestionsVersion = 20261119050003
 
 // openWordRecordsStore is a database of its own migrated through the records' migration.
 func openWordRecordsStore(t *testing.T) *Store {
@@ -83,7 +83,7 @@ func wordRecordsCursor(t *testing.T, store *Store) *int64 {
 	return cursor
 }
 
-// 20261115061524 creates the records and the cursor and refuses no row; the cursor starts null,
+// 20261119050003 creates the records and the cursor and refuses no row; the cursor starts null,
 // a verdict the selection prompt does not give is refused, and a record whose verdict is about
 // words says so.
 func TestMigrationCreatesTheWordRecords(t *testing.T) {

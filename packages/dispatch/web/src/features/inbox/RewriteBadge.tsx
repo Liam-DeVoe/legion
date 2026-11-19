@@ -1,6 +1,7 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useId } from "react";
 
 import type { TextRewrite } from "../../api/types";
+import { useTooltips, withoutEllipsis } from "../../components/tooltips";
 import {
   badgeBlocking,
   badgeBlockingHoverBg,
@@ -11,6 +12,7 @@ import {
   badgePrimaryOutline,
   borderTransparent,
   groupFocusVisibleRing,
+  pageLabelChip,
 } from "../../theme/classes";
 
 /** Every state is the same box: a 1 px border, clear unless the state draws it (Original). */
@@ -21,6 +23,22 @@ const PILL =
 const HIT = "group inline-flex shrink-0 items-center justify-center outline-none";
 
 /**
+ * Each colour the badge draws inside `NoTooltips`, the new issue page's, by the role its colour
+ * has on today's pages: Rewriting… is the page's label chip, the muted words on the pane;
+ * Rewritten the questions' blue on its tint, its edge the blue under the pointer; Original the
+ * same blue as an outline on the paper, the tint under the pointer; and Rewrite failed the
+ * failed red on the paper inside the hairline, its edge the red under the pointer. The box keeps
+ * its 1 px border in every state, drawn in a colour of the page's where today's is clear.
+ */
+const ON_PAGE = {
+  failed: "border-page-hair bg-page-paper text-page-failed hover:border-page-failed",
+  original: "border-page-question bg-page-paper text-page-question hover:bg-page-question-tint",
+  rewriting: pageLabelChip,
+  rewritten:
+    "border-page-question-tint bg-page-question-tint text-page-question hover:border-page-question",
+} as const;
+
+/**
  * The one mark a rewrite leaves on an agent's text - an ask's card, a comment, a message, an
  * issue's title - beside who wrote it and when: **Rewriting…** while a person's Rewrite runs,
  * **Rewritten** once a rewrite is in place, whoever wrote it (a person's Rewrite, or the reviewer
@@ -29,6 +47,11 @@ const HIT = "group inline-flex shrink-0 items-center justify-center outline-none
  * (`toggleKey`, where the surface has one); Rewrite failed tries again (`onRetry`, and `r`), and
  * why it failed is its tooltip alone. `onRetry` is absent where nothing can be rewritten again
  * from the page. A state this release does not know draws nothing.
+ *
+ * Inside `NoTooltips` the badge draws no `title`: what its tooltip says - why a rewrite failed and
+ * that a press tries again, or what a press shows - is its description, read after its name, as a
+ * refused `RefusableButton` says its reason, so the words on the badge stay the state alone.
+ * Rewriting… is named by its words, and every colour is the page's (`ON_PAGE`).
  */
 export function RewriteBadge({
   onRetry,
@@ -47,10 +70,25 @@ export function RewriteBadge({
   /** The key that shows or hides the original on this surface, which the tooltip names. */
   toggleKey?: string;
 }): ReactNode {
+  const tooltips = useTooltips();
+  const descriptionId = useId();
+  // What the tooltip says: on a `title` where tooltips are drawn, else the badge's description.
+  const told = (words: string) =>
+    tooltips
+      ? { description: null, props: { title: words } }
+      : {
+          description: (
+            <span className="sr-only" id={descriptionId}>
+              {words}
+            </span>
+          ),
+          props: { "aria-describedby": descriptionId },
+        };
   if (running || rewrite?.state === "rewriting") {
     return (
       <span
-        className={`${PILL} animate-pulse ${borderTransparent} ${badgeLow.bg} ${badgeLow.text}`}
+        aria-label={tooltips ? undefined : withoutEllipsis("Rewriting…")}
+        className={`${PILL} animate-pulse ${tooltips ? `${borderTransparent} ${badgeLow.bg} ${badgeLow.text}` : ON_PAGE.rewriting}`}
         data-ask-rewrite="rewriting"
         role="status"
       >
@@ -60,39 +98,53 @@ export function RewriteBadge({
   }
   if (rewrite?.state === "failed") {
     const reason = rewrite.reason ?? "Dispatch did not apply the rewrite.";
+    const tip = told(onRetry === undefined ? reason : `${reason} Try again (r)`);
     return (
-      <button
-        className={HIT}
-        data-ask-rewrite="failed"
-        onClick={onRetry}
-        title={onRetry === undefined ? reason : `${reason} Try again (r)`}
-        type="button"
-      >
-        <span
-          className={`${PILL} ${groupFocusVisibleRing} ${borderTransparent} ${badgeBlocking.bg} ${badgeBlocking.text} ${badgeBlockingHoverBg}`}
+      <>
+        <button
+          {...tip.props}
+          className={HIT}
+          data-ask-rewrite="failed"
+          onClick={onRetry}
+          type="button"
         >
-          Rewrite failed
-        </span>
-      </button>
+          <span
+            className={`${PILL} ${groupFocusVisibleRing} ${tooltips ? `${borderTransparent} ${badgeBlocking.bg} ${badgeBlocking.text} ${badgeBlockingHoverBg}` : ON_PAGE.failed}`}
+          >
+            Rewrite failed
+          </span>
+        </button>
+        {tip.description}
+      </>
     );
   }
   if (rewrite?.state !== "rewritten") return null;
   const hint = toggleKey === undefined ? "" : ` (${toggleKey})`;
-  const tone = showingOriginal
-    ? badgePrimaryOutline
-    : `${badgePrimaryEdge} ${badgePrimary.bg} ${badgePrimary.text} ${badgePrimaryHoverBg}`;
+  const tone = tooltips
+    ? showingOriginal
+      ? badgePrimaryOutline
+      : `${badgePrimaryEdge} ${badgePrimary.bg} ${badgePrimary.text} ${badgePrimaryHoverBg}`
+    : showingOriginal
+      ? ON_PAGE.original
+      : ON_PAGE.rewritten;
+  const tip = told(
+    showingOriginal ? `Show the rewrite${hint}` : `Show the original wording${hint}`
+  );
   return (
-    <button
-      aria-pressed={showingOriginal}
-      className={HIT}
-      data-ask-rewrite={showingOriginal ? "original" : "rewritten"}
-      onClick={onToggle}
-      title={showingOriginal ? `Show the rewrite${hint}` : `Show the original wording${hint}`}
-      type="button"
-    >
-      <span className={`${PILL} ${groupFocusVisibleRing} ${tone}`}>
-        {showingOriginal ? "Original" : "Rewritten"}
-      </span>
-    </button>
+    <>
+      <button
+        {...tip.props}
+        aria-pressed={showingOriginal}
+        className={HIT}
+        data-ask-rewrite={showingOriginal ? "original" : "rewritten"}
+        onClick={onToggle}
+        type="button"
+      >
+        <span className={`${PILL} ${groupFocusVisibleRing} ${tone}`}>
+          {showingOriginal ? "Original" : "Rewritten"}
+        </span>
+      </button>
+      {tip.description}
+    </>
   );
 }

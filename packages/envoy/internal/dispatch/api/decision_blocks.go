@@ -46,7 +46,7 @@ const decisionBlockRoute = "SETTLE decision block"
 
 // askNotHeld is the condition every read of an Inbox or an open-ask count adds for the ask aliased
 // a: no reviewer's hold of a decision block keeps it out (asks.held_until, migration
-// 20261115104117).
+// 20261119050005).
 const askNotHeld = `(a.held_until is null or a.held_until <= now())`
 
 // decisionBlockHold is a held decision block's request: the ask whose block is held.
@@ -68,18 +68,23 @@ func (rv *Reviewer) heldDecisionBlockBound() time.Duration {
 
 // decisionBlockReview is the reader and the project of the decision block ask, read in q, and
 // whether the reviewer reads it at all: an agent session's block (the Legion daemon's left out)
-// that a person waits on.
+// that a person waits on. Both are read from what the ask's row holds or will hold, its owner and
+// its documents, rather than from the row: a settlement that opens the block has only queued its
+// row (docs.AskBlockReviewer), so no read of it answers yet.
 func (s *server) decisionBlockReview(ctx context.Context, q queryer, ask model.Ask, author model.Actor) (reader, project string, reads bool, err error) {
 	if checked, _ := writingCheckReads(author); !checked {
 		return "", "", false, nil
 	}
-	if reader, err = askWaitingOnPerson(ctx, q, ask.ID); err != nil {
+	if reader, err = askWaitingOnPerson(ctx, q, ownerOf(ask.IssueKey, ask.ArtifactID), ask.AskedOf); err != nil {
 		return "", "", false, err
 	}
+	document := ask.ArtifactID
+	if document == nil {
+		document = ask.BlockArtifactID
+	}
 	if err := q.QueryRow(ctx, `
-		select coalesce(i.project_key, ar.project_key, '')
-		from asks a left join issues i on i.key = a.issue_key left join artifacts ar on ar.id = coalesce(a.artifact_id, a.block_artifact_id)
-		where a.id = $1`, ask.ID).Scan(&project); err != nil {
+		select coalesce((select project_key from issues where key = $1), (select project_key from artifacts where id = $2::uuid), '')`,
+		ask.IssueKey, document).Scan(&project); err != nil {
 		return "", "", false, fmt.Errorf("read the project of decision block %s: %w", ask.ID, err)
 	}
 	return reader, project, reader != "", nil
@@ -98,7 +103,8 @@ func decisionBlockEvent(author model.Actor, reader, project string) store.Writin
 }
 
 // AskBlockOpened holds or reviews the new decision block ask, by the setting, in the settlement's
-// transaction tx. A block a person typed is recorded exempt_person_typed and opens as it is.
+// transaction tx: the hold's writes are queued after the ask's own (docs.Write). A block a person
+// typed is recorded exempt_person_typed and opens as it is.
 func (d decisionBlockReviewer) AskBlockOpened(ctx context.Context, tx pgx.Tx, ask model.Ask, author model.Actor, personTyped bool) (func(), error) {
 	s := d.s
 	rv := s.deps.Reviewer
@@ -148,15 +154,17 @@ func (d decisionBlockReviewer) AskBlockOpened(ctx context.Context, tx pgx.Tx, as
 	if ask.IssueKey != nil {
 		issueKey = *ask.IssueKey
 	}
-	if _, err := tx.Exec(ctx, `update asks set held_until = now() + $2::interval where id = $1`,
-		ask.ID, intervalOf(rv.heldDecisionBlockBound())); err != nil {
-		return nil, fmt.Errorf("hold decision block %s: %w", ask.ID, err)
-	}
-	if _, err := tx.Exec(ctx, `
-		insert into held_texts (id, kind, route, request, original, actor, writer, reader, project, issue_key, state, reviewed)
-		values ($1, 'decision_block', $2, $3, $4, $5, nullif($6, ''), $7, nullif($8, ''), nullif($9, ''), 'reviewing', true)`,
-		ask.ID, decisionBlockRoute, request, original, actor, writerOf(author), reader, project, issueKey); err != nil {
-		return nil, fmt.Errorf("hold decision block %s: %w", ask.ID, err)
+	bound := intervalOf(rv.heldDecisionBlockBound())
+	if err := docs.Write(ctx, tx, func(b *store.WriteBatch) error {
+		what := fmt.Sprintf("hold decision block %s", ask.ID)
+		b.Queue(what, `update asks set held_until = now() + $2::interval where id = $1`, ask.ID, bound)
+		b.Queue(what, `
+			insert into held_texts (id, kind, route, request, original, actor, writer, reader, project, issue_key, state, reviewed)
+			values ($1, 'decision_block', $2, $3, $4, $5, nullif($6, ''), $7, nullif($8, ''), nullif($9, ''), 'reviewing', true)`,
+			ask.ID, decisionBlockRoute, request, original, actor, writerOf(author), reader, project, issueKey)
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	event.Outcome = reviewHeld
 	return func() {
@@ -169,8 +177,10 @@ func (d decisionBlockReviewer) AskBlockOpened(ctx context.Context, tx pgx.Tx, as
 // write a person typed in a session is theirs: it is reviewed by nobody and recorded
 // exempt_person_typed (personTypedBlockEdit). While the block's hold has not ended any other move
 // is its writer's edit of the held text, reviewed again before the block reaches an Inbox
-// (heldDecisionBlockEdit); else it is reviewed after the write, by the setting, with no hold.
-// Dispatch's own rewrite (the reviewer's actor) starts no review.
+// (queueHeldDecisionBlockEdit); else it is reviewed after the write, by the setting, with no hold.
+// Dispatch's own rewrite (the reviewer's actor) starts no review. Whether the hold has ended is
+// the queued edit's to say, in the settlement's write phase, since the reviewer can end it
+// meanwhile: what runs once the settlement commits reads its answer.
 func (d decisionBlockReviewer) AskBlockReworded(ctx context.Context, tx pgx.Tx, ask model.Ask, previous model.AskEditPrevious, editor model.Actor, personTyped bool) (func(), error) {
 	s := d.s
 	if editor == reviewerActor || s.deps.Store == nil {
@@ -179,27 +189,38 @@ func (d decisionBlockReviewer) AskBlockReworded(ctx context.Context, tx pgx.Tx, 
 	if personTyped {
 		return s.personTypedBlockEdit(ctx, tx, ask, editor)
 	}
-	if after, edited, err := s.heldDecisionBlockEdit(ctx, tx, ask.ID); err != nil || edited {
-		return after, err
-	}
-	if s.deps.Reviewer.setting(reviewer.KindDecisionBlock) == ReviewOff {
-		return nil, nil
-	}
-	reader, project, reads, err := s.decisionBlockReview(ctx, tx, ask, editor)
-	if err != nil || !reads {
+	held, err := s.queueHeldDecisionBlockEdit(ctx, tx, ask.ID)
+	if err != nil {
 		return nil, err
 	}
-	kind, text, subject := askReviewSubject(ask)
-	text.Kind = kind
-	subject.Text, subject.Writer, subject.Reader = text, writerOf(editor), reader
-	review := &postedReview{kind: kind, text: text, subject: subject, event: decisionBlockEvent(editor, reader, project)}
-	return func() { s.reviewPosted(s.postContext(), review, ask.ID) }, nil
+	var review *postedReview
+	if s.deps.Reviewer.setting(reviewer.KindDecisionBlock) != ReviewOff {
+		reader, project, reads, err := s.decisionBlockReview(ctx, tx, ask, editor)
+		if err != nil {
+			return nil, err
+		}
+		if reads {
+			kind, text, subject := askReviewSubject(ask)
+			text.Kind = kind
+			subject.Text, subject.Writer, subject.Reader = text, writerOf(editor), reader
+			review = &postedReview{kind: kind, text: text, subject: subject, event: decisionBlockEvent(editor, reader, project)}
+		}
+	}
+	return func() {
+		if held.taken {
+			s.editedHeldDecisionBlockRow(held.row)
+			return
+		}
+		if review != nil {
+			s.reviewPosted(s.postContext(), review, ask.ID)
+		}
+	}, nil
 }
 
 // personTypedBlockEdit is a person's typed rewording of the decision block ask (Decision 26 of
 // INFRA-3231's plan), in the settlement's transaction tx: no review reads it, it is recorded
-// exempt_person_typed, and a hold of the block that has not ended ends now
-// (endHeldDecisionBlockForPerson).
+// exempt_person_typed, and a hold of the block that has not ended ends in the settlement's write
+// phase (queueEndHeldDecisionBlockForPerson).
 func (s *server) personTypedBlockEdit(ctx context.Context, tx pgx.Tx, ask model.Ask, editor model.Actor) (func(), error) {
 	var record *store.WritingCheckEvent
 	if checked, _ := writingCheckReads(editor); checked {
@@ -211,7 +232,7 @@ func (s *server) personTypedBlockEdit(ctx context.Context, tx pgx.Tx, ask model.
 		event.Outcome = writingCheckPersonTyped
 		record = &event
 	}
-	ended, err := s.endHeldDecisionBlockForPerson(ctx, tx, ask.ID)
+	ended, err := s.queueEndHeldDecisionBlockForPerson(ctx, tx, ask.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -219,55 +240,121 @@ func (s *server) personTypedBlockEdit(ctx context.Context, tx pgx.Tx, ask model.
 		if record != nil {
 			s.recordWritingCheck(s.postContext(), *record)
 		}
-		ended()
+		if ended.taken {
+			s.endedHeldDecisionBlockForPerson(ended.row)
+		}
 	}, nil
+}
+
+// heldBlockPersonEditDetail is the detail a decision block's hold records where a person's typed
+// edit ended it.
+const heldBlockPersonEditDetail = "a person typed an edit of the block in a session"
+
+// endHeldDecisionBlockForPersonSQL ends the hold of the decision block $1 that has not ended,
+// with the block as a person's typed edit left it (posted_as_written), detail $2.
+const endHeldDecisionBlockForPersonSQL = `
+	update held_texts
+	set state = 'posting', outcome = 'posted_as_written', detail = $2, deadline = null, claimed_at = null,
+		updated_at = now()
+	where id = $1 and kind = 'decision_block' and state in ('reviewing', 'awaiting_writer')
+	returning ` + heldColumns
+
+// heldDecisionBlockEditSQL takes a move of the held decision block $1's wording, whose hold has
+// not ended, as its writer's edit: the review starts again on the new wording.
+const heldDecisionBlockEditSQL = `
+	update held_texts
+	set revision = revision + 1, state = 'reviewing', findings = '[]', rewrite = null, not_applied = null,
+		deadline = null, claimed_at = null, updated_at = now()
+	where id = $1 and kind = 'decision_block' and state in ('reviewing', 'awaiting_writer')
+	returning ` + heldColumns
+
+// heldBlockTake is a statement on a held decision block's row queued in a settlement's write
+// phase: once the phase has run, taken is whether the block's hold had not ended, and row the held
+// row the statement left, which what runs once the settlement commits reads.
+type heldBlockTake struct {
+	taken bool
+	row   heldRow
+}
+
+// queueHeldBlockTake queues sql on the decision block id's held row in the settlement's write
+// phase (docs.Write), as what, and answers the take its answer fills in.
+func queueHeldBlockTake(ctx context.Context, tx pgx.Tx, what, sql string, args ...any) (*heldBlockTake, error) {
+	take := &heldBlockTake{}
+	err := docs.Write(ctx, tx, func(b *store.WriteBatch) error {
+		b.Queue(what, sql, args...).QueryRow(func(row pgx.Row) error {
+			held, err := scanHeld(row)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			take.taken, take.row = true, held
+			return nil
+		})
+		return nil
+	})
+	return take, err
 }
 
 // endHeldDecisionBlockForPerson ends, in q, the hold of the decision block id that has not ended,
 // with the block as a person's typed edit left it (posted_as_written), so no reviewer's rewrite is
 // written over their words. What it returns records that and posts the block once q commits; it
-// does nothing for a block nobody holds.
+// does nothing for a block nobody holds. An edit already committed takes it (editAsk); a
+// settlement queues it instead (queueEndHeldDecisionBlockForPerson).
 func (s *server) endHeldDecisionBlockForPerson(ctx context.Context, q queryer, id string) (func(), error) {
-	const detail = "a person typed an edit of the block in a session"
-	held, err := scanHeld(q.QueryRow(ctx, `
-		update held_texts
-		set state = 'posting', outcome = 'posted_as_written', detail = $2, deadline = null, claimed_at = null,
-			updated_at = now()
-		where id = $1 and kind = 'decision_block' and state in ('reviewing', 'awaiting_writer')
-		returning `+heldColumns, id, detail))
+	held, err := scanHeld(q.QueryRow(ctx, endHeldDecisionBlockForPersonSQL, id, heldBlockPersonEditDetail))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return func() {}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("end the hold of decision block %s for a person's edit: %w", id, err)
 	}
-	return func() {
-		s.recordHeld(s.postContext(), held, reviewPostedAsWritten, nil, detail)
-		s.detached.goDetached(s.postReady)
-	}, nil
+	return func() { s.endedHeldDecisionBlockForPerson(held) }, nil
+}
+
+// queueEndHeldDecisionBlockForPerson is endHeldDecisionBlockForPerson queued in the settlement's
+// write phase of tx.
+func (s *server) queueEndHeldDecisionBlockForPerson(ctx context.Context, tx pgx.Tx, id string) (*heldBlockTake, error) {
+	return queueHeldBlockTake(ctx, tx, fmt.Sprintf("end the hold of decision block %s for a person's edit", id),
+		endHeldDecisionBlockForPersonSQL, id, heldBlockPersonEditDetail)
+}
+
+// endedHeldDecisionBlockForPerson records the end of held's hold for a person's edit and posts
+// the block, once the end has committed.
+func (s *server) endedHeldDecisionBlockForPerson(held heldRow) {
+	s.recordHeld(s.postContext(), held, reviewPostedAsWritten, nil, heldBlockPersonEditDetail)
+	s.detached.goDetached(s.postReady)
 }
 
 // heldDecisionBlockEdit takes, in q, a move of the held decision block id's wording as its
 // writer's edit: the review starts again on the new wording, and the frame's window with it. It
 // reports whether id is a decision block whose hold has not ended, with what to run once q
-// commits.
+// commits. An edit already committed takes it (editedHeldDecisionBlock); a settlement queues it
+// instead (queueHeldDecisionBlockEdit).
 func (s *server) heldDecisionBlockEdit(ctx context.Context, q queryer, id string) (func(), bool, error) {
-	row, err := scanHeld(q.QueryRow(ctx, `
-		update held_texts
-		set revision = revision + 1, state = 'reviewing', findings = '[]', rewrite = null, not_applied = null,
-			deadline = null, claimed_at = null, updated_at = now()
-		where id = $1 and kind = 'decision_block' and state in ('reviewing', 'awaiting_writer')
-		returning `+heldColumns, id))
+	row, err := scanHeld(q.QueryRow(ctx, heldDecisionBlockEditSQL, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, fmt.Errorf("take the edit of held decision block %s: %w", id, err)
 	}
-	return func() {
-		s.recordHeld(s.postContext(), row, reviewEdited, nil, "")
-		s.startReview(id)
-	}, true, nil
+	return func() { s.editedHeldDecisionBlockRow(row) }, true, nil
+}
+
+// queueHeldDecisionBlockEdit is heldDecisionBlockEdit queued in the settlement's write phase of
+// tx.
+func (s *server) queueHeldDecisionBlockEdit(ctx context.Context, tx pgx.Tx, id string) (*heldBlockTake, error) {
+	return queueHeldBlockTake(ctx, tx, fmt.Sprintf("take the edit of held decision block %s", id),
+		heldDecisionBlockEditSQL, id)
+}
+
+// editedHeldDecisionBlockRow records the writer's edit of the held decision block row and starts
+// its review again, once the edit has committed.
+func (s *server) editedHeldDecisionBlockRow(row heldRow) {
+	s.recordHeld(s.postContext(), row, reviewEdited, nil, "")
+	s.startReview(row.id)
 }
 
 // editedHeldDecisionBlock is heldDecisionBlockEdit for an edit already committed (PATCH
@@ -351,7 +438,9 @@ func (s *server) decisionBlockRewriteRefusal(ctx context.Context, id string, rew
 // releaseDecisionBlock is a held decision block's post: in one transaction it applies the
 // reviewer's rewrite where the outcome is rewrite_posted and the ask is still open
 // (rewriteDecisionBlock), ends the hold, appends the quiet ask.reviewed an open page refetches its
-// Inbox and counts on, and marks the held row posted.
+// Inbox and counts on, and marks the held row posted. Everything up to Commit is the read phase
+// (Docs.Join): the held row's mark, the rewrite, the hold's end and the event queue their writes
+// on the ledger, in that order, and Commit sends them as one batch.
 func (s *server) releaseDecisionBlock(ctx context.Context, row heldRow, held *heldPost) error {
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -360,7 +449,7 @@ func (s *server) releaseDecisionBlock(ctx context.Context, row heldRow, held *he
 	defer tx.Rollback(ctx)
 	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
 	defer ledger.Discard()
-	if err := held.lock(ctx, tx); err != nil {
+	if err := held.queuePostedOn(ledger); err != nil {
 		return err
 	}
 	unlocked, err := s.loadAsk(ctx, tx, row.id)
@@ -368,20 +457,20 @@ func (s *server) releaseDecisionBlock(ctx context.Context, row heldRow, held *he
 		return err
 	}
 	owner := ownerOf(unlocked.IssueKey, unlocked.ArtifactID)
-	_, open, err := ownerStatus(documentCtx, tx, owner, ownerRowLock)
+	_, open, err := ownerStatus(documentCtx, owner, lockedOwnerRead(tx))
 	if err != nil {
 		return err
 	}
-	ask, err := s.lockAskForTransition(documentCtx, tx, unlocked.ID)
+	ask, err := s.readAskForTransition(documentCtx, tx, unlocked.ID)
 	if err != nil {
 		return err
 	}
-	var published []model.Event
+	var published []*model.Event
 	var previous *model.AskEditPrevious
 	if row.outcome == reviewRewritePosted && row.rewrite != nil && open && ask.State == "open" && ask.BlockID != nil {
 		before := model.NewAskEditPrevious(ask)
 		record := model.AskRewriteEdit{By: model.RewriteByReviewer, AskedBy: reviewerActor, Reason: findingsReason(row.findings)}
-		rewritten, event, err := s.rewriteDecisionBlock(documentCtx, tx, ask, *row.rewrite, record)
+		rewritten, event, err := s.rewriteDecisionBlock(documentCtx, tx, ledger, ask, *row.rewrite, record)
 		switch reason := rewriteRefusal(err); {
 		case reason != "":
 			// The block cannot hold the reviewer's rewrite, which wrote nothing: the block posts
@@ -396,25 +485,24 @@ func (s *server) releaseDecisionBlock(ctx context.Context, row heldRow, held *he
 			published = append(published, event)
 		}
 	}
-	if _, err := tx.Exec(ctx, `update asks set held_until = null where id = $1`, ask.ID); err != nil {
+	if err := queueExec(ledger, `update asks set held_until = null where id = $1`, ask.ID); err != nil {
 		return err
 	}
-	payload, err := events.AskEventPayload(ctx, tx, ask, model.ReferenceChanges{})
-	if err != nil {
-		return err
-	}
-	event, err := s.appendEvent(documentCtx, tx, owner.event("ask.reviewed", reviewerActor, payload))
+	// The ask's thread_logins are read by its event's insert, after the hold's end.
+	event, err := s.queueLoggedEvent(ledger, owner.event(
+		"ask.reviewed", reviewerActor, model.NewAskEventPayload(ask, model.ReferenceChanges{}),
+	), events.ThreadLoginsOf(ask.ID), "", "")
 	if err != nil {
 		return err
 	}
 	published = append(published, event)
-	if err := held.finish(ctx, tx); err != nil {
+	if err := held.dryRunEnds(); err != nil {
 		return err
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		return err
 	}
-	s.publish(ctx, published...)
+	s.publish(ctx, appendedEvents(published...)...)
 	if previous != nil {
 		s.storeDisplayTrees(ctx, ask.ID, texttrees.AskWrittenTexts(
 			texttrees.AskWrittenTexts(nil, ask.Question, ask.Options), previous.Question, previous.Options)...)
@@ -445,15 +533,16 @@ func findingsReason(findings []reviewer.Finding) string {
 // markdown, its pictures, links and marks with it, while the row takes the plain text the block
 // parses back to; a rewrite that would drop a picture or a link the block holds is refused, as
 // *docs.ErrAskBlockUnrepresentable, which rewriteRefusal gives as the reason it was not applied.
-// ctx is the document context of tx's ledger (docs.API.Join), and the caller has locked the ask's
-// owner and its row; it publishes the event once tx commits.
-func (s *server) rewriteDecisionBlock(ctx context.Context, tx pgx.Tx, ask model.Ask, rewrite reviewer.Text, record model.AskRewriteEdit) (model.Ask, model.Event, error) {
+// ctx is the document context of tx's ledger (docs.API.Join), whose writes the rewrite queues on
+// ledger, and the caller has taken the ask's owner's lock and read the ask under it; it
+// publishes the event once its Commit has run the write phase.
+func (s *server) rewriteDecisionBlock(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask, rewrite reviewer.Text, record model.AskRewriteEdit) (model.Ask, *model.Event, error) {
 	if ask.BlockID == nil {
-		return model.Ask{}, model.Event{}, fmt.Errorf("ask %q is no decision block", ask.ID)
+		return model.Ask{}, nil, fmt.Errorf("ask %q is no decision block", ask.ID)
 	}
 	wording := rewriteWording(rewrite)
 	wording.QuestionMarkdown = true
-	rewritten, _, event, err := s.writeAskEdit(ctx, tx, ask, wording, reviewerActor, &record)
+	rewritten, _, event, err := s.writeAskEdit(ctx, tx, ledger, ask, wording, reviewerActor, &record)
 	return rewritten, event, err
 }
 

@@ -14,15 +14,17 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// held_texts.go keeps the texts the reviewer holds (store migration 20261115084745_held_texts):
+// held_texts.go keeps the texts the reviewer holds (store migration 20261119050004_held_texts):
 // the hold, which reserves the text's id and answers the write at once; the decisions the review,
 // the writer and the sweep make; and the post, which runs the kind's own create path with the
 // stored request, the recorded actor and the reserved id, in one transaction that also marks the
@@ -377,7 +379,13 @@ func (s *server) holdWrite(w http.ResponseWriter, r *http.Request, actor model.A
 
 // reserveIssueNumber takes the next number of project's sequence, as an issue create takes it,
 // for an issue the reviewer holds: its key exists at once, and its post files it under that key.
+// It takes the project's owner lock first, as every writer of a projects row does: an issue
+// create reads the number it takes under that lock and writes it after its read phase
+// (writeIssue), so a reservation made between the two would move the number under it.
 func reserveIssueNumber(ctx context.Context, tx pgx.Tx, project string) (int, error) {
+	if err := store.LockOwner(ctx, tx, store.ProjectOwner(project)); err != nil {
+		return 0, err
+	}
 	var number int
 	err := tx.QueryRow(ctx, `
 		update projects set next_number = next_number + 1 where key = $1 returning next_number - 1
@@ -616,16 +624,63 @@ func (s *server) dryRunHeld(write reviewedWrite, actor model.Actor, id string) (
 // posted it first, or it failed.
 var errHeldNotPosting = errors.New("the held text is not waiting to post")
 
-// heldPost is a held text's post inside the kind's create path, which takes its held row first in
-// the create's transaction and marks it posted in the same transaction. A nil *heldPost is the
+// heldPost is a held text's post inside the kind's create path, which takes its held row in the
+// create's transaction and marks it posted in the same transaction. A nil *heldPost is the
 // write's own path, which holds nothing. A dry run (dryRun) takes no row, and ends the create's
 // transaction before its commit with errHeldDryRun.
+//
+// A create path that runs its two phases (INFRA-636) - a read phase, then one batch of its writes
+// - takes and marks the row in one statement of that batch (queuePosted) and ends a dry run once
+// the batch has run (dryRunEnds), so the post holds no transaction id while the create reads and
+// does its document work. A route that writes as it goes takes the row with its first write
+// (lock), once its reads and its planning are done, and marks it before its commit (finish).
 type heldPost struct {
 	id     string
 	dryRun bool
 }
 
-// lock takes the held row for the post: it must still be waiting to post.
+// queuePosted queues on b, the create's write phase, the held row's mark as posted, which takes
+// the row: it must still be waiting to post, and a post that finds it posted by another process
+// first, or failed, answers errHeldNotPosting and its transaction rolls back. Its post time is
+// the transaction's, which the posted row carries as its creation time. Queue it before any other
+// write of the phase, so a second post of the same text waits on the first's row and then stops
+// there. A dry run queues nothing.
+func (h *heldPost) queuePosted(b *store.WriteBatch) {
+	if h == nil || h.dryRun {
+		return
+	}
+	b.Queue(fmt.Sprintf("take held text %s for its post", h.id), `
+		update held_texts set state = 'posted', posted_at = now(), claimed_at = null, updated_at = now()
+		where id = $1 and state = $2`, h.id, heldPosting).Exec(func(tag pgconn.CommandTag) error {
+		if tag.RowsAffected() != 1 {
+			return errHeldNotPosting
+		}
+		return nil
+	})
+}
+
+// queuePostedOn is queuePosted as a step of ledger's write phase (docs.Ledger.Queue).
+func (h *heldPost) queuePostedOn(ledger *docs.Ledger) error {
+	if h == nil || h.dryRun {
+		return nil
+	}
+	return ledger.Queue(func(b *store.WriteBatch) error {
+		h.queuePosted(b)
+		return nil
+	})
+}
+
+// dryRunEnds ends a hold's dry run before its commit: errHeldDryRun, with which its create path
+// answers the advice it worked out. It is nil for every other run.
+func (h *heldPost) dryRunEnds() error {
+	if h != nil && h.dryRun {
+		return errHeldDryRun
+	}
+	return nil
+}
+
+// lock takes the held row for the post of a route that writes as it goes: it must still be
+// waiting to post.
 func (h *heldPost) lock(ctx context.Context, tx pgx.Tx) error {
 	if h == nil || h.dryRun {
 		return nil
@@ -648,9 +703,10 @@ func (h *heldPost) answers() bool {
 	return h == nil || h.dryRun
 }
 
-// finish marks the held row posted, in the create's transaction: its post time is the
-// transaction's, which the posted row carries as its creation time. A dry run ends here, before
-// the commit, and its create path answers errHeldDryRun with the advice it worked out.
+// finish marks the held row posted, in the create's transaction, for a route that took it with
+// lock: its post time is the transaction's, which the posted row carries as its creation time. A
+// dry run ends here, before the commit, and its create path answers errHeldDryRun with the advice
+// it worked out.
 func (h *heldPost) finish(ctx context.Context, tx pgx.Tx) error {
 	if h == nil {
 		return nil

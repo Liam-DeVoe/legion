@@ -13,7 +13,7 @@ import (
 
 // word_questions.go stores INFRA-3231's R8 records: each text a person wrote that the records job
 // (internal/dispatch/wordrecords) read, with the selection prompt's verdict once it has one, and
-// each Define use. Migration 20261115061524 says what each column holds. A word question is a
+// each Define use. Migration 20261119050003 says what each column holds. A word question is a
 // record whose verdict is one of the three about words (about_words): the person asked what a word
 // means, said they could not understand the text, or complained about its words.
 

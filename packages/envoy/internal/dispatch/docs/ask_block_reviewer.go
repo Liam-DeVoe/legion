@@ -14,7 +14,9 @@ import (
 // (api/decision_blocks.go), which may hold a new block from people's Inboxes there, in the same
 // transaction that opens it, so no read of an Inbox or a count ever shows it before its hold. What
 // each call returns runs once that transaction has committed (the review it starts), and not at
-// all where the settlement does not commit.
+// all where the settlement does not commit. The settlement runs in two phases (Ledger): a call
+// reads in its read phase, where the new block's ask row is queued and not yet written, and
+// writes through Write, so its writes join the settlement's write phase after the ask's own.
 type AskBlockReviewer interface {
 	// AskBlockOpened is the decision block ask, which author's write opened; personTyped is
 	// whether a person typed that write in a session (doc_ask_block_authors.person_typed).

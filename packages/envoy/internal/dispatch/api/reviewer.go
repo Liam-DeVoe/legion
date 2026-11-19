@@ -56,7 +56,7 @@ const (
 )
 
 // The outcomes the reviewer records in writing_check_events (store migration
-// 20261113165433_writing_check_events_reader admits each).
+// 20261119050002_writing_check_events_reader admits each).
 const (
 	// reviewHeld is a text the reviewer held.
 	reviewHeld = "held"

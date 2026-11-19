@@ -48,7 +48,7 @@ import (
 const rewriteRequestedRoute = "/api/v1/asks/{id}/rewrites"
 
 // writingCheckRewriteRequested is the outcome of a person's Rewrite request (store migration
-// 20261113165433_writing_check_events_reader admits it): one row per request, whatever came of
+// 20261119050002_writing_check_events_reader admits it): one row per request, whatever came of
 // it, with the person who asked as its reader.
 const writingCheckRewriteRequested = "rewrite_requested"
 
@@ -116,7 +116,7 @@ func (s *server) startAskRewrite(ctx context.Context, person model.Actor, id str
 	}
 	// The owner first, as every write of an ask takes it, so the run's row and its event never
 	// wait on a writer that holds the owner and waits on the ask.
-	if _, _, err := ownerStatus(ctx, tx, ownerOf(ask.IssueKey, ask.ArtifactID), ownerRowLock); err != nil {
+	if _, _, err := ownerStatus(ctx, ownerOf(ask.IssueKey, ask.ArtifactID), lockedOwnerRead(tx)); err != nil {
 		return askRewriteAnswer{}, "", false, err
 	}
 	project := s.askProject(ctx, tx, ask)
@@ -398,7 +398,8 @@ func (s *server) askAddress(ctx context.Context, id string) string {
 // path, as Dispatch's quiet edit carrying record. It writes nothing, and answers why, where the
 // run is no longer the ask's run in progress, the ask is no longer open, or its wording is no
 // longer read, the wording the run read. A refusal of the document's own edit path is a reason
-// too.
+// too. Everything up to Commit is the read phase (Docs.Join): the edit and the run's row queue
+// their writes on the ledger, and Commit sends them as one batch.
 func (s *server) applyAskRewrite(ctx context.Context, run askRewriteRun, read, rewrite reviewer.Text, record model.AskRewriteEdit) (string, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -411,15 +412,17 @@ func (s *server) applyAskRewrite(ctx context.Context, run askRewriteRun, read, r
 	if err != nil {
 		return "", err
 	}
-	if _, _, err := ownerStatus(documentCtx, tx, ownerOf(unlocked.IssueKey, unlocked.ArtifactID), ownerRowLock); err != nil {
+	if _, _, err := ownerStatus(documentCtx, ownerOf(unlocked.IssueKey, unlocked.ArtifactID), lockedOwnerRead(tx)); err != nil {
 		return "", err
 	}
-	ask, err := s.lockAskForTransition(documentCtx, tx, run.askID)
+	ask, err := s.readAskForTransition(documentCtx, tx, run.askID)
 	if err != nil {
 		return "", err
 	}
+	// The run's row is read under the ask's owner's lock, which every writer of its run and its
+	// state holds first (startAskRewrite, writeAskRewriteFailure), so it takes no row lock.
 	var current, state string
-	if err := tx.QueryRow(ctx, `select run::text, state from ask_rewrites where ask_id = $1 for update`, run.askID).Scan(&current, &state); err != nil {
+	if err := tx.QueryRow(ctx, `select run::text, state from ask_rewrites where ask_id = $1`, run.askID).Scan(&current, &state); err != nil {
 		return "", err
 	}
 	switch {
@@ -434,12 +437,12 @@ func (s *server) applyAskRewrite(ctx context.Context, run askRewriteRun, read, r
 	var (
 		rewritten model.Ask
 		previous  = model.NewAskEditPrevious(ask)
-		event     model.Event
+		event     *model.Event
 	)
 	if ask.BlockID != nil {
-		rewritten, event, err = s.rewriteDecisionBlock(documentCtx, tx, ask, rewrite, record)
+		rewritten, event, err = s.rewriteDecisionBlock(documentCtx, tx, ledger, ask, rewrite, record)
 	} else {
-		rewritten, _, event, err = s.writeAskEdit(documentCtx, tx, ask, rewriteWording(rewrite), reviewerActor, &record)
+		rewritten, _, event, err = s.writeAskEdit(documentCtx, tx, ledger, ask, rewriteWording(rewrite), reviewerActor, &record)
 	}
 	if reason := rewriteRefusal(err); reason != "" {
 		return reason, nil
@@ -447,7 +450,7 @@ func (s *server) applyAskRewrite(ctx context.Context, run askRewriteRun, read, r
 	if err != nil {
 		return "", err
 	}
-	if _, err := tx.Exec(ctx, `
+	if err := queueExec(ledger, `
 		update ask_rewrites set state = 'rewritten', finished_at = now() where ask_id = $1 and run = $2`,
 		run.askID, run.run); err != nil {
 		return "", err
@@ -455,7 +458,7 @@ func (s *server) applyAskRewrite(ctx context.Context, run askRewriteRun, read, r
 	if err := ledger.Commit(ctx); err != nil {
 		return "", err
 	}
-	s.publish(ctx, event)
+	s.publish(ctx, *event)
 	s.storeDisplayTrees(ctx, rewritten.ID, texttrees.AskWrittenTexts(
 		texttrees.AskWrittenTexts(nil, rewritten.Question, rewritten.Options), previous.Question, previous.Options)...)
 	return "", nil
@@ -513,7 +516,7 @@ func (s *server) writeAskRewriteFailure(ctx context.Context, run askRewriteRun, 
 		return err
 	}
 	owner := ownerOf(issueKey, artifactID)
-	if _, _, err := ownerStatus(ctx, tx, owner, ownerRowLock); err != nil {
+	if _, _, err := ownerStatus(ctx, owner, lockedOwnerRead(tx)); err != nil {
 		return err
 	}
 	var (

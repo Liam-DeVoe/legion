@@ -7,11 +7,11 @@ import (
 )
 
 const (
-	writingCheckEventsVersion       = 20261113085841
-	writingCheckEventsReaderVersion = 20261113165433
+	writingCheckEventsVersion       = 20261119050001
+	writingCheckEventsReaderVersion = 20261119050002
 )
 
-// 20261113165433 adds writing_check_events.reader and admits the outcome exempt_no_reader. A row
+// 20261119050002 adds writing_check_events.reader and admits the outcome exempt_no_reader. A row
 // written before it keeps its outcome and records no reader, the census refuses nothing, and after
 // it a row names its reader and a write with no person as its reader is recorded as such; an
 // outcome the check does not name, the refused and forced outcomes of a check that refused writes

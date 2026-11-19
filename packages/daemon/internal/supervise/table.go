@@ -77,6 +77,18 @@ type StreamToolStep struct {
 	ConnSequence uint64
 }
 
+// StreamAnswered is the agent's model answering, as the stream read the frame (stream.Answered):
+// Model is `<provider>/<model>`, or the model alone when the frame named no provider, or empty for
+// an answer whose model no store can keep (stream.Answered). It is what the claim's last answer is
+// built from (answered, LastAnswer), and it is no part of the claim the store holds: a record of a
+// step reads it from memory, and a restarted daemon knows no model until the agent answers again.
+// Generation is the launch whose connection read the frame (stream.Answered).
+type StreamAnswered struct {
+	Claim      claim.Token
+	Model      string
+	Generation uint64
+}
+
 // StreamPromptResult is Oh My Pi saying how one prompt's work ended (shimwire.PromptResult): the
 // one frame that names the prompt a turn belonged to, where agent_start and agent_end name none.
 // It arrives on the heels of the agent_end of the turn the prompt ran, so a turn that ends with
@@ -529,6 +541,10 @@ type RequestDeliver struct {
 	// entry test above would decline it, so queue decides such a request by its outbox row
 	// alone.
 	ResendEntry bool
+	// RoundNamed marks a task that ends with the daemon's two sentences of a reviewer's review
+	// round, from the start row that queued it (record.SuperviseRequest.RoundNamed). An operator's
+	// task and the controller's carry none (Delivery.RoundNamed).
+	RoundNamed bool
 	// CheckLook is the look of a closed issue's production check this task is of, from the start
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). A phase task, an
 	// operator's own and a resume name none, and leave the look the claim is serving alone.
@@ -595,6 +611,7 @@ func (StreamTurnStart) isEvent()      {}
 func (StreamTurnEnd) isEvent()        {}
 func (IssueTurnEnded) isEvent()       {}
 func (StreamToolStep) isEvent()       {}
+func (StreamAnswered) isEvent()       {}
 func (StreamPromptResult) isEvent()   {}
 func (StreamClosed) isEvent()         {}
 func (StreamLateRefusal) isEvent()    {}
@@ -636,6 +653,7 @@ const (
 	onTurnEnd       eventKind = "stream_turn_end"
 	onIssueTurnEnd  eventKind = "issue_turn_ended"
 	onToolStep      eventKind = "stream_tool_step"
+	onAnswered      eventKind = "stream_answered"
 	onPromptResult  eventKind = "stream_prompt_result"
 	onClosed        eventKind = "stream_closed"
 	onLateRefusal   eventKind = "stream_late_refusal"
@@ -695,6 +713,8 @@ func kindOf(ev Event) eventKind {
 		return onIssueTurnEnd
 	case StreamToolStep:
 		return onToolStep
+	case StreamAnswered:
+		return onAnswered
 	case StreamPromptResult:
 		return onPromptResult
 	case StreamClosed:
@@ -930,6 +950,12 @@ func fillTable(t *builder) {
 	// the stream is up from the shim's hello.
 	t.row(onToolStep, "the agent stepped: record the call its stream reports", toolStepped, nil, live...)
 	t.ignore(onToolStep, noProcess, processless...)
+
+	// The model that answered, which the record of a step names. The row keeps it in memory and
+	// leaves the claim exactly where it found it (answered), so it is a row of every state a
+	// process of this claim can send a frame from, as the tool step's is.
+	t.row(onAnswered, "the agent's model answered: keep which model it was", answered, nil, live...)
+	t.ignore(onAnswered, noProcess, processless...)
 
 	t.row(onPromptResult, "the prompt's work ended: that names the turn it ran, and ends its delivery (busy, it records the claim working)", promptResulted,
 		[]ClaimState{StateLaunching, StateFailed, StateSuspended, StateWorking}, StateReady, StateIdle, StateWorking)

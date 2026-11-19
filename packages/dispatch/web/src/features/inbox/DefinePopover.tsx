@@ -5,12 +5,20 @@ import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type { Definition } from "../../api/types";
+import { useTooltips } from "../../components/tooltips";
 import {
   borderDefault,
   card,
   linkHoverText,
   linkText,
   liveDotBg,
+  pageHairBg,
+  pageHairBorder,
+  pageInkText,
+  pageMutedText,
+  pagePaperBg,
+  pageQuietText,
+  pageSegmentDoneBg,
   skeletonBg,
   textMutedOnSurface,
   textSecondaryOnSurface,
@@ -25,6 +33,25 @@ import {
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { DefinitionPlace } from "./ask-rewrite";
 import { citationLabel } from "./citation-label";
+
+/**
+ * Each colour the popover draws inside `NoTooltips`, the new issue page's, by the role its colour
+ * has on today's pages: the popover is the page's paper inside its hairline rule, with a hairline
+ * over the agent's answer; the meaning and the agent's answer are the muted grey, what qualifies
+ * them - the agent's name, why Dispatch could not define the words, the dots while the agent is
+ * asked - the quiet grey, a link the ink with its underline, and the lines drawn while the words
+ * are defined the hairline grey. The agent's dot, a mark that draws no words, is the running
+ * mark `AgentName` draws there (`pageSegmentDoneBg`). A link's words, a reason and an answer are
+ * values there, which break anywhere inside the popover's width.
+ */
+const ON_PAGE = {
+  agentRule: pageHairBorder,
+  frame: `${pageHairBorder} ${pagePaperBg}`,
+  link: `${pageInkText} underline max-w-full [overflow-wrap:anywhere]`,
+  prose: `${pageMutedText} max-w-full [overflow-wrap:anywhere]`,
+  quiet: pageQuietText,
+  skeleton: pageHairBg,
+} as const;
 
 /** How often the popover reads the definition again while the agent's answer is on its way, and
  *  for how long at most: the side question waits 60 seconds for its answer (`agent.until`). */
@@ -115,7 +142,7 @@ function DefinitionLink({ href, onFollow }: { href: string; onFollow: () => void
   );
 }
 
-const definitionLinkClass = `mt-1.5 mr-3 inline-block text-xs font-medium ${linkText} ${linkHoverText}`;
+const definitionLinkShape = "mt-1.5 mr-3 inline-block text-xs font-medium";
 
 function ReferenceDefinitionLink({
   route,
@@ -124,18 +151,29 @@ function ReferenceDefinitionLink({
   route: DispatchReferenceRoute;
   onFollow: () => void;
 }): ReactNode {
+  const tooltips = useTooltips();
   const name = useCitationName(route);
   return (
-    <Link className={definitionLinkClass} onClick={onFollow} to={buildReferencePath(route)}>
+    <Link
+      className={`${definitionLinkShape} ${tooltips ? `${linkText} ${linkHoverText}` : ON_PAGE.link}`}
+      onClick={onFollow}
+      to={buildReferencePath(route)}
+    >
       {name} →
     </Link>
   );
 }
 
 function WebDefinitionLink({ href }: { href: string }): ReactNode {
+  const tooltips = useTooltips();
   if (!/^https?:\/\//.test(href)) return null;
   return (
-    <a className={definitionLinkClass} href={href} rel="noreferrer" target="_blank">
+    <a
+      className={`${definitionLinkShape} ${tooltips ? `${linkText} ${linkHoverText}` : ON_PAGE.link}`}
+      href={href}
+      rel="noreferrer"
+      target="_blank"
+    >
       {href} →
     </a>
   );
@@ -253,11 +291,20 @@ export function DefinePopover({
     };
   }, []);
 
-  const prose = `text-[13px] leading-5 ${textSecondaryOnSurface}`;
+  const tooltips = useTooltips();
+  const prose = `text-[13px] leading-5 ${tooltips ? textSecondaryOnSurface : ON_PAGE.prose}`;
+  // Inside `NoTooltips` why Dispatch could not define the words, which a `title` holds today, is
+  // drawn under what the popover says of it.
+  const why = (reason: string | undefined) =>
+    tooltips || reason === undefined ? null : (
+      <p className={`mt-1 max-w-full text-xs [overflow-wrap:anywhere] ${ON_PAGE.quiet}`}>
+        {reason}
+      </p>
+    );
   return createPortal(
     <div
       aria-label={`What “${words}” means`}
-      className={`fixed z-50 rounded-xl border p-3 shadow-lg ${card} ${borderDefault}`}
+      className={`fixed z-50 rounded-xl border p-3 shadow-lg ${tooltips ? `${card} ${borderDefault}` : ON_PAGE.frame}`}
       data-define-popover=""
       ref={panelRef}
       role="dialog"
@@ -269,20 +316,30 @@ export function DefinePopover({
     >
       {definition === undefined ? (
         define.isError ? (
-          <p className={prose} title={define.error.message}>
-            Dispatch could not define these words. Press d to try again.
-          </p>
+          <>
+            <p className={prose} title={tooltips ? define.error.message : undefined}>
+              Dispatch could not define these words. Press d to try again.
+            </p>
+            {why(define.error.message)}
+          </>
         ) : (
           <div aria-label="Defining" className="space-y-1.5 py-0.5" role="status">
-            <div className={`h-3 w-full animate-pulse rounded ${skeletonBg}`} />
-            <div className={`h-3 w-4/5 animate-pulse rounded ${skeletonBg}`} />
+            <div
+              className={`h-3 w-full animate-pulse rounded ${tooltips ? skeletonBg : ON_PAGE.skeleton}`}
+            />
+            <div
+              className={`h-3 w-4/5 animate-pulse rounded ${tooltips ? skeletonBg : ON_PAGE.skeleton}`}
+            />
           </div>
         )
       ) : meaning === undefined ? (
         // The record's half gave no meaning (`failure` says why); the agent's may still come.
-        <p className={prose} title={definition.failure}>
-          Dispatch could not define these words.
-        </p>
+        <>
+          <p className={prose} title={tooltips ? definition.failure : undefined}>
+            Dispatch could not define these words.
+          </p>
+          {why(definition.failure)}
+        </>
       ) : (
         <>
           <p className={prose}>{meaning.meaning}</p>
@@ -292,11 +349,27 @@ export function DefinePopover({
         </>
       )}
       {!agentShown || agent?.session === undefined ? null : (
-        <div className={`mt-2.5 border-t pt-2.5 ${borderDefault}`} data-define-agent={agent.state}>
-          {/* The agent's name is the one label: it tells its words from the record's. */}
-          <p className={`flex items-center gap-1.5 text-xs font-medium ${textMutedOnSurface}`}>
-            <span aria-hidden="true" className={`size-1.5 shrink-0 rounded-full ${liveDotBg}`} />
-            {agentText.sessionText(agent.session, undefined)}
+        <div
+          className={`mt-2.5 border-t pt-2.5 ${tooltips ? borderDefault : ON_PAGE.agentRule}`}
+          data-define-agent={agent.state}
+        >
+          {/* The agent's name is the one label: it tells its words from the record's. Inside
+              `NoTooltips` it is the page's name of the session - An agent for one nothing names -
+              and a value, which breaks anywhere beside its dot. */}
+          <p
+            className={`flex items-center gap-1.5 text-xs font-medium ${tooltips ? textMutedOnSurface : ON_PAGE.quiet}`}
+          >
+            <span
+              aria-hidden="true"
+              className={`size-1.5 shrink-0 rounded-full ${tooltips ? liveDotBg : pageSegmentDoneBg}`}
+            />
+            {tooltips ? (
+              agentText.sessionShown(agent.session, undefined)
+            ) : (
+              <span className="min-w-0 [overflow-wrap:anywhere]">
+                {agentText.sessionShown(agent.session, undefined)}
+              </span>
+            )}
           </p>
           {agent.state === "answered" ? (
             <p className={`mt-1 ${prose}`}>{agent.answer}</p>
@@ -304,7 +377,7 @@ export function DefinePopover({
             <span aria-label="Asking the agent" className="mt-2 flex gap-1" role="status">
               {[0, 200, 400].map((delay) => (
                 <span
-                  className={`size-1.5 animate-pulse rounded-full bg-current ${textMutedOnSurface}`}
+                  className={`size-1.5 animate-pulse rounded-full bg-current ${tooltips ? textMutedOnSurface : ON_PAGE.quiet}`}
                   key={delay}
                   style={{ animationDelay: `${delay}ms` }}
                 />

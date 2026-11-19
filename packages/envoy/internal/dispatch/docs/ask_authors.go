@@ -307,11 +307,12 @@ const askAuthorsStatement = `
 	select $1::uuid, block, actor, $4::boolean from unnest($2::text[], $3::jsonb[]) as author(block, actor)
 	on conflict (artifact_id, block_id_key(block_id)) do nothing`
 
-// askAuthorsArgs is askAuthorsStatement's arguments for authors, keyed by block id, and nil when
-// none of them can name a durable row (storableAskBlockID). An append queues the statement with
-// them among its own writes (appendUpdateTxClass), which go in one round trip. personTyped is
-// whether a person typed the write in a session.
-func askAuthorsArgs(room string, authors map[string]model.Actor, personTyped bool) ([]any, error) {
+// askAuthorsArgs is askAuthorsStatement's arguments for authors, keyed by block id, and the
+// block ids those arguments name: the ones that can name a durable row (storableAskBlockID).
+// Both are nil when none of them can. Its one caller is queueAskAuthors, which every queue of
+// the statement goes through, and which keys its ledger overlay by those ids rather than
+// weighing each id a second time. personTyped is whether a person typed the write in a session.
+func askAuthorsArgs(room string, authors map[string]model.Actor, personTyped bool) ([]any, []string, error) {
 	blocks := make([]string, 0, len(authors))
 	encoded := make([]string, 0, len(authors))
 	for block, actor := range authors {
@@ -320,30 +321,56 @@ func askAuthorsArgs(room string, authors map[string]model.Actor, personTyped boo
 		}
 		raw, err := json.Marshal(actor)
 		if err != nil {
-			return nil, fmt.Errorf("encode an ask block's author: %w", err)
+			return nil, nil, fmt.Errorf("encode an ask block's author: %w", err)
 		}
 		blocks = append(blocks, block)
 		encoded = append(encoded, string(raw))
 	}
 	if len(blocks) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
-	return []any{room, blocks, encoded, personTyped}, nil
+	return []any{room, blocks, encoded, personTyped}, blocks, nil
 }
 
-// recordAskAuthors records authors, keyed by block id, in tx, keeping the author an earlier
-// registration of a block already recorded. A write a person typed in a session
-// (events.PersonTyped on ctx) records its blocks as theirs, which the settlement that opens their
-// asks reads (readPersonTypedAskBlocks).
-func recordAskAuthors(ctx context.Context, tx pgx.Tx, room string, authors map[string]model.Actor) error {
-	args, err := askAuthorsArgs(room, authors, events.PersonTyped(ctx))
+// queueAskAuthors queues askAuthorsStatement for authors, keyed by block id, on plan, and
+// records the rows it will add on the ledger that queues tx's writes (Ledger.queuedAskAuthors).
+// It is the one place doc_ask_block_authors' insert is queued - an update's append queues it
+// among its own writes (appendWrites), recordAskAuthors as a write of its own - so no writer can
+// queue the statement without recording the overlay the transaction's own reads of the table
+// consult (transactionRecordedAskAuthors). It queues nothing where no author can name a durable
+// row (askAuthorsArgs), which leaves no row for a read to miss either. personTyped marks the
+// rows as the blocks of a write a person typed in a session.
+func queueAskAuthors(ctx context.Context, tx pgx.Tx, plan *appendPlan, room string, authors map[string]model.Actor, personTyped bool) error {
+	args, blocks, err := askAuthorsArgs(room, authors, personTyped)
 	if err != nil || args == nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, askAuthorsStatement, args...); err != nil {
-		return fmt.Errorf("record the document's ask block authors: %w", err)
+	plan.queue("record the document's ask block authors", askAuthorsStatement, args...)
+	ledger := queueFor(ctx, tx)
+	if ledger == nil {
+		return nil
 	}
+	queued := make(map[string]model.Actor, len(blocks))
+	for _, block := range blocks {
+		queued[block] = authors[block]
+	}
+	ledger.queuedAskAuthors(room, queued)
 	return nil
+}
+
+// recordAskAuthors records authors, keyed by block id, in tx, keeping the author an earlier
+// registration of a block already recorded: queueAskAuthors as one write of its own. It goes
+// through write, so a transaction whose writes are queued runs it in its write phase and reads
+// the rows it will add from its ledger until then (Ledger.queuedAskAuthors,
+// transactionRecordedAskAuthors). A write a person typed in a session (events.PersonTyped on
+// ctx) records its blocks as theirs, which the settlement that opens their asks reads
+// (readPersonTypedAskBlocks).
+func recordAskAuthors(ctx context.Context, tx pgx.Tx, room string, authors map[string]model.Actor) error {
+	var plan appendPlan
+	if err := queueAskAuthors(ctx, tx, &plan, room, authors, events.PersonTyped(ctx)); err != nil {
+		return err
+	}
+	return plan.send(ctx, tx)
 }
 
 // recordStampedAskAuthors records, in tx, the transaction that stores a stamp, the author of each
@@ -351,32 +378,87 @@ func recordAskAuthors(ctx context.Context, tx pgx.Tx, room string, authors map[s
 // (recordStampedAskBlocks), and otherwise the author recorded for the id it replaced, which another
 // process's write can have recorded where this room never saw it. A copy of a block that keeps its
 // previous id carries nothing, as in the room.
+//
+// The author a rename carries is read here, in the transaction's read phase, rather than joined to
+// doc_ask_block_authors inside the insert: the insert is queued, so a join inside it would answer
+// only once the write phase ran, and the settlement that queues this reads the authors back
+// before then (reconcileAskBlocks). What the read answers is exact for the whole transaction -
+// every write of these rows holds the document's advisory lock, which the caller holds from
+// before this read - and it takes in the rows this transaction has queued itself
+// (transactionRecordedAskAuthors), as the join took in the rows the statement before it inserted.
 func recordStampedAskAuthors(ctx context.Context, tx pgx.Tx, room string, stamped []stampedAsk, carried map[string]model.Actor) error {
-	if err := recordAskAuthors(ctx, tx, room, carried); err != nil {
-		return err
-	}
-	previous := make([]string, 0, len(stamped))
-	minted := make([]string, 0, len(stamped))
+	renames := make([]stampedAsk, 0, len(stamped))
 	for _, ask := range stamped {
 		if ask.copied || !storableAskBlockID(ask.previous) || !storableAskBlockID(ask.minted) {
 			continue
 		}
-		previous = append(previous, ask.previous)
-		minted = append(minted, ask.minted)
+		renames = append(renames, ask)
 	}
-	if len(minted) == 0 {
-		return nil
+	authors := maps.Clone(carried)
+	// A renamed block a person typed in a session stays theirs under the id the stamp minted
+	// (doc_ask_block_authors.person_typed), as its author does. The rows this transaction queued
+	// are marked by its own context, which marks every row it records (recordAskAuthors).
+	var typedRenames map[string]model.Actor
+	if len(renames) > 0 {
+		recorded, err := transactionRecordedAskAuthors(ctx, tx, room)
+		if err != nil {
+			return err
+		}
+		typed, err := readPersonTypedAskBlocks(ctx, tx, room)
+		if err != nil {
+			return err
+		}
+		for _, ask := range renames {
+			author, replaced := recorded[ask.previous]
+			if _, held := authors[ask.minted]; held || !replaced {
+				continue
+			}
+			if _, kept := typedRenames[ask.minted]; kept {
+				continue
+			}
+			if typed[ask.previous] && !events.PersonTyped(ctx) {
+				if typedRenames == nil {
+					typedRenames = make(map[string]model.Actor, len(renames))
+				}
+				typedRenames[ask.minted] = author
+				continue
+			}
+			if authors == nil {
+				authors = make(map[string]model.Actor, len(renames))
+			}
+			authors[ask.minted] = author
+		}
 	}
-	if _, err := tx.Exec(ctx, `
-		insert into doc_ask_block_authors (artifact_id, block_id, actor, person_typed)
-		select recorded.artifact_id, renamed.minted, recorded.actor, recorded.person_typed
-		from unnest($2::text[], $3::text[]) as renamed(previous, minted)
-		join doc_ask_block_authors recorded on recorded.artifact_id = $1 and recorded.block_id = renamed.previous
-		on conflict (artifact_id, block_id_key(block_id)) do nothing
-	`, room, previous, minted); err != nil {
-		return fmt.Errorf("carry the authors of the ask blocks a stamp renamed: %w", err)
+	if len(typedRenames) == 0 {
+		return recordAskAuthors(ctx, tx, room, authors)
 	}
-	return nil
+	var plan appendPlan
+	if err := queueAskAuthors(ctx, tx, &plan, room, authors, events.PersonTyped(ctx)); err != nil {
+		return err
+	}
+	if err := queueAskAuthors(ctx, tx, &plan, room, typedRenames, true); err != nil {
+		return err
+	}
+	return plan.send(ctx, tx)
+}
+
+// transactionRecordedAskAuthors is the durable ask authors of room as tx sees them: the rows the
+// table holds (readRecordedAskAuthors) and the rows the writes tx has queued will add
+// (Ledger.queuedAskAuthors), which the table holds none of until the write phase has run. A row
+// the table already holds keeps its author, as the insert does.
+func transactionRecordedAskAuthors(ctx context.Context, tx pgx.Tx, room string) (map[string]model.Actor, error) {
+	recorded, err := readRecordedAskAuthors(ctx, tx, room)
+	if err != nil {
+		return nil, err
+	}
+	if ledger := queueFor(ctx, tx); ledger != nil {
+		for block, actor := range ledger.askAuthors[room] {
+			if _, held := recorded[block]; !held {
+				recorded[block] = actor
+			}
+		}
+	}
+	return recorded, nil
 }
 
 // readRecordedAskAuthors is the durable ask authors of room, keyed by block id. A settlement reads
@@ -430,7 +512,8 @@ func readPersonTypedAskBlocks(ctx context.Context, q Queryer, room string) (map[
 // blocks of the tree the settlement reconciled: a block deleted from the document, or an id a
 // stamp replaced. A block still waiting for its ask - a copy, one whose observer has not run, one
 // settlement cannot read, one a closed issue's settlement left with no row until the issue
-// reopens (reconcileAskBlocks) - keeps its row.
+// reopens (reconcileAskBlocks) - keeps its row. The delete goes through write, so the settlement
+// runs it in its write phase.
 func deleteSettledAskAuthors(ctx context.Context, tx pgx.Tx, room string, indexed []string, held map[string]struct{}) error {
 	// Neither array may be NULL: `not block_id = any(NULL)` is NULL, which would keep every row of a
 	// document that holds no ask block at all.
@@ -443,11 +526,8 @@ func deleteSettledAskAuthors(ctx context.Context, tx pgx.Tx, room string, indexe
 			kept = append(kept, block)
 		}
 	}
-	if _, err := tx.Exec(ctx, `
+	return writeExec(ctx, tx, "delete the authors of the document's settled ask blocks", `
 		delete from doc_ask_block_authors
 		where artifact_id = $1 and (block_id = any($2::text[]) or not block_id = any($3::text[]))
-	`, room, indexed, kept); err != nil {
-		return fmt.Errorf("delete the authors of the document's settled ask blocks: %w", err)
-	}
-	return nil
+	`, room, indexed, kept)
 }
