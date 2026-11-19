@@ -18,12 +18,14 @@ name: CI caches
 # its module files too, for the reason its job gives): go-notices (lint's notices step), go-daemon
 # (typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-checks, envoy-go-race-docs,
 # envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local and envoy-session-stall),
-# go-envoy-test (envoy-go, and the binaries job of .github/workflows/dispatch-browser.yaml, which
-# ci.yaml's dispatch-browser job calls: it builds the Dispatch server, the real broker's commands
-# and the dev OIDC issuer for the whole run, whose packages the go-envoy entry's build of the
-# listener and natsd alone does not hold; no other job of that workflow runs a go command) and
-# go-envoy-infra (envoy-infra-go, and the build job of release-envoy-infra.yaml). The key carries
-# `runner.arch` because Go's build cache holds the objects of the architecture that compiled them:
+# go-envoy-test (envoy-go, envoy-go-claim-model, which builds the test binary of
+# internal/dispatch/api out of that set, and the binaries job of
+# .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser job calls: it builds
+# the Dispatch server, the real broker's commands and the dev OIDC issuer for the whole run, whose
+# packages the go-envoy entry's build of the listener and natsd alone does not hold; no other job
+# of that workflow runs a go command) and go-envoy-infra (envoy-infra-go, and the build job of
+# release-envoy-infra.yaml). The key carries `runner.arch` because Go's build cache holds the
+# objects of the architecture that compiled them:
 # an entry an x86_64 runner filled gives an arm64 job its modules and none of its objects. So each
 # family is filled on every architecture one of its readers runs on, one matrix leg per runner:
 # go-notices on ubuntu-24.04-arm alone, where lint runs, and go-daemon, go-envoy, go-envoy-test and
@@ -234,8 +236,9 @@ jobs:
   # go-envoy and go-envoy-test. Both key on packages/envoy/go.mod's Go, the module every job that
   # restores them sets Go up from, so one setup serves the two; their lookups and their builds are
   # independent, and each build is gated on its own lookup. One leg per runner its readers run on,
-  # which each reader's own `runs-on` decides. Read at 29b902d1 on 2026-11-18: envoy-go-checks
-  # (go-envoy, ci-job-envoy-go-checks.yaml), dispatch-browser.yaml's binaries job and
+  # which each reader's own `runs-on` decides. Read on 2026-11-19 in a tree holding main's
+  # 5f3d552e: envoy-go-checks (go-envoy, ci-job-envoy-go-checks.yaml), envoy-go-claim-model
+  # (go-envoy-test, ci-job-envoy-go-claim-model.yaml), dispatch-browser.yaml's binaries job and
   # dispatch-browser-nightly.yaml's re-record job (go-envoy-test) run on ubuntu-24.04, and every
   # other job that restores either family on ubuntu-24.04-arm.
   envoy:
