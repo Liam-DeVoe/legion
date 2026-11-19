@@ -51,6 +51,9 @@ test("a chunk that is not in draws the fallback, then the component", async () =
     // Two mounts, one download.
     expect(imports).toBe(1);
   } finally {
+    // The download goes through `renderChunk`, so one still out would be counted for the rows of
+    // other files run after this one (`chunkLoadsOut`). Resolving a settled promise does nothing.
+    resolve(Greeting);
     view.unmount();
   }
 });

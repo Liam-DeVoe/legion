@@ -43,8 +43,9 @@ on:
     types: [labeled]
   schedule:
     # Nightly. The other nightly of this repository is dispatch-browser-nightly.yaml's, hours
-    # away at 02:17, so the two nightlies do not contend for runners; codeql.yaml's (Tuesdays) and
-    # dispatch-unit-repeat.yaml's (Saturdays) run weekly, each at an hour of its own.
+    # away at 02:17, so the two nightlies do not contend for runners; codeql.yaml's and
+    # dispatch-unit-repeat.yaml's run weekly, on Tuesdays at 04:17 and Saturdays at 09:23 when
+    # read on 2026-11-19.
     - cron: "41 4 * * *"
 
 # The jobs clone, download pinned tools and modules, and upload an artifact of the run's own.

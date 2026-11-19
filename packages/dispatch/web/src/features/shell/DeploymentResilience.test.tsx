@@ -132,6 +132,11 @@ test("a chunk the entry only prefetched reloads nothing, and the render's own as
     chunk.reject(new Error("Failed to fetch dynamically imported module"));
     await expect(rendered).rejects.toThrow("Failed to fetch dynamically imported module");
   } finally {
+    // A download still out would fail every later row: the file's `beforeEach` waits until none
+    // is out and gives up after 30 s. So the row settles it here also when an assertion above
+    // failed. It resolves rather than rejects: resolving a settled promise does nothing, and a
+    // rejection nothing awaits would be an unhandled rejection of its own.
+    chunk.resolve(undefined);
     reload.mockRestore();
     window.sessionStorage.clear();
   }
@@ -165,6 +170,9 @@ test("a render-time chunk that fails while a prefetch is out still reloads", asy
     await expect(rendering).rejects.toThrow("Failed to fetch dynamically imported module");
     prefetched.resolve(undefined);
   } finally {
+    // As in the row above: neither download may outlive the row, whether or not it passed.
+    awaited.resolve(undefined);
+    prefetched.resolve(undefined);
     reload.mockRestore();
     window.sessionStorage.clear();
   }

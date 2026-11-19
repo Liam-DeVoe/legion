@@ -1,4 +1,4 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { ID_AMBIGUOUS } from "@legion/contracts/dispatch-api-constants";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -38,37 +38,19 @@ import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { IssuePage } from "./IssuePage";
-import {
-  activityTabChunk,
-  artifactsTabChunk,
-  childrenTabChunk,
-  collaboratorsTabChunk,
-  conversationTabChunk,
-  decisionsTabChunk,
-  planTabChunk,
-  stepsTabChunk,
-  verificationTabChunk,
-} from "./tab-chunks";
+import { issueTabs } from "./issue-tab-list";
+import { issueTabChunk } from "./tab-chunks";
 
 // Every tab panel but the Spec's is a chunk of its own (`tab-chunks.ts`), which draws in the
 // page's first commit only once it is in. The rows here are about the tabs, not about that
 // download, and in a random order the row that happens to load a chunk first would decide what
 // every later row sees in its first commit - and one row runs on a held clock, on which no
-// download ends at all. So the chunks are loaded here, with the test file, as the entry's own
-// prefetch of a landed tab would have them in.
-await Promise.all(
-  [
-    activityTabChunk,
-    artifactsTabChunk,
-    childrenTabChunk,
-    collaboratorsTabChunk,
-    conversationTabChunk,
-    decisionsTabChunk,
-    planTabChunk,
-    stepsTabChunk,
-    verificationTabChunk,
-  ].map((tab) => tab.load())
-);
+// download ends at all. So the chunks are loaded before the first row, from the map the entry's
+// own prefetch of a landed tab reads (`issueTabChunk`), and a tab chunk added to that map is
+// loaded with the others.
+beforeAll(async () => {
+  await Promise.all(issueTabs(0).map((tab) => issueTabChunk(tab.id)?.()));
+});
 
 const issue = {
   route_status: null,
@@ -1663,8 +1645,6 @@ test("IssuePage renders an image artifact in the Artifacts tab", async () => {
 
   try {
     await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
-    // The Artifacts panel is a chunk of its own (`tab-chunks.ts`), so it draws once that
-    // import has resolved, after the tab itself.
     expect(await screen.findByRole("img", { name: "diagram.png version 1" })).not.toBeNull();
     expect(screen.getByTestId("artifact-header").className).toContain("ring-2");
   } finally {

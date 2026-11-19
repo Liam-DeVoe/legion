@@ -142,9 +142,12 @@ interface Landing {
   readonly routeChunk: RegExp;
   /** For a landing that draws a live document, the Yjs transport's chunk, which the entry starts
    *  beside the landing read with the editor's library (`web/src/app.tsx`, `loadDocumentChunks`).
-   *  It is the one chunk of that start whose name stands whether or not the start is there:
-   *  without it, `features/doc/editor.ts` and `features/doc/connection.ts` fold into
-   *  `ProofDocument`'s chunk, while the transport's library stays a chunk of its own. */
+   *  It is a chunk of that start whose name stands whether or not the start is there: without
+   *  it, `features/doc/editor.ts` and `features/doc/connection.ts` fold into `ProofDocument`'s
+   *  chunk, while the libraries they import stay chunks of their own. The start asks for the
+   *  editor's library and the transport in one call, so one of its chunks asked in time shows
+   *  that the start ran. The row holds the entry to this one because Yjs is the library the
+   *  transport cannot open a document without. */
   readonly documentChunk?: RegExp;
   /** R3's bound on the whole landing, where it sets one. It sets one for the issue page alone. */
   readonly bounds?: { readonly reads: number; readonly waves: number };
