@@ -1547,7 +1547,7 @@ func RestartOfLeftTask(issue, task string) *Refusal {
 // and no release of the hold does.
 func RetryOfStoppedTask(issue, task string) *Refusal {
 	return &Refusal{Status: 409, Code: "TASK_STOPPED", Message: fmt.Sprintf(
-		"task %s of %s was stopped by its owner; a later version of the plan that changes the task starts it again at its first step (register_plan). This retry changed nothing.", task, issue)}
+		"task %s of %s was stopped by its owner; a later version of the plan that changes the task starts it again at its first step (register_plan), and a task that never started waits for its gate and its line first. This retry changed nothing.", task, issue)}
 }
 
 // RetryOfHeldParent is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold where issue,

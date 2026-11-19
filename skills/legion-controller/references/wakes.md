@@ -289,9 +289,10 @@ releases the hold only on a root standing at `phase: held`: a root whose tree li
 `phase: done` is re-admitted by the same `todo` at a new generation, and a held child comes back
 at `admitted` with a new generation of its own.
 A root its plan holds is the exception, and is no failure to release: on a root held for its
-stopped task (`holdReason: task-stopped`) that `todo` starts the task again at its first step, on a
-root held before its retro for the issues beneath it (`holdReason: children`) it leaves the root
-held until the last of them leaves, and the architect's `retry_or_escalate` of either hold is
+stopped task (`holdReason: task-stopped`) that `todo` starts the task again at its first step (a
+task that never started waits for its gate and its line, as any task does before its first step),
+on a root held before its retro for the issues beneath it (`holdReason: children`) it leaves the
+root held until the last of them leaves, and the architect's `retry_or_escalate` of either hold is
 refused (`TASK_STOPPED`, `HELD_FOR_CHILDREN`).
 
 When an escalated hold's cause is not gone, do not park the tree. The tree stays admitted and

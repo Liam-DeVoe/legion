@@ -384,7 +384,8 @@ export function createLegionTool(deps: {
         "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). " +
         "stop_task (issue, task) stops one task of the plan Legion runs for a recorded issue: its running step stops, and the issue is " +
         "held, `holdReason` task-stopped, until a later version of the plan, given with register_plan, changes or replaces that task, " +
-        "which then starts at its first step; retry_or_escalate does not start it again (TASK_STOPPED). The daemon refuses a task the plan " +
+        "which then starts at its first step (a task that never started waits for its gate and its line, as any task does before its " +
+        "first step); retry_or_escalate does not start it again (TASK_STOPPED). The daemon refuses a task the plan " +
         "does not hold (TASK_NOT_FOUND) and one that is done (TASK_DONE). " +
         "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
         "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +

@@ -194,7 +194,7 @@ func TestAStoppedTaskAndAHeldParentGetNoWork(t *testing.T) {
 // and start its role, and the escalation records `escalated` and tells the controller.
 func TestARetryOfAStoppedTaskOrAHeldParentIsRefused(t *testing.T) {
 	const beneath = heldBeneath
-	stopped := intake.Refusal{Status: 409, Code: "TASK_STOPPED", Message: "task a of LEGION-208 was stopped by its owner; a later version of the plan that changes the task starts it again at its first step (register_plan). This retry changed nothing."}
+	stopped := *intake.RetryOfStoppedTask("LEGION-208", "a")
 	waiting := intake.Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: "LEGION-208 waits before its retro for these issues beneath it: " + beneath + ". Legion starts the retro when the last one leaves. This retry changed nothing."}
 	for _, h := range heldWorks {
 		for _, release := range []struct {

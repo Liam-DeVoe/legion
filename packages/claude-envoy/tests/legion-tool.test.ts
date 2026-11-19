@@ -4,7 +4,7 @@ import { resolve } from "node:path"
 import type { LegionRole } from "@legion/contracts"
 import type { LegionPhase } from "@legion/contracts/legion-api"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
-import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
+import { type ClaimCapability, PHASE_OP_SENTENCES } from "@legion/pi-shared/legion-phase-ops"
 import { executeLegionTool, legionToolDefinition } from "../src/legion-tool"
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
@@ -156,7 +156,7 @@ test("declares the five phase-worker operations under one op, and names the Envo
     required: ["op"],
   })
   expect(definition.description).toContain(
-    "this tool cannot spawn workers. read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. A held issue names in `heldFrom` the phase the hold took it out of, and in `holdReason` why it is held when its hold has a reason: `escalated` (its architect sent it to the controller), `task-stopped` (its owner stopped its task with stop_task) or `children` (it waits, before its retro, for the issues beneath it). A failed claim carries `failure`: the `cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and `attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts that phase again, as the architect's retry_or_escalate with retry does, but a root held `task-stopped` starts its task again at its first step, and a root held `children` stays held until the issues beneath it close. read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no role, of resumes by wake kind and of holds by reason, the pod-hours released, the share of releases woken again within ten minutes, and the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A release that suspended no role is woken by nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. handoff_complete",
+    `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}${PHASE_OP_SENTENCES.readReleaseRecords}handoff_complete`
   )
   expect(definition.description).toContain(
     "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. The daemon replaces the pod and its disk when the round ends: at the moment the message names, or earlier when every role has answered and no turn runs. No answer delays that moment, and the end of a turn is no answer. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`): a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which counts a review round. What a later phase needs",

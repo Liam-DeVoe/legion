@@ -334,7 +334,8 @@ export const PHASE_OP_SENTENCES = {
     "`cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and " +
     "`attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts " +
     "that phase again, as the architect's retry_or_escalate with retry does, but a root held `task-stopped` starts its task again at its " +
-    "first step, and a root held `children` stays held until the issues beneath it close. ",
+    "first step (a task that never started waits for its gate and its line, as any task does before its first step), and a root held " +
+    "`children` stays held until the issues beneath it close. ",
   readReleaseRecords:
     "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
     "every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no " +

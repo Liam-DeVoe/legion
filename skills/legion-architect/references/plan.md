@@ -106,7 +106,8 @@ need from the planner's plan into your task's text.
   that is done or left the workflow with its issue (`409 TASK_DONE`). A stop of a task already
   stopped changes nothing.
 - A stopped task stays held until you give a later version of the plan that changes it, or, on a
-  root, until a person sets the root `todo`. Legion then starts it at its first step.
+  root, until a person sets the root `todo`. Legion then starts it at its first step. A task that
+  never started waits for its gate and its line first, as any task does before its first step.
   `retry_or_escalate` refuses the hold, a retry and an escalation alike (`409 TASK_STOPPED`), as
   the daemon refuses an operator's restart of it.
 - A later version may change or remove only a task that waits or is stopped. Legion refuses one
