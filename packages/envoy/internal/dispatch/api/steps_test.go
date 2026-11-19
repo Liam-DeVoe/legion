@@ -588,7 +588,10 @@ func TestAStepOfAnotherIssueIsRefused(t *testing.T) {
 }
 
 // A credential scoped to one project writes the records of that project's issues and no other's,
-// though it proves the session of that project's daemon.
+// though it proves the session of that project's daemon. An issue of a project the credential does
+// not list is one it cannot see, so its write is answered as a write of a key no issue holds (404
+// ISSUE_NOT_FOUND), naming its own daemon's session or the other project's: the second is refused
+// for its body first (403 ACTOR_SESSION_MISMATCH), as it is for a key no issue holds.
 func TestAProjectCredentialWritesOnlyItsProject(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -610,9 +613,14 @@ func TestAProjectCredentialWritesOnlyItsProject(t *testing.T) {
 	}
 	own, other := issueOf(brokerTestProject), issueOf("OTH")
 
-	refused := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+other+"/steps/"+uuid.NewString(), token,
-		implementerStart(daemonSessionOf("OTH"))))
-	expectRefusal(t, "a write to "+other, refused, http.StatusForbidden, codeProjectScope, brokerTestProject, "OTH")
+	for _, missing := range []string{other, "OTH-999"} {
+		refused := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+missing+"/steps/"+uuid.NewString(), token,
+			implementerStart(daemonSessionOf(brokerTestProject))))
+		expectRefusal(t, "a write to "+missing+" as its own daemon", refused, http.StatusNotFound, "ISSUE_NOT_FOUND", missing)
+		mismatched := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+missing+"/steps/"+uuid.NewString(), token,
+			implementerStart(daemonSessionOf("OTH"))))
+		expectRefusal(t, "a write to "+missing+" as OTH's daemon", mismatched, http.StatusForbidden, "ACTOR_SESSION_MISMATCH")
+	}
 	answered := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+own+"/steps/"+uuid.NewString(), token,
 		implementerStart(daemonSessionOf(brokerTestProject))))
 	if answered.Code != http.StatusOK {
