@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 // gitPins is the configuration every git this package starts reads last: no hook and no
@@ -342,9 +343,12 @@ func short(id string) string {
 	return id[:min(len(id), 7)]
 }
 
-// git is gitFed with nothing of its own in git's environment and nothing on its standard input.
-// Each of its callers reads what git answers as data: git show's identities and message split on
-// zero bytes, and diff-tree's list of a commit's changes.
+// git is gitFed with nothing of its own in git's environment and nothing on its standard input:
+// it answers git's standard output alone, failing where git itself does. Each of its callers reads
+// what git answers as data: git show's identities and message split on zero bytes, and diff-tree's
+// list of a commit's changes. That output is the push's own content (a diff, a commit's message)
+// and can be large, while git says why it failed on its standard error, so a failure quotes only
+// what git wrote there, capped (gitExited, gitSaid), never its standard output.
 func (g *Guard) git(ctx context.Context, dir string, args ...string) (string, error) {
 	return g.gitFed(ctx, dir, nil, "", args...)
 }
@@ -381,12 +385,39 @@ func (g *Guard) gitFed(ctx context.Context, dir string, env []string, input stri
 }
 
 // gitExited is the failure of a git, what ("git cat-file"), that exited status, quoting stderr,
-// git's own account of the failure, as git wrote it less the user and password of a URL in it
-// (withoutUserinfo): a lazy fetch of a partial clone that fails names its promisor remote, and a
+// git's own account of the failure, less the user and password of a URL in it (withoutUserinfo)
+// and capped (gitSaid): a lazy fetch of a partial clone that fails names its promisor remote, and a
 // read of a push's destination names the URL git handed the hook, either of which can carry a
-// token.
+// token. The user and password are taken out of the whole of stderr before it is capped: a cut
+// that fell inside them would leave their end quoted without the "://" they are found by.
 func gitExited(what string, status int, stderr string) error {
-	return fmt.Errorf("%s exited %d: %s", what, status, withoutUserinfo(strings.TrimSpace(stderr)))
+	return fmt.Errorf("%s exited %d: %s", what, status, gitSaid(withoutUserinfo(stderr)))
+}
+
+// gitErrorBytes is the most of git's standard error a failure of a git quotes (gitExited): git says
+// why it failed in a line or a few, and a failure that wrote more is cut there rather than carried
+// whole into the setup failure a role reads.
+const gitErrorBytes = 4096
+
+// gitSaid is what a failure of a git quotes of the standard error git wrote (gitExited): trimmed
+// and, past gitErrorBytes, its last gitErrorBytes bytes, after the count of the bytes left out
+// before them. The end is what is kept because git writes its `fatal:` line last, after any
+// warnings. The cut moves forward to the start of a character, looking at most utf8.UTFMax bytes
+// ahead and staying put where none starts there, so a valid character is never split and an
+// invalid run cannot take the whole quote.
+func gitSaid(stderr string) string {
+	said := strings.TrimSpace(stderr)
+	if len(said) <= gitErrorBytes {
+		return said
+	}
+	cut := len(said) - gitErrorBytes
+	for i := cut; i < cut+utf8.UTFMax; i++ {
+		if utf8.RuneStart(said[i]) {
+			cut = i
+			break
+		}
+	}
+	return fmt.Sprintf("(%d bytes left out) …%s", cut, said[cut:])
 }
 
 // userinfo is the user and password a URL with a scheme can carry, the "user:token@" of
