@@ -3036,7 +3036,7 @@ GATES = [
         ("scripts/e2e/lib/port-file.sh", "envoy-session-delivery.sh:304 sources it, and scripts/e2e/lib/rig.sh:102"),
         ("scripts/e2e/lib/held-port.py", "envoy-session-delivery.sh:293 and scripts/e2e/lib/rig.sh:143,157 run it to "
                                          "hold a service's port"),
-        ("scripts/e2e/lib/pack-plugin.sh", "dispatch-session-settings.sh:157 and envoy-session-delivery.sh:524 run it, "
+        ("scripts/e2e/lib/pack-plugin.sh", "dispatch-session-settings.sh:157 and envoy-session-delivery.sh:525 run it, "
                                            "and scripts/e2e/lib/install-plugin-profile.sh:153"),
         ("scripts/e2e/lib/install-plugin-profile.sh", "dispatch-user-turns.sh:292 runs it for pi-envoy"),
         ("scripts/e2e/lib/install-key-file-model-route.sh", "dispatch-user-turns.sh:296 runs it to route the "
@@ -3054,10 +3054,10 @@ GATES = [
         ("scripts/e2e/lib/session-settings-model.ts", "dispatch-session-settings.sh:167 runs it under bun, the model "
                                                       "stand-in"),
         ("scripts/e2e/lib/user-turns-model.ts", "dispatch-user-turns.sh:259 runs it under bun, the model stand-in"),
-        ("scripts/e2e/lib/session-delivery-model.ts", "envoy-session-delivery.sh:700 runs it under bun, the model "
+        ("scripts/e2e/lib/session-delivery-model.ts", "envoy-session-delivery.sh:701 runs it under bun, the model "
                                                       "stand-in"),
         ("scripts/e2e/lib/messages-standin.ts", "the three stand-ins above import runStandin from it"),
-        (f"{DAEMON}/internal/claudelaunch/claudelaunch.go", "envoy-session-delivery.sh:586 reads it for the bridge's "
+        (f"{DAEMON}/internal/claudelaunch/claudelaunch.go", "envoy-session-delivery.sh:587 reads it for the bridge's "
                                                              "argv"),
         ("packages/dispatch/**", "dispatch-session-settings.sh:154 and dispatch-user-turns.sh:245 run "
                                  "`bun run build:web` in it, and the drivers launch the Chromium of its "
@@ -3070,7 +3070,7 @@ GATES = [
                              "envoy-session-delivery.sh's Claude Code session runs"),
     ) + [
         Read(g, f"{at_session_script(AGENT_HARNESS_SETTINGS)} and {at_session_script(AGENT_HARNESS_DELIVERY)}: "
-                "dispatch-session-settings.sh:157 and envoy-session-delivery.sh:524 pack packages/pi-envoy through "
+                "dispatch-session-settings.sh:157 and envoy-session-delivery.sh:525 pack packages/pi-envoy through "
                 "scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs its prepack")
         for g in PACK_READS
     ] + install_jj(AGENT_HARNESS_SESSION_SETTINGS, AGENT_HARNESS_WORKFLOW)

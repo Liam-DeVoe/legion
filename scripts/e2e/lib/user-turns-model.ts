@@ -26,6 +26,14 @@ function quoted(value: string): string {
 const SPEC_ASK =
   /With `dispatch issue` in project (\S+), create an issue titled "([^"]+)" whose spec's first section says `([^`]+)` and whose second section repeats that time\./;
 const TIME = /\b\d{2}:\d{2}\b/;
+/** The list of what people wrote to the session in the last 72 hours, which pi-envoy sends beside
+ *  a person's message as a user message of its own (SESSION_ANSWERS_MARKER in
+ *  packages/envoy-client/src/session-answers.ts, each message word for word, then
+ *  SESSION_ANSWERS_REPLACES in packages/pi-envoy/src/session-answers-context.ts). It quotes every
+ *  earlier message, the spec ask among them, so the rules below read the prompt without it: read
+ *  with it, every later turn would be answered as the spec ask again. */
+const ANSWERS_LIST =
+  /\[Dispatch: what people wrote to this session in the last 72 hours[\s\S]*?read only the newest one as current\./g;
 
 runStandin((turn) => {
   // AskGate's two reviews of a Dispatch write, each under a system prompt of its own
@@ -43,7 +51,7 @@ runStandin((turn) => {
   }
   if (afterToolResult(turn)) return text("Done.");
   const prompt = lastPrompt(turn);
-  const words = prompt?.text ?? "";
+  const words = (prompt?.text ?? "").replace(ANSWERS_LIST, "");
   const ask = SPEC_ASK.exec(words);
   if (ask !== null && prompt?.calls.length === 0) {
     const [, project, title, first] = ask as unknown as [string, string, string, string];

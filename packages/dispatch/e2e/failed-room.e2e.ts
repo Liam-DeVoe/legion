@@ -17,9 +17,10 @@ import {
   createIssue,
   createProject,
   getArtifactText,
+  quiesceDocuments,
   userHeaders,
 } from "./api";
-import { documentEditor } from "./editor";
+import { connectedDot, documentEditor } from "./editor";
 import { sql } from "./psql";
 import { resetDatabase } from "./seed";
 import { expect, test } from "./test";
@@ -171,23 +172,38 @@ test("a writer inside the docs layer when its room fails is told, and the room r
   await expect(editor).toBeVisible();
   await expect(editor).toContainText("Ship the migration.");
 
-  // The browser's own edit, so the room holds a live paragraph the recovery has to bring back -
-  // and so the room's durable writer has something to append.
+  // The browser's own edit, so the room holds a live paragraph the recovery has to bring back.
   await editor.click();
   await page.keyboard.press("End");
   await page.keyboard.type(" The browser typed this.");
   await expect(editor).toContainText("The browser typed this.");
 
-  // The room's own durable writer is what has to fail, and it is the browser's append: ygo
-  // persists the keystrokes about twelve seconds later, on the connection that holds the room's
-  // advisory lock. The trigger goes in before that flush, so the append sleeps inside its insert
-  // where a cancel can reach it; an anchored comment then queues behind the room, a second one
-  // behind that, and only then is the sleeping append cancelled. The room fails with both
-  // writers already inside the docs layer, waiting for what its recovery needs.
+  // The room stores a browser's keystrokes as they come, about 50 ms after each (roomAppendLinger
+  // in packages/envoy/internal/dispatch/docs/room_appends.go), so a hold put on now could catch an
+  // append of this paragraph itself, and the failed room would lose the rest of it until the
+  // browser reconnects, up to 2 s later (RECONNECT_SPREAD_MS), and sends it again. Closing every
+  // live document stores what each room holds first (quiesceDocuments), so the paragraph is
+  // durable before anything fails, and the editor reconnects to a room loaded from that copy.
+  const reopened = page.waitForEvent("websocket", (socket) =>
+    new URL(socket.url()).pathname.startsWith("/ws/doc/")
+  );
+  await quiesceDocuments();
+  await reopened;
+  await expect(connectedDot(page)).toHaveText("connected");
+
+  // The room's own durable writer is what has to fail, and it is the browser's append: the trigger
+  // goes in, then the browser types once more, so that append sleeps inside its insert where a
+  // cancel can reach it; an anchored comment then queues behind the room, a second one behind
+  // that, and only then is the sleeping append cancelled. The room fails with both writers already
+  // inside the docs layer, waiting for what its recovery needs. What the browser typed after the
+  // paragraph is the failed room's to lose; the paragraph is in the copy it reloads from.
   let holding: Promise<Attempt>;
   let queued: Promise<Attempt>;
   await holdTheRoomFor(20);
   try {
+    await editor.click();
+    await page.keyboard.press("End");
+    await page.keyboard.type(" Then this.");
     const pid = await heldAppendPid();
     holding = anchoredComment(issue.key, "the writer that arrives after the failure", "migration");
     await new Promise((resolve) => setTimeout(resolve, 1000));

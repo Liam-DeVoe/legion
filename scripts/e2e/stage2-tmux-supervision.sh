@@ -460,11 +460,11 @@ pass
 
 begin gate-refuses-a-missing-skill
 # The gate's load probe resolves every skill Legion's prompts load through the pane's own Oh My Pi.
-# The reviewer's pair ships in the Envoy plugin, which every consumer installs; the installed set
-# without the rubric that thermonuclear-code-quality, the thermonuclear-deep-review agent and the
-# reviewer's role prompt load is refused, naming the skill and every file that loads it.
+# The reviewer's pair ships in the Envoy plugin; the installed set without the rubric is refused,
+# naming every file the gate reads that loads it: pi-legion's and the daemon's role prompts, never
+# pi-envoy's own thermonuclear-code-quality (promptReferences, daemon/promptreferences.go).
 mv "$work/pi-envoy/dist/skills/thermonuclear-deep-review" "$work/rubric.aside"
-expect_refusal missing-skill "finds no skill thermonuclear-deep-review (loaded by dist/skills/thermonuclear-code-quality/SKILL.md, agents/thermonuclear-deep-review.md, roles/core/reviewer.md)"
+expect_refusal missing-skill "finds no skill thermonuclear-deep-review (loaded by agents/thermonuclear-deep-review.md, roles/core/reviewer.md)"
 mv "$work/rubric.aside" "$work/pi-envoy/dist/skills/thermonuclear-deep-review"
 [ -f "$work/pi-envoy/dist/skills/thermonuclear-deep-review/SKILL.md" ] || fail "the rubric was not restored"
 pass
@@ -472,9 +472,9 @@ pass
 begin gate-refuses-a-skill-only-a-role-prompt-loads
 # The gate also resolves the skills the daemon's role prompts load, beside the plugin's own: the
 # refusal of the plugin without legion-controller names roles/controller-root.md, which only a gate
-# that reads the daemon's own role prompts can name.
+# that reads the daemon's own role prompts can name, after the pi-legion files that load it.
 mv "$work/pi-legion/dist/skills/legion-controller" "$work/controller-skill.aside"
-expect_refusal prompt-only-skill "finds no skill legion-controller (loaded by dist/skills/legion-worker/references/findings.md, roles/controller-root.md)"
+expect_refusal prompt-only-skill "finds no skill legion-controller (loaded by dist/skills/legion-architect/references/design-gate.md, dist/skills/legion-architect/references/wake-routing.md, dist/skills/legion-worker/references/findings.md, roles/controller-root.md)"
 mv "$work/controller-skill.aside" "$work/pi-legion/dist/skills/legion-controller"
 [ -f "$work/pi-legion/dist/skills/legion-controller/SKILL.md" ] || fail "the legion-controller skill was not restored"
 pass

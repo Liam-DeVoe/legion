@@ -375,6 +375,7 @@ cleanup() {
     keep-listener-dispatch; do
     stop_label "$label"
   done
+  [[ -z "${cc_tmp:-}" ]] || rm -rf -- "$cc_tmp"
   if [[ -n "$database_created" ]]; then
     psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
       printf '%s: could not drop database %s\n' "$me" "$database" >&2
@@ -805,6 +806,13 @@ prepare_session() {
 }
 prepare_session pi
 prepare_session cc
+# Claude Code's TMPDIR is a short directory of its own, apart from the evidence: its bridge binds
+# the inbox at $TMPDIR/legion-claude-<ten digits>/inbox.sock (InboxLongestPath in
+# packages/daemon/internal/claudebridge/inbox.go), and a unix socket's path holds at most 107
+# bytes, which ${home[cc]}/tmp overruns under a runner's evidence directory
+# ($RUNNER_TEMP/agent-harness-logs/session-delivery made it 111). Nothing written there is
+# evidence: the session's logs, config and transcript stay under ${home[cc]}. cleanup removes it.
+cc_tmp=$(mktemp -d /tmp/sd-cc.XXXXXXXX)
 [ -d "$natives" ] && ln -sfT "$natives" "${home[pi]}/home/.omp/natives"
 # write_mcp_config: the one MCP server Claude Code loads, naming the claude-envoy the run uses now
 # (use_plugins). The upgrade rewrites it before the resume, so the resumed Claude Code loads the
@@ -868,7 +876,7 @@ start_cc() {
   esac
   launches[cc]=$((launches[cc] + 1))
   open_stdin cc
-  (cd "${home[cc]}/cwd" && isolated_exec "" HOME="${home[cc]}/home" TMPDIR="${home[cc]}/tmp" CLAUDE_CONFIG_DIR="${home[cc]}/config" \
+  (cd "${home[cc]}/cwd" && isolated_exec "" HOME="${home[cc]}/home" TMPDIR="$cc_tmp" CLAUDE_CONFIG_DIR="${home[cc]}/config" \
     ANTHROPIC_BASE_URL="$standin_url" CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 CLAUDE_CODE_DISABLE_CRON=1 LEGION_ROLE=implementer \
     LEGION_ISSUE="$followed_issue" ENVOY_HEARTBEAT_MS="$heartbeat_ms" ANTHROPIC_API_KEY="$anthropic_key" -- \
     setsid "$work/bin/legion" claude-bridge -- "$claude_bin" -p --input-format stream-json \

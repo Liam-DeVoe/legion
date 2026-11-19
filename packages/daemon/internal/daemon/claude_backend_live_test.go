@@ -476,16 +476,25 @@ func (r *claudeBackendLive) killServer() {
 // ---- the steps -----------------------------------------------------------------------------------
 
 // Step 1. The planner the boot relaunches on the fake runtime is brought to ready as its pane would
-// be, writes its plan record under its own session, and completes planning naming it; the issue
-// moves to implementing, whose start launches the implementer on the tmux runtime.
+// be, and in the turn its phase task starts writes its plan record under its own session and
+// completes planning naming it, and that turn ends; the issue moves to implementing, whose start
+// launches the implementer on the tmux runtime.
 func (r *claudeBackendLive) plannerCompletes() {
 	t := r.t
 	planner := r.fakeClaimant(claim.RolePlanner, "ses_claude_backend_planner")
+	// A worker completes inside the turn its phase task started: a completion sent before that
+	// task's prompt would leave the planner no turn for endTurn to end.
+	planner.awaitTurn()
 	written := r.writeRecord(planner.session, "plan")
 	status, failure := planner.complete(api.HandoffCompleteRequest{Summary: "planned", HandoffID: written.ID, HandoffVersion: written.Version})
 	if status != http.StatusOK {
 		t.Fatalf("the planner's completion naming its own plan record = %d %+v, want 200", status, failure)
 	}
+	// The planner's turn ends with its completion, as a worker's does: supervise holds the
+	// implementer's phase task while another role of the issue is in a turn, since the two share
+	// the issue's working copy (Machine.sendPending, issueInTurn), so the implementer is prompted
+	// only once it has.
+	planner.endTurn()
 	got := r.waitPhase(phase.Implementing)
 	r.note("the planner on the fake runtime completed planning naming its record %s (version %d); %s is in %s",
 		written.ID, written.Version, r.key, got.Phase)
@@ -800,7 +809,7 @@ func fileDigestOf(t *testing.T, path string, size int64) (string, int64) {
 
 // fakeClaimant is a claim of the fake runtime brought to ready as its pane would be: the shim
 // connected with the launch's boot token, the session registered and ready, and a reader that
-// answers what the daemon asks of the shim and starts a turn on each prompt, as
+// answers what the daemon asks of the shim and starts a turn on each prompt, which endTurn ends, as
 // handoff_records_live_test.go's handoffClaimant does.
 type fakeClaimant struct {
 	r       *claudeBackendLive
@@ -888,6 +897,27 @@ func (c *fakeClaimant) send(frame shimwire.Frame) {
 	if err := c.sh.writer.WriteFrame(frame); err != nil && !errors.Is(err, io.ErrClosedPipe) {
 		c.r.t.Logf("send %s for %s: %v", frame.FrameType(), c.token, err)
 	}
+}
+
+// awaitTurn waits for the daemon to hold this claim in a turn: the one its reader starts on the
+// task the daemon prompts it with (serve).
+func (c *fakeClaimant) awaitTurn() {
+	c.r.t.Helper()
+	c.r.await("the turn of "+string(c.token)+" to start", time.Minute, func() bool {
+		return c.r.claim(c.token).State == string(supervise.StateWorking)
+	})
+}
+
+// endTurn ends the turn this claim is in, as the agent's turn ends: it waits for the daemon to
+// hold the claim in that turn, sends agent_end, and returns once the daemon has the claim out of
+// it.
+func (c *fakeClaimant) endTurn() {
+	c.r.t.Helper()
+	c.awaitTurn()
+	c.send(shimwire.AgentEnd{})
+	c.r.await("the turn of "+string(c.token)+" to end", time.Minute, func() bool {
+		return c.r.claim(c.token).State != string(supervise.StateWorking)
+	})
 }
 
 // complete posts a completion for this claim with a grant minted for it now, as the `legion`
