@@ -1915,3 +1915,61 @@ func TestAHoldNothingStandsForIsDroppedAsItIsRead(t *testing.T) {
 		t.Fatalf("entries after reading a pair whose answer is older than the span = %d, want none", got)
 	}
 }
+
+// A write of a head that records its attribution locks the stored row before it reads the issue
+// the row credits (headIssueBefore), and waits for a row another transaction holds no longer than
+// a write waits for any lock another writer holds (the store's lockWait): at that bound it is
+// refused store.ErrPoolBusy, as ErrHeadNotStored, and writes nothing. A result's read-through
+// (ReadThroughCommitPulls) makes this write on the request that records or reads the result, and
+// the intake and the reconcile write the same row taking no lock that orders them against it, so
+// without the bound that request waited for as long as the holder held the row. Once the row is
+// free the same write goes through. The bound is the test's (store.WithLockWaitForTest).
+func TestAHeadWriteBehindItsHeldRowIsRefusedBusyAtItsBound(t *testing.T) {
+	const bound = time.Second
+	pool, ctx := deliveryTestPool(t)
+	left := seedHeadIssue(t, ctx, pool, 77)
+	reached := seedHeadIssue(t, ctx, pool, 78)
+	broker := events.NewBroker()
+	if err := UpsertPullRequestHead(ctx, pool, broker, attributedHeadRow(177, &left, sourceTitleBody)); err != nil {
+		t.Fatalf("store the head attributed to %s: %v", left, err)
+	}
+
+	holder, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder: %v", err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	if _, err := holder.Exec(ctx, `select 1 from pull_request_heads where repo = 'acme/widgets' and number = 177 for update`); err != nil {
+		t.Fatalf("hold the head's row: %v", err)
+	}
+	answered := make(chan error, 1)
+	started := time.Now()
+	go func() {
+		answered <- UpsertPullRequestHead(store.WithLockWaitForTest(ctx, bound), pool, broker, attributedHeadRow(177, &reached, sourceBranch))
+	}()
+	select {
+	case err = <-answered:
+	case <-time.After(10 * time.Second):
+		waited := time.Since(started)
+		_ = holder.Rollback(ctx)
+		<-answered
+		t.Fatalf("the head's write was still waiting on its held row %s after it began, past its bound of %s: "+
+			"it waits on a held row until its holder lets go", waited.Round(time.Millisecond), bound)
+	}
+	waited := time.Since(started)
+	if !store.IsPoolBusy(err) || !errors.Is(err, ErrHeadNotStored) {
+		t.Fatalf("the head's write behind its held row: %v, want ErrPoolBusy and ErrHeadNotStored", err)
+	}
+	if waited < bound {
+		t.Fatalf("the head's write was refused %s after it began, inside its bound of %s", waited.Round(time.Millisecond), bound)
+	}
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatalf("let the row go: %v", err)
+	}
+	if err := UpsertPullRequestHead(ctx, pool, broker, attributedHeadRow(177, &reached, sourceBranch)); err != nil {
+		t.Fatalf("the head's write once the row was free: %v", err)
+	}
+	if got := attributionEvents(t, ctx, pool, reached); len(got) != 1 {
+		t.Fatalf("%s carries %d attribution events after the write landed, want the one move that reached it", reached, len(got))
+	}
+}

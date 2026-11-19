@@ -321,17 +321,28 @@ func (s *server) claimCommentDeliveryAttempt(
 		return claimedCommentDelivery{}, err
 	}
 	// A bound call reads its own attempt, in whatever state; an unbound one the lowest pending.
+	// Either is taken in a bounded wait and read behind it in the same batch
+	// (store.LockWithinBoundAndRead): the mention sender writes its claims on these rows
+	// (comment_mention_sender.go) without the comment's owner lock this transaction holds, so that
+	// lock orders nothing against it.
 	var takeable bool
 	if resume.attempt > 0 {
 		var stands, delivered bool
-		bound, err := scanCommentDelivery(tx.QueryRow(ctx, `
+		var bound model.CommentDelivery
+		err := store.LockWithinBoundAndRead(ctx, tx, `
+			select 1 from comment_deliveries where comment_id = $1 and target = $2 and attempt = $3 for update
+		`, []any{stored.ID, target.Target, resume.attempt}, `
 			select `+commentDeliveryColumns+`, `+model.DeliveryClaimFreeSQL+` or `+model.DeliveryClaimMineSQL("$4")+`,
 			       `+model.MentionAttemptStandsSQL("comment_deliveries")+`,
 			       `+model.MentionAttemptDeliveredLaterSQL("comment_deliveries")+`
 			from comment_deliveries
 			where comment_id = $1 and target = $2 and attempt = $3
 			for update
-		`, stored.ID, target.Target, resume.attempt, resume.claimedAt), &takeable, &stands, &delivered)
+		`, []any{stored.ID, target.Target, resume.attempt, resume.claimedAt}, func(row pgx.Row) error {
+			var err error
+			bound, err = scanCommentDelivery(row, &takeable, &stands, &delivered)
+			return err
+		})
 		if err != nil {
 			return claimedCommentDelivery{}, fmt.Errorf(
 				"read attempt %d of comment delivery %s/%s: %w", resume.attempt, stored.ID, target.Target, err)
@@ -364,14 +375,25 @@ func (s *server) claimCommentDeliveryAttempt(
 		}
 		return claimed, nil
 	}
-	pending, err := scanCommentDelivery(tx.QueryRow(ctx, `
+	var pending model.CommentDelivery
+	err = store.LockWithinBoundAndRead(ctx, tx, `
+		select 1 from comment_deliveries
+		where comment_id = $1 and target = $2 and state = 'pending'
+		order by attempt
+		limit 1
+		for update
+	`, []any{stored.ID, target.Target}, `
 		select `+commentDeliveryColumns+`, `+model.DeliveryClaimFreeSQL+`
 		from comment_deliveries
 		where comment_id = $1 and target = $2 and state = 'pending'
 		order by attempt
 		limit 1
 		for update
-	`, stored.ID, target.Target), &takeable)
+	`, []any{stored.ID, target.Target}, func(row pgx.Row) error {
+		var err error
+		pending, err = scanCommentDelivery(row, &takeable)
+		return err
+	})
 	switch {
 	case err != nil && !errors.Is(err, pgx.ErrNoRows):
 		return claimedCommentDelivery{}, err
@@ -1182,11 +1204,25 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	attempt, err := scanCommentDelivery(tx.QueryRow(r.Context(), `
+	// The attempt row is taken in a bounded wait and read behind it in the same batch: the mention
+	// sender writes its claims on it without the owner lock this transaction holds
+	// (claimCommentDeliveryAttempt). The lock's failure is the handler's to answer; the read's is a
+	// missing delivery.
+	var attempt model.CommentDelivery
+	var readErr error
+	if err := store.LockWithinBoundAndRead(r.Context(), tx, `
+		select 1 from comment_deliveries where comment_id = $1 and target = $2 and attempt = $3 for update
+	`, []any{comment.ID, target, input.Attempt}, `
 		select `+commentDeliveryColumns+`
 		from comment_deliveries where comment_id = $1 and target = $2 and attempt = $3 for update
-	`, comment.ID, target, input.Attempt))
-	if err != nil {
+	`, []any{comment.ID, target, input.Attempt}, func(row pgx.Row) error {
+		attempt, readErr = scanCommentDelivery(row)
+		return readErr
+	}); err != nil {
+		if readErr == nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
 		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment delivery not found")
 		return
 	}

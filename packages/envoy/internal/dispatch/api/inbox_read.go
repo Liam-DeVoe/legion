@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -172,12 +174,30 @@ const inboxReadMarkAgentReplies = `
 // inboxReadStatementTimeout bounds every statement of the mark-all's transaction. One request
 // marking the acceptance seed - 600 unread Reply threads and 20 Agent threads for one login -
 // takes 30 to 43 ms end to end on the test database, of which the ordered lock pass is 7 to 10
-// (the same seed takes 24 to 33 ms without it), so ten seconds leaves better than two orders of
-// magnitude of headroom for a busier server and cuts no honest request off. The ceiling
+// (the same seed takes 24 to 33 ms without it), so fifteen seconds leaves better than two orders
+// of magnitude of headroom for a busier server and cuts no honest request off. The ceiling
 // matters because this transaction holds its owners' locks in shared mode: every comment, answer and
 // issue message on those owners waits behind a statement that hangs, so one that cannot finish
-// is better killed, which rolls the transaction back and frees them.
-const inboxReadStatementTimeout = "10s"
+// is better killed, which rolls the transaction back and frees them. It is longer than a lock's
+// bounded wait (store.LockWithinBound, ten seconds), because it is the bound of a statement that
+// hangs: a statement waiting on a row another transaction holds is the lock bound's to end.
+const inboxReadStatementTimeout = "15s"
+
+// inboxStatementEnded is err, the failure of a mark-all's or a dismissal's transaction, named
+// store.ErrPoolBusy when it is a statement Postgres ended at inboxReadStatementTimeout (SQLSTATE
+// 57014, query_canceled) while the request was still there to answer: a bound of the server's own
+// ended the statement, the transaction rolled back with it and nothing of the request committed,
+// so it is refused as unserved (503 DATABASE_BUSY with Retry-After, admission.WriteUnserved) and
+// its client sends it again. A request whose context ended - a client that left, whose
+// cancellation pgx sends as a cancel the server answers 57014 too - is left as it is.
+func inboxStatementEnded(ctx context.Context, err error) error {
+	var pgErr *pgconn.PgError
+	if ctx.Err() != nil || !errors.As(err, &pgErr) || pgErr.Code != "57014" {
+		return err
+	}
+	return fmt.Errorf("%w: a statement ran out the Inbox's statement bound of %s and its transaction rolled back: %w",
+		store.ErrPoolBusy, inboxReadStatementTimeout, err)
+}
 
 // inboxReadPriorityLevels are the priorities a request names, as the Inbox's filter writes them,
 // against the issues.priority each stands for. inboxReadNone is the value that stands for the
@@ -391,7 +411,7 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 	}
 	marked, events, err := s.markInboxReadThreads(r.Context(), actor, *input.ReadThrough, scope)
 	if err != nil {
-		s.writeHandlerError(w, r, err)
+		s.writeHandlerError(w, r, inboxStatementEnded(r.Context(), err))
 		return
 	}
 	s.publish(r.Context(), events...)
@@ -721,8 +741,10 @@ func writeInboxThreadMarks(
 ) (inboxReadMarked, error) {
 	moved := inboxReadMarked{}
 	// Step 3 of that order: the update below locks what its plan reaches in the order it
-	// reaches it, which is not one order across two presses (markInboxReadThreads).
-	if _, err := tx.Exec(ctx, inboxReadLockThreads, login, threads); err != nil {
+	// reaches it, which is not one order across two presses (markInboxReadThreads). Two presses
+	// of one login hold their owners shared, which orders nothing between them, so the pass waits
+	// in a bounded wait (store.LockWithinBound).
+	if err := store.LockWithinBound(ctx, tx, inboxReadLockThreads, login, threads); err != nil {
 		return moved, fmt.Errorf("lock the caller's threads: %w", err)
 	}
 	rows, err := tx.Query(ctx, query, inboxMarkArgs(login, mark, threads, seen...)...)
@@ -783,7 +805,7 @@ func (s *server) markInboxReadAgentReplies(
 		// dead (the insert above skips what the mark covers), so this clears only what an older
 		// write left behind; why the statement locks them in that order is written on
 		// pruneAgentReplies (api/state.go).
-		if _, err := tx.Exec(ctx, pruneAgentReplies, login, touched); err != nil {
+		if err := store.LockWithinBound(ctx, tx, pruneAgentReplies, login, touched); err != nil {
 			return nil, 0, fmt.Errorf("prune the agent replies the read marks cover: %w", err)
 		}
 	}

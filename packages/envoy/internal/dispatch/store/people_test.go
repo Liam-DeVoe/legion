@@ -735,3 +735,70 @@ func TestPgPeopleStoreEndSubjectEndsOnlyTheAccountItNames(t *testing.T) {
 		t.Fatalf("EndSubject of no row: ended %t, %v; want false", ended, err)
 	}
 }
+
+// A sign-in and the end of one each lock the person's row before they read the subject it
+// records, and wait for a row another transaction holds no longer than a write waits for any lock
+// another writer holds (lockWait): at that bound they are refused ErrPoolBusy, which the identity
+// routes answer 503 DATABASE_BUSY with Retry-After (identity.WriteError, held by identity's own
+// test of a busy pool), and the transaction writes nothing. Without the bound a sign-in behind a
+// held row waited for as long as its holder held it: nothing that writes the row takes a lock that
+// orders it against these two, and a request's write has no deadline. Once the row is free both go
+// through. The bound is the test's (WithLockWaitForTest) rather than production's ten seconds.
+func TestPgPeopleStoreWaitsForAHeldPersonRowNoLongerThanItsBound(t *testing.T) {
+	const bound = time.Second
+	ctx := context.Background()
+	database := migratedEmptyStore(t)
+	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
+	const email = "held.person@example.com"
+	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1"); err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range []struct {
+		name string
+		run  func(ctx context.Context) error
+	}{
+		{"a sign-in", func(ctx context.Context) error {
+			return people.SignInSubject(ctx, email, "subject-1", "refresh-2")
+		}},
+		{"an end of the sign-in", func(ctx context.Context) error {
+			_, err := people.EndSubject(ctx, email, "subject-1")
+			return err
+		}},
+	} {
+		t.Run(call.name, func(t *testing.T) {
+			holder, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the holder: %v", err)
+			}
+			defer func() { _ = holder.Rollback(ctx) }()
+			if _, err := holder.Exec(ctx, `select 1 from people where email = $1 for update`, email); err != nil {
+				t.Fatalf("hold the person's row: %v", err)
+			}
+			answered := make(chan error, 1)
+			started := time.Now()
+			go func() { answered <- call.run(WithLockWaitForTest(ctx, bound)) }()
+			select {
+			case err = <-answered:
+			case <-time.After(10 * time.Second):
+				waited := time.Since(started)
+				_ = holder.Rollback(ctx)
+				<-answered
+				t.Fatalf("%s was still waiting on the held row %s after it began, past its bound of %s: "+
+					"it waits on a held row until its holder lets go", call.name, waited.Round(time.Millisecond), bound)
+			}
+			waited := time.Since(started)
+			if !IsPoolBusy(err) {
+				t.Fatalf("%s behind the held row: %v, want ErrPoolBusy", call.name, err)
+			}
+			if waited < bound {
+				t.Fatalf("%s was refused %s after it began, inside its bound of %s", call.name, waited.Round(time.Millisecond), bound)
+			}
+			if err := holder.Rollback(ctx); err != nil {
+				t.Fatalf("let the row go: %v", err)
+			}
+			if err := call.run(ctx); err != nil {
+				t.Fatalf("%s once the row was free: %v", call.name, err)
+			}
+		})
+	}
+}

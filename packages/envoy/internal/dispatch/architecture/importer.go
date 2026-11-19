@@ -521,13 +521,20 @@ func (i *Importer) inTransaction(ctx context.Context, write func(pgx.Tx) error) 
 // on one source serialize on the row, and re-reads repo/branch and the row
 // version under the lock. moved reports that the source changed since this
 // sync's fetch began — the caller must abort without writing, because its
-// data describes the old configuration.
+// data describes the old configuration. The lock waits in a bounded wait, the
+// read behind it in the same batch (store.LockWithinBoundAndRead): a route's
+// sync runs this on the request's behalf, and no owner lock orders the
+// source's writers.
 func lockSourceRow(ctx context.Context, tx pgx.Tx, source loadedSource) (locked lockedSource, moved bool, err error) {
 	var repo, branch string
-	if err := tx.QueryRow(ctx, `
+	if err := store.LockWithinBoundAndRead(ctx, tx, `
+		select 1 from architecture_sources where project_key = $1 and id = $2 for update`,
+		[]any{source.Project, source.ID}, `
 		select repo, branch, last_commit, last_error, xmin::text <> $3
 		from architecture_sources where project_key = $1 and id = $2 for update`,
-		source.Project, source.ID, source.version).Scan(&repo, &branch, &locked.lastCommit, &locked.lastError, &locked.superseded); err != nil {
+		[]any{source.Project, source.ID, source.version}, func(row pgx.Row) error {
+			return row.Scan(&repo, &branch, &locked.lastCommit, &locked.lastError, &locked.superseded)
+		}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return lockedSource{}, true, nil
 		}
@@ -544,7 +551,13 @@ func lockSourceRow(ctx context.Context, tx pgx.Tx, source loadedSource) (locked 
 // itself, plus every source's repository by id, which names who holds a
 // colliding id. recordFailure takes only its own row's lock, and a lock taken
 // here is never waited for while holding another order, so no cycle forms.
+// The locks are taken in a bounded wait first, as lockSourceRow's is.
 func lockProjectSources(ctx context.Context, tx pgx.Tx, source loadedSource) (locked lockedSource, repos map[int64]string, moved bool, err error) {
+	if err := store.LockWithinBound(ctx, tx, `
+		select 1 from architecture_sources where project_key = $1 order by id for update`,
+		source.Project); err != nil {
+		return lockedSource{}, nil, false, fmt.Errorf("lock architecture sources: %w", err)
+	}
 	rows, err := tx.Query(ctx, `
 		select id, repo, branch, last_commit, last_error, xmin::text <> $2
 		from architecture_sources where project_key = $1 order by id for update`,

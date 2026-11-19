@@ -22,6 +22,10 @@ import (
 // QueryRow, Query), which runs as Send reads that statement's result, in statement order.
 type WriteBatch struct {
 	batch pgx.Batch
+	// bounds is the statement of each bounded wait queued on the batch (QueueWithinBound) that
+	// sets lock_timeout to the wait's bound, which Send gives the bound of the context it sends
+	// the batch under (lockWaitSetting).
+	bounds []*pgx.QueuedQuery
 }
 
 // LatestEventID is the SQL expression for the id of the event this session appended last: the
@@ -54,6 +58,32 @@ func (q Queued) failed(err error) error {
 		return err
 	}
 	return fmt.Errorf("%s: %w", q.what, err)
+}
+
+// QueueWithinBound queues lock with args, a statement that takes a row lock another transaction
+// may hold and answers nothing its caller reads, under the bound LockWithinBound waits under
+// (lockWait, or the bound a test put on the context Send is given: lockWaitSetting): the
+// transaction's own lock_timeout kept, lock_timeout set to the bound, the lock, and the kept value
+// set again (boundedWaitKeep, boundedWaitBound, boundedWaitRestore). An admitted write has no
+// deadline, so a write phase that queued the lock bare would wait on a held row for as long as
+// its holder held it. A wait that runs the bound out fails the batch with ErrPoolBusy, which a
+// request answers 503 DATABASE_BUSY with Retry-After; nothing queued after it runs, and the
+// transaction, which a failed write phase abandons, rolls back with everything it wrote. That is
+// why it takes no savepoint, as LockWithinBound does to leave its transaction usable: nothing is
+// left to use. Any other failure of the lock comes back wrapped as what failed, as Queue's does.
+func (b *WriteBatch) QueueWithinBound(what, lock string, args ...any) {
+	b.Queue("", boundedWaitKeep)
+	bound := b.Queue("", boundedWaitBound, lockWaitDefault).query
+	b.bounds = append(b.bounds, bound)
+	queued := b.Queue(what, lock, args...)
+	queued.query.Fn = func(results pgx.BatchResults) error {
+		_, err := results.Exec()
+		if ranOutItsBound(err) {
+			err = heldPastItsBound(bound.Arguments[0].(string), err)
+		}
+		return queued.failed(err)
+	}
+	b.Queue("", boundedWaitRestore)
 }
 
 // Exec hands the statement's command tag to fn once it has run; nil drops it. fn's error stops the
@@ -129,8 +159,12 @@ func (b *WriteBatch) Send(ctx context.Context, tx pgx.Tx) error {
 	if b.batch.Len() == 0 {
 		return nil
 	}
+	wait := lockWaitSetting(ctx)
+	for _, bound := range b.bounds {
+		bound.Arguments = []any{wait}
+	}
 	batch := b.batch
-	b.batch = pgx.Batch{}
+	b.batch, b.bounds = pgx.Batch{}, nil
 	return tx.SendBatch(ctx, &batch).Close()
 }
 

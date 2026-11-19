@@ -193,13 +193,18 @@ func ownerLockArgs(keys []string) []any {
 // write takes behind another writer's (LockWithinBound: api's dependency, rank-allocation, upload
 // and repository-mapping locks, prioritystore's priority-rank lock, delivery's session-groups
 // lock, docs' copy and conditional-edit queue locks, and a request's wait for a document's own
-// lock, docs.lockDocumentRoom). A wait that runs it out is refused as a pool that could not serve
-// the call is refused (ErrPoolBusy, leaveBoundedWait): a request answers 503 DATABASE_BUSY with
-// Retry-After and its client sends the write again; a background pass logs it and tries again at
-// its next tick; a settlement stops short and its pending row resumes it. Without it the wait
-// ended only with its holder: a write has no deadline once admitted (api's defaultReadDeadline)
-// and no other bound of a write's sets a lock_timeout, so a writer queued behind a stalled holder
-// held its pool connection, and a request its admission unit, for as long as that holder stood.
+// lock, docs.lockDocumentRoom). It bounds too every row lock a write takes on a row that some
+// other locker takes without an owner lock the write holds, so that no owner lock orders the two
+// (LockWithinBound, and WriteBatch.QueueWithinBound in a write phase: a step's node, a message's
+// row and its delivery attempts, a comment delivery's attempts, the Inbox's and agent state's own
+// rows, a person's row, a pull request's head, an architecture source's rows and an item's block
+// state). A wait that runs it out is refused as a pool that could not serve the call is refused
+// (ErrPoolBusy, leaveBoundedWait): a request answers 503 DATABASE_BUSY with Retry-After and its
+// client sends the write again; a background pass logs it and tries again at its next tick; a
+// settlement stops short and its pending row resumes it. Without it the wait ended only with its
+// holder: a write has no deadline once admitted (api's defaultReadDeadline) and no other bound of
+// a write's sets a lock_timeout, so a writer queued behind a stalled holder held its pool
+// connection, and a request its admission unit, for as long as that holder stood.
 //
 // It is the commit's bound (commitTimeout), because that is how long a holder that has not stalled
 // keeps such a lock past its read phase: it holds it through its write phase's statements and its
@@ -304,10 +309,10 @@ func skipResults(results pgx.BatchResults, n int) error {
 
 // leaveBoundedWait answers err, the failure of a bounded wait whose batch's results the caller has
 // closed, wait being its bound as lock_timeout's value. A wait that ran out its bound
-// (lock_not_available, 55P03) is left - the transaction rolls back to the wait's savepoint and
-// releases it - and answered ErrPoolBusy, which every caller already answers as a pool that could
-// not serve it: nothing of the caller's can commit, since its transaction ends on the error, rolled
-// back. Any other failure is returned as it is.
+// (ranOutItsBound) is left - the transaction rolls back to the wait's savepoint and releases it -
+// and answered ErrPoolBusy, which every caller already answers as a pool that could not serve it:
+// nothing of the caller's can commit, since its transaction ends on the error, rolled back. Any
+// other failure is returned as it is.
 //
 // The rollback and the release go in two round trips, the rollback first. The error has aborted
 // the transaction, and Postgres parses no statement in an aborted transaction but one that ends it
@@ -315,8 +320,7 @@ func skipResults(results pgx.BatchResults, n int) error {
 // it dropped the release from its statement cache with the rest of the failed batch, so a batch of
 // the two would have the release refused (25P02) before the rollback ran.
 func leaveBoundedWait(ctx context.Context, q OwnerLocker, wait string, err error) error {
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+	if !ranOutItsBound(err) {
 		return err
 	}
 	undoErr := sendOne(ctx, q, boundedWaitUndo)
@@ -326,6 +330,19 @@ func leaveBoundedWait(ctx context.Context, q OwnerLocker, wait string, err error
 	if undoErr != nil {
 		return fmt.Errorf("%w: another transaction held the lock past its wait's bound of %s, and leaving the wait failed (%w): %w", ErrPoolBusy, wait, undoErr, err)
 	}
+	return heldPastItsBound(wait, err)
+}
+
+// ranOutItsBound reports whether err is a lock statement of a bounded wait that ran out its
+// bound: lock_not_available (55P03), which lock_timeout raises.
+func ranOutItsBound(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "55P03"
+}
+
+// heldPastItsBound is err, a lock statement that ran out a bounded wait of wait (ranOutItsBound),
+// named ErrPoolBusy.
+func heldPastItsBound(wait string, err error) error {
 	return fmt.Errorf("%w: another transaction held the lock past its wait's bound of %s: %w", ErrPoolBusy, wait, err)
 }
 
@@ -337,30 +354,54 @@ func sendOne(ctx context.Context, q OwnerLocker, sql string) error {
 	return q.SendBatch(ctx, batch).Close()
 }
 
-// LockWithinBound runs lock with args, a statement that takes a transaction advisory lock another
-// writer may hold and answers nothing its caller reads, in a bounded wait (lockWait), as a
+// LockWithinBound runs lock with args, a statement that takes a lock another writer may hold - a
+// transaction advisory lock, or a row lock on a row no owner lock of the caller's keeps every other
+// locker from - and answers nothing its caller reads, in a bounded wait (lockWait), as a
 // read-phase owner lock waits: a lock still held when the bound runs out is refused ErrPoolBusy,
 // and the transaction is as it was before the statement (leaveBoundedWait). It is how a request's
 // write takes every advisory lock of its own besides the owner lock (api's dependency,
 // rank-allocation, upload and repository-mapping locks, prioritystore's priority-rank lock,
 // delivery's session-groups lock, docs' copy and conditional-edit queue locks, and a document's
-// lock where a request waits for it), so no write waits on one without end. It is one round trip,
-// as the statement alone was.
+// lock where a request waits for it) and every such row lock, so no write waits on one without
+// end. A caller that reads the locked row reads it in a statement after this one, which finds the
+// row already held, and sends it in the same batch (LockWithinBoundAndRead). It is one round
+// trip, as the statement alone was.
 func LockWithinBound(ctx context.Context, q OwnerLocker, lock string, args ...any) error {
+	return LockWithinBoundAndRead(ctx, q, lock, args, "", nil, nil)
+}
+
+// LockWithinBoundAndRead is LockWithinBound followed by read with readArgs, the statement that
+// reads the row lock took, whose one row scan reads. The two go in one batch, one round trip and
+// one statement of the transaction's as the locking read alone was, and stay two statements: the
+// server starts read, taking its snapshot, only once the bounded wait has ended and the row is
+// the transaction's, so read sees every commit of the row's previous holder and runs under the
+// transaction's own lock_timeout again. The lock's failure comes back as LockWithinBound's does,
+// ErrPoolBusy at its bound, and scan is not called; read's comes back as scan returned it,
+// pgx.ErrNoRows included. An empty read sends none.
+func LockWithinBoundAndRead(
+	ctx context.Context, q OwnerLocker, lock string, lockArgs []any, read string, readArgs []any, scan func(pgx.Row) error,
+) error {
 	wait := lockWaitSetting(ctx)
 	batch := &pgx.Batch{}
 	beginBoundedWait(batch, wait)
-	batch.Queue(lock, args...)
+	batch.Queue(lock, lockArgs...)
 	endBoundedWait(batch)
+	if read != "" {
+		batch.Queue(read, readArgs...)
+	}
 	results := q.SendBatch(ctx, batch)
-	err := skipResults(results, boundedWaitBegun+1+boundedWaitEnded)
+	if err := skipResults(results, boundedWaitBegun+1+boundedWaitEnded); err != nil {
+		_ = results.Close()
+		return leaveBoundedWait(ctx, q, wait, err)
+	}
+	var err error
+	if read != "" {
+		err = scan(results.QueryRow())
+	}
 	if closeErr := results.Close(); err == nil {
 		err = closeErr
 	}
-	if err != nil {
-		return leaveBoundedWait(ctx, q, wait, err)
-	}
-	return nil
+	return err
 }
 
 // The head of each kind's row lock (ownerLockLevel.rowLocks): the rows of kind's owners named by

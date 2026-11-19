@@ -328,12 +328,18 @@ func appendAttributionChange(
 
 // headIssueBefore is the issue the stored row credits the pull request to, read for no key
 // update so that no other writer moves it between this read and the write that follows: the
-// "from" of the move, and nil where no row is stored yet or the row credits nobody.
+// "from" of the move, and nil where no row is stored yet or the row credits nobody. The row is
+// taken in a bounded wait first and read behind it in the same batch
+// (store.LockWithinBoundAndRead): a result's read-through writes it on a request's own
+// transaction, and its other writers - the intake and the reconcile - take no lock that orders
+// them against that one.
 func headIssueBefore(ctx context.Context, tx pgx.Tx, repoFull string, number int) (*string, error) {
 	var issue *string
-	err := tx.QueryRow(ctx, `
+	err := store.LockWithinBoundAndRead(ctx, tx, `
+		select 1 from pull_request_heads where repo = $1 and number = $2 for no key update
+	`, []any{repoFull, number}, `
 		select issue_key from pull_request_heads where repo = $1 and number = $2 for no key update
-	`, repoFull, number).Scan(&issue)
+	`, []any{repoFull, number}, func(row pgx.Row) error { return row.Scan(&issue) })
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

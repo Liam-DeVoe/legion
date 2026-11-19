@@ -517,8 +517,10 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		//
 		// The dead rows are locked in one order before the delete reaches them, for the reason
 		// written on pruneAgentReplies below, which this route and the Inbox's mark-all share
-		// (markInboxReadThreads names the lock order every writer here takes).
-		if _, err := tx.Exec(r.Context(), pruneAgentReplies,
+		// (markInboxReadThreads names the lock order every writer here takes). The statement runs
+		// in a bounded wait (store.LockWithinBound): no owner lock orders the writers of these
+		// rows, and this route, unlike the mark-all, sets no statement_timeout of its own.
+		if err := store.LockWithinBound(r.Context(), tx, pruneAgentReplies,
 			model.CanonicalLogin(actor.ID), []string{sessionID},
 		); err != nil {
 			s.writeHandlerError(w, r, err)
