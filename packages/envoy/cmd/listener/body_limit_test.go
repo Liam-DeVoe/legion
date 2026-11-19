@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/webhook"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // The limits the listener reads a request body to, written here as numbers so that this file
@@ -414,7 +415,7 @@ func TestARequestBodyOverTheLimitIsRefused(t *testing.T) {
 		}
 		refusal := body
 		if !row.webhook {
-			var answered apiError
+			var answered listenerwire.APIError
 			if err := json.Unmarshal(answer.Body.Bytes(), &answered); err != nil {
 				t.Fatalf("%s: the refusal %.300s is not the route's JSON error: %v", row.path, body, err)
 			}
