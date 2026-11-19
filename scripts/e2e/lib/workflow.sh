@@ -1357,10 +1357,11 @@ worker_sessions() {
 }
 # worker_notices SESSIONS prints one line for each workflow notice delivered into a phase-worker
 # session under SESSIONS: the session file, the role it claims, and the delivery's summary. The
-# kinds are every kind the daemon publishes (record.validNoticeKinds). A notice goes to the role
-# it names: most kinds name the architect that owns the issue, review-stuck names the reviewer of
-# a round that has not ended, and task-stopped the worker of a step that a stop ended. So a phase
-# worker's session holds a notice only after one of those two.
+# kinds are every kind the daemon publishes (record.validNoticeKinds). Every notice goes to the
+# architect that owns its issue, on that architect's role topic (the daemon's deliverNotice and
+# owningArchitect), whatever role it names: a review-stuck notice can name the reviewer's topic for
+# the architect to ask, and a task-stopped notice names the role of the phase the task stopped in.
+# So a phase worker's session holds none, and a line here is a notice routed to the wrong session.
 worker_notices() {
   local f role
   while IFS=$'\t' read -r f role; do
