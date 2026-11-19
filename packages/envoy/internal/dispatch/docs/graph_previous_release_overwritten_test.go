@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"testing"
 
@@ -16,15 +17,18 @@ import (
 //
 // The release before this one writes a version whose index pass inserts the new link's row naming
 // no node and states nothing in the store. This build then writes the next version of the same
-// document through its own write path, keeping that link: its index pass states the version and
-// moves store_version to it, but a link row the render keeps is named only on the drain of a
-// mark, so the row the previous release wrote keeps naming no node. This build's next tick reads
-// the event of the previous release's version, but the document's store_version already equals
-// its version, so the tick marks nothing, and the census refuses the row until someone runs the
-// backfill again, which nothing tells anyone to do. While the previous release holds every
-// period of the block-index lease, this build ticks not at all, so the window is the whole roll.
-// The tester drove the same sequence against legion-envoy-v32.11.1 beside this build on one
-// database (census: `difference at block_ref ...: the row names no node`).
+// document, keeping that link, with the edit route's own write (api's editArtifact): the edit and
+// the named version in one transaction, the version's artifact.version event, and what the
+// version's index pass stated appended under that event (api's commitArtifactVersionEvent). That
+// pass states the version and moves store_version to it, so this build's next tick, which reads
+// the event of the previous release's version, finds the document's store_version equal to its
+// version and marks nothing. A pass that named a link row the render keeps only on the drain of a
+// mark would therefore leave the row the previous release wrote naming no node, and the census
+// would refuse it until someone ran the backfill again, which nothing tells anyone to do. While
+// the previous release holds every period of the block-index lease, this build ticks not at all,
+// so the window is the whole roll. The tester drove the same sequence against
+// legion-envoy-v32.11.1 beside this build on one database (census: `difference at block_ref ...:
+// the row names no node`).
 func TestALinkThePreviousReleaseAddsBeforeThisBuildsNextVersionReachesTheStore(t *testing.T) {
 	database, service := blockIndexService(t)
 	ctx := context.Background()
@@ -63,7 +67,7 @@ func TestALinkThePreviousReleaseAddsBeforeThisBuildsNextVersionReachesTheStore(t
 	}
 
 	// Before any tick of this build reads that version's event, this build writes the next
-	// version of the document through its own write path, keeping the link.
+	// version of the document with the edit route's write, keeping the link.
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -78,8 +82,22 @@ func TestALinkThePreviousReleaseAddsBeforeThisBuildsNextVersionReachesTheStore(t
 	}
 	// The edit route's named version (api's editArtifact), in the edit's own transaction.
 	before := latestVersionNumber(t, service, document)
-	if _, err := service.NamedVersion(joined, document, "This build's version after the previous release's", model.Actor{Kind: "user", ID: "alice"}); err != nil {
+	written, err := service.NamedVersion(joined, document, "This build's version after the previous release's", model.Actor{Kind: "user", ID: "alice"})
+	if err != nil {
 		t.Fatalf("write this build's version of %s: %v", document, err)
+	}
+	// The version's artifact.version event, and what the version's index pass stated appended
+	// under it, in the same transaction, as the route's commitArtifactVersionEvent queues them.
+	payload, err := json.Marshal(map[string]any{
+		"artifact_id": document,
+		"version":     map[string]any{"number": written.Version.Number},
+	})
+	if err != nil {
+		t.Fatalf("encode the version event's payload: %v", err)
+	}
+	event := appendDocumentEvent(t, ctx, tx, "artifact.version", payload)
+	if err := causeInWritePhase(joined, tx, written.Blocks, event); err != nil {
+		t.Fatalf("append what this build's version of %s stated: %v", document, err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit this build's version of %s: %v", document, err)
