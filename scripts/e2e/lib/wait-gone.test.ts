@@ -397,6 +397,16 @@ wait "$h"; echo "status=$?"`);
     expect(Number(v.ms)).toBeLessThan(15_000);
   });
 
+  test("the grace is GRACE seconds from the call, whatever fraction of a second the call starts at", () => {
+    // The stop starts in the last tenth of a second, where a grace counted from EPOCHSECONDS, a
+    // whole second, would end almost at once and SIGKILL a stand-in that needs half of it.
+    const r = bash(`holder h term=slow:0.5
+while [ "\${EPOCHREALTIME#*.}" -lt 900000 ]; do sleep 0.01; done
+stop_gone 1 "$((EPOCHSECONDS + 20))" "$h"; echo "rc=$?"
+wait "$h"; echo "status=$?"`);
+    expect(values(r.stdout)).toMatchObject({ rc: "0", status: "0" });
+  });
+
   test("a SIGTERM wait that takes the caller's time leaves the SIGKILL's wait none past the deadline", () => {
     const r = bash(`holder h term=ignore
 drop_kill "$h"

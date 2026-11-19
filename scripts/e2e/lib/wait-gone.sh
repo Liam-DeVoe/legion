@@ -19,10 +19,11 @@
 # gone once /proc holds no process of that pid, or holds it only as a zombie whose task directory
 # lists no thread but the main one: that zombie holds nothing but its pid, which its parent reaps.
 #
-# Every wait here ends at a DEADLINE, an absolute time in whole seconds since the epoch, as
-# EPOCHSECONDS reads it: the caller's own, so that two waits of one stop (its SIGTERM's and its
-# SIGKILL's) share one bound rather than each starting a fresh one. `$((EPOCHSECONDS + 10))` is ten
-# seconds from now.
+# Every wait here ends at a DEADLINE, an absolute time in seconds since the epoch, whole as
+# EPOCHSECONDS reads it or with up to six decimals as EPOCHREALTIME does: the caller's own, so that
+# two waits of one stop (its SIGTERM's and its SIGKILL's) share one bound rather than each starting
+# a fresh one. `$((EPOCHSECONDS + 10))` is ten seconds from now, less the part of this second
+# already gone.
 
 # wait_gone_proc is the /proc the waits read; a test points it at a tree of its own.
 wait_gone_proc=/proc
@@ -38,11 +39,11 @@ wait_gone_proc=/proc
 # epoch (a count of seconds from now, say) is refused with exit 2, naming it. The locals' names are
 # ones no caller passes.
 wait_gone() {
-  local _wg_deadline=$1 _wg_target _wg_start _wg_read _wg_proc=1
+  local _wg_deadline=$1 _wg_deadline_us _wg_target _wg_start _wg_read _wg_proc=1
   shift
   local -a _wg_targets=() _wg_still=()
   local -A _wg_started=()
-  _wait_gone_deadline wait_gone "$_wg_deadline" || return 2
+  _wait_gone_deadline wait_gone "$_wg_deadline" _wg_deadline_us || return 2
   [ -r "$wait_gone_proc/self/stat" ] || _wg_proc=
   for _wg_target in "$@"; do
     [ -n "$_wg_target" ] || continue
@@ -85,16 +86,22 @@ wait_gone() {
     wait_gone_left=(${_wg_still[@]+"${_wg_still[@]}"})
     [ "${#_wg_still[@]}" -gt 0 ] || return 0
     _wg_targets=("${_wg_still[@]}")
-    [ "${EPOCHREALTIME//[!0-9]/}" -lt "$((_wg_deadline * 1000000))" ] || return 1
+    [ "${EPOCHREALTIME//[!0-9]/}" -lt "$_wg_deadline_us" ] || return 1
     sleep 0.1
   done
 }
 
-# _wait_gone_deadline WHO DEADLINE fails, naming WHO and DEADLINE on stderr, when DEADLINE is no
-# whole number of seconds since the epoch at or after 2001-09-09 (1000000000): a caller that passes
-# a count of seconds from now gets this line rather than a wait that ends at once.
+# _wait_gone_deadline WHO DEADLINE VAR assigns VAR the DEADLINE in microseconds since the epoch. It
+# fails, naming WHO and DEADLINE on stderr, when DEADLINE is no time in seconds since the epoch at or
+# after 2001-09-09 (1000000000), whole or with up to six decimals: a caller that passes a count of
+# seconds from now gets this line rather than a wait that ends at once.
 _wait_gone_deadline() {
-  [[ $2 =~ ^[0-9]+$ ]] && [ "$2" -ge 1000000000 ] && return 0
+  local _wgd_fraction
+  if [[ $2 =~ ^([0-9]+)(\.([0-9]{1,6}))?$ ]] && [ "${BASH_REMATCH[1]}" -ge 1000000000 ]; then
+    _wgd_fraction=${BASH_REMATCH[3]}000000
+    printf -v "$3" '%s' "$((10#${BASH_REMATCH[1]} * 1000000 + 10#${_wgd_fraction:0:6}))"
+    return 0
+  fi
   echo "$1: the deadline '$2' is no time in seconds since the epoch (\$((EPOCHSECONDS + 10)) is ten seconds from now)" >&2
   return 1
 }
@@ -130,10 +137,10 @@ process_start() {
 # next step needs the targets gone fails when it returns 1; a cleanup that goes on whatever it
 # finds adds `|| true` and says why.
 kill_gone() {
-  local _kg_signal=$1 _kg_deadline=$2 _kg_target _kg_sent _kg_status
+  local _kg_signal=$1 _kg_deadline=$2 _kg_deadline_us _kg_target _kg_sent _kg_status
   shift 2
   local -a _kg_targets=()
-  _wait_gone_deadline kill_gone "$_kg_deadline" || return 2
+  _wait_gone_deadline kill_gone "$_kg_deadline" _kg_deadline_us || return 2
   for _kg_target in "$@"; do
     [ -z "$_kg_target" ] || _kg_targets+=("$_kg_target")
   done
@@ -148,24 +155,25 @@ kill_gone() {
 }
 
 # stop_gone GRACE DEADLINE TARGET... is a stop: SIGTERM to every TARGET and a wait of up to GRACE
-# seconds (never past DEADLINE) for all of them to be gone, then SIGKILL to those still there and a
-# wait for them until DEADLINE, so the two waits share the caller's one bound. A process in the
-# middle of a write (a pane's token refresh, a server's drain) gets the grace to finish before
-# anything is killed. Returns 0 once every TARGET is gone, 0 too when none is given; 1 when one is
-# still there at DEADLINE, named on stderr as kill_gone names it; 2 for a DEADLINE wait_gone refuses.
+# whole seconds from the call, counted to the microsecond and never past DEADLINE, for all of them to
+# be gone; then SIGKILL to those still there and a wait for them until DEADLINE, so the two waits
+# share the caller's one bound. A process in the middle of a write (a pane's token refresh, a
+# server's drain) gets the whole grace to finish before anything is killed. Returns 0 once every
+# TARGET is gone, 0 too when none is given; 1 when one is still there at DEADLINE, named on stderr as
+# kill_gone names it; 2 for a DEADLINE wait_gone refuses.
 stop_gone() {
-  local _sg_grace=$1 _sg_deadline=$2 _sg_term_end _sg_target
+  local _sg_grace=$1 _sg_deadline=$2 _sg_deadline_us _sg_term_end _sg_target
   shift 2
   local -a _sg_targets=()
-  _wait_gone_deadline stop_gone "$_sg_deadline" || return 2
+  _wait_gone_deadline stop_gone "$_sg_deadline" _sg_deadline_us || return 2
   for _sg_target in "$@"; do
     [ -z "$_sg_target" ] || _sg_targets+=("$_sg_target")
   done
   [ "${#_sg_targets[@]}" -gt 0 ] || return 0
-  _sg_term_end=$((EPOCHSECONDS + _sg_grace))
-  [ "$_sg_term_end" -le "$_sg_deadline" ] || _sg_term_end=$_sg_deadline
+  _sg_term_end=$((${EPOCHREALTIME//[!0-9]/} + _sg_grace * 1000000))
+  [ "$_sg_term_end" -le "$_sg_deadline_us" ] || _sg_term_end=$_sg_deadline_us
   kill -s TERM -- "${_sg_targets[@]}" 2>/dev/null || true
-  wait_gone "$_sg_term_end" "${_sg_targets[@]}" && return 0
+  wait_gone "${_sg_term_end:0:-6}.${_sg_term_end: -6}" "${_sg_targets[@]}" && return 0
   kill_gone KILL "$_sg_deadline" "${wait_gone_left[@]}"
 }
 

@@ -5609,7 +5609,7 @@ A process given SIGTERM goes on until its handler has run, and a server's handle
 One given SIGKILL keeps its port, its descriptors (an inherited lock among them) and its working directory until its exit has finished, which for a process holding a few GiB takes most of a second on a busy devbox.
 Each thread of a process exits on its own, and those are released only when the last one has: `/proc/PID/stat` shows the main thread alone, which can be a zombie while another thread of the same process still holds the port, as a Go program's or Bun's can.
 
-Every wait ends at a DEADLINE, an absolute time in whole seconds since the epoch (`$((EPOCHSECONDS + 10))` is ten seconds from now): the caller's own, so the two waits of one stop share one bound.
+Every wait ends at a DEADLINE, an absolute time in seconds since the epoch, whole or with up to six decimals (`$((EPOCHSECONDS + 10))` is ten seconds from now, less the part of this second already gone): the caller's own, so the two waits of one stop share one bound.
 A DEADLINE that is no such time (a count of seconds from now) is refused with exit 2, naming it.
 
 - `wait_gone DEADLINE TARGET…`
@@ -5628,7 +5628,7 @@ A DEADLINE that is no such time (a count of seconds from now) is refused with ex
 
 - `stop_gone GRACE DEADLINE TARGET…`
 
-  A stop: SIGTERM to every TARGET, up to GRACE seconds (never past DEADLINE) for all of them to be gone, then SIGKILL to those still there and a wait until DEADLINE, so the two waits share the one bound.
+  A stop: SIGTERM to every TARGET, up to GRACE whole seconds from the call, counted to the microsecond and never past DEADLINE, for all of them to be gone, then SIGKILL to those still there and a wait until DEADLINE, so the two waits share the one bound.
   It returns 1 when one is still there at DEADLINE, named as `kill_gone` names it.
 
 - `process_start PID VAR`
