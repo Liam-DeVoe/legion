@@ -938,7 +938,10 @@ const DAEMON_OUTBOX = "daemon/internal/daemon/outbox.go";
  * the step of each phase, the result of each move and the id's namespace and name; and which
  * fields each of the three writes carries — the identity on every one, the moment alone at the
  * start, the moments, the result, the return, the report and the agent's session and model at the
- * end, and the report alone after it. */
+ * end, and the report alone after it. The end reads its agent in the fact's own transaction
+ * (`e.readAgent(ctx, tx, agent)`, main's since #4220, 46795520eb), which names the claim's
+ * session only while the claim holds it: a world's one claim holds the session it registered, so
+ * the end names that session, as before #4220. */
 const WRITES_STEPS: readonly Marker[] = [
   {
     file: "daemon/internal/record/outbox.go",
@@ -992,7 +995,7 @@ const WRITES_STEPS: readonly Marker[] = [
   },
   {
     file: STEPS_GO,
-    text: 'write := stepWrite(before, step.place, step.role, step.typ, string(agent), start.Starts)\n\tif !startedAt.IsZero() {\n\t\twrite.StartedAt = new(startedAt)\n\t}\n\twrite.EndedAt, write.Result, write.ReturnedTo = new(e.now()), new(string(end.Result)), end.ReturnedTo\n\tif end.Report != "" {\n\t\twrite.Report = new(end.Report)\n\t}\n\tread := e.readAgent(agent)\n\tif read.Session != "" {\n\t\twrite.Session = new(read.Session)\n\t}\n\tif read.Model != "" {\n\t\twrite.Model = new(read.Model)\n\t}',
+    text: 'write := stepWrite(before, step.place, step.role, step.typ, string(agent), start.Starts)\n\tif !startedAt.IsZero() {\n\t\twrite.StartedAt = new(startedAt)\n\t}\n\twrite.EndedAt, write.Result, write.ReturnedTo = new(e.now()), new(string(end.Result)), end.ReturnedTo\n\tif end.Report != "" {\n\t\twrite.Report = new(end.Report)\n\t}\n\tread := e.readAgent(ctx, tx, agent)\n\tif read.Session != "" {\n\t\twrite.Session = new(read.Session)\n\t}\n\tif read.Model != "" {\n\t\twrite.Model = new(read.Model)\n\t}',
   },
   {
     file: STEPS_GO,
@@ -1215,8 +1218,11 @@ export interface DaemonPane {
  * auth status -t` print that token; the world's gh refuses both, since no stand-in reads a token
  * (gh-standin.ts's `authStatus`), and health's rule 21 names a run that makes either. It has the
  * shape of an installation token, `ghs_` and 36 letters and digits, drawn afresh by each process,
- * so no word of it is the rig's (it was `ghs_rig_token`) and no literal of one is in the source a
- * push's leak check reads. A placeholder, never a secret. */
+ * as a real one is random: a process that reads it holds it and scrubs every run of 10 of its
+ * characters from each line it prints (`@legion/contracts/held-secrets`), so a token spelled from
+ * words (it was `ghs_rig_token`) would take those words out of the lines a run reads, and no
+ * literal of one is in the source a push's leak check reads. It is not a `fixtureSecret`, whose
+ * `<prefix>-` and 24 capitals are not the shape gh masks. A placeholder, never a secret. */
 const TOKEN_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 export const RIG_GH_TOKEN = `ghs_${Array.from(
   { length: 36 },

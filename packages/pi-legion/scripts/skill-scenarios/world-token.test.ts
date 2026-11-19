@@ -2,6 +2,7 @@ import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { holds, nameWords, vocabulary } from "./run-names";
 import { spawnChecked } from "./test-programs";
@@ -97,7 +98,7 @@ test("a run's Dispatch server takes the batch's token, and the run's seeds and r
   writeFileSync(path.join(builds, "dispatch-e2e"), "#!/bin/sh\n", { mode: 0o755 });
   mkdirSync(path.join(work, "logs"));
   mkdirSync(path.join(work, "tokens"));
-  const token = "4f1c9a0be27d53c86a1e0f94b7d2c3a5e6f708192a3b4c5d";
+  const token = fixtureSecret("dsp");
   const file = path.join(work, "tokens", "dispatch-token");
   writeFileSync(file, `${token}\n`, { mode: 0o600 });
   const started = bash(

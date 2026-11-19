@@ -55,6 +55,14 @@
       "ruled": "2026-11-19T09:42Z",
       "words": "The world reads the remote's tip live, so a review whose webhook production applies before the push's is taken at the review in the world and at the handoff read in production; the verdict is the same, and k1 scores the verdict.",
       "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\"; daemon-standin.ts's `TAKEN`"
+    },
+    {
+      "name": "a merge state that differs by its viewer",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "gh-threads\\.ts:\\d+ Not modelled: a merge state that differs by its viewer, where the world answers one merge state to every viewer",
+      "ruled": "2026-11-19T14:07Z",
+      "words": "The world answers one merge state to every viewer. Production gave the review App `BLOCKED` and the implement App `CLEAN` on cybermonklabs/legion#4461 (reads of 12:55Z to 13:00Z on 2026-11-19, head `21dc91c7`, carrying three review App commits); the pull request then merged through the queue at 14:02:33Z as `73e417f113`. GitHub's rule behind the per-viewer answer is not known, so it is not modelled. Reviewers and the implementer can see different states in production only where a reviewer reads the merge state after its own approval. A batch that loses a run to it is what pays for a model.",
+      "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\"; gh-threads.ts's `mergeStateOf`"
     }
   ],
   "unreachable": [

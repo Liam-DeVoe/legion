@@ -31,7 +31,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { labelGhSelectors } from "./daemon-pane";
+import { labelGhSelectors, RIG_GH_TOKEN } from "./daemon-pane";
 import { endpointPath, methodOf, type Route, readWorld, routeFor, type World } from "./gh-call";
 import { routeOf, WORLD_ROUTES, worldRouteOf } from "./gh-routes";
 import { RUN_SELECTORS } from "./gh-selectors";
@@ -358,10 +358,11 @@ export class Worlds {
     this.scratch = mkdtempSync(path.join(os.tmpdir(), "class-search-"));
     this.config = path.join(this.scratch, "pane-gh");
     mkdirSync(this.config);
-    const token = `ghs_${"Ab1".repeat(12)}`;
+    // The token every pane's gh configuration holds (daemon-pane.ts's RIG_GH_TOKEN), which the
+    // world's gh names and never reads.
     writeFileSync(
       path.join(this.config, "hosts.yml"),
-      `github.com:\n    oauth_token: ${token}\n    user: x-access-token\n    git_protocol: https\n`
+      `github.com:\n    oauth_token: ${RIG_GH_TOKEN}\n    user: x-access-token\n    git_protocol: https\n`
     );
     this.built = given;
   }

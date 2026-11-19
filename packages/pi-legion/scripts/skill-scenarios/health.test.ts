@@ -1595,7 +1595,7 @@ describe("health: rule 17, names, traced to where an agent got them", () => {
     const id = "0123456789ab";
     const ran = path.join(work, "runs", id);
     const dir = path.join(work, "archive", "runs", id);
-    const secret = "state/secrets/legion-wid-1-reviewer-system-prompt.md";
+    const secret = "state/secrets/legion-wid-1-reviewer-system-prompt.md"; // fixture-secret: a path under the run's secrets directory, no credential, which no client holds
     const prompt = "You review WID-1, whose threads are text-only.\n";
     const said = "The threads are text-only, so I approve.";
     mkdirSync(dir, { recursive: true });

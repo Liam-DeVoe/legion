@@ -3,6 +3,7 @@ import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "nod
 import path from "node:path";
 import { type LegionRole, roleToken } from "@legion/contracts";
 import { LegionActivityRequest, LegionStateResponse } from "@legion/contracts/legion-api";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
@@ -48,9 +49,14 @@ const work = temporaryDirectory("skill-scenarios-standin");
  * project, the run's own directory and the phase". */
 const WORLD_REPO = "example/widgets";
 const WORLD_BASE = "main";
-/** The secret the stand-in's registration answers (daemon-standin.ts's SESSION_SECRET), which a
- * claim's later requests carry. */
-const SECRET = "M4QZ7KWT2HXR5NBJ6YCPVD3LGE";
+/** The secret the stand-in's registration answers (daemon-standin.ts's SESSION_SECRET), which
+ * `standin` names to it (SKILL_SCENARIOS_CLAIM_SECRET) and a claim's later requests carry: random,
+ * as the daemon's is, since the plugin holds it (`@legion/contracts/held-secrets`). */
+const SECRET = fixtureSecret("reg");
+/** The boot token of every run directory below, and the bearer of the run's own Dispatch: random,
+ * as rig.sh's are, since the plugin and the Dispatch client hold them. */
+const BOOT_TOKEN = fixtureSecret("boot");
+const DISPATCH_TOKEN = fixtureSecret("dsp");
 
 /** The handoff word of each role's phase (phase.go's `Handoff`), which the record a role's
  * completion names is of. */
@@ -265,7 +271,9 @@ function seededRecord(word: SeededWord) {
  * runners): each is written into the run's fixture.json and held by its Dispatch under the
  * session of `SEEDED_SESSIONS`, beside the run's issue and its spec, approved at version 1
  * (`seeded`, which a row moves); none, by default, is a run with no seeds at all. `dir` is the
- * run directory of an earlier stand-in of the same run, for the second agent of a run. It prints
+ * run directory of an earlier stand-in of the same run, for the second agent of a run. `secret`
+ * is the secret its registration answers (SKILL_SCENARIOS_CLAIM_SECRET), `SECRET` by default and
+ * none for "", which leaves the stand-in to draw its own, as rig.sh's worker_boot does. It prints
  * `listening on http://127.0.0.1:<port>` once the socket is open, which is what this waits for. */
 let started = 0;
 async function standin(
@@ -286,6 +294,7 @@ async function standin(
     } as Record<string, object>,
     seeds = undefined as readonly SeededWord[] | undefined,
     dir: given = undefined as string | undefined,
+    secret = SECRET,
   } = {}
 ) {
   // One directory per start, so a second stand-in of the same role writes its own log: a test
@@ -294,9 +303,9 @@ async function standin(
   const dir = given ?? path.join(work, `${role}-${started}`);
   mkdirSync(dir, { recursive: true });
   const token = path.join(dir, "boot-token");
-  writeFileSync(token, "rig-boot-token\n");
+  writeFileSync(token, `${BOOT_TOKEN}\n`);
   const bearer = path.join(dir, "dispatch-token");
-  writeFileSync(bearer, "the-run's-dispatch-token\n");
+  writeFileSync(bearer, `${DISPATCH_TOKEN}\n`);
   // The status the seeds leave the issue at is the one the daemon writes as the last seeded
   // phase ends (seed-handoffs.ts's PHASE_SEED): `testing` after the implementer's, and
   // `needs_review` after the tester's, which a review round keeps.
@@ -345,7 +354,7 @@ async function standin(
       ),
       ...records,
     },
-    "the-run's-dispatch-token",
+    DISPATCH_TOKEN,
     seeded,
     writes
   );
@@ -374,6 +383,7 @@ async function standin(
         ...process.env,
         DISPATCH_URL: `http://127.0.0.1:${dispatch.port}`,
         DISPATCH_TOKEN_FILE: bearer,
+        SKILL_SCENARIOS_CLAIM_SECRET: secret,
       },
     }
   );
@@ -1466,7 +1476,7 @@ test.skipIf(skip)(
       const registered = z.object({ claimToken: z.string(), secret: z.string() }).parse(
         await (
           await daemon.post("/legion/v1/claims/register", {
-            bootToken: "rig-boot-token",
+            bootToken: BOOT_TOKEN,
             sessionId: "01a0f2cc",
           })
         ).json()
@@ -1485,7 +1495,7 @@ test.skipIf(skip)(
       expect([answered.status, await answered.text()]).toEqual([204, ""]);
       const wrong = await daemon.post("/legion/v1/claims/activity", {
         ...report,
-        secret: "not-the-secret",
+        secret: "not-the-secret", // fixture-secret: a wrong secret this row proves the stand-in refuses, which no client holds
       });
       expect([wrong.status, await wrong.json()]).toEqual([
         403,
@@ -1494,6 +1504,36 @@ test.skipIf(skip)(
     } finally {
       daemon.stop();
     }
+  },
+  600_000
+);
+
+// Catches: a stand-in whose registration answers a secret spelled from words (`rig-secret`) or
+// one fixed in its source, where the daemon draws one afresh, 26 letters and digits of base32 (Go's
+// `rand.Text()`, packages/daemon/internal/api/claims.go). The agent's plugin holds the secret and
+// scrubs every run of 10 of its characters from each line it prints (`@legion/contracts/
+// held-secrets`), so a secret of words takes those words out of what a run reads. Two stand-ins
+// booted as rig.sh boots them, naming no secret, each answer a secret of that shape, and not the
+// same one.
+test.skipIf(skip)(
+  "the stand-in's registration answers a secret it drew at its boot, in the daemon's shape",
+  async () => {
+    const answered: string[] = [];
+    for (let boot = 0; boot < 2; boot += 1) {
+      const daemon = await standin("implementer", "", undefined, { secret: "" });
+      try {
+        const registered = await daemon.post("/legion/v1/claims/register", {
+          bootToken: BOOT_TOKEN,
+          sessionId: "01a0f2cc",
+        });
+        expect(registered.status).toBe(200);
+        answered.push(z.object({ secret: z.string() }).parse(await registered.json()).secret);
+      } finally {
+        daemon.stop();
+      }
+    }
+    for (const secret of answered) expect(secret).toMatch(/^[A-Z2-7]{26}$/);
+    expect(answered[0]).not.toBe(answered[1]);
   },
   600_000
 );
@@ -1523,7 +1563,7 @@ test.skipIf(skip)(
       'package workflow\n\nfunc (e *Engine) handoff() {\n\tif RoleFor(issue.Phase) != fact.Role {\n\t\treturn refused("HANDOFF_NOT_CURRENT_PHASE", "no")\n\t}\n}\n'
     );
     mkdirSync(dir, { recursive: true });
-    writeFileSync(path.join(dir, "boot-token"), "rig-boot-token\n");
+    writeFileSync(path.join(dir, "boot-token"), `${BOOT_TOKEN}\n`);
     writeFileSync(path.join(dir, "built-from"), `checkout ${path.join(work, "neither-shape")}\n`);
     writeFileSync(
       path.join(dir, "world.json"),
@@ -1685,11 +1725,11 @@ test.skipIf(skip)(
         ["no generation", turn("reviewer", 1, "clean", { generation: 0 })],
         ["another outcome", turn("reviewer", 1, "maybe")],
         ["neither caller", boot],
-        ["both callers", turn("reviewer", 1, "clean", { bootToken: "rig-boot-token" })],
+        ["both callers", turn("reviewer", 1, "clean", { bootToken: BOOT_TOKEN })],
         ["another secret", turn("reviewer", 1, "clean", { secret: "not-it" })],
         ["another boot token", { ...boot, bootToken: "not-it" }],
-        ["another generation", { ...boot, generation: 2, bootToken: "rig-boot-token" }],
-        ["the launch's boot token", { ...boot, bootToken: "rig-boot-token" }],
+        ["another generation", { ...boot, generation: 2, bootToken: BOOT_TOKEN }],
+        ["the launch's boot token", { ...boot, bootToken: BOOT_TOKEN }],
       ] as const)
         answers.push([name, (await daemon.post("/legion/v1/claims/turn-outcome", body)).status]);
       expect(answers).toEqual([
@@ -1947,7 +1987,7 @@ test.skipIf(skip)(
   () => {
     const dir = path.join(work, "reviewer-head-900");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(path.join(dir, "boot-token"), "rig-boot-token\n");
+    writeFileSync(path.join(dir, "boot-token"), `${BOOT_TOKEN}\n`);
     writeFileSync(
       path.join(dir, "world.json"),
       JSON.stringify({
@@ -2371,7 +2411,7 @@ async function boots(
   capabilities?: object
 ) {
   const registered = await post("/legion/v1/claims/register", {
-    bootToken: "rig-boot-token",
+    bootToken: BOOT_TOKEN,
     sessionId: session,
     pluginContract: 146,
   });
@@ -3145,7 +3185,7 @@ test.skipIf(skip)(
     const checkout = codelessCheckout();
     const dir = path.join(work, "reviewer-codeless");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(path.join(dir, "boot-token"), "rig-boot-token\n");
+    writeFileSync(path.join(dir, "boot-token"), `${BOOT_TOKEN}\n`);
     writeFileSync(path.join(dir, "built-from"), `checkout ${checkout}\n`);
     writeFileSync(
       path.join(dir, "world.json"),
@@ -3560,7 +3600,7 @@ test.skipIf(skip)(
         (Date.now() - Date.parse(quiet.treeMovedAt)) / 3_600_000
       );
       const registered = await daemon.post("/legion/v1/claims/register", {
-        bootToken: "rig-boot-token",
+        bootToken: BOOT_TOKEN,
         sessionId: AGENT,
         pluginContract: 144,
       });
@@ -3616,8 +3656,8 @@ test.skipIf(skip)(
   async () => {
     const dir = path.join(work, "unread-seeds");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(path.join(dir, "boot-token"), "rig-boot-token\n");
-    writeFileSync(path.join(dir, "dispatch-token"), "the-run's-dispatch-token\n");
+    writeFileSync(path.join(dir, "boot-token"), `${BOOT_TOKEN}\n`);
+    writeFileSync(path.join(dir, "dispatch-token"), `${DISPATCH_TOKEN}\n`);
     writeFileSync(path.join(dir, "built-from"), `checkout ${CHECKOUT}\n`);
     writeFileSync(
       path.join(dir, "world.json"),
@@ -3659,7 +3699,7 @@ test.skipIf(skip)(
         `${fixture} names seed-plan as version 1 of LWEVAL-1's plan handoff, which the run's Dispatch holds as version 1 of OTHER-9's plan handoff`,
       ],
     ] as const) {
-      const dispatch = dispatchOf(records, "the-run's-dispatch-token", {
+      const dispatch = dispatchOf(records, DISPATCH_TOKEN, {
         issue,
         status: "in_progress",
         statusWrites: [],

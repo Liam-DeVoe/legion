@@ -198,10 +198,13 @@
  * An issue in `reviewing` moves on what the same run directory reports: its remote's tip, the
  * reviews of its world and of its gh record, and the merge state its world reports for that tip
  * (`servedPhase`).
+ * The secret a registration answers is drawn afresh at each boot (`SESSION_SECRET`), and is the
+ * one SKILL_SCENARIOS_CLAIM_SECRET names where it names one: a caller that sends the secret
+ * without registering first, as daemon-standin.test.ts's rows do. rig.sh names none.
  * Prints `listening on http://127.0.0.1:<port>` once the socket is open (port 0: the kernel's
  * pick).
  */
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { isLegionRole, roleToken } from "@legion/contracts";
@@ -324,10 +327,17 @@ const ROLE_TOKEN = roleToken(project, issue, role);
  * handoff record it carried: `legion-daemon:<PROJECT>`, PROJECT being the key's
  * (packages/daemon/internal/dispatch/client.go's `DaemonSession`). */
 const DAEMON_SESSION = `legion-daemon:${issue.split("-")[0]}`;
+/** The letters of Go's `rand.Text()`: RFC 4648's base32 alphabet. */
+const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 /** The secret a registration answers, in the shape the daemon mints one (Go's `rand.Text()`, 26
- * letters and digits of base32: packages/daemon/internal/api/claims.go): a word of the rig's
- * (`rig-secret`) was what the agent's plugin held. Fixed, since daemon-standin.test.ts sends it. */
-const SESSION_SECRET = "M4QZ7KWT2HXR5NBJ6YCPVD3LGE";
+ * letters and digits of base32: packages/daemon/internal/api/claims.go), drawn afresh at each
+ * boot, as the daemon's is random: the agent's plugin holds it and scrubs every run of 10 of its
+ * characters from each line it prints (`@legion/contracts/held-secrets`), so a secret spelled
+ * from words (it was `rig-secret`) took those words out of the lines a run reads. A caller that
+ * sends it without registering first names it in SKILL_SCENARIOS_CLAIM_SECRET. */
+const SESSION_SECRET =
+  process.env.SKILL_SCENARIOS_CLAIM_SECRET ||
+  Array.from({ length: 26 }, () => BASE32[randomInt(BASE32.length)]).join("");
 /** A fact of the run's label's daemon read at boot, or the boot failed with why it could not be
  * read: a run whose daemon cannot be read is never answered as some other daemon would answer
  * it. */

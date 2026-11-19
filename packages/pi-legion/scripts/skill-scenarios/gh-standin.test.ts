@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { DAEMON_MODULE, labelGhSelectors, labelGhTable, RIG_GH_TOKEN } from "./daemon-pane";
@@ -2572,9 +2573,9 @@ test("gh auth status prints gh's text for the pane's own gh configuration, and n
   const { dir } = runDir({ fixture: true });
   const config = path.join(dir, "pane-gh");
   mkdirSync(config);
-  const token = `ghs_${"Zq9".repeat(20)}`;
+  const token = `ghs_${fixtureSecret("pane")}`;
   // The file as the daemon renders it for a role's claim (packages/daemon's `ghconfig.Hosts`),
-  // holding a token of another length than the rig's.
+  // holding a token of another length than the rig's, random as a real one is.
   writeFileSync(
     path.join(config, "hosts.yml"),
     [

@@ -135,6 +135,14 @@ Every client reaches the listener through a recording proxy of its own
 (`role-takeover/listener-proxy.ts`), so each request and the listener's answer to it is read from
 a log rather than inferred.
 
+[`scripts/e2e/nats-callout-sessions.sh`](../../../scripts/e2e/README.md#nats-callout-sessionssh)
+drives the same two clients as the sessions of its stack behind the NATS auth service, with no
+proxy, since a broker token's proof names the listener's own origin: `omp-client.ts` answers
+`{"op":"deliveries"}` with what the extension handed the host, and `claude-client.ts` takes
+`--env-file` (the variables a broker trade reads, added to the server's environment) and
+`--inbox` (it plays the Legion inbox the server writes each delivery to, which
+`{"op":"deliveries"}` then answers).
+
 The listener runs with windows of its own, because every row turns on whether a claim's holder is
 still answering for it: `ENVOY_SESSION_LIVE_WINDOW=10s`, which is how long a claim stands renewed
 after its holder's last registration, and `ENVOY_ROLE_CLAIM_REAP_INTERVAL=2s`, so every row is
@@ -1076,7 +1084,7 @@ measurement each, named where the answer is described: a reply to a reply filed 
 one App's update of another's review, GitHub's 404 body for an endpoint it does not serve, and
 the merge state of an approved, green head on a merge-queue base. A few are stated as
 unmeasured: GitHub's 404 for another App's read of a pending review by id, and the
-rule-violation lines of a refused push beyond the three measured. Six differences are named
+rule-violation lines of a refused push beyond the three measured. Seven differences are named
 residuals rather than defects, each an answer the world cannot give as production gives it:
 
 - `remote.origin.vcs`, the key that carries the world's remote. No production clone has it. The
@@ -1109,6 +1117,14 @@ residuals rather than defects, each an answer the world cannot give as productio
   per-issue read at the reviewer's handoff (`issue_reads.go`'s `readHandedOff`, then
   `review_reads.go`'s `reviewToApply`). The verdict is the same, and k1 scores the verdict (the
   architect's ruling of 2026-11-19T09:42Z).
+- The merge state, which the world answers alike to every viewer (`gh-threads.ts`'s
+  `mergeStateOf`). Production gave the review App `BLOCKED` and the implement App `CLEAN` on
+  cybermonklabs/legion#4461 (reads of 12:55Z to 13:00Z on 2026-11-19, head `21dc91c7`, carrying
+  three review App commits); the pull request then merged through the queue at 14:02:33Z as
+  `73e417f113`. GitHub's rule behind the per-viewer answer is not known, so it is not modelled.
+  Reviewers and the implementer can see different states in production only where a reviewer
+  reads the merge state after its own approval. If a batch loses a run to it, that count buys the
+  model (the architect's ruling of 2026-11-19T14:07Z).
 
 **A read with no pin, and an answer this section and the sections below do not name, is not
 claimed to answer as production does.**

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -10,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { GITHUB_ROUTES, requestSites, UNREACHED } from "./github-routes";
@@ -796,7 +798,11 @@ afterAll(async () => {
 
 /** A run of `call` (a run_<scenario> call of rig.sh) in a world of its own, its agents stubbed,
  * then `after`, every line of both with rig.sh's functions; the scratch it ran in, holding
- * github.log, and its exit. */
+ * github.log, and its exit. Its exit trap stops every process the run started, whether the row
+ * passes or fails, as stop_run stops a run's: the head watcher (start_heads, with TERM, as
+ * stop_run stops it), a daemon stand-in an `after` started in the background as `standin`, the
+ * run's Dispatch and its GitHub. It stopped the last two alone, and every run of a worker world
+ * left its head watcher running past the row, its scratch deleted under it. */
 function worldRun(call: string, after: string[] = []) {
   const scratch = freshDir("github-world-run");
   mkdirSync(path.join(scratch, "tmp"));
@@ -830,7 +836,7 @@ function worldRun(call: string, after: string[] = []) {
     "launch() { :; }",
     "base_env() { :; }",
     "standins() { :; }",
-    `trap 'stop_tree "\${dispatch_pid:-}" >/dev/null 2>&1; stop_tree "\${github_pid:-}" >/dev/null 2>&1; cp "$R/logs/github.log" "$SCRATCH/github.log"; pg_sql "$PG" "DROP DATABASE IF EXISTS $DATABASE_PREFIX$RUN_ID WITH (FORCE)" >/dev/null 2>&1 || true' EXIT`,
+    `trap 'stop_pid "\${watcher_pid:-}" >/dev/null 2>&1; stop_tree "\${standin:-}" >/dev/null 2>&1; stop_tree "\${dispatch_pid:-}" >/dev/null 2>&1; stop_tree "\${github_pid:-}" >/dev/null 2>&1; cp "$R/logs/github.log" "$SCRATCH/github.log"; pg_sql "$PG" "DROP DATABASE IF EXISTS $DATABASE_PREFIX$RUN_ID WITH (FORCE)" >/dev/null 2>&1 || true' EXIT`,
     "results() {",
     '  env -i PATH="$PATH" HOME="$SCRATCH/home" DISPATCH_STATE_DIR="$SCRATCH/state" \\',
     '    DISPATCH_URL="http://127.0.0.1:$dispatch_port" DISPATCH_TOKEN_FILE="$tokens/dispatch-token" \\',
@@ -952,6 +958,10 @@ test.skipIf(pg === undefined)(
   "a world's dispatch steps lists its history and its open step, and after a move the ended step and the next",
   () => {
     const agent = "01a2d000-0000-7000-8000-00000000f006";
+    // The run's boot token and the secret the stand-in's registration answers: random, as the
+    // daemon's are, since the plugin holds them (`@legion/contracts/held-secrets`).
+    const bootToken = fixtureSecret("boot");
+    const secret = fixtureSecret("reg");
     const { scratch, code, stderr } = worldRun("run_tester_proof pin proj 0 0", [
       "steps() {",
       '  env -i PATH="$PATH" HOME="$SCRATCH/home" DISPATCH_STATE_DIR="$SCRATCH/state" \\',
@@ -961,16 +971,16 @@ test.skipIf(pg === undefined)(
       '  curl -fsS -H "Authorization: Bearer $(cat "$tokens/dispatch-token")" \\',
       '    "http://127.0.0.1:$dispatch_port/api/v1/issues/$worker_key/steps" >"$SCRATCH/$1.json"',
       "}",
-      'printf "rig-boot-token\\n" >"$SCRATCH/boot-token"',
-      'DISPATCH_URL="http://127.0.0.1:$dispatch_port" DISPATCH_TOKEN_FILE="$tokens/dispatch-token" \\',
+      `printf "${bootToken}\\n" >"$SCRATCH/boot-token"`,
+      `SKILL_SCENARIOS_CLAIM_SECRET='${secret}' DISPATCH_URL="http://127.0.0.1:$dispatch_port" DISPATCH_TOKEN_FILE="$tokens/dispatch-token" \\`,
       '  bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$SCRATCH/boot-token" proj "$worker_key" "$R" tester >"$SCRATCH/standin.out" 2>&1 &',
       "standin=$!",
       'for _ in $(seq 1200); do grep -q "listening on" "$SCRATCH/standin.out" && break; sleep 0.1; done',
       'url=$(sed -n "s/^listening on //p" "$SCRATCH/standin.out")',
       "steps before",
-      `curl -fsS -X POST "$url/legion/v1/claims/register" -d '{"bootToken":"rig-boot-token","sessionId":"${agent}","pluginContract":146}' >/dev/null`,
-      `curl -fsS -X POST "$url/legion/v1/claims/ready" -d '{"secret":"M4QZ7KWT2HXR5NBJ6YCPVD3LGE"}' >/dev/null`,
-      `grant=$(curl -fsS -X POST "$url/legion/v1/grants" -d "{\\"sessionId\\":\\"${agent}\\",\\"secret\\":\\"M4QZ7KWT2HXR5NBJ6YCPVD3LGE\\",\\"tree\\":\\"$worker_key\\",\\"issue\\":\\"$worker_key\\"}" | jq -r .grantId)`,
+      `curl -fsS -X POST "$url/legion/v1/claims/register" -d '${JSON.stringify({ bootToken, sessionId: agent, pluginContract: 146 })}' >/dev/null`,
+      `curl -fsS -X POST "$url/legion/v1/claims/ready" -d '{"secret":"${secret}"}' >/dev/null`,
+      `grant=$(curl -fsS -X POST "$url/legion/v1/grants" -d "{\\"sessionId\\":\\"${agent}\\",\\"secret\\":\\"${secret}\\",\\"tree\\":\\"$worker_key\\",\\"issue\\":\\"$worker_key\\"}" | jq -r .grantId)`,
       'curl -fsS -X POST "$url/legion/v1/phase/backward" -d "{\\"grantId\\":\\"$grant\\",\\"to\\":\\"implementing\\",\\"reason\\":\\"the fix needs code\\"}" >/dev/null',
       "steps after",
       'kill "$standin"',
@@ -1032,6 +1042,57 @@ test.skipIf(pg === undefined)(
       [3, 1, "agent", 2, null],
       [2, 2, "", null, null],
     ]);
+  },
+  600_000
+);
+
+/** A process this row recorded: its pid and the start time `/proc/<pid>/stat` gives it (field
+ * 22, in clock ticks since boot), read after the name in parentheses, which can hold spaces. */
+interface Recorded {
+  readonly pid: number;
+  readonly started: string;
+}
+function startTime(stat: string): string {
+  return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] ?? "";
+}
+/** Whether the process `recorded` names still runs: its pid names a process that started when it
+ * did. A pid another process has taken since names no recorded process. */
+function running(recorded: Recorded): boolean {
+  try {
+    return startTime(readFileSync(`/proc/${recorded.pid}/stat`, "utf8")) === recorded.started;
+  } catch {
+    return false;
+  }
+}
+
+// Catches: a world run whose exit leaves the head watcher it started running (start_heads, which
+// every worker world's worker_run_world calls). worldRun's exit trap stopped the run's Dispatch
+// and GitHub alone, and after a suite six watchers of `github-world-run` scratches stood up to
+// two hours old, one under a scratch already deleted. The watcher is read by the pid the run
+// recorded and the start time /proc gave it then, never by its name, and a watcher this row finds
+// running it stops itself, whether the row passes or fails.
+test.skipIf(pg === undefined)(
+  "a world run's exit leaves no head watcher of that run running",
+  () => {
+    const { scratch, code, stderr } = worldRun("run_tester_proof pin proj 0 0", [
+      'printf "%s\\n" "$watcher_pid" >"$SCRATCH/watcher-pid"',
+      'cat "/proc/$watcher_pid/stat" >"$SCRATCH/watcher-stat"',
+    ]);
+    const files = ["watcher-pid", "watcher-stat"].map((name) => path.join(scratch, name));
+    const watcher: Recorded | undefined = files.every((file) => existsSync(file))
+      ? {
+          pid: Number(readFileSync(files[0] ?? "", "utf8").trim()),
+          started: startTime(readFileSync(files[1] ?? "", "utf8")),
+        }
+      : undefined;
+    try {
+      expect({ code, stderr }).toMatchObject({ code: 0 });
+      expect(watcher?.pid).toBeGreaterThan(1);
+      expect(watcher?.started).toMatch(/^\d+$/);
+      expect(watcher !== undefined && running(watcher) ? "running" : "stopped").toBe("stopped");
+    } finally {
+      if (watcher !== undefined && running(watcher)) process.kill(watcher.pid, "SIGKILL");
+    }
   },
   600_000
 );

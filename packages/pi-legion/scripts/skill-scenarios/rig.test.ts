@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
@@ -6528,9 +6529,10 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
   const worlds = new Map<WorldName, string>();
   /** The pane's own gh configuration (its GH_CONFIG_DIR), the hosts.yml the daemon renders for a
    * role's claim (packages/daemon's `ghconfig.Hosts`), which `gh auth status` names and never
-   * reads: its token is one of another length than the rig's, which no answer names. */
+   * reads: its token is one of another length than the rig's, which no answer names, and random,
+   * as a real one is. */
   let paneGh = "";
-  const PANE_TOKEN = `ghs_${"Ab1".repeat(20)}`;
+  const PANE_TOKEN = `ghs_${fixtureSecret("pane")}`;
   beforeAll(() => {
     for (const name of WORLDS) worlds.set(name, build(name));
     paneGh = freshDir("pane-gh");
@@ -7704,7 +7706,10 @@ describe("what the rig writes into a run's world", () => {
       ];
     });
     expect(words).toEqual([]);
-  });
+    // It builds five worlds for real: the file ran it in 37 s alone on a quiet pod, and past the
+    // file's 60 s default beside a second suite (INFRA-764, 2026-11-19), so it is bounded at three
+    // minutes.
+  }, 180_000);
 });
 
 // The issue workspace's remote and its configuration, as an agent of the run meets them: in a world
@@ -11150,7 +11155,8 @@ export const LegionStateResponse = {
     const work = freshDir("services-lock");
     const S = path.join(work, "services");
     mkdirSync(path.join(S, "tokens"), { recursive: true });
-    writeFileSync(path.join(S, "tokens", "envoy-token"), "an earlier batch's token\n");
+    const earlier = fixtureSecret("envoy");
+    writeFileSync(path.join(S, "tokens", "envoy-token"), `${earlier}\n`);
     writeFileSync(path.join(S, "services-from-base"), "envoy-listener label /co -\n");
     writeFileSync(path.join(work, "listener_base.port"), "4100\n");
     const result = bash(
@@ -11161,9 +11167,7 @@ export const LegionStateResponse = {
     expect(result.stderr).toContain(
       `an earlier batch left ${S}/tokens/envoy-token ${S}/services-from-base ${work}/listener_base.port; a batch replaces no earlier batch's file`
     );
-    expect(readFileSync(path.join(S, "tokens", "envoy-token"), "utf8")).toBe(
-      "an earlier batch's token\n"
-    );
+    expect(readFileSync(path.join(S, "tokens", "envoy-token"), "utf8")).toBe(`${earlier}\n`);
     expect(readFileSync(path.join(work, "listener_base.port"), "utf8")).toBe("4100\n");
     expect(readdirSync(S).sort()).toEqual(["logs", "services-from-base", "tokens"]);
   });

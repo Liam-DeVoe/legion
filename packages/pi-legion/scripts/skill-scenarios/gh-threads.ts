@@ -790,7 +790,14 @@ const MERGEABLE_BUT_FOR_RULES = ["CLEAN", "UNSTABLE", "HAS_HOOKS"];
  * scanning: #4346, #4334, #4328 and #4325, approved, with `ci-ok`, `pr-title` and `CodeQL`
  * successful and every other check successful or skipped, read `CLEAN` and `MERGEABLE`, the
  * state its merge queue takes them in; #4359, approved with `ci-ok` not yet reported, `BLOCKED`;
- * each `REVIEW_REQUIRED` or `CHANGES_REQUESTED` one `BLOCKED`. */
+ * each `REVIEW_REQUIRED` or `CHANGES_REQUESTED` one `BLOCKED`.
+ * Not modelled: a merge state that differs by its viewer, where the world answers one merge state
+ * to every viewer, since GitHub's rule behind the per-viewer answer is not known. Production gave
+ * the review App `BLOCKED` and the implement App `CLEAN` on cybermonklabs/legion#4461 (reads of
+ * 12:55Z to 13:00Z on 2026-11-19, head `21dc91c7`, carrying three review App commits), which
+ * then merged through the queue at 14:02:33Z as `73e417f113`. A reviewer and the implementer see
+ * different states in production only where a reviewer reads the merge state after its own
+ * approval: a residual (the architect's ruling of 2026-11-19T14:07Z, class-search.json). */
 export function mergeStateOf(
   at: ThreadWorld,
   threads: Threads,
