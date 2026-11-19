@@ -3,9 +3,11 @@ package supervise
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // startOfStep is the work of a workflow start of a step of run 1, which the outbox's start row
@@ -150,6 +152,50 @@ func TestAParkedStartOfWorkTheIssueLeftStartsNoProcessAtItsTurn(t *testing.T) {
 			if got.State != StateSuspended || got.SuspendedBy != SuspendedByDaemon || got.Pending != nil {
 				t.Fatalf("the parked start's claim after its turn = %s by %q holding %+v, want suspended by the daemon holding no task",
 					got.State, got.SuspendedBy, got.Pending)
+			}
+		})
+	}
+}
+
+// A start's launch the session store could not answer is tried again a minute later with the claim
+// launching and no process (startWaitsForStore), and that retry carries the start's work, so it
+// judges the work again as a parked launch's turn does: a start whose work the issue left during
+// the minute starts no process and the claim is suspended for the daemon. The control is the same
+// retry while the work holds, which resumes the session again.
+func TestAStartRetriedAfterTheSessionStoreFailedJudgesItsWorkAgain(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		holds   bool
+		resumes int
+	}{
+		{"the issue leaves the start's work before the retry", false, 1},
+		{"the control: the work still holds at the retry", true, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			holds, asked := true, 0
+			h := newBareHarness(t)
+			phaseHoldsAnswering(&holds, &asked)(&h.deps)
+			suspended := queuedClaim()
+			suspended.State, suspended.Generation, suspended.Session, suspended.SessionFile = StateSuspended, 1, session, sessionFile
+			suspended.SuspendedBy = SuspendedByDaemon
+			if err := h.store.PutClaim(h.ctx, suspended); err != nil {
+				t.Fatal(err)
+			}
+			h.start(suspended)
+			storeDown := fmt.Errorf("resume %s: %w: dial tcp: connection refused", testToken, runtime.ErrSessionStore)
+			h.rt.OnResume = func(context.Context) error { return storeDown }
+
+			if err := h.handle(RequestRuleResume{Claim: testToken, Reason: "it owns its issue's step", Start: startOfStep}); !errors.Is(err, runtime.ErrSessionStore) {
+				t.Fatalf("the start's resume answered %v, want the store's refusal", err)
+			}
+			h.wantState(StateLaunching)
+			h.rt.OnResume = nil
+			holds = tc.holds
+			h.advance(sessionStoreRetry)
+
+			h.wantCalls("Resume", tc.resumes)
+			if got := h.claim(); !tc.holds && (got.State != StateSuspended || got.SuspendedBy != SuspendedByDaemon) {
+				t.Fatalf("the retried start's claim = %s by %q, want suspended by the daemon", got.State, got.SuspendedBy)
 			}
 		})
 	}

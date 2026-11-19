@@ -2330,7 +2330,7 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool, cause s
 				return m.relaunchRefused(ctx, again, err)
 			}
 		}
-		return m.launchNow(ctx, charged, exempt, cause)
+		return m.launchNow(ctx, charged, exempt, cause, start)
 	}, again)
 }
 
@@ -2371,8 +2371,10 @@ func (m *Machine) startLeft(ctx context.Context, err error) error {
 // ended is recorded before the first try's write moves the generation and clears the process's
 // activity report (letGo, recordEnd, the store's putClaim). The retries this launch arms — a
 // failed write's here, a session store's that could not answer (startWaitsForStore) — launch a
-// claim that records no process any more, so they pass noEnd.
-func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause string) error {
+// claim that records no process any more, so they pass noEnd; they carry start, the work of the
+// start this launch is for, so the retry, which finds the claim launching with no process, judges
+// it again as a parked launch's turn does (launchAfter).
+func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause string, start StartWork) error {
 	// The intent is read before it is committed rather than taken, because committing takes it
 	// off the machine (commitPluginRelaunch, takePluginRelaunch) and the retry a failed write
 	// arms must put that same one back where it runs. Reading it without taking it is what the
@@ -2397,7 +2399,7 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			m.log.Warn("supervise: the launch could not be written; trying it again at the probe interval",
 				"generation", m.claim.Generation, "error", err)
 			m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(intent, func(ctx context.Context) error {
-				return m.launchAfter(ctx, charged, exempt, noEnd, StartWork{})
+				return m.launchAfter(ctx, charged, exempt, noEnd, start)
 			}))
 			return err
 		}
@@ -2439,7 +2441,7 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 		}
 		m.claim.LastStartFailure = err.Error()
 		if errors.Is(err, runtime.ErrSessionStore) {
-			return m.startWaitsForStore(starting, err, charged, exempt)
+			return m.startWaitsForStore(starting, err, charged, exempt, start)
 		}
 		var tooLarge *runtime.PromptTooLarge
 		if errors.As(err, &tooLarge) {
@@ -2547,12 +2549,12 @@ const (
 // answers. The issue and the controller are told at once and then hourly, since nothing else says
 // why the worker is not running. The process the launch let go is let go already, so the retry
 // lets none go (noEnd).
-func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, exempt bool) error {
+func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, exempt bool, start StartWork) error {
 	err := errors.Join(cause, m.stopPrevious(ctx))
 	m.log.Error("supervise: the session store could not answer this start; trying it again every minute, charging nothing",
 		"generation", m.claim.Generation, "retry", sessionStoreRetry, "error", err)
 	m.tellStoreFault(cause)
-	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, noEnd, StartWork{}) })
+	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, noEnd, start) })
 	return errors.Join(err, m.persist(ctx))
 }
 
