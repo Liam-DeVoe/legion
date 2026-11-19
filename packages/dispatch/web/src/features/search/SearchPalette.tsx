@@ -836,6 +836,11 @@ function PaletteDialog({
   const firstMore = rows.length - footRows;
   const walkable = searchOut && activeIndex < firstMore ? firstMore : rows.length;
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    // A key that is part of an input method's composition is the composition's, and its default
+    // stays the browser's: it moves no highlight, moves no chip (Tab, Backspace) and picks no row.
+    if (event.nativeEvent.isComposing) {
+      return;
+    }
     if (scope.handleKey(event)) {
       // The browser's own move is what this cancels: the box is the dialog's first focusable,
       // so the dialog's Tab trap, which acts at either end, leaves this key alone.
@@ -851,9 +856,9 @@ function PaletteDialog({
             : walkable - 1
           : stepActive(activeIndex, delta, walkable);
       setActive({ hits: listedQuery, id: rows[next]?.id ?? null });
-    } else if (event.key === "Enter" && !event.nativeEvent.isComposing && activeRow !== undefined) {
-      // Enter picks the highlighted row, but not an Enter that ends or moves an input method's
-      // composition: that one is the composition's.
+    } else if (event.key === "Enter" && activeRow !== undefined) {
+      // Enter picks the highlighted row. An Enter that ends or moves an input method's
+      // composition does not reach here: the guard above leaves it to the composition.
       event.preventDefault();
       selectRow(activeRow);
     }
