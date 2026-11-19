@@ -380,10 +380,13 @@ func wayBackBlockDifference(header, extract string) string {
 // the task numbers', then the step records', then the commit statuses', then the reviewed
 // commit's, then this one (docs/kubernetes.md). So this helper does the same: each later block is
 // read from its header (wayBackBlockOfTheHeader, and migrations.WayBack for the step records')
-// and sent the same way, before the phase entry's. The task numbers', the reviewed commit's and
-// the step records' shapes and their copies in the guide are held by internal/store's tests of
-// those migrations, and the commit statuses' block stands in its header alone, so the four are
-// run here and not counted.
+// and sent the same way, before the phase entry's. The task numbers' block is run, and held to its
+// copy in the guide, by internal/store's migration_20261113175649_test.go; the step records' is
+// run by internal/store's test of 20261117064152 and held to the guide's copy by
+// internal/textcheck's step_records_way_back_doc_test.go; the reviewed commit's is run by
+// internal/admit's architect_upgrade_test.go (headerWayBack), and no test compares it with the
+// guide's copy; and the commit statuses' block stands in its header alone. So the four are run
+// here and not counted.
 //
 // What this cannot show is that daemon running: no binary of it is here to boot against the
 // recovered schema, so that it then mints a fresh token at each role's next start is not

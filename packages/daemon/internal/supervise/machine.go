@@ -1327,7 +1327,7 @@ type Machine struct {
 	steppedAt time.Time
 	// lastAnswer is the model that answered last and the session it answered in (answered,
 	// LastAnswer), nil before any. It is apart from mu, so a read never waits on a decision, and it
-	// is memory only, as steppedAt is. It is not named answer: that is the take's answer (take.go).
+	// is memory only, as steppedAt is.
 	lastAnswer atomic.Pointer[sessionAnswer]
 	// sessionFrom is the first launch of the claim's current session: the launch that spawned it
 	// (spawn), which every later resume continues. The fence takes an answer of any launch from it

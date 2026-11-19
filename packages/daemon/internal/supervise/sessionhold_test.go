@@ -197,7 +197,7 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		h.observe(runtime.Alive)
 		h.wantPrompts(base)
 		if p := h.pending(); p.Task != "the task" || !p.ConfirmedAt.IsZero() {
-			t.Fatalf("pending %+v, want the task held back unsent", p)
+			t.Fatalf("pending %+v, want the task untaken", p)
 		}
 		if err := h.m.Compact(h.ctx, testCompactInstructions); !errors.Is(err, ErrCompactNotTaken) {
 			t.Fatalf("a compaction of the claim's session answered %v, want ErrCompactNotTaken: the claim does not hold %s", err, session)

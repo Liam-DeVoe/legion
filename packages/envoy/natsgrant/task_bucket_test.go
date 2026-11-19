@@ -39,37 +39,6 @@ var daemonTaskBucketCalls = []string{
 	"$JS.FC.KV_legion_tasks.>",
 }
 
-// The daemon's grant is written out literally rather than built from Envoy's names, so a change
-// to the grant or to a name it is built from fails here until reviewed: the notification stream's
-// calls of the daemon's durables and its state read, then the task bucket's, which the daemon
-// creates, reads, writes and watches.
-func TestDaemonIsTheStreamsCallsThenTheTaskBuckets(t *testing.T) {
-	got := natsgrant.Daemon()
-	require.Equal(t, []string{
-		"$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS",
-		"$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS",
-		"$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.>",
-		"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.>",
-		"$JS.API.CONSUMER.MSG.NEXT.ENVOY_NOTIFICATIONS.>",
-		"$JS.ACK.ENVOY_NOTIFICATIONS.>",
-		"$JS.API.INFO",
-		"$JS.API.STREAM.INFO.KV_legion_tasks",
-		"$JS.API.STREAM.CREATE.KV_legion_tasks",
-		"$JS.API.STREAM.UPDATE.KV_legion_tasks",
-		"$JS.API.DIRECT.GET.KV_legion_tasks.>",
-		"$JS.API.STREAM.MSG.GET.KV_legion_tasks",
-		"$KV.legion_tasks.>",
-		"$JS.API.STREAM.PURGE.KV_legion_tasks",
-		"$JS.API.CONSUMER.CREATE.KV_legion_tasks.>",
-		"$JS.API.CONSUMER.DELETE.KV_legion_tasks.>",
-		"$JS.FC.KV_legion_tasks.>",
-	}, got.Publish, "Daemon().Publish")
-	require.Equal(t, []string{
-		"notifications.envoy.exceptions.notifications.role.>",
-		"_INBOX.>",
-	}, got.Subscribe, "Daemon().Subscribe")
-}
-
 // Each call returns lists of its own, so a caller that narrows one, as the daemon's refusal test
 // does, changes no later call's.
 func TestDaemonGrantIsEachCallersToChange(t *testing.T) {

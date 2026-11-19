@@ -25,13 +25,13 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
-import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   publishTaskFrame,
   type TaskStandIn,
   taskRelayConnection,
   taskStandIn,
 } from "@legion/pi-shared/test/task-stand-in";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   completeLines,
   endsWhole,

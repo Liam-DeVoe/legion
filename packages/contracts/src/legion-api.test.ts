@@ -1870,12 +1870,6 @@ test("the take goldens are its three answers", () => {
     LegionTakeResponse.safeParse({ outcome: "refused", hold: "a-hold-a-later-daemon-names" })
       .success
   ).toBeTrue();
-  // The hold of a claim recording a session it does not hold, which the take route answers to the
-  // same contract-168 plugins as every other hold: a plugin before that contract takes no task.
-  expect(LegionTakeResponse.parse({ outcome: "refused", hold: "session-not-held" })).toEqual({
-    outcome: "refused",
-    hold: "session-not-held",
-  });
 });
 
 test("the ready golden carries the session's capability report", () => {

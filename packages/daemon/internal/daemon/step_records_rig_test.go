@@ -798,14 +798,12 @@ func (c *stepClaimant) take() {
 }
 
 // receive waits for the claim's next task and takes it, as the pane's plugin does once its host
-// is idle: the take the daemon accepted, whose turn has not started yet.
-func (c *stepClaimant) receive() takenTask {
+// is idle: the daemon accepts the take, and the take's turn has not started yet.
+func (c *stepClaimant) receive() {
 	c.r.t.Helper()
-	taken, err := c.driver.takeWithin(stepRecordsWait)
-	if err != nil {
+	if _, err := c.driver.takeWithin(stepRecordsWait); err != nil {
 		c.r.t.Fatalf("%s took no task within %s: %v", c.token, stepRecordsWait, err)
 	}
-	return taken
 }
 
 // endTurnUnseen ends the task the pane took with no daemon of this release there to read it, as

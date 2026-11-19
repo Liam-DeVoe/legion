@@ -17,10 +17,13 @@ body: |-
   take within the first bound (`--take-timeout`, 300 seconds by default), counting only time in
   which the daemon waited on that take; each one fails the third verdict. A take the daemon fails to
   decide or to record is refused at its revision, and the value is written again under its number
-  once the store answers, with no charge to the worker. After a daemon start, the first bound over a
-  revision whose seen report the daemon read from its database writes the value again instead of
-  charging. A turn that ends in a provider error counts toward no launch failure: what follows it is
-  the provider-error wait's alone. A push onto a pull request's base has the daemon read its merge
+  once the store answers, with no charge to the worker. A take by a claim that records a session
+  the daemon does not hold is refused with the hold `session-not-held`, charges the worker nothing,
+  and the value is written again once the claim holds its session. After a daemon start, the
+  first bound over a revision whose seen report the daemon read from its database writes the value
+  again instead of charging. A turn that ends in a provider error counts toward no launch failure:
+  what follows it is the provider-error wait's alone. A push onto a pull request's base has the
+  daemon read its merge
   state in testing, acceptance, retro and merging too, not only while a review round waits on it, so
   a head the push left conflicting goes back to implementing from each of them, and the reason that
   sends it back names the head, GitHub's mergeable and merge-state answer and the time of that read.

@@ -25,7 +25,7 @@ func adoptingIdentity(context.Context, claim.Role, string) (runtime.GitIdentity,
 	return runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}, nil
 }
 
-// Each of the seven holds a state of the claim, its issue or its tree puts on a task refuses a
+// Each of the eight holds a state of the claim, its issue or its tree puts on a task refuses a
 // take by its own name, leaves the task untaken and its value in the bucket, and records the
 // refusal at the value's revision, which is how the end of the hold knows to write the value again
 // (offerPending).

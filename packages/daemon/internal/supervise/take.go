@@ -127,7 +127,7 @@ const (
 	TakeOutcomeDropped TakeOutcome = "dropped"
 )
 
-// The holds a take is refused by, by name. The first seven are a state of the claim, its issue or
+// The holds a take is refused by, by name. The first eight are a state of the claim, its issue or
 // its tree that the task waits out; the rest are a take the claim's own state refuses.
 const (
 	// HoldIssueInTurn is another role of the claim's issue in a turn, or holding an accepted take
