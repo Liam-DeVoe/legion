@@ -411,6 +411,20 @@ type appending struct {
 // node write already locked, so the statement takes no node row the write did not hold before,
 // and it reads the marks as its own snapshot holds them, before its own move.
 //
+// Neither the read of the marks nor the move joins the nodes it was handed to graph_nodes: each
+// node probes its own row through graph_nodes' primary key, in a subquery behind an offset 0 the
+// planner cannot flatten, as queueNodes' move meets the table through that key. Joined plainly,
+// the mark is a filter the planner estimates at one row of a table analyzed near empty, whose
+// statistics do not count the rows the node write has just written, and it walks graph_nodes and
+// rescans the whole array for each marked row it finds there: a write of 2,000 nodes removed
+// 3,998,000 rows by its join filter, and a version of 150,000 blocks would run for hours. An
+// update cannot take a lateral on the table it updates, so the move updates the rows its own
+// probe found, by their key: the mark and the sentinel are read off the probed row, and the
+// update carries no condition of its own on graph_nodes for the planner to estimate at one row
+// (TestTheNodeWritesAppendProbesEachNodeOfItsBatchOnce). The probed row is the row the update
+// moves, since every row the move sets is one this transaction's node write holds, so no other
+// writer moves it in between.
+//
 // The tuples carry two repeat keys: one event states one fact once, so a writer that is retried
 // appends the same row again, and the insert drops it. One insert carries both, so it names no
 // conflict target, and every unique index of graph_tuples is its arbiter: the two repeat keys,
@@ -481,7 +495,12 @@ func queueAppend(b *store.WriteBatch, write appending) error {
 		),
 		marked as (
 			select written.*, ((-held.source_event) % 4)::integer & ~written.skip as attributes
-			from written join graph_nodes held on held.kind = written.kind and held.id = written.id
+			from written
+			cross join lateral (
+				select g.source_event from graph_nodes g
+				where g.kind = written.kind and g.id = written.id
+				offset 0
+			) held
 			where `+markedBy("held", markParam)+`
 		),
 		based as (
@@ -497,12 +516,20 @@ func queueAppend(b *store.WriteBatch, write appending) error {
 			where marked.attributes & attribute.bit <> 0
 		),
 		settled as (
-			update graph_nodes set source_event = `+causeOf("written.cause")+`
-			from written
-			where graph_nodes.kind = written.kind and graph_nodes.id = written.id
-			  and (`+markedBy("graph_nodes", markParam)+`
-			       or `+sentinelParam+`::boolean and graph_nodes.source_event = `+strconv.FormatInt(NoEvent, 10)+`
-			          and written.cause <> `+strconv.FormatInt(NoEvent, 10)+`)
+			update graph_nodes set source_event = `+causeOf("moved.cause")+`
+			from (
+				select written.kind, written.id, written.cause
+				from written
+				cross join lateral (
+					select g.source_event from graph_nodes g
+					where g.kind = written.kind and g.id = written.id
+					offset 0
+				) held
+				where `+markedBy("held", markParam)+`
+				   or `+sentinelParam+`::boolean and held.source_event = `+strconv.FormatInt(NoEvent, 10)+`
+				      and written.cause <> `+strconv.FormatInt(NoEvent, 10)+`
+			) moved
+			where graph_nodes.kind = moved.kind and graph_nodes.id = moved.id
 		)
 		insert into graph_tuples (`+tupleWriteColumns+`)
 		select `+tupleWriteColumns+` from (
