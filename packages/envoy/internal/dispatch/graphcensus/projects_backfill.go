@@ -594,7 +594,12 @@ func derefText(value *string) string {
 // gone, its row's own (ownLiveStatement, for a document a removal can take; any such one for the
 // rest, whose address no later row takes) and naming a project or parties was written meanwhile, by
 // another run of the backfill that took the owner locks first, and is left as it is, unless its
-// issue's or document's own row is still unmarked (heldRowMarks); one that is
+// issue's or document's own row is still unmarked (heldRowMarks). Such a node whose row is unmarked
+// only in naming no node - one a build that names no node on its row wrote, at its create or by
+// its backfill - is owed that name and not a node: it is written again with the rest, which moves
+// nothing of it and states only what its kind's writer states beside it, and named, and it counts
+// as no row and no node of the report, so a batch of such rows spends none of the object pass's
+// budget (writeObjectKind), as that build, whose pass reads no such row, spends none. One that is
 // not gone and its row's own but names neither is written again, which states its project or
 // parties alone. A document whose node is not gone but not its row's own is one a build before
 // this one removed and made again at the address: its node is stated gone, by the backfill, and
@@ -640,6 +645,10 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 		// retired holds the address of each retired document whose row names no node yet, which is
 		// named with the written rows and given no node write.
 		var retired []string
+		// named counts the rows of write whose node the store already holds, as their row's own,
+		// not gone and naming a project or parties, and whose row names no node: each is owed its
+		// name alone, and counts as no row and no node the batch wrote.
+		var named int64
 		for _, row := range nodes {
 			node := row.Node
 			if identity, stands := standing[node.ID]; !stands || identity != row.identity {
@@ -655,8 +664,13 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 				}
 				continue
 			}
-			if found && stored.present && stored.own && stored.scoped && !marks[node.ID].owed {
-				continue
+			if found && stored.present && stored.own && stored.scoped {
+				if !marks[node.ID].owed {
+					continue
+				}
+				if marks[node.ID].unnamed {
+					named++
+				}
 			}
 			node.Restates = found && stored.present && stored.own
 			if found && !stored.newest.Before(node.MadeAt) {
@@ -672,7 +686,7 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 			}
 			write = append(write, node)
 		}
-		written.Rows, written.Nodes = int64(len(write)), int64(len(write))
+		written.Rows, written.Nodes = int64(len(write))-named, int64(len(write))-named
 		for start := 0; start < len(write); {
 			end := start + 1
 			for end < len(write) && write[end].SourceEvent == write[start].SourceEvent {
@@ -755,11 +769,11 @@ func stateTuple(node graphstore.Node) graphstore.Tuple {
 
 // rowMark is what an issue's or a document's own row says of its marker, read under the batch's
 // owner locks (heldRowMarks): whether it is still unmarked - an issue's by issueRowUnmarked, a
-// document's by naming no node - and the parent an issue's row names, nil for none and for a
-// document.
+// document's by naming no node - whether it names no node, and the parent an issue's row names,
+// nil for none and for a document.
 type rowMark struct {
-	owed   bool
-	parent *string
+	owed, unnamed bool
+	parent        *string
 }
 
 // heldRowMarks reads again, under the owner locks lockObjectOwners took, the row marker of each
@@ -773,9 +787,9 @@ func heldRowMarks(ctx context.Context, tx pgx.Tx, kind string, ids []string) (ma
 	var read string
 	switch kind {
 	case graphstore.KindIssue:
-		read = `select i.key, ` + issueRowUnmarked + `, i.parent_key from issues i where i.key = any($1::text[])`
+		read = `select i.key, ` + issueRowUnmarked + `, i.node_kind is null, i.parent_key from issues i where i.key = any($1::text[])`
 	case graphstore.KindArtifact:
-		read = `select ref_key, node_kind is null, null::text from artifacts where ref_key = any($1::text[])`
+		read = `select ref_key, node_kind is null, node_kind is null, null::text from artifacts where ref_key = any($1::text[])`
 	default:
 		return nil, nil
 	}
@@ -786,7 +800,7 @@ func heldRowMarks(ctx context.Context, tx pgx.Tx, kind string, ids []string) (ma
 	marks := make(map[string]rowMark, len(ids))
 	var id string
 	var mark rowMark
-	if _, err := pgx.ForEachRow(rows, []any{&id, &mark.owed, &mark.parent}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&id, &mark.owed, &mark.unnamed, &mark.parent}, func() error {
 		held := mark
 		if mark.parent != nil {
 			// The scan writes every row into one target, so each row keeps a parent of its own.
