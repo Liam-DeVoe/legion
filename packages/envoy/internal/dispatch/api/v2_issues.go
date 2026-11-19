@@ -99,8 +99,9 @@ const issueClaimText = "The status does not move. Answers the issue with legion_
 
 // v2IssueRows are the issue routes: rows 80 and 82; 81; the project's
 // list R1.3 adds; 83 and 115; 84 and 102; 95; 96; 97; 100; 101; 17; 110; 111; 112; 113; 114; and
-// 173 of the route map; and #4400's two rows of /api/v1, which the map predates
-// (testdata/v1-only-routes.txt).
+// 173 of the route map; and four rows of /api/v1 the map predates (testdata/v1-only-routes.txt):
+// #4400's two, GET /issues/{key}/steps and PUT /issues/{key}/steps/{id}, and #4488's two, PUT
+// /issues/{key}/steps/{id}/rating and PUT /issues/{key}/plans/{id}.
 func (s *server) v2IssueRows() []routeRow {
 	person := routeScopeSet{model.ScopePerson}
 	issueList := listBounds{Default: contracts.DefaultIssuePageLimit, Max: contracts.MaxIssuePageLimit}
@@ -1511,8 +1512,9 @@ func (s *server) putIssuePlanV2(w http.ResponseWriter, r *http.Request) {
 }
 
 // planHeld is the plan stored in the body's own type, for the members sent states alone: a
-// document half the body leaves out, or sends null, "" or 0, states nothing (planRecordInput) and
-// stands as sent, and so does its actor, which is no field of the plan.
+// document half the body leaves out, or sends null, "" or 0, states nothing
+// (planRecordInput.document) and stands as sent, and so does its actor, which is no field of the
+// plan.
 func planHeld(sent planRecordInput, stored workflowstore.Plan) planRecordInput {
 	held := sent
 	if sent.Generation != nil {

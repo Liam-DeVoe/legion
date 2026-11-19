@@ -66,7 +66,7 @@ func stepsTourSteps() []tourStep {
 			Setup: func(t *testing.T, tour *routeTour) tourRequest {
 				issue := tour.issue(t)
 				tour.writePlan(t, issue, uuid.NewString(), tourDefaultPlan())
-				tour.close(t, issue)
+				closeIssue(t, tour.handler, issue.Key)
 				return tourRequest{Path: map[string]string{"key": tour.projectOf(t, issue)}, As: tourPerson("alice")}
 			},
 			Missing: []tourMissing{{Param: "key", Value: "NOPE", Code: apicode.ProjectNotFound}},
@@ -104,8 +104,9 @@ func tourRating() map[string]any {
 	return map[string]any{"rating": 4, "rating_reason": "The plan put the tests before the review."}
 }
 
-// tourDefaultPlan is the plan of an issue's first run whose owner gave none, as the daemon writes
-// it: the default steps in the one task default.
+// tourDefaultPlan is the plan of an issue's first run whose owner gave none, in the shape the
+// daemon writes it: the source default and the one task default, whose steps are four of the
+// daemon's five default steps (workflow.DefaultSteps), all but acceptance:owner.
 func tourDefaultPlan() map[string]any {
 	return map[string]any{
 		"generation": 1, "source": "default",
@@ -146,14 +147,6 @@ func (tour *routeTour) writePlan(t *testing.T, issue tourIssue, plan string, bod
 		t.Fatalf("write plan %s of %s: %d %s", plan, issue.Key, written.Code, written.Body.String())
 	}
 	return decodeBody[model.PlanRecord](t, written)
-}
-
-// close closes issue as alice through /api/v1, which makes it a finished issue of its project.
-func (tour *routeTour) close(t *testing.T, issue tourIssue) {
-	t.Helper()
-	if closed := dispatchRequest(t, tour.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"status": "done"}, "alice"); closed.Code != http.StatusOK {
-		t.Fatalf("close %s: %d %s", issue.Key, closed.Code, closed.Body.String())
-	}
 }
 
 // TestV2StepWriteOfWhatTheRecordHoldsWritesNothing: a write of a run every field of which the
@@ -232,37 +225,40 @@ func TestV2PlanAndRatingWritesOfWhatTheyHoldWriteNothing(t *testing.T) {
 		name, kind, id string
 		route          apiRoute
 		body           map[string]any
+		// stands answers whether the write's answer is the record as it stands.
+		stands func(t *testing.T, answer *httptest.ResponseRecorder) bool
 	}{
-		{"the plan again", workflowstore.KindPlan, plan, tour.stepRoute(t, tourStep{Method: http.MethodPut, Pattern: "/issues/{key}/plans/{id}"}), tourDefaultPlan()},
-		{"the rating again", workflowstore.KindStep, retro, rating, tourRating()},
+		{"the plan again", workflowstore.KindPlan, plan, tour.stepRoute(t, tourStep{Method: http.MethodPut, Pattern: "/issues/{key}/plans/{id}"}), tourDefaultPlan(),
+			func(t *testing.T, answer *httptest.ResponseRecorder) bool {
+				return decodeBody[model.PlanRecord](t, answer).ID == written.ID
+			}},
+		{"the rating again", workflowstore.KindStep, retro, rating, tourRating(),
+			func(t *testing.T, answer *httptest.ResponseRecorder) bool {
+				record := decodeBody[model.StepRecord](t, answer)
+				return record.ID == retro && record.Rating != nil && *record.Rating == 4 &&
+					record.RatingReason != nil && *record.RatingReason == tourRating()["rating_reason"]
+			}},
 	} {
 		t.Run(again.name, func(t *testing.T) {
-			holding, err := tour.database.Pool.Begin(t.Context())
-			if err != nil {
-				t.Fatalf("begin the transaction that holds the record: %v", err)
-			}
-			defer holding.Rollback(t.Context())
-			if _, err := holding.Exec(t.Context(), `select id from workflow_nodes where kind = $1 and id = $2 for update`,
-				again.kind, again.id); err != nil {
-				t.Fatalf("lock the record's row: %v", err)
-			}
+			release := holdLock(t, tour.database, `select id from workflow_nodes where kind = $1 and id = $2 for update`,
+				again.kind, again.id)
 			answered := make(chan *httptest.ResponseRecorder, 1)
 			sending := tour.request(t, again.route, stepWriteOf(issue, again.id, again.body), "")
 			go func() { answered <- tour.serve(sending) }()
 			select {
 			case response := <-answered:
-				if response.Code != http.StatusOK {
-					t.Fatalf("%s: %d %s, want 200 with the record", again.name, response.Code, response.Body.String())
+				if response.Code != http.StatusOK || !again.stands(t, response) {
+					t.Fatalf("%s: %d %s, want 200 with the record as it stands", again.name, response.Code, response.Body.String())
 				}
 			case <-time.After(10 * time.Second):
-				_ = holding.Rollback(t.Context())
+				release()
 				<-answered
 				t.Fatalf("%s waited on the lock of the record's row: it wrote, where an equal write writes nothing", again.name)
 			}
 		})
 	}
 
-	tour.close(t, issue)
+	closeIssue(t, tour.handler, issue.Key)
 	listed := tour.send(t, tour.stepRoute(t, tourStep{Method: http.MethodGet, Pattern: "/projects/{key}/plans"}),
 		tourRequest{Path: map[string]string{"key": tour.projectOf(t, issue)}, As: tourPerson("alice")}, "")
 	read := decodeBody[page[model.FinishedIssue]](t, listed)
