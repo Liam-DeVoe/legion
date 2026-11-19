@@ -307,6 +307,10 @@ function scrolls(element: Element): boolean {
  *  sideways when the diagram is wider than the words (`styles.css`). */
 const DIAGRAM_PREVIEW = "dispatch-mermaid-preview";
 
+/** The mark a scroller carries while `useOutOfTabOrder` keeps its tab stop, so that a tree's keys
+ *  can tell a kept scroller from the row's other controls. */
+const KEPT_SCROLLER = "data-kept-scroller";
+
 /** The name a scroller carries while it keeps its tab stop, by what it scrolls: a code block; a
  *  table, itself or the one its wrapper holds; a drawn diagram; and anything else by the page's
  *  word for content. */
@@ -332,6 +336,8 @@ function scrollerName(scroller: HTMLElement): string {
  * (decision 317). A scroller other than a table takes a name only with a role (`region`); a table
  * has its own. When it turns off, each scroller leaves the tab order again, and the name and role
  * it was given go back to what they were.
+ * While it keeps its tab stop, a scroller carries `data-kept-scroller` (`KEPT_SCROLLER`); it
+ * loses the mark whenever it leaves the tab order or the hook lets it go.
  */
 export function useOutOfTabOrder(
   box: RefObject<HTMLElement | null>,
@@ -360,6 +366,7 @@ export function useOutOfTabOrder(
         const name = kept.get(scroller);
         if (name === undefined) {
           if (scroller.getAttribute("tabindex") !== "-1") scroller.tabIndex = -1;
+          scroller.removeAttribute(KEPT_SCROLLER);
           continue;
         }
         if (!named.has(scroller)) {
@@ -369,6 +376,7 @@ export function useOutOfTabOrder(
           });
         }
         if (scroller.getAttribute("tabindex") !== "0") scroller.tabIndex = 0;
+        if (!scroller.hasAttribute(KEPT_SCROLLER)) scroller.setAttribute(KEPT_SCROLLER, "");
         if (scroller.getAttribute("aria-label") !== name) scroller.setAttribute("aria-label", name);
         if (scroller.localName !== "table" && scroller.getAttribute("role") !== "region") {
           scroller.setAttribute("role", "region");
@@ -381,6 +389,7 @@ export function useOutOfTabOrder(
     return () => {
       watching.disconnect();
       for (const [scroller, before] of named) {
+        scroller.removeAttribute(KEPT_SCROLLER);
         for (const [attribute, value] of [
           ["aria-label", before.label],
           ["role", before.role],
