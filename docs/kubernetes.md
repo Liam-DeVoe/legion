@@ -6113,12 +6113,6 @@ A role that no live session holds — one whose pod an idle release took, or one
 A ready session claims its role's topic inside its first turn or at the first-turn bound, so a message published inside that window finishes undelivered, and the next sweep asks that role again.
 A `failed` claim is one exception: it runs no turn on the pod, so the round asks it nothing and does not wait for it (`askedClaims`); what it left unpushed goes with the disk, and a retry brings it back into the round as any other claim.
 A claim whose launch waits on the round's pod is the other exception ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker), under the transition file).
-The runtime refused that launch because the pod carries no exchange identity, so the claim records no process and runs no turn on the pod (`awaitsRoundPod`).
-The daemon records the round on that claim even when it has no session, because the claim can be the issue's only claim and so the round's only way to the pod (`blockingClaims`).
-The round asks it nothing and does not wait for it (`waitingClaims`).
-Where no claim records a process in the pod, the daemon replaces the pod through that claim (`podProcess`).
-Where the claim has a session and had not answered, the replacement's log line and a gone pod's message on the issue name it as having lost what it did not push (`replacePodForRound`, `lostClaims`).
-A claim with no session never had a worker, and nothing names it.
 No claim is left out of a round for the contract its plugin records:
 a role whose `legion` tool has no `ready_for_update` operation is told to push its work and end its turn, since its round ends at the bound whatever it does.
 The end of a turn is no answer at any contract: only the `ready_for_update` call answers the round.
