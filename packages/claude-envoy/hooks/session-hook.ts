@@ -99,6 +99,7 @@ import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory, writeAtomically } from "@legion/envoy-client/dispatch-session-directory"
 import { offWithError } from "@legion/envoy-client/envoy-config"
 import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors"
+import { exitProcess } from "@legion/envoy-client/process-exit"
 import {
   readSessionAnswers,
   SESSION_ANSWERS_DEADLINE_MS,
@@ -150,6 +151,14 @@ const ANSWERS_LEAST_WAIT_MS = 150
 /** How long after the hook's print deadline a read that answered past it may still write
  *  `answers.json` for the next hook before the process exits. */
 const ANSWERS_SETTLE_MS = 50
+/** How long the answers hook's exit gives stderr (the notice, or the line saying why people's
+ *  answers were not added) and stdout to take what it wrote before it exits whatever is still
+ *  queued (`exitProcess`): Claude Code reads a hook's output as it comes, so only a reader that
+ *  takes nothing keeps the hook this long. Claude Code and Codex kill the answers hook at 5 s
+ *  (`hooks/hooks.json`'s and `codex/hooks/hooks.json`'s `timeout`), and it reaches its exit by
+ *  its print deadline plus `ANSWERS_SETTLE_MS`: under a second after a quick start-up, and with a
+ *  start-up of up to 3 s the flush still ends inside that grace. */
+const ANSWERS_EXIT_FLUSH_MS = 1_000
 /**
  * The host whose envoy.json this hook reads, and its mode and the mode's own arguments, from
  * `<mode> [arguments…] [--host <claude|codex>]`. Claude Code's hooks.json names no host, so it is
@@ -607,8 +616,9 @@ async function answers(text: string): Promise<never> {
       // The tests' seam only: a path it cannot write never changes what the hook printed or its exit.
     }
   }
-  // Exits rather than returns: a read still running would hold the process open.
-  process.exit(0)
+  // Exits rather than returns, since a read still running would hold the process open, once
+  // stderr has taken the notice or failure line: the one line that says why no answers came.
+  return exitProcess(0, ANSWERS_EXIT_FLUSH_MS)
 }
 
 /** The answers-refresh mode, which the answers hook starts detached with the session id and the

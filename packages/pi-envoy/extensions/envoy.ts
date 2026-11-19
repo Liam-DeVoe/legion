@@ -219,6 +219,7 @@ import {
   carriedAnswers,
   withSessionAnswers,
 } from "../src/session-answers-context";
+import { deregisterAndDrain, SHUTDOWN_DEADLINE_MS } from "../src/session-shutdown";
 import { sideTurn } from "../src/side-turn";
 import { followBoundMs, startTradeBoundMs } from "../src/start-bound";
 import { TypedPictures } from "../src/typed-pictures";
@@ -3275,17 +3276,6 @@ export default function envoyExtension(hostApi: PiApi): void {
     return registering;
   };
 
-  /** The whole of what the `session_shutdown` handler gives its deregistration and its drain. Oh
-   *  My Pi abandons a shutdown handler after 2 s (`SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`), and the
-   *  second this leaves is for the synchronous work ahead of the race and for the host. The
-   *  shared `SHUTDOWN_SETTLE_MS` is what that path spends waiting on a registration still on the
-   *  wire: `REGISTRATION_SETTLE_MS` is five times this whole deadline, so a registration slower
-   *  than a second would mean no DELETE was sent at all and the record outlived this process by
-   *  the gone horizon, where a DELETE that races a slow registration only may lose. The quarter
-   *  of a second it spends instead leaves 750 ms here (1.75 s of the host's 2 s) for the DELETE
-   *  to reach the wire. */
-  const SHUTDOWN_DEADLINE_MS = 1_000;
-
   /** Deregisters a session this process has stopped heartbeating — its own at shutdown, the one
    *  it left at a `/new`, a fork or a branch — once that session's registration has settled or
    *  `settleMs` have passed. The DELETE carries this client instance's id
@@ -4417,15 +4407,15 @@ export default function envoyExtension(hostApi: PiApi): void {
       // below: the DELETE has to be on the wire before the host abandons this handler, since a
       // record left behind outlives the process by the gone horizon. The drain runs beside the
       // wait: it needs no listener call, and both share that deadline, which is what the host's
-      // own limit on a shutdown handler leaves them.
-      const deregistration = deregisterSession(sessionID, SHUTDOWN_SETTLE_MS, endsAt).catch(
-        () => undefined
-      );
-      const draining = connection?.drain().catch(() => undefined) ?? Promise.resolve();
-      await Promise.race([
-        Promise.allSettled([deregistration, draining]).then(() => undefined),
-        deadline.promise,
-      ]);
+      // own limit on a shutdown handler leaves them. A DELETE that fails or is given up at the
+      // deadline is logged at warn, naming the session (`deregisterAndDrain`).
+      await deregisterAndDrain({
+        sessionID,
+        deregistration: deregisterSession(sessionID, SHUTDOWN_SETTLE_MS, endsAt),
+        draining: connection?.drain() ?? Promise.resolve(),
+        deadline: deadline.promise,
+        warn: (message, context) => logger.warn(message, context),
+      });
     } finally {
       clearTimeout(timer);
       connection = undefined;

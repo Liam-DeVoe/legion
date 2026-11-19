@@ -51,6 +51,7 @@ import {
   keepNatsCredential,
   type NatsCredential,
 } from "@legion/envoy-client/nats-credential"
+import { exitProcess } from "@legion/envoy-client/process-exit"
 import {
   type SessionConfigFile,
   sessionConfigFile,
@@ -134,7 +135,6 @@ import {
 } from "./legion-tool"
 import { type ModLink, startModLink } from "./mod-link"
 import { type ModSession, modSession } from "./mod-session"
-import { exitProcess } from "./process-exit"
 import {
   type ReplayStateFile,
   type ReplayStateWriter,

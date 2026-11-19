@@ -17,8 +17,20 @@ export const SLACK_BOT_TOKEN_SECRET = "LEGION_SLACK_BOT_TOKEN";
  * environment, held to https or a loopback host, and handed to the poster. */
 const SLACK_POST_API_URL_VARIABLE = "SLACK_POST_API_URL";
 
-/** How long the broker request and the post may take together before the tool stops waiting. The
- * poster gives Slack 10 s of its own. */
+/** How long the poster gives Slack to answer chat.postMessage. */
+const SLACK_ANSWER_MS = 10_000;
+
+/** How long the poster's exit gives stdout to take its one line before it exits whatever is still
+ * queued, as `exitProcess` (`./process-exit`) does: the poster runs as `bun -e`, which imports
+ * nothing of this package, so it ends that way in a copy of its own. The tool reads the line as it
+ * comes, so only a reader that takes nothing keeps the poster this long. What stops the poster is
+ * the tool's SIGKILL at `POST_TIMEOUT_MS`, and Slack's answer and this flush together leave the
+ * rest of it to the broker's grant and Bun's start. */
+const POSTER_FLUSH_MS = 5_000;
+
+/** How long the broker request and the post may take together before the tool stops waiting and
+ * kills the poster. The poster gives Slack `SLACK_ANSWER_MS` of its own and its stdout
+ * `POSTER_FLUSH_MS`. */
 const POST_TIMEOUT_MS = 30_000;
 
 /** Slack's own error codes for chat.postMessage, as its reference lists them
@@ -112,12 +124,23 @@ const out = (value) => {
   if (token !== "") line = line.split(token).join("[redacted]");
   process.stdout.write(line + "\\n");
 };
+const exit = async () => {
+  const flushed = Promise.withResolvers();
+  if (process.stdout.destroyed || process.stdout.writableFinished) {
+    flushed.resolve();
+  } else {
+    process.stdout.once("error", () => flushed.resolve());
+    process.stdout.end(() => flushed.resolve());
+  }
+  await Promise.race([flushed.promise, Bun.sleep(${POSTER_FLUSH_MS})]);
+  process.exit(0);
+};
 let sent = false;
 try {
   const input = JSON.parse(await Bun.stdin.text());
   if (token === "") {
     out({ invalid: "the poster's environment carries no LEGION_SLACK_BOT_TOKEN" });
-    process.exit(0);
+    await exit();
   }
   const base = (process.env.SLACK_POST_API_URL || "https://slack.com/api").replace(/\\/+$/, "");
   let status = 0;
@@ -128,13 +151,13 @@ try {
       method: "POST",
       headers: { Authorization: "Bearer " + token, "Content-Type": "application/json; charset=utf-8" },
       body: JSON.stringify({ channel: input.channel, thread_ts: input.thread_ts, text: input.text }),
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(${SLACK_ANSWER_MS}),
     });
     status = response.status;
     raw = await response.text();
   } catch {
     out({ unanswered: true });
-    process.exit(0);
+    await exit();
   }
   let answer;
   try {
@@ -155,6 +178,7 @@ try {
 } catch {
   out(sent ? { unanswered: true } : { invalid: "a reply the poster could not read" });
 }
+await exit();
 `;
 
 /** One reply into a Slack thread. */
