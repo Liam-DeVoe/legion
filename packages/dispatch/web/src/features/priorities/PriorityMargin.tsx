@@ -112,12 +112,15 @@ function PriorityHistory({ id }: { id: string }): ReactNode {
  * no view of its own: a priority carries no comments, questions or pins until
  * dispatch://INFRA-1098 makes its description a document, so a choice of what the margin
  * shows would only offer views that are always empty.
+ *
+ * Its acts are short lines, so it is 280 px wide beside the page, which leaves the work under
+ * the priority a 768 px box in a 1440 px window.
  */
 export function PriorityMargin({ id }: { id: string }): ReactNode {
   return (
     <aside
       aria-label="Margin"
-      className={`w-full shrink-0 space-y-3 border-t pt-4 lg:w-80 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-4 ${borderDefault}`}
+      className={`w-full shrink-0 space-y-3 border-t pt-4 lg:w-70 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-4 ${borderDefault}`}
       data-testid="priority-margin"
     >
       <PriorityHistory id={id} />

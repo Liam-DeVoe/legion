@@ -325,10 +325,14 @@ export function IssueTableToolbar({
   const setExpanded = table.setExpanded;
   return (
     <>
-      <div className="flex flex-wrap items-center gap-2">
+      {/* The toolbar is one row where the search box, its whole placeholder (about 406 px) and
+          the five controls after it (about 557 px with their gaps) fit; in a narrower box, as
+          beside a priority's margin, the search box takes a row of its own and the controls the
+          row under it, rather than cut the placeholder and leave the last control alone. */}
+      <div className="@container flex flex-wrap items-center gap-2">
         <input
           aria-label="Search issues"
-          className={`w-full min-w-0 flex-none rounded-lg border px-3 py-1.5 text-sm sm:w-auto sm:min-w-64 sm:flex-1 ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
+          className={`w-full min-w-0 flex-none rounded-lg border px-3 py-1.5 text-sm sm:w-auto sm:min-w-64 sm:flex-1 @max-[61rem]:basis-full ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
           onChange={(event) => {
             setSearch(event.target.value);
           }}
