@@ -5,7 +5,6 @@ import {
   Suspense,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -27,26 +26,18 @@ import { useInboxCount } from "./features/inbox/useInboxCount";
 import { CreateIssueDialogHost } from "./features/issue/CreateIssueDialogHost";
 import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
 import { issueTabChunk } from "./features/issue/tab-chunks";
-import { useIssuePageChoice } from "./features/issue-page/choice";
-import { IconRail } from "./features/issue-page/IconRail";
+import { frameShellChunk } from "./features/issue-page/frame-chunk";
+import type { FrameProviders, ShellFrame } from "./features/issue-page/frame-shell";
 import {
-  type MarginDrawer,
-  type MarginDrawerPage,
-  MarginSlotProvider,
-} from "./features/issue-page/margin-slot";
-import { ReferenceNamesProvider } from "./features/issue-page/reference-names";
-import {
-  type ShellNavigation,
-  ShellNavigationContext,
-} from "./features/issue-page/shell-navigation";
-import { ShortcutHelpOpener } from "./features/issue-page/shortcut-help-opener";
+  outlineChosenInThisBrowser,
+  useStoredIssuePageChoice,
+} from "./features/issue-page/stored-choice";
 import { MarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
 import { AgentRegistryPoller } from "./features/refs/agent-registry";
 import { TextAskCard } from "./features/refs/markdown-cards";
 import { RefPreviewLayer } from "./features/refs/RefPreviewLayer";
-import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./features/refs/ref-preview-card";
 import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
@@ -66,6 +57,7 @@ import {
 } from "./features/refs/routes";
 import { useRecordRecents } from "./features/search/recents";
 import { SearchPaletteHost } from "./features/search/SearchPaletteHost";
+import { chunkComponent } from "./features/shell/chunk-component";
 import { lazyChunk, prefetchChunk } from "./features/shell/chunk-loads";
 import { holdUntilContentDraws } from "./features/shell/content-drawn";
 import { ErrorBoundary } from "./features/shell/ErrorBoundary";
@@ -86,7 +78,6 @@ import {
 } from "./features/shell/sign-in-channel";
 import {
   COMPACT_VIEWPORT_QUERY,
-  MD_VIEWPORT_QUERY,
   READING_PANE_QUERY,
   useDialog,
   useMediaQuery,
@@ -95,8 +86,7 @@ import { useDocumentTitle } from "./features/shell/useDocumentTitle";
 import { useKeyboardFit } from "./features/shell/useKeyboardFit";
 import { legacyPinnedAgentsKey, useUserPreference } from "./features/shell/userPreference";
 import { Sidebar } from "./features/sidebar/Sidebar";
-import { KeptWrites } from "./features/writes/KeptWrites";
-import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
+import { KeptWritesHost, PendingWritesHost } from "./features/writes/write-hosts";
 import "./features/writes/kinds";
 import { useKeyedWrite } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
@@ -114,7 +104,6 @@ import {
   card,
   linkHoverText,
   linkText,
-  pagePaperBg,
   primaryButtonBg,
   primaryButtonHoverBg,
   railAccentHoverText,
@@ -211,14 +200,14 @@ function issueDrawsDocument(route: IssueRoute): boolean {
  * document and to no others: a project's document page always draws one, and an issue page
  * draws one on the tabs `issueDrawsDocument` names and on no other, so the Conversation of an
  * issue downloads no editor. The board draws no document and takes neither chunk, and an
- * address that is no page of a cold landing starts nothing. The Inbox's own chunk holds to the
- * same rule - a chunk is started where the landed page draws it - and needs a second question
- * to hold it: the landing read takes every address that is neither an issue nor a project as
- * the Inbox, while the Inbox is the page at the addresses `InboxPage` is mounted at and a peek
- * drawer over every other, so the arm below asks `routeIsInbox` as well. A chunk that fails
- * here is left to the router: `lazyChunk` asks for the same import again, and that failure - a
- * reader in front of a page that cannot draw - is the one `DeploymentResilience` reloads for
- * (`prefetchChunk`).
+ * address that is no page of a cold landing starts no page's chunk (the new issue page's shell,
+ * below, is no page's). The Inbox's own chunk holds to the same rule - a chunk is started where
+ * the landed page draws it - and needs a second question to hold it: the landing read takes
+ * every address that is neither an issue nor a project as the Inbox, while the Inbox is the page
+ * at the addresses `InboxPage` is mounted at and a peek drawer over every other, so the arm below
+ * asks `routeIsInbox` as well. A chunk that fails here is left to the router: `lazyChunk` asks
+ * for the same import again, and that failure - a reader in front of a page that cannot draw - is
+ * the one `DeploymentResilience` reloads for (`prefetchChunk`).
  *
  * `pathname` is the caller's and has no default: the one call site is `main.tsx`, which passes
  * `window.location.pathname` - the address the browser is loading, read before React renders
@@ -226,6 +215,13 @@ function issueDrawsDocument(route: IssueRoute): boolean {
  * (`readLanding`).
  */
 export function preloadRouteChunk(pathname: string): void {
+  // A reader who turned the new issue page on draws the whole shell, on every page, through a
+  // chunk of its own (`features/issue-page/frame-chunk.ts`), so it is started here on every
+  // address, beside the landing read, for the reason the page's chunk is. This runs before the
+  // sign-in check has answered, so the login whose choice the shell will read is not known yet:
+  // any login's choice stored in this browser that reads `outline` starts it. A browser where
+  // nobody chose the new page fetches none of it.
+  if (outlineChosenInThisBrowser()) prefetchChunk(frameShellChunk.load);
   switch (landingReadOf(pathname).page) {
     case "issue": {
       prefetchChunk(loadIssuePage);
@@ -280,7 +276,8 @@ export function preloadRouteChunk(pathname: string): void {
 // its failure is one the chunk-failure recovery must reload for. Only a chunk nothing is waiting
 // on may be passed over, which is what every `prefetchChunk` call is: the preload above, the
 // Inbox peek's chunk after a page's first paint (`features/inbox/InboxHost.tsx`), the search
-// bar's after the same paint (`features/search/SearchPaletteHost.tsx`) and the boot warm of the
+// bar's after the same paint (`features/search/SearchPaletteHost.tsx`), the two lists of writes'
+// once the page has drawn (`features/writes/write-hosts.tsx`) and the boot warm of the
 // Markdown engine (`features/shell/DeploymentResilience.tsx`). Left bare, a route chunk that
 // failed while one of those prefetches was still out would be read as that prefetch's and reload
 // nothing, leaving the reader in front of a page that cannot draw (dispatch://INFRA-1109);
@@ -388,37 +385,6 @@ function IssuePageFallback(): ReactNode {
   );
 }
 
-/**
- * What the new issue page's frame holds while the page's code loads (R10):
- * the header's two lines, the view row's five controls and the first rows, as boxes with no word
- * in them, so no name of a control flashes on screen and none of today's nine tab names does.
- * It takes the inset the page's own column takes, since the frame gives `<main>` no padding.
- * `min-w-0` and `overflow-hidden`: the row of boxes neither wraps nor scrolls, so a chunk's load
- * never makes the page wider than a phone's window. Every other reader keeps
- * `IssuePageFallback`.
- */
-function IssueFrameFallback(): ReactNode {
-  return (
-    <div aria-busy="true" className="px-3.5 pt-2 md:px-7">
-      <div className={`h-4 w-16 animate-pulse rounded ${skeletonBg}`} />
-      <div className={`mt-2 h-7 w-2/3 animate-pulse rounded ${skeletonBg}`} />
-      <div
-        className={`mt-4 mb-4 flex min-w-0 gap-2 overflow-hidden border-b pb-2 ${borderDefault}`}
-        role="toolbar"
-      >
-        {[0, 1, 2, 3, 4].map((box) => (
-          <span className={`h-5 w-16 shrink-0 animate-pulse rounded ${skeletonBg}`} key={box} />
-        ))}
-      </div>
-      <div className="space-y-3">
-        {[0, 1, 2, 3].map((row) => (
-          <div className={`h-4 w-full animate-pulse rounded ${skeletonBg}`} key={row} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function ShellMessagePage({ children, title }: { children?: ReactNode; title: string }): ReactNode {
   return (
     <main className={`grid min-h-dvh place-items-center px-6 ${canvasText}`}>
@@ -452,9 +418,9 @@ function InboxPage(): ReactNode {
   );
 }
 
-/** The sign-in page. A session that lapsed shows what it keeps for its person (`KeptWrites`), and
- *  its sign-in link asks nothing on leaving: the page comes back to this tab, where every kept
- *  write resumes (`Writes.leavingToSignIn`). */
+/** The sign-in page. A session that lapsed shows what it keeps for its person
+ *  (`KeptWritesHost`), and its sign-in link asks nothing on leaving: the page comes back to this
+ *  tab, where every kept write resumes (`Writes.leavingToSignIn`). */
 function SignInPage(): ReactNode {
   const queryClient = useQueryClient();
   return (
@@ -473,7 +439,7 @@ function SignInPage(): ReactNode {
       >
         Sign in with Google
       </a>
-      <KeptWrites />
+      <KeptWritesHost />
     </ShellMessagePage>
   );
 }
@@ -620,39 +586,42 @@ function NavigationContents({
   );
 }
 
-/**
- * The providers the shell mounts around everything it draws: the margin's own, and the four the
- * new issue page's frame reads (R12, R14). `drawer` is Details, which only
- * the frame passes: with it undefined the margin is the column it has always been, and no page
- * fills its slot. `navigation` is what the page's header draws its `☰` from, and `openHelp` what
- * its Keys control opens. A page publishes the names it read for its references to everything
- * under the shell, the margin beside the router among it (`ReferenceNamesProvider`).
- */
-function ShellProviders({
+/** Everything the shell draws, inside the new issue page's providers where the reader's shell
+ *  has them (`providers`, from the frame-shell chunk), and as it is everywhere else. The state
+ *  those providers read, the navigation's sheet and what `?` opens, is the shell's own. */
+function WithFrameProviders({
   children,
-  drawer,
-  navigation,
+  navigationOpen,
   openHelp,
+  providers,
+  setNavigationOpen,
 }: {
   children: ReactNode;
-  drawer: MarginDrawer | undefined;
-  navigation: ShellNavigation | undefined;
+  navigationOpen: boolean;
   openHelp: () => void;
+  providers: FrameProviders | undefined;
+  setNavigationOpen: (open: boolean) => void;
 }): ReactNode {
-  return (
-    <MarginProvider>
-      <ReferenceNamesProvider>
-        <MarginSlotProvider drawer={drawer} drawsSlot={drawer !== undefined}>
-          <ShellNavigationContext.Provider value={navigation}>
-            <ShortcutHelpOpener.Provider value={openHelp}>{children}</ShortcutHelpOpener.Provider>
-          </ShellNavigationContext.Provider>
-        </MarginSlotProvider>
-      </ReferenceNamesProvider>
-    </MarginProvider>
-  );
+  if (providers === undefined) return children;
+  return providers(children, { navigationOpen, openHelp, setNavigationOpen });
 }
 
-function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
+/**
+ * The shell every signed-in page is drawn in. `frame` is what the new issue page's frame changes
+ * in it, on an issue's address for a reader who chose that page, and `providers` are what that
+ * reader's shell mounts around everything it draws, on every page; both come from the
+ * frame-shell chunk (`features/issue-page/frame-shell.tsx`) and are undefined for every other
+ * reader, whose shell is exactly what this draws without them.
+ */
+function AppShell({
+  frame,
+  providers,
+  user,
+}: {
+  frame: ShellFrame | undefined;
+  providers?: FrameProviders;
+  user: AuthenticatedUser;
+}): ReactNode {
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [inboxDrawerOpen, setInboxDrawerOpen] = useState(false);
@@ -685,41 +654,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     String
   );
   const location = useLocation();
-  // The new issue page's frame (R1, R14), computed here once: an issue's
-  // address, for a reader who chose the new page. In it an icon rail of 56 px stands where the
-  // sidebar stands, from Tailwind's `md` up, and below that the page's header draws the control
-  // that opens the navigation (`ShellNavigationContext`); the margin is Details, a drawer over
-  // the page. The rail is drawn by the query that is `md` itself, in `rem`, because the room the
-  // page makes for it is `md:pl-14`: a pixel query draws the rail over the page wherever the two
-  // disagree, which is every width from 768 to 959 px at a 20 px default font. Every other page,
-  // and every other reader's issue page, keeps the shell below exactly as it was.
-  const [issuePageChoice] = useIssuePageChoice();
-  const issueFrame =
-    issuePageChoice === "outline" &&
-    parseIssuePath(location.pathname, location.search) !== undefined;
-  const railFits = useMediaQuery(MD_VIEWPORT_QUERY);
-  const iconRailShown = issueFrame && railFits;
-  // Whether Details is open, held for the issue it was opened on: every load opens it closed, and
-  // so does every move to another issue. Leaving the issue forgets it in the same render, so
-  // coming back to it - by a link or by Back - finds it closed, as a load does.
-  const detailsIssue = parseIssuePath(location.pathname)?.key;
-  const [detailsFor, setDetailsFor] = useState<string | undefined>(undefined);
-  if (detailsFor !== undefined && detailsFor !== detailsIssue) setDetailsFor(undefined);
-  // What the new page's root hands Details: its words and its address rule
-  // (`features/issue-page/drawer-page.ts`), so that this file imports neither.
-  const [drawerPage, setDrawerPage] = useState<MarginDrawerPage | undefined>(undefined);
-  const detailsDrawer = useMemo<MarginDrawer | undefined>(
-    () =>
-      issueFrame
-        ? {
-            open: detailsFor !== undefined && detailsFor === detailsIssue,
-            page: drawerPage,
-            setOpen: (open: boolean) => setDetailsFor(open ? detailsIssue : undefined),
-            setPage: setDrawerPage,
-          }
-        : undefined,
-    [detailsFor, detailsIssue, drawerPage, issueFrame]
-  );
+  // Whether the shell draws the new issue page's frame: an issue's address, for a reader who
+  // chose the new page (`frame`). Every other page, and every other reader's issue page, keeps
+  // the shell below exactly as it was.
+  const issueFrame = frame !== undefined;
   // The shell reserves a gutter for a rail only where that rail exists. The collapsed-margin
   // rail exists only where the route has a margin, so it is reserved from exactly the answer
   // `features/margin/Margin.tsx` renders from; two answers that disagree leave 80 px of
@@ -813,20 +751,11 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     onClose: () => setNavigationOpen(false),
     open: navigationOpen && (isCompactViewport || issueFrame),
   });
-  // What the page's header draws its `☰` from below `md`, where the frame draws neither the
-  // shell's bar nor the rail; undefined wherever the shell draws a control of its own.
-  const shellNavigation = useMemo<ShellNavigation | undefined>(
-    () =>
-      issueFrame && !railFits
-        ? { onOpen: () => setNavigationOpen(true), open: navigationOpen }
-        : undefined,
-    [issueFrame, navigationOpen, railFits]
-  );
   const navigate = useNavigate();
   // The registry as described when `?` fired (focus still on the caller); `null` while closed.
   const [helpSnapshot, setHelpSnapshot] = useState<readonly KeyBindingDescription[] | null>(null);
-  // What a page's own Keys control does (`features/issue-page/shortcut-help-opener.tsx`): what
-  // `?` does.
+  // What a page's own Keys control does (the frame's providers hand it to the page): what `?`
+  // does.
   const openHelp = useCallback(() => setHelpSnapshot(appKeymap.describe()), []);
   const [createOpen, setCreateOpen] = useState(false);
   const routeProject = routeProjectOf(location.pathname);
@@ -901,18 +830,15 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     },
     {
       // In the new issue page's frame the margin is Details, which this key opens and closes at
-      // every width. Its id follows the gate, so that crossing it registers the binding again
-      // and the list of keys reads the label of the shell it is in.
-      id: detailsDrawer === undefined ? "toggle-margin" : "toggle-details",
+      // every width (`frame.toggleDetails`). Its id follows the gate, so that crossing it
+      // registers the binding again and the list of keys reads the label of the shell it is in.
+      id: frame === undefined ? "toggle-margin" : "toggle-details",
       keys: "Shift+M",
-      label: detailsDrawer === undefined ? "Toggle margin" : "Open or close Details",
-      run: () =>
-        detailsDrawer === undefined
-          ? setMarginHidden(!marginHidden)
-          : detailsDrawer.setOpen(!detailsDrawer.open),
+      label: frame === undefined ? "Toggle margin" : "Open or close Details",
+      run: () => (frame === undefined ? setMarginHidden(!marginHidden) : frame.toggleDetails()),
       // Below `xl` the margin is a sheet the route opens itself: `Margin` reads the preference
       // only from `xl`, so a toggle there would change nothing on screen and flip it for later.
-      when: () => detailsDrawer !== undefined || (!isCompactViewport && hasMargin),
+      when: () => frame !== undefined || (!isCompactViewport && hasMargin),
     },
   ]);
   const login = user.login;
@@ -1022,7 +948,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   }`;
 
   return (
-    <ShellProviders drawer={detailsDrawer} navigation={shellNavigation} openHelp={openHelp}>
+    <WithFrameProviders
+      navigationOpen={navigationOpen}
+      openHelp={openHelp}
+      providers={providers}
+      setNavigationOpen={setNavigationOpen}
+    >
       <div
         className={`${fillsViewport ? "flex h-screen flex-col supports-[height:100dvh]:h-dvh xl:flex-row" : "xl:flex"} ${canvasText}`}
         data-testid="app-shell"
@@ -1043,7 +974,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           className="pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-composer-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-composer-inset,0px)_+_1rem)] *:pointer-events-auto"
           ref={statusCornerRef}
         >
-          <PendingWritesIndicator />
+          <PendingWritesHost />
           {connection === "stuck" ? (
             <p
               aria-live="polite"
@@ -1130,15 +1061,15 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             </aside>
           </>
         ) : null}
-        {iconRailShown ? (
-          <IconRail
-            inboxCount={inboxCount}
-            navigationOpen={navigationOpen}
-            onOpenNavigation={() => setNavigationOpen(true)}
-            project={routeProject}
-            user={user}
-          />
-        ) : isCompactViewport || issueFrame ? null : sidebarHidden ? (
+        {frame !== undefined ? (
+          frame.rail({
+            inboxCount,
+            navigationOpen,
+            onOpenNavigation: () => setNavigationOpen(true),
+            project: routeProject,
+            user,
+          })
+        ) : isCompactViewport ? null : sidebarHidden ? (
           <aside
             aria-label="Collapsed sidebar"
             className={`fixed inset-y-0 left-0 z-10 flex w-14 justify-center border-r p-2 ${railBorder} ${railBg} ${railText}`}
@@ -1170,25 +1101,22 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             <div className="sticky top-0 flex h-dvh flex-col overflow-y-auto p-5">{navigation}</div>
           </aside>
         )}
-        {/* In the frame `<main>` has no padding of its own: the page's header, its view row, its
-            Contents pane and its column each keep the inset the prototype gives them, the pane
-            against the rail, which `md:pl-14` makes room for. Its references open no card on
-            hover (R6). */}
+        {/* In the frame `<main>` is drawn as the frame says (`frame.mainClass`,
+            `frame.mainAttributes`): no padding of its own, and no card on a reference's hover. */}
         <main
           className={
-            issueFrame
-              ? `min-h-dvh min-w-0 flex-1 outline-none md:pl-14 ${pagePaperBg}`
-              : `min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-32 xl:pb-6"} ${mainLayoutClass}`
+            frame?.mainClass ??
+            `min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-32 xl:pb-6"} ${mainLayoutClass}`
           }
           data-shell-layout={issueFrame || fullWidth ? "full-width" : "standard"}
-          {...(issueFrame ? { [NO_HOVER_PREVIEW_ATTRIBUTE]: "" } : {})}
+          {...frame?.mainAttributes}
           data-testid="main-content"
           id="main-content"
           ref={mainRef}
           tabIndex={-1}
         >
           <ErrorBoundary region="this page" resetKey={location.pathname}>
-            <Suspense fallback={issueFrame ? <IssueFrameFallback /> : <IssuePageFallback />}>
+            <Suspense fallback={frame?.fallback ?? <IssuePageFallback />}>
               <Routes>
                 <Route element={<InboxPage />} path="/" />
                 <Route element={<AnswersPage />} path={ANSWERS_PATH} />
@@ -1244,7 +1172,33 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         {createOpen ? <CreateIssueDialogHost onClose={() => setCreateOpen(false)} /> : null}
         <RefPreviewLayer />
       </div>
-    </ShellProviders>
+    </WithFrameProviders>
+  );
+}
+
+/** The shell of a reader who turned the new issue page on, drawn as the sign-in check's skeleton
+ *  while its chunk is on its way. */
+const FrameShell = chunkComponent(frameShellChunk, <ShellSkeleton />);
+
+/**
+ * The shell the reader's choice of issue page draws: today's for `tabs`, with the margin's
+ * provider around it, and for `outline` the frame-shell chunk, which draws the same shell inside
+ * the new page's providers and with its frame on an issue's address. Only the choice is read
+ * here, never the address, so a move between an issue and another page keeps the shell mounted;
+ * a change of the choice mounts the other shell.
+ */
+function ChosenShell({ user }: { user: AuthenticatedUser }): ReactNode {
+  if (useStoredIssuePageChoice(user.login) === "tabs") {
+    return (
+      <MarginProvider>
+        <AppShell frame={undefined} user={user} />
+      </MarginProvider>
+    );
+  }
+  return (
+    <FrameShell
+      shell={(frame, providers) => <AppShell frame={frame} providers={providers} user={user} />}
+    />
   );
 }
 
@@ -1274,7 +1228,7 @@ function AuthenticatedApp({ user }: { user: AuthenticatedUser }): ReactNode {
     <KeymapProvider>
       <AgentRegistryPoller />
       <TextAskCard.Provider value={TextAskCardHost}>
-        <AppShell user={user} />
+        <ChosenShell user={user} />
       </TextAskCard.Provider>
     </KeymapProvider>
   );
