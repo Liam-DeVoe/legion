@@ -132,7 +132,7 @@ func (r *liveRig) checkPodUpdate() error {
 	for _, c := range workers {
 		turns = append(turns, &liveTurn{claim: c, from: mark})
 		tasked = append(tasked, c.name)
-		note("harness", "update round %s: %s is tasked to push its work and answer, as the sweep tasks every worker claim of issue %s", round, c.name, issue)
+		note("harness", "update round %s: %s is tasked to push its work and answer, as the sweep tasks each worker claim of issue %s but a failed one and one that has left the round's pod", round, c.name, issue)
 	}
 	var inPod []string
 	for _, c := range r.claims {
@@ -142,7 +142,7 @@ func (r *liveRig) checkPodUpdate() error {
 	}
 	slices.Sort(inPod)
 	if want := slices.Sorted(slices.Values(tasked)); !slices.Equal(inPod, want) {
-		return fmt.Errorf("the pod %s runs %v and the round tasked %v: a round tasks every live worker of its pod", short(old.Sandbox.PodUID), inPod, want)
+		return fmt.Errorf("the pod %s runs %v and the round tasked %v: a round tasks each live worker of its pod but a failed one and one that has left the round's pod, and this test's workers are neither", short(old.Sandbox.PodUID), inPod, want)
 	}
 
 	headFirst, err := r.answerUpdate(first, dir)

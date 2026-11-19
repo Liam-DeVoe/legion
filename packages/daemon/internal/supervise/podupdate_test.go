@@ -965,7 +965,7 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 		"Push every commit that you want to keep to this issue's branch.",
 		`Call the ` + "`legion`" + ` tool with op: "ready_for_update" and round: "` + testRound + `".`,
 		"The round ends at 2026-11-13T12:30:00Z (UTC).",
-		"If every role answers, the round can end before that moment.",
+		"If every role but a failed one and one that has left the round's pod answers, the round can end before that moment.",
 		"If a role does not answer, the round still ends at 2026-11-13T12:30:00Z.",
 		"A turn in progress does not delay that moment.",
 		"The round ends at 2026-11-13T12:30:00Z whatever you do.",

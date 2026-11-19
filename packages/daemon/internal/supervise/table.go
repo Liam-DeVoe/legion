@@ -294,7 +294,7 @@ func UpdateTask(round, reasons string, endsAt time.Time) string {
 
 The round is %s. The round ends at %s (UTC). When the round ends, the daemon deletes the pod and the disk. The disk holds your workspace. Only your own push keeps your work. Work that you do not push before the pod goes is lost.
 
-If every role answers, the round can end before that moment. The round then ends when no role is in a turn. If a role does not answer, the round still ends at %s. A turn in progress does not delay that moment.
+If every role but a failed one and one that has left the round's pod answers, the round can end before that moment. The round then ends when no role is in a turn. If a role does not answer, the round still ends at %s. A turn in progress does not delay that moment.
 
 This message can arrive while you are in a turn. Do these four steps now:
 
@@ -1014,7 +1014,7 @@ func fillTable(t *builder) {
 	t.ignore(onPodUpdateOpen, "the claim failed; what happens to it next is not the supervisor's decision, and no process of it would read the ask", StateFailed)
 	t.ignore(onPodUpdateOpen, "the claim is retired; nothing of it runs on the pod being replaced", StateRetired)
 
-	t.row(onPodUpdateEnded, "the update round is over: clear it, and relaunch the process or release the task it held", endPodUpdate,
+	t.row(onPodUpdateEnded, "the update round is over: clear it, and release the task it held", endPodUpdate,
 		[]ClaimState{StateLaunching, StateFailed, StateSuspended, StateWorking}, append(slices.Clone(inRound), StateFailed)...)
 	t.ignore(onPodUpdateEnded, "the claim is retired; its update round ended with it", StateRetired)
 
@@ -2885,9 +2885,10 @@ func (m *Machine) dropUpdateTask(ctx context.Context) error {
 // round nobody has weighed.
 //
 // A pod's round ends only once the pod it was opened over is gone: the replacement the round
-// itself made, a pod replaced under it, or a pod that went for a failure of its own. Each role's
-// process died with that pod, and the displaced path brings each one back on its own session, so
-// nothing is launched here, whatever state the claim is in: a claim that failed while the round
+// itself made, a pod replaced under it, or a pod that went for a failure of its own. Each process
+// that ran in that pod died with it — a claim that has left the round's pod runs in another pod
+// already — and the displaced path brings each one back on its own session, so nothing is
+// launched here, whatever state the claim is in: a claim that failed while the round
 // ran is left failed for the workflow's retry to decide, and sendPending hands a claim with no
 // agent nothing (delivery.go). Leaving the round on it instead would outlive the pod the round
 // was opened over, and the sweep reads the round of every claim.
@@ -3032,7 +3033,7 @@ func podUpdateSignalled(m *Machine, ctx context.Context, ev Event) error {
 // nothing of, it is told so.
 func foreignRoundRefusal(c Claim, answered string) error {
 	in, next := fmt.Sprintf("%q", c.UpdateRound), fmt.Sprintf(
-		"The daemon asks each role one time in each update round. "+
+		"The daemon asks each role but a failed one and one that has left the round's pod one time in each update round. "+
 			"The daemon sends that ask as a message on the role's own topic. "+
 			"Answer with the round that the newest such message names. "+
 			"If no such message names round %q, the daemon has nothing to ask you now. End your turn",

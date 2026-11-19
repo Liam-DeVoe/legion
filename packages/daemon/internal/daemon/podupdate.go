@@ -312,14 +312,14 @@ func (s *supervision) completePodUpdate(ctx context.Context, issue string, snaps
 		return nil, false
 	case waitsForAnswer:
 		if len(waitingClaims(snapshot, round)) == 0 {
-			s.log.Info("supervise: every worker of this update round had answered in the sweep's snapshot, and the fresh read finds one unanswered; the replacement waits for the next sweep or for the round's bound",
+			s.log.Info("supervise: every worker of this update round but a failed one and one that has left the round's pod had answered in the sweep's snapshot, and the fresh read finds one unanswered; the replacement waits for the next sweep or for the round's bound",
 				"issue", issue, "round", round, "waiting", namesOf(reading.waiting))
 		}
 		return nil, false
 	case waitsForProcessInItsPod:
 		return nil, s.roundWithNoProcessInItsPod(ctx, issue, snapshot, live, round, pod, reasons, now, reading.held)
 	case waitsForTurn:
-		s.log.Info("supervise: every worker of this update round has answered; the replacement waits for the turns still running, or for the round's bound",
+		s.log.Info("supervise: every worker of this update round but a failed one and one that has left the round's pod has answered; the replacement waits for the turns still running, or for the round's bound",
 			"issue", issue, "round", round, "working", reading.working)
 		return nil, true
 	case waitsForPodInFlight:
@@ -1073,15 +1073,16 @@ func (s *supervision) endRoundOverAGonePod(ctx context.Context, issue string, gr
 // the round's pod is no stall: its bound ends the wait whatever they say, and the readings that
 // hold a round past its bound are told where they are read.
 //
-// It reports whether this ask can reach a claim whose machine records the round, which is what
-// the project's limits charge an opening for (reconcileIssuePodUpdate). Those are the claims the
-// round asks (askedClaims) rather than every claim it posts to: a failed claim is posted like
-// any other and its machine ignores the event (supervise's table), so an ask whose blocking
-// claims have all failed is recorded by no claim at all. An issue with no claim the round can
-// reach records no round and so holds no slot: charged an opening all the same, it would be
+// It reports whether a claim's machine can record the round, which is what the project's limits
+// charge an opening for (reconcileIssuePodUpdate). Those are the claims with a session but a
+// failed one, a claim that has left the round's pod included (askedClaims), rather than every
+// claim the round posts to: a failed claim is posted like any other and its machine ignores the
+// event (supervise's table), so a round whose blocking claims have all failed is recorded by no
+// claim at all. A claim that has left the round's pod records the round all the same, though the
+// round asks it nothing (supervise's Claim.OwesUpdateAsk). An issue with no claim that can record
+// the round records no round and so holds no slot: charged an opening all the same, it would be
 // read as an opening of this daemon's still in flight at every later sweep (podUpdateOpenings),
-// hold that slot for ever, and leave every other drifted issue waiting until the daemon
-// restarts.
+// hold that slot for ever, and leave every other drifted issue waiting until the daemon restarts.
 func (s *supervision) openPodUpdate(ctx context.Context, issue string, group []supervise.Claim, pod, reasons string) bool {
 	round := supervise.PodRound(pod)
 	blocking := blockingClaims(group)
@@ -1267,7 +1268,7 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 		}
 		return
 	}
-	s.log.Info("supervise: the update round's ask is enqueued for each role of the pod",
+	s.log.Info("supervise: the update round's ask is enqueued for the roles named",
 		"issue", issue, "round", round, "pod", pod, "roles", namesOf(asking))
 }
 
@@ -1555,16 +1556,16 @@ func waitingClaims(group []supervise.Claim, round string) []supervise.Claim {
 // askedClaims is every blocking claim but a failed one, a claim that has left the round's pod
 // included: the round asks that claim nothing (supervise's Claim.OwesUpdateAsk) and does not wait
 // for it (waitingClaims, heldByOperator), and the late-round notice lists it with its answer
-// (tellLateRound). A failed claim's launches or prompts ran out, so it runs no process and no
-// turn of it runs on the pod; the round asks it nothing (supervise's Claim.OwesUpdateAsk, and its
-// machine ignores the round's post), and only a retry of it brings it back (supervise's onRetry
-// and onOperatorRetry rows), which the round does not make. Holding the round for its answer held
-// the pod, and every answered worker's next task with it, for an answer it can never give: on the
-// first contract-46 roll a planner that had failed at contract 41 recorded no round at all, and
-// held its issue's round open behind the three workers that had answered. A retry starts it
-// again and it is asked like any other claim from the next tick. Work it left on the pod's disk
-// and did not push goes with the pod; the replacement's log line names each failed claim it did
-// not wait for.
+// (tellLateRound). A failed claim's launches or prompts ran out, so no turn of it runs on the pod,
+// though its process can outlive a suspension the runtime refused; the round asks it nothing
+// (supervise's Claim.OwesUpdateAsk, and its machine ignores the round's post), and only a retry of
+// it brings it back (supervise's onRetry and onOperatorRetry rows), which the round does not make.
+// Holding the round for its answer held the pod, and every answered worker's next task with it,
+// for an answer it can never give: on the first contract-46 roll a planner that had failed at
+// contract 41 recorded no round at all, and held its issue's round open behind the three workers
+// that had answered. A retry starts it again and it is asked like any other claim from the next
+// tick. Work it left on the pod's disk and did not push goes with the pod; the replacement's log
+// line names each failed claim it did not wait for.
 func askedClaims(group []supervise.Claim) []supervise.Claim {
 	var asked []supervise.Claim
 	for _, c := range blockingClaims(group) {

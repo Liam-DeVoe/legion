@@ -328,7 +328,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "pod_update_grace_minutes", Default: "`30`", RequiredBy: "no",
-			Description: "How many minutes a pod's update round waits for its roles after it opens: the round ends at that bound whatever the roles answered, and an answer from every role with no turn running ends it sooner; decimals allowed.",
+			Description: "How many minutes a pod's update round waits, after it opens, for each role in the pod but a failed one and one that has left the round's pod: the round ends at that bound whatever they answered, and an answer from each of those roles ends it sooner once no turn runs; decimals allowed.",
 			Read:        reads(readMinutes, func(f *fileConfig, v *time.Duration) { f.PodUpdateGrace = v }),
 		},
 		{
@@ -338,7 +338,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "pod_update_max_open_rounds", Default: "no limit at all: the daemon opens a round for any number of issues at once", RequiredBy: "no",
-			Description: "How many issues may hold an open pod-update round at once, a round being the ask to every worker of its issue to push and wait.",
+			Description: "How many issues may hold an open pod-update round at once, a round being the ask, to each worker of its issue but a failed one and one that has left the round's pod, to push its work and answer.",
 			Read:        reads(roundCap, func(f *fileConfig, v *int) { f.PodUpdateMaxOpenRounds = v }),
 		},
 		{

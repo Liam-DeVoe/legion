@@ -439,7 +439,7 @@ type FailureBudget struct {
 // the round was opened for, as the ask states it. Waiting is every claim of the round with a
 // session but a failed one, one that has left the round's pod included, each marked with whether
 // it answered, so the controller can ask the operator to act on a suspended claim rather than
-// read the whole claims list to find out who the round asked; what each entry says is
+// read the whole claims list to find out which claims have not answered; what each entry says is
 // UpdateWaiting's. The notice's issue is the outbox row's own.
 //
 // Reasons is one string, never a list: a single reason carries ", " inside it already — a moved

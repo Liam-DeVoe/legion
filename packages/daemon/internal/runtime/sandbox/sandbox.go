@@ -1192,7 +1192,7 @@ func (r *Runtime) warnPodDrift(u *unstructured.Unstructured) {
 		return
 	}
 	if other, drifted := imageDrift(pod, r.image); drifted {
-		r.log.Warn(fmt.Sprintf("sandbox runtime: %s runs image %s, the configured image is %s; its agents call this daemon as the older release until its update round replaces the pod", u.GetName(), other, r.image),
+		r.log.Warn(fmt.Sprintf("sandbox runtime: %s runs image %s, the configured image is %s; its agents call this daemon as the older release until the pod is replaced — by its update round where a round covers the pod, by the next launch of one of its roles where none does", u.GetName(), other, r.image),
 			"sandbox", u.GetName(), "pod", pod.UID)
 	}
 	if account, drifted := accountDrift(pod, r.pod.ServiceAccount); drifted {

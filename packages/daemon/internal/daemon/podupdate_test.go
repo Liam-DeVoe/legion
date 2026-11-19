@@ -955,12 +955,12 @@ func TestPodUpdateToldOnceAtTheBoundOfARoundAnOperatorsSuspensionHolds(t *testin
 	}
 }
 
-// A failed claim runs no process and no turn on the pod, and the round asks it nothing, so the
-// round does not wait for it: once every other claim has answered, the pod is replaced and the
-// round is over. This is the first contract-46 roll's shape: a planner failed at contract 41,
-// which records no round, beside three workers at contract 45 that each answered. Held for the
-// planner, the round would never end, and every answered worker's next task would wait behind
-// it.
+// A failed claim runs no turn on the pod, and the round asks it nothing, so the round does not
+// wait for it: once every claim but a failed one and one that has left the round's pod has
+// answered and no turn runs, the pod is replaced and the round is over. This is the first
+// contract-46 roll's shape: a planner failed at contract 41, which records no round, beside three
+// workers at contract 45 that each answered. Held for the planner, the round would never end, and
+// every answered worker's next task would wait behind it.
 func TestPodUpdateReplacesThePodWithoutWaitingForAFailedClaim(t *testing.T) {
 	behind := supervise.PodUpdateContract - 1
 	answering := []claim.Role{claim.RoleImplementer, claim.RoleReviewer, claim.RoleTester}
@@ -2632,7 +2632,7 @@ func (r *podUpdateRig) envoyTurn(role claim.Role) {
 // (reconcileIssuePodUpdate), the turn in the new pod is left running, and the operator's side is
 // told nothing, however long past the round's bound the sweep runs.
 func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplacedIt(t *testing.T) {
-	const held = "supervise: every worker of this update round has answered; the replacement waits for the turns still running"
+	const held = "supervise: every worker of this update round but a failed one and one that has left the round's pod has answered; the replacement waits for the turns still running"
 	const overAGonePod = "supervise: the pod this issue's update round was opened over is gone; the round is over"
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
