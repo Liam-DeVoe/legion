@@ -99,7 +99,6 @@ It carries:
   The daemon and the image pins move together, and a rollback of one is a rollback of the other:
   an older daemon pushes nothing, and a new image's shim then refuses every start.
   A tag of that repository is not protected, so a tag that is force-moved is served from the daemon's earlier copy until the daemon restarts.
-  With `answers` set, the daemon installs and runs a copy itself, at its own environment's pin, under `<state_dir>/leak-check/` ([The `gh` tool, a security decision](#the-gh-tool-a-security-decision)).
   A tmux pane installs nothing, because no pin is set there and such a machine carries the check through the check's own installer.
   The daemon resolves that machine's check once per launch and tells the pane where it is (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
   What a role sees when a write is refused is a command that wrote nothing and one of two lines on standard error:
@@ -1461,8 +1460,7 @@ With `answers` set in `legion.yaml`, the daemon answers a question to one of its
 — in that agent's name, from the agent's own conversation, on the model that conversation last ran on.
 It adds the exchange to the conversation in the harness's own format, so the agent finds it there when it next resumes, and posts the reply where the question was asked.
 Without `answers` the daemon answers nothing and keeps none of the records below beyond its history of conversations, and a message to a stopped agent is refused as before.
-The Envoy listener's half, which hands the daemon a message for a stopped agent in place of the `404` or the dropped delivery, and Dispatch's, which delivers a message or mention to a stopped agent instead of recording `no live session`, land with their own changes;
-until they do, no question reaches the loop.
+The Envoy listener hands the daemon a message for a stopped agent in place of the `404` or the dropped delivery, and Dispatch delivers a message or mention to a stopped agent instead of recording `no live session`, each only while the agent's daemon last said it answers ([Rolling back below the release that answers for a stopped agent](#rolling-back-below-the-release-that-answers-for-a-stopped-agent) says how that record is written).
 It runs under either runtime.
 
 The code: `packages/daemon/internal/answerloop` (the question pipeline:
@@ -1644,7 +1642,7 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   A fault decided before any model call, or a first call that returned nothing, appends nothing.
 
 - **Passing on.**
-  The controller gets one `agent-question` notice per question on its controller topic (`{kind, role, reason, question: {id, issue, session, asker, ref, text, writes}}`, the text cut at 2,000 characters), and, because that topic is a live wake only, `legion state` lists every question passed on in the last seven days, newest first and at most 100, as `questionsForController` (daemon API contract 170), which the controller reads at its start.
+  The controller gets one `agent-question` notice per question on its controller topic (`{kind, role, reason, question: {id, issue, session, asker, ref, text, writes}}`, the text cut at 2,000 characters), and, because that topic is a live wake only, `legion state` lists every question passed on in the last seven days, newest first and at most 100, as `questionsForController` (daemon API contract 171), which the controller reads at its start.
   Both name each `gh` write the question's calls ran, as the reply does, so the controller never decides on a question without knowing what the agent already did:
   `writes` is a list of `{seq, command, repository, exit}`, `command` being the command's words (for `gh api` its method and endpoint, `api PUT repos/acme/widgets/pulls/7/merge`), `repository` `""` where the call named none, and `exit` `null` where gh answered no status.
   The notice leaves `writes` out when there is none, and `questionsForController` carries `[]`.
@@ -2710,6 +2708,74 @@ A pod the rollback leaves running keeps its trimmer and the identifier that trim
 `psql` answers `DELETE` with the number of count rows the statement deleted, not the number of notices.
 With the counts gone, nothing of these notices need come back except one kind: a notice of a filling volume is reported again by its trimmer at its next sweep that ends above the low mark once the newer release is pinned again, but the notice that a trimmer switched itself off is not, since that trimmer sends nothing more until its roles container restarts.
 The trimmer itself needs no statement either — `runtime.kubernetes.volume_trim` is a key an earlier loader refuses by name, so take the block out of `legion.yaml` before pinning that image, and a pod of the earlier release's own worker image runs no trimmer at all.
+
+#### Rolling back below the release that answers for a stopped agent
+
+The release that added the answer loop ([The answer loop](#the-answer-loop)) is the one whose `packages/daemon/internal/api/version.go` carries the entry for `dispatch://INFRA-204`.
+Name it by that entry rather than by its contract number, which moved more than once while it was open, each time `main` or another open pull request reached the number it held.
+So the release before it is whichever release of `main` precedes that entry, and the rules below apply to a rollback to it under either runtime.
+A rollback below it has three steps of its own, all taken before the earlier image is pinned, and a tmux daemon whose panes keep their sessions in a database has a wait of its own as well.
+
+**The project must stop saying it answers, while this release still runs.**
+This release's daemon writes its project's answering record into the Envoy listener's agent registry, the key `project.<legion_project>` of the `legion_agents` bucket, at its boot and every minute after.
+A listener of this release hands a message off to the project's daemon while that record last said `answering: true`, whatever the record's age:
+a message to a session the registry names, once that session is gone, and a message to a role nobody holds, once the role's newest entry is `finished`, in either case while that entry is not `released`.
+It publishes the message on `notifications.legion.<project>.agents.<session>` and answers its sender as delivered.
+An earlier daemon writes no record and no entry, so the last `answering: true` stands, and it opens no consumer on that subject, so every message the listener hands off goes unanswered.
+Take `answers` out of `legion.yaml` and restart this release's daemon once:
+without `answers` it still writes the record with its own Envoy credential (`envoy_url` and `envoy_token_file`) as soon as it has booted, and the record then says `answering: false`.
+`GET /v1/legion/agents/sessions/<session>` of any session of the project, with the listener's bearer, answers `"answering": false` once that write has landed.
+From then on the listener answers the project's messages as it did before the hand-off existed, a send stored for a session it still knows or a `404`, and a role's message kept for the role's next holder.
+Dispatch reads the same flag before it delivers to a stopped agent, so its deliveries go back to what they were too.
+No earlier daemon writes to the bucket, so that `false` stands until this release runs again.
+A hand-off the listener published before the write waits on the stream for this release's durable consumer, which no earlier daemon opens.
+
+**An earlier listener needs nothing.**
+A listener below this release hands nothing off and reads no answering record: its registry reads take a session's key or an issue's or a role's prefix, never `project.`, and it decodes an entry leniently, so the `finished` and `released` this release wrote mean nothing to it.
+The entries stay in the bucket, which deletes nothing, and its routes serve them as before.
+
+**`answers`, `runtime.tmux.session_store` and `runtime.tmux.session_dsn_file` must come out of `legion.yaml`.**
+An earlier loader knows none of the three and refuses the file, naming the first of them it meets in file order (`unknown key answers`, `unknown key runtime.tmux.session_store`, `unknown key runtime.tmux.session_dsn_file`), so its daemon does not start while one of them stands.
+`answers` is out after the step above.
+Take the two tmux keys out as well, `session_store: files` included, and `legion config check` on the earlier image reads the file clean.
+A file that never set them needs nothing.
+
+**A queued `agent-question` or `agent-decision` notice must go before the earlier image is pinned.**
+The answer loop queues two notice kinds an earlier release does not know, each with a payload member of its own:
+`agent-question`, a question it passed to the controller, with `question`, and `agent-decision`, a person's decision on a stopped agent's ask, with `agent_decision`.
+An earlier daemon decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), so it can never decode such a row while it is queued, and its outbox calls no notice row's failure permanent, so the row is retried on its backoff for ever.
+An `agent-question` row, and an `agent-decision` row for the controller, are `controller_notice` rows: each attempt logs `outbox row failed`, and the controller never hears of it.
+An `agent-decision` row for the architect that owns the agent's issue is a `notice` row, and it fails more than itself, as the `volume-near-full` row above does:
+on its backoff it is one of the rows `WaitingNotices` reads, so `pacedCatchUps` fails `GET /legion/v1/state` for the whole project on every read, and `releaseWaiting` fails every release of the notices owed to architects that became ready.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' in ('agent-question', 'agent-decision');
+```
+
+The statement takes these rows of every project the database holds.
+Where another project's daemon shares the database and stays on this release, add `and split_part(issue, '-', 1) = '<PROJECT>'`, the Dispatch project key the rolled-back daemon's issues carry, which is how `WaitingNotices` itself selects a project.
+What the delete costs is the notices themselves.
+The loop marked each question and each decision passed in the transaction that queued its notice (`processed_events`), so a roll forward queues neither again:
+a deleted question is still listed in `questionsForController`, among the newest 100, for seven days from its pass, which a controller of this release reads at its start, and a deleted decision is not told again.
+
+**The four tables need no statement.**
+This release creates `answer_tool_calls` (`20261106214000_answer_tool_calls`), `agent_conversations` (`20261106214001_agent_conversations`), and `answer_questions` and `answer_spend` (`20261106214002_answer_questions`).
+An earlier daemon does not refuse a database that records migrations it does not know: its migrator applies each migration it embeds that the database has not recorded and compares nothing else (`Store.Migrate` in `store/store.go`), so it boots on that database and names none of the four tables.
+Leave them and their three `schema_version` rows as they are: a roll forward finds the three versions recorded, runs none of them again, and finds the conversations, the questions and the day's spend as this release left them.
+
+**A tmux daemon on `runtime.tmux.session_store: postgres` waits until it holds no session to resume.**
+Under that store this release tells every pane `OMP_SESSION_STORAGE=sql` and `OMP_SESSION_SQL_DSN_FILE`, so each pane's Oh My Pi session is a row of the session table, keyed by the path its file would have had.
+An earlier daemon tells its panes neither variable, and its `runtime.tmux.pane_env` refuses both names, so its panes keep their sessions as files.
+Its resume looks for the session as a file, at its recorded path or by its name in another folder of a sessions directory, and a session that is a row is found nowhere:
+the claim forgets the session and starts a fresh agent, charged nothing, and the loss is reported to the issue, its architect and the controller.
+Nothing copies a row back out to a file (`legion sessions` has `import` alone), so no step here saves those sessions.
+Roll such a daemon back once none of its claims records an Oh My Pi session it is still to resume, or accept a fresh agent for each one that does.
+A Claude Code transcript is a file under either store, and resumes as before.
+
+**Nothing else in the database needs a statement.**
+This release adds no other migration and no other notice kind or payload member.
+The marks the loop writes in `processed_events`, under the sources `agent-question` and `agent-decision`, sit in a table the earlier release reads by source and event id, and it reads neither source.
 
 ### Pinning a release that drops what a running pod still uses
 

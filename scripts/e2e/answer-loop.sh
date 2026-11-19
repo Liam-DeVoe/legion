@@ -86,7 +86,8 @@
 #
 # Everything the run starts is its own and stopped by exact pid on exit: Postgres (the zonky
 # embedded-postgres binaries with Debian's pgvector), nats-server, the recording proxy, the Envoy
-# inbox, the listener, Dispatch, each daemon and its private tmux server. The run's GitHub writes
+# inbox, the listener, Dispatch, each daemon and its private tmux server, and the keepers holding
+# the listener's, Dispatch's and the daemons' ports. The run's GitHub writes
 # are on the smoke repository (A17, A18, A19's pull requests, comments and reviews, each recorded by
 # id and closed or deleted on exit) and A17's refused write of a workflow file on the second
 # owner's repository, which GitHub refuses the review App for want of its `workflows` permission.
@@ -197,6 +198,9 @@ asker_heartbeat_pid=
 listener_pid=
 dispatch_pid=
 daemon_pid=
+listener_keeper_pid=
+dispatch_keeper_pid=
+daemon_keeper_pid=
 port_pg=
 port_nats=
 port_proxy=
@@ -247,28 +251,6 @@ unset DISPATCH_TOKEN
 # wrote: lib/rig.sh's start_process appends every boot of a service to the one log.
 log_size() { stat -c %s "$evidence/logs/$1.log" 2>/dev/null || printf '0\n'; }
 
-# pick_port VAR replaces lib/rig.sh's: lib/free-port.sh asks `ss` for listeners and needs the kernel's
-# ephemeral range to start above 21000, and a Legion pod has no ss and a range from 16000. This picks
-# below the range as free-port.sh does, from 10000, and reads the listeners from /proc/net/tcp and
-# tcp6 (state 0A), never one this run already picked.
-picked_ports=
-pick_port() {
-  local _low _port _hex _busy
-  read -r _low _ </proc/sys/net/ipv4/ip_local_port_range
-  [ "$_low" -gt 11000 ] || fail "the ephemeral port range starts at $_low, leaving no room above 10000"
-  for _ in $(seq 1 100); do
-    _port=$((10000 + RANDOM % (_low - 10000)))
-    case " $picked_ports " in *" $_port "*) continue ;; esac
-    printf -v _hex '%04X' "$_port"
-    _busy=$(awk -v port=":$_hex" '$4 == "0A" && substr($2, length($2) - 4) == port' /proc/net/tcp /proc/net/tcp6 2>/dev/null || true)
-    [ -z "$_busy" ] || continue
-    picked_ports="$picked_ports $_port"
-    printf -v "$1" '%s' "$_port"
-    return 0
-  done
-  fail "no free port for $1"
-}
-
 # record_result CRITERION VERDICT DETAIL: one summary row, for the current store ("-" for a
 # criterion that does not run per store). VERDICT is PASS, FAIL or WAITING; DETAIL says why.
 record_result() {
@@ -316,6 +298,9 @@ cleanup() {
   stop_pid "$proxy_pid"
   stop_pid "$nats_pid"
   stop_pid "$pg_pid"
+  stop_pid "$daemon_keeper_pid"
+  stop_pid "$dispatch_keeper_pid"
+  stop_pid "$listener_keeper_pid"
   for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
   [ "${#github_writes[@]}" = 0 ] || github_cleanup
   # The App keys go next, and unconditionally. They cannot go first, as the other proofs' traps
@@ -377,8 +362,15 @@ pg_sql() {
   bun "$work/pg-sql.ts" "postgres://postgres@127.0.0.1:$port_pg/$1?sslmode=disable" "$2"
 }
 
+# start_postgres starts the run's Postgres, the one service of the run on a port number it picks
+# rather than on one the kernel chose and something holds (lib/rig.sh): postgres binds its port
+# itself, takes no inherited socket and refuses port 0. The pick is below the kernel's ephemeral
+# range, from 10000, where the kernel numbers no connection's own port, and it can still be taken
+# before postgres binds it, so a start that fails is made again on another pick, five times in all.
 start_postgres() {
-  local attempt
+  local attempt low
+  read -r low _ </proc/sys/net/ipv4/ip_local_port_range
+  [ "$low" -gt 11000 ] || fail "the ephemeral port range starts at $low, leaving Postgres no room above 10000"
   cat >"$work/pg-sql.ts" <<'TS'
 const [dsn, query] = process.argv.slice(2);
 const sql = new Bun.SQL(dsn as string);
@@ -390,7 +382,7 @@ TS
     >>"$evidence/logs/postgres.log" 2>&1 || fail "initdb failed; see $evidence/logs/postgres.log"
   mkdir -p "$work/pg-sock"
   for attempt in 1 2 3 4 5; do
-    pick_port port_pg
+    port_pg=$((10000 + RANDOM % (low - 10000)))
     if LD_LIBRARY_PATH="$pg_root/lib" "$pg_root/bin/pg_ctl" -D "$work/pg-data" -l "$evidence/logs/postgres.log" -w -t 60 \
       -o "-p $port_pg -h 127.0.0.1 -k $work/pg-sock" start >/dev/null; then
       pg_pid=$(head -1 "$work/pg-data/postmaster.pid")
@@ -809,21 +801,21 @@ EOF
 # ---- services --------------------------------------------------------------------------------------
 service_env=(env -i "PATH=$PATH" "LANG=C.UTF-8" "TZ=UTC")
 
+# start_nats starts nats-server on a port the kernel chooses (`-p -1`), read back from the line this
+# start logged (lib/rig.sh's report_port): nats-server takes no inherited socket, so no keeper holds
+# its port. Each start serves a port of its own, A13's restarts included, and everything that dials
+# NATS after a restart (the listener, Dispatch and each daemon's legion.yaml) is started or written
+# after it. The inbox is not: its one connection names the bring-up's port, and no check reads the
+# inbox once A13 has restarted NATS.
 start_nats() {
-  local attempt offset result
+  local offset
   mkdir -p "$work/nats-store"
-  for attempt in 1 2 3 4 5; do
-    [ -n "$port_nats" ] || pick_port port_nats
-    offset=$(log_size nats)
-    start_process nats "${service_env[@]}" "$nats_bin" -js -a 127.0.0.1 -p "$port_nats" -sd "$work/nats-store"
-    result=0
-    await_start nats "$nats_pid" 60 "nats-server to be ready" \
-      sh -c "tail -c +$((offset + 1)) '$evidence/logs/nats.log' | grep -q 'Server is ready'" || result=$?
-    [ "$result" != 0 ] || return 0
-    port_nats=
-    note "nats-server lost its port (attempt $attempt); picking another"
-  done
-  fail "nats-server lost its picked port five times"
+  offset=$(log_size nats)
+  start_process nats "${service_env[@]}" "$nats_bin" -js -a 127.0.0.1 -p -1 -sd "$work/nats-store"
+  await_start nats "$nats_pid" 60 "nats-server to be ready" \
+    sh -c "tail -c +$((offset + 1)) '$evidence/logs/nats.log' | grep -q 'Server is ready'"
+  port_nats=$(report_port <(tail -c +$((offset + 1)) "$evidence/logs/nats.log") 'Listening for client connections on [^ ]*:') ||
+    fail "nats-server logged no client port; see $evidence/logs/nats.log"
 }
 
 start_proxy() {
@@ -834,14 +826,17 @@ start_proxy() {
   # `Authorization: Bearer` instead, and this hop, the one every call of the run already goes
   # through, is where that translation lives (lib/recording-proxy.ts).
   [ -z "$gateway_token_helper" ] || bearer=(--api-key-as-bearer)
-  pick_port port_proxy
   mkdir -p "$work/proxy-hold" "$work/proxy-stand-in"
   offset=$(log_size proxy)
-  start_process proxy "${service_env[@]}" "HOME=$work" bun "$root/scripts/e2e/lib/recording-proxy.ts" --port "$port_proxy" \
+  # lib/recording-proxy.ts takes a port number and no inherited socket, so it binds port 0 itself
+  # and logs the port it got. The run starts it once, before anything names its port.
+  start_process proxy "${service_env[@]}" "HOME=$work" bun "$root/scripts/e2e/lib/recording-proxy.ts" --port 0 \
     --upstream "$model_upstream" --record "$evidence/model-calls.jsonl" \
     --hold-dir "$work/proxy-hold" --stand-in-dir "$work/proxy-stand-in" "${bearer[@]}"
   await_start proxy "$proxy_pid" 30 "the recording proxy" \
     sh -c "tail -c +$((offset + 1)) '$evidence/logs/proxy.log' | grep -q 'recording-proxy listening'"
+  port_proxy=$(report_port <(tail -c +$((offset + 1)) "$evidence/logs/proxy.log") 'recording-proxy listening on [^ ]*:') ||
+    fail "the recording proxy logged no port; see $evidence/logs/proxy.log"
 }
 
 # start_inbox subscribes the run's inbox to the relay subjects of its two stand-in sessions,
@@ -863,8 +858,18 @@ start_inbox() {
     sh -c "tail -c +$((offset + 1)) '$evidence/logs/inbox.log' | grep -q 'envoy-inbox listening'"
 }
 
-# start_listener BINARY_DIR and start_dispatch BINARY_DIR DATABASE are claude-backend-tmux.sh's, with
-# every variable named (env -i): a pod's own ENVOY_*, DISPATCH_* and LEGION_* never reach them.
+# start_listener BINARY_DIR and start_dispatch BINARY_DIR DATABASE start the listener and Dispatch
+# as claude-backend-tmux.sh's functions of those names do, each on a socket held for it and handed
+# over as ENVOY_LISTEN_FD or DISPATCH_LISTEN_FD, but for two things. First, each serves on a copy
+# of the socket a keeper holds for the whole run (lib/rig.sh's keep_port, run by its first start,
+# and start_kept), where claude-backend-tmux.sh, which starts each once, opens a fresh one
+# (start_held): A13 restarts both, the base commit's binaries among them, and a restart cannot lose
+# a kept port. The asker's heartbeat, a subshell forked at bring-up, keeps calling the listener's
+# port it was forked with. Between two servers a kept port listens and nothing answers, so each
+# poll of it carries a timeout (curl --max-time). Second, every variable is named (env -i), so a
+# pod's own ENVOY_*, DISPATCH_* and LEGION_* never reach them, and the command names its descriptor
+# variable itself, =3, the descriptor held-port.py hands the socket over as: env -i drops the one
+# held-port.py sets.
 # The listener also serves GitHub's webhook route, `/webhook/github`, as a deployment's does, since
 # a running daemon hears a review only as its webhook (A19, deliver_review): ENVOY_WEBHOOKS=github,
 # the route's secret the run's own random value ($work/github-webhook-secret, 0600, printed
@@ -874,51 +879,35 @@ start_inbox() {
 # listener's own default, and the CI store the route records checks in is the listener's own
 # bucket on the run's NATS. The base commit's listener (A13) is started the same way.
 start_listener() {
-  local bin=$1 attempt offset result
-  for attempt in 1 2 3 4 5; do
-    [ -n "$port_listener" ] || pick_port port_listener
-    offset=$(log_size listener)
-    start_process listener "${service_env[@]}" "HOME=$work/listener-home" "ENVOY_API_TOKEN=$(cat "$work/envoy-token")" \
-      "PORT=$port_listener" ENVOY_LISTEN_HOST=127.0.0.1 "ENVOY_MACHINE_ID=legion-e2eal-$$" \
-      ENVOY_WEBHOOKS=github "ENVOY_GITHUB_WEBHOOK_SECRET=$(cat "$work/github-webhook-secret")" \
-      "ENVOY_REVIEWER_APP_ID=${review_app_id:-$default_review_app_id}" \
-      "NATS_URLS=nats://127.0.0.1:$port_nats" "$bin/envoy-listener"
-    result=0
-    await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
-      curl -fsS -H "@$work/envoy-auth-header" "http://127.0.0.1:$port_listener/v1/sessions" || result=$?
-    [ "$result" != 0 ] || return 0
-    port_listener=
-    note "the Envoy listener lost its port (attempt $attempt); picking another"
-  done
-  fail "the Envoy listener lost its picked port five times"
+  local bin=$1
+  [ -n "$listener_keeper_pid" ] || keep_port listener_keeper port_listener
+  start_kept listener listener_keeper ENVOY_LISTEN_FD -- "${service_env[@]}" "HOME=$work/listener-home" \
+    "ENVOY_API_TOKEN=$(cat "$work/envoy-token")" ENVOY_LISTEN_FD=3 "PORT={port}" ENVOY_LISTEN_HOST=127.0.0.1 \
+    "ENVOY_MACHINE_ID=legion-e2eal-$$" ENVOY_WEBHOOKS=github "ENVOY_GITHUB_WEBHOOK_SECRET=$(cat "$work/github-webhook-secret")" \
+    "ENVOY_REVIEWER_APP_ID=${review_app_id:-$default_review_app_id}" \
+    "NATS_URLS=nats://127.0.0.1:$port_nats" "$bin/envoy-listener"
+  await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
+    curl -fsS --max-time 5 -H "@$work/envoy-auth-header" "http://127.0.0.1:$port_listener/v1/sessions"
 }
 
 start_dispatch() {
-  local bin=$1 database=$2 attempt offset result
+  local bin=$1 database=$2
   local -a web=()
   # The SPA only a run with A3's conversation-page leg builds; without it Dispatch serves the API
   # alone, which every other criterion reads.
   [ -z "$web_dist" ] || web=("DISPATCH_WEB_DIST=$web_dist")
   mkdir -p "$work/dispatch-home"
   chmod 0700 "$work/dispatch-home"
-  for attempt in 1 2 3 4 5; do
-    [ -n "$port_dispatch" ] || pick_port port_dispatch
-    offset=$(log_size dispatch)
-    start_process dispatch "${service_env[@]}" "HOME=$work/dispatch-home" "XDG_CONFIG_HOME=$work/dispatch-home/.config" \
-      "DATABASE_URL=postgres://postgres@127.0.0.1:$port_pg/$database?sslmode=disable" \
-      "DISPATCH_AGENT_TOKEN=$(cat "$work/dispatch-token")" "ENVOY_TOKEN=$(cat "$work/envoy-token")" \
-      DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 \
-      "DISPATCH_PORT=$port_dispatch" "DISPATCH_SERVER_URL=http://127.0.0.1:$port_dispatch" "${web[@]}" \
-      "NATS_URLS=nats://127.0.0.1:$port_nats" "ENVOY_URL=http://127.0.0.1:$port_listener" "$bin/envoy-dispatch"
-    result=0
-    await_start dispatch "$dispatch_pid" 120 "the scratch Dispatch server" \
-      curl -fsS "http://127.0.0.1:$port_dispatch/api/v1" || result=$?
-    dispatch_base="http://127.0.0.1:$port_dispatch"
-    [ "$result" != 0 ] || return 0
-    port_dispatch=
-    note "the scratch Dispatch lost its port (attempt $attempt); picking another"
-  done
-  fail "the scratch Dispatch lost its picked port five times"
+  [ -n "$dispatch_keeper_pid" ] || keep_port dispatch_keeper port_dispatch
+  start_kept dispatch dispatch_keeper DISPATCH_LISTEN_FD -- "${service_env[@]}" "HOME=$work/dispatch-home" \
+    "XDG_CONFIG_HOME=$work/dispatch-home/.config" "DATABASE_URL=postgres://postgres@127.0.0.1:$port_pg/$database?sslmode=disable" \
+    "DISPATCH_AGENT_TOKEN=$(cat "$work/dispatch-token")" "ENVOY_TOKEN=$(cat "$work/envoy-token")" \
+    DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_FD=3 DISPATCH_LISTEN_HOST=127.0.0.1 \
+    "DISPATCH_PORT={port}" "DISPATCH_SERVER_URL=http://127.0.0.1:{port}" "${web[@]}" \
+    "NATS_URLS=nats://127.0.0.1:$port_nats" "ENVOY_URL=http://127.0.0.1:$port_listener" "$bin/envoy-dispatch"
+  dispatch_base="http://127.0.0.1:$port_dispatch"
+  await_start dispatch "$dispatch_pid" 120 "the scratch Dispatch server" \
+    curl -fsS --max-time 5 "$dispatch_base/api/v1"
 }
 
 stop_service() {
@@ -982,8 +971,13 @@ write_legion_config() {
 # daemon takes omp_invocation only as `mise x <tool> -- omp`), the run's tmux directory, and the
 # Claude Code launch. Of the host's own variables it passes the three a pane's jj and Oh My Pi
 # need, each only when this shell has it: a pod has no mise and no MISE_DATA_DIR, and an empty one
-# names the working directory. It waits for /healthz and records the log offset this boot starts
-# at; a daemon that exits first fails the check with its log's last lines.
+# names the working directory. The daemon serves on a copy of the socket the keeper daemon_keeper
+# holds for the whole run (keep_port at bring-up), handed over as LEGION_LISTEN_FD, so every boot
+# serves the port each legion.yaml names. This runs what lib/rig.sh's start_kept runs, held-port.py
+# exec --from the keeper's socket, itself: start_kept logs to $evidence/logs/<NAME>.log, and each
+# boot appends to LOG, which the checks read from this boot's offset. It waits for /healthz, each
+# poll bounded (a kept port takes a connection before the daemon serves it), and records the log
+# offset this boot starts at; a daemon that exits first fails the check with its log's last lines.
 start_daemon() {
   daemon_bin=$1 daemon_config=$2 daemon_log=$3 daemon_home=$4 daemon_profile=$5 daemon_plugin_dir=$6
   local started=$SECONDS name
@@ -993,11 +987,12 @@ start_daemon() {
   done
   printf '=== boot at %s (%s)\n' "$(date -u +%FT%TZ)" "$daemon_config" >>"$daemon_log"
   boot_offset=$(stat -c %s "$daemon_log")
-  env -i "HOME=$daemon_home" "OMP_PROFILE=$daemon_profile" "PATH=$daemon_path" "TMPDIR=$work/tmp" \
+  python3 "$root/scripts/e2e/lib/held-port.py" exec --from "$work/daemon_keeper.sock" --fd-env LEGION_LISTEN_FD -- \
+    env -i "HOME=$daemon_home" "OMP_PROFILE=$daemon_profile" "PATH=$daemon_path" "TMPDIR=$work/tmp" \
     "TMUX_TMPDIR=$work/tmux" "XDG_STATE_HOME=$work/xdg" "${host_env[@]}" \
     LANG=C.UTF-8 TZ=UTC "USER=$(id -un)" "LOGNAME=$(id -un)" SHELL=/bin/bash TERM=xterm-256color \
     "LEGION_OMP_PATH=$omp_bin" "LEGION_CLAUDE_PATH=$claude_bin" "LEGION_BUN_PATH=$work/realbin/bun" \
-    "LEGION_CLAUDE_PLUGIN_DIR=$daemon_plugin_dir" \
+    "LEGION_CLAUDE_PLUGIN_DIR=$daemon_plugin_dir" LEGION_LISTEN_FD=3 \
     "$daemon_bin" start --config "$daemon_config" >>"$daemon_log" 2>&1 &
   daemon_pid=$!
   note "waiting up to 300s for the daemon ($daemon_config) to answer /healthz"
@@ -1621,7 +1616,10 @@ start_proxy
 start_inbox
 start_listener "$work/branch"
 start_dispatch "$work/branch" dispatch
-note "NATS $port_nats (pid $nats_pid), proxy $port_proxy (pid $proxy_pid), inbox (pid $inbox_pid), listener $port_listener (pid $listener_pid), Dispatch $port_dispatch (pid $dispatch_pid)"
+# Every daemon of the run, the base commit's and the branch's in both passes, serves this one kept
+# port (start_daemon), which each legion.yaml names before its daemon boots.
+keep_port daemon_keeper port_daemon
+note "NATS $port_nats (pid $nats_pid), proxy $port_proxy (pid $proxy_pid), inbox (pid $inbox_pid), listener $port_listener (pid $listener_pid), Dispatch $port_dispatch (pid $dispatch_pid), the daemons' kept port $port_daemon"
 # The stand-ins are registered once here, and a registration the listener refuses, or answers with
 # no consumer, ends the run naming the listener's answers: every answering criterion reads what the
 # asker is delivered. Their sessions lapse with the session bucket's TTL like any other, so a loop
@@ -3144,7 +3142,6 @@ for store in $stores; do
   [ -n "$gpt_refusal" ] ||
     agent[$store:gpt.issue]=$(new_rig_issue "Answer loop proof child: the GPT-6.1 merger" "${agent[$store:root]}")
   note "project $project, issues: root ${agent[$store:root]}, planner ${agent[$store:planner.issue]}, tester ${agent[$store:tester.issue]}, pre-change ${agent[$store:pre_change.issue]} (tree ${agent[$store:pre_change.tree]})${agent[$store:gpt.issue]:+, GPT-6.1 merger ${agent[$store:gpt.issue]}}"
-  pick_port port_daemon
   produce_pre_change
   write_legion_config "$work/answers-$store.yaml" yes
   write_legion_config "$work/plain-$store.yaml" no

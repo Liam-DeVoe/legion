@@ -1457,7 +1457,10 @@ CI does not run it.
   its secret is the run's own random value, written `0600` as `$work/github-webhook-secret` and printed nowhere, and `ENVOY_REVIEWER_APP_ID` is the review App's id, without which the route refuses to start.
   That id only tells the reviewer's verdict check runs from another App's, and the run delivers no check run, so a run that read no review App gives [`lib/github-apps.sh`](lib/github-apps.sh)'s default.
   The mention trigger is the listener's default, and the CI store the route records checks in is the listener's own bucket on the run's NATS.
-  Ports are picked below the kernel's ephemeral range from `/proc/net/tcp`, since `lib/free-port.sh` needs `ss` and a range above 21000, and a pod has neither.
+  The listener, Dispatch and every daemon serve on a copy of the socket a keeper holds for the whole run ([`lib/rig.sh`](lib/rig.sh)'s `keep_port` and `start_kept`, handed over as `ENVOY_LISTEN_FD`, `DISPATCH_LISTEN_FD` and `LEGION_LISTEN_FD`), so each legion.yaml names the daemon's port before the daemon boots, and A13's restarts and every daemon boot serve the port the run started with.
+  `nats-server -p -1` and the recording proxy's `--port 0` bind a port the kernel chooses and log it, which the run reads back with `report_port`:
+  each NATS start, A13's restarts among them, takes a new port, and the listener, Dispatch and each daemon's legion.yaml are started or written after it.
+  Postgres alone binds a port number the run picks below the kernel's ephemeral range, since it takes no inherited socket and no port 0, and a start that fails is made again on another pick, five times in all.
 
 - Only for A3's conversation-page leg, the one surface of this proof that is a page:
   Dispatch's SPA, built from this checkout (`bun run build:web` into `packages/dispatch/web/dist`, which Dispatch serves as `DISPATCH_WEB_DIST`), and Playwright's own Chromium, installed once under `PLAYWRIGHT_BROWSERS_PATH` — the caller's when it names one, else the run's cache, never a pod's home directory, whose disk a browser fills.
