@@ -624,11 +624,11 @@ func TestAReplayedTurnStartIsFencedOnItsDeliveryID(t *testing.T) {
 // My Pi acknowledges a prompt at its admission, before its pre-turn work, runs one admitted prompt
 // at a time and refuses the rest ("Agent is already processing"), and hands each prompt its one
 // prompt_result at the end of the first run after its admission (rpc-prompt-results.ts); the
-// Claude Code bridge takes one prompt at a time too (claudebridge's busyWords and promptRun).
-// So the late start confirms the task, and the prompt's result — naming the id the bound took
-// back — retires it, and no prompt follows. Before, the late start was taken for a foreign turn,
-// the result was dropped at the fence, and the task was sent again when the turn ended, to a
-// worker that had just done it: the loop dispatch://INFRA-3276 measured.
+// Claude Code bridge takes one prompt at a time too (internal/claudebridge's busyWords and
+// promptRun). So the late start confirms the task, and the prompt's result — naming the id the
+// bound took back — retires it, and no prompt follows. Before, the late start was taken for a
+// foreign turn, the result was dropped at the fence, and the task was sent again when the turn
+// ended, to a worker that had just done it: the loop dispatch://INFRA-3276 measured.
 //
 // The prompt's own result is what corrects a start taken for it that was in fact another input's.
 // A result that says the prompt ran no turn takes the task back, charged nothing more than the

@@ -2728,9 +2728,8 @@ The release's image also pins an Oh My Pi whose refusal of a prompt sent while t
 Such a prompt charges the claim nothing, and its task is sent again when the turn ends.
 A pod moves onto the new image only at its update round, and until then its Oh My Pi sends that refusal with no code.
 The daemon reads it as busy all the same, charging nothing, when its own record holds the claim working or when the agent answers `get_state` that it is streaming.
-Two cases of an agent on the earlier image are still charged until its pod's update round, while the daemon's record does not hold the claim working: as unrecognised for its refusal, and as a prompt that ran no turn for its prompt's result.
-The first is an agent that does not answer `get_state` within the RPC bound.
-The second is an agent whose turn ended between its refusal and the daemon's `get_state` ask, so it answers that it is not streaming: for example one that refuses the task with its busy sentence while it does the pre-turn work of a notice, and whose turn on that notice has ended by the ask.
+While the daemon's record does not hold the claim working, an agent on the earlier image is still charged in two cases until its pod's update round: it does not answer `get_state` within the RPC bound, or its turn ended between its refusal and the `get_state` ask, as a notice's turn can when the refusal came during its pre-turn work.
+Its refusal is then charged as unrecognised, and its prompt's result as a prompt that ran no turn.
 
 Store migration 20261112012123_issue_repository_correction adds the four `issues` columns the repository keys are read from — `repo_before`, `repo_corrected_at`, `repo_change_pending` and `repo_change_reason` — and `workspace_bundles.repo`, the repository a saved workspace bundle's work is of.
 Every row already there takes each column's default, and nothing is backfilled.

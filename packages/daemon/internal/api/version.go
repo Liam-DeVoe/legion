@@ -2274,11 +2274,11 @@ package api
 // is in a turn of its own (dispatch://INFRA-3538). The daemon reads that code and no words. A pod
 // still on the earlier image, until its update round, sends its busy refusal with no code, and the
 // daemon reads it as busy from its own record of the claim working or from the agent's get_state
-// (supervise's agentRefusalOutcome). While the record does not hold the claim working, two such
-// agents are charged as unrecognised for the refusal, and as a prompt that ran no turn for the
-// prompt's result: one that does not answer get_state within the RPC bound, and one whose turn
-// ended between its refusal and the ask, as a turn on a notice can whose pre-turn work the
-// refusal came during. Nothing of the daemon API changes with the pin.
+// (supervise's agentRefusalOutcome). While the record does not hold the claim working, an agent on
+// the earlier image is still charged in two cases: it does not answer get_state within the RPC
+// bound, or its turn ended between its refusal and the ask, as a notice's turn can when the
+// refusal came during its pre-turn work. Its refusal is then charged as unrecognised, and its
+// prompt's result as a prompt that ran no turn. Nothing of the daemon API changes with the pin.
 // (This entry takes 162, the lowest number above main's 152 that no open pull request declared,
 // as .github/scripts/check-daemon-api-contract.sh read every open head's own copy of this file at
 // 2026-11-18T07:20Z: 153 #4115, 154 #3659, 155 #4273, 156 #4065, 157 #2230 and #3993, 158 #4017,

@@ -12,8 +12,7 @@ import (
 // CheckPackage reads the files the build compiles and no other. A test file and a file a build
 // constraint leaves out are no part of the package the build makes, so a test that read them
 // would hold the daemon to code it never runs. Each of the two here declares A again, so reading
-// either one fails the check on the redeclaration rather than passing unseen. The test reads each
-// file's name from its position, as every caller does.
+// either one fails the check on the redeclaration rather than passing unseen.
 func TestCheckPackageReadsTheFilesTheBuildCompilesAndNoOther(t *testing.T) {
 	dir := t.TempDir()
 	for name, source := range map[string]string{

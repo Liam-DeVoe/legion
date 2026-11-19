@@ -45,8 +45,9 @@ const (
 	// carries beside them, shimwire.CodeSessionBusy, from which its stream mints the agent's answer
 	// that it is in a turn of its own, so the task goes back unread, uncharged, and is sent again
 	// when the turn ends. They are unexported, so no other package can name them to match a
-	// refusal against; supervise's outcome source test holds what the compiler cannot: that no
-	// other package writes them out, and that the bridge uses them only to write this refusal.
+	// refusal against; supervise's outcome source test holds what the compiler cannot: that
+	// supervise, the stream and the runtime do not write them out, and that the bridge uses them
+	// only to write this refusal.
 	busyWords = "Agent is already processing a turn; the Claude Code bridge takes a prompt only between turns"
 )
 

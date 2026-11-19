@@ -66,7 +66,7 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 				}
 				for _, expr := range clause.List {
 					value := src.info.Types[expr].Value
-					if value == nil || !isOutcome(src.info.Types[expr].Type) {
+					if value == nil || !isNamed(src.info.Types[expr].Type, runtimePath, "Outcome") {
 						t.Errorf("Charges has a row %s that is no constant Outcome", src.pos(expr))
 						continue
 					}
@@ -95,7 +95,7 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 		}
 	})
 
-	t.Run("no site reads a refusal's words", func(t *testing.T) {
+	t.Run("no site matches a refusal's words", func(t *testing.T) {
 		for _, path := range []string{supervisePath, streamPath, claudebridgePath} {
 			pkg := sources[path]
 			taint := pkg.refusalWords(t)
@@ -153,7 +153,7 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 				}
 				calls[fn.Name()]++
 				for i, arg := range call.Args {
-					if !isOutcome(src.info.Types[arg].Type) {
+					if !isNamed(src.info.Types[arg].Type, runtimePath, "Outcome") {
 						continue
 					}
 					if why := judge.expr(arg); why != "" {
@@ -264,8 +264,7 @@ func (s *goSource) budgetWrites(body *ast.BlockStmt, counters map[types.Object]b
 				return true
 			}
 		}
-		named, ok := s.info.Types[target].Type.(*types.Named)
-		return ok && named.Obj().Pkg() == s.pkg && named.Obj().Name() == "Budgets"
+		return isNamed(s.info.Types[target].Type, s.pkg.Path(), "Budgets")
 	}
 	var found []budgetWrite
 	ast.Inspect(body, func(node ast.Node) bool {
@@ -309,8 +308,9 @@ type goSource struct {
 	files   []*ast.File
 	pkg     *types.Package
 	info    *types.Info
-	// given is what assignments answers, read once on its first call: both taints and the judge
-	// read it, and it walks every file of the package.
+	// given is what assignments answers, read once on its first call: the refusal taint (spread),
+	// the bridge's busy refusal (busyRefusal) and the judge read it, and it walks every file of the
+	// package.
 	given map[types.Object][]ast.Expr
 }
 
@@ -351,10 +351,11 @@ func (s *goSource) declName(decl ast.Decl) string {
 	return s.pkg.Name() + "." + receiver + "." + fn.Name.Name
 }
 
-// isOutcome is whether typ is runtime.Outcome, read from its source or from its export data.
-func isOutcome(typ types.Type) bool {
+// isNamed is whether typ is the named type the package at path declares as name, read from its
+// source or from its export data.
+func isNamed(typ types.Type, path, name string) bool {
 	named, ok := typ.(*types.Named)
-	return ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == runtimePath && named.Obj().Name() == "Outcome"
+	return ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == path && named.Obj().Name() == name
 }
 
 type declaredOutcome struct{ name, value, pos string }
@@ -365,7 +366,7 @@ func (s *goSource) declaredOutcomes(t *testing.T) []declaredOutcome {
 	t.Helper()
 	var declared []declaredOutcome
 	for ident, object := range s.info.Defs {
-		if c, ok := object.(*types.Const); ok && isOutcome(c.Type()) {
+		if c, ok := object.(*types.Const); ok && isNamed(c.Type(), runtimePath, "Outcome") {
 			declared = append(declared, declaredOutcome{name: ident.Name, value: c.Val().ExactString(), pos: s.pos(ident)})
 		}
 	}
@@ -439,22 +440,18 @@ func (s *goSource) assignments() map[types.Object][]ast.Expr {
 		}
 		return s.info.Uses[ident]
 	}
-	pair := func(lhs, rhs []ast.Expr) {
-		for i, left := range lhs {
-			target := object(left)
-			if target == nil {
-				continue
-			}
-			if len(lhs) == len(rhs) {
-				given[target] = append(given[target], rhs[i])
-			} else if len(rhs) == 1 {
-				given[target] = append(given[target], rhs[0])
-			}
-		}
-	}
 	give := func(target, expr ast.Expr) {
 		if object := object(target); object != nil {
 			given[object] = append(given[object], expr)
+		}
+	}
+	pair := func(lhs, rhs []ast.Expr) {
+		for i, left := range lhs {
+			if len(lhs) == len(rhs) {
+				give(left, rhs[i])
+			} else if len(rhs) == 1 {
+				give(left, rhs[0])
+			}
 		}
 	}
 	decls := s.funcs()
@@ -599,43 +596,37 @@ func (s *goSource) busyHolders(decl ast.Decl, words string, allowed map[ast.Expr
 }
 
 // busyRefusal is where the bridge may hold its busy words: the value its declaration gives
-// busyWords, and busyWords as the Error of a shimwire.Response the bridge hands to its respond
-// method, which is the busy refusal it writes.
+// busyWords (assignments), and busyWords as the Error of a shimwire.Response the bridge hands to
+// its respond method, which is the busy refusal it writes.
 func (s *goSource) busyRefusal(busy *types.Const) map[ast.Expr]bool {
 	allowed := map[ast.Expr]bool{}
+	for _, value := range s.assignments()[busy] {
+		allowed[value] = true
+	}
 	for _, file := range s.files {
 		ast.Inspect(file, func(node ast.Node) bool {
-			switch node := node.(type) {
-			case *ast.ValueSpec:
-				for i, name := range node.Names {
-					if s.info.Defs[name] == busy && i < len(node.Values) {
-						allowed[node.Values[i]] = true
-					}
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			fn := s.callee(call)
+			if fn == nil || fn.Pkg() != s.pkg || fn.Name() != "respond" || fn.Signature().Recv() == nil {
+				return true
+			}
+			for _, arg := range call.Args {
+				literal, ok := ast.Unparen(arg).(*ast.CompositeLit)
+				if !ok || !isNamed(s.info.Types[literal].Type, internalPath+"shimwire", "Response") {
+					continue
 				}
-			case *ast.CallExpr:
-				fn := s.callee(node)
-				if fn == nil || fn.Pkg() != s.pkg || fn.Name() != "respond" || fn.Signature().Recv() == nil {
-					return true
-				}
-				for _, arg := range node.Args {
-					literal, ok := ast.Unparen(arg).(*ast.CompositeLit)
+				for _, elt := range literal.Elts {
+					field, ok := elt.(*ast.KeyValueExpr)
 					if !ok {
 						continue
 					}
-					named, ok := s.info.Types[literal].Type.(*types.Named)
-					if !ok || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != internalPath+"shimwire" || named.Obj().Name() != "Response" {
-						continue
-					}
-					for _, elt := range literal.Elts {
-						field, ok := elt.(*ast.KeyValueExpr)
-						if !ok {
-							continue
-						}
-						key, isKey := field.Key.(*ast.Ident)
-						value, isValue := ast.Unparen(field.Value).(*ast.Ident)
-						if isKey && key.Name == "Error" && isValue && s.info.Uses[value] == busy {
-							allowed[field.Value] = true
-						}
+					key, isKey := field.Key.(*ast.Ident)
+					value, isValue := ast.Unparen(field.Value).(*ast.Ident)
+					if isKey && key.Name == "Error" && isValue && s.info.Uses[value] == busy {
+						allowed[field.Value] = true
 					}
 				}
 			}
@@ -659,8 +650,8 @@ const bridgeName = " the Claude Code bridge "
 // piece of the bridge's name (bridgeName): the words whole, a prefix or any other piece of them,
 // either alone or inside a longer text.
 func holdsBusyWords(value, words string) bool {
-	for i := range len(value) {
-		for j := range len(words) {
+	for i := range len(value) - busyRun + 1 {
+		for j := range len(words) - busyRun + 1 {
 			n := 0
 			for i+n < len(value) && j+n < len(words) && value[i+n] == words[j+n] {
 				n++
@@ -824,8 +815,9 @@ func (r *refusalTaint) matches(node ast.Node) []wordMatch {
 			if node.Tag == nil {
 				return true
 			}
+			tagText, tagEmpty := text(node.Tag), empty(node.Tag)
 			for _, stmt := range node.Body.List {
-				if slices.ContainsFunc(stmt.(*ast.CaseClause).List, func(c ast.Expr) bool { return compares(node.Tag, c) }) {
+				if slices.ContainsFunc(stmt.(*ast.CaseClause).List, func(c ast.Expr) bool { return tagText && !empty(c) || text(c) && !tagEmpty }) {
 					found = append(found, wordMatch{at: node, what: "a switch"})
 					break
 				}
@@ -934,7 +926,7 @@ func (j *outcomeJudge) function(fn *types.Func, decl *ast.FuncDecl) string {
 		}
 		if ret, ok := node.(*ast.ReturnStmt); ok {
 			for _, result := range ret.Results {
-				if isOutcome(j.src.info.Types[result].Type) {
+				if isNamed(j.src.info.Types[result].Type, runtimePath, "Outcome") {
 					if reason := j.expr(result); reason != "" {
 						why = fmt.Sprintf("%s returns %s", fn.Name(), reason)
 					}

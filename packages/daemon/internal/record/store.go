@@ -1504,13 +1504,9 @@ func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree stri
 // forget's rule reads: the decisions tree keeps on issue, or on any of its issues when issue is
 // "", whoever claims or holds them, as one KeptDecisions. Only the cleared issues' decisions are
 // handed over: a decision is asked of the gates of the issue it was made on, and every other issue
-// keeps its gates. The set carries no kept approval. The forget deletes no approval, and reads the
-// tree's gates for one only so that a task can name it (workflow.ReadKeptGates), so with or
-// without it the forget asks each decision what a start or catch-up asks it, and the approval
-// would only cost a read. The approval a re-admission keeps is read from the gates its clear then
-// deletes (admit's keepStaleApproval), and the start that names it asks it of the gates the new
-// generation registers. A nil forget is refused before anything is read or written, so a clear
-// handed no forget clears nothing.
+// keeps its gates. The set carries no kept approval: the forget deletes none
+// (workflow.ForgetSuperseded). A nil forget is refused before anything is read or written, so a
+// clear handed no forget clears nothing.
 func (s *Postgres) forgetKept(ctx context.Context, tx pgx.Tx, tree, issue string, forget KeptForget, describe string) error {
 	if forget == nil {
 		return fmt.Errorf("%s: no forget to run over the decisions kept on it, which the clear must run before it deletes the gates the forget's rule reads", describe)

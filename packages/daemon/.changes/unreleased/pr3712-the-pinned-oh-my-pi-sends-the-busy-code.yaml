@@ -7,8 +7,7 @@ body: |-
   the new image only at its update round, and until then its Oh My Pi sends that refusal with no
   code: the daemon reads it as busy, charging nothing, when its own record holds the claim working
   or when the agent's `get_state` says it is streaming. While the record does not hold the claim
-  working, such an agent is charged as unrecognised for its refusal, and as a prompt that ran no
-  turn for its prompt's result, until its pod's update round in two cases: it does not answer
-  `get_state` within the RPC bound, or its turn ended between its refusal and the `get_state` ask,
-  as when it refuses the task with its busy sentence during the pre-turn work of a notice and its
-  turn on that notice has ended by the ask.
+  working, such an agent is still charged in two cases until its pod's update round: it does not
+  answer `get_state` within the RPC bound, or its turn ended between its refusal and the ask, as a
+  notice's turn can when the refusal came during its pre-turn work. Its refusal is then charged as
+  unrecognised, and its prompt's result as a prompt that ran no turn.

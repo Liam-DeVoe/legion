@@ -112,29 +112,23 @@ func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, step
 // made on, and the tree's own for its kept approval, by issue.
 type KeptGates map[string]map[record.DesignStep]record.DesignGate
 
-// ReadKeptGates reads in tx the gates owed is asked of (KeptGates), each issue's once, and writes
-// nothing: a delivery's read-only transaction reads them so (the daemon's readNoticeTree).
+// ReadKeptGates reads in tx the gates owed is asked of (KeptGates), in one read
+// (record.Store.Gates), and writes nothing: a delivery's read-only transaction reads them so (the
+// daemon's readNoticeTree). An issue with no gate has no entry, which gateOf reads as no gate.
 func ReadKeptGates(ctx context.Context, tx pgx.Tx, store record.Store, tree string, owed record.KeptDecisions) (KeptGates, error) {
-	gates := KeptGates{}
-	read := func(issue string) error {
-		if _, ok := gates[issue]; ok {
-			return nil
-		}
-		held, err := store.GatesOf(ctx, tx, issue)
-		gates[issue] = held
-		return err
-	}
+	var issues []string
 	for _, d := range owed.Decisions {
-		if err := read(d.Issue); err != nil {
-			return nil, err
+		if !slices.Contains(issues, d.Issue) {
+			issues = append(issues, d.Issue)
 		}
 	}
-	if owed.Approved > 0 {
-		if err := read(tree); err != nil {
-			return nil, err
-		}
+	if owed.Approved > 0 && !slices.Contains(issues, tree) {
+		issues = append(issues, tree)
 	}
-	return gates, nil
+	if len(issues) == 0 {
+		return KeptGates{}, nil
+	}
+	return store.Gates(ctx, tx, issues)
 }
 
 // ForgetSuperseded reads the gates owed is asked of (ReadKeptGates) and deletes in tx the row of

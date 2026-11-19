@@ -861,10 +861,11 @@ func TestABundleTheReleaseCannotSaveStopsItAndResumesTheClaims(t *testing.T) {
 // again asked the pod's shim for a bundle over the worker stream and wrote one more hold, about
 // one a minute (BET-487's pod had 18 such releases between 13:42:50Z and 13:59:49Z on
 // 2026-11-13). So the rule marks it again only after an event that can change the outcome: a
-// push, which moves the head of the issue's pull request, or a turn of a role of the pod, which
-// writes its claim after the refusal. The worker is told once for each head a release was
-// refused at, with the size and the bound, since only a push of its own brings the work under
-// the bound.
+// write of a claim of the pod after the refused release was marked (a role's turn, any other
+// change of the claim's state, or its activity report), or a move of the head of the issue's pull
+// request (a push, or a pull request opened for an issue that had none). The worker is told once
+// for each head a release was refused at, with the size and the bound, since only a push of its
+// own brings the work under the bound.
 //
 // The refusal reaches the release two ways, and both are held. The shim refuses the bundle
 // itself and answers its size over the worker stream, which is the path of every refusal
