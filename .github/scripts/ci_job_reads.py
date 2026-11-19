@@ -1288,6 +1288,12 @@ DAEMON_PLAIN_PATTERN = "/(" + "|".join(DAEMON_RACE_PACKAGES + [TEXT_CHECK_PACKAG
 # Runs below are that command's. PRIVATE_PROC_READ is the file each such gate reads.
 PRIVATE_PROC_READ = ".github/scripts/private_proc.py"
 PRIVATE_PROC = f"../../{PRIVATE_PROC_READ}"
+# daemon-go's three steps pass --sudo: the job lifts AppArmor's restriction on unprivileged user
+# namespaces for the launcher's role tests, so without it the wrapper would make each namespace as
+# a user namespace, where sudo cannot make a process root, and the rows that run sudo themselves
+# (the hostile row's git of another user, runAsPIDOne's PID 1) fail on CI. --sudo takes the sudo
+# route alone, and changes no test the command runs.
+PRIVATE_PROC_SUDO = f"{PRIVATE_PROC} --sudo"
 
 # The three tests of this module the plugin-pack job runs: the plugin pack test and the two tests
 # of agentmodels_omp_test.go (a fourth that loads a plugin on the real Oh My Pi,
@@ -1326,7 +1332,7 @@ if PLUGIN_PACK_PACKAGE not in DAEMON_RACE_PACKAGES:
     raise ValueError(f"the plugin-pack tests are in {PLUGIN_PACK_PACKAGE}, which the race step does not run, so "
                      f"nothing skips them there; name that package's step here, or move the -skip to the step that "
                      f"runs them")
-DAEMON_RACE_SCRIPT = f"{PRIVATE_PROC} go test -count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN} " + " ".join(DAEMON_RACE_PKGS)
+DAEMON_RACE_SCRIPT = f"{PRIVATE_PROC_SUDO} go test -count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN} " + " ".join(DAEMON_RACE_PKGS)
 
 
 PLUGIN_PACK_SOURCE = f"{DAEMON}/{PLUGIN_PACK_PACKAGE}"
@@ -1447,7 +1453,7 @@ if SUPERVISE_TABLE_PACKAGE in DAEMON_RACE_PACKAGES + [TEXT_CHECK_PACKAGE]:
                      f"that runs them")
 DAEMON_PLAIN_SCRIPT = f"""\
 set -o pipefail
-go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs {PRIVATE_PROC} go test -count=1 -timeout 15m -skip {SUPERVISE_TABLE_PATTERN}"""
+go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs {PRIVATE_PROC_SUDO} go test -count=1 -timeout 15m -skip {SUPERVISE_TABLE_PATTERN}"""
 
 
 def hold_supervise_table_tests():
@@ -2013,7 +2019,7 @@ def daemon_race_packages() -> list:
 # changes this text and ci-job-daemon-go.yaml stops matching it.
 DAEMON_RACE_IMPOSSIBLE_STEP = "Test what the race build cannot run"
 DAEMON_RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(DAEMON, daemon_race_packages())
-DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON_RACE_IMPOSSIBLE_PACKAGES, PRIVATE_PROC)
+DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON_RACE_IMPOSSIBLE_PACKAGES, PRIVATE_PROC_SUDO)
 
 
 # The text-check job: the three modules' text checks, and the seventeen tests of the Dispatch API's

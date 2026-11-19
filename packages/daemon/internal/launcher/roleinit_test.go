@@ -119,7 +119,7 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 		t.Fatal(err)
 	}
 	stage := exec.Command(self, "-test.run=^TestRoleInitStageHelper$")
-	stage.Env = append(os.Environ(), roleInitStageEnv+"="+string(encoded))
+	stage.Env = append(os.Environ(), roleInitStageEnv+"="+string(encoded), hostproc.ChildEnv(t))
 	// The stage's own IPC namespace, as a container's, so the message queue it makes to stand for
 	// the container's lands in no namespace of the machine's.
 	stage.SysProcAttr = &syscall.SysProcAttr{

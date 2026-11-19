@@ -9,12 +9,14 @@
 # is a `git archive` of the base commit, so this run's EXIT trap is that subshell's and the script
 # goes on to read the run's proof.log.
 #
-# live_daemon_proof LABEL SLUG TEST EVIDENCE runs four checks, each printing `== <check>`, what it
+# live_daemon_proof LABEL SLUG TEST EVIDENCE runs three checks, each printing `== <check>`, what it
 # observed and `ok <check> (<s>s)`; the first that fails prints `FAIL <check>: <why>` and ends the
 # run non-zero. Exit 2 is an input of the caller's the run refuses. Exit 1 is every other failure.
 # prerequisites wants LEGION_TEST_PG_DSN, the PostgreSQL the daemon migrates and runs on, which
-# nothing here starts or prints, go, awk and python3, the libpq lib/loopback-dsn.py loads, `sudo -n`,
-# which the driver's namespace is made with, and a nats-server: LEGION_E2E_NATS_BIN's, or the pinned
+# nothing here starts or prints, go, awk and python3, the libpq lib/loopback-dsn.py loads, a way
+# for .github/scripts/private_proc.py to make the driver's namespace (an unprivileged user
+# namespace, as a Legion pod gives one, or `sudo -n` where the kernel refuses that: the wrapper's
+# --check), and a nats-server: LEGION_E2E_NATS_BIN's, or the pinned
 # one installed with `go install`. It refuses
 # two inputs with exit 2, before the driver is built and before the broker starts: a
 # LEGION_TEST_PG_DSN that is unset, and one whose host is not loopback, which
@@ -24,17 +26,16 @@
 # line tells that case apart, and names libpq and the package to install. The status does not:
 # the helper answers every refusal with one status, so a status of its own here would need this
 # file to read the helper's wording, or to ask for libpq a second time. broker starts that
-# nats-server with JetStream on a port the kernel picks. driver builds the daemon package's
-# `-tags e2e` test binary. proof runs the one test TEST against them, through
-# .github/scripts/private_proc.py as CI runs every daemon test binary: go test builds the driver
-# again from the cache driver filled and runs it beneath a supervisor at PID 1 of a PID and mount
-# namespace of its own, whose /proc lists the driver's processes and none of the machine's. The
+# nats-server with JetStream on a port the kernel picks. proof builds the daemon package's
+# `-tags e2e` test binary, the driver, and runs its one test TEST against them, in one go test
+# through .github/scripts/private_proc.py as CI runs every daemon test binary: go runs the driver
+# beneath a supervisor at PID 1 of a PID and mount namespace of its own, whose /proc lists the
+# driver's processes and none of the machine's, and a driver that does not build fails proof. The
 # wrapper is this checkout's, the one beside this file, whatever root the caller set. proof holds
 # that the test passed.
 #
 # SLUG names the run's own files: the work directory legion-e2e-SLUG.<pid>.* under TMPDIR (or /tmp
-# when it is unset), which holds the broker's store, the driver binary SLUG.test and go's build of
-# it for the proof, and is removed
+# when it is unset), which holds the broker's store and go's build of the driver, and is removed
 # on any exit, and the evidence directory legion-e2e-SLUG-evidence.* beside it when EVIDENCE, the
 # directory the caller named, is empty. The evidence directory is kept and printed; it holds the
 # transcript (lib/transcript.sh), the nats-server's log, the daemon's own, which the driver writes
@@ -54,10 +55,11 @@
 # with exit 1 and a FAIL line of its own, before the run builds or starts anything: that CLI is
 # this checkout's (packages/envoy-client/bin/dispatch.ts), which runs under bun out of the
 # checkout's node_modules. It then exports LEGION_E2E_REPO_ROOT, the checkout the driver builds
-# Dispatch from and runs the CLI out of, which the driver binary needs because it runs from the
-# directory the caller ran the entry script in, not the package's. An entry script whose driver
-# drives the CLI calls it after sourcing this file and before live_daemon_proof, so the refusal
-# comes before the run's own checks.
+# Dispatch from and runs the CLI out of. The driver runs in its package's directory, where go test
+# runs a test binary, and reads the checkout from that variable (internal/testbuild's RootEnv)
+# rather than from the directory it runs in. An entry script whose driver drives the CLI calls it
+# after sourcing this file and before live_daemon_proof, so the refusal comes before the run's own
+# checks.
 require_dispatch_cli() {
   command -v bun >/dev/null || {
     echo "FAIL prerequisites: bun is not on PATH; the dispatch CLI the proof drives runs under it" >&2
@@ -134,8 +136,13 @@ live_daemon_proof() {
     command -v "$tool" >/dev/null || fail "$tool is not on PATH"
   done
   [ -x "$proof_wrapper" ] || fail "no executable $proof_wrapper, which the proof runs its driver through"
-  sudo -n true 2>/dev/null ||
-    fail "sudo -n is required: the proof runs its driver beneath $proof_wrapper, which makes the driver's PID and mount namespace with it"
+  # The wrapper makes the driver's PID and mount namespace as an unprivileged user namespace where
+  # the kernel allows one, as a Legion pod's does, and with `sudo -n` where it refuses one; --check
+  # says which, or why neither can, before anything is built or started.
+  local namespace
+  namespace=$("$proof_wrapper" --check 2>&1) ||
+    fail "the driver cannot have a /proc of its own, which the proof runs it in: ${namespace#private-proc: }"
+  note "${namespace#private-proc: }"
   # require_loopback_dsn in lib/loopback-dsn.sh says why a caller of the loopback guard clears
   # these three, and why the call comes after the tool check above.
   unset PGHOSTADDR PGSERVICE PGSERVICEFILE

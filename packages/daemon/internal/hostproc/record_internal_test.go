@@ -3,12 +3,13 @@ package hostproc
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
 
-// useRecord points this process's record at a file of the test's own until the test's end, and
-// answers a reader of the lines written to it since.
+// useRecord points this process's record at a file of the test's own until the test's end, as the
+// record of the binary go ran, and answers a reader of the lines written to it since.
 func useRecord(t *testing.T) func() []string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "scans")
@@ -18,11 +19,14 @@ func useRecord(t *testing.T) func() []string {
 	}
 	recorder.mu.Lock()
 	previousFile, previousSeen, previousTests := recorder.file, recorder.seen, recorder.tests
+	previousChild, previousStarter := recorder.child, recorder.starter
 	recorder.file, recorder.seen, recorder.tests = file, map[string]bool{}, map[uint64]string{}
+	recorder.child, recorder.starter = false, ""
 	recorder.mu.Unlock()
 	t.Cleanup(func() {
 		recorder.mu.Lock()
 		recorder.file, recorder.seen, recorder.tests = previousFile, previousSeen, previousTests
+		recorder.child, recorder.starter = previousChild, previousStarter
 		recorder.mu.Unlock()
 		_ = file.Close()
 	})
@@ -81,8 +85,11 @@ func TestATestIsNamedByItsTestFunction(t *testing.T) {
 // A goroutine's test is the top-level test up its chain of starters, which a dump of every
 // goroutine names: a launcher's loop takes its starter's starter's; a subtest made of another
 // test's function takes the test that ran it, and not TestMain, which the main goroutine's stack
-// holds under every test; a scan TestMain makes itself takes TestMain; and a goroutine whose chain
-// reaches one that has returned takes none.
+// holds under every test; a scan TestMain makes itself takes none, for TestMain is no test; a
+// goroutine whose chain reaches one that has returned takes none; and a loop whose test function
+// has returned, as its cleanup stops the loop, takes the answer an earlier scan kept for a
+// goroutine of its chain, and none where no earlier scan kept one. Each answer is kept for the
+// goroutines up to the one that named it, and for none above it, which other tests share.
 func TestAGoroutinesTestIsTheTopLevelTestUpItsStarters(t *testing.T) {
 	const dump = `goroutine 40 [running]:
 example.com/pkg.(*sweep).holders(0xc000123456)
@@ -151,19 +158,49 @@ example.com/pkg.orphan()
 	/src/pkg/orphan.go:3 +0x1
 created by example.com/pkg.starter in goroutine 49
 	/src/pkg/orphan.go:2 +0x1
+
+goroutine 70 [running]:
+example.com/pkg.(*guard).scan(0xc000123456)
+	/src/pkg/guard.go:10 +0x1
+example.com/pkg.(*guard).loop()
+	/src/pkg/guard.go:20 +0x1
+created by example.com/pkg.startGuard in goroutine 69
+	/src/pkg/guard.go:19 +0x1
+
+goroutine 69 [chan receive]:
+example.com/pkg.startGuard.func2()
+	/src/pkg/guard_test.go:9 +0x1
+testing.(*common).Cleanup.func1()
+	/go/src/testing/testing.go:1211 +0x1
+testing.(*common).runCleanup(0xc000103000, 0x0)
+	/go/src/testing/testing.go:1445 +0x1
+testing.tRunner.func2()
+	/go/src/testing/testing.go:1786 +0x1
+testing.tRunner(0xc000103000, 0x1)
+	/go/src/testing/testing.go:1798 +0xf4
+created by testing.(*T).Run in goroutine 1
+	/go/src/testing/testing.go:1851 +0x413
 `
 	for _, c := range []struct {
-		id   uint64
-		want string
-		why  string
+		id    uint64
+		known map[uint64]string
+		want  string
+		chain []uint64
+		why   string
 	}{
-		{40, "TestTheOriginalConditions", "a loop of a launcher a subtest made of TestTheLauncherSweeps started"},
-		{23, "TestTheOriginalConditions", "the subtest made of TestTheLauncherSweeps"},
-		{21, "TestTheOriginalConditions", "the top-level test itself"},
-		{50, "", "its starter, goroutine 49, has returned"},
+		{40, nil, "TestTheOriginalConditions", []uint64{40, 30, 23, 22, 21}, "a loop of a launcher a subtest made of TestTheLauncherSweeps started"},
+		{23, nil, "TestTheOriginalConditions", []uint64{23, 22, 21}, "the subtest made of TestTheLauncherSweeps"},
+		{21, nil, "TestTheOriginalConditions", []uint64{21}, "the top-level test itself"},
+		{50, nil, "", []uint64{50, 49}, "its starter, goroutine 49, has returned"},
+		{70, nil, "", []uint64{70, 69, 1}, "its test function has returned, and no earlier scan kept its test's name"},
+		{70, map[uint64]string{69: "TestTheGuardStopsInItsCleanup", 1: "TestNotThisOne"}, "TestTheGuardStopsInItsCleanup", []uint64{70, 69},
+			"an earlier scan kept its test's goroutine's answer"},
+		{40, map[uint64]string{30: "TestTheLauncherSweeps", 23: ""}, "TestTheLauncherSweeps", []uint64{40, 30},
+			"the answer kept for its starter, the nearest of the chain that has one"},
 	} {
-		if got := testOfChain(c.id, []byte(dump)); got != c.want {
-			t.Errorf("the test of goroutine %d is %q, want %q: %s", c.id, got, c.want, c.why)
+		got, chain := testOfChain(c.id, []byte(dump), c.known)
+		if got != c.want || !slices.Equal(chain, c.chain) {
+			t.Errorf("the test of goroutine %d is %q, kept for %v, want %q kept for %v: %s", c.id, got, chain, c.want, c.chain, c.why)
 		}
 	}
 	const helper = `goroutine 1 [running]:
@@ -174,7 +211,7 @@ example.com/pkg.TestMain(0xc000180000)
 main.main()
 	_testmain.go:100 +0xa8
 `
-	if got := testOfChain(1, []byte(helper)); got != "TestMain" {
-		t.Errorf("the test of a scan TestMain makes is %q, want TestMain", got)
+	if got, _ := testOfChain(1, []byte(helper), nil); got != "" {
+		t.Errorf("the test of a scan TestMain makes is %q, want none: TestMain is no test", got)
 	}
 }

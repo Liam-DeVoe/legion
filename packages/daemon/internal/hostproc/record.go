@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"testing"
 	"unicode"
 	"unicode/utf8"
 )
@@ -25,9 +26,29 @@ import (
 //	                                              binary with no scan line recorded and scanned
 //	                                              nothing
 //	scan <kind> <test> <scanner> <root> <reason>  one scan: kind is ScanOwn, ScanNamespace,
-//	                                              ScanReason or ScanRefused; test is "" when no
-//	                                              goroutine up the scan's chain runs a test
+//	                                              ScanReason or ScanRefused; test is "" where the
+//	                                              record cannot name it (testOf), which the
+//	                                              wrapper says as UNKNOWN
 const RecordEnv = "HOSTPROC_RECORD"
+
+// BinaryEnv is set, by the wrapper, for the test binary go ran, and for no child a test starts of
+// it: the binary takes it out of its own environment as it starts, so a child a test starts with
+// that environment is known for a child, whose scans its chain of goroutines cannot name (testOf).
+const BinaryEnv = "HOSTPROC_BINARY"
+
+// TestEnv names, in a child a test starts of its own test binary, the top-level test that started
+// it: the test every scan of the child is recorded with. ChildEnv is its entry.
+const TestEnv = "HOSTPROC_TEST"
+
+// ChildEnv is the environment entry that tells a child t starts of its own test binary which test
+// started it, TestEnv set to t's top-level test, for the child's command to carry beside the
+// variables it is started with. A child given none records its scans with no test, and the wrapper
+// says them as UNKNOWN and fails the step: the helper test a child runs is not the test the
+// command ran.
+func ChildEnv(t testing.TB) string {
+	top, _, _ := strings.Cut(t.Name(), "/")
+	return TestEnv + "=" + top
+}
 
 // The kinds of root a scan line names.
 const (
@@ -45,12 +66,16 @@ const (
 )
 
 // recorder is this process's record, when RecordEnv names one it can open: seen keeps each line
-// to one write, and tests the test of each goroutine whose own stack names none (testOf).
+// to one write, tests the test of each goroutine an earlier scan's chain passed through (testOf),
+// and child and starter say whether this process is a child a test started of its test binary and,
+// for one, the test TestEnv names.
 var recorder struct {
-	mu    sync.Mutex
-	file  *os.File
-	seen  map[string]bool
-	tests map[uint64]string
+	mu      sync.Mutex
+	file    *os.File
+	seen    map[string]bool
+	tests   map[uint64]string
+	child   bool
+	starter string
 }
 
 // A test binary opens its record as it starts, before any test runs, and writes its binary line,
@@ -63,7 +88,8 @@ func init() {
 // before the binary ran, and opened without O_CREAT, for the reason the wrapper's own record is
 // (private_proc.py). A process that cannot open it — a child a test started in a mount namespace
 // of its own, where the path is another directory — records nothing; the wrapper holds each binary
-// to its own binary line.
+// to its own binary line. The binary go ran takes BinaryEnv out of its environment; a process
+// started without it is a child, recorded with the test TestEnv names.
 func openRecord() {
 	path := os.Getenv(RecordEnv)
 	if path == "" || !inTest() {
@@ -73,7 +99,12 @@ func openRecord() {
 	if err != nil {
 		return
 	}
+	_, binary := os.LookupEnv(BinaryEnv)
+	if binary {
+		_ = os.Unsetenv(BinaryEnv)
+	}
 	recorder.file, recorder.seen, recorder.tests = file, map[string]bool{}, map[uint64]string{}
+	recorder.child, recorder.starter = !binary, os.Getenv(TestEnv)
 	writeRecord("binary", strconv.Itoa(os.Getpid()))
 }
 
@@ -116,23 +147,35 @@ func writeRecord(fields ...string) {
 	}
 }
 
-// testOf is the test the calling goroutine scans for: the top-level test go test ran, which is
-// the outermost Test function on the stack of the calling goroutine or of the goroutines that
-// started it, one up from the next, as Go's dump of every goroutine names each one's starter
-// ("created by … in goroutine N"). That chain holds a test's own goroutine and every subtest's, so
-// a subtest made of another test's function (t.Run(name, TestX)), or a launcher's loop a test
-// started, is named by the test that ran it. TestMain stands for no test the chain passes through,
-// and names a scan only where no other test does, one a helper child makes from its TestMain. It is
-// "" when no goroutine of the chain still runs a test: a starter that has returned takes its stack
-// with it. The answer for each goroutine is kept, so a loop that scans every second dumps every
-// goroutine once. The caller holds recorder.mu.
+// testOf is the test the calling goroutine scans for. In a child a test started of its test
+// binary it is the test TestEnv names, "" for none: the helper the child runs is no test the
+// command ran, and the test that started it runs in another process, which no chain reaches.
+// Elsewhere it is the top-level test go test ran, which is the outermost Test function on the
+// stack of the calling goroutine or of the goroutines that started it, one up from the next, as
+// Go's dump of every goroutine names each one's starter ("created by … in goroutine N"). That chain
+// holds a test's own goroutine and every subtest's, so a subtest made of another test's function
+// (t.Run(name, TestX)), or a launcher's loop a test started, is named by the test that ran it.
+//
+// The answer is kept for every goroutine of the chain up to the one that named it (testOfChain):
+// goroutine ids are never reused, and a goroutine a test started stays that test's. So a loop
+// that scans every second dumps every goroutine once, and a loop whose first scan comes after its
+// test function returned, as its cleanup stops it, is named by a goroutine of its chain an earlier
+// scan named, the one that built its scanner among them. TestMain is no test: a scan whose chain
+// reaches only TestMain, or a test function that has returned with no earlier scan passing
+// through it, is "", which the wrapper says as UNKNOWN rather than name a test that may not have
+// made it. The caller holds recorder.mu.
 func testOf() string {
+	if recorder.child {
+		return recorder.starter
+	}
 	id := goroutineID()
 	if test, ok := recorder.tests[id]; ok {
 		return test
 	}
-	test := testOfChain(id, allStacks())
-	recorder.tests[id] = test
+	test, chain := testOfChain(id, allStacks(), recorder.tests)
+	for _, g := range chain {
+		recorder.tests[g] = test
+	}
 	return test
 }
 
@@ -179,36 +222,42 @@ func allStacks() []byte {
 }
 
 // goroutineStack is what testOfChain needs of one goroutine of a dump: the outermost Test function
-// on its stack but TestMain, whether TestMain is on it, and the goroutine that started it, 0 for
-// none.
+// on its stack (TestMain is none), and the goroutine that started it, 0 for none.
 type goroutineStack struct {
 	test    string
-	main    bool
 	starter uint64
 }
 
-// testOfChain is testOf's answer for goroutine id, read from dump: the test of the highest
-// goroutine of id's chain of starters whose stack names one, TestMain when only TestMain is named,
-// and "" when none is.
-func testOfChain(id uint64, dump []byte) string {
+// testOfChain is testOf's answer for goroutine id, read from dump and from known, the answers kept
+// for goroutines an earlier chain passed through: the test of the highest goroutine of id's chain
+// of starters whose stack names one, or a known answer of a goroutine on it, which was that
+// goroutine's own highest; "" when neither is. chain is the goroutines from id up to the one that
+// gave the answer, each of which takes it: a goroutine above that one, goroutine 1 or a t.Run's
+// caller, is shared with other tests and takes none, and with no answer every goroutine walked
+// takes "", since a chain only loses stacks as its goroutines return.
+func testOfChain(id uint64, dump []byte, known map[uint64]string) (string, []uint64) {
 	stacks := parseStacks(dump)
-	test, main := "", false
+	test, named := "", 0
+	var walked []uint64
 	seen := map[uint64]bool{}
 	for g := id; g != 0 && !seen[g]; g = stacks[g].starter {
 		seen[g] = true
+		walked = append(walked, g)
+		if answer, ok := known[g]; ok && answer != "" {
+			return answer, walked
+		}
 		stack, ok := stacks[g]
 		if !ok {
 			break
 		}
 		if stack.test != "" {
-			test = stack.test
+			test, named = stack.test, len(walked)
 		}
-		main = main || stack.main
 	}
-	if test == "" && main {
-		return "TestMain"
+	if test == "" {
+		return "", walked
 	}
-	return test
+	return test, walked[:named]
 }
 
 // parseStacks reads a dump of every goroutine: blocks apart by a blank line, each a "goroutine N
@@ -241,11 +290,7 @@ func parseStacks(dump []byte) map[uint64]goroutineStack {
 			if open := strings.LastIndexByte(line, '('); open > 0 {
 				function = line[:open]
 			}
-			switch test := testName(function); test {
-			case "":
-			case "TestMain":
-				stack.main = true
-			default:
+			if test := testName(function); test != "" && test != "TestMain" {
 				stack.test = test
 			}
 		}

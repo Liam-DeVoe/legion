@@ -338,7 +338,7 @@ STATUS = re.compile(r"^(ok|FAIL|\?)\s+(\S+)")
 SHELL_VAR = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
 FOR_LINE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*;\s*do$")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
-XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?:\S*\.github/scripts/private_proc\.py\s+)?(?P<test>go\s+test\b.*)$")
+XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?:\S*\.github/scripts/private_proc\.py\s+(?:--sudo\s+)?)?(?P<test>go\s+test\b.*)$")
 TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
 
 
@@ -385,6 +385,9 @@ ENV_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^$]*$")
 # this tuple does not name is refused rather than guessed at. Matched by the end of the word,
 # since a step writes the path from its own working directory.
 GO_WRAPPERS = (".github/scripts/race_memory.py", ".github/scripts/private_proc.py")
+# The options of a wrapper's own, before its go command: private_proc.py's --sudo chooses how it
+# makes each test binary's namespace, and changes no test the command runs.
+WRAPPER_OPTIONS = ("--sudo",)
 # go commands that run no test, so a step may hold one and this script need not read it.
 NO_TEST_GO = ("build", "vet", "list", "install", "mod", "work", "env", "generate", "tool", "run")
 # go test flags whose value is the next argument.
@@ -641,8 +644,12 @@ def go_command(line: str) -> tuple[list[str], str]:
             continue
         break
     head = rest.split(None, 1)
-    if len(head) == 2 and head[0].endswith(GO_WRAPPERS) and head[1].split(None, 1)[0] == "go":
-        rest = head[1]
+    if len(head) == 2 and head[0].endswith(GO_WRAPPERS):
+        after = head[1]
+        while (option := after.split(None, 1))[0] in WRAPPER_OPTIONS and len(option) == 2:
+            after = option[1]
+        if after.split(None, 1)[0] == "go":
+            rest = after
     return rest.split(), rest
 
 

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/hostproc"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"golang.org/x/sys/unix"
 )
@@ -575,7 +576,7 @@ func TestASweepsOwnDeleterIsNoHoldOnTheRootsItDeletesFrom(t *testing.T) {
 			defer cancel()
 			child := exec.CommandContext(ctx, self, "-test.run=^TestASweepsOwnDeleterIsNoHoldHelper$", "-test.v")
 			child.Dir = "/"
-			child.Env = append(os.Environ(), volumeTrimOwnHoldEnv+"="+sweep)
+			child.Env = append(os.Environ(), volumeTrimOwnHoldEnv+"="+sweep, hostproc.ChildEnv(t))
 			child.SysProcAttr = attr
 			output, err := child.CombinedOutput()
 			if err != nil {

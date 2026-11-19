@@ -2,6 +2,7 @@ package hostproc_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -12,7 +13,9 @@ import (
 )
 
 // newRecord is an empty record of scans for a child of this test binary, which opens the file
-// RecordEnv names as it starts (the wrapper makes it the same way, before the binary runs).
+// RecordEnv names as it starts (the wrapper makes it the same way, before the binary runs). The
+// child stands for a binary go ran (BinaryEnv), whose scans its chain of goroutines names, unless
+// the test starts it as a child of the test (runChild).
 func newRecord(t *testing.T) string {
 	t.Helper()
 	record := filepath.Join(t.TempDir(), "scans")
@@ -20,7 +23,29 @@ func newRecord(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Setenv(hostproc.RecordEnv, record)
+	t.Setenv(hostproc.BinaryEnv, "1")
 	return record
+}
+
+// runChild runs this test binary again on the tests run matches, with this process's environment
+// and env, and fails t unless it passes. With binary false it takes BinaryEnv out, so the child is
+// what a test's re-run of its own binary is, a child and never the binary go ran.
+func runChild(t *testing.T, run string, binary bool, env ...string) {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := exec.Command(self, "-test.run="+run, "-test.count=1", "-test.v")
+	for _, entry := range os.Environ() {
+		if binary || !strings.HasPrefix(entry, hostproc.BinaryEnv+"=") {
+			child.Env = append(child.Env, entry)
+		}
+	}
+	child.Env = append(child.Env, env...)
+	if output, err := child.CombinedOutput(); err != nil {
+		t.Fatalf("the child failed: %v\n%s", err, output)
+	}
 }
 
 // recordLines is every line of a record, its fields split at the tabs.
@@ -115,4 +140,145 @@ func TestABinaryGivenNoRecordWritesNone(t *testing.T) {
 	if lines := recordLines(t, record); len(lines) != 0 {
 		t.Fatalf("a child with no record wrote %q", lines)
 	}
+}
+
+// helperEnv is set in the children the tests below start, the one process in which each of the
+// helper tests after it scans; elsewhere each returns at once.
+const helperEnv = "HOSTPROC_RECORD_TEST_HELPER"
+
+// ownRoot is a root of the test's own: the package's directory, where go test runs each test
+// binary, and where a child started with no directory of its own runs too.
+func ownRoot(t *testing.T) string {
+	t.Helper()
+	own, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return own
+}
+
+// wantLines fails t unless record holds a binary line and then want, in order.
+func wantLines(t *testing.T, record string, want [][]string) {
+	t.Helper()
+	lines := recordLines(t, record)
+	if len(lines) != 1+len(want) || lines[0][0] != "binary" {
+		t.Fatalf("the record holds %q, want the child's binary line and then %q", lines, want)
+	}
+	for i, line := range lines[1:] {
+		if !slices.Equal(line, want[i]) {
+			t.Errorf("line %d of the record is %q, want %q", i+2, line, want[i])
+		}
+	}
+}
+
+// TestRecordHelperScans is the helper a child below runs under its own name, as a launcher test
+// re-runs its binary as role-init: no test of the command, it scans a root of the test's own once.
+func TestRecordHelperScans(t *testing.T) {
+	if os.Getenv(helperEnv) == "" {
+		return
+	}
+	hostproc.Check("the helper child's scanner", ownRoot(t), hostproc.Reason{})
+}
+
+// A scan a child makes, which a test started of its own binary under a helper's name, is recorded
+// with the test that started it, which hostproc.ChildEnv tells the child, and not with the helper,
+// which is no test the command ran.
+func TestAScanInAHelperChildIsNamedByTheTestThatStartedIt(t *testing.T) {
+	record := newRecord(t)
+	runChild(t, "^TestRecordHelperScans$", false, helperEnv+"=1", hostproc.ChildEnv(t))
+	wantLines(t, record, [][]string{
+		{"scan", hostproc.ScanOwn, "TestAScanInAHelperChildIsNamedByTheTestThatStartedIt", "the helper child's scanner", ownRoot(t), ""},
+	})
+}
+
+// A child no test named records its scans with no test, which the wrapper says as UNKNOWN, rather
+// than under its helper's name, a test the command did not run.
+func TestAScanInAChildNoTestNamedIsRecordedWithNoTest(t *testing.T) {
+	record := newRecord(t)
+	runChild(t, "^TestRecordHelperScans$", false, helperEnv+"=1")
+	wantLines(t, record, [][]string{{"scan", hostproc.ScanOwn, "", "the helper child's scanner", ownRoot(t), ""}})
+}
+
+// startLoop starts a loop on a goroutine of its own that scans own once, when the test's cleanup
+// stops it, as a launcher's loops make a last scan when a test's helper stops the launcher. With
+// seeded, the goroutine that starts the loop first scans own itself, as a launcher's memory guard
+// is built by a scan of its root before its loop starts, and returns. Neither goroutine's stack
+// names a test, and the test function has returned by the time the loop scans.
+func startLoop(t *testing.T, seeded bool, scanner string) {
+	own, stop, done := ownRoot(t), make(chan struct{}), make(chan struct{})
+	loop := func() {
+		defer close(done)
+		<-stop
+		hostproc.Check(scanner, own, hostproc.Reason{})
+	}
+	if seeded {
+		started := make(chan struct{})
+		go func() {
+			defer close(started)
+			hostproc.Check("the seeding scanner", own, hostproc.Reason{})
+			go loop()
+		}()
+		<-started
+	} else {
+		go loop()
+	}
+	t.Cleanup(func() { close(stop); <-done })
+}
+
+// TestRecordLoopSeeded and TestRecordLoopUnseeded are the two helpers the test below runs in a
+// child that stands for a binary go ran.
+func TestRecordLoopSeeded(t *testing.T) {
+	if os.Getenv(helperEnv) != "" {
+		startLoop(t, true, "the seeded loop's scanner")
+	}
+}
+
+func TestRecordLoopUnseeded(t *testing.T) {
+	if os.Getenv(helperEnv) != "" {
+		startLoop(t, false, "the unseeded loop's scanner")
+	}
+}
+
+// A loop whose one scan comes while its test's cleanup runs, after the test function returned, is
+// named by the scan that built it on a goroutine of its chain, which kept its test's name; a loop no
+// earlier scan of its chain named is recorded with no test, which the wrapper says as UNKNOWN,
+// rather than under TestMain or a test it cannot see.
+func TestALoopsScanInItsTestsCleanupIsNamedOnlyThroughAnEarlierScanOfItsChain(t *testing.T) {
+	record := newRecord(t)
+	runChild(t, "^(TestRecordLoopSeeded|TestRecordLoopUnseeded)$", true, helperEnv+"=1")
+	own := ownRoot(t)
+	wantLines(t, record, [][]string{
+		{"scan", hostproc.ScanOwn, "TestRecordLoopSeeded", "the seeding scanner", own, ""},
+		{"scan", hostproc.ScanOwn, "TestRecordLoopSeeded", "the seeded loop's scanner", own, ""},
+		{"scan", hostproc.ScanOwn, "", "the unseeded loop's scanner", own, ""},
+	})
+}
+
+// TestScanPairFirst and TestScanPairSecond are the two tests of one binary the test below runs in
+// a child that stands for a binary go ran: both make one same scan, and the second one more.
+func TestScanPairFirst(t *testing.T) {
+	if os.Getenv(helperEnv) != "" {
+		hostproc.Check("the pair's shared scanner", ownRoot(t), hostproc.Reason{})
+	}
+}
+
+func TestScanPairSecond(t *testing.T) {
+	if os.Getenv(helperEnv) != "" {
+		hostproc.Check("the pair's shared scanner", ownRoot(t), hostproc.Reason{})
+		hostproc.Check("the second's own scanner", ownRoot(t), hostproc.Reason{})
+	}
+}
+
+// Two tests of one binary that make the same scan are each recorded with it, and a scan of the
+// second is recorded with the second: the record holds tests apart, as a CI binary of many tests
+// needs, and not only the scans of one test.
+func TestEachTestOfOneBinaryIsRecordedWithItsOwnScans(t *testing.T) {
+	record := newRecord(t)
+	runChild(t, "^(TestScanPairFirst|TestScanPairSecond)$", true, helperEnv+"=1")
+	own := ownRoot(t)
+	wantLines(t, record, [][]string{
+		{"scan", hostproc.ScanOwn, "TestScanPairFirst", "the pair's shared scanner", own, ""},
+		{"scan", hostproc.ScanOwn, "TestScanPairSecond", "the pair's shared scanner", own, ""},
+		{"scan", hostproc.ScanOwn, "TestScanPairSecond", "the second's own scanner", own, ""},
+	})
 }

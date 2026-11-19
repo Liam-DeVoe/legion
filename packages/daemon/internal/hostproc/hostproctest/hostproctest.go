@@ -74,8 +74,9 @@ func inChild(t *testing.T, body func()) bool {
 	return true
 }
 
-// runChild runs the test binary again on this one test, with childEnv naming it, and answers what
-// it wrote and its exit status.
+// runChild runs the test binary again on this one test, with childEnv naming it and the record's
+// TestEnv naming its top-level test (hostproc.ChildEnv), and answers what it wrote and its exit
+// status.
 func runChild(t *testing.T) (string, int) {
 	t.Helper()
 	self, err := os.Executable()
@@ -89,7 +90,7 @@ func runChild(t *testing.T) (string, int) {
 	ctx, cancel := context.WithTimeout(context.Background(), bound)
 	defer cancel()
 	command := exec.CommandContext(ctx, self, "-test.run="+runPattern(t.Name()), "-test.count=1", "-test.v")
-	command.Env = append(os.Environ(), childEnv+"="+t.Name())
+	command.Env = append(os.Environ(), childEnv+"="+t.Name(), hostproc.ChildEnv(t))
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
 	err = command.Run()

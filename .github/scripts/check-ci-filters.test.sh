@@ -2552,6 +2552,73 @@ daemon_step "$root" "Build the daemon's test binaries" "go test -c -o /dev/null 
 run_check "$root"
 check "no line of rule 21" "$(is "$(contains "$out" "$rule21")" false)"
 
+# The forms the gates of the last round found rule 21 let through, and the three things it did
+# right that no case held: each its own case, its step written as a block (daemon_block_step), so a
+# line of any shape and a line continued with `\` reach the rule as bash reads them. Each case
+# reads the rule's line for its step with grep -F (has), since the lines hold regular-expression
+# characters. rule21_refuses <fixture> <case> <working directory> <run line> <where it names>.
+daemon_block_step() {
+  local body
+  body=$(printf '%s\n' "$3" | sed 's/^/          /')
+  replace "$1/.github/workflows/ci.yaml" $'      - name: Report ci-ok when this job decides a merge-group run\n        if: always()\n        uses: ./.github/actions/ci-ok-report\n        with:\n          changes: ${{ toJSON(needs.changes) }}\n          job-status: ${{ job.status }}\n  image:' \
+    $'      - name: '"$2"$'\n        run: |\n'"$body"$'\n        working-directory: '"$4"$'\n      - name: Report ci-ok when this job decides a merge-group run\n        if: always()\n        uses: ./.github/actions/ci-ok-report\n        with:\n          changes: ${{ toJSON(needs.changes) }}\n          job-status: ${{ job.status }}\n  image:'
+}
+has() { grep -qF -- "$2" <<<"$1" && echo true || echo false; }
+# daemon_workspace <root>: the fixture's go.work uses a daemon module of this repository's module
+# path and another module beside mod, as this repository's binds packages/daemon and
+# packages/envoy, so a go command from the root or from the other module can name the daemon's
+# packages.
+daemon_workspace() {
+  mkdir -p "$1/packages/daemon" "$1/packages/envoy"
+  printf 'module github.com/sjawhar/legion/daemon\n\ngo 1.21\n' > "$1/packages/daemon/go.mod"
+  printf 'module github.com/sjawhar/legion/envoy\n\ngo 1.21\n' > "$1/packages/envoy/go.mod"
+  printf 'go 1.21\n\nuse (\n\t./mod\n\t./packages/daemon\n\t./packages/envoy\n)\n' > "$1/go.work"
+}
+rule21_refuses() {
+  echo "case: $2"
+  root=$(fixture "$1")
+  daemon_workspace "$root"
+  daemon_block_step "$root" "Test the daemon" "$4" "$3"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "names the line and where it runs" "$(has "$out" "step \"Test the daemon\" runs \`${6:-$4}\` in $5 $rule21")"
+}
+rule21_refuses daemon-go-c-equals "go -C=dir into the daemon from the root" . "go -C=packages/daemon test -count=1 ./..." packages/daemon
+rule21_refuses daemon-package-path "a package path of the daemon from the root" . "go test -count=1 ./packages/daemon/..." "the root, whose packages are the daemon's,"
+rule21_refuses daemon-root-pattern "./... from the root, whose workspace holds the daemon" . "go test ./..." "the root, whose packages are the daemon's,"
+rule21_refuses daemon-module-path "the daemon's module path from another module" packages/envoy "go test -count=1 github.com/sjawhar/legion/daemon/..." "packages/envoy, whose packages are the daemon's,"
+rule21_refuses daemon-env-c "env -C into the daemon" . "env -C packages/daemon go test -count=1 ./..." packages/daemon
+rule21_refuses daemon-pushd "pushd into the daemon" . "pushd packages/daemon && go test -count=1 ./..." packages/daemon
+rule21_refuses daemon-continued "a go test continued over two lines with \\" packages/daemon $'go \\\n  test -count=1 ./...' packages/daemon "go    test -count=1 ./..."
+rule21_refuses daemon-binary-not-dot-test "a test binary built without the .test suffix and run by its own name" packages/daemon "go test -c -o launcher.bin ./internal/launcher/ && ./launcher.bin -test.v" "packages/daemon, the test binary ./launcher.bin run by its own name,"
+rule21_refuses daemon-cd-p "cd -P into the daemon" . "cd -P packages/daemon && go test ./..." packages/daemon
+rule21_refuses daemon-cd-dashdash "cd -- into the daemon" . "cd -- packages/daemon && go test ./..." packages/daemon
+rule21_refuses daemon-go-path "a go named by its full path" packages/daemon "/usr/local/go/bin/go test ./..." packages/daemon
+rule21_refuses daemon-go-variable "a go named by a variable" packages/daemon '"$GO" test ./...' packages/daemon
+rule21_refuses daemon-bash-c-binary "a test binary behind bash -c" packages/daemon "bash -c './launcher.test -test.run X'" "packages/daemon, the test binary ./launcher.test run by its own name,"
+rule21_refuses daemon-subshell-cd "a cd in a subshell, which the line's next command does not take" packages/daemon "(cd ../envoy && true); go test ./..." packages/daemon
+rule21_refuses daemon-setsid "a test binary behind setsid" packages/daemon "setsid ./launcher.test -test.v" "packages/daemon, the test binary ./launcher.test run by its own name,"
+rule21_refuses daemon-stdbuf "a test binary behind stdbuf" packages/daemon "stdbuf -oL ./launcher.test -test.v" "packages/daemon, the test binary ./launcher.test run by its own name,"
+rule21_refuses daemon-nohup "a test binary behind nohup" packages/daemon "nohup ./launcher.test -test.v" "packages/daemon, the test binary ./launcher.test run by its own name,"
+rule21_refuses daemon-timeout-binary "a test binary behind a runner, timeout" packages/daemon "timeout 20m ./launcher.test -test.v" "packages/daemon, the test binary ./launcher.test run by its own name,"
+rule21_refuses daemon-cd-unknown "a go test after a cd to a directory named by a variable" . 'cd "$DAEMON" && go test ./...' "a directory a cd made unknown"
+rule21_refuses daemon-semicolon "a -c build and a run split by ; rather than &&" packages/daemon "go test -c -o /dev/null ./... ; go test -count=1 ./..." packages/daemon
+
+echo "case: the forms beside those that run no daemon test binary outside the wrapper pass rule 21"
+root=$(fixture daemon-quiet-forms)
+daemon_workspace "$root"
+daemon_block_step "$root" "Test the daemon with --sudo" "../../.github/scripts/private_proc.py --sudo go test -count=1 ./..." packages/daemon
+daemon_block_step "$root" "Test the daemon through xargs with --sudo" "go list ./... | xargs ../../.github/scripts/private_proc.py --sudo go test -count=1" packages/daemon
+daemon_block_step "$root" "Test another module by its path from the root" "go test ./packages/envoy/..." .
+daemon_block_step "$root" "Test another module by its import path" "go test github.com/sjawhar/legion/envoy/..." packages/daemon
+daemon_block_step "$root" "Test another module's packages through xargs" "go list ../envoy/... | xargs go test" packages/daemon
+daemon_block_step "$root" "Run another module's test binary by its own name" "go test -c -o x.test ./internal/x/ && ./x.test -test.v" packages/envoy
+daemon_block_step "$root" "Read a test binary's name" "rm -f launcher.test" packages/daemon
+daemon_block_step "$root" "Build a command named like a test binary" "go build -o launcher.test ./cmd/legion" packages/daemon
+daemon_block_step "$root" "Leave the daemon by popd" "pushd packages/daemon && popd && go test ./packages/envoy/..." .
+run_check "$root"
+check "no line of rule 21" "$(is "$(contains "$out" "$rule21")" false)"
+
 # Rule 20. darwin_vet <root> <set>...: a step of the app job that vets ./... of mod for
 # darwin/arm64 once per <set> (an empty one is no tag), pinned as an exact entry with one Run
 # per set carrying that platform and those tags, as ci_job_reads.py's darwin_vet pins this
