@@ -348,3 +348,31 @@ func TestGhJSONGraphQLEndpointSpellingsReadOneFieldAtATime(t *testing.T) {
 		})
 	}
 }
+
+// A `gh api graphql` call can take its query from standard input, `-F query=@-`, and gh then sends
+// those bytes as the request's GraphQL query: on 2026-11-19 GitHub parsed a mutation sent so from
+// the gh of an INFRA issue pod, and answered "Could not resolve to a node" for its invented id.
+// So that input is a GraphQL query and is read one literal at a time, as the same query is from a
+// `-F query=@<file>` file: the fixture's two words in two literals pass, and a name written with an
+// escape inside one literal is refused. Standard input named by `-F <name>=@-` for any other field
+// stays text GitHub stores as it stands.
+func TestGhJSONGraphQLQueryOnStandardInputReadsOneFieldAtATime(t *testing.T) {
+	apart := graphQLMutation("the "+leakguardtest.PairName+" notes", "a "+leakguardtest.PairWord+" aside")
+	escaped := graphQLMutation("the "+strings.Replace(leakguardtest.PairName, "l", `\u006c`, 1)+" and the "+leakguardtest.PairWord, "a clean body")
+	refusedWhole(t, apart)
+	if strings.Contains(escaped, leakguardtest.PairName) {
+		t.Fatalf("the query %q spells the name in its own bytes, so it proves nothing", escaped)
+	}
+	for _, tc := range []struct{ name, stdinOption string }{
+		{"read out of the argv", ""},
+		{"named by the caller's parse", "--field"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			call := func(query string) GhRequest {
+				return GhRequest{Args: []string{"api", "graphql", "-F", "query=@-"}, Stdin: strings.NewReader(query), StdinOption: tc.stdinOption}
+			}
+			cleared(t, ghFieldCall(t, call(apart)))
+			reports(t, refusal(t, ghFieldCall(t, call(escaped))).Lines, "the gh call's standard input, GraphQL string 2: "+leakguardtest.PairClass)
+		})
+	}
+}
