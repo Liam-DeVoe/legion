@@ -302,7 +302,7 @@ jobs:
     #   ./.github/actions/setup-bun                           19
     #   bun install --frozen-lockfile                         62
     #   Build dispatch dashboard                              34
-    #   Read the lanes' PostgreSQL and time its provider       5
+    #   Read the stacks' PostgreSQL and time its provider      5
     #   Start an S3-compatible server for uploaded files       1
     #   Wait for the S3-compatible server                     24
     #   Browser-test dispatch dashboard                      356   (carries its own budget)
@@ -462,7 +462,7 @@ jobs:
       # Its head says what each line it prints is for. The argument is this job's stack count,
       # the `--workers 4` the browser step below passes Playwright, so the copy time it prints
       # is this job's own.
-      - name: Read the lanes' PostgreSQL and time its provider
+      - name: Read the stacks' PostgreSQL and time its provider
         run: .github/scripts/dispatch-browser-postgres.sh 4
       # The file store the browser suite uploads through: the server runs with
       # DISPATCH_FILE_STORE_BUCKET set (e2e/run-server.sh reads
@@ -822,7 +822,7 @@ jobs:
     #   ./.github/actions/setup-bun                           20
     #   bun install --frozen-lockfile                          9
     #   Build dispatch dashboard                              35
-    #   Read the lanes' PostgreSQL and time its provider       3
+    #   Read the stacks' PostgreSQL and time its provider      3
     #   Browser-test dispatch dashboard                       69   (carries its own budget)
     #   upload-artifact, this leg's blob report                2
     #   What the run left behind                               0
@@ -914,7 +914,7 @@ jobs:
       # That step says why it is read here or nowhere, and the script it calls says what each
       # line it prints is for. The argument is this job's stack count: one copy rather than
       # four, since this job runs one worker.
-      - name: Read the lanes' PostgreSQL and time its provider
+      - name: Read the stacks' PostgreSQL and time its provider
         run: .github/scripts/dispatch-browser-postgres.sh 1
       - name: Browser-test dispatch dashboard (${{ matrix.project }})
         # `bun run e2e` builds the SPA itself, which would rebuild it a second time in this job.

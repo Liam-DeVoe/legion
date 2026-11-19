@@ -2078,7 +2078,7 @@ BROWSER_MERGE_STEP = "Merge the legs' blob reports into one report"
 BROWSER_SELECT_STEP = "Take the newest attempt of each leg's blob report"
 BROWSER_READ_ONE_STEP = "Reading one, the rows"
 BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
-BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
+BROWSER_PG_STEP = "Read the stacks' PostgreSQL and time its provider"
 # The visual job's own step, which runs e2e/visual-run.sh: that script seeds on the host, where
 # e2e/run-server.sh's `go build` of the Dispatch server has already run, and then runs Playwright
 # in the pinned container. That build compiles ./cmd/dispatch, which the multiprocess job's

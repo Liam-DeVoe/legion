@@ -2695,7 +2695,7 @@ jobs:
               # is a read of the ci_filters gate instead, so a change to it re-runs this check,
               # which holds this filter and that gate together.
               - '.github/workflows/dispatch-browser.yaml'
-              # The reading of the lanes' PostgreSQL the shard and alone jobs run before the
+              # The reading of the stacks' PostgreSQL the shard and alone jobs run before the
               # suite, the script the merge job runs to take each leg's newest attempt, and the
               # script that makes the merge job's two reads of its own run, which reads this run's
               # own attempt's jobs and says a refused blob download was a refused read. The
