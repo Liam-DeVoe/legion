@@ -36,8 +36,9 @@ var readsNoCommit = []struct {
 // scenarioAs is a copy of the scenario name in a directory of the test's own, with its check id
 // written as a check of procedure and subject by the one conversion that specgraph's sweeps read
 // their bases through too (specgraphtest.As): its block in each approved version and in each spec
-// file, and for a check of production each result of it that read a transaction of the graph
-// reading the deploy d1 instead, as a result of production reads a deploy. The test fails when the
+// file, for a check of production each result of it that read a transaction of the graph reading
+// the deploy d1 instead, as a result of production reads a deploy, and for a check of the graph each
+// result of it that read a deploy reading the transaction tx1 instead. The test fails when the
 // scenario does not hold the check's block as As reads it, so that no row passes on a change that
 // changed nothing.
 func scenarioAs(t *testing.T, name, id string, procedure specgraph.Procedure, subject specgraph.Subject) string {
@@ -224,4 +225,95 @@ func TestARefusalOfAnAgentOrAQueryOfTheCodeTakesOutTheResultsOfItsCommit(t *test
 			}
 		})
 	}
+}
+
+// R48: "At that commit, such a check reads unknown, and no earlier result of it counts." R8: "A
+// result at one commit also counts at another commit when no code that the check runs changed
+// between the two." A program check of production or of the graph reads the commit of its test,
+// the test_commit of its results, as a check of the code reads the commit of its results, so the
+// results whose test ran at a commit where CI refused the check count nowhere, at it or where R8
+// would carry them: its runs and its failing examples alike. Each row: production-and-graph with its
+// program check of production written as the row's kind, c2 a commit of c1's tree, the check's pass
+// at test_commit c2 and its caught failing example at c1, each of which counts at m2, and CI's
+// refusal at c1 or at none. The failing examples: with its failing run of 11:00 taken out, it reads
+// true with no refusal (the control), and with the refusal unknown (no_failing_example): the pass of
+// c2 counts, and the failing example of c1 counts nowhere. The runs: with that run of c1 one that
+// could not run, it reads unknown (could_not_run) with no refusal (the control), and with the
+// refusal unknown (no_failing_example): that run counts nowhere, so the pass of c2 is the newest run
+// that counts. A failing run in its place would show no runs half for production, whose newest run
+// decides after its failing example: the refusal takes out the failing example of c1 too, so the
+// check reads unknown (no_failing_example) whether that failing run counts or not.
+func TestARefusalOfAProgramCheckOfProductionOrOfTheGraphTakesOutTheResultsOfItsTestCommit(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	const check = "a-production-restart-loses-no-message"
+	for _, k := range []struct {
+		kind    string
+		subject specgraph.Subject
+		from    string // the subject of production-and-graph that a run of the kind reads
+	}{
+		{"a program check of production", specgraph.SubjectProduction, "d1"},
+		{"a program check of the graph", specgraph.SubjectGraph, "tx1"},
+	} {
+		t.Run(k.kind, func(t *testing.T) {
+			t.Parallel()
+			for _, row := range []struct {
+				half, refused, want string // the half of the rule, the commit of CI's refusal ("" for none), and the line of the check
+			}{
+				{"failing examples", "", "true (passed, counted from " + k.from + ")"},
+				{"failing examples", "c1", "unknown (no_failing_example)"},
+				{"runs", "", "unknown (could_not_run)"},
+				{"runs", "c1", "unknown (no_failing_example)"},
+			} {
+				dir := scenarioAs(t, "production-and-graph", check, specgraph.ProcedureProgram, k.subject)
+				withCommitOf(t, dir, "c2", "c1")
+				var results []map[string]any
+				readJSONFile(t, filepath.Join(dir, "results.json"), &results)
+				for i, want := range []struct{ kind, outcome string }{{"run", "pass"}, {"failing_example", "fail"}, {"run", "fail"}} {
+					if r := results[i]; r["check"] != check || r["kind"] != want.kind || r["outcome"] != want.outcome || r["test_commit"] != "c1" {
+						t.Fatalf("result %d of production-and-graph is no %s of %s with the outcome %s at test_commit c1: %v", i+1, want.kind, check, want.outcome, r)
+					}
+				}
+				results[0]["test_commit"] = "c2"
+				if row.half == "runs" {
+					results[2]["outcome"] = "could_not_run"
+				} else {
+					results = slices.Delete(results, 2, 3)
+				}
+				writeJSONFile(t, filepath.Join(dir, "results.json"), results)
+				uncited := map[string]any{}
+				if row.refused != "" {
+					uncited[row.refused] = map[string]any{check: "test-not-in-code"}
+				}
+				writeJSONFile(t, filepath.Join(dir, "uncited.json"), uncited)
+				got := runBinary(t, binary, "", "state", "--scenario", dir)
+				if line := "  check " + check + ": " + row.want; got.code != 0 || got.stderr != "" || !slices.Contains(strings.Split(got.stdout, "\n"), line) {
+					t.Errorf("the %s, CI's refusal at %q: exit %d, stderr %q, stdout:\n%s\nwant exit 0 and the line %q", row.half, row.refused, got.code, got.stderr, got.stdout, line)
+				}
+			}
+		})
+	}
+}
+
+// withCommitOf adds to the history of the scenario at dir the commit id, a child of the commit
+// named of with the same tree, and gives id the ties of that commit, so that a result at id counts
+// wherever one at that commit counts (R8).
+func withCommitOf(t *testing.T, dir, id, of string) {
+	t.Helper()
+	var history map[string]any
+	readJSONFile(t, filepath.Join(dir, "history.json"), &history)
+	commits, _ := history["commits"].([]any)
+	i := slices.IndexFunc(commits, func(c any) bool { commit, _ := c.(map[string]any); return commit["id"] == of })
+	if i < 0 {
+		t.Fatalf("the history of %s holds no commit %s", dir, of)
+	}
+	history["commits"] = append(commits, map[string]any{"id": id, "parent": of, "files": commits[i].(map[string]any)["files"]})
+	writeJSONFile(t, filepath.Join(dir, "history.json"), history)
+	var ties map[string]any
+	readJSONFile(t, filepath.Join(dir, "ties.json"), &ties)
+	if ties[of] == nil {
+		t.Fatalf("the ties of %s hold no commit %s", dir, of)
+	}
+	ties[id] = ties[of]
+	writeJSONFile(t, filepath.Join(dir, "ties.json"), ties)
 }

@@ -20,15 +20,28 @@ import (
 // check of another procedure does not hold.
 var testAttributes = []string{"runner", "selector", "job"}
 
+// subjectRead is, for a check of production and for one of the graph, the member of a result that
+// names the subject that the check reads, the value that As writes there (the deploy d1 and the
+// transaction tx1 of production-and-graph's subject), and the member of the other of the two
+// subjects, which As takes out.
+var subjectRead = map[string]struct{ member, value, other string }{
+	"production": {"deploy", "d1", "graph_tx"},
+	"graph":      {"graph_tx", "tx1", "deploy"},
+}
+
 // As is the scenario at the root of fsys with its check id written as a check of procedure and
 // subject, which a test reads as a check of that kind. In each approved version of the check's
 // block, and in its block in each spec file (files/<commit>/spec.md): the attributes procedure and
 // subject set to procedure and subject, and the attributes that name a program's test (runner,
-// selector and job) taken out when procedure is no program. For a check of production, each result
-// of it that read a transaction of the graph reads the deploy d1 instead, as a result of production
-// reads a deploy. Each other file holds the bytes of fsys. As refuses a scenario whose approved spec
-// holds no node id, a spec file that does not hold the check's block once, and a block that sets no
-// procedure or no subject, so that no test passes on a change that changed nothing.
+// selector and job) taken out when procedure is no program. As writes no such attribute: a check
+// written as a program keeps the test that its block names, as production-and-graph's program check
+// of production does, and the reader refuses a program check that names none. For a check of
+// production, each result of it that read a transaction of the graph reads the deploy d1 instead,
+// as a result of production reads a deploy; for a check of the graph, each result of it that read a
+// deploy reads the transaction tx1 instead, as a result of the graph reads a transaction. Each other
+// file holds the bytes of fsys. As refuses a scenario whose approved spec holds no node id, a spec
+// file that does not hold the check's block once, and a block that sets no procedure or no subject,
+// so that no test passes on a change that changed nothing.
 func As(fsys fs.FS, id, procedure, subject string) (fstest.MapFS, error) {
 	out := fstest.MapFS{}
 	err := fs.WalkDir(fsys, ".", func(path string, entry fs.DirEntry, err error) error {
@@ -67,16 +80,16 @@ func As(fsys fs.FS, id, procedure, subject string) (fstest.MapFS, error) {
 		}
 		out[path] = &fstest.MapFile{Data: []byte(text[:start] + block + text[start+end:])}
 	}
-	if subject == "production" {
+	if read, reads := subjectRead[subject]; reads {
 		err := editJSON(out, "results.json", func(v any) error {
 			results, ok := v.([]any)
 			if !ok {
 				return fmt.Errorf("it is no list")
 			}
 			for _, r := range results {
-				if r, ok := r.(map[string]any); ok && r["check"] == id && r["graph_tx"] != nil {
-					delete(r, "graph_tx")
-					r["deploy"] = "d1"
+				if r, ok := r.(map[string]any); ok && r["check"] == id && r[read.other] != nil {
+					delete(r, read.other)
+					r[read.member] = read.value
 				}
 			}
 			return nil

@@ -103,7 +103,7 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 }
 
 // sweepBases is each base that the sweeps read, by its name: each scenario of testdata/scenarios,
-// and fourteen shapes that no scenario holds. silent-leg with the job's matrix dropped after c1, one
+// and sixteen shapes that no scenario holds. silent-leg with the job's matrix dropped after c1, one
 // run of no matrix at m2 that ended with no result: there a run result of the leg "" at c1, where
 // the job had legs, would answer that run, and the check would read true (legFault refuses it).
 // Three of carry where a failure and a later pass count at one subject, so the check reads unknown
@@ -127,6 +127,11 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 // failing run and the other CI's refusal of the check at c1: the refusal sweep adds the refusal to
 // the one and the member sweep the test_commit to the other, so an input of each holds both facts,
 // and a rule by which such a refusal took out that run would read the check's earlier pass true.
+// And two of production-and-graph with its program check of production written as another kind: as
+// a program check of the graph, whose runs read the transaction tx1 and count at the commit of their
+// test, and as an agent of production, whose block names no test. Each of these ten bases reads its
+// check of the graph, or the check that it writes, in the state that the check's kind gives its
+// results (readsAt), not only as that kind.
 func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	t.Helper()
 	dirs, err := filepath.Glob(filepath.Join("testdata", "scenarios", "*"))
@@ -211,34 +216,47 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	})
 	bases["wait-cycle with the outcomes of its two first runs swapped"] = swapped
 	bases["wait-cycle with a second, passing check of a-message-survives-a-restart"] = withSecondCheck(t, bases["wait-cycle"])
-	const graph = "the-graph-holds-a-delivery-of-each-message"
-	// written is production-and-graph with its check of the graph written as a check of procedure
-	// and subject, which reads no commit either, by the one conversion that the command's tests
-	// read it through too (specgraphtest.As): its text in the approved spec and in the files at m2,
-	// and for a check of production each run of it that read the transaction tx1 reading the deploy
-	// d1 of the subject instead, as a check of production reads a deploy.
-	written := func(procedure Procedure, subject Subject) fstest.MapFS {
-		fsys, err := specgraphtest.As(bases["production-and-graph"], graph, string(procedure), string(subject))
+	const graph, program = "the-graph-holds-a-delivery-of-each-message", "a-production-restart-loses-no-message"
+	// written is production-and-graph with its check id written as a check of procedure and subject
+	// by the one conversion that the command's tests read it through too (specgraphtest.As): its text
+	// in the approved spec and in the files at m2, for a check of production each run of it that read
+	// the transaction tx1 reading the deploy d1 of the subject instead, as a check of production reads
+	// a deploy, and for a check of the graph each run of it that read the deploy d1 reading the
+	// transaction tx1 instead. The files at m2 and the approved spec read the check as that kind.
+	written := func(id string, procedure Procedure, subject Subject) fstest.MapFS {
+		fsys, err := specgraphtest.As(bases["production-and-graph"], id, string(procedure), string(subject))
 		if err != nil {
-			t.Fatalf("production-and-graph with %s written with procedure %q and subject %q: %v", graph, procedure, subject, err)
+			t.Fatalf("production-and-graph with %s written with procedure %q and subject %q: %v", id, procedure, subject, err)
 		}
-		is := func(c Check) bool { return c.ID == graph && c.Procedure == procedure && c.Subject == subject }
+		is := func(c Check) bool { return c.ID == id && c.Procedure == procedure && c.Subject == subject }
 		s, err := ReadScenario(fsys)
 		if err != nil {
-			t.Fatalf("production-and-graph with %s written with procedure %q and subject %q: %v", graph, procedure, subject, err)
+			t.Fatalf("production-and-graph with %s written with procedure %q and subject %q: %v", id, procedure, subject, err)
 		}
 		if current, _ := s.Approved.Current(); !slices.ContainsFunc(s.Files["m2"].Checks, is) || !slices.ContainsFunc(current.Checks, is) {
-			t.Fatalf("production-and-graph with %s written with procedure %q and subject %q: the files at m2 or the approved spec do not read it so", graph, procedure, subject)
+			t.Fatalf("production-and-graph with %s written with procedure %q and subject %q: the files at m2 or the approved spec do not read it so", id, procedure, subject)
 		}
 		return fsys
 	}
-	for what, base := range map[string]fstest.MapFS{
-		"its query of the graph":                           bases["production-and-graph"],
-		"its check of the graph as an agent":               written(ProcedureAgent, SubjectGraph),
-		"its check of the graph as a query of production":  written(ProcedureQuery, SubjectProduction),
-		"its check of the graph as an agent of production": written(ProcedureAgent, SubjectProduction),
+	// Each base of production-and-graph reads its check of the graph, or its program check of
+	// production as written, in the state that its kind gives the scenario's results of it, a pass
+	// at 10:00, a caught failing example and a failure at 11:00 (readsAt), so that a conversion that
+	// gives the check its kind and results that read another subject, or no result that counts,
+	// gives no base: a check of the graph unknown, since its pass and its failure at the transaction
+	// tx1 disagree (R7), and one of production false, since its newest run decides, at the deploy d1.
+	disagree := CheckState{State: checkUnknown, Reason: reasonDisagree, Disagree: true}
+	failed := CheckState{State: checkFalse, Reason: reasonFailed, From: "d1"}
+	type converted struct {
+		fsys fstest.MapFS
+		want CheckState
+	}
+	for what, base := range map[string]converted{
+		"its query of the graph":                           {bases["production-and-graph"], disagree},
+		"its check of the graph as an agent":               {written(graph, ProcedureAgent, SubjectGraph), disagree},
+		"its check of the graph as a query of production":  {written(graph, ProcedureQuery, SubjectProduction), failed},
+		"its check of the graph as an agent of production": {written(graph, ProcedureAgent, SubjectProduction), failed},
 	} {
-		withTestCommit := maps.Clone(base)
+		withTestCommit := maps.Clone(base.fsys)
 		editTree(t, withTestCommit, "results.json", func(v any) any {
 			for _, r := range v.([]any) {
 				if r := r.(map[string]any); r["check"] == graph && r["kind"] == "run" && r["outcome"] == "fail" {
@@ -247,10 +265,21 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 			}
 			return v
 		})
-		bases["production-and-graph with test_commit c1 on the failing run of "+what] = withTestCommit
-		refused := maps.Clone(base)
+		refused := maps.Clone(base.fsys)
 		refused["uncited.json"] = &fstest.MapFile{Data: []byte(`{"c1": {"` + graph + `": "test-not-in-code"}}`)}
-		bases["production-and-graph with CI's refusal at c1 of "+what] = refused
+		for how, fsys := range map[string]fstest.MapFS{"with test_commit c1 on the failing run of ": withTestCommit, "with CI's refusal at c1 of ": refused} {
+			name := "production-and-graph " + how + what
+			readsAt(t, name, fsys, graph, base.want)
+			bases[name] = fsys
+		}
+	}
+	for what, base := range map[string]converted{
+		"as a program check of the graph": {written(program, ProcedureProgram, SubjectGraph), disagree},
+		"as an agent of production":       {written(program, ProcedureAgent, SubjectProduction), failed},
+	} {
+		name := "production-and-graph with its program check of production " + what
+		readsAt(t, name, base.fsys, program, base.want)
+		bases[name] = base.fsys
 	}
 	return bases
 }
@@ -300,6 +329,26 @@ func withSecondCheck(t *testing.T, base fstest.MapFS) fstest.MapFS {
 		return v
 	})
 	return fsys
+}
+
+// readsAt fails the test unless the check id of the base name reads want, with id as its ID, at
+// each subject of the base: its state, its reason, its detail and the subject that it counts from.
+func readsAt(t *testing.T, name string, base fs.FS, id string, want CheckState) {
+	t.Helper()
+	s, err := ReadScenario(base)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	want.ID = id
+	for i := range s.Subjects {
+		state, err := Derive(s.Input(i))
+		if err != nil {
+			t.Fatalf("%s: subject %d: %v", name, i+1, err)
+		}
+		if j := slices.IndexFunc(state.Checks, func(c CheckState) bool { return c.ID == id }); j < 0 || state.Checks[j] != want {
+			t.Fatalf("%s: at subject %d the check %s reads %+v, want %+v", name, i+1, id, state.Checks[max(j, 0):max(j+1, 0)], want)
+		}
+	}
 }
 
 // baseStates is the state of each check, statement and wait of the base, as sweepStates gives it.
