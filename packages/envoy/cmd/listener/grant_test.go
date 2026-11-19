@@ -275,3 +275,52 @@ func TestAListenerWhoseGrantRefusesItsDurablesCreateStaysLiveAndUnready(t *testi
 		}
 	}
 }
+
+// A session relay's reply subscription, _INBOX.<id>.>, that the server refuses follows the rule a
+// refused durable follows (TestAListenerWhoseGrantRefusesItsDurablesCreateStaysLiveAndUnready):
+// the listener stays up and not ready, /livez 204 and /healthz 503 "starting", and opens the
+// session consumers' connection and the subscription again (openStartConnection), naming the
+// refusal at ERROR at each try (relayRepliesRefusedLine) with the refused subject and the
+// server's text, after a wait of 1 s and then 2 s (nextRefusedWait); once the subscription is let
+// through, a later try opens and the listener is ready. No grant of a real server refuses that
+// subscription and keeps _INBOX.<id>.*, the one every request's replies come on, since the server
+// matches a subscription's > as a token any * of the grant takes; so a relay (startGate) answers
+// the session consumers' subscription as a server whose grant does not carry it answers, with its
+// violation. Before, the start read no refusal of the subscription and served with a relay no
+// reply reached.
+func TestAListenerWhoseRelaysReplySubscriptionIsRefusedNamesItAtEachTryAndStaysUnready(t *testing.T) {
+	t.Parallel()
+	gate := startStartGate(t, testnats.URL(t))
+	gate.refuseSubscriptions("envoy-session-consumers", func(subject string) bool {
+		return strings.HasPrefix(subject, "_INBOX.") && strings.HasSuffix(subject, ".>")
+	})
+	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), gate.url, "box-no-replies", "ENVOY_INSTANCE_ID=pod-a")
+	const while = "its relay's reply subscription was refused"
+	refusals := func() []map[string]any {
+		var refused []map[string]any
+		for _, record := range linesIn(listener.Output.String(), relayRepliesRefusedLine, map[string]any{"level": "ERROR"}) {
+			subject, _ := record["subject"].(string)
+			text, _ := record["error"].(string)
+			if strings.HasPrefix(subject, "_INBOX.") && strings.HasSuffix(subject, ".>") &&
+				strings.Contains(text, `Permissions Violation for Subscription to "`+subject+`"`) {
+				refused = append(refused, record)
+			}
+		}
+		return refused
+	}
+	for deadline := time.Now().Add(30 * time.Second); len(refusals()) < 2; time.Sleep(200 * time.Millisecond) {
+		requireLiveAndStarting(t, listener, while)
+		if time.Now().After(deadline) {
+			t.Fatalf("the listener named the refused reply subscription %d times at ERROR within 30 s, want it named at each try:\n%s",
+				len(refusals()), listener.Output.String())
+		}
+	}
+	for index, wait := range []string{"1s", "2s"} {
+		if record := refusals()[index]; record["retry_in"] != wait {
+			t.Fatalf("refusal %d = %v, want retry_in %s", index+1, record, wait)
+		}
+	}
+	requireLiveAndStarting(t, listener, while)
+	gate.refuseSubscriptions("envoy-session-consumers", nil)
+	listener.waitHealthy(t)
+}

@@ -283,8 +283,9 @@ type sessionDelivery struct {
 // whose read of the deployed stream's subjects decides only which topics a registration's answer
 // warns that no stream subject captures (sessionDelivery.stream).
 //
-// Every session takes its messages from the consumer this connection manages, so a failure is
-// the whole start's: main ends the process with it, as it does for the live topics lane.
+// Every session takes its messages from the consumer this connection manages, so the start waits
+// until it opens: main tries it again, with the relay's reply subscription on it, by the start rule
+// (openStartConnection; cmd/listener/README.md, "Start").
 func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger) (*sessionDelivery, error) {
 	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog())
 	if err != nil {

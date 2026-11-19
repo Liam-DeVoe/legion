@@ -1261,40 +1261,62 @@ func TestSessionConsumerWithoutTheGrantProbesItOncePerTenMinutes(t *testing.T) {
 }
 
 // Every session takes its messages from a session consumer this listener manages on a connection
-// of its own, so a listener that cannot open that connection would refuse every registration: it
-// ends its start instead, exits 1 and says why, as the live topics lane's failure does
-// (TestAListenerWhoseGrantRefusesEveryTopicEndsItsStart). The connection is refused here by the
-// account's connection limit, three: the main client, the delivery lease's own connection
-// (openDeliveryLease) and the role lane take them all, and the session consumers' is the fourth.
-func TestAListenerThatCannotOpenItsSessionConsumersEndsItsStart(t *testing.T) {
+// of its own, so a listener that cannot open that connection waits for it by the start rule
+// (openStartConnection) and serves nothing meanwhile. The connection is refused here by the
+// account's connection limit, four: the test's two connections and the listener's main client
+// and lease connection (openDeliveryLease) take them all, and the session consumers' is the
+// fifth. The server refuses each of its dials, a refusal of the server's and not of the
+// listener's settings, so the listener stays up and not ready, /livez 204 and /healthz 503
+// "starting", and logs the failure at ERROR at each try, after a wait of 1 s and then 2 s
+// (nextRefusedWait). Once the test closes its two connections, a later try connects, the role
+// lane after it, and the listener is ready. Before, the start exited 1 at the refusal.
+func TestAListenerWhoseAccountRefusesItsSessionConsumersConnectionWaitsForASlotThenServes(t *testing.T) {
 	config := `jetstream {}
 accounts {
   LISTENER: {
     jetstream: enabled
     users: [ { user: listener, password: listener } ]
-    limits: { max_connections: 3 }
+    limits: { max_connections: 4 }
   }
 }
 `
 	_, uri := testnats.StartConfig(t, config, []string{"-js"}, false)
 	uri = asListenerUser(t, uri)
+	var held []*natsgo.Conn
+	for range 2 {
+		conn, err := natsgo.Connect(uri)
+		if err != nil {
+			t.Fatalf("hold a connection of the account: %v", err)
+		}
+		t.Cleanup(conn.Close)
+		held = append(held, conn)
+	}
 
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "session-consumers-refused")
-	listener.WaitExit(t, "its start")
-	output := listener.Output.String()
-	if code := listener.Cmd.ProcessState.ExitCode(); code != 1 {
-		t.Fatalf("exit code = %d, want 1:\n%s", code, output)
+	const (
+		while = "its account refused the session consumers' connection"
+		line  = "session consumer connection failed; retrying"
+	)
+	failures := func() []map[string]any {
+		return linesIn(listener.Output.String(), line, map[string]any{"level": "ERROR"})
 	}
-	for line := range strings.SplitSeq(output, "\n") {
-		var record map[string]any
-		if json.Unmarshal([]byte(line), &record) != nil || record["level"] != "ERROR" {
-			continue
-		}
-		if strings.Contains(fmt.Sprint(record["msg"]), "session consumer connection failed") {
-			return
+	for deadline := time.Now().Add(60 * time.Second); len(failures()) < 2; time.Sleep(200 * time.Millisecond) {
+		requireLiveAndStarting(t, listener, while)
+		if time.Now().After(deadline) {
+			t.Fatalf("the listener named the refused connection %d times at ERROR within 60 s, want it named at each try:\n%s",
+				len(failures()), listener.Output.String())
 		}
 	}
-	t.Fatalf("no ERROR says the session-consumer connection failed:\n%s", output)
+	for index, wait := range []string{"1s", "2s"} {
+		if record := failures()[index]; record["retry_in"] != wait || !strings.Contains(fmt.Sprint(record["error"]), "maximum account active connections exceeded") {
+			t.Fatalf("failure %d = %v, want retry_in %s and the server's refusal", index+1, record, wait)
+		}
+	}
+	requireLiveAndStarting(t, listener, while)
+	for _, conn := range held {
+		conn.Close()
+	}
+	listener.waitHealthy(t)
 }
 
 // nakLadderAcker is the acker of a frame whose naks are read rather than sent: it records the

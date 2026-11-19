@@ -101,6 +101,9 @@ func openListenerState(ctx context.Context, conn *nats.Conn, replicas int, wait 
 // publishViolation captures the subject of the server's refusal of a publish.
 var publishViolation = regexp.MustCompile(`Publish to "([^"]*)"`)
 
+// grantViolation captures the subject of the server's refusal of a publish or of a subscription.
+var grantViolation = regexp.MustCompile(`(?:Publish|Subscription) to "([^"]*)"`)
+
 // listenerStateRefusal returns the permissions violation that refused a failed open of the
 // listener state bucket, or nil when the open failed for another reason (bucketRefusal over that
 // one bucket).

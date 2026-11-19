@@ -72,11 +72,11 @@ func TestASessionConsumerHandsOverItsOwnMessagesInBothFormsBehindOtherSessionsTr
 	})
 }
 
-// The listener refuses to start against a nats-server that can skip a message on a consumer
+// The listener refuses to serve against a nats-server that can skip a message on a consumer
 // filtering on a wildcard and a literal at the same token: its start connects its session
-// consumers (cmd/listener connectSessionDelivery, ConnectSessionConsumers) and ends the process on
-// the error, which names the server's version and the fixed releases (natsversion.Refusal). The
-// control is the hub's v2.15.1, which it connects to.
+// consumers (cmd/listener connectSessionDelivery, ConnectSessionConsumers) and, on the error,
+// which names the server's version and the fixed releases (natsversion.Refusal), stays unready and
+// tries again. The control is the hub's v2.15.1, which it connects to.
 func TestTheListenerRefusesAServerThatSkipsAFilter(t *testing.T) {
 	_, refused := testnats.StartImageConfig(t, testnats.LegacyImage, "jetstream {}\n", liveServerArgs, true)
 	consumers, err := ConnectSessionConsumers([]string{refused}, 0, nil, WithEnvironment(liveServerEnvironment))

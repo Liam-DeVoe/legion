@@ -542,7 +542,9 @@ func (f *relayFrame) envelope() contracts.Envelope {
 }
 
 // startSessionRelays starts the relay of delivery's session consumers and makes it delivery's
-// relay (sessionDelivery.relay). It relays nothing until a receive term is set (setOwned).
+// relay (sessionDelivery.relay). It relays nothing until a receive term is set (setOwned). A reply
+// subscription the server refuses, under the NATS grant or otherwise, is its error, and it starts
+// nothing then: main closes delivery and tries both again (openStartConnection).
 func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerConfig) (*sessionRelays, error) {
 	inbox := nats.NewInbox()
 	m := &sessionRelays{

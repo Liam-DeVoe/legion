@@ -219,8 +219,9 @@ type SessionConsumers struct {
 // decides on a version the connection reports and waits out one that reports none): every session
 // consumer filters on its agent subject in both forms, notifications.agent.<session> beside
 // notifications.agent.*.<session>, and on such a server it would lose the session's old-form
-// messages behind other sessions' traffic with no error. The listener calls this at its start and
-// ends the process on the error, so it refuses to start against such a server.
+// messages behind other sessions' traffic with no error. The listener calls this at its start and,
+// on the refusal (natsversion.RefusedRelease), stays unready and tries again, serving nothing, so
+// it never delivers from such a server.
 func ConnectSessionConsumers(urls []string, inactiveThreshold time.Duration, logger *slog.Logger, options ...ConnectOption) (*SessionConsumers, error) {
 	client, err := Connect(urls, append([]ConnectOption{WithName("envoy-session-consumers")}, options...)...)
 	if err != nil {
@@ -282,12 +283,26 @@ func (s *SessionConsumers) Publish(ctx context.Context, msg *nats.Msg) error {
 // on the connection, and keeps the subscription across a reconnect and on a connection dialled to
 // replace a closed one (Client.SubscribeCore). It is the connection's one core subscription: a
 // second call on another subject is refused with ErrSubscriptionHeld. It returns once the server
-// holds the subscription.
+// holds the subscription. A subscription the server refuses under the NATS user's grant is
+// refused before the flush's PONG and recorded only as the connection's last error, so a last
+// error that changed across the flush to a refusal of subject is returned, wrapping the server's
+// violation (nats.ErrPermissionViolation); the listener's start then tries it again on a new
+// connection (cmd/listener startSessionRelays).
 func (s *SessionConsumers) SubscribeReplies(subject string, handler nats.MsgHandler) error {
+	before := s.client.Connection().LastError()
 	if _, err := s.client.SubscribeCore(subject, handler); err != nil {
 		return err
 	}
-	return s.client.Connection().Flush()
+	conn := s.client.Connection()
+	if err := conn.Flush(); err != nil {
+		return err
+	}
+	if after := conn.LastError(); !sameError(after, before) {
+		if refusal, ok := readSubscriptionRefusal(after); ok && refusal.subject == subject {
+			return fmt.Errorf("bus: NATS refused the reply subscription %q: %w", subject, after)
+		}
+	}
+	return nil
 }
 
 // SessionConsumerStart is what Ensure or RestartAtFloor did to a session's consumer.

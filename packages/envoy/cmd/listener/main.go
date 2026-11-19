@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/webhook"
 	"github.com/sjawhar/envoy/listenfd"
+	"github.com/sjawhar/envoy/natsversion"
 )
 
 // listenerDeps holds the NATS-dependent resources, all open. main builds the /v1 handlers over it
@@ -1018,31 +1019,93 @@ func listenerInstance() (string, error) {
 
 // startRetry is how long a start waits between attempts to reach NATS while it cannot answer: the
 // connect (connectListener), the spent-proof bucket (openSpentProofBucket), each store's buckets
-// (openStartStore) and the listener state bucket (openDeliveryLease). It is the third group of the
-// start rule (cmd/listener/README.md, "Start"); a server that answers from its cluster's state
-// waits by nextRefusedWait instead (waitOutClusterState).
+// (openStartStore), the listener state bucket (openDeliveryLease), and the connections the start
+// opens once the stores are open (openStartConnection). It is the third group of the start rule
+// (cmd/listener/README.md, "Start"); a server that answers from its cluster's state, or a grant
+// that refuses a step, waits by nextRefusedWait instead (waitOutClusterState, waitOutGrantRefusal).
 const startRetry = 2 * time.Second
 
-// clusterStateLine is the ERROR the start logs at each try of a request the NATS server answered
+// clusterStateLine is the line the start logs at each try of a request the NATS server answered
 // from its cluster's state (bus.ClusterStateAnswer), the second group of the start rule
 // (cmd/listener/README.md, "Start"), with what the request was for, the copies it asked, the
 // answer's code, the server's text and the wait before the next try (waitOutClusterState).
 const clusterStateLine = "start refused by the NATS cluster's state; retrying"
 
-// waitOutClusterState logs clusterStateLine at ERROR for err, a start step's request the NATS
-// server answered from its cluster's state with the JetStream API error code code
+// clusterUnavailableWarnFor is how long a start step logs clusterStateLine at WARN, not ERROR,
+// for JetStream's two "temporarily unavailable" answers, the ones nats-server gives with HTTP
+// status 503: the meta group with no leader (nats.JSErrCodeJetStreamNotAvailable, 10008) and
+// insufficient resources (nats.JSErrCodeInsufficientResourcesErr, 10023). A routine JetStream
+// leader change answers so until its election ends, and an alarm on that would call an operator
+// for nothing; an answer that has lasted this long is logged at ERROR at each try after.
+const clusterUnavailableWarnFor = 30 * time.Second
+
+// clusterStateWait is what one start step carries across the answers the NATS server gives it
+// from its cluster's state (waitOutClusterState).
+type clusterStateWait struct {
+	// next is the wait before the step's next try: durableBindPoll at first, then twice the last
+	// up to durableRefusedRetryCap (nextRefusedWait).
+	next time.Duration
+	// unavailableSince is when the step got its first "temporarily unavailable" answer
+	// (clusterUnavailableWarnFor), zero until it has.
+	unavailableSince time.Time
+}
+
+// waitOutClusterState logs clusterStateLine for err, a start step's request the NATS server
+// answered from its cluster's state with the JetStream API error code code
 // (bus.ClusterStateAnswer): what names what the step opens (the stream, a bucket or a store's
-// buckets), replicas the copies the deployment asks for (bus.ReplicasEnvVar). It then sleeps
-// *wait, and doubles *wait up to durableRefusedRetryCap for the step's next such answer
-// (nextRefusedWait), as a refused durable's retries wait; a step starts *wait at durableBindPoll.
-func waitOutClusterState(logger *logging.Logger, wait *time.Duration, what slog.Attr, replicas, code int, err error) {
-	logger.Error(clusterStateLine,
+// buckets), replicas the copies the deployment asks for (bus.ReplicasEnvVar). The line is an
+// ERROR, but a WARN for a "temporarily unavailable" answer while the step's first such answer
+// came less than clusterUnavailableWarnFor ago. It then sleeps wait.next, and doubles it up to
+// durableRefusedRetryCap for the step's next such answer (nextRefusedWait), as a refused
+// durable's retries wait.
+func waitOutClusterState(logger *logging.Logger, wait *clusterStateWait, what slog.Attr, replicas, code int, err error) {
+	level := slog.LevelError
+	if code == int(nats.JSErrCodeJetStreamNotAvailable) || code == int(nats.JSErrCodeInsufficientResourcesErr) {
+		if wait.unavailableSince.IsZero() {
+			wait.unavailableSince = time.Now()
+		}
+		if time.Since(wait.unavailableSince) < clusterUnavailableWarnFor {
+			level = slog.LevelWarn
+		}
+	}
+	logger.LogEvent(level, clusterStateLine,
 		what,
 		slog.String("setting", fmt.Sprintf("%s=%d", bus.ReplicasEnvVar, replicas)),
 		slog.Int("code", code),
 		slog.String("error", err.Error()),
-		slog.String("retry_in", wait.String()),
+		slog.String("retry_in", wait.next.String()),
 	)
+	time.Sleep(wait.next)
+	wait.next = nextRefusedWait(wait.next)
+}
+
+// The ERRORs the start logs at each try of a step the NATS grant refused (waitOutGrantRefusal),
+// each "<what the step opens> refused by the NATS grant; retrying", as a refused durable's
+// (durableGrantRefusedLine) and the spent-proof bucket's (spentProofBucketRefusedLine) are.
+const (
+	// storeBucketRefusedLine is a store's bucket (openStartStore), with the bucket and the grant.
+	storeBucketRefusedLine = "KV bucket refused by the NATS grant; retrying"
+	// roleLaneRefusedLine is the role lane's subscription, refused in both of its queue groups
+	// (bus.ConnectRoleLane).
+	roleLaneRefusedLine = "role lane refused by the NATS grant; retrying"
+	// relayRepliesRefusedLine is the session relay's reply subscription
+	// (bus.SessionConsumers.SubscribeReplies, startSessionRelays).
+	relayRepliesRefusedLine = "session relay reply subscription refused by the NATS grant; retrying"
+)
+
+// waitOutGrantRefusal logs line at ERROR for err, a start step's request the NATS grant refused:
+// what names what the step opens, then the refused subject (refusedSubject), the server's text and
+// the wait before the next try. It then sleeps *wait, and doubles *wait up to
+// durableRefusedRetryCap for the step's next refusal (nextRefusedWait), as a refused durable's
+// retries wait; a step starts *wait at durableBindPoll. Every pod of the machine connects as the
+// same NATS user and would be refused alike, and an exit would send each into a crash loop whose
+// backoff delays the recovery by minutes once the grant is fixed.
+func waitOutGrantRefusal(logger *logging.Logger, wait *time.Duration, line string, err error, what ...slog.Attr) {
+	logger.Error(line, append(what,
+		slog.String("subject", refusedSubject(err)),
+		slog.String("error", err.Error()),
+		slog.String("retry_in", wait.String()),
+	)...)
 	time.Sleep(*wait)
 	*wait = nextRefusedWait(*wait)
 }
@@ -1089,7 +1152,7 @@ func natsConnectionError(err error) bool {
 // long as it takes, so a listener started before its NATS waits for it rather than exiting, and
 // any other failure ends the process after one ERROR naming it.
 func connectListener(cfg config.Service, instance string, logger *logging.Logger) *bus.Client {
-	clusterWait := durableBindPoll
+	clusterWait := clusterStateWait{next: durableBindPoll}
 	for {
 		options := append(listenerStreamOptions(cfg), bus.WithName("envoy-listener "+instance))
 		client, err := bus.ConnectOwningStream(cfg.NATSURLs, options...)
@@ -1113,13 +1176,13 @@ func connectListener(cfg config.Service, instance string, logger *logging.Logger
 // buckets at replicas copies, until it succeeds, by the start rule (cmd/listener/README.md,
 // "Start"). An open the server cannot take in its cluster's present state is tried again after
 // waitOutClusterState, and one that fails for want of NATS (natsConnectionError) every startRetry.
-// An open the NATS user's grant refuses ends the process after one ERROR naming the bucket and
-// the grant it lacks: nats-server drops a refused request and reports the refusal only as the
-// connection's last error, so the open runs out of time, and a last error that changed across the
-// open to a refusal of one of buckets' subjects is that refusal (bucketRefusal). Any other failure
-// ends the process after one ERROR naming it.
+// An open the NATS user's grant refuses is tried again after waitOutGrantRefusal, which logs
+// storeBucketRefusedLine naming the bucket and the grant it lacks: nats-server drops a refused
+// request and reports the refusal only as the connection's last error, so the open runs out of
+// time, and a last error that changed across the open to a refusal of one of buckets' subjects is
+// that refusal (bucketRefusal). Any other failure ends the process after one ERROR naming it.
 func openStartStore[T any](client *bus.Client, logger *logging.Logger, what string, buckets []string, replicas int, open func(*nats.Conn) (T, error)) T {
-	clusterWait := durableBindPoll
+	clusterWait, refusedWait := clusterStateWait{next: durableBindPoll}, durableBindPoll
 	for {
 		conn := client.Conn
 		before := conn.LastError()
@@ -1128,13 +1191,8 @@ func openStartStore[T any](client *bus.Client, logger *logging.Logger, what stri
 			return store
 		}
 		if bucket, violation := bucketRefusal(buckets, err, before, conn.LastError()); violation != nil {
-			logger.Error("NATS refused KV bucket "+bucket+": the listener's NATS user lacks the grant for it",
-				slog.String("bucket", bucket),
-				slog.String("grant", listenerGrant),
-				slog.String("error", violation.Error()),
-			)
-			conn.Close()
-			os.Exit(1)
+			waitOutGrantRefusal(logger, &refusedWait, storeBucketRefusedLine, violation, slog.String("bucket", bucket), slog.String("grant", listenerGrant))
+			continue
 		}
 		if code, ok := bus.ClusterStateAnswer(err); ok {
 			waitOutClusterState(logger, &clusterWait, slog.String("buckets", strings.Join(buckets, ",")), replicas, code, err)
@@ -1170,17 +1228,16 @@ const spentProofBucketRefusedLine = "spent-proof bucket refused by the NATS gran
 // An open the server cannot take in its cluster's present state is tried again after
 // waitOutClusterState, and one that fails for want of NATS (natsConnectionError) every startRetry
 // with a WARN. An open the NATS grant refuses (bus.ErrPublishDenied, which bus.EnsureKeyValue
-// returns as the server's refusal arrives) is tried again after a wait that starts at
-// durableBindPoll and doubles up to durableRefusedRetryCap (nextRefusedWait), each try logging
-// spentProofBucketRefusedLine at ERROR with the refused subject and the server's text, as a
-// refused durable's tries do (durableReceiver.prepare): every pod of the machine connects as the
-// same NATS user and would be refused the same way. Any other failure is one no try gets past, an
-// origin brokertoken.New refuses among them, and ends the process after one ERROR naming it.
+// returns as the server's refusal arrives) is tried again after waitOutGrantRefusal, each try
+// logging spentProofBucketRefusedLine at ERROR with the refused subject and the server's text, as
+// a refused durable's tries do (durableReceiver.prepare). Any other failure is one no try gets
+// past, an origin brokertoken.New refuses among them, and ends the process after one ERROR naming
+// it.
 func openSpentProofBucket(ctx context.Context, client *bus.Client, logger *logging.Logger, tokens *brokerTokens, replicas int) {
 	if tokens == nil {
 		return
 	}
-	refusedWait, clusterWait := durableBindPoll, durableBindPoll
+	refusedWait, clusterWait := durableBindPoll, clusterStateWait{next: durableBindPoll}
 	for {
 		conn := client.Conn
 		err := tokens.open(ctx, conn, replicas)
@@ -1193,16 +1250,7 @@ func openSpentProofBucket(ctx context.Context, client *bus.Client, logger *loggi
 		}
 		switch {
 		case errors.Is(err, bus.ErrPublishDenied):
-			wait := refusedWait
-			refusedWait = nextRefusedWait(refusedWait)
-			logger.Error(spentProofBucketRefusedLine,
-				slog.String("bucket", bus.DPoPProofBucket),
-				slog.String("grant", listenerGrant),
-				slog.String("subject", refusedSubject(err)),
-				slog.String("error", err.Error()),
-				slog.String("retry_in", wait.String()),
-			)
-			time.Sleep(wait)
+			waitOutGrantRefusal(logger, &refusedWait, spentProofBucketRefusedLine, err, slog.String("bucket", bus.DPoPProofBucket), slog.String("grant", listenerGrant))
 		case natsConnectionError(err):
 			logger.Warn("spent-proof bucket open failed; retrying",
 				slog.String("bucket", bus.DPoPProofBucket),
@@ -1266,7 +1314,7 @@ func refusesBucket(err error, bucket string) bool {
 // (openListenerState).
 func openDeliveryLease(ctx context.Context, urls []string, replicas int, machineID, instance string, logger *logging.Logger) (*lease, *nats.Conn) {
 	var conn *nats.Conn
-	clusterWait := durableBindPoll
+	clusterWait := clusterStateWait{next: durableBindPoll}
 	for {
 		var err error
 		if conn == nil {
@@ -1297,6 +1345,60 @@ func openDeliveryLease(ctx context.Context, urls []string, replicas int, machine
 			slog.String("error", err.Error()),
 		)
 		time.Sleep(startRetry)
+	}
+}
+
+// natsReleaseRefusedLine is the ERROR the start logs at each try of the session consumers'
+// connection whose server is a nats-server release the listener refuses (natsversion's floor,
+// asked as bus.ConnectSessionConsumers opens the connection), with the server's release, the
+// floor the listener needs (natsversion.FixedReleases), the refusal's text and the wait before the
+// next try (openStartConnection).
+const natsReleaseRefusedLine = "nats-server release below the listener's floor; retrying"
+
+// openStartConnection runs open, a step that opens a NATS connection of its own once the stores
+// are open (the session consumers' with its relay's reply subscription, the role lane's), until it
+// succeeds, by the start rule (cmd/listener/README.md, "Start"). Each such connection reads the
+// settings the start's own connect (connectListener) has already taken - its servers, its
+// credential, its proxy and the remote-NATS rule - so no failure here is one the listener's
+// configuration alone decides, and none ends the process:
+//   - a refusal under the NATS grant (nats.ErrPermissionViolation) is tried again after
+//     waitOutGrantRefusal, which logs refusedLine;
+//   - a server whose release the listener refuses (natsversion.RefusedRelease) after the same
+//     wait, logging natsReleaseRefusedLine at ERROR with the server's release and the floor;
+//   - a failure for want of NATS (natsConnectionError), among them a connection's ten dials
+//     (bus.Connect) that no server answered, every startRetry, logging failedLine at WARN;
+//   - any other failure, a server that refuses the connection itself (an account at its
+//     connection limit) among them, after the same wait as a refusal, logging failedLine at ERROR.
+//
+// /healthz answers 503 "starting", /livez 204, and /v1 stays closed meanwhile.
+func openStartConnection[T any](logger *logging.Logger, failedLine, refusedLine string, open func() (T, error)) T {
+	wait := durableBindPoll
+	for {
+		opened, err := open()
+		if err == nil {
+			return opened
+		}
+		var release *natsversion.RefusedRelease
+		switch {
+		case errors.Is(err, nats.ErrPermissionViolation):
+			waitOutGrantRefusal(logger, &wait, refusedLine, err)
+		case errors.As(err, &release):
+			logger.Error(natsReleaseRefusedLine,
+				slog.String("release", release.Release),
+				slog.String("floor", natsversion.FixedReleases),
+				slog.String("error", err.Error()),
+				slog.String("retry_in", wait.String()),
+			)
+			time.Sleep(wait)
+			wait = nextRefusedWait(wait)
+		case natsConnectionError(err):
+			logger.Warn(failedLine, slog.String("retry_in", startRetry.String()), slog.String("error", err.Error()))
+			time.Sleep(startRetry)
+		default:
+			logger.Error(failedLine, slog.String("error", err.Error()), slog.String("retry_in", wait.String()))
+			time.Sleep(wait)
+			wait = nextRefusedWait(wait)
+		}
 	}
 }
 
@@ -2025,19 +2127,62 @@ func main() {
 	deliveryConfig = wireRoleForwarder(deliveryConfig)
 	roleForwards := deliveryConfig.roleForwards
 
+	// Every session takes its messages from a session consumer this listener manages on a
+	// connection of its own (bus.ConnectSessionConsumers), and its relay needs a reply inbox to
+	// answer frames on. There is nothing left to fall back to, so the start waits until both are
+	// open, by the start rule (openStartConnection): a listener that served without them would
+	// refuse every registration. They open before the role lane, so a nats-server release the
+	// listener refuses, which the connection asks of its server as it opens, leaves the pod
+	// delivering nothing at all: no role message is forwarded, no frame relayed, and /v1 stays
+	// closed.
+	//
+	// The threshold the server removes an idle session consumer after is derived from this
+	// deployment's own windows first and given to that connection, so every consumer the
+	// listener creates carries one that stands above its own sweep's worst bound: the session's
+	// record leaving the bucket, then the sweep's next pass. A deployment that keeps session
+	// records for longer than the default windows would otherwise have the server remove a
+	// consumer the listener's own delete had not reached, and with it the only record of where
+	// that session's delivery stopped (inactiveThresholdFor, bus.ConnectSessionConsumers).
+	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
+	// Each try opens a connection of its own and subscribes its relay's replies on it, and a try
+	// that fails closes it: the connection holds one reply subscription, so a later try's relay,
+	// whose inbox is new, needs a new connection.
+	var delivery *sessionDelivery
+	// The relay hears registrations from the moment /v1 opens, and relays once this task serves
+	// its machine's receive term (below).
+	relays := openStartConnection(logger, "session consumer connection failed; retrying", relayRepliesRefusedLine, func() (*sessionRelays, error) {
+		var err error
+		if delivery, err = connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, client, logger); err != nil {
+			return nil, err
+		}
+		relays, err := startSessionRelays(delivery, deliveryConfig)
+		if err != nil {
+			delivery.close()
+		}
+		return relays, err
+	})
+	if deliveryLease != nil {
+		// A relay of this pod restarts a session's consumer at its ack floor only once a
+		// former holder that released the lease has had its settle bound
+		// (lease.FormerSettleWait): until then that pod may still be acking a frame the
+		// session answered, which this one would otherwise publish again.
+		relays.formerSettle = deliveryLease.FormerSettleWait
+	}
+
 	// The role lane is a core-NATS queue subscription on a connection of its own with finite pending
 	// limits (bus.RoleLanePendingMsgs, bus.RoleLanePendingBytes; bus.ConnectRoleLane), in the queue
 	// group every listener shares, or this machine's group on a hub whose grant predates it. Every
 	// pod of this machine id, the lease holder and each standby, is a member, and during a rolling
 	// deploy the task being replaced is one too; NATS hands each role message to one member of a
 	// group, so no message is forwarded twice whichever pods run, and opening the lane before the
-	// durable binds forwards none twice either.
-	roleLaneClient, roleQueue, err := bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, coreNATSDeliveryHandler(deliveryConfig))
-	if err != nil {
-		logger.Error("core role subscription failed", slog.String("error", err.Error()))
-		client.Conn.Close()
-		os.Exit(1)
-	}
+	// durable binds forwards none twice either. Its connection opens by the start rule too
+	// (openStartConnection).
+	var roleQueue string
+	roleLaneClient := openStartConnection(logger, "role lane connection failed; retrying", roleLaneRefusedLine, func() (*bus.Client, error) {
+		laneClient, queue, err := bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, coreNATSDeliveryHandler(deliveryConfig))
+		roleQueue = queue
+		return laneClient, err
+	})
 	logger.Info("role lane subscribed", slog.String("subject", contracts.RoleTopicPrefix+">"), slog.String("queue", roleQueue))
 	met.NewGaugeFunc("envoy_role_lane_slow_consumers", "Slow-consumer errors the role lane's connection has reported", func() int64 {
 		return int64(roleLaneClient.SlowConsumers())
@@ -2049,42 +2194,6 @@ func main() {
 	go watchRoleLaneSlowConsumers(roleLaneWatchCtx, roleLaneClient, logger, roleLaneSlowConsumerInterval)
 	lane := roleLane{client: roleLaneClient, forwards: roleForwards, stopWatch: roleLaneWatchCancel}
 
-	// Every session takes its messages from a session consumer this listener manages on a
-	// connection of its own (bus.ConnectSessionConsumers), and its relay needs a reply inbox to
-	// answer frames on. There is nothing left to fall back to, so either failure ends the start:
-	// a listener that refuses every registration would stop at each session rather than at the
-	// rollout, where an operator learns of it at once.
-	//
-	// The threshold the server removes an idle session consumer after is derived from this
-	// deployment's own windows first and given to that connection, so every consumer the
-	// listener creates carries one that stands above its own sweep's worst bound: the session's
-	// record leaving the bucket, then the sweep's next pass. A deployment that keeps session
-	// records for longer than the default windows would otherwise have the server remove a
-	// consumer the listener's own delete had not reached, and with it the only record of where
-	// that session's delivery stopped (inactiveThresholdFor, bus.ConnectSessionConsumers).
-	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
-	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, client, logger)
-	if err != nil {
-		logger.Error("session consumer connection failed: every session is delivered through a consumer of its own", slog.String("error", err.Error()))
-		client.Conn.Close()
-		os.Exit(1)
-	}
-	// The relay hears registrations from the moment /v1 opens, and relays once this task serves
-	// its machine's receive term (below).
-	relays, err := startSessionRelays(delivery, deliveryConfig)
-	if err != nil {
-		logger.Error("session relay reply subscription failed: no relayed frame could be answered", slog.String("error", err.Error()))
-		delivery.close()
-		client.Conn.Close()
-		os.Exit(1)
-	}
-	if deliveryLease != nil {
-		// A relay of this pod restarts a session's consumer at its ack floor only once a
-		// former holder that released the lease has had its settle bound
-		// (lease.FormerSettleWait): until then that pod may still be acking a frame the
-		// session answered, which this one would otherwise publish again.
-		relays.formerSettle = deliveryLease.FormerSettleWait
-	}
 	// The parts a shutdown ends, gathered once: every end of a start that serves /v1 passes them
 	// to shutdownListener.
 	parts := listenerParts{

@@ -140,11 +140,11 @@ const (
 	// NATS grant refused (durableReceiver.prepare), with the refused subject and the server's text.
 	durableGrantRefusedLine = "durable consumer refused by the NATS grant; retrying"
 	// durableRefusedRetryCap is the longest wait between two tries of a request the NATS grant
-	// refused, a durable's or the start's open of the spent-proof bucket, and of a start's request
-	// the server answered from its cluster's state (waitOutClusterState): the waits start at
-	// bindPoll and double up to it (nextRefusedWait). 30 s writes at most two of those ERROR lines
-	// a minute once the cap is reached, and a grant fixed or a member back meanwhile is used
-	// within 30 s.
+	// refused, a durable's or a start step's (waitOutGrantRefusal), of a start's request the
+	// server answered from its cluster's state (waitOutClusterState), and of a start's connection
+	// the server refused (openStartConnection): the waits start at bindPoll and double up to it
+	// (nextRefusedWait). 30 s writes at most two of those ERROR lines a minute once the cap is
+	// reached, and a grant fixed or a member back meanwhile is used within 30 s.
 	durableRefusedRetryCap = 30 * time.Second
 	// holderLoopsStopWait bounds how long the end of a term waits for a pass of the holder-only
 	// loops in flight, measured from when they were told to stop.
@@ -757,21 +757,21 @@ func (r *durableReceiver) prepare(ctx context.Context, correct bool) (*nats.Cons
 	}
 }
 
-// refusedSubject is the subject err, a request the NATS grant refused (bus.ErrPublishDenied), was
-// refused on, read from the server's violation it carries (publishViolation), and empty when it
-// carries none.
+// refusedSubject is the subject err, a request or a subscription the NATS grant refused
+// (bus.ErrPublishDenied, nats.ErrPermissionViolation), was refused on, read from the server's
+// violation it carries (grantViolation), and empty when it carries none.
 func refusedSubject(err error) string {
-	if match := publishViolation.FindStringSubmatch(err.Error()); match != nil {
+	if match := grantViolation.FindStringSubmatch(err.Error()); match != nil {
 		return match[1]
 	}
 	return ""
 }
 
 // nextRefusedWait is the wait before the next try of a request the NATS grant refused, or a start
-// request the server answered from its cluster's state, after a wait of previous: twice it, up to
-// durableRefusedRetryCap. The durable's requests (prepare, from bindPoll), the start's open of the
-// spent-proof bucket (openSpentProofBucket, from durableBindPoll) and a start step's cluster-state
-// answers (waitOutClusterState, from durableBindPoll) back off by it.
+// request the server answered from its cluster's state or refused, after a wait of previous: twice
+// it, up to durableRefusedRetryCap. The durable's requests (prepare, from bindPoll) and the start's
+// steps (waitOutGrantRefusal, waitOutClusterState and openStartConnection, from durableBindPoll)
+// back off by it.
 func nextRefusedWait(previous time.Duration) time.Duration {
 	return min(2*previous, durableRefusedRetryCap)
 }

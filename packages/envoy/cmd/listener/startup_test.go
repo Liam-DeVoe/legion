@@ -1,16 +1,21 @@
 package main
 
 import (
+	"bufio"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/natsversion"
 )
 
 // During the first roll onto the delivery lease, the durable's push binding is a pre-lease build's
@@ -287,22 +293,460 @@ func bucketDeniedConfig(user, bucket string) string {
 		strconv.Quote("$KV."+bucket+".>") + "] } } } ]\n}\n"
 }
 
-// A store bucket the listener's NATS user may not use is no connection error to wait out: the
-// start ends, exit 1, with one ERROR naming the bucket and the grant that lacks it. (The listener
-// state bucket is the exception: without it the listener delivers without a lease.)
-func TestAListenerWhoseGrantRefusesAStoreBucketExitsNamingIt(t *testing.T) {
+// A store bucket the listener's NATS user may not use follows the rule the durable and the
+// spent-proof bucket follow (TestAListenerWhoseGrantRefusesItsSpentProofBucketStaysUnready): the
+// listener stays up and not ready, /livez 204 and /healthz 503 "starting", and tries the store's
+// open again (openStartStore), naming the refusal at ERROR at each try (storeBucketRefusedLine)
+// with the bucket, the grant that lacks it, the refused subject and the server's text, after a
+// wait of 1 s and then 2 s (nextRefusedWait). (The listener state bucket is the exception: without
+// it the listener delivers without a lease.) Before, the start exited 1 at the refusal.
+func TestAListenerWhoseGrantRefusesAStoreBucketNamesItAtEachTryAndStaysUnready(t *testing.T) {
 	seed, public := testnats.User(t)
 	_, uri := testnats.StartConfig(t, bucketDeniedConfig(public, bus.SessionBucket), []string{"-js"}, false)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "box-refused", "NATS_NKEY_SEED="+seed)
-	listener.WaitExit(t, "a start whose grant refuses "+bus.SessionBucket)
-	if code := listener.Cmd.ProcessState.ExitCode(); code != 1 {
-		t.Fatalf("the listener exited %d, want 1:\n%s", code, listener.Output.String())
+	const while = "the NATS grant refused its " + bus.SessionBucket + " bucket"
+	refusals := func() []map[string]any {
+		return linesIn(listener.Output.String(), storeBucketRefusedLine,
+			map[string]any{"level": "ERROR", "bucket": bus.SessionBucket, "grant": listenerGrant})
 	}
-	refused := func(record map[string]any) bool {
-		return record["level"] == "ERROR" && record["bucket"] == bus.SessionBucket && record["grant"] == listenerGrant
+	for deadline := time.Now().Add(30 * time.Second); len(refusals()) < 2; time.Sleep(200 * time.Millisecond) {
+		requireLiveAndStarting(t, listener, while)
+		if time.Now().After(deadline) {
+			t.Fatalf("the listener named the refused open of %s %d times at ERROR within 30 s, want it named at each try:\n%s",
+				bus.SessionBucket, len(refusals()), listener.Output.String())
+		}
 	}
-	if got := countRecords(listener, "NATS refused KV bucket "+bus.SessionBucket+": the listener's NATS user lacks the grant for it", refused); got != 1 {
-		t.Fatalf("the listener logged the refused bucket %d times at ERROR, want once:\n%s", got, listener.Output.String())
+	for index, wait := range []string{"1s", "2s"} {
+		record := refusals()[index]
+		subject, _ := record["subject"].(string)
+		ofBucket := strings.HasSuffix(subject, ".KV_"+bus.SessionBucket) || strings.Contains(subject, ".KV_"+bus.SessionBucket+".") ||
+			strings.HasPrefix(subject, "$KV."+bus.SessionBucket+".")
+		text, _ := record["error"].(string)
+		if record["retry_in"] != wait || !ofBucket || !strings.Contains(text, `Permissions Violation for Publish to "`+subject+`"`) {
+			t.Fatalf("refusal %d = %v, want retry_in %s, a subject of %s and the server's violation of it", index+1, record, wait, bus.SessionBucket)
+		}
+	}
+	requireLiveAndStarting(t, listener, while)
+}
+
+// A connection the start opens once its stores are open, the session consumers' and then the role
+// lane's, that no server lets through for longer than its ten dials (bus.Connect) is waited for,
+// as the start's own connect is (TestAListenerStartedBeforeItsNATSWaitsForItThenServes). A relay
+// (startGate) lets the listener's own connection and its lease's through and closes every dial of
+// the session consumers' connection, then of the role lane's, until the test lets each through:
+// the listener stays up and not ready, /livez 204 and /healthz 503 "starting", past the eleventh
+// refused dial of each, logs the failure at WARN after each ten dials with the 2 s wait
+// (startRetry), and is ready once both have connected. Before, the start exited 1 after either
+// connection's tenth dial.
+func TestAListenerWhoseLaterConnectionsCannotDialWaitsForThemThenServes(t *testing.T) {
+	gate := startStartGate(t, testnats.URL(t))
+	steps := []struct{ name, line string }{
+		{"envoy-session-consumers", "session consumer connection failed; retrying"},
+		{"envoy-role-lane", "role lane connection failed; retrying"},
+	}
+	gate.refuse(steps[0].name, steps[1].name)
+	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), gate.url, "box-late-lanes", "ENVOY_INSTANCE_ID=pod-late-lanes")
+	for _, step := range steps {
+		while := "no dial of its " + step.name + " connection was let through"
+		failures := func(level string) []map[string]any {
+			return linesIn(listener.Output.String(), step.line, map[string]any{"level": level})
+		}
+		for deadline := time.Now().Add(45 * time.Second); gate.refused(step.name) <= 10 || len(failures("WARN")) == 0; time.Sleep(200 * time.Millisecond) {
+			requireLiveAndStarting(t, listener, while)
+			if time.Now().After(deadline) {
+				t.Fatalf("within 45 s the relay refused %d dials of %s and the listener logged %d WARN %q, want past ten dials and a WARN:\n%s",
+					gate.refused(step.name), step.name, len(failures("WARN")), step.line, listener.Output.String())
+			}
+		}
+		if record := failures("WARN")[0]; record["retry_in"] != startRetry.String() {
+			t.Fatalf("the first failure of %s = %v, want retry_in %s", step.name, record, startRetry)
+		}
+		if erred := failures("ERROR"); len(erred) != 0 {
+			t.Fatalf("the listener logged %q at ERROR for dials no server let through, want WARN: %v", step.line, erred)
+		}
+		requireLiveAndStarting(t, listener, while)
+		gate.admit(step.name)
+	}
+	listener.waitHealthy(t)
+}
+
+// A nats-server release the listener refuses (natsversion's floor, asked as the session
+// consumers' connection opens) keeps the pod up and not ready, and the start tries again, serving
+// nothing meanwhile. A relay (startGate) reports the server as nats-server 2.10.29, a release
+// that can skip a message on a session consumer's filters: the listener logs
+// natsReleaseRefusedLine at ERROR at each try, naming the release and the floor
+// (natsversion.FixedReleases), after a wait of 1 s and then 2 s (nextRefusedWait), while /livez
+// answers 204, /healthz 503 "starting" and /v1 503 "service starting"; no connection of it
+// subscribes the role lane or a relay's replies, and the stream holds no consumer, its durable's
+// or a session's, so nothing is delivered. Once the relay reports the server's own release, a later
+// try connects and the listener is ready. Before, the start exited 1 at the refusal.
+func TestAListenerWhoseNATSReleaseIsBelowItsFloorServesNothingUntilTheServerIsOneItTakes(t *testing.T) {
+	server, uri := testnats.Start(t)
+	gate := startStartGate(t, uri)
+	const release = "2.10.29"
+	gate.reportRelease(release)
+	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), gate.url, "box-below-floor", "ENVOY_INSTANCE_ID=pod-below-floor")
+	const while = "its NATS server reported a release below the floor"
+	refusals := func() []map[string]any {
+		return linesIn(listener.Output.String(), natsReleaseRefusedLine,
+			map[string]any{"level": "ERROR", "release": release, "floor": natsversion.FixedReleases})
+	}
+	for deadline := time.Now().Add(30 * time.Second); len(refusals()) < 2; time.Sleep(200 * time.Millisecond) {
+		requireLiveAndStarting(t, listener, while)
+		if time.Now().After(deadline) {
+			t.Fatalf("the listener named the refused release %s %d times at ERROR within 30 s, want it named at each try:\n%s",
+				release, len(refusals()), listener.Output.String())
+		}
+	}
+	for index, wait := range []string{"1s", "2s"} {
+		if record := refusals()[index]; record["retry_in"] != wait || !strings.Contains(fmt.Sprint(record["error"]), "nats-server "+release) {
+			t.Fatalf("refusal %d = %v, want retry_in %s and the refusal's text naming nats-server %s", index+1, record, wait, release)
+		}
+	}
+	if status, body := callListener(t, listener.port, http.MethodGet, "/v1/roles/none", ""); status != http.StatusServiceUnavailable || !strings.Contains(body, "service starting") {
+		t.Fatalf("/v1 while %s = %d %s, want 503 service starting", while, status, body)
+	}
+	for _, subject := range serverSubscriptions(t, server) {
+		if subject == contracts.RoleTopicPrefix+">" || strings.HasPrefix(subject, "_INBOX.") && strings.HasSuffix(subject, ".>") {
+			t.Fatalf("a connection subscribes %s while %s, want no role lane and no relay's replies", subject, while)
+		}
+	}
+	if info, err := connectPublisher(t, uri).JS().StreamInfo(bus.Stream); err != nil || info.State.Consumers != 0 {
+		t.Fatalf("%s while %s = %v, %v, want no consumer on it", bus.Stream, while, info, err)
+	}
+	requireLiveAndStarting(t, listener, while)
+	gate.reportRelease("")
+	listener.waitHealthy(t)
+}
+
+// JetStream's "temporarily unavailable" (JSClusterNotAvailErr, 10008), what a routine JetStream
+// leader change answers until its election ends, is logged at WARN for its first 30 s
+// (clusterUnavailableWarnFor) and at ERROR at each try after, with the backoff of every answer of
+// the cluster's state. Of a hub of three servers two stop, so the meta group has no leader, and
+// the one left answers the start's stream lookup 10008: the listener logs clusterStateLine at WARN
+// at each try after a wait of 1 s, 2 s, 4 s, 8 s and 16 s, then at ERROR at the two tries after,
+// each 30 s or more after the first answer and with a wait of 30 s, and stays up and not ready
+// throughout. Before, every such answer was logged at ERROR, the first included.
+func TestAListenerWhoseJetStreamIsTemporarilyUnavailableWarnsForThirtySecondsThenErrsAtEachTry(t *testing.T) {
+	cluster := testnats.StartCluster(t, 3)
+	cluster.Servers[1].Stop(t)
+	cluster.Servers[2].Stop(t)
+	left := cluster.Servers[0].URL()
+	probe, err := natsgo.Connect(left)
+	if err != nil {
+		t.Fatalf("connect to the member left: %v", err)
+	}
+	t.Cleanup(probe.Close)
+	js, err := probe.JetStream()
+	if err != nil {
+		t.Fatalf("open JetStream on the member left: %v", err)
+	}
+	waitFor(t, 60*time.Second, "the member left to answer 10008", func() bool {
+		_, err := js.AccountInfo()
+		code, ok := bus.ClusterStateAnswer(err)
+		return ok && code == int(natsgo.JSErrCodeJetStreamNotAvailable)
+	})
+	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), left, "box-unavailable", "ENVOY_INSTANCE_ID=pod-unavailable")
+	const while = "its JetStream had no meta leader"
+	answers := func(level string) []map[string]any {
+		return linesIn(listener.Output.String(), clusterStateLine,
+			map[string]any{"level": level, "stream": bus.Stream, "code": float64(natsgo.JSErrCodeJetStreamNotAvailable)})
+	}
+	for deadline := time.Now().Add(100 * time.Second); len(answers("ERROR")) < 2; time.Sleep(time.Second) {
+		requireLiveAndStarting(t, listener, while)
+		if time.Now().After(deadline) {
+			t.Fatalf("the listener logged %d WARN and %d ERROR answers of 10008 within 100 s, want five WARN and then two ERROR:\n%s",
+				len(answers("WARN")), len(answers("ERROR")), listener.Output.String())
+		}
+	}
+	warned, erred := answers("WARN"), answers("ERROR")
+	if all := linesIn(listener.Output.String(), clusterStateLine, nil); len(all) != len(warned)+len(erred) {
+		t.Fatalf("the listener logged %d %q lines, %d of them WARN or ERROR of 10008 on %s, want each such:\n%s",
+			len(all), clusterStateLine, len(warned)+len(erred), bus.Stream, listener.Output.String())
+	}
+	waits := []string{"1s", "2s", "4s", "8s", "16s"}
+	if len(warned) != len(waits) {
+		t.Fatalf("the listener logged %d WARN answers of 10008 before its ERRORs, want %d, one per try in the first 30 s:\n%s",
+			len(warned), len(waits), listener.Output.String())
+	}
+	first := recordTime(t, warned[0])
+	for index, wait := range waits {
+		if record := warned[index]; record["retry_in"] != wait || recordTime(t, record).Sub(first) >= clusterUnavailableWarnFor {
+			t.Fatalf("WARN answer %d = %v, want retry_in %s and less than %s after the first", index+1, record, wait, clusterUnavailableWarnFor)
+		}
+	}
+	for index, record := range erred[:2] {
+		if since := recordTime(t, record).Sub(first); record["retry_in"] != "30s" || since < clusterUnavailableWarnFor {
+			t.Fatalf("ERROR answer %d = %v, %s after the first answer, want retry_in 30s and %s or more after it", index+1, record, since, clusterUnavailableWarnFor)
+		}
+	}
+	requireLiveAndStarting(t, listener, while)
+}
+
+// recordTime is when the listener logged record, its ts field.
+func recordTime(t *testing.T, record map[string]any) time.Time {
+	t.Helper()
+	at, err := time.Parse(time.RFC3339Nano, fmt.Sprint(record["ts"]))
+	if err != nil {
+		t.Fatalf("the record %v carries no ts the listener writes: %v", record, err)
+	}
+	return at
+}
+
+// serverSubscriptions is every subject a client connection of server subscribes, as its /connz
+// lists them.
+func serverSubscriptions(t *testing.T, server *testnats.Server) []string {
+	t.Helper()
+	response, err := http.Get(server.MonitorURL() + "/connz?subs=1")
+	if err != nil {
+		t.Fatalf("read the server's /connz: %v", err)
+	}
+	defer response.Body.Close()
+	var connz struct {
+		Connections []struct {
+			Subscriptions []string `json:"subscriptions_list"`
+		} `json:"connections"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&connz); err != nil {
+		t.Fatalf("decode the server's /connz: %v", err)
+	}
+	var subjects []string
+	for _, connection := range connz.Connections {
+		subjects = append(subjects, connection.Subscriptions...)
+	}
+	return subjects
+}
+
+// startGate stands between a listener and its NATS server and relays every connection, one NATS
+// protocol operation at a time, except that it closes at once, before the server reads it, each
+// connection whose CONNECT names a client it refuses (refuse, admit), as a link that refuses some
+// connections and lets others through does; that it reports in each of the server's INFOs the
+// release reportRelease names, as an older server does; and that it answers a subscription
+// refuseSubscriptions names as a server whose grant does not carry it answers, with its
+// violation, and passes it no further.
+type startGate struct {
+	listener net.Listener
+	target   string
+	url      string
+
+	mu       sync.Mutex
+	refusing map[string]bool
+	refusals map[string]int
+	release  string
+	// subscriptions refuses, for the connections a client name keys, each subscription whose
+	// subject it reports true for.
+	subscriptions map[string]func(subject string) bool
+	links         []net.Conn
+	closed        bool
+}
+
+// connectName is the client name a CONNECT line carries.
+var connectName = regexp.MustCompile(`"name":"([^"]*)"`)
+
+// infoVersion is the release an INFO line carries.
+var infoVersion = regexp.MustCompile(`"version":"[^"]*"`)
+
+func startStartGate(t *testing.T, uri string) *startGate {
+	t.Helper()
+	server, err := url.Parse(uri)
+	if err != nil {
+		t.Fatalf("parse NATS URL %q: %v", uri, err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the relay: %v", err)
+	}
+	relayed := *server
+	relayed.Host = listener.Addr().String()
+	gate := &startGate{listener: listener, target: server.Host, url: relayed.String(), refusing: map[string]bool{},
+		refusals: map[string]int{}, subscriptions: map[string]func(string) bool{}}
+	t.Cleanup(gate.close)
+	go gate.serve()
+	return gate
+}
+
+// refuse has the relay close each later connection named one of names.
+func (g *startGate) refuse(names ...string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, name := range names {
+		g.refusing[name] = true
+	}
+}
+
+// admit lets the later connections named name through.
+func (g *startGate) admit(name string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.refusing, name)
+}
+
+// refused is how many connections named name the relay has closed.
+func (g *startGate) refused(name string) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.refusals[name]
+}
+
+// reportRelease has the relay report release in the INFO of each later connection, or the
+// server's own when release is empty.
+func (g *startGate) reportRelease(release string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.release = release
+}
+
+// refuseSubscriptions has the relay refuse, on each later connection named name, every
+// subscription whose subject refused reports true for; nil refuses none.
+func (g *startGate) refuseSubscriptions(name string, refused func(subject string) bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if refused == nil {
+		delete(g.subscriptions, name)
+		return
+	}
+	g.subscriptions[name] = refused
+}
+
+func (g *startGate) serve() {
+	for {
+		client, err := g.listener.Accept()
+		if err != nil {
+			return
+		}
+		go g.relay(client)
+	}
+}
+
+// track keeps conn for close, or reports false once the relay is closed.
+func (g *startGate) track(conn net.Conn) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return false
+	}
+	g.links = append(g.links, conn)
+	return true
+}
+
+// readProtocolUnit reads one NATS protocol operation from r: its line and, for an operation that
+// carries a payload (MSG, HMSG, PUB, HPUB), the payload and the CRLF after it, whose size the
+// line ends with.
+func readProtocolUnit(r *bufio.Reader) (string, error) {
+	line, err := r.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return line, nil
+	}
+	switch strings.ToUpper(fields[0]) {
+	case "MSG", "HMSG", "PUB", "HPUB":
+		size, err := strconv.Atoi(fields[len(fields)-1])
+		if err != nil {
+			return "", err
+		}
+		payload := make([]byte, size+2)
+		if _, err := io.ReadFull(r, payload); err != nil {
+			return "", err
+		}
+		return line + string(payload), nil
+	}
+	return line, nil
+}
+
+// relay relays one connection. The server sends an INFO as the client connects and more after
+// it, one with the client's own details once it has taken the CONNECT among them, and nats.go
+// reports the version of the last it read, so the relay rewrites each.
+func (g *startGate) relay(client net.Conn) {
+	defer func() { _ = client.Close() }()
+	if !g.track(client) {
+		return
+	}
+	server, err := net.Dial("tcp", g.target)
+	if err != nil {
+		return
+	}
+	defer func() { _ = server.Close() }()
+	if !g.track(server) {
+		return
+	}
+	g.mu.Lock()
+	release := g.release
+	g.mu.Unlock()
+	fromServer, fromClient := bufio.NewReader(server), bufio.NewReader(client)
+	// Both directions write to the client, the server's operations and the relay's refusals, so
+	// each write is one whole operation.
+	var toClient sync.Mutex
+	send := func(unit string) bool {
+		if release != "" && strings.HasPrefix(unit, "INFO ") {
+			unit = infoVersion.ReplaceAllLiteralString(unit, `"version":"`+release+`"`)
+		}
+		toClient.Lock()
+		defer toClient.Unlock()
+		_, err := io.WriteString(client, unit)
+		return err == nil
+	}
+	info, err := readProtocolUnit(fromServer)
+	if err != nil || !send(info) {
+		return
+	}
+	connect, err := readProtocolUnit(fromClient)
+	if err != nil {
+		return
+	}
+	name := ""
+	if match := connectName.FindStringSubmatch(connect); match != nil {
+		name = match[1]
+	}
+	g.mu.Lock()
+	refused, refusesSubscription := g.refusing[name], g.subscriptions[name]
+	if refused {
+		g.refusals[name]++
+	}
+	g.mu.Unlock()
+	if refused {
+		return
+	}
+	if _, err := io.WriteString(server, connect); err != nil {
+		return
+	}
+	go func() {
+		defer func() { _ = server.Close() }()
+		for {
+			unit, err := readProtocolUnit(fromClient)
+			if err != nil {
+				return
+			}
+			if fields := strings.Fields(unit); refusesSubscription != nil && len(fields) >= 3 && fields[0] == "SUB" && refusesSubscription(fields[1]) {
+				if !send(fmt.Sprintf("-ERR 'Permissions Violation for Subscription to %q'\r\n", fields[1])) {
+					return
+				}
+				continue
+			}
+			if _, err := io.WriteString(server, unit); err != nil {
+				return
+			}
+		}
+	}()
+	for {
+		unit, err := readProtocolUnit(fromServer)
+		if err != nil || !send(unit) {
+			return
+		}
+	}
+}
+
+func (g *startGate) close() {
+	g.mu.Lock()
+	g.closed = true
+	links := g.links
+	g.links = nil
+	g.mu.Unlock()
+	_ = g.listener.Close()
+	for _, link := range links {
+		_ = link.Close()
 	}
 }
 
