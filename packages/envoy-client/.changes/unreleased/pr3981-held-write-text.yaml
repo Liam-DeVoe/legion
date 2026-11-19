@@ -6,3 +6,8 @@ body: |-
   with its kind, its id and its state, and names `dispatch held <id>`. Where Dispatch gives them,
   it also says until when the writer has to act and which held text it posts after. The cadence
   line of a held write opens with `Held for review (<state>).` in place of `Posted.`.
+  A write that waits on another held text, which the reviewer does not read, says
+  `Held until held text <id> posts` in both lines instead, and promises no findings.
+  When the close of `dispatch issue-update` fails after its reason was held, the error says the
+  reason is held as that message and names `dispatch held <id>`, and the result's details carry
+  `held`.

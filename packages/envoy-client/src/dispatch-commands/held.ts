@@ -30,33 +30,58 @@ function postsAfter(waitsOn: string): string {
   return `It posts after held text ${waitsOn}.`;
 }
 
-/** What opens each line that reports a write the reviewer holds, where a write that posted at
- *  once says `Posted`: the first line of the write's result, and its cadence line. */
+/** What a held text's lines say of when it posts: until when its writer has to act on it, while
+ *  it waits on the writer, and the held text it posts after, where it waits on one. */
+function heldTiming(held: HeldState): string[] {
+  return [
+    ...(held.deadline !== null && held.state === "awaiting_writer" ? [actBy(held.deadline)] : []),
+    ...(held.waits_on === undefined || held.waits_on === "" ? [] : [postsAfter(held.waits_on)]),
+  ];
+}
+
+/** The held text a write waits on when the reviewer does not read it (the server answers
+ *  `posting` with `waits_on`): Dispatch holds such a write only until that text posts, and posts
+ *  it right after. Undefined for a write the reviewer reads. */
+function waitsOnlyOn(held: HeldState): string | undefined {
+  return held.state === "posting" && held.waits_on !== undefined && held.waits_on !== ""
+    ? held.waits_on
+    : undefined;
+}
+
+/** What holds a write, in the words that follow `held`: the review, with its state, or only the
+ *  held text the write waits on. */
+export function heldFor(held: HeldState): string {
+  const parent = waitsOnlyOn(held);
+  return parent === undefined ? `for review (${held.state})` : `until held text ${parent} posts`;
+}
+
+/** What opens each line that reports a write Dispatch holds, where a write that posted at once
+ *  says `Posted`: the first line of the write's result, and its cadence line. */
 export function heldOpening(held: HeldState): string {
-  return `Held for review (${held.state})`;
+  return `Held ${heldFor(held)}`;
 }
 
 /**
- * The first line of a write the reviewer holds, which the server answers with the id it reserved
- * and `held`: no person sees the text until it posts, so the line never says it posted, was sent,
- * was asked or was created. It names the text's kind, its id and its state; `names`, what the
- * command's own line names beside the id, with its own leading separator; until when the writer
- * has to act, and the held text it posts after, where the server says; and `dispatch held <id>`.
+ * The first line of a write Dispatch holds, which the server answers with the id it reserved and
+ * `held`: no person sees the text until it posts, so the line never says it posted, was sent, was
+ * asked or was created. It names what holds the text, its kind and its id; `names`, what the
+ * command's own line names beside the id, with its own leading separator ("" for nothing); when it
+ * posts (heldTiming); and `dispatch held <id>`, with the reviewer's findings where the reviewer
+ * reads the text. A text that waits only on another held text gets no findings.
  */
-export function heldWriteLine(held: HeldState, kind: string, id: string, names = ""): string {
+export function heldWriteLine(held: HeldState, kind: string, id: string, names: string): string {
   return [
     `${heldOpening(held)}: ${kind} ${id}${names}. No person sees it until it posts.`,
-    ...(held.deadline === null ? [] : [actBy(held.deadline)]),
-    ...(held.waits_on === undefined || held.waits_on === "" ? [] : [postsAfter(held.waits_on)]),
-    `\`dispatch held ${id}\` reads it and what the reviewer found; a finding also reaches you as a message of its own.`,
+    ...heldTiming(held),
+    waitsOnlyOn(held) === undefined
+      ? `\`dispatch held ${id}\` reads it and what the reviewer found; a finding also reaches you as a message of its own.`
+      : `\`dispatch held ${id}\` reads it.`,
   ].join(" ");
 }
 
 /** What a held text's read prints: its state, its wording, the findings and the rewrite. */
 function heldText(held: HeldRead): string {
-  const lines = [`Held ${held.kind} ${held.id}: ${held.state}.`];
-  if (held.deadline !== null && held.state === "awaiting_writer") lines.push(actBy(held.deadline));
-  if (held.waits_on !== undefined && held.waits_on !== "") lines.push(postsAfter(held.waits_on));
+  const lines = [`Held ${held.kind} ${held.id}: ${held.state}.`, ...heldTiming(held)];
   if (held.outcome !== undefined && held.outcome !== "") lines.push(`Outcome: ${held.outcome}.`);
   lines.push("", "The text:", ...wordingLines(held.wording));
   const findings = held.findings ?? [];

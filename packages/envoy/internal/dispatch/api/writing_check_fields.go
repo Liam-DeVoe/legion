@@ -36,26 +36,26 @@ type proseMark struct {
 
 // The marks the registry gives, by what they say.
 var (
-	markProse      = proseMark{prose: true}
-	markIdentifier = proseMark{why: "an identifier: a key, an id, a slug, a session, a reference or a block id"}
-	markEnum       = proseMark{why: "one of a fixed set of values the server names"}
-	markName       = proseMark{why: "a name or a label of a few words, not a sentence"}
-	markPerson     = proseMark{why: "names a person or a session"}
-	markTime       = proseMark{why: "a time, a duration or a precondition the server compares"}
-	markQuote      = proseMark{why: "quotes text a document already holds, to find it; the write adds none of it"}
-	markSecret     = proseMark{why: "a code or a digest the server compares, never shown as text"}
-	markQuery      = proseMark{why: "a question or a draft the server reads to search and stores nothing of"}
-	markRoundTrip  = proseMark{why: "a draft the server parses and renders back, storing nothing of it"}
-	markConfig     = proseMark{why: "a repository, a branch, a path or a job name the server matches"}
-	markHandoff    = proseMark{why: "a handoff body is one JSON object a daemon reads, never shown as Markdown"}
-	markAttributes = proseMark{why: "a typed block's attributes: ids, states and values the block schema names"}
-	markRawPayload = proseMark{why: "a value the server reads as a number, an id, a time or null"}
-	markPending    = proseMark{why: "a write the caller has not sent, which the server reads to find its reader and stores nothing of"}
-	markNotAKind   = proseMark{why: "a priority's text, which is not a kind of text the reviewer reads (INFRA-3231 R5: asks, issues, comments, messages, documents and decision blocks)"}
-	markRatingWhy  = proseMark{why: "a retro's reason for its rating of the plan its issue ran, which is not a kind of text the reviewer reads (INFRA-3231 R5: asks, issues, comments, messages, documents and decision blocks)"}
-	markHeldEdit   = proseMark{why: "a held text's own wording, which the reviewer reads again before the text posts (held_routes.go): no person reads it until then"}
-	markHeldReason = proseMark{why: "the writer's reason for posting its held text as written, which Dispatch records and no person reads"}
-	markDraft      = proseMark{why: "a draft the reviewer reads and stores nothing of (reviewer_draft.go)"}
+	markProse        = proseMark{prose: true}
+	markIdentifier   = proseMark{why: "an identifier: a key, an id, a slug, a session, a reference or a block id"}
+	markEnum         = proseMark{why: "one of a fixed set of values the server names"}
+	markName         = proseMark{why: "a name or a label of a few words, not a sentence"}
+	markPerson       = proseMark{why: "names a person or a session"}
+	markTime         = proseMark{why: "a time, a duration or a precondition the server compares"}
+	markQuote        = proseMark{why: "quotes text a document already holds, to find it; the write adds none of it"}
+	markSecret       = proseMark{why: "a code or a digest the server compares, never shown as text"}
+	markQuery        = proseMark{why: "a question or a draft the server reads to search and stores nothing of"}
+	markRoundTrip    = proseMark{why: "a draft the server parses and renders back, storing nothing of it"}
+	markConfig       = proseMark{why: "a repository, a branch, a path or a job name the server matches"}
+	markHandoff      = proseMark{why: "a handoff body is one JSON object a daemon reads, never shown as Markdown"}
+	markAttributes   = proseMark{why: "a typed block's attributes: ids, states and values the block schema names"}
+	markRawPayload   = proseMark{why: "a value the server reads as a number, an id, a time or null"}
+	markPending      = proseMark{why: "a write the caller has not sent, which the server reads to find its reader and stores nothing of"}
+	markNotAKind     = proseMark{why: "a priority's text, which is not a kind of text the reviewer reads (INFRA-3231 R5: asks, issues, comments, messages, documents and decision blocks)"}
+	markRatingReason = proseMark{why: "a retro's reason for its rating of the plan its issue ran, which is not a kind of text the reviewer reads (INFRA-3231 R5: asks, issues, comments, messages, documents and decision blocks)"}
+	markHeldEdit     = proseMark{why: "a held text's own wording, which the reviewer reads again before the text posts (held_routes.go): no person reads it until then"}
+	markHeldReason   = proseMark{why: "the writer's reason for posting its held text as written, which Dispatch records and no person reads"}
+	markDraft        = proseMark{why: "a draft the reviewer reads and stores nothing of (reviewer_draft.go)"}
 )
 
 // rawAs is the mark of a json.RawMessage member that holds an object of type T, whose own members
@@ -115,7 +115,7 @@ var proseRegistry = map[reflect.Type]map[string]proseMark{
 		"role": markIdentifier, "type": markIdentifier, "agent": markName, "session": markPerson,
 		"model": markIdentifier,
 	},
-	reflect.TypeFor[stepRatingInput](): {"rating_reason": markRatingWhy},
+	reflect.TypeFor[stepRatingInput](): {"rating_reason": markRatingReason},
 	reflect.TypeFor[planRecordInput](): {"source": markEnum, "artifact_id": markIdentifier},
 	reflect.TypeFor[planTaskInput]():   {"id": markIdentifier, "steps": markIdentifier},
 	reflect.TypeFor[checkResultInput](): {

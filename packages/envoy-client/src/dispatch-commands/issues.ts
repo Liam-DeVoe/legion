@@ -46,7 +46,7 @@ import {
   stringArg,
 } from "./context";
 import { dispatchAnswered, refusalWithCode, withAccount, writeMayHaveLanded } from "./failures";
-import { heldWriteLine } from "./held";
+import { heldFor, heldWriteLine } from "./held";
 import { linkFor } from "./links";
 import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
 import { notSubscribed } from "./results";
@@ -391,10 +391,13 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       }
       throw refusalWithCode(error, taken);
     }
-    // The reason is on the issue, so a blind retry would post it a second time: the error
-    // says where the first one is, and whether the close may have landed anyway. A gateway's
-    // timeout or rate limit refused nothing there is to fix.
-    const posted = `the reason already landed as message ${closingNote.id} (${closingNote.ref})`;
+    // The reason is on the issue, or held to post there under its id, so a blind retry would
+    // post it a second time: the error says where the first one is, and whether the close may
+    // have landed anyway. A gateway's timeout or rate limit refused nothing there is to fix.
+    const posted =
+      closingNote.held === undefined
+        ? `the reason already landed as message ${closingNote.id} (${closingNote.ref})`
+        : `the reason is held ${heldFor(closingNote.held)}, as message ${closingNote.id} (${closingNote.ref}; \`dispatch held ${closingNote.id}\` reads it)`;
     const fix =
       error instanceof DispatchGatewayError && error.transient
         ? ""
@@ -498,6 +501,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       status: after.status,
       external_links: (after.external_links ?? []).map((link) => link.url),
       ...(closingNote === undefined ? {} : { message: closingNote.id }),
+      ...(closingNote?.held === undefined ? {} : { held: closingNote.held }),
       ...(after.advice === undefined ? {} : { advice: after.advice }),
     },
   };

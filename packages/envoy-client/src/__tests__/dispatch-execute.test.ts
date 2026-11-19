@@ -5457,6 +5457,7 @@ describe("executeDispatchTool", () => {
       issue: "ACME-175",
       status: "done",
       message: "message-7",
+      held: { state: "reviewing", deadline: null },
     });
   });
 
@@ -5673,6 +5674,33 @@ describe("executeDispatchTool", () => {
         "Retrying this call posts its reason again, so fix what refused the close, then retry with " +
         "a reason that points at message message-7"
     );
+  });
+
+  // A closing reason the reviewer holds is not on the issue when the close fails after it: the
+  // error says it is held, under the id it posts as, and how to read it.
+  test("dispatch_issue_update names the held reason when the close fails after it", async () => {
+    const server = closingServer({
+      message: () =>
+        response(
+          { id: "message-7", issue_key: "ACME-175", held: { state: "reviewing", deadline: null } },
+          201
+        ),
+      patch: () => refusal(409, "ISSUE_CLAIMED", "claimed by session other"),
+    });
+
+    const failure = await closeCall(server.fetchImpl).then(
+      () => "",
+      (error: Error) => error.message
+    );
+
+    expect(failure).toBe(
+      "ISSUE_CLAIMED: claimed by session other; the reason is held for review (reviewing), as " +
+        "message message-7 (dispatch://ACME-175/message/message-7; `dispatch held message-7` reads " +
+        "it) but the issue did not close. Retrying this call posts its reason again, so fix what " +
+        "refused the close, then retry with a reason that points at message message-7"
+    );
+    expect(failure).not.toContain("landed");
+    expect(server.requests.map(({ method }) => method)).toEqual(["GET", "POST", "PATCH"]);
   });
 
   // A gateway's 408 or 429 on the close is its own timeout or rate limit, sent before it forwards
@@ -12292,6 +12320,12 @@ describe("executeDispatchTool", () => {
       "Held for review (reviewing): suggestion comment-42. No person sees it until it posts. " +
         "`dispatch held comment-42` reads it and what the reviewer found; a finding also " +
         "reaches you as a message of its own.",
+    ],
+    [
+      "holds until the held text it waits on posts",
+      { state: "posting", deadline: null, waits_on: "comment-41" },
+      "Held until held text comment-41 posts: suggestion comment-42. No person sees it until it " +
+        "posts. It posts after held text comment-41. `dispatch held comment-42` reads it.",
     ],
   ] as const)("a suggestion Dispatch %s says so", async (_case, held, text) => {
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {

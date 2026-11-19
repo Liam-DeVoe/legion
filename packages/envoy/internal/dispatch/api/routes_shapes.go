@@ -67,7 +67,8 @@ type routeShape struct {
 	// (withAdvice, withRawAdvice and withSuggestions merge an `advice` sibling into the payload
 	// object rather than nesting it, write_advice.go:471-517); nil for an answer that carries none.
 	Advice any
-	// Held is a route whose success answer is, for a write the reviewer holds (reviewer.go), the
+	// Held is a route whose success answer is, for a write the reviewer holds (reviewer.go's
+	// reviewWrite, and held_replay.go's reviewReply for an agent's reply to a delivery), the
 	// same payload with a `held` sibling (heldState) merged into it, as advice is merged.
 	Held bool
 	// Refusals are this route's refusal bodies richer than errorBody, each with its status.
@@ -812,7 +813,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: acceptedDelivery{}, Request: actorInput{},
 	},
 	"POST /api/v1/messages/{id}/reply": {
-		Status: http.StatusCreated, Response: replyRead{}, Request: messageReplyInput{}, Params: messageReplyQuery{},
+		Status: http.StatusCreated, Response: replyRead{}, Request: messageReplyInput{}, Params: messageReplyQuery{}, Held: true,
 		// An attempt already answered is answered the stored reply, 200, marked duplicate
 		// when nothing was posted; an error report answers the attempt itself. A reply to the
 		// frame that carried a held text's findings names the held text and answers it, 202
@@ -922,7 +923,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusCreated, Response: model.CommentDelivery{}, Request: createCommentDeliveryInput{},
 	},
 	"POST /api/v1/comments/{id}/reply": {
-		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentReplyInput{},
+		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentReplyInput{}, Held: true,
 		// An attempt already answered is answered the stored reply, 200; an error report
 		// answers the attempt itself (comment_delivery.go).
 		Also: []routeAnswer{

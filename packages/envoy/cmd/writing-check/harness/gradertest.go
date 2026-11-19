@@ -288,9 +288,10 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 	}
 	wg.Wait()
 	uncached := runner.Pacer.Use()
-	report := graderReport(results, graderID, candidate, inputs.String(), *addedGrader, time.Since(started)) + paceText(mf.uncachedPerMinute, uncached)
+	promptsSHA := PromptsDigest()
+	report := graderReport(results, graderID, candidate, grader, promptsSHA, time.Since(started)) + paceText(mf.uncachedPerMinute, uncached)
 	if err := writeJSON(filepath.Join(*out, "grader-test.json"), map[string]any{"grader": graderID, "grader_is_candidate": candidate, "grader_inputs": inputs.String(),
-		"added_grader": *addedGrader, "prompts_sha256": PromptsDigest(),
+		"added_grader": *addedGrader, "prompts_sha256": promptsSHA,
 		"uncached_input_per_minute": mf.uncachedPerMinute, "uncached_input": uncached, "results": results}); err != nil {
 		return fail(err)
 	}
@@ -308,16 +309,16 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 
 // graderReport is the grader test's table: for each judgement, the wrong and the right outputs
 // it marked correctly, then each output with what a correct grader answers and what it answered,
-// then what the calls cost. candidate says the grader is a candidate of candidates.yaml; inputs
-// names the grader's input modes and added the added grader's variant, which the report says
-// whatever they are, defaults included, with the SHA-256 of the grader's prompts.
-func graderReport(results []PlantedResult, grader string, candidate bool, inputs, added string, elapsed time.Duration) string {
+// then what the calls cost. candidate says the grader is a candidate of candidates.yaml. Under
+// them the report names the grader's input modes and its added grader's variant, whatever they
+// are, defaults included, and promptsSHA, the prompts' digest as scores.md names it (PromptsDigest).
+func graderReport(results []PlantedResult, graderID string, candidate bool, grader *Grader, promptsSHA string, elapsed time.Duration) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Grader test: %s\n\n", grader)
+	fmt.Fprintf(&b, "# Grader test: %s\n\n", graderID)
 	if candidate {
-		fmt.Fprintf(&b, "%s is a candidate of candidates.yaml. It grades here because no candidate wrote a planted output; `harness score` refuses it as the grader (R2).\n\n", grader)
+		fmt.Fprintf(&b, "%s is a candidate of candidates.yaml. It grades here because no candidate wrote a planted output; `harness score` refuses it as the grader (R2).\n\n", graderID)
 	}
-	fmt.Fprintf(&b, "The grader's inputs are %s (--grader-inputs). The added grader is %s (--added-grader). The grader's prompts have SHA-256 %s.\n\n", inputs, added, PromptsDigest())
+	fmt.Fprintf(&b, "The grader's inputs are %s (--grader-inputs). The added grader is %s (--added-grader). Prompts SHA-256 %s.\n\n", grader.Inputs, grader.Added, promptsSHA)
 	b.WriteString("| Judgement | Wrong outputs marked correctly | Right outputs marked correctly | Correct / total |\n| --- | ---: | ---: | ---: |\n")
 	all, allCorrect := 0, 0
 	for _, j := range Judgements {

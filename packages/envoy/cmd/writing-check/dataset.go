@@ -253,12 +253,22 @@ func snapKind(line []byte) string {
 
 // eachGzipLine calls fn with every non-blank line of a gzipped file.
 func eachGzipLine(path string, fn func(line []byte) error) error {
+	return eachGzipLineTo(path, nil, fn)
+}
+
+// eachGzipLineTo is eachGzipLine that, when raw is not nil, also writes every byte of the file
+// to raw, read to its end, on the same pass: raw holds the whole file once the lines are read.
+func eachGzipLineTo(path string, raw io.Writer, fn func(line []byte) error) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	gz, err := gzip.NewReader(bufio.NewReaderSize(f, 1<<20))
+	var file io.Reader = f
+	if raw != nil {
+		file = io.TeeReader(f, raw)
+	}
+	gz, err := gzip.NewReader(bufio.NewReaderSize(file, 1<<20))
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
@@ -275,6 +285,12 @@ func eachGzipLine(path string, fn func(line []byte) error) error {
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
+	}
+	if raw != nil {
+		// What the buffer had not read when the gzip stream ended is the file's too.
+		if _, err := io.Copy(io.Discard, file); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
 	}
 	return nil
 }
@@ -1343,10 +1359,11 @@ func dsNewBlocks(previous, current string) string {
 
 // loadIndex reads a snapshot into an index: its header, events, bodies and labels, and which
 // versions it holds, and the first fault against its end (dsIndex.endFault). Version Markdown is
-// read by loadVersions.
-func loadIndex(path string) (*dsIndex, error) {
+// read by loadVersions. raw, when not nil, gets every byte of the snapshot file on the same pass,
+// so build hashes the snapshot without reading it again.
+func loadIndex(path string, raw io.Writer) (*dsIndex, error) {
 	var ix *dsIndex
-	err := eachGzipLine(path, func(line []byte) error {
+	err := eachGzipLineTo(path, raw, func(line []byte) error {
 		kind := snapKind(line)
 		if ix == nil {
 			if kind != "header" {
@@ -2115,16 +2132,17 @@ type dsVerdict struct {
 	Error          string   `json:"error,omitempty"`
 }
 
-// readVerdicts reads a verdicts file: the last line of each text that holds no error. A line a
-// crash cut short is skipped.
-func readVerdicts(path string) (map[string]dsVerdict, error) {
+// readVerdicts reads a verdicts file: the last line of each text that holds no error, and the
+// SHA-256 of the bytes it read. A line a crash cut short is skipped, and a missing file holds no
+// verdict, as an empty one does.
+func readVerdicts(path string) (map[string]dsVerdict, string, error) {
 	out := map[string]dsVerdict{}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return out, nil
+		return out, sha256Hex(nil), nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	for _, line := range bytes.Split(data, []byte("\n")) {
 		var v dsVerdict
@@ -2133,7 +2151,7 @@ func readVerdicts(path string) (map[string]dsVerdict, error) {
 		}
 		out[v.Text] = v
 	}
-	return out, nil
+	return out, sha256Hex(data), nil
 }
 
 // classifyInput is the user message of one classify call (wordrecords.Input): the agent text the
@@ -2238,7 +2256,7 @@ func runDatasetClassify(ctx context.Context, args []string, stdout, stderr io.Wr
 		return 1
 	}
 	started := time.Now()
-	ix, err := loadIndex(*snapshot)
+	ix, err := loadIndex(*snapshot, nil)
 	if err != nil {
 		return fail(err)
 	}
@@ -2259,7 +2277,7 @@ func runDatasetClassify(ctx context.Context, args []string, stdout, stderr io.Wr
 	for _, d := range docs {
 		ix.fillVersionText(d)
 	}
-	done, err := readVerdicts(*out)
+	done, _, err := readVerdicts(*out)
 	if err != nil {
 		return fail(err)
 	}
@@ -2321,7 +2339,7 @@ feeding:
 	if writeErr != nil {
 		return fail(writeErr)
 	}
-	all, err := readVerdicts(*out)
+	all, _, err := readVerdicts(*out)
 	if err != nil {
 		return fail(err)
 	}
@@ -2791,23 +2809,20 @@ func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
 		return res, err
 	}
 	snapshotPath, verdictsPath, seed := in.Snapshot, in.Verdicts, in.Seed
-	ix, err := loadIndex(snapshotPath)
+	snapshotHash := sha256.New()
+	ix, err := loadIndex(snapshotPath, snapshotHash)
 	if err != nil {
 		return res, err
 	}
 	if ix.endFault != nil {
 		return res, fmt.Errorf("%s: %w", snapshotPath, ix.endFault)
 	}
-	verdicts, err := readVerdicts(verdictsPath)
+	res.snapshotSHA = hex.EncodeToString(snapshotHash.Sum(nil))
+	verdicts, verdictsSHA, err := readVerdicts(verdictsPath)
 	if err != nil {
 		return res, err
 	}
-	if res.snapshotSHA, err = fileSHA256(snapshotPath); err != nil {
-		return res, err
-	}
-	if res.verdictsSHA, err = fileSHA256(verdictsPath); err != nil {
-		return res, err
-	}
+	res.verdictsSHA = verdictsSHA
 	owners := ix.ownerTexts()
 	verdictOf := map[*dsText]dsVerdict{}
 	missing := 0
@@ -3552,7 +3567,7 @@ func runDatasetOwnerTexts(args []string, stdout, stderr io.Writer) int {
 // notes on asks and review reasons, and no document version or issue title. It reads nothing but
 // the snapshot, so the same snapshot writes the same bytes.
 func writeOwnerTexts(snapshot, path string) (string, int, error) {
-	ix, err := loadIndex(snapshot)
+	ix, err := loadIndex(snapshot, nil)
 	if err != nil {
 		return "", 0, err
 	}

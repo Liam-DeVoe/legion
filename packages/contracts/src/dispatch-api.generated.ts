@@ -9702,7 +9702,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["CommentWriteResponse"];
+          "application/json": components["schemas"]["CommentWriteResponse"] & {
+            held?: components["schemas"]["HeldState"];
+          };
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -13588,7 +13590,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["MessageReplyResult"];
+          "application/json": components["schemas"]["MessageReplyResult"] & {
+            held?: components["schemas"]["HeldState"];
+          };
         };
       };
       /** @description Accepted */

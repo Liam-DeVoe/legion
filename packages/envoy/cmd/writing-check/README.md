@@ -796,8 +796,9 @@ text. The work has these steps:
 The dataset is a file artifact of INFRA-3231. It is never a file of this repository.
 `dataset/DATASET` holds the end time, the seed and the SHA-256 of each input and each output.
 `build --from <bundle>` prints the SHA-256 of the snapshot and the verdicts it read, the end and
-the owner of the snapshot's header, and the SHA-256 of each output, so a rebuild compares with
-`DATASET` on its inputs and its outputs. `build` does not read `DATASET`.
+the owner of the snapshot's header, and the SHA-256 of `documents.jsonl.gz`, `sessions.tsv` and
+`cases.jsonl.gz`, so a rebuild compares with `DATASET` on its inputs and those three outputs.
+`build` does not read `DATASET`.
 
 `named` is not one of these steps. It builds cases from document versions and asks that it reads
 from the live Dispatch, for a text the dataset does not hold (see "named").
@@ -1870,9 +1871,11 @@ planted output. The report then says the grader is a candidate, and `grader-test
 the grader and `grader_is_candidate`. `--uncached-input-per-minute` paces the test's calls as it
 paces `score`'s (see "Pacing"). `--added-grader` sets the added grader, as `score` takes it (see
 "The added grader"); `grader-test.json` records it as `added_grader`, and the cost holds the
-check's calls. The report's first line under its title names the grader's inputs as the run
-resolved them (`--grader-inputs`), the added grader, `old` included, and the SHA-256 of the
-grader's prompts, so two reports of other settings never read alike.
+check's calls. Under its title, after the line that says the grader is a candidate where it is
+one, the report names the grader's inputs as the run resolved them (`--grader-inputs`), the added
+grader, `old` included, and `Prompts SHA-256`, the digest `scores.md` names so and
+`grader-test.json` records as `prompts_sha256`: every file of `prompts/`, with `candidates.yaml`
+and `prices.yaml`. Two reports that differ in one of these three do not read alike.
 
 ### compare and repeatability
 

@@ -27,6 +27,7 @@ const (
 	fixtureOwner  = "owner@example.com"
 	fixtureNaming = "NAME-1"
 	fixtureSeed   = 3231
+	fixtureEnd    = "2026-11-01T00:00:00Z"
 )
 
 var (
@@ -102,7 +103,7 @@ func (f *dsFixture) write(t *testing.T, dir string) (snapshot, verdicts string) 
 			t.Fatal(err)
 		}
 	}
-	must(dsJSONLine(gz, snapLine{Kind: "header", Format: dsFormat, End: "2026-11-01T00:00:00Z", Owner: fixtureOwner,
+	must(dsJSONLine(gz, snapLine{Kind: "header", Format: dsFormat, End: fixtureEnd, Owner: fixtureOwner,
 		NamingIssue: fixtureNaming, Events: len(f.events), Versions: len(f.versions), Labels: len(f.labels)}))
 	for _, ev := range f.events {
 		raw, err := json.Marshal(ev)
@@ -594,7 +595,7 @@ func TestDatasetReplyChainFindsTheAgentText(t *testing.T) {
 	f.event("ask.answered", fixturePerson, "WALK-1", map[string]any{"id": "ask-9", "answer": map[string]any{"text": "What does shipping mean here?"}})
 	dir := t.TempDir()
 	snapshot, _ := f.write(t, dir)
-	ix, err := loadIndex(snapshot)
+	ix, err := loadIndex(snapshot, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -640,7 +641,7 @@ func TestDatasetRecordNamesEachDocumentAsItWasNamedThen(t *testing.T) {
 		"artifact": map[string]any{"id": "art-notes", "kind": "doc", "name": "Launch notes"}, "previous_name": "Draft notes"})
 	f.comment("after", "DOC-1", fixtureAgent, "The launch moved to Tuesday.", "")
 	snapshot, _ := f.write(t, t.TempDir())
-	ix, err := loadIndex(snapshot)
+	ix, err := loadIndex(snapshot, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -686,7 +687,7 @@ func TestDatasetBroadcastCopyIsItsConversationsRoot(t *testing.T) {
 	f.verdicts["message:owner-2@"+strconv.FormatInt(f.next, 10)] = wordrecords.WordMeaning
 	dir := t.TempDir()
 	snapshot, verdicts := f.write(t, dir)
-	ix, err := loadIndex(snapshot)
+	ix, err := loadIndex(snapshot, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -884,7 +885,7 @@ func TestDatasetBuildFromPackPrintsTheSameDigest(t *testing.T) {
 			t.Fatalf("build --from %s: exit %d: %s", from, code, stderr.String())
 		}
 		for _, want := range []string{"\nsnapshot sha256: " + snapshotSHA + "\n", "\nverdicts sha256: " + verdictsSHA + "\n",
-			"\nend: 2026-11-01T00:00:00Z\n", "\nowner: " + fixtureOwner + "\n", "\ncases.jsonl.gz sha256: " + direct.casesSHA + "\n"} {
+			"\nend: " + fixtureEnd + "\n", "\nowner: " + fixtureOwner + "\n", "\ncases.jsonl.gz sha256: " + direct.casesSHA + "\n"} {
 			if !strings.Contains(stdout.String(), want) {
 				t.Errorf("build --from %s printed:\n%s\nwant %q", from, stdout.String(), want)
 			}
@@ -910,9 +911,8 @@ func TestDatasetBuildFromPackPrintsTheSameDigest(t *testing.T) {
 // holds an event created after it, naming the first such event's id and time.
 func TestDatasetBuildRefusesAnEventAfterTheEnd(t *testing.T) {
 	t.Parallel()
-	const end = "2026-11-01T00:00:00Z" // the end dsFixture.write gives the header
 	f := standardFixture()
-	f.events[len(f.events)-1]["created_at"] = end
+	f.events[len(f.events)-1]["created_at"] = fixtureEnd
 	snapshot, verdicts := f.write(t, t.TempDir())
 	if _, err := buildDataset(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}, filepath.Join(t.TempDir(), "out")); err != nil {
 		t.Fatalf("a snapshot whose last event is created at its end: %v", err)
@@ -924,8 +924,21 @@ func TestDatasetBuildRefusesAnEventAfterTheEnd(t *testing.T) {
 	f.events[len(f.events)-1]["created_at"] = "2026-11-02T00:00:00Z"
 	snapshot, verdicts = f.write(t, t.TempDir())
 	_, err := buildDataset(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}, filepath.Join(t.TempDir(), "out"))
-	if want := fmt.Sprintf("holds event %d, created at 2026-11-01T00:00:00.5Z, after its end %s", late, end); err == nil || !strings.Contains(err.Error(), want) {
+	if want := fmt.Sprintf("holds event %d, created at 2026-11-01T00:00:00.5Z, after its end %s", late, fixtureEnd); err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("a snapshot with events after its end: %v, want a refusal saying %q", err, want)
+	}
+}
+
+// build reads a --verdicts path that names no file as a verdicts file that holds no verdict, so
+// it says which of the owner's texts have none, as for any verdicts file that lacks them.
+func TestDatasetBuildSaysTheTextsWithNoVerdictForAMissingVerdictsFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	snapshot, _ := standardFixture().write(t, dir)
+	missing := filepath.Join(dir, "no-verdicts.jsonl")
+	_, err := buildDataset(dsInputs{Snapshot: snapshot, Verdicts: missing, Seed: fixtureSeed}, filepath.Join(dir, "out"))
+	if want := " texts have no verdict in " + missing + ": run classify again"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("a --verdicts path that names no file: %v, want a refusal saying %q", err, want)
 	}
 }
 
@@ -1037,7 +1050,7 @@ func TestDatasetFetchWritesTheSnapshotBuildReads(t *testing.T) {
 		return strings.TrimSpace(sum)
 	}
 	first := fetch()
-	ix, err := loadIndex(out)
+	ix, err := loadIndex(out, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -59,8 +59,7 @@ async function executeWrite(
   tool: string,
   args: Record<string, unknown>,
   advice?: AdviceFixture,
-  requestPaths?: string[],
-  held?: HeldState
+  { requestPaths, held }: { readonly requestPaths?: string[]; readonly held?: HeldState } = {}
 ) {
   const written = <T extends Record<string, unknown>>(body: T) =>
     withAdvice(held === undefined ? body : { ...body, held }, advice);
@@ -652,8 +651,7 @@ describe("a write the reviewer holds", () => {
       "dispatch_message",
       { issue: "DSP-42", body: "Progress" },
       undefined,
-      undefined,
-      held
+      { held }
     );
 
     expect(result.text).toBe(
@@ -665,14 +663,41 @@ describe("a write the reviewer holds", () => {
     expect(result.details).toEqual({ issue: "DSP-42", message: "message-1", held });
   });
 
+  // A write that waits on a held text and that the reviewer does not read answers `posting` with
+  // `waits_on`: Dispatch holds it only until that text posts and posts it right after, and no
+  // finding of the reviewer comes. Neither its first line nor its cadence line says "for review".
+  test("a write held only until the held text it waits on posts says so, and promises no findings", async () => {
+    const held: HeldState = { state: "posting", deadline: null, waits_on: "ask-held" };
+    const rawAdvice = advice({ session_writes_since_human: 3 });
+    const result = await executeWrite(
+      "dispatch_message",
+      { issue: "DSP-42", body: "Progress" },
+      rawAdvice,
+      { held }
+    );
+
+    expect(result.text).toBe(
+      `Held until held text ask-held posts: message message-1 (dispatch://DSP-42/message/message-1) ${issueSuffix}. ` +
+        "No person sees it until it posts. It posts after held text ask-held. `dispatch held message-1` reads it.\n" +
+        'Held until held text ask-held posts. You\'ve sent 3 messages on DSP-42 with no human response. Progress ledger or scratchpad? If so, stop. See the `dispatch` skill, "Structure over stream".'
+    );
+    expect(result.text).not.toContain("for review");
+    expect(result.text).not.toContain("reviewer");
+    expect(result.details).toEqual({
+      issue: "DSP-42",
+      message: "message-1",
+      held,
+      advice: rawAdvice,
+    });
+  });
+
   test("a held reply on an ask says it is held, not that it replied", async () => {
     const ownAsk = "01234567-0000-4000-8000-000000000042";
     const result = await executeWrite(
       "dispatch_comment",
       { issue: "DSP-42", body: "JSON.", reply_to_ask: ownAsk },
       advice({ session_writes_since_human: 3 }),
-      undefined,
-      reviewing
+      { held: reviewing }
     );
 
     expect(result.text).toBe(
@@ -692,13 +717,9 @@ describe("a write the reviewer holds", () => {
     ["dispatch_comment", { issue: "DSP-42", body: "Progress" }, "comment", "comment-1"],
     ["dispatch_ask", { issue: "DSP-42", question: "What should we do?" }, "ask", "ask-new"],
   ])("%s held for review opens its cadence line with the held state", async (tool, args, kind, id) => {
-    const result = await executeWrite(
-      tool,
-      args,
-      advice({ session_writes_since_human: 3 }),
-      undefined,
-      reviewing
-    );
+    const result = await executeWrite(tool, args, advice({ session_writes_since_human: 3 }), {
+      held: reviewing,
+    });
 
     expect(result.text).toStartWith(`Held for review (reviewing): ${kind} ${id}`);
     expect(result.text).toContain(readsIt(id));
@@ -1744,12 +1765,9 @@ describe("a document write that moved an open approval request", () => {
 
   test("the whole write that prints the line reads no ask", async () => {
     const requestPaths: string[] = [];
-    const result = await executeWrite(
-      "dispatch_doc_edit",
-      editArgs,
-      movedAdvice(request()),
-      requestPaths
-    );
+    const result = await executeWrite("dispatch_doc_edit", editArgs, movedAdvice(request()), {
+      requestPaths,
+    });
 
     expect(adviceLines(result.text)).toEqual([verificationMoved]);
     expect(requestPaths.length).toBeGreaterThan(0);

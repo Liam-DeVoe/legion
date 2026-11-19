@@ -426,11 +426,11 @@ func writeFollowups(in dsInputs, casesPath, out string) (dsFollowupsResult, erro
 	}
 	slices.SortFunc(cases, func(a, b dsCaseLine) int { return strings.Compare(a.ID, b.ID) })
 
-	ix, err := loadIndex(in.Snapshot)
+	ix, err := loadIndex(in.Snapshot, nil)
 	if err != nil {
 		return res, err
 	}
-	verdicts, err := readVerdicts(in.Verdicts)
+	verdicts, _, err := readVerdicts(in.Verdicts)
 	if err != nil {
 		return res, err
 	}

@@ -3821,7 +3821,19 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CommentWriteResponse"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/CommentWriteResponse"
+                    },
+                    {
+                      "properties": {
+                        "held": {
+                          "$ref": "#/components/schemas/HeldState"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
                 }
               }
             }
@@ -9941,7 +9953,19 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MessageReplyResult"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/MessageReplyResult"
+                    },
+                    {
+                      "properties": {
+                        "held": {
+                          "$ref": "#/components/schemas/HeldState"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
                 }
               }
             }
