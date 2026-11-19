@@ -61,7 +61,7 @@ func TestAnAdoptedClosedTreesMemberForgetsOnlyTheChangesRequestItsGatesApprovalS
 			}
 
 			engine := testEngine(config.DesignGateRootIssues, nil)
-			applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 				return engine.AdoptMember(ctx, tx, adopted, live, intake.AdoptedChild{Issue: member, Parent: live.Key})
 			})
 

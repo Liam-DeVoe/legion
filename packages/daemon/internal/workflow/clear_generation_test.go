@@ -223,7 +223,7 @@ func TestAClearForgetsTheKeptDecisionsAStartForgets(t *testing.T) {
 			}
 			return nil
 		})
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error { return path(ctx, tx, root.Tree) })
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error { return path(ctx, tx, root.Tree) })
 		var refs []string
 		seedRecord(t, pool, func(tx pgx.Tx) error {
 			kept, err := records.ParkedDecisions(t.Context(), tx, root.Tree)
