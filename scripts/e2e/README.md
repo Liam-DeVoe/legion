@@ -1587,19 +1587,35 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   — the status, the response's own status and the body's error message, with the key and what a LiteLLM refusal says of it (its masked tail and its hash) left out before the message is cut (`preflight_refusal`)
   — and no GPT-6.1 agent is made.
   A route whose last answer is still one of those that say nothing records WAITING as not having answered the preflight, never as not serving the model.
-  Otherwise the stopped GPT-6.1 merger is asked two questions, the second ten seconds after the first answer is posted, each read from `go.mod` at a fixed commit of the smoke repository with `gh`, so that an answer takes more than one model step.
-  An answer's own calls are the daemon's records whose body holds that question's marker (`A10-gpt-1)`, `A10-gpt-2)`) and not the next one's (`answer_calls`).
-  The clause holds when the merger's conversation holds a tool call in a turn that did not fail (`omp_openai_summary`);
-  every call of both answers is a `POST /v1/responses` for the model and both cost lines name it;
-  every request carries `reasoning.effort` at the level the transcript last ran at, as agentloop words it (`off` is `none`; `omp_thinking_level`, `openai_effort`);
-  each answer's first request carries every reasoning item the transcript stores, read just before its question, with its id and encrypted content byte for byte (`reasoning_replayed`), the items of a turn that ended aborted or in error left out, as the loop's reader drops that turn, and the FAIL naming each item a request lacks;
-  each request after a step whose response returned reasoning carries that reasoning as the response's `response.output_item.done` event holds it (`reasoning_carried`), never as `response.completed` does, whose encrypted content differs from the done event's (measured through the model gateway on 2026-11-18);
-  the second answer's first call reads the conversation from cache, its own response reporting `usage.input_tokens_details.cached_tokens > 0` (`call_cached_tokens`), and its cost line reads `cacheReadTokens > 0`, both of which the run prints:
-  the line's count is summed over the answer's calls, and a later call of an answer reads what an earlier call of the same answer wrote, so the line alone shows nothing of the question's first call;
-  both replies hold their keys;
-  and the resumed merger's first call on `/tag/agents-gpt` is for the model and holds both questions once each.
-  A transcript with no tool call, one with no reasoning item carrying encrypted content, and answers in which no step that returned reasoning was followed by another (not every step returns reasoning) each fail the clause, which then says what went unexercised.
-  The conversation the second answer replays is kept as `sessions/<store>/gpt-before-A10-gpt-2.jsonl`.
+  Otherwise the stopped GPT-6.1 merger is asked questions, each read from `go.mod` at a fixed commit of the smoke repository with `gh`, so that an answer takes more than one model step, and is then resumed:
+
+  - Two questions first, the second ten seconds after the first answer is posted.
+    A step returns reasoning only when the model reasons, and those two questions rarely make it:
+    in proof run 44461333495 no step of their four answers returned any (`reasoning_tokens` 0 in each of the eight), so no later step had reasoning to carry.
+    So while no answer so far had a step that returned reasoning with a later step after it, the merger is asked the next question of `questions.json`'s `a10.reasoning` list, each a new question that makes the model reason before a `gh` call (`a10_next_question`):
+    the commit hash written backwards, which it must reverse before its call;
+    a remainder of the Go version it read, which decides its second read;
+    and a remainder of its marker's number, which picks the line it reports.
+    The list is three questions long, which is the leg's bound.
+    Measured through the model gateway on 2026-11-19 with the daemon's own loop
+    (a throwaway harness over `answer.Answer` on that run's merger conversation, its `gh` calls answered with the bytes `go.mod` holds),
+    each of the three, asked after the two cache questions, had a step that returned reasoning with a later step after it in 34 of 34 answers, each carried, and the two cache questions had one in 0 of 34 each;
+    so the first of the list all but always ends the asking, the other two stay for a model that reasons less on one kind of question (before the first call, or between two), and a fourth would add an answer's wait of up to 240 s, and a question the resume must hold, against a miss none of the three showed.
+
+  - An answer's own calls are the daemon's records whose body holds that question's marker (`A10-gpt-1)`, `A10-gpt-2)`, and so on) and not the next one's (`answer_calls`).
+    The clause holds when the merger's conversation holds a tool call in a turn that did not fail (`omp_openai_summary`);
+    every call of every answer is a `POST /v1/responses` for the model and every cost line names it;
+    every request carries `reasoning.effort` at the level the transcript last ran at, as agentloop words it (`off` is `none`; `omp_thinking_level`, `openai_effort`);
+    each of the two cache answers' first request carries every reasoning item the transcript stores, read just before its question, with its id and encrypted content byte for byte (`reasoning_replayed`), the items of a turn that ended aborted or in error left out, as the loop's reader drops that turn, and the FAIL naming each item a request lacks;
+    over every answer asked, each request after a step whose response returned reasoning carries that reasoning as the response's `response.output_item.done` event holds it (`reasoning_carried`, summed by `carried_total`), never as `response.completed` does, whose encrypted content differs from the done event's (measured through the model gateway on 2026-11-18),
+    and a call the provider cut for length (its response ends `response.incomplete`), which the daemon made again sent the cut call's own request, owes nothing, since by design no later request holds what it returned;
+    the second answer's first call reads the conversation from cache, its own response reporting `usage.input_tokens_details.cached_tokens > 0` (`call_cached_tokens`), and its cost line reads `cacheReadTokens > 0`, both of which the run prints:
+    the line's count is summed over the answer's calls, and a later call of an answer reads what an earlier call of the same answer wrote, so the line alone shows nothing of the question's first call;
+    every reply holds its keys;
+    and the resumed merger's first call on `/tag/agents-gpt` is for the model and holds every question asked once each.
+    A transcript with no tool call, one with no reasoning item carrying encrypted content, and answers within the bound none of which had a step that returned reasoning followed by another each fail the clause, which then says what went unexercised;
+    a later request that carries an earlier step's reasoning other than byte for byte, or not at all, fails it too.
+    The conversation the second answer replays is kept as `sessions/<store>/gpt-before-A10-gpt-2.jsonl`.
 
 - A12: the daemon restarted with each bound in turn (`model_calls: 1`, `answer_seconds: 1`, `output_tokens: 16`, a stand-in reply out of form, `daily_usd: 0.01`):
   each ends with `answers: question passed to the controller` naming the fault and the daemon's own reply.

@@ -565,13 +565,20 @@ reasoning_replayed() {
 # item in `response.output_item.added`, shorter, and in `response.completed`, whose encrypted
 # content differs from the done event's (measured through the model gateway on 2026-11-18):
 # neither is what the next step carries. The answer's last call has no later one, so what it alone
-# returned is owed nowhere, and `0 0` says no step but the last returned reasoning at all.
+# returned is owed nowhere, and `0 0` says no step but the last returned reasoning at all. A call
+# whose response ended incomplete (a `response.incomplete` event: the provider cut it for length)
+# owes nothing either: the daemon makes such a call once more (agentloop's
+# Request.CallAgainWhenCut, which it sets to 1), sent the cut call's request byte for byte, so by
+# design no later request holds anything the cut call returned. A cut call that is not the
+# answer's last is always one made again; the last call owes nothing anyway.
 reasoning_carried() {
   local answer
   answer=$(jq -r "$openai_reasoning"'def returned:
       if type == "string" then
         [split("\n")[] | rtrimstr("\r") | select(startswith("data:")) | ltrimstr("data:") | ltrimstr(" ")
-          | fromjson? | objects | select(.type == "response.output_item.done") | .item | encrypted_reasoning]
+          | fromjson? | objects] as $events
+        | if any($events[]; .type == "response.incomplete") then []
+          else [$events[] | select(.type == "response.output_item.done") | .item | encrypted_reasoning] end
       else [] end;
     def sent: [.request_body | .. | encrypted_reasoning];
     (if type == "array" then . else [] end) as $calls
@@ -579,6 +586,37 @@ reasoning_carried() {
         | range($i + 1; $calls | length) as $j | ($calls[$j] | sent) | any(.[]; . == $item)]
     | "\(map(select(.)) | length) \(length)"' <<<"${1:-[]}" 2>/dev/null) || answer=
   printf '%s\n' "${answer:-0 0}"
+}
+# carried_total CARRIED... sums reasoning_carried's `<carried> <owed>` lines, one an answer's, into
+# one such line: of the reasoning earlier steps of all those answers returned, how many pairs a
+# later request of the same answer carried, and how many were owed. A line that is not two counts
+# adds nothing, so no answer at all is `0 0`.
+carried_total() {
+  local line carried owed sum_carried=0 sum_owed=0
+  for line in "$@"; do
+    read -r carried owed <<<"$line" || true
+    [[ $carried =~ ^[0-9]+$ && $owed =~ ^[0-9]+$ ]] || continue
+    sum_carried=$((sum_carried + carried))
+    sum_owed=$((sum_owed + owed))
+  done
+  printf '%s %s\n' "$sum_carried" "$sum_owed"
+}
+# a10_next_question ASKED CARRIED... prints the id of the question A10's GPT-6.1 leg asks next,
+# given that it has asked ASKED of the questions file's a10.reasoning list and that CARRIED are the
+# reasoning_carried lines of every answer it has asked, the two cache answers' first: the list's
+# next question while those answers owe nothing, since then no step that returned reasoning had a
+# later step after it and clause (c) has nothing to judge. It prints nothing once some answer owed
+# a carry, whether or not the later request carried it, and nothing once the list is spent, which
+# is the leg's bound. In proof run 44461333495 no step of the four cache answers returned
+# reasoning at all (reasoning_tokens 0 in each), which is the case this read asks again for.
+a10_next_question() {
+  local asked=$1 total next
+  shift
+  total=$(carried_total "$@")
+  [ "${total#* }" = 0 ] || return 0
+  next=$(jq -r --argjson n "$asked" 'if ($n | type) == "number" and $n >= 0 then (.a10.reasoning[$n]? // empty) else empty end' \
+    "$questions_file" 2>/dev/null) || next=
+  printf '%s\n' "$next"
 }
 # call_cached_tokens CALL prints the input tokens the model read from the provider's cache for one
 # OpenAI Responses call, a record of the proxy (answer_calls): the response's own

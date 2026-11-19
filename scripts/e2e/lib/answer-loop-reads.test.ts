@@ -53,6 +53,12 @@ const presenceEvidence = join(dir, "presence-evidence");
 /** A run's proxy records of A10's GPT-6.1 clause: the preflight, the daemon's two answers to the
  * merger (the first of two calls, the second of one), and the resumed merger's own calls. */
 const gptEvidence = join(dir, "gpt-evidence");
+/** A chain of three answers the daemon's own loop made to the GPT-6.1 merger through the model
+ * gateway, as A10's GPT-6.1 leg asks them: the two cache questions, then the first question of the
+ * questions file's a10.reasoning list. */
+const gptReasoningEvidence = join(dir, "gpt-reasoning-evidence");
+/** The questions file the live proof reads. */
+const liveQuestions = join(e2e, "answer-loop", "questions.json");
 
 beforeAll(() => {
   writeFileSync(daemonLog, bootOne + bootTwo);
@@ -78,6 +84,11 @@ beforeAll(() => {
   cpSync(join(data, "a13"), join(presenceEvidence, "a13"), { recursive: true });
   mkdirSync(gptEvidence, { recursive: true });
   cpSync(join(data, "model-calls-gpt.jsonl"), join(gptEvidence, "model-calls.jsonl"));
+  mkdirSync(gptReasoningEvidence, { recursive: true });
+  cpSync(
+    join(data, "model-calls-gpt-reasoning.jsonl"),
+    join(gptReasoningEvidence, "model-calls.jsonl")
+  );
   const presence = join(presenceEvidence, "a13", "branch", "files");
   const basePublish = JSON.parse(
     readFileSync(join(data, "a13", "base", "files", "publish.body"), "utf8")
@@ -132,6 +143,7 @@ bare_evidence=${shq(bareEvidence)}
 branch_only_evidence=${shq(branchOnlyEvidence)}
 presence_evidence=${shq(presenceEvidence)}
 gpt_evidence=${shq(gptEvidence)}
+gpt_reasoning_evidence=${shq(gptReasoningEvidence)}
 daemon_log=${shq(daemonLog)}
 empty_log=${shq(emptyLog)}
 quiet_log=${shq(join(data, "daemon-no-answers-quiet.log.txt"))}
@@ -1100,6 +1112,148 @@ describe("the recording proxy's records", () => {
     expect(read(`${third}; reasoning_carried "$calls"`).text).toBe("1 2");
   });
 
+  // A chain the daemon's own loop answered through the model gateway on 2026-11-19 as A10's
+  // GPT-6.1 leg asks it (testdata/answer-loop/model-calls-gpt-reasoning.jsonl), recorded by a
+  // throwaway harness over answer.Answer on proof run 44461333495's merger conversation, its gh
+  // calls answered with the bytes go.mod holds. Each id and encrypted content is a stand-in that
+  // keeps which of them are equal, and each request keeps the input items the reads look at. The
+  // two cache answers returned no reasoning in any step, as all four of that proof run's GPT-6.1
+  // answers did; the third, asked gpt-reason-reversed, returned rs_r2 beside its gh call, and its
+  // later request carried the done event's content.
+  const chain = (n: number) =>
+    `evidence=$gpt_reasoning_evidence; calls=$(answer_calls daemon-files 'A10-gpt-${n})' 'A10-gpt-${n + 1})')`;
+  const carriedOf = (n: number) =>
+    `"$(reasoning_carried "$(answer_calls daemon-files 'A10-gpt-${n})' 'A10-gpt-${n + 1})')")"`;
+  const reasoningQuestions: string[] = JSON.parse(readFileSync(liveQuestions, "utf8")).a10
+    .reasoning;
+
+  test("reasoning_carried passes a recorded step that reasoned before its gh call, and no change of it", () => {
+    const ordinals = [1, 2, 3].map(
+      (n) => read(`${chain(n)}; jq -c 'map(.ordinal)' <<<"$calls"`).text
+    );
+    expect(ordinals).toEqual(["[1,2]", "[3,4]", "[5,6]"]);
+    expect(read(`${chain(3)}; reasoning_carried "$calls"`)).toEqual({ code: 0, text: "1 1" });
+    // The later request carrying the item as the stream's `response.completed` or
+    // `output_item.added` holds it, or not at all, carries nothing of what the step returned.
+    for (const content of ["gAAAAAB-rs-r2-completed", "gAAAAAB-rs-r2-added"]) {
+      const changed = `${chain(3)}; calls=$(jq -c '.[1].request_body.input |= map(if .id? == "rs_r2" then .encrypted_content = "${content}" else . end)' <<<"$calls")`;
+      expect(read(`${changed}; reasoning_carried "$calls"`).text).toBe("0 1");
+    }
+    const dropped = `${chain(3)}; calls=$(jq -c '.[1].request_body.input |= map(select(.id? != "rs_r2"))' <<<"$calls")`;
+    expect(read(`${dropped}; reasoning_carried "$calls"`).text).toBe("0 1");
+    // The reply that answer posted holds its question's keys.
+    const reply = `reply=$(jq -r 'select(.ordinal == 6) | .response_body' "$gpt_reasoning_evidence/model-calls.jsonl" | sed -n 's/^data: //p' | jq -R -r 'fromjson? | select(.type == "response.output_item.done") | .item.content[0].text | fromjson | .text')`;
+    expect(
+      run(
+        `${reply}; questions_file=${shq(liveQuestions)}; answer_holds gpt-reason-reversed "$reply"`
+      ).code
+    ).toBe(0);
+  });
+
+  test("reasoning_carried owes nothing for recorded answers whose steps returned no reasoning", () => {
+    for (const n of [1, 2]) {
+      expect(read(`${chain(n)}; reasoning_carried "$calls"`)).toEqual({ code: 0, text: "0 0" });
+    }
+  });
+
+  // A call the provider cut for length, which the daemon makes once more (agentloop's
+  // Request.CallAgainWhenCut): the call made again is sent the cut call's request byte for byte,
+  // so nothing the cut call returned reaches a later request, and it owes nothing. The cut call
+  // here returns a reasoning item and ends `response.incomplete`, as a Responses stream cut at
+  // max_output_tokens ends. Inserted before the recorded answer's later call, with that call's
+  // request, it is one more later request that carries rs_r2: 2 of 2, where reading the cut call's
+  // rs_cut as owed would make it 2 of 3. Inserted before the recorded step that returned rs_r2,
+  // with that step's request, it carries nothing and owes nothing: 1 of 1, not 1 of 3.
+  test("reasoning_carried owes nothing for a call the provider cut, which the daemon made again", () => {
+    const cutStream = [
+      {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: {
+          type: "reasoning",
+          id: "rs_cut",
+          summary: [],
+          encrypted_content: "gAAAAAB-rs-cut-added",
+        },
+      },
+      {
+        type: "response.output_item.done",
+        output_index: 0,
+        item: {
+          type: "reasoning",
+          id: "rs_cut",
+          summary: [],
+          encrypted_content: "gAAAAAB-rs-cut-done",
+        },
+      },
+      {
+        type: "response.incomplete",
+        response: {
+          id: "resp_cut",
+          status: "incomplete",
+          incomplete_details: { reason: "max_output_tokens" },
+          output: [
+            {
+              type: "reasoning",
+              id: "rs_cut",
+              summary: [],
+              encrypted_content: "gAAAAAB-rs-cut-completed",
+            },
+          ],
+        },
+      },
+    ]
+      .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+      .join("");
+    const cutBody = `${cutStream}data: [DONE]\n\n`;
+    // The cut call is made with the request of the call at index AT, and goes before it.
+    const withCut = (at: number) =>
+      `${chain(3)}; calls=$(jq -c --argjson at ${at} --arg body ${shq(cutBody)} '.[:$at] + [.[$at] | .response_body = $body] + .[$at:]' <<<"$calls")`;
+    expect(read(`${withCut(1)}; jq length <<<"$calls"`).text).toBe("3");
+    expect(read(`${withCut(1)}; reasoning_carried "$calls"`)).toEqual({ code: 0, text: "2 2" });
+    expect(read(`${withCut(0)}; reasoning_carried "$calls"`)).toEqual({ code: 0, text: "1 1" });
+    // The skip is the cut call's alone: the step that returned rs_r2 still owes it to the call
+    // made again, which fails when it drops it.
+    const dropped = `${withCut(1)}; calls=$(jq -c '.[2].request_body.input |= map(select(.id? != "rs_r2"))' <<<"$calls")`;
+    expect(read(`${dropped}; reasoning_carried "$calls"`).text).toBe("1 2");
+  });
+
+  test("carried_total sums every answer's carried and owed, adding nothing for a line of no two counts", () => {
+    expect(read("carried_total '0 0' '1 1' '2 3'")).toEqual({ code: 0, text: "3 4" });
+    expect(read("carried_total '' 'not counts' '1' '1 x' '2 2'")).toEqual({ code: 0, text: "2 2" });
+    expect(read("carried_total")).toEqual({ code: 0, text: "0 0" });
+  });
+
+  // Whether A10's GPT-6.1 leg asks again. After the two recorded cache answers, which owe nothing,
+  // it asks the list's first question; after the recorded third, which owed its first step's
+  // reasoning, it asks nothing more, and nothing more when that answer's later request dropped it
+  // either, since the clause then has a carry to judge, and fails it. Past the list it asks
+  // nothing: that is the bound.
+  test("a10_next_question asks the next reasoning question while no answer owed a carry", () => {
+    const recorded = `evidence=$gpt_reasoning_evidence; questions_file=${shq(liveQuestions)}`;
+    expect(read(`${recorded}; a10_next_question 0 ${carriedOf(1)} ${carriedOf(2)}`)).toEqual({
+      code: 0,
+      text: reasoningQuestions[0],
+    });
+    expect(
+      read(`${recorded}; a10_next_question 1 ${carriedOf(1)} ${carriedOf(2)} ${carriedOf(3)}`)
+    ).toEqual({ code: 0, text: "" });
+    const next = (args: string) =>
+      read(`questions_file=${shq(liveQuestions)}; a10_next_question ${args}`).text;
+    expect(next("1 '0 0' '0 0' '0 0'")).toBe(reasoningQuestions[1]);
+    expect(next("2 '0 0' '0 0' '0 0' '0 0'")).toBe(reasoningQuestions[2]);
+    expect(
+      next(`${reasoningQuestions.length} ${"'0 0' ".repeat(reasoningQuestions.length + 2)}`)
+    ).toBe("");
+    expect(next("1 '0 0' '0 0' '0 1'")).toBe("");
+    expect(next("0")).toBe(reasoningQuestions[0]);
+    // An ASKED that counts no questions asked asks nothing, and so does a questions file with no
+    // a10 list, the fixture's.
+    expect(next("'' '0 0' '0 0'")).toBe("");
+    expect(next("-1 '0 0' '0 0'")).toBe("");
+    expect(read("a10_next_question 0 '0 0' '0 0'")).toEqual({ code: 0, text: "" });
+  });
+
   // The cost line sums an answer's calls, and a later call reads what an earlier call of the same
   // answer wrote: the cache read the second answer is judged by is its first call's own.
   test("call_cached_tokens reads one call's cached input tokens off its response", () => {
@@ -1197,6 +1351,25 @@ describe("the questions file", () => {
     expect(unknown.code).toBe(1);
     expect(unknown.text).toContain("no question no-such-question");
     expect(read(`answer_holds architect-decision ''`)).toEqual({ code: 1, text: "write-through" });
+  });
+
+  // The list A10's GPT-6.1 leg asks from after its two cache questions: three questions, the
+  // leg's bound, each a question of its own to the GPT-6.1 merger with keys the rig checks.
+  test("the live file's a10.reasoning names three questions to the GPT-6.1 merger, each with keys", () => {
+    const file = JSON.parse(readFileSync(liveQuestions, "utf8")) as {
+      a10: { reasoning: string[] };
+      questions: { id: string; agent?: string; criteria: string[]; must_contain?: string[] }[];
+    };
+    const reasoning = file.a10.reasoning;
+    expect(reasoning).toHaveLength(3);
+    expect(new Set(reasoning).size).toBe(3);
+    for (const id of reasoning) {
+      expect(["gpt-repository-module", "gpt-repository-go"]).not.toContain(id);
+      const question = file.questions.find((q) => q.id === id);
+      expect(question?.agent).toBe("gpt");
+      expect(question?.criteria).toContain("A10");
+      expect(question?.must_contain?.length ?? 0).toBeGreaterThan(0);
+    }
   });
 
   test("recorded_hit reads the hits the file records as not about the loop", () => {

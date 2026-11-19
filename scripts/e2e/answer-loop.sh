@@ -2315,19 +2315,36 @@ check_a9() {
 # a10_gpt is A10's GPT-6.1 clause: the stopped merger, whose conversation ran on GPT-6.1 with
 # reasoning and a tool call (produce_gpt_agent), is asked two questions within the cache lifetime,
 # each read from the smoke repository with the gh tool, so an answer takes more than one model
-# step, and is then resumed in its own harness. It is judged from the recording proxy's records of
-# each answer's own calls (answer_calls: the daemon's label, the question's marker and not the next
-# question's) and from the daemon's `answers: answered` lines:
+# step; then, while no answer so far had a step that returned reasoning with a later step after
+# it, the next question of the questions file's a10.reasoning list, each a new question that makes
+# the model reason before a gh call (a10_next_question); and it is then resumed in its own harness.
+# A step returns reasoning only when the model reasons, and the cache questions rarely make it:
+# in proof run 44461333495 none of the eight steps of their four answers returned any
+# (reasoning_tokens 0 in each), so (c) owed nothing. The list is three questions long, which is
+# the leg's bound. Measured through the model gateway on 2026-11-19 with the daemon's own loop (a
+# throwaway harness over answer.Answer on that run's merger conversation, its gh calls answered
+# with the bytes go.mod holds), each of the three, asked after the two cache questions, had a step
+# that returned reasoning with a later step after it in 34 of 34 answers, and each later request
+# carried it; the two cache questions had one in 0 of 34 each. So the first of the list all but
+# always ends the asking, and the other two stay for a model that reasons less on one kind of
+# question: the first and the third make it reason before the answer's first gh call, the second
+# between its two. A fourth would cost another answer's wait (up to 240 s) and another question
+# the resume must hold, against a miss none of the three showed. It is judged from the recording
+# proxy's records of each answer's own calls (answer_calls: the daemon's label, the question's
+# marker and not the next question's) and from the daemon's `answers: answered` lines:
 #   the conversation: its turns that did not fail hold a tool call (omp_openai_summary);
-#   the model: every call of both answers is a POST /v1/responses for the conversation's model,
+#   the model: every call of every answer is a POST /v1/responses for the conversation's model,
 #   and each answered line names it (calls_on_model);
 #   (a) every request carries `reasoning.effort` at the level the conversation last ran at, in
 #   agentloop's words for it (omp_thinking_level, openai_effort, efforts_all);
-#   (b) each answer's first request carries every reasoning item the transcript stores, its id and
-#   encrypted content byte for byte (reasoning_replayed), the transcript read just before that
-#   question, so the second answer's holds the first answer's appended turns too;
-#   (c) every request after a step whose response returned reasoning carries it as that
-#   response's `response.output_item.done` event holds it (reasoning_carried);
+#   (b) each of the two cache answers' first request carries every reasoning item the transcript
+#   stores, its id and encrypted content byte for byte (reasoning_replayed), the transcript read
+#   just before that question, so the second answer's holds the first answer's appended turns too;
+#   (c) over every answer asked, every request after a step whose response returned reasoning
+#   carries it as that response's `response.output_item.done` event holds it (reasoning_carried,
+#   summed by carried_total); a call the provider cut for length (`response.incomplete`), which
+#   the daemon made again sent the cut call's own request (agentloop's CallAgainWhenCut), owes
+#   nothing, since by design no later request holds what it returned;
 #   (d) the second answer, asked ten seconds after the first answer is posted, as the Claude Code
 #   leg asks its second, reads the conversation from cache: its first call's own response reports
 #   cached input tokens (call_cached_tokens), and its cost line a cache read (cache_read_tokens).
@@ -2335,16 +2352,17 @@ check_a9() {
 #   an earlier call of the same answer wrote, so the line alone shows nothing of the first call;
 #   (e) each reply holds its question's answer key;
 #   (f) resumed on its own route (agents-gpt), the merger's first request is for the model and
-#   holds both questions once each.
+#   holds every question asked once each.
 # A transcript with no tool call, or with no reasoning item carrying encrypted content, which
-# leaves (b) nothing to replay, and answers in which no step that returned reasoning was followed
-# by another, which leave (c) nothing to carry, each fail the clause and say what went unexercised,
-# since a request carries every item of none.
+# leaves (b) nothing to replay, and answers within the bound none of which had a step that
+# returned reasoning followed by another, which leave (c) nothing to carry, each fail the clause
+# and say what went unexercised, since a request carries every item of none.
 a10_gpt() {
   local session=${agent[$store:gpt.session]:-} token=${agent[$store:gpt.token]:-}
-  local transcript second summary level want t1 t2 s1 s2 e1 e2 calls1 calls2 line1 line2 reply1 reply2 cached1 cached2
-  local replay1 replay2 carried1 carried2 rgot1 rof1 rmiss1 rgot2 rof2 rmiss2 cgot1 cof1 cgot2 cof2 carried owed m request counts
-  local unexercised='' uncarried='' unreplayed='' ok_tools=0 ok_model=0 ok_effort=0 ok_replay=0 ok_carried=0 ok_cache=0 ok_keys=0 ok_resume=0
+  local transcript second summary level want id s e n k calls line reply missing cached1 cached2
+  local replay1 replay2 rgot1 rof1 rmiss1 rgot2 rof2 rmiss2 carried owed exercised='' m request counts='' want_counts=''
+  local unexercised='' uncarried='' unreplayed='' unkeyed='' ok_tools=0 ok_model=1 ok_effort=1 ok_replay=0 ok_carried=0 ok_cache=0 ok_keys=1 ok_resume=0
+  local -a ids=(gpt-repository-module gpt-repository-go) sent=() replies=() answers=() lines=() carries=()
   if [ -n "${agent[$store:gpt.why]:-}" ] || [ -z "$session" ]; then
     record_result A10 FAIL "GPT-6.1: ${agent[$store:gpt.why]:-the merger registered no session}"
     return 0
@@ -2369,71 +2387,88 @@ a10_gpt() {
     unexercised+=", so the clause that the replay carries each reasoning item byte for byte is unexercised"
   fi
   [ -z "$unexercised" ] || note "$unexercised: the GPT-6.1 clause fails"
-  t1="$(question_text gpt-repository-module) (question gpt-repository-module of run $run_tag, A10-gpt-1)"
-  t2="$(question_text gpt-repository-go) (question gpt-repository-go of run $run_tag, A10-gpt-2)"
-  s1=$(envoy_ask_text session "$session" "$t1")
-  e1=${s1#* }
-  soft_wait 240 "the GPT-6.1 merger's first answer" inbox_reply "$e1" || true
-  sleep 10
-  # The conversation the second answer's first request replays, kept beside the one the first
-  # answer's replays (save_conversations' gpt.jsonl).
-  second=$(conversation_text gpt)
-  mkdir -p "$evidence/sessions/$store"
-  printf '%s\n' "$second" >"$evidence/sessions/$store/gpt-before-A10-gpt-2.jsonl"
-  s2=$(envoy_ask_text session "$session" "$t2")
-  e2=${s2#* }
-  soft_wait 240 "the GPT-6.1 merger's second answer" inbox_reply "$e2" || true
-  reply1=$(inbox_reply "$e1" || true)
-  reply2=$(inbox_reply "$e2" || true)
-  line1=$(answered_line "$(answer_question_id "$reply1")") || line1=
-  line2=$(answered_line "$(answer_question_id "$reply2")") || line2=
-  calls1=$(answer_calls "daemon-$store" "A10-gpt-1)" "A10-gpt-2)")
-  calls2=$(answer_calls "daemon-$store" "A10-gpt-2)")
-  replay1=$(reasoning_replayed "$transcript" "$(jq -c '.[0].request_body // null' <<<"$calls1")")
-  replay2=$(reasoning_replayed "$second" "$(jq -c '.[0].request_body // null' <<<"$calls2")")
-  carried1=$(reasoning_carried "$calls1")
-  carried2=$(reasoning_carried "$calls2")
-  cached1=$(call_cached_tokens "$(jq -c '.[0] // null' <<<"$calls1")")
-  cached2=$(call_cached_tokens "$(jq -c '.[0] // null' <<<"$calls2")")
-  note "GPT-6.1: listener $s1 and $s2; the answers' calls on daemon-$store: $(jq -c '[.[] | {ordinal, path, model: .request_body.model, status}]' <<<"$calls1") and $(jq -c '[.[] | {ordinal, path, model: .request_body.model, status}]' <<<"$calls2")"
-  note "GPT-6.1: efforts $(calls_efforts "$calls1") and $(calls_efforts "$calls2") (want \"$want\"); of the transcript's reasoning items each first request carried $replay1 and $replay2 (carried, stored, missing); of the reasoning earlier steps returned, later requests carried $carried1 and $carried2 (carried, owed)"
-  note "GPT-6.1: each answer's first call read $cached1 and $cached2 cached input tokens (its response's usage); answered lines $(jq -c '{model, calls, cacheReadTokens, cacheWriteTokens, costUSD}' <<<"${line1:-null}") and $(jq -c '{model, calls, cacheReadTokens, cacheWriteTokens, costUSD}' <<<"${line2:-null}")"
-  note "GPT-6.1: replies: $(head -c 300 <<<"$reply1" | tr '\n' ' ') | $(head -c 300 <<<"$reply2" | tr '\n' ' ')"
-  calls_on_model "$calls1" /v1/responses "$gpt_model_id" && calls_on_model "$calls2" /v1/responses "$gpt_model_id" &&
-    [ "$(jq -r '.model // ""' <<<"${line1:-null}")" = "$gpt_model" ] &&
-    [ "$(jq -r '.model // ""' <<<"${line2:-null}")" = "$gpt_model" ] && ok_model=1
-  efforts_all "$calls1" "$want" && efforts_all "$calls2" "$want" && ok_effort=1
+  n=0
+  while :; do
+    if [ "$n" -lt 2 ]; then
+      id=${ids[$n]}
+    else
+      id=$(a10_next_question "$((n - 2))" "${carries[@]}")
+      [ -n "$id" ] || break
+      ids+=("$id")
+    fi
+    n=$((n + 1))
+    if [ "$n" = 2 ]; then
+      sleep 10
+      # The conversation the second answer's first request replays, kept beside the one the first
+      # answer's replays (save_conversations' gpt.jsonl).
+      second=$(conversation_text gpt)
+      mkdir -p "$evidence/sessions/$store"
+      printf '%s\n' "$second" >"$evidence/sessions/$store/gpt-before-A10-gpt-2.jsonl"
+    fi
+    s=$(envoy_ask_text session "$session" "$(question_text "$id") (question $id of run $run_tag, A10-gpt-$n)")
+    sent+=("$s")
+    e=${s#* }
+    soft_wait 240 "the GPT-6.1 merger's answer to $id (A10-gpt-$n)" inbox_reply "$e" || true
+    reply=$(inbox_reply "$e" || true)
+    replies+=("$reply")
+    calls=$(answer_calls "daemon-$store" "A10-gpt-$n)" "A10-gpt-$((n + 1)))")
+    carries+=("$(reasoning_carried "$calls")")
+  done
+  # Every answer's calls read again now that the last is posted, so that none is judged short of a
+  # call the proxy had not yet recorded when the leg decided whether to ask again.
+  carries=()
+  for ((k = 1; k <= n; k++)); do
+    calls=$(answer_calls "daemon-$store" "A10-gpt-$k)" "A10-gpt-$((k + 1)))")
+    answers+=("$calls")
+    carries+=("$(reasoning_carried "$calls")")
+    line=$(answered_line "$(answer_question_id "${replies[k - 1]}")") || line=
+    lines+=("$line")
+    note "GPT-6.1: A10-gpt-$k (${ids[k - 1]}): listener ${sent[k - 1]}; its calls on daemon-$store $(jq -c '[.[] | {ordinal, path, model: .request_body.model, status}]' <<<"$calls"), efforts $(calls_efforts "$calls") (want \"$want\"); of the reasoning its earlier steps returned, its later requests carried ${carries[k - 1]} (carried, owed); answered line $(jq -c '{model, calls, cacheReadTokens, cacheWriteTokens, costUSD}' <<<"${line:-null}"); reply: $(head -c 300 <<<"${replies[k - 1]}" | tr '\n' ' ')"
+    calls_on_model "$calls" /v1/responses "$gpt_model_id" && [ "$(jq -r '.model // ""' <<<"${line:-null}")" = "$gpt_model" ] || ok_model=0
+    efforts_all "$calls" "$want" || ok_effort=0
+    if ! missing=$(answer_holds "${ids[k - 1]}" "${replies[k - 1]}"); then
+      ok_keys=0
+      unkeyed+="${unkeyed:+; }the reply to A10-gpt-$k (${ids[k - 1]}) lacks \"$missing\""
+    fi
+    [ "${carries[k - 1]#* }" = 0 ] || exercised+="${exercised:+, }A10-gpt-$k (${ids[k - 1]}, ${carries[k - 1]% *} of ${carries[k - 1]#* } carried)"
+  done
+  replay1=$(reasoning_replayed "$transcript" "$(jq -c '.[0].request_body // null' <<<"${answers[0]}")")
+  replay2=$(reasoning_replayed "$second" "$(jq -c '.[0].request_body // null' <<<"${answers[1]}")")
+  cached1=$(call_cached_tokens "$(jq -c '.[0] // null' <<<"${answers[0]}")")
+  cached2=$(call_cached_tokens "$(jq -c '.[0] // null' <<<"${answers[1]}")")
+  note "GPT-6.1: of the transcript's reasoning items each cache answer's first request carried $replay1 and $replay2 (carried, stored, missing); each cache answer's first call read $cached1 and $cached2 cached input tokens (its response's usage)"
   read -r rgot1 rof1 rmiss1 <<<"$replay1"
   read -r rgot2 rof2 rmiss2 <<<"$replay2"
   [ "$rof1" -gt 0 ] && [ "$rgot1" = "$rof1" ] && [ "$rof2" -gt 0 ] && [ "$rgot2" = "$rof2" ] && ok_replay=1
   [ -z "$rmiss1" ] || unreplayed="the first answer's first request lacks the stored reasoning items $rmiss1"
   [ -z "$rmiss2" ] || unreplayed+="${unreplayed:+; }the second answer's first request lacks the stored reasoning items $rmiss2"
-  read -r cgot1 cof1 <<<"$carried1"
-  read -r cgot2 cof2 <<<"$carried2"
-  carried=$((cgot1 + cgot2))
-  owed=$((cof1 + cof2))
+  read -r carried owed <<<"$(carried_total "${carries[@]}")"
   if [ "$owed" = 0 ]; then
-    uncarried="no step of either answer that returned reasoning was followed by another step, so the clause that a later step carries an earlier step's reasoning is unexercised"
+    uncarried="no step of the $n answers asked (the two cache questions and $((n - 2)) of the questions file's a10.reasoning list, which is the bound) that returned reasoning was followed by another step, so the clause that a later step carries an earlier step's reasoning is unexercised"
     note "$uncarried"
   elif [ "$carried" = "$owed" ]; then
     ok_carried=1
+  else
+    uncarried="later requests carried $carried of the $owed pairs of a reasoning item an earlier step returned and a later request of its answer: $exercised"
   fi
-  [ "$(cache_read_tokens "$line2")" -gt 0 ] && [ "$cached2" -gt 0 ] && ok_cache=1
-  answer_holds gpt-repository-module "$reply1" >/dev/null && answer_holds gpt-repository-go "$reply2" >/dev/null && ok_keys=1
+  [ "$(cache_read_tokens "${lines[1]}")" -gt 0 ] && [ "$cached2" -gt 0 ] && ok_cache=1
   m=$(proxy_count agents-gpt)
   resume_agent gpt || true
-  claims_cmd deliver --claim "$token" --task "While you were stopped you were asked about go.mod twice. What did you answer each time?" >/dev/null || true
+  claims_cmd deliver --claim "$token" --task "While you were stopped you were asked $n questions about go.mod. What did you answer each time?" >/dev/null || true
   soft_wait 300 "the resumed GPT-6.1 merger's first model call" more_than "$m" proxy_count agents-gpt || true
   soft_wait 600 "the resumed merger's turn" claim_is "$token" '.state == "idle" and .pending == null' || true
   request=$(first_request_after agents-gpt "$m")
-  counts="$(occurrences "$request" "A10-gpt-1)") $(occurrences "$request" "A10-gpt-2)")"
-  note "GPT-6.1: the resumed merger's first request (agents-gpt, after its first $m model calls), for $(jq -r '.model // "no model"' <<<"$request"), holds the two questions: $counts"
-  [ "$counts" = "1 1" ] && [ "$(jq -r '.model // ""' <<<"$request")" = "$gpt_model_id" ] && ok_resume=1
+  for ((k = 1; k <= n; k++)); do
+    counts+="${counts:+ }$(occurrences "$request" "A10-gpt-$k)")"
+    want_counts+="${want_counts:+ }1"
+  done
+  note "GPT-6.1: the resumed merger's first request (agents-gpt, after its first $m model calls), for $(jq -r '.model // "no model"' <<<"$request"), holds each of the $n questions this many times: $counts"
+  [ "$counts" = "$want_counts" ] && [ "$(jq -r '.model // ""' <<<"$request")" = "$gpt_model_id" ] && ok_resume=1
   suspend_agent gpt || true
   if [ "$ok_tools$ok_model$ok_effort$ok_replay$ok_carried$ok_cache$ok_keys$ok_resume" = 11111111 ]; then
-    record_result A10 PASS "GPT-6.1: a conversation with $(jq -r .tool_calls <<<"$summary") tool call(s) answered twice on $gpt_model_id through /v1/responses, every request at effort $want, the level it last ran at; each answer's first request carried every reasoning item its transcript stored ($rof1, then $rof2) with its encrypted content byte for byte, and each later step the reasoning an earlier step returned ($owed owed, all carried); the second answer's first call read $cached2 tokens from cache, its cost line $(cache_read_tokens "$line2"); both replies hold their keys; resumed in Oh My Pi on $gpt_model_id, its first request holding both questions once"
+    record_result A10 PASS "GPT-6.1: a conversation with $(jq -r .tool_calls <<<"$summary") tool call(s) answered $n times on $gpt_model_id through /v1/responses (${ids[*]}), every request at effort $want, the level it last ran at; each cache answer's first request carried every reasoning item its transcript stored ($rof1, then $rof2) with its encrypted content byte for byte, and each later step the reasoning an earlier step returned, all $owed carried byte for byte ($exercised); the second answer's first call read $cached2 tokens from cache, its cost line $(cache_read_tokens "${lines[1]}"); every reply holds its keys; resumed in Oh My Pi on $gpt_model_id, its first request holding each question once"
   else
-    record_result A10 FAIL "GPT-6.1: a tool call in the conversation $ok_tools, on the model $ok_model, effort $ok_effort, the transcript's reasoning replayed $ok_replay, earlier steps' reasoning carried $ok_carried ($carried of $owed), the second answer read from cache $ok_cache (its first call $cached2 tokens, its cost line $(cache_read_tokens "$line2")), answer keys $ok_keys, resumed holding both $ok_resume (1 = shown)${unexercised:+; $unexercised}${unreplayed:+; $unreplayed}${uncarried:+; $uncarried}"
+    record_result A10 FAIL "GPT-6.1: a tool call in the conversation $ok_tools, on the model $ok_model, effort $ok_effort, the transcript's reasoning replayed $ok_replay, earlier steps' reasoning carried $ok_carried ($carried of $owed over $n answers), the second answer read from cache $ok_cache (its first call $cached2 tokens, its cost line $(cache_read_tokens "${lines[1]}")), answer keys $ok_keys, resumed holding each question once $ok_resume (1 = shown)${unexercised:+; $unexercised}${unreplayed:+; $unreplayed}${uncarried:+; $uncarried}${unkeyed:+; $unkeyed}"
   fi
 }
 

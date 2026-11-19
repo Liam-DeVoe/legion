@@ -165,8 +165,36 @@
       "to": "session",
       "text": "Read go.mod at commit 6d843f28732dd82163065cb4d2248e488f68ca0b of sjawhar/legion-smoke again with your gh tool, not from what you read before: which Go version line does it declare, and under which marker is your merge's wait tracked?",
       "must_contain": ["1.22", "LICENSE-TEAL-207"]
+    },
+    {
+      "id": "gpt-reason-reversed",
+      "criteria": ["A10"],
+      "agent": "gpt",
+      "to": "session",
+      "text": "Read go.mod with your gh tool from sjawhar/legion-smoke at the commit whose hash is b0ac86f884e8422d4bc56036128dd23782f348d6 written backwards, character by character; work the hash out before you call. Which module path and which Go version line does it declare?",
+      "must_contain": ["example.com/stage4b-fixture", "1.22"]
+    },
+    {
+      "id": "gpt-reason-square",
+      "criteria": ["A10"],
+      "agent": "gpt",
+      "to": "session",
+      "text": "Read go.mod at commit 6d843f28732dd82163065cb4d2248e488f68ca0b of sjawhar/legion-smoke with your gh tool. Then square the minor number of the Go version it declares (the number after \"1.\") and take the remainder of that square divided by 17: if the remainder is more than 5, read go.mod at that commit once more with your gh tool and check its module path again; if not, make no second call. Reply with the remainder, the Go version line and the module path.",
+      "must_contain": ["1.22", "example.com/stage4b-fixture"]
+    },
+    {
+      "id": "gpt-reason-parity",
+      "criteria": ["A10"],
+      "agent": "gpt",
+      "to": "session",
+      "text": "Before any tool call, work out (207 × 31) mod 7, from the number in your merge's marker: if the remainder is odd, the line you must report is go.mod's Go version line, and if it is even, its module line. Then read go.mod at commit 6d843f28732dd82163065cb4d2248e488f68ca0b of sjawhar/legion-smoke with your gh tool and reply with the remainder and that line.",
+      "must_contain": ["1.22"]
     }
   ],
+  "a10": {
+    "about": "A10's GPT-6.1 leg asks these questions, in this order, after its two go.mod questions (gpt-repository-module, gpt-repository-go), each only while no answer so far had a step that returned reasoning with a later step after it, which clause (c) needs; the list's length is the leg's bound. Each makes the model reason before a gh call: the first and the third before the answer's first one, the second between its two.",
+    "reasoning": ["gpt-reason-reversed", "gpt-reason-square", "gpt-reason-parity"]
+  },
   "a16": {
     "phrases": [
       "\\b(no tools|without tools|tool-?less)\\b[^.]{0,60}\\b(loop|agent)s?\\b",
