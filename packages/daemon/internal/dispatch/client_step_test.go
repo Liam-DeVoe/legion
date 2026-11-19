@@ -36,17 +36,17 @@ func TestPutStepWritesTheRecordUnderTheDaemonSession(t *testing.T) {
 	}
 }
 
-// A write that rates a retro goes to the record's rating route, PUT
+// The rating a retro gave the plan goes to the record's rating route, PUT
 // /api/v1/issues/{key}/steps/{id}/rating, never to the step route: Dispatch ignores a body member
 // it does not declare, so a rating sent to the step route would be answered 200 and dropped. The
 // body is the step write's, with the identity of the retro's run, which makes the record where its
 // start and end have not landed yet, plus the rating and its reason.
-func TestPutStepWritesARatingOnTheRatingRoute(t *testing.T) {
+func TestPutStepRatingWritesTheRatingOnTheRatingRoute(t *testing.T) {
 	const id = "0b9e5c2a-7f43-5d1e-9a6b-3c4d5e6f7a8b"
 	write := StepWrite{Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
-		Agent: "legion-leg-leg-1-implementer", Generation: 2, PlanRating: &PlanRating{Rating: 4, Reason: "The plan put the tests after the review."}}
+		Agent: "legion-leg-leg-1-implementer", Generation: 2}
 	body := putRecord(t, "/api/v1/issues/LEG-1/steps/"+id+"/rating", id, func(client *HTTPClient) error {
-		return client.PutStep(context.Background(), "LEG-1", id, write)
+		return client.PutStepRating(context.Background(), "LEG-1", id, write, PlanRating{Rating: 4, Reason: "The plan put the tests after the review."})
 	})
 	for name, want := range map[string]string{
 		"task": `"default"`, "step": "0", "kind": `"retro"`, "role": `"implementer"`, "type": `""`,

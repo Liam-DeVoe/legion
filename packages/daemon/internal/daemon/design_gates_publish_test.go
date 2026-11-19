@@ -53,6 +53,10 @@ func (d *gatePublishDispatch) PutStep(context.Context, string, string, dispatch.
 	return nil
 }
 
+func (d *gatePublishDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+
 func (d *gatePublishDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }

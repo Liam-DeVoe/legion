@@ -53,9 +53,12 @@ type Client interface {
 	// session holds a role.
 	PutRoleHolders(ctx context.Context, key string, holders []RoleHolder) error
 	// PutStep writes one start or one end of a step onto Dispatch's record id of the issue's
-	// steps, or the rating a retro gave the plan onto the retro's record, where the write names
-	// one. Dispatch writes each field once and keeps every field the write leaves out.
+	// steps. Dispatch writes each field once and keeps every field the write leaves out.
 	PutStep(ctx context.Context, key, id string, write StepWrite) error
+	// PutStepRating writes the rating a retro gave the plan onto the retro's record id of the
+	// issue, with the record's identity in write, on the record's rating route. Dispatch writes
+	// each field once, so a rating sent again changes nothing.
+	PutStepRating(ctx context.Context, key, id string, write StepWrite, rating PlanRating) error
 	// PutPlan writes the plan one run of the issue carries out onto Dispatch's plan id of the
 	// issue. Dispatch writes each field once, so a plan sent again changes nothing.
 	PutPlan(ctx context.Context, key, id string, plan PlanWrite) error
@@ -95,9 +98,7 @@ type RoleHolder struct {
 // know as a pointer, left out when nil. Dispatch writes each field once and keeps what a write
 // leaves out, and it takes a text field sent as "" as left out; a time and ReturnedTo are pointers
 // because their zero is a value (a moment, and the retro's place 0). It mirrors the record's own
-// StepRecord, because this package imports no record of the daemon's. PlanRating is the rating a
-// retro gave the plan, which only the record's rating route takes (HTTPClient.PutStep sends a
-// write naming a rating there) and every other write leaves out.
+// StepRecord, the rating aside, because this package imports no record of the daemon's.
 type StepWrite struct {
 	Task       string     `json:"task"`
 	Step       int        `json:"step"`
@@ -113,14 +114,13 @@ type StepWrite struct {
 	Result     *string    `json:"result,omitempty"`
 	ReturnedTo *int       `json:"returned_to,omitempty"`
 	Report     *string    `json:"report,omitempty"`
-	*PlanRating
 }
 
 // PlanRating is a retro's rating of the plan, from 1 to 5, and its reason, as the record's rating
-// route takes them: embedded in StepWrite, its members are members of the body, both written or
-// neither. It mirrors the record's own PlanRating, which publishStepRecord converts to it, because
-// this package imports no record of the daemon's; internal/daemon's
-// TestAStepRecordReachesDispatchWithEveryField holds the two to the same fields.
+// route takes them beside the step write (HTTPClient.PutStepRating). It mirrors the record's own
+// PlanRating, which the outbox converts to it, because this package imports no record of the
+// daemon's; internal/daemon's TestAStepRecordReachesDispatchWithEveryField holds the two to the
+// same fields.
 type PlanRating struct {
 	Rating int    `json:"rating"`
 	Reason string `json:"rating_reason"`
@@ -483,7 +483,7 @@ func PermanentRefusal(err error) (*Error, bool) {
 // name: a hand-over's labels_add and expected_sequence. Since #2461 Dispatch ignores a body member
 // it does not declare (decodeJSON in its api package) and refuses no field by name, so this retry
 // serves only a Dispatch from before that change; a field whose loss would change a write ships as
-// a route of its own instead (the record's rating route, HTTPClient.PutStep). Any other malformed
+// a route of its own instead (the record's rating route, HTTPClient.PutStepRating). Any other malformed
 // body stays a permanent refusal.
 var newerFields = []string{"labels_add", "expected_sequence"}
 

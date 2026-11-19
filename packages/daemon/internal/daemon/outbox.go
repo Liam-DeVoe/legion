@@ -788,6 +788,11 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 	case record.RoleHoldersPublish:
 		return r.publishRoleHolders(ctx, value)
 	case record.StepRecord:
+		// A step record carrying a rating is the rating a retro gave the plan, which Dispatch
+		// takes on the record's rating route alone (publishStepRating).
+		if value.PlanRating != nil {
+			return r.publishStepRating(ctx, row, value)
+		}
 		return r.publishStepRecord(ctx, row, value)
 	case record.PlanRecord:
 		return r.publishPlanRecord(ctx, row, value)
@@ -1299,10 +1304,9 @@ func (r *outbox) publishRoleHolders(ctx context.Context, payload record.RoleHold
 }
 
 // publishStepRecord writes one start or one end of a step onto Dispatch's record of it, under the
-// row's issue and the record's own id, or the rating a retro gave the plan onto the retro's record,
-// which the client sends to the record's rating route. Dispatch writes each field once and keeps
-// what the write leaves out, so the start, the end and the rating land in any order, and a write
-// that runs again after a lost answer changes nothing.
+// row's issue and the record's own id. Dispatch writes each field once and keeps what the write
+// leaves out, so the start, the end and the rating land in any order, and a write that runs again
+// after a lost answer changes nothing.
 //
 // A Dispatch that has not got the route yet answers its router's 404, which execute makes a wait,
 // so the daemon and Dispatch deploy in either order, and once Dispatch serves the route the row's
@@ -1313,14 +1317,34 @@ func (r *outbox) publishStepRecord(ctx context.Context, row record.OutboxRow, pa
 	if r.dispatch == nil {
 		return errors.New("step record executor has no Dispatch client")
 	}
-	write := dispatch.StepWrite{Task: payload.Task, Step: payload.Step, Kind: payload.Kind, Role: payload.Role,
-		Type: payload.Type, Agent: payload.Agent, Generation: payload.Generation, Session: payload.Session,
-		Model: payload.Model, StartedAt: payload.StartedAt, EndedAt: payload.EndedAt, Result: payload.Result,
-		ReturnedTo: payload.ReturnedTo, Report: payload.Report, PlanRating: (*dispatch.PlanRating)(payload.PlanRating)}
-	if err := r.dispatch.PutStep(ctx, row.Issue, payload.ID, write); err != nil {
+	if err := r.dispatch.PutStep(ctx, row.Issue, payload.ID, stepWriteOf(payload)); err != nil {
 		return fmt.Errorf("write the step record %s of %s: %w", payload.ID, row.Issue, err)
 	}
 	return nil
+}
+
+// publishStepRating writes the rating a retro gave the plan, which payload carries, onto the
+// retro's record on Dispatch, under the row's issue and the record's own id, through the record's
+// rating route (dispatch.Client.PutStepRating), with the record's identity, so the write makes the
+// record where the retro's start and end have not landed yet. Its answers are decided as a step
+// record's are (publishStepRecord).
+func (r *outbox) publishStepRating(ctx context.Context, row record.OutboxRow, payload record.StepRecord) error {
+	if r.dispatch == nil {
+		return errors.New("step record executor has no Dispatch client")
+	}
+	if err := r.dispatch.PutStepRating(ctx, row.Issue, payload.ID, stepWriteOf(payload), dispatch.PlanRating(*payload.PlanRating)); err != nil {
+		return fmt.Errorf("write the rating of the step record %s of %s: %w", payload.ID, row.Issue, err)
+	}
+	return nil
+}
+
+// stepWriteOf is the step write of payload's fields, the rating aside: the identity of the run, and
+// each field of its start or its end that payload carries.
+func stepWriteOf(payload record.StepRecord) dispatch.StepWrite {
+	return dispatch.StepWrite{Task: payload.Task, Step: payload.Step, Kind: payload.Kind, Role: payload.Role,
+		Type: payload.Type, Agent: payload.Agent, Generation: payload.Generation, Session: payload.Session,
+		Model: payload.Model, StartedAt: payload.StartedAt, EndedAt: payload.EndedAt, Result: payload.Result,
+		ReturnedTo: payload.ReturnedTo, Report: payload.Report}
 }
 
 // publishPlanRecord writes the plan one run of an issue carries out onto Dispatch, under the row's

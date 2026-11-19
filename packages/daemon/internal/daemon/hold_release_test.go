@@ -287,6 +287,9 @@ func (d *pilotDispatch) PutGatedSteps(context.Context, string, []string) error  
 func (d *pilotDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
 	return nil
 }
+func (d *pilotDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
 func (d *pilotDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
@@ -356,6 +359,9 @@ func (d *filteringDispatch) PutGatedSteps(context.Context, string, []string) err
 	return nil
 }
 func (d *filteringDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
+func (d *filteringDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
 func (d *filteringDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {

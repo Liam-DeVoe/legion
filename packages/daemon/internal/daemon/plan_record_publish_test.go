@@ -82,9 +82,9 @@ func TestAPlanRecordIsWrittenUnderItsIssueAndItsID(t *testing.T) {
 	}
 }
 
-// The rating a retro gave the plan reaches Dispatch as a write of the retro's record carrying the
-// rating, its reason and the run's identity, which the client sends to the record's rating route
-// (dispatch.HTTPClient.PutStep).
+// The rating a retro gave the plan reaches Dispatch as a write of the retro's record on the
+// record's rating route (dispatch.Client.PutStepRating), carrying the run's identity, the rating
+// and its reason.
 func TestTheRetrosRatingReachesDispatch(t *testing.T) {
 	rig := newStepRecordRigOf(t, ratingRecordOf(), nil)
 	rig.run()
@@ -93,8 +93,8 @@ func TestTheRetrosRatingReachesDispatch(t *testing.T) {
 	}
 	steps := rig.client.received()
 	want := stepPut{Issue: stepIssue, ID: retroRecordID, Write: dispatch.StepWrite{Task: "default", Step: 0, Kind: "retro",
-		Role: "implementer", Agent: "legion-legion-legion-1-implementer", Generation: 2,
-		PlanRating: &dispatch.PlanRating{Rating: 3, Reason: "The plan put the tests after the review."}}}
+		Role: "implementer", Agent: "legion-legion-legion-1-implementer", Generation: 2},
+		Rating: &dispatch.PlanRating{Rating: 3, Reason: "The plan put the tests after the review."}}
 	if len(steps) != 1 || !reflect.DeepEqual(steps[0], want) {
 		t.Fatalf("Dispatch received %+v, want the one rating %+v", steps, want)
 	}

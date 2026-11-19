@@ -226,6 +226,9 @@ func (r *statusRecorder) PutGatedSteps(context.Context, string, []string) error 
 func (r *statusRecorder) PutStep(context.Context, string, string, dispatch.StepWrite) error {
 	return nil
 }
+func (r *statusRecorder) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
 func (r *statusRecorder) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }

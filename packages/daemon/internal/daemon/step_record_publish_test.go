@@ -31,11 +31,13 @@ const (
 // stepRefusedLine is the one line that says a step record ended unwritten.
 const stepRefusedLine = "outbox step record refused by Dispatch and dropped"
 
-// stepPut is one step write as Dispatch received it.
+// stepPut is one step write as Dispatch received it, and the rating it carried on the record's
+// rating route (nil for a write of the step route).
 type stepPut struct {
-	Issue string
-	ID    string
-	Write dispatch.StepWrite
+	Issue  string
+	ID     string
+	Write  dispatch.StepWrite
+	Rating *dispatch.PlanRating
 }
 
 // stepRecordDispatch is Dispatch as the record lane meets it (record.LaneRecord): what each PUT of
@@ -56,8 +58,17 @@ type stepRecordDispatch struct {
 }
 
 func (d *stepRecordDispatch) PutStep(ctx context.Context, key, id string, write dispatch.StepWrite) error {
+	return d.putStep(ctx, stepPut{Issue: key, ID: id, Write: write})
+}
+
+func (d *stepRecordDispatch) PutStepRating(ctx context.Context, key, id string, write dispatch.StepWrite, rating dispatch.PlanRating) error {
+	return d.putStep(ctx, stepPut{Issue: key, ID: id, Write: write, Rating: &rating})
+}
+
+// putStep records put, a write of either step route, and answers it.
+func (d *stepRecordDispatch) putStep(ctx context.Context, put stepPut) error {
 	d.mu.Lock()
-	d.puts = append(d.puts, stepPut{Issue: key, ID: id, Write: write})
+	d.puts = append(d.puts, put)
 	n, answer, hold := len(d.puts)+len(d.plans)-1, d.answer, d.hold
 	d.mu.Unlock()
 	return recordPutAnswer(ctx, n, answer, hold)
@@ -333,58 +344,50 @@ func TestAStepRecordWaitsForADispatchThatHasNoRouteForIt(t *testing.T) {
 	rig.waitedNeverFailed(stepRefusedLine, []string{"INFO", "DEBUG", "DEBUG", "DEBUG", "DEBUG", "DEBUG", "DEBUG", "WARN"})
 }
 
-// A step record and the write Dispatch gets are the same fields, the record's id aside, and the
-// publication copies them one by one (publishStepRecord), since the dispatch package imports no
-// record of the daemon's. A field added to both types and left out of the copy compiles and drops
-// that field from every write. So the two types are held to one set of fields, each of the same
-// type under the same JSON name, but for a struct of the record's that the write holds as its
-// mirror in dispatch (record.PlanRating and dispatch.PlanRating), which the copy converts: the two
-// structs have the same fields, each of the same type under the same JSON name, so a field added
-// to one alone fails here or stops the build; the fixtures, the two writes production makes, to a
-// value in every field between them, which a new field must get in the write that carries it: the
-// end of a step carries every field but the rating and its reason, and the retro's rating
-// (workflow's rateRetro) carries the step's identity, the rating and its reason; and each write to
-// its own record's value of each field, a mirrored struct's converted to the write's type.
+// A step record and the writes Dispatch gets are the same fields, the record's id aside, and the
+// publication copies them one by one (stepWriteOf), since the dispatch package imports no record
+// of the daemon's. A field added to both types and left out of the copy compiles and drops that
+// field from every write. So the record's fields but its rating are held to the step write's, each
+// of the same type under the same JSON name, and its rating (record.PlanRating) to the write's
+// mirror of it in dispatch (dispatch.PlanRating), the rating route's own argument
+// (Client.PutStepRating), which the copy converts: the two structs have the same fields, each of
+// the same type under the same JSON name, so a field added to one alone fails here or stops the
+// build. The fixtures are the two writes production makes, to a value in every field between
+// them, which a new field must get in the write that carries it: the end of a step carries every
+// field but the rating, and the retro's rating (workflow's rateRetro) carries the step's identity
+// and the rating. The run (outbox.run) sends each to its own route, and each write carries its own
+// record's value of each field.
 func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
 	recordType, writeType := reflect.TypeFor[record.StepRecord](), reflect.TypeFor[dispatch.StepWrite]()
 	recordFields := map[string]reflect.StructField{}
 	for i := range recordType.NumField() {
 		field := recordType.Field(i)
-		if field.Name != "ID" {
+		if field.Name != "ID" && field.Name != "PlanRating" {
 			recordFields[field.Name] = field
 		}
 	}
 	if len(recordFields) != writeType.NumField() {
-		t.Errorf("record.StepRecord has %d fields beside its ID, dispatch.StepWrite %d: a field of one is not a field of the other",
+		t.Errorf("record.StepRecord has %d fields beside its ID and its rating, dispatch.StepWrite %d: a field of one is not a field of the other",
 			len(recordFields), writeType.NumField())
-	}
-	recordPackage, writePackage := recordType.PkgPath(), writeType.PkgPath()
-	// mirrored is whether the write's field of type write mirrors the record's of type rec: the
-	// same struct name in the two packages, or pointers to such, with the same fields, each of the
-	// same type under the same JSON name, so the record's converts to the write's.
-	mirrored := func(write, rec reflect.Type) bool {
-		if write.Kind() == reflect.Pointer && rec.Kind() == reflect.Pointer {
-			write, rec = write.Elem(), rec.Elem()
-		}
-		if write.Kind() != reflect.Struct || rec.Kind() != reflect.Struct || write.PkgPath() != writePackage ||
-			rec.PkgPath() != recordPackage || write.Name() != rec.Name() || write.NumField() != rec.NumField() {
-			return false
-		}
-		for i := range write.NumField() {
-			w, r := write.Field(i), rec.Field(i)
-			if w.Name != r.Name || w.Type != r.Type || w.Tag.Get("json") != r.Tag.Get("json") {
-				return false
-			}
-		}
-		return true
 	}
 	for i := range writeType.NumField() {
 		field := writeType.Field(i)
 		mirror, ok := recordFields[field.Name]
-		sameType := ok && (mirror.Type == field.Type || mirrored(field.Type, mirror.Type) && mirror.Type.ConvertibleTo(field.Type))
-		if !sameType || mirror.Tag.Get("json") != field.Tag.Get("json") {
+		if !ok || mirror.Type != field.Type || mirror.Tag.Get("json") != field.Tag.Get("json") {
 			t.Errorf("dispatch.StepWrite's %s is %s %q; record.StepRecord's is %s %q (present: %t)", field.Name,
 				field.Type, field.Tag.Get("json"), mirror.Type, mirror.Tag.Get("json"), ok)
+		}
+	}
+	recordRating, writeRating := reflect.TypeFor[record.PlanRating](), reflect.TypeFor[dispatch.PlanRating]()
+	if recordRating.NumField() != writeRating.NumField() {
+		t.Errorf("record.PlanRating has %d fields, dispatch.PlanRating %d", recordRating.NumField(), writeRating.NumField())
+	} else {
+		for i := range writeRating.NumField() {
+			w, r := writeRating.Field(i), recordRating.Field(i)
+			if w.Name != r.Name || w.Type != r.Type || w.Tag.Get("json") != r.Tag.Get("json") {
+				t.Errorf("dispatch.PlanRating's field %d is %s %s %q; record.PlanRating's is %s %s %q", i,
+					w.Name, w.Type, w.Tag.Get("json"), r.Name, r.Type, r.Tag.Get("json"))
+			}
 		}
 	}
 	fixtures := []struct {
@@ -419,7 +422,7 @@ func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
 			rec := fixture.rec
 			client := &stepRecordDispatch{outboxDispatch: &outboxDispatch{}}
 			runner := &outbox{dispatch: client, log: quietLogger()}
-			if err := runner.publishStepRecord(context.Background(), mustOutboxRow(t, stepIssue, rec, time.Now()), rec); err != nil {
+			if err := runner.run(context.Background(), mustOutboxRow(t, stepIssue, rec, time.Now())); err != nil {
 				t.Fatalf("publish the record: %v", err)
 			}
 			puts := client.received()
@@ -429,13 +432,16 @@ func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
 			written, value := reflect.ValueOf(puts[0].Write), reflect.ValueOf(rec)
 			for i := range writeType.NumField() {
 				field := writeType.Field(i)
-				got, want := written.Field(i), value.FieldByName(field.Name)
-				if want.Type() != got.Type() {
-					want = want.Convert(got.Type())
-				}
-				if !reflect.DeepEqual(got.Interface(), want.Interface()) {
+				if got, want := written.Field(i), value.FieldByName(field.Name); !reflect.DeepEqual(got.Interface(), want.Interface()) {
 					t.Errorf("the write's %s = %v, want the record's %v", field.Name, shown(got), shown(want))
 				}
+			}
+			var want *dispatch.PlanRating
+			if rec.PlanRating != nil {
+				want = new(dispatch.PlanRating(*rec.PlanRating))
+			}
+			if !reflect.DeepEqual(puts[0].Rating, want) {
+				t.Errorf("the write's rating = %+v on the rating route, want the record's %+v", puts[0].Rating, want)
 			}
 		})
 	}

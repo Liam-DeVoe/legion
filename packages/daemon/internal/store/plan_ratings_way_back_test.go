@@ -72,17 +72,18 @@ func decodedBeforeTheRating(payload []byte) error {
 }
 
 // writeOf is how the daemon names a write of payload in the error of a run that failed (its
-// executors: "write the plan record %s of %s", "write the step record %s of %s"), and the Dispatch
-// route the write goes to, under /api/v1/issues/{key}/, as the daemon's client sends it (dispatch's
-// PutPlan and PutStep): a plan on its own id, a step record on its own, and a step record carrying
-// a rating on that record's rating route.
+// executors: "write the plan record %s of %s", "write the step record %s of %s" and "write the
+// rating of the step record %s of %s"), and the Dispatch route the write goes to, under
+// /api/v1/issues/{key}/, as the daemon's client sends it (dispatch's PutPlan, PutStep and
+// PutStepRating): a plan on its own id, a step record on its own, and a step record carrying a
+// rating on that record's rating route.
 func writeOf(payload record.OutboxPayload) (what, route string) {
 	switch write := payload.(type) {
 	case record.PlanRecord:
 		return "plan record " + write.ID, "plans/" + write.ID
 	case record.StepRecord:
 		if write.PlanRating != nil {
-			return "step record " + write.ID, "steps/" + write.ID + "/rating"
+			return "rating of the step record " + write.ID, "steps/" + write.ID + "/rating"
 		}
 		return "step record " + write.ID, "steps/" + write.ID
 	default:

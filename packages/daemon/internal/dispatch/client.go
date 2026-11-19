@@ -218,23 +218,31 @@ func (c *HTTPClient) PutRoleHolders(ctx context.Context, key string, holders []R
 
 // PutStep writes one start or one end of a step onto Dispatch's record id of the issue key,
 // through PUT /api/v1/issues/{key}/steps/{id}, as the daemon's own session, the one session the
-// route takes a record of the issue from. A write naming a rating is the rating a retro gave the
-// plan, and goes to the record's rating route, PUT /api/v1/issues/{key}/steps/{id}/rating, which
-// takes the same body with the rating and its reason: the step route ignores a member it does not
-// declare, so a rating sent there would be answered 200 and lost. Either write appends no event
-// and notifies nobody. Dispatch answers 400 STEP_INPUT for a value it will not take, 403
-// STEP_WRITER for any other writer, 404 ISSUE_NOT_FOUND for an issue it does not know and 409
-// STEP_OTHER_ISSUE for an id that is a record of another issue; a Dispatch older than the route
-// answers its router's 404 (NoRoute), which the outbox's row waits on until the server release that
-// has it.
+// route takes a record of the issue from. The write appends no event and notifies nobody. Dispatch
+// answers 400 STEP_INPUT for a value it will not take, 403 STEP_WRITER for any other writer, 404
+// ISSUE_NOT_FOUND for an issue it does not know and 409 STEP_OTHER_ISSUE for an id that is a
+// record of another issue; a Dispatch older than the route answers its router's 404 (NoRoute),
+// which the outbox's row waits on until the server release that has it.
 func (c *HTTPClient) PutStep(ctx context.Context, key, id string, write StepWrite) error {
-	path := "/api/v1/issues/" + url.PathEscape(key) + "/steps/" + url.PathEscape(id)
-	if write.PlanRating != nil {
-		path += "/rating"
-	}
-	return c.request(ctx, http.MethodPut, path, stepWrite{
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id), stepWrite{
 		StepWrite: write,
 		Actor:     daemonActor(key),
+	}, nil)
+}
+
+// PutStepRating writes the rating a retro gave the plan onto the retro's record id of the issue
+// key, through the record's rating route, PUT /api/v1/issues/{key}/steps/{id}/rating, as the
+// daemon's own session. The body is the step write's, with the identity of the retro's run, which
+// makes the record where its start and end have not landed yet, and the rating and its reason. The
+// rating has a route of its own because the step route ignores a member it does not declare, so a
+// rating sent there would be answered 200 and lost. Dispatch answers the step route's refusals,
+// and 400 STEP_INPUT for a rating off its rule or on a record that is no retro; a Dispatch older
+// than the route answers its router's 404 (NoRoute), which the outbox's row waits on.
+func (c *HTTPClient) PutStepRating(ctx context.Context, key, id string, write StepWrite, rating PlanRating) error {
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id)+"/rating", stepRatingWrite{
+		StepWrite:  write,
+		PlanRating: rating,
+		Actor:      daemonActor(key),
 	}, nil)
 }
 
@@ -756,6 +764,14 @@ type roleHoldersWrite struct {
 // stepWrite is the body of a step record's write: the record's fields and the daemon's actor.
 type stepWrite struct {
 	StepWrite
+	Actor actor `json:"actor"`
+}
+
+// stepRatingWrite is the body of a rating's write: the record's fields, the rating and its reason,
+// and the daemon's actor.
+type stepRatingWrite struct {
+	StepWrite
+	PlanRating
 	Actor actor `json:"actor"`
 }
 
