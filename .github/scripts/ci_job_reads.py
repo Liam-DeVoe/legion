@@ -2155,11 +2155,11 @@ SCRIPT_TEST_GATES = [
     # tool-fallback job (main's #3576 gave that rig a harness of its own).
     harness("ci_tools_test", "Test the tool fetch helper", f"{SCRIPTS}/ci-tools.test.sh", [
         (f"{SCRIPTS}/ci-tools.sh", "the script under test"),
-        (".github/ci-tools.yaml", "ci-tools.test.sh:1278-1287 reads every row of this repository's own manifest"),
+        (".github/ci-tools.yaml", "ci-tools.test.sh:1525-1529 reads every row of this repository's own manifest"),
     ]),
     harness("mirror_ci_tools_test", "Test the tool copy filler", f"{SCRIPTS}/mirror-ci-tools.test.sh", [
         (f"{SCRIPTS}/mirror-ci-tools.sh", "the script under test"),
-        (f"{SCRIPTS}/ci-tools.sh", "mirror-ci-tools.test.sh:359 symlinks in the fetch helper the filler sources"),
+        (f"{SCRIPTS}/ci-tools.sh", "mirror-ci-tools.test.sh:427 symlinks in the fetch helper the filler sources"),
     ]),
     # main's #3179 gave the gate rule 3's own-repository test: it runs .github/scripts/repo-paths.sh
     # for this repository's addresses, so that script is a second subject of this step.
@@ -2387,14 +2387,15 @@ GATES = [
         ]),
     ], reads=reads(
         ("scripts/e2e/stage1-skeleton.sh", at("daemon-go", "Stage 1 live proof")),
-        ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:139 sources it"),
+        ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:142 sources it"),
         ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh:93 sources it"),
         ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh:102 sources it"),
-        ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh:143,157 runs it to hold a port for the daemon"),
-        ("scripts/e2e/lib/built-from.sh", "scripts/e2e/stage1-skeleton.sh:172 runs it over the checkout"),
-        ("packages/pi-legion/package.json", "scripts/e2e/stage1-skeleton.sh:229 copies its name, version and legion "
+        ("scripts/e2e/lib/wait-gone.sh", "scripts/e2e/lib/rig.sh:107 sources it"),
+        ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh:148,162 runs it to hold a port for the daemon"),
+        ("scripts/e2e/lib/built-from.sh", "scripts/e2e/stage1-skeleton.sh:175 runs it over the checkout"),
+        ("packages/pi-legion/package.json", "scripts/e2e/stage1-skeleton.sh:232 copies its name, version and legion "
                                             "block with jq into the pi-legion plugin the proof's home holds"),
-        ("packages/pi-envoy/package.json", "scripts/e2e/stage1-skeleton.sh:230 copies its name and version with jq "
+        ("packages/pi-envoy/package.json", "scripts/e2e/stage1-skeleton.sh:233 copies its name and version with jq "
                                            "into the pi-envoy plugin the proof's home holds"),
         (".github/actions/install-uv/**", at("daemon-go", "./.github/actions/install-uv")),
         (".github/ci-tools.yaml", ".github/actions/install-uv/action.yml:25 installs the uv row's binary"),
@@ -2947,6 +2948,9 @@ GATES = [
         (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go', DATABASE_SKIPS_STEP)} runs it, and "
                                 f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it and copies it"),
         (DATABASE_SKIPS_TEST, f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it"),
+        ("scripts/e2e/lib/wait-gone.sh",
+         f"{at('envoy-go', 'Prove the hub behind the NATS auth service on the local stack (callout-check.sh)')}: "
+         "packages/envoy/scripts/callout-check.sh:49 sources it"),
     ) + ceiling_reads("envoy-go") + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go")),
 
     # envoy-go's fast half: its format and generated-code checks, the shell-script tests,

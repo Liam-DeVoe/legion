@@ -1037,9 +1037,9 @@ jobs:
               - 'skills/legion-worker/references/tools.md'
               - 'skills/legion-worker/references/merge-gate.md'
               - 'scripts/e2e/lib/github-apps.sh'
-              # The Stage 1 proof: the script, the rig it sources, the helpers the rig runs, and
-              # the two plugin manifests it copies with jq into the plugins its home holds
-              # (stage1-skeleton.sh:202-203).
+              # The Stage 1 proof: the script, the rig it sources, the helpers the rig sources and
+              # runs, and the two plugin manifests it copies with jq into the plugins its home holds
+              # (stage1-skeleton.sh:232-233).
               - 'scripts/e2e/stage1-skeleton.sh'
               - 'scripts/e2e/lib/rig.sh'
               - 'scripts/e2e/lib/wait-gone.sh'
