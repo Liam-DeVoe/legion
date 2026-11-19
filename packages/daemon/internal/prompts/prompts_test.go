@@ -1083,14 +1083,14 @@ func TestThePlannerAddsNoTaskBlockToAnOwnersPlan(t *testing.T) {
 	}
 }
 
-// A report of a step whose run Legion ended, on a task with plan rows, is refused as late: the
-// daemon answers STEP_ENDED where the task stands at another step now, and TASK_STOPPED where the
-// task was stopped at that step (intake's LateReportOfEndedStep and LateReportOfStoppedTask). The
-// answer names no result and no cause, sends the agent to `dispatch steps`, and keeps the handoff
-// record the report named as used, so each phase worker is told what the two codes mean and that
-// a later run of its step writes a handoff of its own. This shows the text is loaded, never that a
-// worker follows it.
-func TestAPhaseWorkerIsToldWhatALateReportsRefusalMeans(t *testing.T) {
+// The first report of a run an event ended is taken and moves nothing, with or without plan rows
+// (workflow's leftItsPhase), so each phase worker is told to end its turn on it. A report of the
+// step at which a task with plan rows was stopped is refused as late (intake's
+// LateReportOfStoppedTask): the answer names no result and no cause, sends the agent to
+// `dispatch steps`, and keeps the handoff record the report named as used, so each phase worker is
+// told what TASK_STOPPED means and that a later run of its step writes a handoff of its own. This
+// shows the text is loaded, never that a worker follows it.
+func TestAPhaseWorkerIsToldWhatALateReportsAnswerMeans(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1098,7 +1098,8 @@ func TestAPhaseWorkerIsToldWhatALateReportsRefusalMeans(t *testing.T) {
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer} {
 		text := foldWhitespace(composedText(t, composer, role, false))
 		for _, phrase := range []string{
-			"`STEP_ENDED` where the task stands at another step now, which the answer names, and `TASK_STOPPED` where the task was stopped at your step, whose stop reason the answer gives.",
+			"is no refusal: it is taken, moves nothing, and its handoff is the ended step's report, so end your turn.",
+			"the report of the step at which the task was stopped is refused `TASK_STOPPED`, whose stop reason the answer gives.",
 			"The report moved nothing, `dispatch steps --issue <issue>` shows how that run ended, and a handoff record the report named counts as used, so a later run of your step writes a handoff of its own.",
 		} {
 			if !strings.Contains(text, phrase) {

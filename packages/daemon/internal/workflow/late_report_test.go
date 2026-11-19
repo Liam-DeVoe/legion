@@ -59,17 +59,17 @@ func assertLateReport(t *testing.T, pool *pgxpool.Pool, engine *Engine, role cla
 // The tail every refusal of a late report ends with where the report names a handoff record.
 const usedTail = " Its handoff record counts as used, so the next run of this step writes a handoff of its own."
 
-// For an issue with plan rows, a report of a step whose run Legion already ended is refused, and
-// the answer says why and what to do: the task stands at another step (STEP_ENDED), or the
-// task was stopped (TASK_STOPPED, by its owner or because a failed step had no step to return to).
-// Each refusal moves nothing and writes only the report's handoff record as the role's last one,
-// so the next run of the step cannot complete on it (HANDOFF_NOT_NEW). Neither text names how the
-// run ended: the step record Dispatch holds does (dispatch steps). A report of a task whose issue
-// left the workflow is refused HANDOFF_NOT_CURRENT_PHASE, and a report of another run
-// HANDOFF_STALE_GENERATION. An issue with no plan rows keeps today's answers: a late
-// reviewer's report is taken and moves nothing, and a held issue's tester is told it runs no
-// phase.
-func TestALateReportIsRefusedAndSaysWhy(t *testing.T) {
+// For an issue with plan rows, the first report of a run an event ended is taken: it moves
+// nothing, and the next run of the step cannot complete on its handoff record (HANDOFF_NOT_NEW).
+// A report of a step whose task was stopped there is refused, and the answer says why and what to
+// do (TASK_STOPPED, by its owner or because a failed step had no step to return to). The refusal
+// moves nothing and writes only the report's handoff record as the role's last one, so the next
+// run of the step cannot complete on it either. Its text does not name how the run ended: the
+// step record Dispatch holds does (dispatch steps). A report of a task whose issue left the
+// workflow is refused HANDOFF_NOT_CURRENT_PHASE, and a report of another run
+// HANDOFF_STALE_GENERATION. An issue with no plan rows answers the same: a late reviewer's report
+// is taken and moves nothing, and a held issue's tester is told it runs no phase.
+func TestALateReportIsTakenAfterAnEventAndRefusedAfterAStop(t *testing.T) {
 	t.Run("a review that requested changes ended the reviewer's step", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -80,21 +80,19 @@ func TestALateReportIsRefusedAndSaysWhy(t *testing.T) {
 		move(t, pool, engine, root.Key, TriggerTesterPassed, "", record.PhaseRow{})
 		reviewer := seedPhaseWorker(t, pool, root.Key, claim.RoleReviewer, "")
 		reviewRequestsChanges(t, pool, engine, root.Key)
-		assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
+		implementing := record.TaskPlace{Kind: record.PlaceStep, Position: 1}
+		assertWalksAt(t, pool, engine, root.Key, phase.Implementing, implementing)
 		apply := applyFacts(t, pool, engine)
-		const ended = "step 3 (reviewer) of task a of LEGION-208 has ended, and Legion runs step 1 (implementer) now. This report moved nothing. dispatch steps --issue LEGION-208 shows how that run ended."
 
-		before := reportedOf(t, pool, engine, root.Key, claim.RoleReviewer, true)
-		assertLateReport(t, pool, engine, claim.RoleReviewer, apply("late", reportOf(claim.RoleReviewer, reviewer, "review-1")),
-			"STEP_ENDED", ended+usedTail, "review-1", before)
+		if result := apply("late", reportOf(claim.RoleReviewer, reviewer, "review-1")); result.Refusal != nil {
+			t.Fatalf("the reviewer's first report after the changes request = %+v, want it taken", result.Refusal)
+		}
+		assertWalksAt(t, pool, engine, root.Key, phase.Implementing, implementing)
+		if row := roleRowOf(t, pool, engine, root.Key, claim.RoleReviewer); row.HandoffRecord != "review-1" || row.LastHandoff != "review-1" {
+			t.Fatalf("the reviewer's row = %+v, want the taken report recorded on it", row)
+		}
 
-		// A late report that names no handoff record has none to count as used, and says so by
-		// saying nothing of one.
-		before = reportedOf(t, pool, engine, root.Key, claim.RoleReviewer, true)
-		assertLateReport(t, pool, engine, claim.RoleReviewer, apply("late-bare", reportOf(claim.RoleReviewer, reviewer, "")),
-			"STEP_ENDED", ended, "", before)
-
-		// Round 2: the reviewer's completion naming the record of the refused report is refused as
+		// Round 2: the reviewer's completion naming the record of the taken report is refused as
 		// a handoff not written anew.
 		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerTesterPassed, "", record.PhaseRow{})
@@ -102,7 +100,7 @@ func TestALateReportIsRefusedAndSaysWhy(t *testing.T) {
 		result := apply("round-2", reportOf(claim.RoleReviewer, reviewer, "review-1"))
 		want := "the reviewer named handoff record review-1 for its previous phase of LEGION-208; write this phase's handoff with `dispatch handoff-write --issue LEGION-208 --phase review --body-file <file>` before completing"
 		if result.Refusal == nil || result.Refusal.Code != "HANDOFF_NOT_NEW" || result.Refusal.Message != want {
-			t.Fatalf("round 2's completion naming the refused report's record = %+v, want HANDOFF_NOT_NEW %q", result.Refusal, want)
+			t.Fatalf("round 2's completion naming the taken report's record = %+v, want HANDOFF_NOT_NEW %q", result.Refusal, want)
 		}
 	})
 
@@ -111,13 +109,16 @@ func TestALateReportIsRefusedAndSaysWhy(t *testing.T) {
 		engine := returnEngine()
 		tester := seedPhaseWorker(t, pool, "LEGION-208", claim.RoleTester, "")
 		root := stoppedAtTesting(t, pool, engine)
+		apply := applyFacts(t, pool, engine)
+		const stopped = "task a of LEGION-208 was stopped by its owner. Step 2 (tester) has ended. This report moved nothing. dispatch steps --issue LEGION-208 shows how that run ended."
+
+		// A late report that names no handoff record has none to count as used, and says so by
+		// saying nothing of one.
 		before := reportedOf(t, pool, engine, root.Key, claim.RoleTester, true)
+		assertLateReport(t, pool, engine, claim.RoleTester, apply("late-bare", reportOf(claim.RoleTester, tester, "")), "TASK_STOPPED", stopped, "", before)
 
-		result := applyFacts(t, pool, engine)("late", reportOf(claim.RoleTester, tester, "test-1"))
-
-		assertLateReport(t, pool, engine, claim.RoleTester, result, "TASK_STOPPED",
-			"task a of LEGION-208 was stopped by its owner. Step 2 (tester) has ended. This report moved nothing. dispatch steps --issue LEGION-208 shows how that run ended."+usedTail,
-			"test-1", before)
+		before = reportedOf(t, pool, engine, root.Key, claim.RoleTester, true)
+		assertLateReport(t, pool, engine, claim.RoleTester, apply("late", reportOf(claim.RoleTester, tester, "test-1")), "TASK_STOPPED", stopped+usedTail, "test-1", before)
 	})
 
 	t.Run("a failed step with no step to return to stopped the task", func(t *testing.T) {
@@ -182,7 +183,7 @@ func TestALateReportIsRefusedAndSaysWhy(t *testing.T) {
 			"the tester does not run phase done of LEGION-208; this completion changed nothing", "", before)
 	})
 
-	t.Run("the twins with no plan rows answer as today", func(t *testing.T) {
+	t.Run("the twins with no plan rows answer the same", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Reviewing)
@@ -191,11 +192,11 @@ func TestALateReportIsRefusedAndSaysWhy(t *testing.T) {
 		assertPhase(t, pool, phase.Implementing)
 
 		if result := applyFacts(t, pool, engine)("late", reportOf(claim.RoleReviewer, reviewer, "review-1")); result.Refusal != nil {
-			t.Fatalf("the late reviewer's report on an issue with no plan rows = %+v, want it taken as today", result.Refusal)
+			t.Fatalf("the late reviewer's report on an issue with no plan rows = %+v, want it taken", result.Refusal)
 		}
 		assertPhase(t, pool, phase.Implementing)
 		if row := roleRowOf(t, pool, engine, root.Key, claim.RoleReviewer); row.HandoffRecord != "review-1" || row.LastHandoff != "review-1" {
-			t.Fatalf("the reviewer's row = %+v, want the late report recorded on it as today", row)
+			t.Fatalf("the reviewer's row = %+v, want the late report recorded on it", row)
 		}
 
 		held := migratedPool(t)

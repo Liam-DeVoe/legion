@@ -1582,43 +1582,25 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 	return &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf("the %s does not run phase %s of %s; this completion changed nothing", role, p, issue)}
 }
 
-// LateReportOfEndedStep is the 409 STEP_ENDED refusal of a report of step ended, run by endedRole,
-// of task of issue, whose run Legion ended when the task went on to step now, run by nowRole, which
-// it runs now: the report moves nothing (workflow's lateReport). It names no result and no
-// cause, because the daemon holds no record of how that run ended: the step record in Dispatch does
-// (dispatch steps). named says whether the report names a handoff record, which then counts as
-// used (lateEnd).
-func LateReportOfEndedStep(issue, task string, ended int, endedRole string, now int, nowRole string, named bool) *Refusal {
-	return &Refusal{Status: 409, Code: "STEP_ENDED", Message: fmt.Sprintf(
-		"step %d (%s) of task %s of %s has ended, and Legion runs step %d (%s) now. %s", ended, endedRole, task, issue, now, nowRole, lateEnd(issue, named))}
-}
-
 // LateReportOfStoppedTask is the 409 TASK_STOPPED refusal of a report of step, run by role, of task
 // of issue, which was stopped at that step for reason, the stop reason the task stores
 // (record.PlanTask.StoppedReason): the stop ended the step's run, and the report moves nothing
 // (workflow's lateReport). Its first sentence is the stored reason where that names the task
 // already, as an owner's stop does, and otherwise says the task was stopped for it. The task's row
-// holds no stop time, so the text names none. named says whether the report names a handoff
-// record, which then counts as used (lateEnd).
+// holds no stop time, so the text names none, and it names no result, because the daemon holds no
+// record of how that run ended: the step record in Dispatch does (dispatch steps). Where the report
+// names a handoff record (named), the workflow keeps it as the role's last one, so the step's next
+// run is refused that record (HANDOFF_NOT_NEW), and the text says so.
 func LateReportOfStoppedTask(issue, task, reason string, step int, role string, named bool) *Refusal {
 	why := reason
 	if !strings.HasPrefix(reason, fmt.Sprintf("task %s of %s ", task, issue)) {
 		why = fmt.Sprintf("task %s of %s was stopped: %s", task, issue, reason)
 	}
-	return &Refusal{Status: 409, Code: "TASK_STOPPED", Message: fmt.Sprintf(
-		"%s. Step %d (%s) has ended. %s", why, step, role, lateEnd(issue, named))}
-}
-
-// lateEnd is how each refusal of a late report of a step of issue ends: the report moved nothing,
-// and where to read how the step's run ended. Where the report names a handoff record (named),
-// the workflow keeps it as the role's last one, so the step's next run is refused that record
-// (HANDOFF_NOT_NEW), and the text says so.
-func lateEnd(issue string, named bool) string {
 	end := fmt.Sprintf("This report moved nothing. dispatch steps --issue %s shows how that run ended.", issue)
 	if named {
 		end += " Its handoff record counts as used, so the next run of this step writes a handoff of its own."
 	}
-	return end
+	return &Refusal{Status: 409, Code: "TASK_STOPPED", Message: fmt.Sprintf("%s. Step %d (%s) has ended. %s", why, step, role, end)}
 }
 
 // Pool is the Postgres connection pool the intake applies its facts on, keeps its consumers'

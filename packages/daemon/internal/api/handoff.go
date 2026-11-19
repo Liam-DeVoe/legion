@@ -693,9 +693,9 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 // it: a daemon upgraded in place has roles no start has stamped, whose row answers 0, and workers
 // that confirmed no task carrying an entry, whose claim answers 0 (supervise.Claim.ServingEntry).
 // A completion level with its row's entry is not this fence's: the engine decides it, and records
-// one that arrives after the daemon moved the issue on by an event (workflow's leftItsPhase), or,
-// for a task with plan rows, refuses it as the report of a step whose run ended (workflow's
-// lateReport).
+// one that arrives after the daemon moved the issue on by an event (workflow's leftItsPhase),
+// whether or not the task has plan rows, or, for a task its owner or a failed step stopped,
+// refuses it as the report of the step the stop ended (workflow's lateReport).
 //
 // Where the two differ, the fence first asks whether the role works the phase the issue stands
 // in, because the entry it compares is the role's own row's, which stays where the role's last

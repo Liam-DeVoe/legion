@@ -2162,8 +2162,8 @@ package api
 // fails no step, a production check's report included, `400 RETURN_TO_NEEDS_FAIL`
 // (`api.returnToRefusal`); the workflow refuses a step it may not name, one that is not earlier in
 // the task, `409 RETURN_REFUSED`. For
-// an issue with plan rows the completion route may also answer `409 STEP_ENDED` and
-// `409 TASK_STOPPED` where it answered 200 for a late completion, and `retry_or_escalate` and
+// an issue whose task was stopped the completion route may also answer `409 TASK_STOPPED` to a
+// late completion of the step the stop ended, and `retry_or_escalate` and
 // `legion claims retry` answer `409 TASK_STOPPED` or `409 HELD_FOR_CHILDREN` on a hold of one of
 // the two new reasons; only this release writes plan rows and those reasons, so no issue a release
 // before ran gets the new answers. `readBody` refuses an unknown field, so a plugin sending
