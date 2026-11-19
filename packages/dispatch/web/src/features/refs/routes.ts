@@ -21,6 +21,7 @@ import {
   parseBlockReference,
   withBlock,
 } from "./block-reference";
+import { readerStep } from "./reader-steps";
 import { referenceSpans } from "./reference-spans";
 import { pageInBound, routeInBound } from "./target-id";
 
@@ -186,8 +187,8 @@ function isPlainIssueRoute(route: DispatchRoute | AgentArtifactRoute): route is 
 
 const projectKeyPattern = "[A-Z][A-Z0-9]{1,9}";
 const issueKeyPattern = `${projectKeyPattern}-[1-9]\\d*`;
-const issueKeyOnlyPattern = new RegExp(`^${issueKeyPattern}$`);
-const projectKeyOnlyPattern = new RegExp(`^${projectKeyPattern}$`);
+export const issueKeyOnlyPattern = new RegExp(`^${issueKeyPattern}$`);
+export const projectKeyOnlyPattern = new RegExp(`^${projectKeyPattern}$`);
 const issuePathPattern = new RegExp(`^/issues/(${issueKeyPattern})(?:/(.*))?$`);
 const projectPathPattern = new RegExp(`^/projects/(${projectKeyPattern})(?:/(.*))?$`);
 /** The slug Dispatch gives a document, the one a reference can name. */
@@ -199,6 +200,8 @@ const issueArtifactReferencePattern = new RegExp(
 const projectArtifactReferencePattern = new RegExp(
   `^artifact/(${artifactSlugPattern})(?:@v([1-9]\\d*))?(?:/(ask|comment)/([^/?#\\s]+))?$`
 );
+/** A `dispatch://` reference: what names its owner, then the target within it. */
+export const dispatchReferencePattern = /^dispatch:\/\/([^/]+)(?:\/(.*))?$/;
 /** An agent artifact's reference after `dispatch://agent/`: the session id by the server's rule
  *  (`SESSION_ID_PATTERN`), then the artifact's slug and the version it pins. */
 const agentArtifactReferencePattern = new RegExp(
@@ -388,7 +391,7 @@ export function parseNodeReference(value: string): DispatchReferenceRoute | unde
       ? undefined
       : withBlock(parseNodeReference(document), target.block, target.pin);
   }
-  const match = value.match(/^dispatch:\/\/([^/]+)(?:\/(.*))?$/);
+  const match = value.match(dispatchReferencePattern);
   if (match === null) {
     return undefined;
   }
@@ -671,6 +674,7 @@ export function composerReferences(
   const references: ComposerReference[] = [];
   const seen = new Set<string>();
   for (const { value } of referenceSpans(body)) {
+    readerStep();
     const route = referenceRouteFromHref(value, appOrigin);
     if (route === undefined) {
       continue;

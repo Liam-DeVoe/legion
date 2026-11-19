@@ -955,15 +955,10 @@ describe("Mermaid diagrams", () => {
     });
   });
 
+  // A row below whose promise never settles fails at the test's own deadline, the `--timeout` of
+  // `test:web`, rather than on a race of its own: such a race against real time is an assertion
+  // that the draws settle within it, which a slow machine fails for being slow.
   describe("mermaidDrawsSettled", () => {
-    /** Whether `promise` settles within `ms`, so a promise that never resolves fails the case on
-     *  its assertion rather than on the test's timeout. This wait stays on the real clock where
-     *  the rest of the file moved to a fake one (INFRA-1505): a fake clock only moves when the
-     *  test moves it, so the losing side of the race would never come up and the race would
-     *  decide nothing. */
-    const settlesWithin = (promise: Promise<void>, ms: number): Promise<boolean> =>
-      Promise.race([promise.then(() => true), Bun.sleep(ms).then(() => false)]);
-
     test("resolves at once when no source is waiting", async () => {
       let settled = false;
       void mermaidDrawsSettled().then(() => {
@@ -978,10 +973,9 @@ describe("Mermaid diagrams", () => {
       const events: string[] = [];
       requestMermaidDrawing("sequenceDiagram\n  Alice->>Bob: First", () => events.push("first"));
       requestMermaidDrawing("sequenceDiagram\n  Carol->>Dave: Second", () => events.push("second"));
-      const settled = mermaidDrawsSettled().then(() => {
+      await mermaidDrawsSettled().then(() => {
         events.push("settled");
       });
-      expect(await settlesWithin(settled, 2000)).toBe(true);
       expect(events).toEqual(["first", "second", "settled"]);
     });
 
@@ -993,7 +987,7 @@ describe("Mermaid diagrams", () => {
         requestMermaidDrawing("sequenceDiagram\n  Alice->>Bob: Never", (drawing) =>
           drawn.push(drawing)
         );
-        expect(await settlesWithin(mermaidDrawsSettled(), 1000)).toBe(true);
+        await mermaidDrawsSettled();
         expect(logged).toHaveBeenCalledTimes(1);
         expect(drawn).toEqual([{ unavailable: true }]);
       } finally {
