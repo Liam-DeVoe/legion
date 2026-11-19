@@ -271,6 +271,15 @@ export default function legionExtension(pi: PiApi): void {
     saveEntry: (entry) => pi.appendEntry(PHASE_STALL_ENTRY, entry),
     claim: paneClaim,
     readOwed: (input, signal) => roleDaemon().owed(input, { signal }),
+    // A timer whose check decided not to remind has cleared the wake, and no turn starts whose
+    // `session_stop` would report it, so the pane reports now, as the 5 s interval does: only
+    // when the report's content changed. It has changed from the wake the last report carried,
+    // so the report goes, and a report the daemon already holds is not sent twice. The rule that
+    // sends a report at every settle whatever it says is the daemon's, which releases no claim
+    // whose last report is older than its last turn, and a timer is no turn.
+    wakeChanged: () => {
+      if (paneContext !== undefined) void reportActivity(paneContext, { onlyWhenChanged: true });
+    },
     publisher,
     project: process.env.LEGION_PROJECT,
     limits,

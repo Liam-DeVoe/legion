@@ -39,7 +39,6 @@ import {
   PHASE_STALL_ENTRY,
   reminderText,
   restorePhaseStallEntry,
-  UNREAD_REMINDER,
 } from "@legion/pi-shared/phase-stall";
 import type {
   AsyncJobSnapshot,
@@ -2535,21 +2534,41 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       ]);
     });
 
-    test("a daemon that does not answer what the claim owes still nudges, and says it could not read the record", async () => {
-      // An unreachable daemon is exactly when a stalled worker must still be nudged; the nudge
-      // names no phase and no operation, since it read neither.
+    test("a daemon that does not answer what the claim owes sends no reminder, and the timer whose read fails reports no wake", async () => {
+      // A read that fails reminds no one (`UNREAD_CHECK`, @legion/pi-shared/phase-reminder): a
+      // stalled worker is sent its task again by the daemon's own silence sweep.
       const worker = await bootStalling({
         owed: () => Response.json({ error: "the daemon is restarting" }, { status: 503 }),
       });
       await worker.arrives(assignment);
 
-      const result = await worker.settles("Pushed.");
-      expect(result).toEqual({ continue: true, additionalContext: UNREAD_REMINDER });
+      expect(await worker.settles("Pushed.")).toBeUndefined();
       expect(recorded(worker).at(-1)).toEqual({
         state: "active",
-        count: 1,
+        count: 0,
         reported: false,
         lastMessage: "Pushed.",
+      });
+
+      // A WAITING reply arms a timer, and the settle's report carries its wake.
+      expect(await worker.settles("WAITING: CI on the pull request")).toBeUndefined();
+      expect(activityReports(worker).at(-1)).toMatchObject({
+        activity: { phase: { nextReminderAt: expect.any(String) } },
+      });
+      const reportsBefore = activityReports(worker).length;
+
+      // The timer's read fails too: nothing is steered, nothing more is armed, and the pane reports
+      // at once that no reminder is due.
+      const armed = worker.timers.length;
+      await fires(worker);
+      const reported = Promise.withResolvers<void>();
+      setImmediate(reported.resolve);
+      await reported.promise;
+      expect(steered(worker)).toEqual([]);
+      expect(worker.timers).toHaveLength(armed);
+      expect(activityReports(worker)).toHaveLength(reportsBefore + 1);
+      expect(activityReports(worker).at(-1)).toMatchObject({
+        activity: { phase: { nextReminderAt: null } },
       });
     });
 

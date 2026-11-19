@@ -9,7 +9,7 @@ import {
 } from "@legion/envoy-client/transport"
 import { type ActivityInput, createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
-import { owedReminder, UNREAD_REMINDER } from "@legion/pi-shared/phase-stall"
+import { owedReminder } from "@legion/pi-shared/phase-stall"
 import {
   createPhaseHookEndpoint,
   PHASE_HOOK_REFUSAL,
@@ -269,15 +269,15 @@ test("a turn the daemon says owes nothing is blocked by nothing, from the Stop o
   }
 })
 
-// A daemon that does not answer — unreachable, refusing, or answering what the contract does
-// not describe — still has the worker nudged, and the nudge says it could not read the record:
-// it names no phase and no operation, because it read neither.
-test("a daemon that does not say what the claim owes still blocks the Stop, with a reminder that names no phase and no operation", async () => {
+// A daemon that does not answer — refusing, or answering what the contract does not describe —
+// has the worker reminded of nothing: the `Stop` is blocked by nothing, and the resume timer's own
+// read writes nothing into the session. The pane's log says why, once for the claim in the hour.
+test("a daemon that does not say what the claim owes blocks no Stop and sends no reminder", async () => {
   for (const [failure, answer] of [
     ["a refusal", () => Response.json({ error: "the daemon is restarting" }, { status: 503 })],
     ["an answer the contract refuses", () => Response.json({ owes: true, work: "" })],
   ] as const) {
-    const { endpoint, close } = await harness({
+    const { endpoint, inbox, asked, boot, lines, close } = await harness({
       record: recorded("active", 0),
       claim: implementer,
       owed: answer,
@@ -286,14 +286,59 @@ test("a daemon that does not say what the claim owes still blocks the Stop, with
       expect(
         await endpoint.handle({ event: "Stop", lastAssistantMessage: "Pushed." }),
         failure,
-      ).toEqual({ decision: "block", reason: UNREAD_REMINDER })
+      ).toEqual({})
+      boot()
+      await waitFor(async () => asked.length === 2, "the resume timer to ask the daemon")
+      // A case asserting that nothing happens has no condition to wait for: one of the file's
+      // fixed waits, three times the reminder interval.
+      await Bun.sleep(60)
+      expect(inbox, failure).toEqual([])
+      expect(
+        lines.filter((line) =>
+          line.startsWith(
+            "warn: legion: the daemon did not say what this claim owes; no reminder is sent",
+          ),
+        ),
+        failure,
+      ).toHaveLength(1)
     } finally {
       await close()
     }
   }
-  expect(UNREAD_REMINDER).toContain("could not read the Legion daemon's record")
-  for (const named of ["phase", "handoff_complete", "implementing", WORK]) {
-    expect(UNREAD_REMINDER).not.toContain(named)
+})
+
+// A timer whose check decides not to remind clears the wake it armed, and this host, which
+// otherwise reports only at `Stop`, reports that at once: a reported wake that is due and past
+// holds the pod from its idle release.
+test("a timer that decides not to remind clears the wake and sends a report", async () => {
+  for (const [label, answer] of [
+    ["an answer that the claim owes nothing", owesNothing],
+    ["a refusal", () => Response.json({ error: "the daemon is restarting" }, { status: 503 })],
+  ] as const) {
+    // The restored count makes the settle's reminder a timer's.
+    const { endpoint, inbox, reports, close } = await harness({
+      record: recorded("active", 1),
+      claim: implementer,
+      owed: answer,
+    })
+    try {
+      expect(
+        await endpoint.handle({ event: "Stop", lastAssistantMessage: "Pushed." }),
+        label,
+      ).toEqual({})
+      expect(reports, label).toHaveLength(1)
+      expect(
+        Date.parse(String(reports[0]?.activity.phase.nextReminderAt)),
+        "the settle's report carries the wake its timer is due at",
+      ).not.toBeNaN()
+
+      await waitFor(async () => reports.length === 2, "the timer's report")
+      expect(reports[1]?.activity.phase, label).toEqual({ nextReminderAt: null })
+      expect(reports[1]?.activity.backgroundWork, label).toEqual({ running: false, kinds: [] })
+      expect(inbox, label).toEqual([])
+    } finally {
+      await close()
+    }
   }
 })
 

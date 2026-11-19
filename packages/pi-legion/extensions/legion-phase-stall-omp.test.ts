@@ -751,23 +751,25 @@ test.skipIf(skip)(
   120_000
 );
 
-// Where the daemon's answer does not arrive the worker is still nudged, and the nudge says
-// it could not read the record. It names no phase and no operation, because it read neither. The
-// stand-in answers `claims/owed` as a proxy does for a daemon it cannot reach: a 503 whose body is
-// not the daemon's (`daemonUnreachable` in packages/pi-shared/src/daemon-client.ts).
+// Where the daemon's answer does not arrive the worker is reminded of nothing (`UNREAD_CHECK` in
+// packages/pi-shared/src/phase-reminder.ts): a stalled worker is sent its task again by the
+// daemon's own silence sweep. The stand-in answers `claims/owed` as a proxy does for a daemon it
+// cannot reach: a 503 whose body is not the daemon's (`daemonUnreachable` in
+// packages/pi-shared/src/daemon-client.ts). The worker's WAITING reply arms a timer, whose read
+// fails as well: the timer clears the wake it armed, and the session reports at once that no
+// reminder is due, so no wake past its time holds the pod from its idle release.
 test.skipIf(skip)(
-  "with the daemon unreachable the worker is still nudged, by a reminder that names no phase and no operation",
+  "with the daemon unreachable the worker is reminded of nothing, and its session reports no reminder wake",
   async () => {
     const run = setup();
     const pane = await stallPane(
       run,
       [
-        [{ type: "text", text: "Pushed the change." }],
-        [{ type: "text", text: "Still pushing." }],
         [{ type: "text", text: "WAITING: the daemon to come back." }],
+        [{ type: "text", text: "A turn that should never start." }],
       ],
       {
-        env: { LEGION_STALL_REMINDER_MS: "500" },
+        env: { LEGION_STALL_WAITING_MS: "500" },
         quietMs: 4_000,
         answer: (url) =>
           url.pathname === "/legion/v1/claims/owed"
@@ -776,20 +778,24 @@ test.skipIf(skip)(
       }
     );
 
-    // Three turns: the prompt's, the continuation's and the timer's, each reminder the unread
-    // one. The assignment's own turn named no operation, so what the reminders' turns carry is
-    // theirs.
-    const turns = pane.turns();
-    expect(turns).toHaveLength(3);
-    expect(userText(turns[0] as Request)).not.toContain("handoff_complete");
-    for (const index of [1, 2]) {
-      const text = userText(turns[index] as Request);
-      expect(text).toContain("could not read the Legion daemon's record of what your role owes");
-      expect(text).not.toContain("handoff_complete");
-      expect(text).not.toContain(STALL_WORK);
-      expect(text).not.toContain("implementing");
-    }
-    expect(stallCounts(await pane.phaseEntries())).toEqual([0, 1, 2]);
+    // One turn, the prompt's own: the timer the WAITING reply armed asked the daemon, read no
+    // answer, and sent nothing.
+    expect(pane.turns()).toHaveLength(1);
+    expect(daemonRoutes(pane)).toContain("/legion/v1/claims/owed");
+    expect(pane.publishes()).toEqual([]);
+    expect(stallCounts(await pane.phaseEntries())).toEqual([0]);
+
+    // The settle reported the wake the WAITING reply armed, and the timer, once its read failed,
+    // reported that no reminder is due.
+    const reports = pane.requests
+      .filter((request) => request.path === ACTIVITY_ROUTE)
+      .map((request) => request.body);
+    expect(reports).toContainEqual(
+      expect.objectContaining({
+        activity: expect.objectContaining({ phase: { nextReminderAt: expect.any(String) } }),
+      })
+    );
+    expect(reports.at(-1)).toMatchObject({ activity: { phase: { nextReminderAt: null } } });
   },
   120_000
 );

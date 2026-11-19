@@ -167,7 +167,8 @@ export interface PhaseHookDeps {
   /** What this session's claim owes now (`LegionDaemonClient.owed`), the one answer that decides
    * whether a reminder goes out, aborted with `signal` once the check's bound passes
    * (`PhaseReminderDeps.readOwed`). An answer that does not arrive is the shared reminder's to
-   * decide (`UNREAD_CHECK`, `@legion/pi-shared/phase-reminder`), as it is on Oh My Pi. */
+   * decide (`UNREAD_CHECK`, `@legion/pi-shared/phase-reminder`), as it is on Oh My Pi: it reminds
+   * no one. */
   readonly readOwed: (input: OwedInput, signal: AbortSignal) => Promise<LegionOwed>
   /** Sends this session's activity report to the daemon (`LegionDaemonClient.activity`), so the
    * idle rule can decide whether the pane's pod may be released (INFRA-945). */
@@ -373,6 +374,9 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     return writeToSession(text, "a phase reminder")
   }
 
+  /** Whether the last `Stop` saw background work of the worker's own running: Claude Code's only
+   * sight of it, which a report sent between turns repeats (`sendActivity`). */
+  let lastBackgroundWork = false
   const reminder = createPhaseReminder({
     // The bridge turns one inbox line into a user turn, which is what every reminder after the
     // `Stop` continuation is.
@@ -385,6 +389,14 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     saveEntry: saveRecord,
     claim: deps.claim,
     readOwed: deps.readOwed,
+    // A timer whose check decided not to remind has cleared the wake. This host reports only at
+    // `Stop`, and no turn starts whose `Stop` would carry the change, so the report goes now: a
+    // reported wake that is due and past holds the pod from its idle release. It repeats the
+    // background work the last `Stop` saw, which nothing has read since.
+    wakeChanged: () => {
+      const claim = deps.claim()
+      if (claim !== undefined) void sendActivity(claim, lastBackgroundWork)
+    },
     // The server's own listener client, so the notice reaches the one this session already talks
     // to; Envoy off for the session leaves it undefined, the runner says so once at debug, and
     // the reminder keeps coming without a notice.
@@ -399,7 +411,8 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
    * INFRA-945: what this session is doing, reported to the daemon as each turn settles, so the
    * idle rule can decide whether the pane's pod may be released. Claude Code's only sight of
    * background work is the `Stop` hook's `${background_tasks}`, so this host reports at the
-   * settle and nowhere else; the one kind it can name is a Claude Code background task.
+   * settle, and between turns only when a timer's check cleared the reminder wake
+   * (`wakeChanged`); the one kind it can name is a Claude Code background task.
    *
    * A report that does not reach the daemon is logged and dropped: the turn's reminder is what
    * the hook owes its worker, and a claim with no report after its last turn is held rather than
@@ -490,6 +503,7 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // decide: a turn that ends with a background task of the worker's own still running is
           // a worker waiting to be woken by it, not a stalled one.
           const backgroundWork = backgroundWorkRunning(event.backgroundTasks)
+          lastBackgroundWork = backgroundWork
           deps.log.debug("legion: a Claude Code phase worker's turn is settling", {
             issue: claim.issue,
             role: claim.role,

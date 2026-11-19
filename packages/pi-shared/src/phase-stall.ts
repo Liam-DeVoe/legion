@@ -122,28 +122,16 @@ export function owedReminder(work: string): string {
   );
 }
 
-/** What a worker is told when the daemon's answer did not arrive: an error, a timeout, a refusal,
- * or an answer the contract does not describe. It still nudges, since an unreachable daemon is
- * exactly when a stalled worker must still be nudged, and it says that it could not read the
- * record. It names no phase and no operation, because it read neither. */
-export const UNREAD_REMINDER =
-  "Your turn ended, and this reminder could not read the Legion daemon's record of what your " +
-  "role owes, so it cannot say whether any work is still yours. If your role's instructions " +
-  "leave work of yours unfinished, finish it now with a real tool call. If you are waiting on " +
-  "something (CI, a review, a person), reply with a line starting WAITING that names what you " +
-  "are waiting on: that buys a quiet wait, and then this reminder comes again. This reminder " +
-  "repeats at the end of every turn for as long as the record cannot be read.";
-
 const TEXT_TOOL_CALL =
   "Your last message holds a tool call written as text, so it did not run: make it a real tool call. ";
 
-/** The reminder a settling message earns, given what the daemon answered: `owedReminder` for the
- * `work` it named, or `UNREAD_REMINDER` when `work` is undefined because no answer arrived. Either
- * is led by `TEXT_TOOL_CALL` when that message holds a tool call written as text, which is the
- * step the worker failed to take. A reminder no settling message decided (the resume timer's)
- * passes `""` for the text. */
-export function reminderText(lastAssistantText: string, work: string | undefined): string {
-  const reminder = work === undefined ? UNREAD_REMINDER : owedReminder(work);
+/** The reminder a settling message earns: `owedReminder` for the `work` the daemon answered the
+ * claim owes, which is the only answer a reminder is sent on (`UNREAD_CHECK` in
+ * `src/phase-reminder.ts`). It is led by `TEXT_TOOL_CALL` when that message holds a tool call
+ * written as text, which is the step the worker failed to take. A reminder no settling message
+ * decided (the resume timer's) passes `""` for the text. */
+export function reminderText(lastAssistantText: string, work: string): string {
+  const reminder = owedReminder(work);
   return TOOL_CALL_SHAPED.test(lastAssistantText) ? TEXT_TOOL_CALL + reminder : reminder;
 }
 
