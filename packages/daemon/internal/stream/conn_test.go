@@ -375,7 +375,7 @@ func TestAMessageEndNamesTheModelThatAnswered(t *testing.T) {
 	if got := h.next(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("event = %#v, want %#v: the user's and the synthetic message name no model that answered", got, want)
 	}
-	if got := h.next(); got != (Closed{Claim: testClaim}) {
+	if got := h.next(); got != (Closed{Claim: testClaim, Generation: testGeneration}) {
 		t.Fatalf("event after the answer = %#v, want the close", got)
 	}
 	if rest := h.stop(); len(rest) != 0 {
@@ -401,7 +401,7 @@ func TestAMessageEndNamingAModelNoStoreTakesAnswersWithNoModel(t *testing.T) {
 		Answered{Claim: testClaim, Generation: testGeneration},
 		Answered{Claim: testClaim, Generation: testGeneration},
 		Answered{Claim: testClaim, Provider: "second", Model: "second-model", Generation: testGeneration},
-		Closed{Claim: testClaim},
+		Closed{Claim: testClaim, Generation: testGeneration},
 	} {
 		if got := h.next(); !reflect.DeepEqual(got, want) {
 			t.Fatalf("event = %#v, want %#v: a model or a provider holding U+0000 answers with no model", got, want)
