@@ -133,17 +133,15 @@ until_true() {
 
 # ---- cleanup: never fails, leaves nothing of the run behind ---------------------------------------
 
-# stop_pid PID: SIGTERM, up to 10 s for PID to leave the process table, then SIGKILL and up to 10 s
-# more, naming it when it is still there (wait_gone and kill_gone, lib/wait-gone.sh, which
-# lib/box-login.sh sources above): the next run's refuse_leftovers, and under box-login its lock,
-# read what a process SIGKILL has not finished ending still holds. Never fails.
+# stop_pid PID [DEADLINE]: stop_gone (lib/wait-gone.sh, which lib/box-login.sh sources above):
+# SIGTERM, up to 10 s for PID to be gone, then SIGKILL and a wait until DEADLINE (20 s from the
+# call by default), naming it when it is still there then, and returning 1: the next run's
+# refuse_leftovers, and under box-login its lock, read what a process SIGKILL has not finished
+# ending still holds. The cleanup below is its one caller, and it goes on whatever it returns.
 stop_pid() {
   local pid=$1
   [ -n "$pid" ] || return 0
-  kill -TERM "$pid" 2>/dev/null || return 0
-  wait_gone 10 "$pid" && return 0
-  kill_gone KILL 10 "$pid" || true
-  return 0
+  stop_gone 10 "${2:-$((EPOCHSECONDS + 20))}" "$pid"
 }
 # run_processes: every process of this run still alive — any whose command line names the work
 # directory (the daemons, the listener, each pane's shell and shim) or whose working directory is
@@ -171,25 +169,27 @@ cleanup() {
   # key command, which bakes in --key-file's resolved path, must never survive this script on any
   # exit, so it is never conditioned on how the rest of cleanup goes.
   rm -rf "$work/model-gateway-key" || true
-  stop_pid "$daemon_pid"
-  stop_pid "$deadline_pid"
-  stop_pid "$daemon_keeper_pid"
-  stop_pid "$deadline_keeper_pid"
+  # The teardown goes on whatever a stop finds, which names a process still there: a failed
+  # cleanup must never obscure the check that failed.
+  stop_pid "$daemon_pid" || true
+  stop_pid "$deadline_pid" || true
+  stop_pid "$daemon_keeper_pid" || true
+  stop_pid "$deadline_keeper_pid" || true
   # Under box-login the panes share the operator's login database: each gets SIGTERM and up to
   # box_login_stop_grace seconds to finish a token refresh before anything is killed, and the
   # profile's link to that database goes (the link alone) once they are gone, so a kept workspace
   # holds no live path to the login (lib/box-login.sh). The other routes keep the SIGKILL below.
   if [ "$model_route" = box-login ]; then
     # shellcheck disable=SC2046 # one pid per word
-    stop_box_login_processes $(run_processes)
+    stop_box_login_processes $(run_processes) || true
     unlink_box_login_db "$profile_agent"
   fi
   for p in "$ptoken" "$deadline_ptoken"; do
     TMUX_TMPDIR=$work/tmux tmux -L "legion-$p" kill-server >/dev/null 2>&1 || true
   done
-  stop_pid "$listener_pid"
+  stop_pid "$listener_pid" || true
   # shellcheck disable=SC2046 # one pid per word
-  kill_gone KILL 10 $(run_processes) || true
+  kill_gone KILL "$((EPOCHSECONDS + 10))" $(run_processes) || true
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1 || true
   rm -rf "$work/model-gateway-cache" || true
   if [ -n "${ok:-}" ]; then
@@ -287,7 +287,7 @@ stop_daemon() {
   for i in $(seq 1 100); do
     kill -0 "$pid" 2>/dev/null || break
     [ "$i" = 100 ] && {
-      kill_gone KILL 10 "$pid" || true
+      kill_gone KILL "$((EPOCHSECONDS + 10))" "$pid" || true
       fail "the daemon ignored $2 for 20s (SIGKILLed)"
     }
     sleep 0.2

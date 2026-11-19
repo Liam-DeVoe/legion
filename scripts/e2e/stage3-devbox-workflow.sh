@@ -212,7 +212,7 @@ cleanup() {
   # Waited for, so the next run's refuse_leftovers, and under box-login its lock, meet nothing of
   # this one.
   # shellcheck disable=SC2046 # one pid per word
-  kill_gone KILL 10 $(run_processes) || true
+  kill_gone KILL "$((EPOCHSECONDS + 10))" $(run_processes) || true
   docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
   collect_transcripts
   close_unpassed_run_pull_requests
@@ -366,8 +366,10 @@ daemon_runs_the_pinned_omp() {
   note "the daemon resolved $pin's own omp, $expected, for its boot probes and panes"
 }
 
+# stop_dispatch: the outbox proof starts Dispatch again on the port it keeps, and services-stopped
+# reads the process table next, so a Dispatch still there at its stop's deadline fails the check.
 stop_dispatch() {
-  stop_pid "$dispatch_pid"
+  stop_pid "$dispatch_pid" || fail "Dispatch (pid $dispatch_pid) did not stop (named above)"
   dispatch_pid=
 }
 
@@ -1256,7 +1258,7 @@ restart_scenarios() {
   # turn state (working, idle) may change across the restart as the agent finishes a turn.
   before_restart=$(daemon_state | jq -c --arg issue "$restart_issue" '.issues[$issue].workers.implementer.claim | {session, incarnation: (.locator.incarnation // "")}')
   kill -TERM "$daemon_pid" # no-wait: stop_pid, next, sends TERM again and waits for it to go
-  stop_pid "$daemon_pid"
+  stop_pid "$daemon_pid" || fail "the daemon (pid $daemon_pid) did not stop (named above); its restart would meet its port"
   daemon_pid=
   # While the daemon is down, a human board write becomes a durable Dispatch event that the restored
   # consumer must process. It changes only the board status; no phase is manually advanced. It is
@@ -1438,26 +1440,27 @@ pass
 begin services-stopped
 # Stop the remaining services explicitly and prove every one is gone, so no agent can take another
 # turn: an idle agent takes one on the next event the daemon delivers, until the daemon stops.
+# Each service still there at its stop's deadline fails the check; stop_pid has named it.
 stop_tree "$watcher_pid"; watcher_pid=
-stop_pid "$daemon_pid"; daemon_pid=
+stop_pid "$daemon_pid" || fail "the daemon did not stop (named above)"; daemon_pid=
 stop_dispatch
-stop_pid "$listener_pid"; listener_pid=
-stop_pid "$daemon_keeper_pid"; daemon_keeper_pid=
-stop_pid "$dispatch_keeper_pid"; dispatch_keeper_pid=
-stop_pid "$bridge_pid"; bridge_pid=
+stop_pid "$listener_pid" || fail "the listener did not stop (named above)"; listener_pid=
+stop_pid "$daemon_keeper_pid" || fail "the daemon's keeper did not stop (named above)"; daemon_keeper_pid=
+stop_pid "$dispatch_keeper_pid" || fail "Dispatch's keeper did not stop (named above)"; dispatch_keeper_pid=
+stop_pid "$bridge_pid" || fail "the bridge did not stop (named above)"; bridge_pid=
 # Under box-login the panes get SIGTERM and a bounded grace before the kills below, as cleanup
 # gives them (lib/box-login.sh); the profile's link to the operator's database goes with them.
 if [ "$model_route" = box-login ]; then
   # shellcheck disable=SC2046 # one pid per word
-  stop_box_login_processes $(run_processes)
+  stop_box_login_processes $(run_processes) || fail "a box-login pane did not stop (named above)"
   unlink_box_login_db "$profile_agent"
 fi
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
 docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
 # Waited for: the read of the process table below would otherwise meet a process SIGKILL has not
-# finished ending.
+# finished ending; that read names what is still there.
 # shellcheck disable=SC2046 # one pid per word
-kill_gone KILL 10 $(run_processes) || true
+kill_gone KILL "$((EPOCHSECONDS + 10))" $(run_processes) || true
 [ "$(docker ps -aq --filter "name=^/$pg_container$" --filter "name=^/$nats_container$")" = "" ] || fail "a proof container remains"
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" has-session 2>/dev/null && fail "the proof tmux server remains"
 [ -z "$(run_processes)" ] || fail "a proof process remains"

@@ -332,7 +332,9 @@ stop_agent() {
   signalable "$1" || return 0
   kill -CONT "$1" 2>/dev/null || true
   kill -TERM -- -"$1" 2>/dev/null || true # no-wait: stop_pid, next, waits for the group's leader
-  stop_pid "$1"
+  # A teardown's: it goes on whatever the stop finds (stop_pid names one still there), and the KILL
+  # below ends what is left of the group.
+  stop_pid "$1" || true
   # no-wait: the group holds no database connection or port; the work directory is kept.
   kill -KILL -- -"$1" 2>/dev/null || true
 }
@@ -738,7 +740,8 @@ set_max_age() {
     ENVOY_MACHINE_ID="envoy-session-states-maxage-$$" ENVOY_LISTEN_HOST=127.0.0.1 \
     NATS_URLS="$nats_url" ENVOY_SESSION_MAX_AGE="$1" "$work/bin/envoy-listener"
   await_start maxage "$maxage_pid" 60 "the maximum-age listener to serve" serving "$maxage_port"
-  stop_pid "$maxage_pid"
+  stop_pid "$maxage_pid" ||
+    refuse "the maximum-age listener (pid $maxage_pid) did not stop (named above), and it would hold the bucket's maximum age" || return 1
   maxage_pid=
 }
 
@@ -1098,7 +1101,8 @@ check_stalled_session_reads_unresponsive() {
     refuse "listener B reads the stalled session '$state', not unresponsive" || return 1
   [ "$(last_seen "$port_b" "$omp_session")" = "$stalled" ] ||
     refuse "listener B names another last_seen than listener A for the stalled session" || return 1
-  stop_pid "$listener_b_pid"
+  stop_pid "$listener_b_pid" ||
+    refuse "listener B (pid $listener_b_pid) did not stop (named above); its restart would meet its port" || return 1
   start_listener listener_b listener_b_keeper
   wait_until 60 "listener B to serve again" serving "$port_b" || return 1
   wait_until 60 "the restarted listener to read the stalled session unresponsive" \
@@ -1134,7 +1138,7 @@ check_bus_outage_keeps_claims() {
   wait_until 180 "both sessions to read unresponsive" state_is "$port_a" "$first" unresponsive unresponsive || return 1
   state_is "$port_a" "$second" unresponsive unresponsive ||
     refuse "the second session did not reach unresponsive before the outage" || return 1
-  stop_pid "$natsd_pid"
+  stop_pid "$natsd_pid" || refuse "NATS (pid $natsd_pid) did not stop (named above), so there is no outage" || return 1
   natsd_pid=
   note "stopped NATS for ${outage}s with both sessions stalled and both claims held"
   sleep "$outage"
@@ -1607,7 +1611,8 @@ check_gone_only_past_the_horizon() {
   # decides their verdicts rather than its own.
   boundary=0
   gone_horizon_boundary "$victim" "$role" "$killed_at" || boundary=$?
-  stop_pid "$shortlistener_pid"
+  stop_pid "$shortlistener_pid" ||
+    refuse "the short-horizon listener (pid $shortlistener_pid) did not stop (named above); it would go on reaping the bucket" || return 1
   shortlistener_pid=
   [ "$boundary" -eq 0 ] || return 1
   # /clear mints a new session id; the one it leaves must be gone at once, and a resume inside the

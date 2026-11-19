@@ -2155,11 +2155,11 @@ SCRIPT_TEST_GATES = [
     # tool-fallback job (main's #3576 gave that rig a harness of its own).
     harness("ci_tools_test", "Test the tool fetch helper", f"{SCRIPTS}/ci-tools.test.sh", [
         (f"{SCRIPTS}/ci-tools.sh", "the script under test"),
-        (".github/ci-tools.yaml", "ci-tools.test.sh:1525-1529 reads every row of this repository's own manifest"),
+        (".github/ci-tools.yaml", "ci-tools.test.sh:1530-1534 reads every row of this repository's own manifest"),
     ]),
     harness("mirror_ci_tools_test", "Test the tool copy filler", f"{SCRIPTS}/mirror-ci-tools.test.sh", [
         (f"{SCRIPTS}/mirror-ci-tools.sh", "the script under test"),
-        (f"{SCRIPTS}/ci-tools.sh", "mirror-ci-tools.test.sh:427 symlinks in the fetch helper the filler sources"),
+        (f"{SCRIPTS}/ci-tools.sh", "mirror-ci-tools.test.sh:428 symlinks in the fetch helper the filler sources"),
     ]),
     # main's #3179 gave the gate rule 3's own-repository test: it runs .github/scripts/repo-paths.sh
     # for this repository's addresses, so that script is a second subject of this step.
@@ -3363,6 +3363,8 @@ GATES = [
         ("packages/pi-shared/src/**", "packages/pi-envoy and packages/claude-envoy import @legion/pi-shared/*"),
         ("packages/contracts/**", at(STALL, "Build contracts for the stall suites")),
         (BROKER_CLIENT_SRC, f"{at(STALL, 'Stall test of claude-envoy')} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/broker-client's seven modules through packages/envoy-client/src/broker-credential.ts:21-34"),
+        ("scripts/e2e/lib/wait-gone.sh", f"{at(STALL, 'Role takeover smoke')}: "
+                                         "packages/pi-envoy/scripts/smoke-role-takeover.sh:183 sources it"),
     ) + ceiling_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL)),
 
     gate("go_notices", "lint", step=NOTICES_STEP, runs=go_notices_runs(), reads=reads(

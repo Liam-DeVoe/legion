@@ -183,7 +183,7 @@ cleanup() {
   stop_agent_daemons
   # Waited for, so the next run's refuse_leftovers meets nothing of this one.
   # shellcheck disable=SC2046 # one pid per word
-  kill_gone KILL 10 $(run_processes) || true
+  kill_gone KILL "$((EPOCHSECONDS + 10))" $(run_processes) || true
   docker rm -f "$pg_container" "$nats_container" >/dev/null 2>&1 || true
   close_unpassed_run_pull_requests
   remove_run_branches >&2
@@ -589,12 +589,10 @@ stop_agent_daemons() {
   done
   ((${#targets[@]} > 0)) || return 0
   note "stopping ${#targets[@]} processes of ${#dirs[@]} Oh My Pi daemon broker sessions: ${targets[*]}"
-  kill -TERM "${targets[@]}" 2>/dev/null || true
-  wait_gone 10 "${targets[@]}" && return 0
-  # The ones still there are ended and waited for, so the next run's refuse_leftovers meets none.
-  # shellcheck disable=SC2154 # wait_gone_left is lib/wait-gone.sh's, which wait_gone sets
-  kill_gone KILL 10 "${wait_gone_left[@]}" || true
-  return 0
+  # stop_gone (lib/wait-gone.sh): SIGTERM, up to 10 s, then SIGKILL to the ones still there and a
+  # wait until 20 s from now, so the next run's refuse_leftovers meets none; one still there then is
+  # named, and the function returns 1.
+  stop_gone 10 "$((EPOCHSECONDS + 20))" "${targets[@]}"
 }
 
 # ---- checkpoints --------------------------------------------------------------------------------------
@@ -1031,14 +1029,15 @@ done_with verdict
 begin cleanup-is-complete
 controller_quit ctl2
 tm kill-server >/dev/null 2>&1 || true
-stop_pid "$daemon_pid"
-stop_pid "$dispatch_pid"
-stop_pid "$listener_pid"
-stop_pid "$daemon_keeper_pid"
-stop_pid "$dispatch_keeper_pid"
+# The loop below fails on any of these still there, and stop_pid has named it.
+stop_pid "$daemon_pid" || true
+stop_pid "$dispatch_pid" || true
+stop_pid "$listener_pid" || true
+stop_pid "$daemon_keeper_pid" || true
+stop_pid "$dispatch_keeper_pid" || true
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
 # The panes are gone; what their sessions started detached is not (stop_agent_daemons).
-stop_agent_daemons
+stop_agent_daemons || fail "a process the run's Oh My Pi sessions started detached is still there 20 s after its SIGTERM (named above)"
 for pid in $daemon_pid $dispatch_pid $listener_pid $daemon_keeper_pid $dispatch_keeper_pid; do
   ! kill -0 "$pid" 2>/dev/null || fail "process $pid still runs"
 done

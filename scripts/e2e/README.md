@@ -5596,31 +5596,46 @@ it returns 0 once VAR is set, 1 when PID exits before FILE is written, and 2 aft
 ## lib/wait-gone.sh
 
 The one wait for a process a script has signalled, before a later step binds its port, takes its lock, reads a file it writes, removes its directory or reads the process table.
-[`lib/rig.sh`](#librigsh) (so its `stop_pid` and every stage proof's teardown sweep), [`lib/box-login.sh`](#libbox-loginsh), `stage2-tmux-supervision.sh`, `verifiers-staging-token.sh`, and `packages/envoy/scripts/airlock-check.sh`, `callout-check.sh` and `dev-stack.test.sh` source it.
-Sourced, never run; it needs nothing of its caller's.
+[`lib/rig.sh`](#librigsh) (so its `stop_pid` and every stage proof's teardown sweep), [`lib/box-login.sh`](#libbox-loginsh), `stage2-tmux-supervision.sh`, `verifiers-staging-token.sh`, `envoy-session-delivery.sh`, and outside this directory `airlock-check.sh`, `callout-check.sh` and `dev-stack.test.sh` (`packages/envoy/scripts`), `smoke-registration-stall.sh` and `smoke-role-takeover.sh` (`packages/pi-envoy/scripts`), `replace-blocks.sh` (`packages/dispatch/e2e/acceptance`) and the temporal evaluation's `run.sh` source it.
+Sourced, never run; it needs nothing of its caller's but bash 5, for `EPOCHSECONDS` and `EPOCHREALTIME`.
 
 ```sh
 . "$root/scripts/e2e/lib/wait-gone.sh"
-kill_gone KILL 10 $(run_processes) || true     # a teardown sweep
+kill_gone KILL "$((EPOCHSECONDS + 10))" $(run_processes) || true     # a teardown sweep
 ```
 
 A signal ends nothing by itself.
 A process given SIGTERM goes on until its handler has run, and a server's handler drains first.
-One given SIGKILL keeps its port, its descriptors (an inherited lock among them) and its working directory until its exit has finished, which for a process holding a few GiB takes most of a second on a busy devbox, and its pid stays in the process table until its parent reaps it.
+One given SIGKILL keeps its port, its descriptors (an inherited lock among them) and its working directory until its exit has finished, which for a process holding a few GiB takes most of a second on a busy devbox.
+Each thread of a process exits on its own, and those are released only when the last one has: `/proc/PID/stat` shows the main thread alone, which can be a zombie while another thread of the same process still holds the port, as a Go program's or Bun's can.
 
-- `wait_gone SECONDS TARGET…`
+Every wait ends at a DEADLINE, an absolute time in whole seconds since the epoch (`$((EPOCHSECONDS + 10))` is ten seconds from now): the caller's own, so the two waits of one stop share one bound.
+A DEADLINE that is no such time (a count of seconds from now) is refused with exit 2, naming it.
 
-  Returns 0 once every TARGET, a pid or `-PGID` for every process of that group, is gone, and 1 once the clock has passed SECONDS whole seconds since the call, so never sooner.
-  A pid counts as gone once `/proc` holds no process of that pid that started when the first read found it, so a pid the kernel hands a new process during the wait is not taken for the old one, or holds it only as a zombie.
-  A zombie holds no port, descriptor or directory, only its pid, which is its parent's to reap; a parent that is itself waiting on the caller, as a test runner's synchronous spawn is, would not reap it while the wait went on.
+- `wait_gone DEADLINE TARGET…`
+
+  Returns 0 once every TARGET, a pid or `-PGID` for every process of that group, is gone, and 1 once the clock reaches DEADLINE with one still there; never before DEADLINE, and it reads the targets once more at it.
+  A pid is gone once `/proc` holds no process of that pid that started when the first read found it, so a pid the kernel hands a new process during the wait is not taken for the old one, or holds it only as a zombie whose task directory lists no thread but the main one: that zombie holds nothing but its pid, which is its parent's to reap, and a parent that is itself waiting on the caller, as a test runner's synchronous spawn is, would not reap it while the wait went on.
+  A `/proc` entry that is there but cannot be read is not gone.
   A group counts while `kill -0` finds any member, a zombie included.
   It prints nothing; the targets still there are left in the array `wait_gone_left`, for the caller to name.
+  `wait_gone_proc` names the `/proc` it reads, which a test points at a tree of its own.
 
-- `kill_gone SIGNAL SECONDS TARGET…`
+- `kill_gone SIGNAL DEADLINE TARGET…`
 
   Sends SIGNAL to every TARGET, one already gone being no failure, and waits for them with `wait_gone`.
-  Each one still there at the bound is named on stderr with its command line, and it returns 1.
+  Each one still there at DEADLINE is named on stderr with its command line, the deadline and the time since the signal, and it returns 1.
 
+- `stop_gone GRACE DEADLINE TARGET…`
+
+  A stop: SIGTERM to every TARGET, up to GRACE seconds (never past DEADLINE) for all of them to be gone, then SIGKILL to those still there and a wait until DEADLINE, so the two waits share the one bound.
+  It returns 1 when one is still there at DEADLINE, named as `kill_gone` names it.
+
+- `process_start PID VAR`
+
+  Sets VAR to the start time `/proc/PID/stat` gives (field 22) and returns 0 while that process is there, 1 once it is gone by the rule above, and 2 when its entry cannot be read; a caller that records a pid with its start time tells by it whether the pid still names that process.
+
+A caller whose next step needs a process gone fails when its wait returns 1, naming it; a teardown goes on, with `|| true` and a word on why.
 A signal that needs no wait says why on its own line, or in the comment block right above its command, as `# no-wait: <why>`: the end of a script with nothing after it that the process could disturb, a process another line already waits for, or a process whose end is itself what the check measures.
 
 ## lib/built-from.sh
@@ -6045,8 +6060,8 @@ A taken lock fails at once, naming the holder the file records:
 `another box-login proof holds <file>: pid <pid> (<command>); one box-login proof runs at a time`, or that the pid has exited and a process it started still holds the lock.
 Every pane of a box-login run shares the operator's login database; one run at a time keeps the load on that login bounded and each run's evidence its own.
 
-`stop_box_login_processes PID…` sends SIGTERM to every pid, waits at most `box_login_stop_grace` (10) seconds for all of them to exit, then SIGKILLs only those still alive and waits up to 10 s more for them to leave the process table ([`lib/wait-gone.sh`](#libwait-gonesh)), naming any still there, so a pane in the middle of a token refresh can write the rotated token back before it goes.
-A pane holds the box-login lock it inherited until its exit has finished, so the wait is what lets the next box-login run take the lock at once.
+`stop_box_login_processes PID…` sends SIGTERM to every pid, waits at most `box_login_stop_grace` (10) seconds for all of them to be gone, then SIGKILLs only those still there and waits until 10 s past the grace ([`lib/wait-gone.sh`](#libwait-gonesh)'s `stop_gone`), naming any still there and returning 1, so a pane in the middle of a token refresh can write the rotated token back before it goes.
+A pane holds the box-login lock it inherited until its last thread has exited, so the wait is what lets the next box-login run take the lock at once.
 `unlink_box_login_db
 AGENT_DIR` removes `AGENT_DIR/agent.db` when it is a symlink, the link itself and never what it names;
 the stages call it once the run's processes are gone, since a process that opened the database again after the link went would make a fresh database of its own in the profile.
@@ -6229,9 +6244,9 @@ Each item below names a function, then what it does.
 
   waits, bounded, for CMD to succeed while PID lives, and fails naming NAME's log the moment PID exits
 
-- `stop_pid PID`
+- `stop_pid PID [DEADLINE]`
 
-  TERM, up to 10 s for the process to leave the process table, then KILL and up to 10 s more ([`lib/wait-gone.sh`](#libwait-gonesh)), naming one still there; best effort, so a failed cleanup never hides the check that failed.
+  TERM, up to `stop_pid_grace` (10) seconds for the process to be gone, then KILL and a wait until DEADLINE, by default 10 s past the grace ([`lib/wait-gone.sh`](#libwait-gonesh)'s `stop_gone`); it returns 1, naming the process, when it is still there then, so a step that needs it gone fails, and a teardown goes on (`stop_pid PID || true`), since a failed cleanup must never hide the check that failed.
   An empty PID does nothing; a PID that cannot name one process of the run (0 however spelled, so any value with a leading zero, 1, a negative or non-numeric value, the calling shell or its process group's leader) is refused with a printed line, since `kill 0` signals the caller's whole process group
 
 - `stop_tree PID`

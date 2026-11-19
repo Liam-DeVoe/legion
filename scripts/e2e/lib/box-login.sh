@@ -43,27 +43,23 @@ take_box_login_lock() {
   printf '%s %s\n' "$$" "$(ps -o args= -p "$$" 2>/dev/null || echo "$0")" >"$file"
 }
 
-# lib/wait-gone.sh, beside this file, holds the wait below.
+# lib/wait-gone.sh, beside this file, holds the stop below.
 # shellcheck source-path=SCRIPTDIR source=wait-gone.sh
 . "$(dirname -- "${BASH_SOURCE[0]}")/wait-gone.sh"
 
-# box_login_stop_grace is how long stop_box_login_processes waits, in seconds.
+# box_login_stop_grace is how long stop_box_login_processes waits after its SIGTERM, in seconds.
 box_login_stop_grace=10
-# stop_box_login_processes PID… — SIGTERM to every PID, a wait of at most box_login_stop_grace
-# seconds for all of them to exit, then SIGKILL to those still alive and a wait of at most 10 s for
-# them to leave the process table (lib/wait-gone.sh), naming any still there. A pane's Oh My Pi in
-# the middle of a token refresh gets the time to write the rotated token back to the operator's
-# database before it goes; a plain SIGKILL could leave the database with a refresh token that is
-# already spent. Each pane holds the box-login lock it inherited until its exit has finished, so the
-# next box-login run's take_box_login_lock meets one that SIGKILL has not finished ending. Never
-# fails.
+# stop_box_login_processes PID… — stop_gone (lib/wait-gone.sh): SIGTERM to every PID, a wait of at
+# most box_login_stop_grace seconds for all of them to be gone, then SIGKILL to those still there
+# and a wait until 10 s past the grace, naming any still there then. A pane's Oh My Pi in the middle
+# of a token refresh gets the time to write the rotated token back to the operator's database
+# before it goes; a plain SIGKILL could leave the database with a refresh token that is already
+# spent. Each pane holds the box-login lock it inherited until its last thread has exited, so the
+# next box-login run's take_box_login_lock would meet a pane SIGKILL has not finished ending.
+# Returns 0 once every PID is gone, 1 when one is still there at the deadline: every caller is a
+# teardown, which goes on, and the next run's take_box_login_lock names the holder if it stays.
 stop_box_login_processes() {
-  local pids=("$@")
-  [ "${#pids[@]}" -gt 0 ] || return 0
-  kill -TERM "${pids[@]}" 2>/dev/null || true
-  wait_gone "$box_login_stop_grace" "${pids[@]}" && return 0
-  kill_gone KILL 10 "${wait_gone_left[@]}" || true
-  return 0
+  stop_gone "$box_login_stop_grace" "$((EPOCHSECONDS + box_login_stop_grace + 10))" "$@"
 }
 
 # unlink_box_login_db AGENT_DIR — removes AGENT_DIR/agent.db when it is a symlink (the link

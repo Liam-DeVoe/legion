@@ -101,8 +101,8 @@ until_true() {
 # shellcheck source-path=SCRIPTDIR source=port-file.sh
 . "$root/scripts/e2e/lib/port-file.sh"
 
-# lib/wait-gone.sh holds wait_gone and kill_gone, the wait for a process the run has signalled to
-# leave the process table, which stop_pid and every stage's teardown sweep run.
+# lib/wait-gone.sh holds wait_gone, kill_gone and stop_gone, the waits for a process the run has
+# signalled to be gone, which stop_pid and every stage's teardown sweep run.
 # shellcheck source-path=SCRIPTDIR source=wait-gone.sh
 . "$root/scripts/e2e/lib/wait-gone.sh"
 
@@ -272,21 +272,21 @@ signalable() {
   return 1
 }
 
-# stop_pid PID ends PID: SIGTERM, up to 10 s for it to leave the process table, then SIGKILL and up
-# to 10 s more (wait_gone and kill_gone, lib/wait-gone.sh). A caller restarts a service on the same
-# fixed port next (stage4b's restart_daemon, whose start_daemon refuses a port still held), drops a
-# database the process was connected to, or reads the process table, and a process SIGKILL has not
-# finished ending still holds its port, its connections and its pid. One still there at the bound
-# is named on stderr. It is intentionally best effort and returns 0: a failed cleanup must never
-# obscure the check that failed.
+# stop_pid PID [DEADLINE] ends PID with stop_gone (lib/wait-gone.sh): SIGTERM, up to stop_pid_grace
+# seconds for it to be gone, then SIGKILL and a wait until DEADLINE, by default stop_pid_grace + 10
+# seconds from the call. A caller restarts a service on the same fixed port next (stage4b's
+# restart_daemon, whose start_daemon refuses a port still held), drops a database the process was
+# connected to, or reads the process table, and a process SIGKILL has not finished ending still
+# holds its port, its connections and its pid. Returns 0 once PID is gone, and for an empty PID or
+# one signalable refuses; 1 when PID is still there at DEADLINE, named on stderr. A caller whose
+# next step needs PID gone fails there; a teardown goes on (`stop_pid PID || true`), since a failed
+# cleanup must never obscure the check that failed.
+stop_pid_grace=10
 stop_pid() {
-  local pid=${1:-}
+  local pid=${1:-} deadline=${2:-$((EPOCHSECONDS + stop_pid_grace + 10))}
   [ -n "$pid" ] || return 0
   signalable "$pid" || return 0
-  kill -TERM "$pid" 2>/dev/null || return 0
-  wait_gone 10 "$pid" && return 0
-  kill_gone KILL 10 "$pid" || true
-  return 0
+  stop_gone "$stop_pid_grace" "$deadline" "$pid"
 }
 
 # stop_tree PID stops PID and every process under it. A watcher is a loop whose kubectl, jq or sleep

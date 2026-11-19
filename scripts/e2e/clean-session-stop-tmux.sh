@@ -313,7 +313,9 @@ stop_agent() {
   grep -qsF "$work" "/proc/$1/cmdline" || grep -qsF "$work" "/proc/$1/environ" || return 0
   signalable "$1" || return 0
   kill -TERM -- -"$1" 2>/dev/null || true # no-wait: stop_pid, next, waits for the group's leader
-  stop_pid "$1"
+  # The cleanup's: it goes on whatever the stop finds (stop_pid names one still there), and the
+  # KILL below ends what is left of the group.
+  stop_pid "$1" || true
   # no-wait: the group holds no database connection or port; SIGKILL leaves it nothing to write.
   kill -KILL -- -"$1" 2>/dev/null || true
 }

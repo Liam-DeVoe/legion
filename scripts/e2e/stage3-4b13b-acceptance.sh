@@ -304,8 +304,8 @@ start_daemon() {
   await_start daemon "$daemon_pid" 180 "the Go daemon to answer /healthz" \
     curl -fsS --max-time 5 "http://127.0.0.1:$port_daemon/healthz"
 }
-# no-wait: stop_pid, on the same line, sends TERM again and waits for the daemon to go.
-stop_daemon() { kill -TERM "$daemon_pid" 2>/dev/null || true; stop_pid "$daemon_pid"; daemon_pid=; }
+# no-wait: stop_pid, on the same line, sends TERM again and waits; one still there fails the check.
+stop_daemon() { kill -TERM "$daemon_pid" 2>/dev/null || true; stop_pid "$daemon_pid" || fail "the daemon (pid $daemon_pid) did not stop (named above); its restart would meet its port"; daemon_pid=; }
 
 claim_session_file() {
   local issue=$1 role=$2
@@ -1148,20 +1148,20 @@ pass
 begin services-stopped
 daemon_state >"$evidence/final-state.json"
 "$work/legion" claims list --json --config "$work/legion.yaml" --operator-token-file "$work/operator-token" >"$evidence/final-claims.json"
-stop_pid "$watcher_pid"; watcher_pid=
-stop_pid "$daemon_pid"; daemon_pid=
-stop_pid "$daemon_keeper_pid"; daemon_keeper_pid=
-stop_dispatch() { stop_pid "$dispatch_pid"; dispatch_pid=; }
+stop_pid "$watcher_pid" || fail "the watcher did not stop (named above)"; watcher_pid=
+stop_pid "$daemon_pid" || fail "the daemon did not stop (named above)"; daemon_pid=
+stop_pid "$daemon_keeper_pid" || fail "the daemon's keeper did not stop (named above)"; daemon_keeper_pid=
+stop_dispatch() { stop_pid "$dispatch_pid" || fail "Dispatch did not stop (named above)"; dispatch_pid=; }
 stop_dispatch
-stop_pid "$listener_pid"; listener_pid=
-stop_pid "$bridge_pid"; bridge_pid=
-stop_pid "${instructor_pid:-}"; instructor_pid=
+stop_pid "$listener_pid" || fail "the listener did not stop (named above)"; listener_pid=
+stop_pid "$bridge_pid" || fail "the bridge did not stop (named above)"; bridge_pid=
+stop_pid "${instructor_pid:-}" || fail "the instructor did not stop (named above)"; instructor_pid=
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
-stop_pid "$nats_pid"; nats_pid=
+stop_pid "$nats_pid" || fail "NATS did not stop (named above)"; nats_pid=
 # Waited for: the read of the process table on the next line would otherwise meet a process SIGKILL
-# has not finished ending.
+# has not finished ending; that read names what is still there.
 # shellcheck disable=SC2046 # one pid per word
-kill_gone KILL 10 $(run_processes) || true
+kill_gone KILL "$((EPOCHSECONDS + 10))" $(run_processes) || true
 [ -z "$(run_processes)" ] || fail "a proof process remains"
 pass
 

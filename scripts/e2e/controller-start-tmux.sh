@@ -74,7 +74,7 @@ cleanup() {
   stop_pid "$daemon_keeper_pid"
   # Waited for, so the next run's refuse_leftovers meets nothing of this one.
   # shellcheck disable=SC2046 # one pid per word
-  kill_gone KILL 10 $(run_processes) || true
+  kill_gone KILL "$((EPOCHSECONDS + 10))" $(run_processes) || true
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1
   rm -rf "$work"
   [ -n "$ok" ] || echo "controller start e2e: FAIL (check $check)"

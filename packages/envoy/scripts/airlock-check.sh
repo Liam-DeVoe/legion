@@ -1965,8 +1965,12 @@ check_k9() {
 		>/dev/null 2>"$WORK_DIR/k9/load.err"
 	wall_after="$(date +%s.%N)"
 	for pid in "${pids[@]}"; do after+=("$(k9_cpu "$pid")"); done
-	# Gone before its file is read: an awk of the sampler still running would append to it.
-	kill_gone TERM 10 "$sampler" || true
+	# Gone before its file is read: an awk of the sampler still running would append to it. A
+	# sampler still there at its deadline leaves the file unread, and the memory limit fails,
+	# naming it.
+	local rss_left=
+	kill_gone TERM "$((EPOCHSECONDS + 10))" "$sampler" ||
+		rss_left="the RSS sampler (pid $sampler) was still there 10 s after its SIGTERM, so its file was not read"
 
 	local calls failed p50 base_p50 added
 	calls="$(jq -r '.calls' "$WORK_DIR/k9/load.json")"
@@ -1986,16 +1990,21 @@ check_k9() {
 	wall="$(awk -v a="$wall_before" -v b="$wall_after" 'BEGIN { printf "%.1f", b - a }')"
 	for i in "${!pids[@]}"; do
 		cpu="$(awk -v a="${before[$i]}" -v b="${after[$i]}" 'BEGIN { printf "%.1f", b - a }')"
+		awk -v c="$cpu" -v w="$wall" 'BEGIN { exit !(c <= w / 2) }' || over=$((over + 1))
+		worst_cpu="$cpu"
+		if [ -n "$rss_left" ]; then
+			limits="$limits; pid ${pids[$i]}: $cpu s of CPU over $wall s of wall, peak memory not read"
+			over=$((over + 1))
+			continue
+		fi
 		peak="$(k9_peak_kb "$rss" "${pids[$i]}")"
 		limits="$limits; pid ${pids[$i]}: $cpu s of CPU over $wall s of wall (a share of $(awk -v c="$cpu" -v w="$wall" 'BEGIN { printf "%.2f", c / w }')), peak memory $(awk -v k="$peak" 'BEGIN { printf "%.0f", k / 1024 }') MiB"
-		awk -v c="$cpu" -v w="$wall" 'BEGIN { exit !(c <= w / 2) }' || over=$((over + 1))
 		[ "${peak:-0}" -le 1048576 ] || over=$((over + 1))
-		worst_cpu="$cpu"
 	done
-	observe "each broker process over the ten minutes${limits}"
+	observe "each broker process over the ten minutes${limits}${rss_left:+; $rss_left}"
 	judge "$([ "$over" = 0 ] && echo 0 || echo 1)" \
 		"each process's CPU time is at most half its wall time and its peak memory at most 1 GiB" \
-		"${limits#; } (the last CPU figure read $worst_cpu s)"
+		"${limits#; } (the last CPU figure read $worst_cpu s)${rss_left:+; $rss_left}"
 
 	# The upload, the answer with a gap in it, the upgrade and the clone.
 	echo "airlock-check: k9 is uploading 50 MiB, waiting out a 90-second gap and cloning..." >&2

@@ -1643,9 +1643,9 @@ start_daemon() {
   ports_ours
 }
 # restart_daemon stops the run's daemon and starts it again on a legion.yaml written afresh
-# (write_legion_config).
+# (write_legion_config); the new one binds the old one's ports, so one still there fails the check.
 restart_daemon() {
-  stop_pid "$daemon_pid"
+  stop_pid "$daemon_pid" || fail "the daemon (pid $daemon_pid) did not stop (named above); its replacement would meet its ports"
   daemon_pid=
   write_legion_config
   start_daemon
@@ -2935,7 +2935,7 @@ cleanup() {
   fi
   # Waited for, so the next run's refuse_leftovers and ports_free meet nothing of this one.
   # shellcheck disable=SC2046 # one pid per word
-  kill_gone KILL 10 $(run_processes) || true
+  kill_gone KILL "$((EPOCHSECONDS + 10))" $(run_processes) || true
   remove_run_container "$pg_container"
   remove_run_container "$session_db_container"
   rm -rf "$work"
@@ -5497,7 +5497,7 @@ begin restart-mid-tree
 before=$(claim_view "$tree1" merger | jq -c '{session, incarnation: .locator.incarnation, podUid: .locator.sandbox.podUid, container: .locator.sandbox.container}')
 live_before=$(live_claims) || fail "legion claims could not be read"
 stale_before=$(log_lines "$stale_msg" | wc -l)
-stop_pid "$daemon_pid"
+stop_pid "$daemon_pid" || fail "the daemon (pid $daemon_pid) did not stop (named above); its restart would meet its ports"
 daemon_pid=
 start_daemon
 on_tree "$tree1" until_true 300 "the merger to be re-adopted" sh -c \
@@ -5550,7 +5550,7 @@ new_envoy_url=$(upper_host "$handed_envoy_url")
 [ "$new_envoy_url" != "$old_envoy_url" ] || fail "LEGION_E2E_ENVOY_URL's host has no lower-case letter to upper-case"
 stale_before=$(log_lines "$stale_msg" | wc -l)
 failed_before=$(log_lines "supervise: launch failed" | wc -l)
-stop_pid "$daemon_pid"
+stop_pid "$daemon_pid" || fail "the daemon (pid $daemon_pid) did not stop (named above); its restart would meet its ports"
 daemon_pid=
 handed_envoy_url=$new_envoy_url
 handed_envoy_source="LEGION_E2E_ENVOY_URL with its host upper-cased"
@@ -5604,7 +5604,7 @@ old_stream=tcp://$host:$port_worker_stream
 old_daemon_url=http://$host:$port_daemon
 stale_before=$(log_lines "$stale_msg" | wc -l)
 failed_before=$(log_lines "supervise: launch failed" | wc -l)
-stop_pid "$daemon_pid"
+stop_pid "$daemon_pid" || fail "the daemon (pid $daemon_pid) did not stop (named above); its restart would meet its ports"
 daemon_pid=
 read -r port_daemon port_worker_stream <<<"$port_worker_stream $port_daemon"
 write_legion_config
@@ -6800,7 +6800,7 @@ bad=$(pod_shape_verdict "$evidence/pod-watch.json")
 [ -z "$bad" ] || fail "Sandbox pods depart from the pod shape: $(tr '\n' ' ' <<<"$bad")"
 judged=$(jq -r -L "$root/scripts/e2e/lib" 'include "stage4b-pods"; ready_pods | .metadata.uid' "$evidence/pod-watch.json" | sort -u | wc -l)
 # The Secret-value check: the helper judges the recorded pods against every value it held, on TERM.
-stop_pid "$leaks_pid"
+stop_pid "$leaks_pid" || fail "lib/secret-leaks.ts (pid $leaks_pid) did not stop (named above), so its verdict may be unfinished"
 leaks_pid=
 [ -s "$work/secret-leaks.json" ] || fail "lib/secret-leaks.ts wrote no verdict ($evidence/logs/secret-leaks.err)"
 jq -e '.leaks == [] and .unseen == [] and .unreadable == 0' "$work/secret-leaks.json" >/dev/null ||
@@ -6882,7 +6882,7 @@ expect_failure pod-watch-scheduled-then-died pod_watch_verdict "$evidence/contro
 pass
 
 begin hygiene
-stop_pid "$daemon_pid"
+stop_pid "$daemon_pid" || fail "the daemon (pid $daemon_pid) did not stop (named above); the teardown would race it"
 daemon_pid=
 teardown
 delete_consumers
