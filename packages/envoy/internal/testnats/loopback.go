@@ -7,9 +7,10 @@ import (
 )
 
 // Loopback is the address every listener of this package opens on, a server's client, route and
-// monitoring listeners and every relay, proxy and gate in front of one: a loopback address of this
-// test binary's own, 127.a.b.c with a, b and c drawn when the binary starts, or 127.0.0.1 where
-// the system serves no other loopback address (Linux serves all of 127.0.0.0/8).
+// monitoring listeners and every relay, proxy and gate in front of one, but for a callout server's
+// relay, which takes an address of its own (calloutHost): a loopback address of this test binary's
+// own, 127.a.b.c with a, b and c drawn when the binary starts, or 127.0.0.1 where the system
+// serves no other loopback address (Linux serves all of 127.0.0.0/8).
 //
 // A port this package held and let go is dialed by nobody of this binary, but it is dialed by a
 // client of another test binary whose test ended without closing it: nats.go reconnects to the URL

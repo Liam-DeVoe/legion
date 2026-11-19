@@ -9,8 +9,9 @@
 // URL that survives a stop and a start (Server.Stop, Server.Start), a way to stop the bytes
 // moving in either direction without dropping a connection (Server.Freeze), a reload with no
 // client message in flight (Server.Reload), and a port no other test binary can take while the
-// test runs. Every listener is on this binary's own loopback address (Loopback), so a client
-// another test binary left reconnecting reaches none of them once their ports are let go.
+// test runs. Every listener is on this binary's own loopback address (Loopback), and a callout
+// server's relay on one of that server's own (calloutHost), so a client another test binary left
+// reconnecting reaches none of them once their ports are let go.
 //
 // A package's tests share one server rather than start one each, and each test gets it as the user
 // of a JetStream account no earlier test used (URL), so no test ever deletes and recreates a
@@ -26,6 +27,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -542,9 +544,17 @@ var hostOnlyConfig = fmt.Sprintf("host: %s\n", Loopback)
 // its command line after it (so -js for JetStream, -DV for the protocol trace), behind a relay
 // holding the port of the URL it returns, and returns it once it accepts connections. When the
 // test ends the server is shut down, the relay closed and the server's directory removed; until
-// then AwaitConsumerStored finds the server by the relay address its URL names. It is the one
-// place a server of this package is made: every helper here is a call on it.
+// then AwaitConsumerStored finds the server by the relay address its URL names. The relay listens
+// on this binary's own loopback address (Loopback); startOn is start with the relay on another
+// loopback address.
 func start(t testing.TB, config string, serverArgs []string) *Server {
+	t.Helper()
+	return startOn(t, Loopback, config, serverArgs)
+}
+
+// startOn is start with the relay listening on host. It is the one place a server of this
+// package is made: every helper here is a call on it.
+func startOn(t testing.TB, host, config string, serverArgs []string) *Server {
 	t.Helper()
 	if config == "" {
 		config = hostOnlyConfig
@@ -553,7 +563,7 @@ func start(t testing.TB, config string, serverArgs []string) *Server {
 	if err != nil {
 		t.Fatalf("make the server's directory: %v", err)
 	}
-	listener, err := Listen()
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
 	if err != nil {
 		_ = os.RemoveAll(dir)
 		t.Fatalf("hold the server's port: %v", err)
@@ -662,6 +672,17 @@ func serverOptions(path string, serverArgs []string, store string) (*natsserver.
 	if opts.LameDuckDuration == 0 && opts.LameDuckGracePeriod == 0 {
 		opts.LameDuckDuration = rigLameDuck
 		opts.LameDuckGracePeriod = rigLameDuckGrace
+	}
+	// A server with an auth callout holds a client it sends to the service until the service
+	// answers or its authorization timeout passes (nats-server v2.15.1 server/auth_callout.go:457-464),
+	// and it starts that client's first PING timer before it asks (client.go:2352-2353): two seconds
+	// plus up to a fifth of that (client.go:7136-7142), against the callout's two. So a client the
+	// service never answers is now and then sent a PING before its refusal, and nats.go fails the
+	// connect with "expected 'PONG', got 'PING'" rather than nats.ErrAuthorization, which a test
+	// that waits out the hub's timeout for the refusal reads as a failure. The rig turns the short
+	// first PING off on such a server, so its first PING waits for the ping interval, two minutes.
+	if opts.AuthCallout != nil {
+		opts.DisableShortFirstPing = true
 	}
 	return opts, nil
 }
