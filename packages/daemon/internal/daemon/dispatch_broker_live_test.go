@@ -183,7 +183,7 @@ func newDispatchBrokerRig(t *testing.T, lifetime time.Duration) *dispatchBrokerR
 		direct: &http.Client{Timeout: 30 * time.Second},
 	}
 	r.broker = brokertest.NewRig(t, brokertest.WithAccessLifetime(lifetime))
-	r.proxy = &recordingProxy{tokens: map[string]string{}}
+	r.proxy = newRecordingProxy()
 	at := httptest.NewServer(r.proxy.at("proxy"))
 	t.Cleanup(at.Close)
 	outside := httptest.NewServer(r.proxy.at("outside"))
@@ -844,11 +844,27 @@ type proxyRecord struct {
 // recordingProxy is the proxy in front of Dispatch: it forwards each request as it came and keeps
 // a record of it. The tokens themselves are kept apart, by digest, for the broker's
 // introspection alone; no table prints one.
+//
+// A request's record takes its place when the request arrives, and its status and code only once
+// Dispatch's answer has gone out whole, which can be after the client has read that answer and
+// returned: the client stops reading at the body's last byte, while the handler is still writing.
+// So a reader that marks the records, has a client write and then reads them (since) waits for
+// every request it may have read in flight to land, rather than reading before its record does.
 type recordingProxy struct {
 	mu      sync.Mutex
+	landed  *sync.Cond // signalled each time a request's record lands
 	target  *url.URL
 	records []proxyRecord
-	tokens  map[string]string
+	// inFlight is the index in records of each request whose answer has not gone out whole.
+	inFlight map[int]struct{}
+	tokens   map[string]string
+}
+
+// newRecordingProxy is a proxy with no record, pointed at no Dispatch yet (forward).
+func newRecordingProxy() *recordingProxy {
+	p := &recordingProxy{inFlight: map[int]struct{}{}, tokens: map[string]string{}}
+	p.landed = sync.NewCond(&p.mu)
+	return p
 }
 
 // forward points the proxy at Dispatch.
@@ -878,6 +894,9 @@ func (p *recordingProxy) at(address string) http.Handler {
 		record.Scheme, record.Token = p.credential(request.Header.Get("Authorization"))
 		p.mu.Lock()
 		ready := p.target != nil
+		index := len(p.records)
+		p.records = append(p.records, record)
+		p.inFlight[index] = struct{}{}
 		p.mu.Unlock()
 		answer := &answerRecorder{ResponseWriter: w}
 		if ready {
@@ -898,7 +917,9 @@ func (p *recordingProxy) at(address string) http.Handler {
 			}
 		}
 		p.mu.Lock()
-		p.records = append(p.records, record)
+		p.records[index] = record
+		delete(p.inFlight, index)
+		p.landed.Broadcast()
 		p.mu.Unlock()
 	})
 }
@@ -925,18 +946,34 @@ func (p *recordingProxy) token(digest string) string {
 	return p.tokens[digest]
 }
 
-// count is how many requests the proxy has recorded.
+// count is how many requests have reached the proxy, those still in flight included.
 func (p *recordingProxy) count() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.records)
 }
 
-// since is every request recorded after the first mark.
+// since is every request recorded after the first mark, once each of them has landed. A caller
+// reads it after the writes it made returned, so each request of those writes has reached the
+// proxy and taken its place; only its answer can still be going out, and that ends.
 func (p *recordingProxy) since(mark int) []proxyRecord {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	for p.inFlightFrom(mark) {
+		p.landed.Wait()
+	}
 	return append([]proxyRecord(nil), p.records[mark:]...)
+}
+
+// inFlightFrom is whether a request recorded at mark or after it is still in flight. The caller
+// holds p.mu.
+func (p *recordingProxy) inFlightFrom(mark int) bool {
+	for index := range p.inFlight {
+		if index >= mark {
+			return true
+		}
+	}
+	return false
 }
 
 // answerRecorder is a ResponseWriter that keeps the status written and the first bytes of the
