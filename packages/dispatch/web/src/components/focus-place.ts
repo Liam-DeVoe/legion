@@ -333,17 +333,26 @@ const HELD = '[aria-disabled="true"], :disabled';
  *  tells a loss the reader caused from one an update made under them: where it landed, the dialog
  *  or panel it landed in (`DIALOG`) and the loss that region was opened from (`openedFrom`), the
  *  elements it can read as (`pressedOn`) that were already held when it was made (`heldBefore`,
- *  `heldAt`), the event that releases it (`pointerup`, `keyup`, none for a change), whether it
- *  can still be the cause of a loss (`live`, `answerPress`), and what stops the timers and the
+ *  `heldAt`), its own release while that is still to come (`Release`; none for a change), whether
+ *  it can still be the cause of a loss (`live`, `answerPress`), and what stops the timers and the
  *  watch that end it. */
 interface Press {
   readonly heldBefore: ReadonlySet<Element>;
   live: boolean;
   readonly opener: Loss | null;
   readonly region: Element | null;
-  readonly release: "keyup" | "pointerup" | null;
+  release: Release | null;
   stop: () => void;
   readonly target: Element;
+}
+
+/** The release a press waits for: the event that releases it (`pointerup`, `keyup`) from the
+ *  pointer or the key that made the press (`by`, `pressedBy`), so that another pointer or key let
+ *  go while the press is down - Space let go on a control Enter is still pressing - is not taken
+ *  for it. */
+interface Release {
+  readonly by: number | string | null;
+  readonly type: "keyup" | "pointerup";
 }
 
 /** The reader's latest press, kept by the page's rescue while it is mounted, else null. */
@@ -355,6 +364,12 @@ const RELEASE: Readonly<Record<string, "keyup" | "pointerup">> = {
   pointerdown: "pointerup",
 };
 
+/** What made `event`: its pointer (`pointerId`), or its key (`code`), else null. */
+function pressedBy(event: Event): number | string | null {
+  if (event instanceof PointerEvent) return event.pointerId;
+  return event instanceof KeyboardEvent ? event.code : null;
+}
+
 /** The nearest of `opener` and the openers before it whose region is still in the page and drawn
  *  (`present`), else null: where a focus lost from a region that has gone goes back to. */
 function drawnOpener(opener: Loss | null): Loss | null {
@@ -363,15 +378,22 @@ function drawnOpener(opener: Loss | null): Loss | null {
   return from;
 }
 
+/** The control `element` is held through while it is in the page: the nearest of itself and the
+ *  elements around it that cannot be pressed now (`HELD`) - the button a span or an icon of it is
+ *  drawn in - else null. */
+function heldControl(element: Element): Element | null {
+  return element.isConnected ? element.closest(HELD) : null;
+}
+
 /** Whether `element` is in the page and cannot be pressed now (`HELD`). */
 function isHeld(element: Element): boolean {
-  return element.isConnected && element.closest(HELD) !== null;
+  return heldControl(element) !== null;
 }
 
 /** The elements a press on `target` can read as (`pressedOn`) - `target`, and the control each
  *  region around it was opened from, `opener` and each opener before it - that are held now
- *  (`isHeld`). Read as the press is made, before what it does: a control held then refuses the
- *  press, so its hold is no doing of the press (`answerPress`). */
+ *  (`isHeld`). Read as the press is made, before what it does: a control held then takes the
+ *  press without a write, so its hold is no doing of the press (`answerPress`). */
 function heldAt(target: Element, opener: Loss | null): ReadonlySet<Element> {
   const held = new Set<Element>();
   if (isHeld(target)) held.add(target);
@@ -396,20 +418,34 @@ function pressedOn(press: Press): Element[] {
   return from === null ? [target] : [target, from.element];
 }
 
+/** Whether a press on `target` lands on a control `press` holds: one `press` reads as
+ *  (`pressedOn`), held now by a hold that began after `press` (not in `heldBefore`), with `target`
+ *  that control or inside it. The controls are compared, not the nodes the presses landed on, so
+ *  a press on a span or an icon of the button counts, and so does a press on the button after
+ *  one on a span of it. */
+function onHeldControl(press: Press, target: Element): boolean {
+  return pressedOn(press).some(
+    (each) => !press.heldBefore.has(each) && heldControl(each)?.contains(target) === true
+  );
+}
+
 /** Keeps `press` live while the update that answers it is still to run: a press is the cause only
  *  of the change it leads to. That is a frame and a task from now (`afterComponents`) - from the
- *  press, and again from its release, which a click answers - by when React has committed what the
- *  press did and run its effects, and longer only while a control it reads as (`pressedOn`) is
- *  held (`HELD`) by a hold that began after the press, its write out, and then until a frame and a
- *  task after that hold ends: the control taken away, or its `aria-disabled` or `disabled` gone. A
- *  control already held when the press was made (`heldBefore`) - the pager's Next on its last
- *  page, a select or a trigger held while an earlier write is out - refused the press, which led
- *  to no write, so its hold keeps the press live no longer than a press on a control held by
- *  nothing. The hold's end is watched rather than polled, since its write's latency is the
- *  server's, and the watch ends at the write deadline (`RESCUE_WAIT_MS`) as the rescue's own wait
- *  does, so a write that never answers keeps no watch over the page and no press live past it. A
- *  press past that is no cause, so an update after it - a live update taking the row away, a
- *  refetch emptying the selection bar - is a loss the reader did not cause. */
+ *  press, and again from its own release, which a click answers (`noteRelease`) - by when React
+ *  has committed what the press did and run its effects, and longer only while a control it reads
+ *  as (`pressedOn`) is held (`HELD`) by any hold that began after the press - its write out, or
+ *  what the press did to its own control, as a pager's Next is held on the last page it led to -
+ *  and then until a frame and a task after that hold ends: the control taken away, or its
+ *  `aria-disabled` or `disabled` gone. A control already held when the press was made
+ *  (`heldBefore`) - the pager's Next on its last page, a select or a trigger held while an
+ *  earlier write is out - took the press without a write, so its hold keeps the press live no
+ *  longer than a press on a control held by nothing. The hold's end is watched rather than
+ *  polled, since a write's latency is the server's, and the watch ends at the write deadline
+ *  (`RESCUE_WAIT_MS`) counted from the press's release - from the press itself for a change,
+ *  which has none - as the rescue's own wait does, so a hold that never ends keeps no watch over
+ *  the page and no press live past it. A press past that is no cause, so an update after it - a
+ *  live update taking the row away, a refetch emptying the selection bar - is a loss the reader
+ *  did not cause. */
 function answerPress(press: Press): void {
   press.stop();
   press.live = true;
@@ -1178,40 +1214,43 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
      *  while it is live can be told from one an update made under them (`causedByReader`), with
      *  the dialog or panel it landed in and the loss that region was opened from, read now, while
      *  the region is still in the page, for when a pick or a confirm takes it away (`pressedOn`),
-     *  and the controls it can read as that are already held (`heldAt`), read before the act runs.
-     *  A newer act ends the one before it, and the watch on that one's hold with it, except an act
-     *  on a control that act already holds - a double click, a repeated Enter - which the control
-     *  refuses, so the act before it stays the cause of what its write takes away. */
+     *  the controls it can read as that are already held (`heldAt`), read before the act runs, and
+     *  the release it waits for (`Release`). A newer act ends the one before it, and the watch on
+     *  that one's hold with it, except an act on a control the live act holds by a hold that began
+     *  after it, or on anything inside that control (`onHeldControl`) - a double click, a repeated
+     *  Enter, any other key or pointer press on that control or on a span or an icon of it: the
+     *  held control takes the act without a write, so the act before it stays the cause, with its
+     *  release and its write deadline as they were (`noteRelease`). */
     const notePress = (event: Event) => {
       if (!(event.target instanceof Element)) return;
-      if (
-        lastPress?.live === true &&
-        isHeld(event.target) &&
-        !lastPress.heldBefore.has(event.target) &&
-        pressedOn(lastPress).includes(event.target)
-      ) {
-        return;
-      }
+      if (lastPress?.live === true && onHeldControl(lastPress, event.target)) return;
       lastPress?.stop();
       const region = event.target.closest(DIALOG);
       const opener = region === null ? null : (openedFrom.get(region) ?? null);
+      const release = RELEASE[event.type];
       lastPress = {
         heldBefore: heldAt(event.target, opener),
         live: true,
         opener,
         region,
-        release: RELEASE[event.type] ?? null,
+        release: release === undefined ? null : { by: pressedBy(event), type: release },
         stop: () => undefined,
         target: event.target,
       };
       answerPress(lastPress);
     };
-    /** The release of the reader's latest press - the next `pointerup` after a pointer's press,
-     *  the next `keyup` after a key's (`RELEASE`) - which is what a click answers: a control
-     *  pressed by the pointer, or by Space, acts on the release, however long the reader held it
-     *  down. The press is live again from there, as if made then, on the control it was made on. */
+    /** The release of the reader's latest press - the `pointerup` of the pointer it was made by,
+     *  the `keyup` of its key (`Release`) - which is what a click answers: a control pressed by the
+     *  pointer, or by Space, acts on the release, however long the reader held it down. The press
+     *  is live again from there, as if made then, on the control it was made on, and from that
+     *  release alone, once: the release is spent then, so an act on the control the press holds,
+     *  which the rescue does not note (`notePress`), and that act's release leave the press's
+     *  watch and its write deadline as they were. */
     const noteRelease = (event: Event) => {
-      if (lastPress?.release === event.type) answerPress(lastPress);
+      const press = lastPress;
+      if (press?.release?.type !== event.type || press.release.by !== pressedBy(event)) return;
+      press.release = null;
+      answerPress(press);
     };
     const readerMoved = (event: Event) => {
       notePress(event);
