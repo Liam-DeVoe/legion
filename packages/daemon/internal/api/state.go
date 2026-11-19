@@ -91,7 +91,7 @@ type State struct {
 	AgentSecretsLogin *AgentSecretsLoginView `json:"agentSecretsLogin,omitempty"`
 	// DispatchCredential is the daemon's own Dispatch credential under dispatch_token_broker and
 	// the two counts a deployment reads before it removes dispatch_token_transition_file
-	// (DispatchCredentialView), absent when the setting is off (contract 165).
+	// (DispatchCredentialView), absent when the setting is off (contract 175).
 	DispatchCredential *DispatchCredentialView `json:"dispatchCredential,omitempty"`
 	// Capabilities is the deployment's capability report (capabilities.Deployment.Report), one row
 	// per capability in the table's order: what the worker image was probed for, what the live

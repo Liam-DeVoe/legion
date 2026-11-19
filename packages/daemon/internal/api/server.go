@@ -1172,13 +1172,13 @@ const entryTimesContract = 146
 
 // dispatchCredentialContract is the daemon contract that added `dispatchCredential`, the daemon's
 // own Dispatch credential under dispatch_token_broker and the two counts of the Dispatch tokens
-// its launches hand out (version.go's 165, DispatchCredentialView). A plugin before it is served
+// its launches hand out (version.go's 175, DispatchCredentialView). A plugin before it is served
 // the state without the key: one built before sjawhar/legion#2788 reads it with a strict schema
 // and would refuse the whole body for a key it does not name, and one built after strips the key
 // instead, so the strip is what keeps the object from a caller that did not ask for it rather
 // than what keeps such a caller reading at all. entryTimesContract stands below it with no row of
 // stateNarrowings between the two (151 moves no shape of the state).
-const dispatchCredentialContract = 165
+const dispatchCredentialContract = 175
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
