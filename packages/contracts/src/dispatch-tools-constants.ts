@@ -12,7 +12,13 @@
  * browser, so the constants live here and `dispatch-tools.ts` re-exports them: an import of that
  * module, or of the package index, answers exactly what it answered before. A new constant of
  * the tool contract goes here too, rather than beside the schemas, whether or not a browser
- * reads it.
+ * reads it. What still sits in `dispatch-tools.ts`, `DISPATCH_ITEM_BLOCKS` and `SEARCH_KIND_DEPTH`
+ * among them, has no reader that is not taking the schemas anyway, and each moves here the first
+ * time a reader needs it without them.
+ *
+ * The dashboard takes a value of this module through its own subpath,
+ * `@legion/contracts/dispatch-tools-constants`, never through `@legion/contracts/dispatch-tools`
+ * or the package index: either would bring the schema modules with the value.
  */
 
 /** Ask urgency levels the Dispatch server accepts, in ascending order. */

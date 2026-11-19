@@ -1,7 +1,8 @@
 /** The accessibility layer: every page of `e2e/review-routes.ts`'s scanned set, in light and in
  *  dark, read by axe at WCAG 2.0 and 2.1 level A and AA. The rows are untagged, so only the
- *  `chromium` project runs them and the pass reaches every pull request
- *  (e2e/playwright.config.ts).
+ *  `chromium` project runs them, on the full lane: the pull-request lane runs only `@pr` rows, so
+ *  a pull request meets the pass in the merge queue (e2e/playwright.config.ts,
+ *  .github/workflows/dispatch-browser.yaml).
  *
  *  A row fails on any serious or critical violation `e2e/accessibility-exclusions.ts` does not
  *  cover, and each (route, scheme) prints one `A11Y …` line to stdout, so the shard legs' own job

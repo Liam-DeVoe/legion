@@ -3,8 +3,12 @@
  * (`@legion/contracts` re-exports it whole); nothing outside the package imports a module of the
  * split by path, save the constants module below, which is a subpath of its own and which
  * `scripts/e2e/verification-results.ts` reads by its file path, since the root package does not
- * depend on this one. Three files name an area module's path without importing it, which
- * `packages/contracts/AGENTS.md` lists under "Dispatch API shapes".
+ * depend on this one. Three files name an area module's path without importing it, and a move that
+ * takes what they look for elsewhere changes them too: `.github/scripts/check-plugin-names.sh`
+ * lists `dispatch-api-search.ts`, and in `packages/envoy`
+ * `internal/dispatch/outbox/expects_reply_never_false_test.go` globs `dispatch-api*.ts` for the
+ * `DispatchEvent` union and a comment of `internal/dispatch/model/display_tree.go` names
+ * `dispatch-api-core.ts`.
  *
  * The wire shapes are generated from the Go route table through `schemas/dispatch-openapi.json`:
  * `dispatch-api.generated.ts` is the one definition of every HTTP request and response body of

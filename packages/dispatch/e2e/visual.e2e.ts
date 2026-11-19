@@ -279,7 +279,7 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         // So the honest picture is drift 7 < bound 20 < nearest measured real change 79: a
         // factor of 3.95, not the 22,572 the canvas alone suggests. A token drawn over less
         // than about 20 pixels of a page is outside this gate, and the kept row of
-        // `e2e/theme.e2e.ts` is what binds an element to its swatch there.
+        // `e2e/theme.stub.e2e.ts` is what binds an element to its swatch there.
         //
         // Eleven sources of difference were measured on the way here and nine removed rather
         // than tolerated - two races in the seeded corpus, a reconcile tick jittered across

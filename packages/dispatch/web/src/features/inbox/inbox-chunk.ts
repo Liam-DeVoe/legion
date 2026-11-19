@@ -9,7 +9,7 @@
  * was the largest part of it no page but the Inbox itself draws: the card list, the ask cards,
  * the thread bodies and the Markdown surfaces under them. A reader on an issue, a board or a
  * document parsed all of it to be shown none of it. What the entry cost before the split and
- * costs now is measured in one place, `packages/dispatch/AGENTS.md` under "Layout".
+ * costs now is measured in one place, the `build` comment of `web/vite.config.ts`.
  *
  * What a reader loses by its being late, and when it is fetched. Where the Inbox is the page,
  * the list is what the reader came for, so the download starts with the navigation rather than

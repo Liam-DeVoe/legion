@@ -13,6 +13,10 @@
  * them: an import of that module, or of the package index, answers exactly what it answered
  * before. A new constant of the contract goes here too, rather than beside the schemas, so this
  * module also holds codes no browser reads, which were added after it was split out.
+ *
+ * The dashboard takes a value of this module through its own subpath,
+ * `@legion/contracts/dispatch-api-constants`, never through `@legion/contracts/dispatch-api` or
+ * the package index: either would bring the area modules' schemas with the value.
  */
 
 // Types only: a type import is erased by the compiler, so it builds no edge a bundler would

@@ -1,3 +1,9 @@
+/**
+ * The drawing of a typed block that the editor's node views and the read-only text engine share.
+ * It imports only types from `prosemirror-model` and small value modules - no editor library, no
+ * `picture-view`, no React - so the text engine's chunk (`markdown-engine-*.js`, which every page
+ * fetches at boot) draws typed blocks without pulling the editor in.
+ */
 import { parseBlockPointerValue } from "@legion/contracts/dispatch-block-ref";
 import type { DOMOutputSpec, Node as ProseMirrorNode } from "prosemirror-model";
 

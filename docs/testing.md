@@ -256,6 +256,26 @@ and each command runs there.
   `drop database … with (force)`, which refuses a login that is not a superuser, as CI's is not,
   while an autovacuum worker is attached (the doc of `dropDatabase` says why).
 
+## A Dispatch browser-suite command run by hand
+
+Each script of `packages/dispatch/package.json` that runs Playwright and builds anything builds
+`@legion/contracts` first (`build:contracts`), since Playwright's runner loads that package's built
+`dist/`. The three `:run` scripts, `e2e:clock:run`, `e2e:embedder:run` and `e2e:multiprocess:run`,
+are the Playwright command alone: like a `bunx playwright test` typed by hand, each needs
+`bun run build:contracts` once and the dashboards it serves already built. So after `bun run e2e`
+from an unchanged tree, `bun run e2e:clock:run` runs the wall-clock rows without building again.
+
+One leg of CI's pull-request lane is the shard job's command without its blob reporter and its
+memory and CPU samplers, run from `packages/dispatch` with a Postgres provider
+`e2e/harness-postgres.ts` reads, here the browser image's own binaries:
+
+```bash
+DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin bunx playwright test --config e2e/playwright.config.ts --project=chromium --project=iphone --project=stub --project=stub-phone --grep='(^|\s)@pr(\s|$)' --shard=1/2 --workers 4
+```
+
+A full-lane leg names the projects of the shard job's `full` arm in
+`.github/workflows/dispatch-browser.yaml` in place of those four, and passes no `--grep`.
+
 ## Unix sockets in Go tests
 
 A unix socket path must be 107 bytes or shorter. Linux's `sun_path` holds 108 bytes with the

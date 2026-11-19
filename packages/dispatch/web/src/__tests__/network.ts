@@ -67,9 +67,9 @@ const shellHandlers: RequestHandler[] = [
   ),
   // The sidebar reads the project list wherever it is drawn - on a wide viewport with the sidebar
   // shown, or in the compact navigation drawer while it is open - with no `enabled` guard
-  // (`features/sidebar/Sidebar.tsx:91`, drawn by `app.tsx:375`). The issue header reads the same
+  // (`features/sidebar/Sidebar.tsx:158`, drawn by `app.tsx:557`). The issue header reads the same
   // `projectsQuery` key for every root issue, to learn which design steps are gated
-  // (`features/issue/IssueHeader.tsx:292`, `enabled: issue.parent === null`), and that is the
+  // (`features/issue/IssueHeader.tsx:261`, `enabled: issue.parent === null`), and that is the
   // reader this answer exists for: without it, 36 rows of pages carrying the header fail on an
   // unanswered read, none of them about projects. `CreateIssueDialog`, `ProjectPage`, the
   // palette's project mode and three settings sections (`ArchitectureSourcesSection.tsx:52`,
