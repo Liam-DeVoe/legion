@@ -5,6 +5,9 @@
  * U+2029, U+202F, U+205F and U+3000 (`IsSpace` in Go's `unicode/graphic.go`, reading the
  * `_White_Space` table of its `unicode/tables.go`).
  *
+ * A client that must call text blank where a Go server does tests it against this pattern, never
+ * against `trim`, which disagrees with Go on two characters.
+ *
  * The set is written out because it is Go's and not JavaScript's: walked over every Unicode
  * scalar, `String.prototype.trim` and `strings.TrimSpace` differ on exactly two characters.
  * `trim` removes U+FEFF, which Go keeps, so `trim` calls U+FEFF blank where a Go server reads
