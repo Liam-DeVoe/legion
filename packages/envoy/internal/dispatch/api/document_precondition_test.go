@@ -464,3 +464,47 @@ func TestDocumentEditBlockPreconditionCoversAReplaceThatWritesBlocks(t *testing.
 		})
 	}
 }
+
+// A delete whose find opens with a list marker removes the whole item it selects, the items
+// nested in it included. A block guard covers every block the batch changes, so such a delete is
+// covered only by a guard on what it removes: a guard on the item's opening paragraph alone,
+// read before another writer changed a nested item, must not let the delete remove that change.
+// `delete {block: item}` under the same guard is refused for it (INFRA-341, testing round 17, at
+// 1808df5f).
+func TestADeleteByListMarkerIsGuardedOnEveryBlockItRemoves(t *testing.T) {
+	handler, _, _ := preconditionTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Marker delete guard", "- Parent\n  - Child\n- Other\n")
+	blocks := readDocumentPreconditionBlocks(t, handler, issue.PrimaryArtifactID)
+	parent := ""
+	for text, id := range blockIDsByText(t, handler, issue.PrimaryArtifactID) {
+		if strings.TrimSpace(text) == "Parent" {
+			parent = id
+		}
+	}
+	token := ""
+	for _, block := range blocks {
+		if block.ID == parent {
+			token = block.Token
+		}
+	}
+	if parent == "" || token == "" {
+		t.Fatalf("no block of %v is the item's paragraph Parent", blocks)
+	}
+	writer := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+		"ops": []map[string]string{{"op": "replace", "find": "Child", "with": "Child, changed by another writer"}},
+	}, "alice")
+	if writer.Code != http.StatusOK {
+		t.Fatalf("the other writer's change: status=%d body=%s", writer.Code, writer.Body.String())
+	}
+
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+		"ops":          []map[string]string{{"op": "delete", "find": "- Parent"}},
+		"precondition": map[string]any{"blocks": []map[string]string{{"id": parent, "token": token}}},
+	}, "alice")
+	if response.Code == http.StatusOK {
+		t.Errorf("a marker delete guarded on the item's paragraph alone, after a nested item changed: status=200 body=%s, want it refused", response.Body.String())
+	}
+	if got := readDocumentPrecondition(t, handler, issue.PrimaryArtifactID); !strings.Contains(got.Markdown, "Child, changed by another writer") {
+		t.Errorf("document after the guarded delete = %q, want the other writer's change kept", got.Markdown)
+	}
+}
