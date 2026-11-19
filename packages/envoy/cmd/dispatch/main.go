@@ -179,6 +179,10 @@ type bootConfig struct {
 	// its jittered first tick; only DISPATCH_TEST_RECONCILE_AT_START=1, under the test hooks, sets
 	// it.
 	ReconcileAtStart bool
+	// HideStateFile names the file whose presence makes the results read leave out the state the
+	// server computes from the results (api.Deps.HideStateFile); only DISPATCH_TEST_HIDE_STATE_FILE,
+	// under the test hooks, sets it.
+	HideStateFile string
 	// OIDCIssuer and OIDCAudience configure verification of projected
 	// service-account tokens. Both set or neither; empty means no verifier.
 	OIDCIssuer   string
@@ -1312,6 +1316,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, err
 		}
 	}
+	if err := testHookPath(env, "DISPATCH_TEST_HIDE_STATE_FILE", boot.TestHooksEnabled, &boot.HideStateFile); err != nil {
+		return bootConfig{}, err
+	}
 	identityMode := strings.TrimSpace(env.get("DISPATCH_IDENTITY"))
 	if err := checkSignInSettings(boot, identityMode); err != nil {
 		return bootConfig{}, err
@@ -1736,6 +1743,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.HorizonStallAfter = boot.HorizonStallAfter
 	built.HorizonWarnEvery = boot.HorizonWarnEvery
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
+	built.HideStateFile = boot.HideStateFile
 	built.DevSignIn = boot.DevSignIn
 	return built
 }
@@ -2063,6 +2071,24 @@ func testHookBool(env settingValues, name string, testHooksEnabled bool, target 
 		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
 	}
 	*target = raw == "1"
+	return nil
+}
+
+// testHookPath reads the test-only file setting name into target, leaving target as it is when
+// the setting is unset. Such a setting is refused without DISPATCH_TEST_HOOKS=1, and so is a path
+// that is not absolute, which would name a file in whatever directory the process started in.
+func testHookPath(env settingValues, name string, testHooksEnabled bool, target *string) error {
+	raw := strings.TrimSpace(env.get(name))
+	if raw == "" {
+		return nil
+	}
+	if !testHooksEnabled {
+		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
+	}
+	if !filepath.IsAbs(raw) {
+		return fmt.Errorf("%s=%q (expected an absolute path)", name, raw)
+	}
+	*target = raw
 	return nil
 }
 

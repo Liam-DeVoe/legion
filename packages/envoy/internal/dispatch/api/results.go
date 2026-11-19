@@ -428,6 +428,9 @@ type issueCheckResults struct {
 // The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's
 // newest pull request head as on every read: the derived result is that head's, and stands at
 // the named commit only where that commit is the head.
+//
+// An end-to-end test process whose hide-state file exists answers without the state the server
+// computes from the results (stateHidden, withoutComputedState).
 func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -499,6 +502,15 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	keepFieldsOlderCommandsRead(checks)
 	body.Checks = checks
 	trees.resolve()
+	if s.stateHidden() {
+		hidden, err := withoutComputedState(body)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, hidden)
+		return
+	}
 	WriteJSON(w, http.StatusOK, body)
 }
 

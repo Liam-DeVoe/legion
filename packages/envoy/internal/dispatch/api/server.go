@@ -191,6 +191,11 @@ type Deps struct {
 	// changes the listener's sessions sees the change at its next read. A deployment leaves it
 	// false.
 	ListenerRosterUncached bool
+	// HideStateFile is for end-to-end test processes only: while the file it names exists, the
+	// results read leaves out the state the server computes from the results (stateHidden,
+	// results_state_hidden.go), so a run of the skill-scenario rig can show an agent the results
+	// alone. A deployment leaves it "".
+	HideStateFile string
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
@@ -273,6 +278,8 @@ type DepsInput struct {
 	// ListenerRosterUncached is for end-to-end test processes only; see
 	// Deps.ListenerRosterUncached.
 	ListenerRosterUncached bool
+	// HideStateFile is for end-to-end test processes only; see Deps.HideStateFile.
+	HideStateFile string
 	// DashboardEntry is this process's dashboard entry chunk; see Deps.DashboardEntry.
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
@@ -358,6 +365,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		HorizonWarnEvery:       input.HorizonWarnEvery,
 		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
+		HideStateFile:          input.HideStateFile,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
 	}, nil

@@ -288,6 +288,15 @@ if [ -n "${DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL:-}" ]; then
   delivery_reconcile_env=(DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL="$DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL")
 fi
 
+# The hide-state file, read before the sweep below and passed under the same DISPATCH_TEST_HOOKS=1.
+# While the file it names exists, the results read leaves out the state the server computes from
+# the results: each check's pass_stands and ci, and each result's currency. The skill-scenario rig
+# sets it for a run whose agent judges the results alone. Unset, nothing changes.
+hide_state_env=()
+if [ -n "${DISPATCH_TEST_HIDE_STATE_FILE:-}" ]; then
+  hide_state_env=(DISPATCH_TEST_HIDE_STATE_FILE="$DISPATCH_TEST_HIDE_STATE_FILE")
+fi
+
 # The NATS server, read before the sweep below: DISPATCH_E2E_NATS_URL names one the caller started
 # (the skill-scenario rig starts one for each run of its heads scenarios), and the server gets it
 # as NATS_URLS, NATS on, so its delivery intake reads the `pull_request` envelopes the caller
@@ -405,6 +414,7 @@ exec "${listen[@]}" env \
   "${nats_env[@]}" \
   "${port_env[@]}" \
   "${delivery_reconcile_env[@]}" \
+  "${hide_state_env[@]}" \
   DISPATCH_TEST_EMBEDDER_OFF="$embedder_off" \
   DISPATCH_TEST_HOOKS=1 \
   DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW="$listener_takeover_window" \

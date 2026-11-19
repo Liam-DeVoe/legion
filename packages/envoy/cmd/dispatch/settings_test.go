@@ -1883,6 +1883,22 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_RECONCILE_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_HIDE_STATE_FILE": func(t *testing.T) {
+			const file = "/run/skill-scenarios/quiet/run-1"
+			boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HIDE_STATE_FILE": file})
+			if boot.HideStateFile != file {
+				t.Errorf("DISPATCH_TEST_HIDE_STATE_FILE=%s: HideStateFile %q", file, boot.HideStateFile)
+			}
+			if handed := appContextOptions(boot, routes.AppContextOptions{}).HideStateFile; handed != file {
+				t.Errorf("DISPATCH_TEST_HIDE_STATE_FILE=%s: the router is handed %q", file, handed)
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.HideStateFile != "" {
+				t.Errorf("unset: HideStateFile %q", boot.HideStateFile)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HIDE_STATE_FILE": "quiet/run-1"},
+				`DISPATCH_TEST_HIDE_STATE_FILE="quiet/run-1" (expected an absolute path)`)
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HIDE_STATE_FILE": file}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_CI_RECONCILE_INTERVAL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.CIReconcileInterval != 0 {
 				t.Errorf("DISPATCH_TEST_CI_RECONCILE_INTERVAL unset: CIReconcileInterval = %v, want 0 (cireconcile.Interval's five minutes)", boot.CIReconcileInterval)
