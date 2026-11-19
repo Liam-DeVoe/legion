@@ -766,8 +766,9 @@ with no failure before it also ends when the listener watches the bucket again o
 stops. The error names the watcher and its bucket, and the interest cache's covers the role claims
 too. A read whose scan times out, or whose last check of the bucket's stream fails after the
 marker and the leader's answers, is read again and is not counted. Neither is a wait that finds
-the bucket deleted, or deleted and created again, nor a read the listener's NATS connection
-dropped under.
+the bucket deleted, or deleted and created again, nor the failure of a read the listener's NATS
+connection dropped under. The tests of `packages/envoy/internal/kvwatch` pin each of these cases,
+one test each, in `read_err_paths_test.go` and `settle_test.go`.
 
 `role_claim_repair` says how fresh the listener's copy of the role claims is. The listener reads
 every role claim from NATS again one minute after each full read completes, and each such read

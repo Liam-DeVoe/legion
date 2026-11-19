@@ -520,26 +520,40 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // answers; 503 "unhealthy" when NATS is unavailable, the durable subscription is inactive, a
 // cache's watcher has stopped, a cache's reads have failed, or are still waiting, to settle past
 // their barrier for longer than its stale bound with none completing (the error "<cache> KV read
-// unavailable: …", kvwatch.Watcher.ReadErr, below), the durable consumer is gone, a bus check did
-// not answer within healthzBudget, or the durable consumer is "not bound to this listener's
-// subscription" because it was recreated server-side and now delivers elsewhere; and 200
-// "degraded" for a transient KV failure the self-health monitor and the NATS reconnect retry, for
-// a KV watch rebuild stalled past bus.RepairGrace (below), and for the known-session store's reads
-// past their own stale bound (below), which are never unhealthy. A role lane client that is not
-// connected or holds no valid subscription is 503 "role lane subscription inactive", since no role
-// message is forwarded then. A listener that mounts no GitHub webhook route keeps no CI cache, and
-// its answer carries "ci_cache": "not_applicable".
+// unavailable: …", kvwatch.Watcher.ReadErr, below;
+// TestHealthzIsUnhealthyOnceACachesReadsCannotReadPastABarrierForTheBound), the durable consumer
+// is gone, a bus check did not answer within healthzBudget, or the durable consumer is "not bound
+// to this listener's subscription" because it was recreated server-side and now delivers
+// elsewhere; and 200 "degraded" for a transient KV failure the self-health monitor and the NATS
+// reconnect retry, for a KV watch rebuild stalled past bus.RepairGrace (below), and for the
+// known-session store's reads past their own stale bound (below), which are never unhealthy. A
+// role lane client that is not connected or holds no valid subscription is 503 "role lane
+// subscription inactive", since no role message is forwarded then. A listener that mounts no
+// GitHub webhook route keeps no CI cache, and its answer carries "ci_cache": "not_applicable".
 //
 // ReadErr's count starts when a read that got past its scan begins waiting past its barrier, and
-// is held to the stale bound: 2 minutes, or half the stream's MaxAge when that is shorter. A read
-// that may still complete adds to it when its settlement fails: its barrier write fails, its
-// consumer does not reach the barrier in time (whatever the stream check after the timeout
-// answers, unless it finds the bucket replaced), or the key list or a leader read after the
-// barrier fails. A wait still under way counts too. Only a completed read ends a run of failed
-// reads; a wait that no failed read precedes also ends with its generation, at a new watch, the
-// watcher's own end or Stop (TestAWaitItsGenerationEndedIsNoWaitToReadErr). A read whose scan
-// timed out, or whose stream check at completion failed after its barrier and leader reads
-// succeeded, is read again uncounted, and so is a wait that found its bucket replaced.
+// is held to the stale bound: 2 minutes, or half the stream's MaxAge when that is shorter. Each
+// path names the internal/kvwatch test that pins it:
+//
+//   - A wait still under way counts (TestAReadsWaitPastItsBarrierIsBoundedAndReported).
+//   - A read that may still complete adds to the run when its barrier write fails
+//     (TestReadErrReportsAReadFailureThatOutlastsTheStaleBound), when its consumer does not reach
+//     the barrier in time, whatever the stream check after the timeout answers unless it finds
+//     the bucket replaced (TestAReadsWaitPastItsBarrierIsBoundedAndReported,
+//     TestReadErrCountsATimedOutWaitWhoseStreamCheckFails), and when the key list or a leader read
+//     after the barrier fails (TestReadErrCountsAReadWhoseKeyListFailsAfterTheBarrier,
+//     TestReadErrCountsAReadWhoseLeaderReadFailsAfterTheBarrier).
+//   - Only a completed read ends a run of failed reads
+//     (TestReadErrReportsAReadFailureThatOutlastsTheStaleBound). A wait that no failed read
+//     precedes ends with its read (TestReadErrEndsAWaitWhoseReadCompletes), or with its
+//     generation, at a new watch, the watcher's own end or Stop
+//     (TestAWaitItsGenerationEndedIsNoWaitToReadErr).
+//   - Uncounted: a read whose scan timed out (TestReadErrCountsNoReadWhoseScanTimedOut), a read
+//     whose stream check at completion failed after its barrier and leader reads succeeded
+//     (TestReadErrCountsNoReadWhoseStreamCheckAtCompletionFails), a wait that found its bucket
+//     replaced (TestReadErrCountsNoWaitThatFoundItsBucketReplaced), and the failure of a read
+//     that may no longer complete, such as one the connection dropped under
+//     (TestReadErrCountsNoFailureOfAReadTheConnectionDroppedUnder).
 //
 // A rewatch of the KV caches that keeps failing after a reconnect ends no watcher and clears no
 // cache, so every other check still passes while the caches follow buckets they no longer watch
@@ -611,7 +625,8 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // The known-session store's reads are judged after the role claim checks. A store whose reads have
 // failed, or are still waiting, to settle past their barrier for longer than its stale bound with
 // none completing, counted as a cache's are (session.KnownSessions.ReadErr), is 200 "degraded"
-// with the error "known session KV read unavailable: …", keeping every other field. Degraded and
+// with the error "known session KV read unavailable: …", keeping every other field
+// (TestHealthzIsDegradedOnceTheKnownSessionStoresReadsCannotReadPastABarrier). Degraded and
 // never unhealthy: the store is none of the listener's caches (listenerDeps.known), so neither the
 // self-health monitor nor a readiness probe is to act on it, and until a read completes the store
 // answers no record (session.KnownSessions.Opened), so a send to a stopped session answers 404 and

@@ -47,28 +47,60 @@ func (w *Watcher) servable() error {
 }
 
 // ErrUnverified is what ReadErr wraps: for longer than the copy's stale bound, reads of the bucket
-// have failed to settle past their barrier and be verified (settleFailed: the barrier was not
-// written, the consumer did not reach it in time, or the key list or a leader read after it
-// failed), or one is still waiting, and none completed.
+// have failed to settle past their barrier and be verified, or one is still waiting, and none
+// completed. A settlement fails (settleFailed) when the barrier is not written
+// (TestReadErrReportsAReadFailureThatOutlastsTheStaleBound), when the consumer does not reach it in
+// time (TestAReadsWaitPastItsBarrierIsBoundedAndReported,
+// TestReadErrCountsATimedOutWaitWhoseStreamCheckFails), or when the key list or a leader read after
+// it fails (TestReadErrCountsAReadWhoseKeyListFailsAfterTheBarrier,
+// TestReadErrCountsAReadWhoseLeaderReadFailsAfterTheBarrier).
 var ErrUnverified = errors.New("kvwatch: no read could read its bucket past a barrier")
 
 // ReadErr reports reads that have failed to settle past their barrier and be verified, or are
-// still waiting to, for the stale bound with none completing (2 minutes, or half the stream's
-// MaxAge when that is shorter), measured from when the first of them began waiting past its
-// barrier (beginSettle): an unbroken run of reads whose settlement failed (settleFailed,
-// readAgainUnverified), or, before any has failed, the one still waiting. A wait past the barrier
-// that timed out counts whatever the stream check after it answers, unless that check finds the
-// bucket replaced (settleReplaced). Only a completed read ends a run (completeRead). A wait that
-// no failed read precedes ends with its read, and also with its generation: a new watch, the
-// watcher's own end or Stop (clearSettleLocked). Neither starts nor adds to a run: a read whose
-// scan timed out, a read whose stream check at completion failed after its barrier and leader
-// reads succeeded (both readAgainLater), a wait that found its bucket replaced, and a read that
-// may no longer complete (completes). From the bound on the copy is refused (Servable), because
-// those reads do not complete, and only a read that completes repairs it. It names the watcher and
-// its bucket, how long the reads have waited and the run's last error, and is nil before the bound
-// and once the run or the wait ends. A cache that answers for two watchers (store.Registry)
-// reports either one's under that one's own name. A watcher whose reads fail so keeps running, so
-// Err stays nil; the listener's /healthz reports this instead.
+// still waiting to, for the stale bound with none completing: 2 minutes, or half the stream's
+// MaxAge when that is shorter. Each path below names the test that pins it (read_err_paths_test.go
+// and settle_test.go).
+//
+// It measures from when the first of them began waiting past its barrier (beginSettle): an
+// unbroken run of reads whose settlement failed (settleFailed, readAgainUnverified), or, before
+// any has failed, the one still waiting (TestAReadsWaitPastItsBarrierIsBoundedAndReported). A read
+// that may still complete adds to the run when:
+//
+//   - its barrier write fails (TestReadErrReportsAReadFailureThatOutlastsTheStaleBound);
+//   - its wait past the barrier times out, whatever the stream check after the timeout answers
+//     unless it finds the bucket replaced: a check that answers
+//     (TestAReadsWaitPastItsBarrierIsBoundedAndReported) or one that fails
+//     (TestReadErrCountsATimedOutWaitWhoseStreamCheckFails);
+//   - the key list after the barrier fails
+//     (TestReadErrCountsAReadWhoseKeyListFailsAfterTheBarrier);
+//   - a leader read after the barrier fails
+//     (TestReadErrCountsAReadWhoseLeaderReadFailsAfterTheBarrier).
+//
+// The count ends:
+//
+//   - for a run, only when a read completes (completeRead;
+//     TestReadErrReportsAReadFailureThatOutlastsTheStaleBound);
+//   - for a wait that no failed read precedes, when its read completes
+//     (TestReadErrEndsAWaitWhoseReadCompletes), and with its generation: a new watch, the
+//     watcher's own end or Stop (clearSettleLocked; TestAWaitItsGenerationEndedIsNoWaitToReadErr).
+//
+// Neither starts nor adds to a run:
+//
+//   - a read whose scan timed out (readAgainLater; TestReadErrCountsNoReadWhoseScanTimedOut);
+//   - a read whose stream check at completion failed after its barrier and leader reads
+//     succeeded (readAgainLater; TestReadErrCountsNoReadWhoseStreamCheckAtCompletionFails);
+//   - a wait whose stream check found its bucket replaced (settleReplaced;
+//     TestReadErrCountsNoWaitThatFoundItsBucketReplaced);
+//   - the failure of a read that may no longer complete (completes), such as one the connection
+//     dropped under, whose wait counts only while it is under way
+//     (TestReadErrCountsNoFailureOfAReadTheConnectionDroppedUnder).
+//
+// From the bound on the copy is refused (Servable), because those reads do not complete, and only
+// a read that completes repairs it. It names the watcher and its bucket, how long the reads have
+// waited and the run's last error, and is nil before the bound and once the run or the wait ends.
+// A cache that answers for two watchers (store.Registry) reports either one's under that one's own
+// name. A watcher whose reads fail so keeps running, so Err stays nil; the listener's /healthz
+// reports this instead.
 func (w *Watcher) ReadErr() error {
 	w.mu.RLock()
 	defer w.mu.RUnlock()

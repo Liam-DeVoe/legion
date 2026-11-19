@@ -284,10 +284,10 @@ func TestAReadsWaitPastItsBarrierIsBoundedAndReported(t *testing.T) {
 }
 
 // A read's wait past its barrier ends with its generation, and ReadErr then measures nothing
-// from it. The read here waits on a barrier its consumer never reaches. Then either a new watch
-// replaces it, whose scan has not ended, or its watcher ends on its own when the bucket is
-// deleted. Past the stale bound, ReadErr is nil: no read is waiting past a barrier, and none has
-// failed. Before, the replaced wait's start stayed, and ReadErr answered "the read is still
+// from it. The read here waits on a barrier its consumer never reaches. Then a new watch replaces
+// it, whose scan has not ended, or its watcher ends on its own when the bucket is deleted, or the
+// watcher stops. Past the stale bound, ReadErr is nil: no read is waiting past a barrier, and none
+// has failed. Before, the replaced wait's start stayed, and ReadErr answered "the read is still
 // waiting", which /healthz reports as a 503.
 func TestAWaitItsGenerationEndedIsNoWaitToReadErr(t *testing.T) {
 	for _, row := range []struct {
@@ -304,6 +304,9 @@ func TestAWaitItsGenerationEndedIsNoWaitToReadErr(t *testing.T) {
 			// nats.go's ordered consumer notices a deleted stream only after about 10 s
 			// (stopNoticeBudget).
 			testwait.WithinPolling(t, stopNoticeBudget, 50*time.Millisecond, "the watcher to end on its own", func() bool { return w.Err() != nil })
+		}},
+		{name: "the watcher stops", end: func(_ *testing.T, w *kvwatch.Watcher, _ *natsgo.Conn, _ bus.KeyValue) {
+			w.Stop()
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
