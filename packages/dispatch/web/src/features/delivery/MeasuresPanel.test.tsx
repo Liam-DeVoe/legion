@@ -211,6 +211,17 @@ function tones(title: string): Record<string, string> {
   return tonesIn(card(title), "window");
 }
 
+/** What each figure of the whole window within `scope` writes, and its tone, by the statistic it
+ *  names: "44.6m met". */
+function written(scope: Element): Record<string, string> {
+  return Object.fromEntries(
+    Array.from(scope.querySelectorAll('[data-span="window"][data-statistic]'), (element) => [
+      element.getAttribute("data-statistic"),
+      `${element.textContent} ${toneOf(element)}`,
+    ])
+  );
+}
+
 /** The six cards, in the panel's order. */
 const TITLES = [
   "Deploys a day",
@@ -1236,6 +1247,135 @@ test("a chart draws its target line exactly where its bars take a tone: where th
   });
   const empty = chart("Deploy runs reaching production");
   expect([toned(empty.bars), empty.lines]).toEqual([[], 1]);
+});
+
+// R3-C1, the architect's rule of 2026-11-19 for review round 3: a toned figure's printed text lies
+// on the same side of its target as its value. A figure that rounds to the target itself or past
+// it is written with more digits, until it does not: "5.0%" in green beside "< 5%", or "45m" in
+// green beside "< 45m for every change", reads as a figure its own tone contradicts.
+test("a toned figure is written on its value's side of the target: more digits where the usual ones would print the target itself or past it", async () => {
+  renderPanel({
+    ...fixtureMeasures,
+    flags_source: "stored",
+    measures: {
+      ...fixtureMeasures.measures,
+      deploy_frequency: { ...fixtureMeasures.measures.deploy_frequency, per_day: 19.96 },
+      lead_time: {
+        ...fixtureMeasures.measures.lead_time,
+        merge_to_production: { median_minutes: 44.6, p90_minutes: 44.8, max_minutes: 44.9 },
+      },
+      change_failure_rate: {
+        ...measuredFailureRate,
+        per_deploy: { ...measuredFailureRate.per_deploy, rate: 0.0496 },
+      },
+      deploy_run_success: { ...fixtureMeasures.measures.deploy_run_success, rate: 0.8996 },
+    },
+  });
+  // At least 20 a day: 19.96 misses, where one decimal would print 20.0. Under 5%: 4.96% meets,
+  // which the headline's two decimals already print. Under 45m for every change: a median of 44.6m
+  // and a longest change of 44.9m meet, where whole minutes would print 45m. At least 90%: 89.96%
+  // misses, where one decimal would print 90.0%. Every other figure is of a statistic no judge
+  // names, and keeps its usual digits.
+  expect(Object.fromEntries(TITLES.map((title) => [title, written(card(title))]))).toEqual({
+    "Deploys a day": { "deploys.per_day": "19.96/day missed", "deploys.deploys": "5 plain" },
+    "Change failure rate": {
+      "per_deploy.rate": "4.96% met",
+      "upper_bound.rate": "4.00% plain",
+      "per_deploy.confirmed": "1 plain",
+    },
+    "Merge \u2192 production": { "minutes.median": "44.6m met", "minutes.max": "44.9m met" },
+    "PR open \u2192 merge": { "minutes.median": "5.5h missed", "minutes.p90": "7.7h plain" },
+    "Deploy runs reaching production": {
+      "runs.rate": "89.96% missed",
+      "runs.reached_production": "5 plain",
+      "runs.concluded": "7 plain",
+      "runs.cancelled": "1 plain",
+    },
+    "P0 issues with no owner": { "issues.value": "1 missed" },
+  });
+  // The strip writes deploys a day to two decimals, which already print 19.96.
+  expect(written(screen.getByTestId("measures-strip"))).toEqual({
+    "deploys.per_day": "19.96/day missed",
+    "minutes.median": "44.6m met",
+    "per_pr.rate": "40.0% plain",
+  });
+  await openFold();
+  // The fold writes rates to one decimal: the per-deploy rate, 4.96%, would print 5.0%. The p90,
+  // which no judge names, keeps its whole minutes.
+  expect(written(definition("Lead time (merge \u2192 prod)"))).toEqual({
+    "minutes.median": "44.6m met",
+    "minutes.p90": "45m plain",
+    "minutes.max": "44.9m met",
+  });
+  expect(written(definition("Change failure rate (per deploy)"))).toEqual({
+    "per_deploy.rate": "4.96% met",
+    "per_deploy.confirmed": "1 plain",
+    "per_deploy.total": "50 plain",
+    "upper_bound.rate": "4.0% plain",
+  });
+});
+
+// R3-C1: the digits are added only where the usual ones would print the figure on the other side
+// of its target; a figure whose usual digits already print it on its value's side keeps them.
+test("a toned figure whose usual digits print it on its value's side of the target keeps them", async () => {
+  renderPanel({
+    ...fixtureMeasures,
+    flags_source: "stored",
+    measures: {
+      ...fixtureMeasures.measures,
+      lead_time: {
+        ...fixtureMeasures.measures.lead_time,
+        merge_to_production: { median_minutes: 44.4, p90_minutes: 2736, max_minutes: 3840 },
+      },
+      change_failure_rate: {
+        ...measuredFailureRate,
+        per_deploy: { ...measuredFailureRate.per_deploy, rate: 0.0449 },
+      },
+    },
+  });
+  // Under 5%: 4.49% meets, and one decimal prints 4.5%, under it. Under 45m: a median of 44.4m
+  // prints 44m, under it, and a longest change of 2.7d misses, far over it.
+  expect(written(card("Merge \u2192 production"))).toEqual({
+    "minutes.median": "44m met",
+    "minutes.max": "2.7d missed",
+  });
+  expect(written(card("Change failure rate"))["per_deploy.rate"]).toBe("4.49% met");
+  expect(written(card("Deploys a day"))["deploys.per_day"]).toBe("0.2/day missed");
+  expect(written(card("Deploy runs reaching production"))["runs.rate"]).toBe("71.4% missed");
+  expect(written(screen.getByTestId("measures-strip"))["minutes.median"]).toBe("44m met");
+  await openFold();
+  expect(written(definition("Change failure rate (per deploy)"))["per_deploy.rate"]).toBe(
+    "4.5% met"
+  );
+  expect(written(definition("Lead time (merge \u2192 prod)"))["minutes.median"]).toBe("44m met");
+});
+
+// R3-T1: a day's Deploys cell is that day's deploys a day, toned by its own value where the
+// target judges deploys.per_day; a partial day's cell takes no tone.
+test("a day's Deploys cell is toned by its own deploys under deploys a day: a complete day meeting, one missing, and a partial day's cell untoned", async () => {
+  renderPanel({
+    ...fixtureMeasures,
+    measures: {
+      ...fixtureMeasures.measures,
+      // The partial day, 2026-09-27, deployed twice, which would meet the target.
+      daily: fixtureDaily().map((day) => (day.partial ? { ...day, deploys: 2 } : day)),
+    },
+    targets: {
+      ...catalogueTargets,
+      deploys_per_day: { ...catalogueTargets.deploys_per_day, value: 1 },
+    },
+  });
+  await openFold();
+  // At least one a day: 2026-09-05 deployed once and meets, 2026-09-04 deployed nothing and
+  // misses, beside a missed badge.
+  expect(
+    card("Deploys a day").querySelector("[data-target-met]")?.getAttribute("data-target-met")
+  ).toBe("false");
+  expect(
+    ["2026-09-05", "2026-09-04", "2026-09-27 (partial)"].map(
+      (day) => cellTones(day)["deploys.per_day"]
+    )
+  ).toEqual(["met", "missed", "plain"]);
 });
 
 test("a lead-time card whose target is off reads off alone, with no verdict", () => {

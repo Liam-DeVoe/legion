@@ -9,18 +9,20 @@ import { formatMinutes as formatLeadTime } from "./prList";
 export const NO_VALUE = "n/a";
 
 /** Minutes as the measures panel shows durations: the PR list's buckets ("45m", "3.5h", "2.1d"),
- *  and `NO_VALUE` when there is nothing to measure. */
-export function formatMinutes(v: number | null): string {
-  return v === null ? NO_VALUE : formatLeadTime(v);
+ *  with `extra` decimals past theirs where a toned figure takes them (`lib/target.ts`'s
+ *  `judgeFigure`), and `NO_VALUE` when there is nothing to measure. */
+export function formatMinutes(v: number | null, extra = 0): string {
+  return v === null ? NO_VALUE : formatLeadTime(v, extra);
 }
 
 /** Minutes as the Pipeline page shows them: "4.6m" under ten minutes, "93m" under three hours,
- *  then hours ("3.2h"); `NO_VALUE` when there is nothing to measure. */
-export function formatDuration(minutes: number | null): string {
+ *  then hours ("3.2h"), with `extra` decimals past those where a toned figure takes them
+ *  (`lib/target.ts`'s `judgeFigure`); `NO_VALUE` when there is nothing to measure. */
+export function formatDuration(minutes: number | null, extra = 0): string {
   if (minutes === null) return NO_VALUE;
-  if (minutes < 10) return `${minutes.toFixed(1)}m`;
-  if (minutes < 180) return `${Math.round(minutes)}m`;
-  return `${(minutes / 60).toFixed(1)}h`;
+  if (minutes < 10) return `${minutes.toFixed(1 + extra)}m`;
+  if (minutes < 180) return `${extra === 0 ? Math.round(minutes) : minutes.toFixed(extra)}m`;
+  return `${(minutes / 60).toFixed(1 + extra)}h`;
 }
 
 /** A success rate as a whole percentage; `NO_VALUE` when nothing ended in success or failure. */

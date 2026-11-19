@@ -4,14 +4,15 @@
 // GET /api/v1/delivery/measures; nothing is computed here but the tone of a figure, a count, a
 // day's bar or a per-day cell, each by its own value against the target of the eval it belongs to
 // and only where that target judges the statistic it shows (`lib/target.ts`'s `ownVerdict`,
-// dispatch://INFRA-2916, R5). Each such element names the eval, the statistic and whether its
-// value is one day's or the window's (`data-eval`, `data-statistic`, `data-span`), and each card's
-// caption names the statistics its target judges, so it reads as the badge beside it is judged.
-// Three differences, each from LEGION-567's slice 2 plan: the change-failure-rate card says flags
-// arrive with flag confirmation while the server stores none; the P0 card links each issue inside
-// Dispatch and dates its count by the response's computed_at; and the cards and the strip lay
-// themselves out for the panel's own width, since Dispatch's sidebar leaves it narrower than the
-// prototype's page and a phone narrower still, where the prototype is desktop-only.
+// dispatch://INFRA-2916, R5), and the digits a toned figure is written with, which print it on its
+// value's side of the target (`judgeFigure`). Each such element names the eval, the statistic and
+// whether its value is one day's or the window's (`data-eval`, `data-statistic`, `data-span`), and
+// each card's caption names the statistics its target judges, so it reads as the badge beside it
+// is judged. Three differences, each from LEGION-567's slice 2 plan: the change-failure-rate card
+// says flags arrive with flag confirmation while the server stores none; the P0 card links each
+// issue inside Dispatch and dates its count by the response's computed_at; and the cards and the
+// strip lay themselves out for the panel's own width, since Dispatch's sidebar leaves it narrower
+// than the prototype's page and a phone narrower still, where the prototype is desktop-only.
 import { type ReactNode, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -31,16 +32,7 @@ import {
 import { buildIssuePath } from "../refs/routes";
 import { JudgedFigure, tone } from "./JudgedFigure";
 import { formatMinutes, NO_VALUE, pct } from "./lib/format";
-import {
-  DEPLOY_BARS,
-  EVAL_SLUGS,
-  type Judge,
-  type Measure,
-  ownVerdict,
-  RUN_SUCCESS_BARS,
-  targetLabel,
-  targetLine,
-} from "./lib/target";
+import { EVAL_SLUGS, type Judge, judgeFigure, type Measure, targetLabel } from "./lib/target";
 import { Sparkbars } from "./Sparkbars";
 import { TargetBadge } from "./TargetBadge";
 
@@ -48,6 +40,15 @@ const UNOWNED_P0_SHOWN = 6;
 
 /** What a pending read shows in each number's place. */
 const PENDING = "\u2026";
+
+/** How a figure is written with `extra` decimals past its usual ones, which a toned figure takes
+ *  where its usual ones would print it on the other side of its target (`judgeFigure`). */
+type Write = (extra: number) => string;
+
+/** A count's `Write`: a count is exact, so it is written the same whatever decimals it is offered. */
+function count(n: number): Write {
+  return () => `${n}`;
+}
 
 /** The change-failure-rate card's breakdown: deploys with a confirmed break, and how many more
  *  have only unreviewed (pending) flags. `confirmedOrPending` counts each deploy once (the
@@ -68,9 +69,8 @@ function FailureRateBreakdown(props: {
         statistic="per_deploy.confirmed"
         targets={props.targets}
         value={props.confirmed}
-      >
-        {props.confirmed}
-      </WindowFigure>
+        write={count(props.confirmed)}
+      />
       {` ${props.confirmed === 1 ? "deploy" : "deploys"} with a confirmed break; `}
       {onlyPending === 0 ? "none" : `${onlyPending} more`}
       {" with only unreviewed flags"}
@@ -93,36 +93,33 @@ function measured(f: FailureRate): f is FailureRate & {
 }
 
 /** A figure of the whole window that the target of `measure`'s eval may judge (`JudgedFigure`),
- *  toned by its own value. It reads `plain` where that target judges another statistic or is off,
- *  so a card judged by its p90 does not colour its median and change-fail-rate judged by its
- *  per-PR rate colours neither its per-deploy rate nor its upper bound; and `pending`, muted
- *  unless given, while the read is pending (`targets` undefined). */
+ *  toned by its own value and written on its side of the target. It reads `plain` where that
+ *  target judges another statistic or is off, so a card judged by its p90 does not colour its
+ *  median and change-fail-rate judged by its per-PR rate colours neither its per-deploy rate nor
+ *  its upper bound; and `pending`, muted unless given, while the read is pending (`targets`
+ *  undefined), when no target judges it. */
 function WindowFigure(props: {
   measure: Measure;
   statistic: Judge;
   targets: DeliveryTargets | undefined;
   value: number | null | undefined;
+  write: Write;
   className?: string;
   plain?: string;
   pending?: string;
-  children: ReactNode;
 }): ReactNode {
   const { targets } = props;
   return (
     <JudgedFigure
       className={props.className}
       evalSlug={EVAL_SLUGS[props.measure]}
-      met={
-        targets === undefined
-          ? null
-          : ownVerdict(targets[props.measure], props.statistic, "window", props.value ?? null)
-      }
       plain={targets === undefined ? (props.pending ?? textMutedOnSurface) : props.plain}
       span="window"
       statistic={props.statistic}
-    >
-      {props.children}
-    </JudgedFigure>
+      target={targets?.[props.measure] ?? null}
+      value={props.value ?? null}
+      write={props.write}
+    />
   );
 }
 
@@ -158,8 +155,8 @@ function BigNumber(props: {
   statistic: Judge;
   targets: DeliveryTargets | undefined;
   value: number | null | undefined;
+  write: Write;
   pending?: string;
-  children: string;
 }): ReactNode {
   return <WindowFigure className="text-lg font-semibold" plain={textPrimaryOnSurface} {...props} />;
 }
@@ -182,7 +179,7 @@ function DefinitionCard(props: {
  *  where it shows one. */
 interface StripStat {
   label: string;
-  value: string;
+  write: Write;
   judged?: { measure: Measure; statistic: Judge; value: number | null | undefined };
 }
 
@@ -192,8 +189,11 @@ interface StripStat {
  *  `data` is undefined while the read is pending, when the cards show their frame. */
 export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undefined }): ReactNode {
   const [open, setOpen] = useState(false);
-  const show = (format: (response: DeliveryMeasuresResponse) => string): string =>
-    data === undefined ? PENDING : format(data);
+  // A figure of the answer as `Write` writes it, and `PENDING` while the read is pending.
+  const show =
+    (format: (response: DeliveryMeasuresResponse, extra: number) => string): Write =>
+    (extra) =>
+      data === undefined ? PENDING : format(data, extra);
   const targets = data?.targets;
   const status = data?.status;
   const measures = data?.measures;
@@ -201,7 +201,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
   const strip: StripStat[] = [
     {
       label: "Deploy freq",
-      value: show((d) => `${d.measures.deploy_frequency.per_day.toFixed(2)}/day`),
+      write: show((d, extra) => `${d.measures.deploy_frequency.per_day.toFixed(2 + extra)}/day`),
       judged: {
         measure: "deploys_per_day",
         statistic: "deploys.per_day",
@@ -210,7 +210,9 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
     },
     {
       label: "Lead time (merge\u2192prod)",
-      value: show((d) => formatMinutes(d.measures.lead_time.merge_to_production.median_minutes)),
+      write: show((d, extra) =>
+        formatMinutes(d.measures.lead_time.merge_to_production.median_minutes, extra)
+      ),
       judged: {
         measure: "merge_to_production_minutes",
         statistic: "minutes.median",
@@ -219,10 +221,10 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
     },
     {
       label: "CFR (per PR)",
-      value: show((d) =>
+      write: show((d, extra) =>
         !measured(d.measures.change_failure_rate)
           ? NO_VALUE
-          : pct(d.measures.change_failure_rate.per_pr.rate)
+          : pct(d.measures.change_failure_rate.per_pr.rate, 1 + extra)
       ),
       judged: {
         measure: "change_failure_rate",
@@ -232,9 +234,9 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
     },
     {
       label: "Time to restore",
-      value: show((d) => formatMinutes(d.measures.time_to_restore.median_minutes)),
+      write: show((d) => formatMinutes(d.measures.time_to_restore.median_minutes)),
     },
-    { label: "Rework share", value: show((d) => pct(d.measures.rework_share)) },
+    { label: "Rework share", write: show((d) => pct(d.measures.rework_share)) },
   ];
 
   return (
@@ -258,9 +260,10 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
               statistic="deploys.per_day"
               targets={targets}
               value={measures?.deploy_frequency.per_day}
-            >
-              {show((d) => `${d.measures.deploy_frequency.per_day.toFixed(1)}/day`)}
-            </BigNumber>
+              write={show(
+                (d, extra) => `${d.measures.deploy_frequency.per_day.toFixed(1 + extra)}/day`
+              )}
+            />
             {measures === undefined ? null : (
               <span className={`text-xs ${textMutedOnSurface}`}>
                 <WindowFigure
@@ -268,9 +271,8 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
                   statistic="deploys.deploys"
                   targets={targets}
                   value={measures.deploy_frequency.successful_deploys}
-                >
-                  {measures.deploy_frequency.successful_deploys}
-                </WindowFigure>{" "}
+                  write={count(measures.deploy_frequency.successful_deploys)}
+                />{" "}
                 deploys
               </span>
             )}
@@ -278,18 +280,16 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
           {measures === undefined || targets === undefined ? null : (
             <Sparkbars
               format={(v) => `${v} deploys`}
-              judged={{ evalSlug: EVAL_SLUGS.deploys_per_day, statistic: "deploys.per_day" }}
-              max={
-                targetLine(targets.deploys_per_day, DEPLOY_BARS) ??
-                Math.max(1, ...(measures.daily ?? []).map((d) => d.deploys))
-              }
+              judged={{
+                evalSlug: EVAL_SLUGS.deploys_per_day,
+                statistic: "deploys.per_day",
+                target: targets.deploys_per_day,
+              }}
               points={(measures.daily ?? []).map((d) => ({
                 label: d.day,
                 value: d.deploys,
                 partial: d.partial,
-                met: ownVerdict(targets.deploys_per_day, "deploys.per_day", "day", d.deploys),
               }))}
-              target={targetLine(targets.deploys_per_day, DEPLOY_BARS)}
             />
           )}
         </KpiCard>
@@ -310,13 +310,12 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
                   ? null
                   : measures.change_failure_rate.per_deploy.rate
               }
-            >
-              {show((d) =>
+              write={show((d, extra) =>
                 !measured(d.measures.change_failure_rate)
                   ? NO_VALUE
-                  : pct(d.measures.change_failure_rate.per_deploy.rate, 2)
+                  : pct(d.measures.change_failure_rate.per_deploy.rate, 2 + extra)
               )}
-            </BigNumber>
+            />
             {data !== undefined && !measured(data.measures.change_failure_rate) ? null : (
               <span className={`text-xs ${textMutedOnSurface}`}>confirmed</span>
             )}
@@ -336,9 +335,12 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
                   statistic="upper_bound.rate"
                   targets={data.targets}
                   value={data.measures.change_failure_rate.per_deploy.upper_bound_rate}
-                >
-                  {pct(data.measures.change_failure_rate.per_deploy.upper_bound_rate, 2)}
-                </WindowFigure>{" "}
+                  write={show((d, extra) =>
+                    !measured(d.measures.change_failure_rate)
+                      ? NO_VALUE
+                      : pct(d.measures.change_failure_rate.per_deploy.upper_bound_rate, 2 + extra)
+                  )}
+                />{" "}
                 if every pending flag is confirmed
               </div>
               <div className={`text-[11px] ${textMutedOnSurface}`}>
@@ -368,11 +370,10 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
                 statistic="minutes.median"
                 targets={targets}
                 value={measures?.lead_time.merge_to_production.median_minutes}
-              >
-                {show((d) =>
-                  formatMinutes(d.measures.lead_time.merge_to_production.median_minutes)
+                write={show((d, extra) =>
+                  formatMinutes(d.measures.lead_time.merge_to_production.median_minutes, extra)
                 )}
-              </BigNumber>
+              />
               <span className={`text-xs ${textMutedOnSurface}`}>median</span>
             </span>
             <span className="flex items-baseline gap-1">
@@ -381,9 +382,10 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
                 statistic="minutes.max"
                 targets={targets}
                 value={measures?.lead_time.merge_to_production.max_minutes}
-              >
-                {show((d) => formatMinutes(d.measures.lead_time.merge_to_production.max_minutes))}
-              </BigNumber>
+                write={show((d, extra) =>
+                  formatMinutes(d.measures.lead_time.merge_to_production.max_minutes, extra)
+                )}
+              />
               <span className={`text-xs ${textMutedOnSurface}`}>max</span>
             </span>
           </div>
@@ -406,9 +408,10 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
                 statistic="minutes.median"
                 targets={targets}
                 value={measures?.lead_time.opened_to_merge.median_minutes}
-              >
-                {show((d) => formatMinutes(d.measures.lead_time.opened_to_merge.median_minutes))}
-              </BigNumber>
+                write={show((d, extra) =>
+                  formatMinutes(d.measures.lead_time.opened_to_merge.median_minutes, extra)
+                )}
+              />
               <span className={`text-xs ${textMutedOnSurface}`}>median</span>
             </span>
             <span className="flex items-baseline gap-1">
@@ -417,9 +420,10 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
                 statistic="minutes.p90"
                 targets={targets}
                 value={measures?.lead_time.opened_to_merge.p90_minutes}
-              >
-                {show((d) => formatMinutes(d.measures.lead_time.opened_to_merge.p90_minutes))}
-              </BigNumber>
+                write={show((d, extra) =>
+                  formatMinutes(d.measures.lead_time.opened_to_merge.p90_minutes, extra)
+                )}
+              />
               <span className={`text-xs ${textMutedOnSurface}`}>p90</span>
             </span>
           </div>
@@ -437,13 +441,12 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
               statistic="runs.rate"
               targets={targets}
               value={measures?.deploy_run_success.rate}
-            >
-              {show((d) =>
+              write={show((d, extra) =>
                 d.measures.deploy_run_success.rate === null
                   ? NO_VALUE
-                  : pct(d.measures.deploy_run_success.rate)
+                  : pct(d.measures.deploy_run_success.rate, 1 + extra)
               )}
-            </BigNumber>
+            />
             {measures === undefined ? null : (
               <span className={`text-xs ${textMutedOnSurface}`}>
                 <WindowFigure
@@ -451,18 +454,16 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
                   statistic="runs.reached_production"
                   targets={targets}
                   value={measures.deploy_run_success.reached_production}
-                >
-                  {measures.deploy_run_success.reached_production}
-                </WindowFigure>{" "}
+                  write={count(measures.deploy_run_success.reached_production)}
+                />{" "}
                 of{" "}
                 <WindowFigure
                   measure="deploy_run_success_rate"
                   statistic="runs.concluded"
                   targets={targets}
                   value={measures.deploy_run_success.concluded}
-                >
-                  {measures.deploy_run_success.concluded}
-                </WindowFigure>{" "}
+                  write={count(measures.deploy_run_success.concluded)}
+                />{" "}
                 concluded
               </span>
             )}
@@ -474,20 +475,14 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
                 judged={{
                   evalSlug: EVAL_SLUGS.deploy_run_success_rate,
                   statistic: "runs.rate",
+                  target: targets.deploy_run_success_rate,
                 }}
                 max={1}
                 points={(measures.daily ?? []).map((d) => ({
                   label: d.day,
                   value: d.run_success_rate,
                   partial: d.partial,
-                  met: ownVerdict(
-                    targets.deploy_run_success_rate,
-                    "runs.rate",
-                    "day",
-                    d.run_success_rate
-                  ),
                 }))}
-                target={targetLine(targets.deploy_run_success_rate, RUN_SUCCESS_BARS)}
               />
               <div className={`text-[11px] ${textMutedOnSurface}`}>
                 <WindowFigure
@@ -495,9 +490,8 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
                   statistic="runs.cancelled"
                   targets={targets}
                   value={measures.deploy_run_success.cancelled}
-                >
-                  {measures.deploy_run_success.cancelled}
-                </WindowFigure>{" "}
+                  write={count(measures.deploy_run_success.cancelled)}
+                />{" "}
                 cancelled runs not counted
               </div>
             </>
@@ -515,9 +509,8 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
               statistic="issues.value"
               targets={targets}
               value={data === undefined ? undefined : (data.unowned_p0 ?? []).length}
-            >
-              {show((d) => `${(d.unowned_p0 ?? []).length}`)}
-            </BigNumber>
+              write={show((d) => `${(d.unowned_p0 ?? []).length}`)}
+            />
             {data === undefined ? null : (
               <span className={`text-xs ${textMutedOnSurface}`}>
                 no claim or route, as of{" "}
@@ -565,12 +558,15 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
             <div className="flex items-baseline gap-2 whitespace-nowrap" key={stat.label}>
               {stat.judged === undefined ? (
                 <span className={`text-lg font-semibold ${textPrimaryOnSurface}`}>
-                  {stat.value}
+                  {stat.write(0)}
                 </span>
               ) : (
-                <BigNumber {...stat.judged} pending={textPrimaryOnSurface} targets={targets}>
-                  {stat.value}
-                </BigNumber>
+                <BigNumber
+                  {...stat.judged}
+                  pending={textPrimaryOnSurface}
+                  targets={targets}
+                  write={stat.write}
+                />
               )}
               <span className={`text-xs ${textMutedOnCanvas}`}>{stat.label}</span>
             </div>
@@ -595,27 +591,32 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
 
 /** One day's cell of the fold's per-day table that the target of `measure`'s eval may judge: it
  *  names the eval and the statistic, and is toned by its own value where that target judges a
- *  day's value of `statistic` (`ownVerdict`), plain otherwise, an off target included. A partial
- *  day's cell takes no tone, its row reading muted. */
+ *  day's value of `statistic`, plain otherwise, an off target included, and written on its side
+ *  of the target (`judgeFigure`). A partial day's cell is judged by no target, so it takes no
+ *  tone, its row reading muted. */
 function DayCell(props: {
   measure: Measure;
   statistic: Judge;
   targets: DeliveryTargets;
   partial: boolean;
   value: number | null;
-  children: ReactNode;
+  write: Write;
 }): ReactNode {
-  const toned = props.partial
-    ? ""
-    : tone(ownVerdict(props.targets[props.measure], props.statistic, "day", props.value));
+  const { met, text } = judgeFigure(
+    props.partial ? null : props.targets[props.measure],
+    props.statistic,
+    "day",
+    props.value,
+    props.write
+  );
   return (
     <td
-      className={`px-2 py-0.5 text-right ${toned}`}
+      className={`px-2 py-0.5 text-right ${tone(met)}`}
       data-eval={EVAL_SLUGS[props.measure]}
       data-span="day"
       data-statistic={props.statistic}
     >
-      {props.children}
+      {text}
     </td>
   );
 }
@@ -632,11 +633,15 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
     measure: Measure,
     statistic: Judge,
     value: number | null,
-    text: ReactNode
+    write: Write
   ): ReactNode => (
-    <WindowFigure measure={measure} statistic={statistic} targets={targets} value={value}>
-      {text}
-    </WindowFigure>
+    <WindowFigure
+      measure={measure}
+      statistic={statistic}
+      targets={targets}
+      value={value}
+      write={write}
+    />
   );
   const frequency = measures.deploy_frequency;
   const merge = measures.lead_time.merge_to_production;
@@ -653,28 +658,28 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
             "deploys_per_day",
             "deploys.per_day",
             frequency.per_day,
-            `${frequency.per_day.toFixed(2)}/day`
+            (extra) => `${frequency.per_day.toFixed(2 + extra)}/day`
           )}
         >
           {figure(
             "deploys_per_day",
             "deploys.deploys",
             frequency.successful_deploys,
-            frequency.successful_deploys
+            count(frequency.successful_deploys)
           )}{" "}
           successful (
           {figure(
             "deploys_per_day",
             "deploys.with_prs",
             frequency.deploys_with_prs,
-            frequency.deploys_with_prs
+            count(frequency.deploys_with_prs)
           )}{" "}
           shipped a PR,{" "}
           {figure(
             "deploys_per_day",
             "deploys.with_prs_per_day",
             frequency.with_prs_per_day,
-            frequency.with_prs_per_day.toFixed(2)
+            (extra) => frequency.with_prs_per_day.toFixed(2 + extra)
           )}
           /day)
         </DefinitionCard>
@@ -685,22 +690,16 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
             "merge_to_production_minutes",
             "minutes.median",
             merge.median_minutes,
-            formatMinutes(merge.median_minutes)
+            (extra) => formatMinutes(merge.median_minutes, extra)
           )}
         >
           p90{" "}
-          {figure(
-            "merge_to_production_minutes",
-            "minutes.p90",
-            merge.p90_minutes,
-            formatMinutes(merge.p90_minutes)
+          {figure("merge_to_production_minutes", "minutes.p90", merge.p90_minutes, (extra) =>
+            formatMinutes(merge.p90_minutes, extra)
           )}
           , max{" "}
-          {figure(
-            "merge_to_production_minutes",
-            "minutes.max",
-            merge.max_minutes,
-            formatMinutes(merge.max_minutes)
+          {figure("merge_to_production_minutes", "minutes.max", merge.max_minutes, (extra) =>
+            formatMinutes(merge.max_minutes, extra)
           )}
         </DefinitionCard>
 
@@ -731,46 +730,43 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
           <>
             <DefinitionCard
               title="Change failure rate (per PR)"
-              value={figure(
-                "change_failure_rate",
-                "per_pr.rate",
-                failures.per_pr.rate,
-                pct(failures.per_pr.rate)
+              value={figure("change_failure_rate", "per_pr.rate", failures.per_pr.rate, (extra) =>
+                pct(failures.per_pr.rate, 1 + extra)
               )}
             >
               {figure(
                 "change_failure_rate",
                 "per_pr.confirmed",
                 failures.per_pr.confirmed,
-                failures.per_pr.confirmed
+                count(failures.per_pr.confirmed)
               )}{" "}
               confirmed (
               {figure(
                 "change_failure_rate",
                 "per_pr.reverts",
                 failures.per_pr.reverts,
-                failures.per_pr.reverts
+                count(failures.per_pr.reverts)
               )}{" "}
               reverts),{" "}
               {figure(
                 "change_failure_rate",
                 "per_pr.pending",
                 failures.per_pr.pending,
-                failures.per_pr.pending
+                count(failures.per_pr.pending)
               )}{" "}
               pending,{" "}
               {figure(
                 "change_failure_rate",
                 "per_pr.rejected",
                 failures.per_pr.rejected,
-                failures.per_pr.rejected
+                count(failures.per_pr.rejected)
               )}{" "}
               rejected of{" "}
               {figure(
                 "change_failure_rate",
                 "per_pr.total",
                 failures.per_pr.total,
-                failures.per_pr.total
+                count(failures.per_pr.total)
               )}{" "}
               PRs. Incidents: no source yet.
             </DefinitionCard>
@@ -781,28 +777,28 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
                 "change_failure_rate",
                 "per_deploy.rate",
                 failures.per_deploy.rate,
-                pct(failures.per_deploy.rate)
+                (extra) => pct(failures.per_deploy.rate, 1 + extra)
               )}
             >
               {figure(
                 "change_failure_rate",
                 "per_deploy.confirmed",
                 failures.per_deploy.confirmed,
-                failures.per_deploy.confirmed
+                count(failures.per_deploy.confirmed)
               )}{" "}
               of{" "}
               {figure(
                 "change_failure_rate",
                 "per_deploy.total",
                 failures.per_deploy.total,
-                failures.per_deploy.total
+                count(failures.per_deploy.total)
               )}{" "}
               deploys;{" "}
               {figure(
                 "change_failure_rate",
                 "upper_bound.rate",
                 failures.per_deploy.upper_bound_rate,
-                pct(failures.per_deploy.upper_bound_rate)
+                (extra) => pct(failures.per_deploy.upper_bound_rate, 1 + extra)
               )}{" "}
               if every pending flag is confirmed
             </DefinitionCard>
@@ -853,9 +849,8 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
                     statistic="deploys.per_day"
                     targets={targets}
                     value={d.deploys}
-                  >
-                    {d.deploys}
-                  </DayCell>
+                    write={count(d.deploys)}
+                  />
                   <td className="px-2 py-0.5 text-right">{d.concluded}</td>
                   <td className="px-2 py-0.5 text-right">{d.reached_production}</td>
                   <DayCell
@@ -864,9 +859,10 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
                     statistic="runs.rate"
                     targets={targets}
                     value={d.run_success_rate}
-                  >
-                    {d.run_success_rate === null ? NO_VALUE : pct(d.run_success_rate)}
-                  </DayCell>
+                    write={(extra) =>
+                      d.run_success_rate === null ? NO_VALUE : pct(d.run_success_rate, 1 + extra)
+                    }
+                  />
                   <td className="px-2 py-0.5 text-right">{d.cancelled}</td>
                 </tr>
               ))}

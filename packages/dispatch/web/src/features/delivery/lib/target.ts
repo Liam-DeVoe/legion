@@ -5,7 +5,8 @@
 // verdict of the whole window (`status`). Every other figure a page tones, a headline figure, a
 // count, a day's bar or per-day cell, a lead-time line's figure, takes a tone only where the
 // target judges the statistic it shows, and then by its own value of that statistic
-// (`ownVerdict`, dispatch://INFRA-2916, R5). Pure.
+// (`ownVerdict`, dispatch://INFRA-2916, R5), and a toned figure is written on its value's side of
+// the target (`judgeFigure`). Pure.
 
 import type { DeliveryLeadTimeCell, DeliveryTargets } from "../../../api/types";
 import { pct } from "./format";
@@ -236,13 +237,57 @@ export function targetLine(target: Target, drawn: readonly Judge[]): number | un
   return drawn.some((statistic) => judgesDay(target, statistic)) ? target?.value : undefined;
 }
 
-/** The statistics each chart's bars draw, a day's value of each: a day's deploys, which are its
- *  deploys a day, a day's run success, and a lead time's median and p90 (`SpreadBars`). A target
- *  judging another statistic, the window's count of deploys among them, tones none of their bars
- *  and draws no line over them. */
-export const DEPLOY_BARS: readonly Judge[] = ["deploys.per_day"];
-export const RUN_SUCCESS_BARS: readonly Judge[] = ["runs.rate"];
-export const LEAD_TIME_BARS: readonly Judge[] = ["minutes.median", "minutes.p90"];
+/** How much of a target's unit one of each unit a figure is written in makes: a rate is written
+ *  as a percentage of its target's share, a lead time in minutes, hours or days of its target's
+ *  minutes, and deploys a day, and every count, as the number itself. */
+const UNIT: Readonly<Record<string, number>> = {
+  "%": 0.01,
+  m: 1,
+  h: 60,
+  d: 1440,
+  "/day": 1,
+  "": 1,
+};
+
+/** A written figure read back in its target's unit (`UNIT`): "4.96%" as 0.0496, "44.6m" as 44.6,
+ *  "8.5h" as 510, "2.1d" as 3024, "0.17/day" and "0.17" as 0.17; NaN for a text that writes no
+ *  number, "n/a". */
+function readFigure(text: string): number {
+  const match = /^(-?\d+(?:\.\d+)?)(%|m|h|d|\/day)?$/.exec(text);
+  if (match === null) return Number.NaN;
+  return Number(match[1]) * (UNIT[match[2] ?? ""] ?? Number.NaN);
+}
+
+/** The most decimals `judgeFigure` writes past a figure's usual ones: a double holds no more than
+ *  17 significant digits, so a figure written to 17 more has its value's whole stored precision. */
+const MAX_EXTRA_DECIMALS = 17;
+
+/** A figure's own verdict (`ownVerdict`) and its text, the architect's rule for review round 3
+ *  (dispatch://INFRA-2916, R3-C1): a toned figure's text lies on the same side of its target as
+ *  its value. `write(extra)` writes the figure with `extra` decimals past its usual ones. Its
+ *  usual text, `write(0)`, stands unless, read back in the target's unit (`readFigure`), it lies
+ *  on the target itself or past it where the value does not, or the other way round; then the
+ *  figure takes the fewest more decimals whose text reads back on the value's side, up to its
+ *  stored precision (`MAX_EXTRA_DECIMALS`). So a failure rate of 0.0496 under "< 5%" reads 4.96%
+ *  in green, never 5.0%, and a longest change of 44.6m under "< 45m" reads 44.6m, never 45m. A
+ *  figure that takes no verdict is written its usual way. */
+export function judgeFigure(
+  target: Target,
+  statistic: string,
+  span: Span,
+  value: number | null,
+  write: (extra: number) => string
+): { met: boolean | null; text: string } {
+  const met = ownVerdict(target, statistic, span, value);
+  let text = write(0);
+  if (met === null) return { met, text };
+  for (let extra = 1; extra <= MAX_EXTRA_DECIMALS; extra++) {
+    const read = readFigure(text);
+    if (Number.isNaN(read) || meetsTarget(read, target) === met) break;
+    text = write(extra);
+  }
+  return { met, text };
+}
 
 /** A Pipeline lead-time cell's value of a lead-time eval's judge, a day's or the seven days',
  *  null where it states none. */

@@ -1,21 +1,26 @@
 import { expect, test } from "bun:test";
 import type { DeliveryLeadTimeCell } from "../../../api/types";
+import { formatDuration, formatMinutes, pct } from "./format";
 import {
-  DEPLOY_BARS,
   type Judge,
+  judgeFigure,
   judgesStatistic,
   judgeWord,
-  LEAD_TIME_BARS,
   leadTimeValue,
   meetsTarget,
   ownVerdict,
-  RUN_SUCCESS_BARS,
   shownJudges,
   type Target,
   targetLabel,
   targetLine,
   targetWords,
 } from "./target";
+
+/** The statistics each chart's bars draw a day's value of: the deploys chart's deploys a day, the
+ *  run success chart's success rate, and a lead-time chart's median and p90 (`SpreadBars`). */
+const DEPLOYS: Judge[] = ["deploys.per_day"];
+const RUN_SUCCESS: Judge[] = ["runs.rate"];
+const LEAD_TIMES: Judge[] = ["minutes.median", "minutes.p90"];
 
 /** deploy-frequency's target as the catalogue seeds it, at least 20 deploys a day, with `over`. */
 function deploys(over: Partial<NonNullable<Target>> = {}): NonNullable<Target> {
@@ -198,12 +203,14 @@ test("an off target judges no statistic: no figure, day or bar takes a verdict o
     expect(ownVerdict(null, statistic, "window", 1)).toBeNull();
     expect(ownVerdict(null, statistic, "day", 1)).toBeNull();
   }
-  expect(
-    [DEPLOY_BARS, RUN_SUCCESS_BARS, LEAD_TIME_BARS].map((drawn) => targetLine(null, drawn))
-  ).toEqual([undefined, undefined, undefined]);
+  expect([DEPLOYS, RUN_SUCCESS, LEAD_TIMES].map((drawn) => targetLine(null, drawn))).toEqual([
+    undefined,
+    undefined,
+    undefined,
+  ]);
   // A target with no judges, as a server older than them answers, judges nothing either.
   expect(ownVerdict(deploys({ judges: null }), "deploys.per_day", "window", 25)).toBeNull();
-  expect(targetLine(deploys({ judges: null }), DEPLOY_BARS)).toBeUndefined();
+  expect(targetLine(deploys({ judges: null }), DEPLOYS)).toBeUndefined();
 });
 
 // R5 (3): a figure takes a verdict only where the target's whole list of judges names its
@@ -265,25 +272,88 @@ test("ownVerdict: a day is judged only by a rate or a quantile of its samples, a
 
 // R5 (5): a chart draws its dashed line exactly where its bars take a tone.
 test("targetLine: a chart draws the target's value as its line exactly where its bars take a tone, where the target judges a day's statistic its bars draw", () => {
-  expect(targetLine(deploys(), DEPLOY_BARS)).toBe(20);
-  expect(targetLine(deploys({ judges: ["deploys.per_day", "deploys.deploys"] }), DEPLOY_BARS)).toBe(
-    20
-  );
+  expect(targetLine(deploys(), DEPLOYS)).toBe(20);
+  expect(targetLine(deploys({ judges: ["deploys.per_day", "deploys.deploys"] }), DEPLOYS)).toBe(20);
   // The window's count of deploys and its deploys with a PR a day: no bar draws either.
-  expect(targetLine(deploys({ judges: ["deploys.deploys"] }), DEPLOY_BARS)).toBeUndefined();
-  expect(
-    targetLine(deploys({ judges: ["deploys.with_prs_per_day"] }), DEPLOY_BARS)
-  ).toBeUndefined();
-  expect(targetLine(deploys({ value: 0.9, judges: ["runs.rate"] }), RUN_SUCCESS_BARS)).toBe(0.9);
-  expect(targetLine(deploys({ judges: ["runs.concluded"] }), RUN_SUCCESS_BARS)).toBeUndefined();
+  expect(targetLine(deploys({ judges: ["deploys.deploys"] }), DEPLOYS)).toBeUndefined();
+  expect(targetLine(deploys({ judges: ["deploys.with_prs_per_day"] }), DEPLOYS)).toBeUndefined();
+  expect(targetLine(deploys({ value: 0.9, judges: ["runs.rate"] }), RUN_SUCCESS)).toBe(0.9);
+  expect(targetLine(deploys({ judges: ["runs.concluded"] }), RUN_SUCCESS)).toBeUndefined();
   // A lead time's bars draw its median and its p90, and no bar its longest change or its count.
-  expect(targetLine(minutes(["minutes.max", "minutes.median"]), LEAD_TIME_BARS)).toBe(45);
-  expect(targetLine(minutes(["minutes.p90"]), LEAD_TIME_BARS)).toBe(45);
-  expect(targetLine(minutes(["minutes.max"]), LEAD_TIME_BARS)).toBeUndefined();
-  expect(targetLine(minutes(["minutes.n"]), LEAD_TIME_BARS)).toBeUndefined();
-  expect(targetLine(minutes(["minutes.n", "minutes.max"]), LEAD_TIME_BARS)).toBeUndefined();
+  expect(targetLine(minutes(["minutes.max", "minutes.median"]), LEAD_TIMES)).toBe(45);
+  expect(targetLine(minutes(["minutes.p90"]), LEAD_TIMES)).toBe(45);
+  expect(targetLine(minutes(["minutes.max"]), LEAD_TIMES)).toBeUndefined();
+  expect(targetLine(minutes(["minutes.n"]), LEAD_TIMES)).toBeUndefined();
+  expect(targetLine(minutes(["minutes.n", "minutes.max"]), LEAD_TIMES)).toBeUndefined();
   // A judge the charts' list names that no day is judged of draws no line either.
   expect(targetLine(minutes(["minutes.n"]), ["minutes.n"])).toBeUndefined();
+});
+
+// R3-C1, the architect's rule of 2026-11-19 for review round 3: a toned figure's text lies on the
+// same side of its target as its value, with more digits where its usual ones would not.
+test("judgeFigure: a toned figure takes the fewest more decimals that print it on its value's side of the target, and a figure that takes no verdict keeps its usual ones", () => {
+  const underFive = deploys({
+    value: 0.05,
+    inclusive: false,
+    direction: "lower_better",
+    judges: ["per_deploy.rate"],
+  });
+  const rate = (value: number) =>
+    judgeFigure(underFive, "per_deploy.rate", "window", value, (extra) => pct(value, 1 + extra));
+  // Just under 5%: one decimal would print 5.0%, the target itself.
+  expect(rate(0.0496)).toEqual({ met: true, text: "4.96%" });
+  expect(rate(0.049999)).toEqual({ met: true, text: "4.9999%" });
+  // Not near it, or its usual digits already on its side: as usual.
+  expect(rate(0.02)).toEqual({ met: true, text: "2.0%" });
+  expect(rate(0.0449)).toEqual({ met: true, text: "4.5%" });
+  // On the target itself, a strict target missed: the target itself is the value's side.
+  expect(rate(0.05)).toEqual({ met: false, text: "5.0%" });
+
+  // Just past an inclusive target better higher: 90.0% would read as meeting at least 90%.
+  const success = deploys({ value: 0.9, judges: ["runs.rate"] });
+  expect(
+    judgeFigure(success, "runs.rate", "day", 0.8996, (extra) => pct(0.8996, 1 + extra))
+  ).toEqual({ met: false, text: "89.96%" });
+
+  // Minutes in each unit they are written in, read back as minutes.
+  const underFortyFive = minutes(["minutes.max", "minutes.median"]);
+  expect(
+    judgeFigure(underFortyFive, "minutes.max", "window", 44.6, (extra) =>
+      formatDuration(44.6, extra)
+    )
+  ).toEqual({ met: true, text: "44.6m" });
+  expect(
+    judgeFigure(underFortyFive, "minutes.median", "window", 44.4, (extra) =>
+      formatMinutes(44.4, extra)
+    )
+  ).toEqual({ met: true, text: "44m" });
+  const underADay = minutes(["minutes.median"], { value: 1440 });
+  expect(
+    judgeFigure(underADay, "minutes.median", "window", 1439.9, (extra) =>
+      formatMinutes(1439.9, extra)
+    )
+  ).toEqual({ met: true, text: "23.998h" });
+  // Deploys a day, written to one decimal.
+  expect(
+    judgeFigure(
+      deploys(),
+      "deploys.per_day",
+      "window",
+      19.96,
+      (extra) => `${(19.96).toFixed(1 + extra)}/day`
+    )
+  ).toEqual({ met: false, text: "19.96/day" });
+
+  // No judge names the p90, and an off target judges nothing: the usual digits, whatever they
+  // print.
+  expect(
+    judgeFigure(underFortyFive, "minutes.p90", "window", 44.6, (extra) =>
+      formatDuration(44.6, extra)
+    )
+  ).toEqual({ met: null, text: "45m" });
+  expect(
+    judgeFigure(null, "minutes.max", "window", 44.6, (extra) => formatDuration(44.6, extra))
+  ).toEqual({ met: null, text: "45m" });
 });
 
 test("leadTimeValue reads a lead-time cell's value of a judge, null where the cell states none", () => {

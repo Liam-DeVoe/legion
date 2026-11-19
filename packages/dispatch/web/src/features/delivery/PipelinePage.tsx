@@ -61,9 +61,7 @@ import {
   EVAL_SLUGS,
   type Judge,
   judgeWord,
-  LEAD_TIME_BARS,
   leadTimeValue,
-  ownVerdict,
   type Span,
   shownJudges,
   type Target,
@@ -72,7 +70,7 @@ import {
 } from "./lib/target";
 import { SourceFreshness } from "./SourceFreshness";
 import { Sparkbars } from "./Sparkbars";
-import { SpreadBars } from "./SpreadBars";
+import { SPREAD_STATISTICS, SpreadBars } from "./SpreadBars";
 import { TargetBadge } from "./TargetBadge";
 
 const CARD = `flex min-w-0 flex-col gap-1.5 rounded border px-3 py-2 ${surfaceBg} ${borderDefault}`;
@@ -352,26 +350,26 @@ function Figure(props: {
   judging?: Judging;
 }): ReactNode {
   const { judging } = props;
-  const part = (statistic: Judge, value: number | null, text: string): ReactNode =>
+  // `write(extra)` writes a figure with `extra` decimals past its usual ones, which a judged
+  // figure takes where its usual ones would print it on the other side of its target.
+  const part = (statistic: Judge, value: number | null, write: (extra: number) => string) =>
     judging === undefined ? (
-      text
+      write(0)
     ) : (
-      <JudgedFigure {...judging} statistic={statistic} value={value}>
-        {text}
-      </JudgedFigure>
+      <JudgedFigure {...judging} statistic={statistic} value={value} write={write} />
     );
   return (
     <div className="min-w-0">
       <div className={`text-[11px] ${textMutedOnSurface}`}>{props.label}</div>
       <div className="flex items-baseline gap-1">
         <span className={`text-lg font-semibold ${textPrimaryOnSurface}`}>
-          {part("minutes.median", props.median, formatDuration(props.median))}
+          {part("minutes.median", props.median, (extra) => formatDuration(props.median, extra))}
         </span>
         <span className={`text-[11px] ${textMutedOnSurface}`}>median</span>
       </div>
       <div className={`text-xs ${textSecondaryOnSurface}`}>
-        p90 {part("minutes.p90", props.p90, formatDuration(props.p90))} ·{" "}
-        {part("minutes.n", props.n, `${props.n}`)}{" "}
+        p90 {part("minutes.p90", props.p90, (extra) => formatDuration(props.p90, extra))} ·{" "}
+        {part("minutes.n", props.n, () => `${props.n}`)}{" "}
         {props.n === 1 ? props.noun.replace(/s$/, "") : props.noun}
       </div>
     </div>
@@ -458,8 +456,10 @@ function TimingCard(props: {
  *  seven days' figures and each judged line's two values by its own value of its statistic,
  *  where the target judges it, today's only for a median, p90 or longest change (a count of pull
  *  requests judges the seven days' total, which no day is a share of); a day's median bar by that
- *  day's median and its p90 bar by its p90, each where the target judges it. The dashed line is
- *  drawn exactly where those bars take a tone. `measure` names the card's eval among `targets`. */
+ *  day's median and its p90 bar by its p90, each where the target judges it (`SpreadBars`). The
+ *  dashed line is drawn exactly where those bars take a tone, and each toned figure is written on
+ *  its value's side of the target (`judgeFigure`). `measure` names the card's eval among
+ *  `targets`. */
 function LeadTimeCard(props: {
   metric: string;
   title: string;
@@ -478,12 +478,15 @@ function LeadTimeCard(props: {
   const evalSlug = EVAL_SLUGS[props.measure];
   const today = lastDay(timing);
   const total = timing.total;
-  const line = targetLine(target, LEAD_TIME_BARS);
+  const line = targetLine(target, SPREAD_STATISTICS);
   const ofDay: Judging = { evalSlug, target, span: "day" };
   const ofWindow: Judging = { evalSlug, target, span: "window" };
-  // The count of pull requests is a number; every other statistic of a lead time is minutes.
-  const figure = (judge: string, value: number | null): string =>
-    judge === "minutes.n" ? `${value}` : formatDuration(value);
+  // The count of pull requests is a number; every other statistic of a lead time is minutes, with
+  // `extra` decimals past their usual ones where a toned figure takes them (`judgeFigure`).
+  const write =
+    (judge: string, value: number | null) =>
+    (extra: number): string =>
+      judge === "minutes.n" ? `${value}` : formatDuration(value, extra);
   return (
     <div className={CARD} data-metric={props.metric}>
       <div className="flex items-start justify-between gap-2">
@@ -509,15 +512,10 @@ function LeadTimeCard(props: {
         />
       </div>
       <SpreadBars
-        days={(timing.days ?? []).map((d) => ({
-          ...d,
-          median_met: ownVerdict(target, "minutes.median", "day", d.median_minutes),
-          p90_met: ownVerdict(target, "minutes.p90", "day", d.p90_minutes),
-        }))}
+        days={timing.days ?? []}
         format={formatDuration}
-        judged={{ evalSlug, series: "minutes" }}
+        judged={{ evalSlug, target }}
         noun="PRs"
-        target={line}
       />
       {(target === null ? [props.offJudge] : shownJudges(target)).map((judge) => {
         const todays = leadTimeValue(today, judge);
@@ -525,18 +523,21 @@ function LeadTimeCard(props: {
         return (
           <div className={`text-xs ${textSecondaryOnSurface}`} data-judge={judge} key={judge}>
             {judgeWord(judge)} today{" "}
-            <JudgedFigure className="font-semibold" {...ofDay} statistic={judge} value={todays}>
-              {figure(judge, todays)}
-            </JudgedFigure>
+            <JudgedFigure
+              className="font-semibold"
+              {...ofDay}
+              statistic={judge}
+              value={todays}
+              write={write(judge, todays)}
+            />
             , 7 days{" "}
             <JudgedFigure
               className="font-semibold"
               {...ofWindow}
               statistic={judge}
               value={sevenDays}
-            >
-              {figure(judge, sevenDays)}
-            </JudgedFigure>
+              write={write(judge, sevenDays)}
+            />
           </div>
         );
       })}
