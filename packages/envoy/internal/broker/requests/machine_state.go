@@ -1789,8 +1789,10 @@ const judgedKind = "request.judged"
 // the row is written with applied false (JudgedWritten); when that wait outlasts its bound or the
 // read fails, it writes the row with applied AppliedUnknown and the cause under applied_unknown
 // (JudgedAppliedUnknown), in a transaction of its own, since a read that lost its connection
-// leaves the first one nothing to write on. Every other row is written as given (JudgedWritten),
-// with no read: an approval the state machine refused before its COMMIT certainly wrote nothing.
+// leaves the first one nothing to write on, and ends no hold: the approval it could not read may
+// still hold the request's row, and its hold runs out by itself (JudgeHold), which hands the
+// request to its person. Every other row is written as given (JudgedWritten), with no read: an
+// approval the state machine refused before its COMMIT certainly wrote nothing.
 func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judged map[string]any) (JudgedWrite, error) {
 	detail := judgedDetail(judged)
 	wrote := JudgedWritten
@@ -1837,9 +1839,13 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 	}
 	// The hand-over: a verdict that decides nothing ends the judge's hold in the transaction
 	// that records it, so the request is on its person's list the moment the row is, and
-	// theirs to decide. A request no judge held is left as it was.
-	if _, err := tx.Exec(ctx, `update requests set judge_until = null where id=$1 and judge_until is not null`, requestID); err != nil {
-		return "", err
+	// theirs to decide. A request no judge held is left as it was. A row whose applied is unknown
+	// ends no hold: the approval it could not read may still hold the request's row for update,
+	// and waiting on it would spend the time the row needs; the hold runs out by itself.
+	if wrote != JudgedAppliedUnknown {
+		if _, err := tx.Exec(ctx, `update requests set judge_until = null where id=$1 and judge_until is not null`, requestID); err != nil {
+			return "", err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return "", err

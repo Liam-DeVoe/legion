@@ -195,19 +195,21 @@ func (f *agedFront) States(ctx context.Context, projects []string) (map[string]p
 func TestEveryDecisionOnAnAgedProjectFactIsMadeOnAFreshOne(t *testing.T) {
 	const reason = "TEAM-7: rotate the shared key"
 	// pendingShared is a request for SHARED_KEY, which anyone may decide, whose reason names
-	// TEAM-7, made while TEAM was public; TEAM is then private, and the reader is handed the aged
-	// public answer.
+	// TEAM-7, made while TEAM was public by a pod that names no person, so every signed-in
+	// person's list reads it (everyonesPod); TEAM is then private, and the reader is handed the
+	// aged public answer.
 	pendingShared := func(t *testing.T, team projectaccesstest.Row) (*Machine, string, string, *agedFront) {
 		t.Helper()
-		m, enr, key, dispatch := newProjectFixture(t, airlock.Rules{}, publicTeam)
-		req, err := m.Create(t.Context(), enr, signRequest(t, m, key, reason, "SHARED_KEY"), "", nil)
+		m, _, _, dispatch := newProjectFixture(t, airlock.Rules{}, publicTeam)
+		pod, podKey := everyonesPod(t, m, "pod-p-shared", "")
+		req, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, reason, "SHARED_KEY"), "", nil)
 		if err != nil || req.State != "pending" || req.RecordID == nil {
 			t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending", req, err)
 		}
 		dispatch.SetRow(teamProject, team)
 		front := &agedFront{inner: projectaccess.New(dispatch.URL, dispatch.Account, nil)}
 		m.Projects = front
-		return m, enr, *req.RecordID, front
+		return m, pod, *req.RecordID, front
 	}
 	handedAged := func(t *testing.T, front *agedFront) {
 		t.Helper()

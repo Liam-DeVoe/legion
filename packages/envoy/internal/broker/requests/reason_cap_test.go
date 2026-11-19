@@ -148,8 +148,11 @@ func TestARequestStoredOverTheCapStaysVisibleAndAsksDispatchNothing(t *testing.T
 // request is the private project's from then on: an outsider no longer sees it, and a person the
 // project lists still does, whatever its reason names.
 func TestARequestStoredOverTheCapOfASecretSinceTaggedPrivateStaysHidden(t *testing.T) {
-	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
-	stored := storedBeforeTheCap(t, m, enr, key, reasonNaming(record.MaxReasonProjects+1), "SHARED_KEY")
+	m, _, _, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	// A pod that names no person, so every signed-in person's list reads its request
+	// (everyonesPod).
+	pod, podKey := everyonesPod(t, m, "pod-c-stored", "")
+	stored := storedBeforeTheCap(t, m, pod, podKey, reasonNaming(record.MaxReasonProjects+1), "SHARED_KEY")
 	if stored.RecordID == nil {
 		t.Fatalf("the stored request = %+v; want it pending", stored)
 	}

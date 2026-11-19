@@ -166,6 +166,9 @@ func TestNoDispatchReadOnTheJudgesPathSkipsItsBound(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, rules, publicTeam)
 	retag(t, m, taggedSecret("TEAM_HUMAN", fixtureOperator, policy.TierHuman, teamProject, "team-human-v1"))
 	m.Chain = NewChainVerifier(m.Store, testAudience, time.Minute, m.Airlock)
+	// A broker that runs a judge holds a judge key's request for it (judge_until), and only a
+	// request the judge holds takes its approval.
+	m.Judge = func(PendingRequest) {}
 	const reason = "TEAM-7: rotate the deploy key"
 	req := pendingJudgeable(t, m, enr, key, reason, 600, "TEAM_HUMAN")
 	log := &boundLog{inner: m.Projects}

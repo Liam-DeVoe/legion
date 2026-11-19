@@ -14,8 +14,11 @@ import (
 // the decision would refuse a person is one that person is not shown either.
 func TestEveryReaderReadsTheProjectsOfBothCredentials(t *testing.T) {
 	t.Run("a pending request now on a credential naming PRIV", func(t *testing.T) {
-		m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
-		req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "rotate the shared key", "SHARED_KEY"), "", nil)
+		// The request comes from a pod that names no person, so every signed-in person's list
+		// reads it (everyonesPod).
+		m, _, _, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+		pod, podKey := everyonesPod(t, m, "pod-r-shared", "")
+		req, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, "rotate the shared key", "SHARED_KEY"), "", nil)
 		if err != nil || req.RecordID == nil {
 			t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending for anyone to decide", req, err)
 		}

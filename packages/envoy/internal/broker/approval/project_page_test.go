@@ -172,10 +172,11 @@ func TestASignInToAHiddenRequestNamesNoApprover(t *testing.T) {
 const unansweredNote = "the secrets broker could not ask Dispatch whether you may see this request, so it shows nothing of it and cannot decide it until Dispatch answers. Try again shortly."
 
 // TestADispatchOutageShowsOnlyItsRequestAsUnavailable: nothing is tagged, and ben's request for
-// the shared secret names an issue, INFRA-12, beside one that names none. carol's page prints both
-// while Dispatch answers. Dispatch then goes down and she approves all she was shown: the request
-// naming no issue is granted, and the one naming INFRA-12 is decided by nobody and stays pending.
-// The page she lands on answers 200 with each outcome, the INFRA-12 one saying only that it is
+// the shared secret names an issue, INFRA-12, beside one that names none. Both are listed for ben,
+// the person the session acts for (requests.responsiblePerson), and his page prints both while
+// Dispatch answers. Dispatch then goes down and he approves all he was shown: the request naming
+// no issue is granted, and the one naming INFRA-12 is decided by nobody and stays pending. The
+// page he lands on answers 200 with each outcome, the INFRA-12 one saying only that it is
 // unavailable; the INFRA-12 request's own page answers 503 showing that one request as
 // unavailable and nothing of it, its reason included. Once Dispatch answers it is shown and
 // decidable again.
@@ -190,10 +191,10 @@ func TestADispatchOutageShowsOnlyItsRequestAsUnavailable(t *testing.T) {
 	keyed := r.request(t, keyedSession, keyedKey, "INFRA-12: rotate the deploy key", nil, "", "SHARED_SECRET")
 
 	b := r.browser(t)
-	b.SignIn(t, plain.recordID, person(carol))
+	b.SignIn(t, plain.recordID, person(ben))
 	all, label := approveAll(t, b.Page(t, plain.recordID).Body)
 	if label != "Approve all 2 shown" {
-		t.Fatalf("carol's page offers %q; want both requests shown while Dispatch answers", label)
+		t.Fatalf("ben's page offers %q; want both requests shown while Dispatch answers", label)
 	}
 	down := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
 	down.SetDown(true)

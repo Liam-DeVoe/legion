@@ -76,6 +76,28 @@ func privateTeam(listed ...string) projectaccesstest.Row {
 	return projectaccesstest.Row{Visibility: "private", Owner: otherPerson, Listed: listed}
 }
 
+// everyonesPod is a pod of a service account no operator's entry names a person for, with no
+// claim and no service: its requests for a shared secret name no responsible person
+// (responsiblePerson), so they wait on every signed-in person's list, as a Legion pod's do whose
+// issue nobody is assigned. A shared secret's request from the fixture's own session names its
+// operator, whose list alone would hold it. On a list everyone reads, the project rule is what
+// must hide a private project's rows from the people outside it, so the tests of that rule make
+// their requests here. project, when set, is the project an operator's exchange entry maps the
+// pod's account to (Exchange.MappedProjects), which its credential then names; m's exchange set
+// is replaced by that one entry.
+func everyonesPod(t *testing.T, m *Machine, name, project string) (string, *ecdsa.PrivateKey) {
+	t.Helper()
+	subject := "system:serviceaccount:example:" + name
+	if project != "" {
+		set, err := exchange.NewSet([]exchange.AccountEntry{{Account: subject, Project: project, Person: insider}}, nil, nil, nil, "")
+		if err != nil {
+			t.Fatalf("exchange.NewSet: %v", err)
+		}
+		m.Exchange = set
+	}
+	return insertEnrollment(t, m.Store, "pod", name, nil, nil, &subject)
+}
+
 // newProjectFixture is newPlaceholderFixture on a broker that checks projects: its loader serves
 // projectSecrets (Loader.ProjectChecks), rules are in force, and Dispatch answers rows. The
 // enrollment is a session of the fixture's operator naming no project.
@@ -290,20 +312,21 @@ func TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest(t *testing.T) {
 // request for PRIV's secret nor a request for an untagged shared secret whose reason names a PRIV
 // issue, and may not read either record; a person on PRIV's list sees both. Every issue key of a
 // reason counts, not the first alone: "SHA-256" has an issue key's form and names no project, so a
-// reason naming it before a PRIV issue is still PRIV's.
+// reason naming it before a PRIV issue is still PRIV's. The requests come from pods that name no
+// person, so every signed-in person's list reads them (everyonesPod).
 func TestPendingLeavesOutAPrivateRequestForAnOutsider(t *testing.T) {
-	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
-	nameProjects(t, m, enr, privProject)
-	tagged, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "", nil)
+	m, _, _, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	privPod, privKey := everyonesPod(t, m, "pod-t-priv", privProject)
+	tagged, err := m.Create(t.Context(), privPod, signRequest(t, m, privKey, "read it", "PRIV_HUMAN"), "", nil)
 	if err != nil || tagged.RecordID == nil {
 		t.Fatalf("Create(PRIV_HUMAN) = %+v, %v", tagged, err)
 	}
-	plain, plainKey := newEnrollment(t, m.Store, "session", "box-q-"+t.Name(), new(fixtureOperator), nil)
+	plain, plainKey := everyonesPod(t, m, "pod-q-plain", "")
 	reasoned, err := m.Create(t.Context(), plain, signRequest(t, m, plainKey, "PRIV-12: rotate the deploy key", "SHARED_KEY"), "", nil)
 	if err != nil || reasoned.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v", reasoned, err)
 	}
-	hashed, hashedKey := newEnrollment(t, m.Store, "session", "box-h-"+t.Name(), new(fixtureOperator), nil)
+	hashed, hashedKey := everyonesPod(t, m, "pod-h-hashed", "")
 	hashedReason, err := m.Create(t.Context(), hashed, signRequest(t, m, hashedKey, "SHA-256 of the PRIV-12 bundle", "SHARED_KEY"), "", nil)
 	if err != nil || hashedReason.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v", hashedReason, err)
@@ -346,17 +369,20 @@ func TestPendingLeavesOutAPrivateRequestForAnOutsider(t *testing.T) {
 // that row alone) and logged once with its id and the error, however often the list is read, and
 // the rest of each list is answered. An approval of the pending one answers
 // ErrProjectAccessUnavailable and leaves it pending, while the request whose reason names no key
-// is approved. Once Dispatch answers, the request is listed again.
+// is approved. Once Dispatch answers, the request is listed again. The two pending requests come
+// from pods that name no person, so the insider's list reads them (everyonesPod).
 func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
 	other, otherKey := newEnrollment(t, m.Store, "session", "box-o-"+t.Name(), new(fixtureOperator), nil)
 	_, keyedGrant := grantOf(t, m, enr, key, "INFRA-13: deploy the broker", "AUTO_TOKEN")
 	_, plainGrant := grantOf(t, m, other, otherKey, "no issue named", "AUTO_TOKEN")
-	keyed, err := m.Create(t.Context(), enr, signRequest(t, m, key, "INFRA-12: rotate the deploy key", "SHARED_KEY"), "", nil)
+	keyedPod, keyedKey := everyonesPod(t, m, "pod-o-keyed", "")
+	keyed, err := m.Create(t.Context(), keyedPod, signRequest(t, m, keyedKey, "INFRA-12: rotate the deploy key", "SHARED_KEY"), "", nil)
 	if err != nil || keyed.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY, INFRA-12) = %+v, %v; want pending", keyed, err)
 	}
-	plain, err := m.Create(t.Context(), other, signRequest(t, m, otherKey, "no issue named", "SHARED_KEY"), "", nil)
+	plainPod, plainKey := everyonesPod(t, m, "pod-o-plain", "")
+	plain, err := m.Create(t.Context(), plainPod, signRequest(t, m, plainKey, "no issue named", "SHARED_KEY"), "", nil)
 	if err != nil || plain.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY, no issue) = %+v, %v; want pending", plain, err)
 	}
@@ -458,8 +484,10 @@ func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
 			if err != nil || pending.RecordID == nil {
 				t.Fatalf("Create(SHARED_KEY) = %+v, %v", pending, err)
 			}
-			if listed, err := m.PendingForApprover(t.Context(), insider, PendingStates{}); err != nil || len(listed) != 1 {
-				t.Fatalf("PendingForApprover(%s) = %+v, %v; want the one request", insider, listed, err)
+			// A shared secret's request of the operator's session is listed for the operator,
+			// the person responsible for the agent (responsiblePerson).
+			if listed, err := m.PendingForApprover(t.Context(), fixtureOperator, PendingStates{}); err != nil || len(listed) != 1 {
+				t.Fatalf("PendingForApprover(%s) = %+v, %v; want the one request", fixtureOperator, listed, err)
 			}
 			if _, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, insider); err != nil {
 				t.Fatalf("ApplyDecision: %v", err)
