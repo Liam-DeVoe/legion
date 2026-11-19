@@ -530,7 +530,7 @@ func cannotSeeRepository(err error) bool {
 // and writes rows nobody else can find. One repository reaches the table under two spellings.
 // A merge's seed carries GitHub's own (`Acme/Widgets`), since refs.CanonicalRepo gives a
 // caller's spelling back unchanged where no rename is recorded, while the results read asks
-// under the lowercased name repo_projects stores (api's canonicalRepo, through
+// under the lowercased name repo_projects stores (refs.ExternalRepo, through
 // comparisonReader.repositoryOf), so a table holding both spellings would place every
 // `after_merge` result of a repository whose owner writes their name with capitals at another
 // commit for good — the squash-merged, branch-deleted case the seed exists for above all

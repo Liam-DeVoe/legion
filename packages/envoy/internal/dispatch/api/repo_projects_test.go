@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -287,7 +288,7 @@ func TestRepoProjectMappingCanonicalizesRepositoryVariants(t *testing.T) {
 	if deleted.Code != http.StatusNoContent {
 		t.Fatalf("delete canonical repository: status=%d body=%s", deleted.Code, deleted.Body.String())
 	}
-	if got := canonicalRepo(" Owner ", " Repo.git "); got != "owner/repo" {
+	if got := refs.ExternalRepo(" Owner ", " Repo.git "); got != "owner/repo" {
 		t.Fatalf("canonical repository whitespace: got %q", got)
 	}
 }
@@ -471,7 +472,7 @@ func TestRepoProjectRenamedToIsSetKeptClearedAndHeldToOneStep(t *testing.T) {
 // and the stored name becomes the repository of every issue of the project that names none, whose
 // halves the linked-repository reads and the App's installation read put into GitHub paths as
 // they are. `...git` and `.git` are no dot segments, so the mux does not clean them, and the
-// trailing `.git` that canonicalRepo trims leaves `..` or an empty name behind.
+// trailing `.git` that refs.ExternalRepo trims leaves `..` or an empty name behind.
 func TestRepoProjectMappingPathIsHeldToTheNamesGitHubAllows(t *testing.T) {
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -538,7 +539,7 @@ func TestRepoProjectMappingPathIsHeldToTheNameAsItIsStored(t *testing.T) {
 }
 
 // GitHub allows a repository name of up to 100 characters, and a mapping path may carry the
-// trailing `.git` a clone URL does, which canonicalRepo trims before the name is stored. So the
+// trailing `.git` a clone URL does, which refs.ExternalRepo trims before the name is stored. So the
 // bound is the stored name's: a name of exactly 100 characters written with `.git` is that
 // repository, mapped under its 100 characters, and one character more is refused however it is
 // written.

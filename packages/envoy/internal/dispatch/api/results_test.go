@@ -4079,7 +4079,7 @@ func TestALinkedReadThatDidNotAnswerRefusesTheRecordForNow(t *testing.T) {
 				linked.mintStatus, linked.mintBody = http.StatusBadGateway, "<html>"+strings.Repeat("x", 1<<19)+"</html>"
 			},
 			says:    []string{"status 502: <html>xxxx", "(GitHub's error, cut to its first 1024 of", "Nothing was recorded: record the result again"},
-			longest: linkedReadReasonBytes + 512,
+			longest: gitHubReasonBytes + 512,
 		},
 		{
 			name: "an installation token mint GitHub refused 403",

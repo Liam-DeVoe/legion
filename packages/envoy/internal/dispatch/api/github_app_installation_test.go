@@ -82,6 +82,29 @@ func TestAppInstallationGitHubFailureAnswers502(t *testing.T) {
 	}
 }
 
+// A lookup GitHub fails with a page that is no JSON carries the whole page in its error, so the
+// 502 words it as every GITHUB_UNREADABLE does (gitHubReason): its first gitHubReasonBytes, and
+// a note that GitHub's error was cut, never the page whole.
+func TestAppInstallationGitHubFailureWithAPageIsCutToTheBound(t *testing.T) {
+	page := "<html>" + strings.Repeat("x", 4*gitHubReasonBytes) + "</html>"
+	handler := appInstallationServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprint(w, page)
+	})
+	response := agentRequest(t, handler, http.MethodGet, "/api/v1/github/app-installation/acme/widgets", nil, "agent-token")
+	body := decodeBody[map[string]string](t, response)
+	if response.Code != http.StatusBadGateway || body["code"] != "GITHUB_UNREADABLE" {
+		t.Fatalf("GitHub 502 page: status=%d body=%.300s", response.Code, response.Body.String())
+	}
+	said := body["error"]
+	if !strings.Contains(said, "acme/widgets") || !strings.Contains(said, "(GitHub's error, cut to its first") {
+		t.Fatalf("the refusal reads %.300q, want the repository and the cut named", said)
+	}
+	if longest := gitHubReasonBytes + 512; len(said) > longest {
+		t.Fatalf("the refusal is %d bytes, want at most %d: GitHub's page went in whole", len(said), longest)
+	}
+}
+
 // The installation read's path is held to the names GitHub allows, as a mapping's is
 // (repoProjectPath): its halves go into the lookup's own path as they are, and `...git` and
 // `.git` are no dot segments, so the mux does not clean them, while the trailing `.git` trimmed

@@ -402,7 +402,7 @@ func (s *server) repoProject(ctx context.Context, repo string) (string, error) {
 // becomes the repository of every issue of its project that names none, whose halves delivery
 // puts into GitHub paths, and the installation read puts its halves into one at once; `...git`
 // and `.git` are no dot segments, so the mux does not clean them, and the trailing `.git`
-// canonicalRepo trims would leave `..` or an empty name behind.
+// refs.ExternalRepo trims would leave `..` or an empty name behind.
 func repoProjectPath(r *http.Request) (owner, name string, err error) {
 	owner, name, err = sourcePathRepo(r)
 	if err != nil {

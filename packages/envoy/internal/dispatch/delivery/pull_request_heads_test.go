@@ -1411,8 +1411,8 @@ func TestAMergeRecordsItsMergeCommitOnItsBaseBranch(t *testing.T) {
 // A merge recorded under GitHub's own spelling of a repository is answered for the lowercased
 // name the results read asks under. GitHub spells an owner and a repository as their owners do
 // (`Acme/Widgets`) and refs.CanonicalRepo hands a caller's own spelling back where no rename is
-// recorded, while the results read asks under the name repo_projects stores (api's
-// canonicalRepo); branch_commits is keyed by one lowercased name so that the two meet
+// recorded, while the results read asks under the name repo_projects stores
+// (refs.ExternalRepo); branch_commits is keyed by one lowercased name so that the two meet
 // (readBranchCommit). Without it, every result of a squash-merged issue of a repository whose
 // owner writes their name with capitals would stand at no basis for good once its base branch
 // was deleted, which is the case the seed exists for.

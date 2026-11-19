@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -211,7 +210,7 @@ func (r *Reconciler) appAbsent(row string, mapped bool, err error, asked bool, c
 // covered is every repository a pass covers, each named as the repository is called today: every
 // repository repo_projects maps to a project, and every repository an issue names as its own.
 // A name is the row's or the issue's own `owner/name`, lower-cased with any `.git` stripped as
-// both are stored (api's canonicalRepo), or, where a mapping names a rename, what its
+// both are stored (refs.ExternalRepo), or, where a mapping names a rename, what its
 // renamed_to names. The two halves are read as one statement, which answers each distinct name
 // once -- a repository a mapping names and an issue names too is one repository to read, as
 // are two issues naming one repository -- and the answer is ordered, so two passes read GitHub
@@ -471,23 +470,14 @@ func mappingPath(repo string) (string, bool) {
 	return "", false
 }
 
-// storedRefPattern is api's externalRefPattern, the shape storedName takes a path's two segments
-// in.
-var storedRefPattern = regexp.MustCompile(`^([^/\s]+)/([^/\s#]+)#([1-9][0-9]*)$`)
-
 // storedName is the mapping name the settings route's DELETE reads from the path segments owner
 // and name, as the mux unescapes them, and false where it refuses them: api's
-// storedRepoProjectPath, which reads them through externalRef and canonicalRepo, each half
-// trimmed and lower-cased and one trailing `.git` trimmed off the name. It is written out here
-// because package api imports this one (its CI reconcile passes route), so this one cannot import
-// api; the route test (mapping_route_test.go) sends the requests mappingRepairs names through the
-// route itself.
+// storedRepoProjectPath reads them as the reference `owner/name#1` by the one rule both packages
+// import (refs.ParseExternalRef), and so does this. The route test (mapping_route_test.go) sends
+// the requests mappingRepairs names through the route itself.
 func storedName(owner, name string) (string, bool) {
-	match := storedRefPattern.FindStringSubmatch(strings.TrimSpace(owner + "/" + name + "#1"))
-	if match == nil {
-		return "", false
-	}
-	return strings.ToLower(strings.TrimSpace(match[1])) + "/" + strings.TrimSuffix(strings.ToLower(strings.TrimSpace(match[2])), ".git"), true
+	repo, _, ok := refs.ParseExternalRef(owner + "/" + name + "#1")
+	return repo, ok
 }
 
 // rawSegment is segment as a request path carries it: escaped, and `.` and `..` written as `%2E`
