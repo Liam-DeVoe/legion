@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck"
@@ -221,20 +222,39 @@ type writingCheckRig struct {
 	t        *testing.T
 	handler  http.Handler
 	database *store.Store
-	token    agentTokenResponse
-	fixture  writingCheckFixture
+	// served is the rig's server, whose reader rule a test reads directly (wantReader).
+	served *server
+	// broken is the rig's document store, which hands the load breakNextLoad names a history
+	// that does not decode.
+	broken  *invalidLoadOnceStore
+	token   agentTokenResponse
+	fixture writingCheckFixture
 }
 
 type writingCheckFixture struct {
 	issue, spec, notesID, notesSlug, editOneID, editTwoSlug, projectDocID, projectDocSlug string
+	rebuildID                                                                             string
 	askEdit, askAnswer, askResolve, askDecline                                            string
 	message, comment, result                                                              string
 }
 
+// newWritingCheckRig builds the rig every write of the check's tests takes place on. A write the
+// route refuses records nothing (recordTakenWrites), so the rig builds the state each write needs:
+// a listener holding the session a send to an agent and a broadcast reach, a document store that
+// can break a document for its rebuild, a message and a comment delivered to checkWriter for its
+// replies, and a result checkWriter recorded for its retraction.
 func newWritingCheckRig(t *testing.T, check *WritingCheck) *writingCheckRig {
 	t.Helper()
-	handler, database, _ := newTestServer(t, testServerOptions{writingCheck: check, writingCheckOff: check == nil})
-	rig := &writingCheckRig{t: t, handler: handler, database: database}
+	listenerURL, _ := newFakeReviewListener(t, "s-reader")
+	var broken *invalidLoadOnceStore
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
+		writingCheck: check, writingCheckOff: check == nil, envoyURL: listenerURL,
+		persistence: func(database *store.Store) docs.VersionedStore {
+			broken = &invalidLoadOnceStore{VersionedStore: docs.NewPgVersioned(database), invalid: make(map[string]bool)}
+			return broken
+		},
+	})
+	rig := &writingCheckRig{t: t, handler: handler, database: database, served: served, broken: broken}
 	rig.token = mintPersonalToken(t, handler, "alice", "writer", []string{model.ScopePerson, model.ScopeApprove})
 	issue := createInteractionIssue(t, handler, "WCK", "Writing check issue", "Seed paragraph here.\n")
 	rig.fixture.issue, rig.fixture.spec = issue.Key, issue.PrimaryArtifactID
@@ -249,6 +269,7 @@ func newWritingCheckRig(t *testing.T, check *WritingCheck) *writingCheckRig {
 	rig.fixture.notesID, rig.fixture.notesSlug = upload("/api/v1/issues/"+issue.Key+"/artifacts", "notes")
 	rig.fixture.editOneID, _ = upload("/api/v1/issues/"+issue.Key+"/artifacts", "edit one")
 	_, rig.fixture.editTwoSlug = upload("/api/v1/issues/"+issue.Key+"/artifacts", "edit two")
+	rig.fixture.rebuildID, _ = upload("/api/v1/issues/"+issue.Key+"/artifacts", "rebuilt")
 	rig.fixture.projectDocID, rig.fixture.projectDocSlug = upload("/api/v1/projects/WCK/artifacts", "guide")
 	for _, ask := range []*string{&rig.fixture.askEdit, &rig.fixture.askAnswer, &rig.fixture.askResolve, &rig.fixture.askDecline} {
 		response := rig.asSession(http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{"question": "Which port should the server use?"})
@@ -262,23 +283,60 @@ func newWritingCheckRig(t *testing.T, check *WritingCheck) *writingCheckRig {
 		t.Fatalf("create message: %d %s", message.Code, message.Body.String())
 	}
 	rig.fixture.message = decodeBody[model.Message](t, message).ID
+	rig.deliverMessage(rig.fixture.message, checkWriter)
 	comment := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{"body": "The cache is warm."}, "alice")
 	if comment.Code != http.StatusCreated {
 		t.Fatalf("create comment: %d %s", comment.Code, comment.Body.String())
 	}
 	rig.fixture.comment = decodeBody[model.Comment](t, comment).ID
-	// A result recorded on the issue, so its retraction is text on that issue.
+	rig.deliverComment(rig.fixture.comment, checkWriter)
+	// A result checkWriter recorded on the issue, so its retraction is text on that issue and the
+	// writer's to take back.
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
-	result := recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil))
-	if result.Code != http.StatusCreated {
-		t.Fatalf("record a result: %d %s", result.Code, result.Body.String())
-	}
-	rig.fixture.result = decodeBody[recordedResult](t, result).Result.ID
+	rig.fixture.result = recordResultAsSession(t, handler, issue.Key, checkWriter, resultBody("k1", "pass", headCommit, nil)).ID
 	// alice's direct conversation with the agent session checkWriter, which makes her the person
 	// who reads what that session puts into its conversation.
 	rig.openConversation("user", "alice", checkWriter)
 	rig.clearEvents()
 	return rig
+}
+
+// deliverMessage records the message's first attempt as sent to session, as the send leaves it,
+// so session's reply to attempt 1 takes place.
+func (rig *writingCheckRig) deliverMessage(messageID, session string) {
+	rig.t.Helper()
+	if _, err := rig.database.Pool.Exec(context.Background(), `
+		insert into message_deliveries (message_id, attempt, delivery, session_id, state)
+		values ($1::uuid, 1, 'btw', $2, 'sent')`, messageID, session); err != nil {
+		rig.t.Fatalf("deliver message %s to %s: %v", messageID, session, err)
+	}
+}
+
+// deliverComment records the comment's mention of session and the mention's first attempt, sent
+// to session, as the comment's create and its send leave them, so session's reply to attempt 1
+// takes place.
+func (rig *writingCheckRig) deliverComment(commentID, session string) {
+	rig.t.Helper()
+	for _, statement := range []string{`
+		insert into comment_mentions (comment_id, target, delivery, resolved_session_id)
+		values ($1::uuid, 'session:' || $2::text, 'steer', $2::text)`, `
+		insert into comment_deliveries (comment_id, target, attempt, delivery, session_id, state, claimed_at)
+		values ($1::uuid, 'session:' || $2::text, 1, 'steer', $2::text, 'sent', now())`,
+	} {
+		if _, err := rig.database.Pool.Exec(context.Background(), statement, commentID, session); err != nil {
+			rig.t.Fatalf("deliver comment %s to %s: %v", commentID, session, err)
+		}
+	}
+}
+
+// breakNextLoad leaves the document id out of every room and hands its next load a history that
+// does not decode, the one state a rebuild takes place on.
+func (rig *writingCheckRig) breakNextLoad(id string) {
+	rig.t.Helper()
+	if err := rig.served.deps.Docs.(*docs.Service).Evict(context.Background(), id); err != nil {
+		rig.t.Fatalf("evict document %s: %v", id, err)
+	}
+	rig.broken.failNextLoad(id)
 }
 
 // openConversation opens a direct conversation to session, as the author kind and id write it,
@@ -367,8 +425,8 @@ type proseRouteCase struct {
 	route string
 	field string
 	// call writes text through the route; wantStatus is the status a write answers, 0 for any
-	// status (a route whose write needs a state the rig does not build, such as a delivery
-	// attempt to reply to, still reaches the check before it refuses for that).
+	// status (a second call that writes what the first wrote, such as a second answer to one
+	// ask, is refused, and records nothing).
 	call       func(rig *writingCheckRig, text string) *httptest.ResponseRecorder
 	wantStatus int
 }
@@ -395,8 +453,15 @@ func proseRouteCases() []proseRouteCase {
 			return body
 		}
 	}
-	replace := func(text string) map[string]any {
-		return map[string]any{"ops": []map[string]any{{"op": "replace", "find": "Seed paragraph here.", "with": text}}}
+	// replace edits a document's text in place: the first call replaces the seed, and each call
+	// after it the text the call before it wrote, so every call finds what it replaces.
+	replace := func() func(text string) map[string]any {
+		found := "Seed paragraph here."
+		return func(text string) map[string]any {
+			body := map[string]any{"ops": []map[string]any{{"op": "replace", "find": found, "with": text}}}
+			found = text
+			return body
+		}
 	}
 	upload := func(path func(f writingCheckFixture) string) func(*writingCheckRig, string) *httptest.ResponseRecorder {
 		names := 0
@@ -414,7 +479,7 @@ func proseRouteCases() []proseRouteCase {
 			return rig.multipartUpload("/api/v1/agents/"+checkWriter+"/artifacts", "trace.txt", "text/plain", "plain bytes", text, checkWriter)
 		}, http.StatusCreated},
 		{"POST /api/v1/issues/{key}/results", "run", session(post, func(f writingCheckFixture) string { return "/api/v1/issues/" + f.issue + "/results" },
-			field("run", "check", "no-such-check", "role", "tester", "commit", strings.Repeat("a", 40), "verdict", "pass")), 0},
+			field("run", "check", "k1", "role", "tester", "commit", strings.Repeat("a", 40), "verdict", "pass")), 0},
 		{"POST /api/v1/results/{id}/retract", "reason", session(post, func(f writingCheckFixture) string {
 			return "/api/v1/results/" + f.result + "/retract"
 		}, field("reason")), 0},
@@ -425,14 +490,17 @@ func proseRouteCases() []proseRouteCase {
 		{"POST /api/v1/issues/{key}/asks", "question", session(post, func(f writingCheckFixture) string { return "/api/v1/issues/" + f.issue + "/asks" }, field("question")), http.StatusCreated},
 		{"POST /api/v1/artifacts/{id}/asks", "question", session(post, func(f writingCheckFixture) string { return "/api/v1/artifacts/" + f.projectDocID + "/asks" }, field("question")), http.StatusCreated},
 		{"PATCH /api/v1/asks/{id}", "question", session(patch, func(f writingCheckFixture) string { return "/api/v1/asks/" + f.askEdit }, field("question")), http.StatusOK},
-		{"POST /api/v1/asks/{id}/answer", "text", token(http.MethodPost, func(f writingCheckFixture) string { return "/api/v1/asks/" + f.askAnswer + "/answer" }, field("text", "expected_edited_at", nil)), http.StatusOK},
-		{"POST /api/v1/asks/{id}/resolve", "reason", session(post, func(f writingCheckFixture) string { return "/api/v1/asks/" + f.askResolve + "/resolve" }, field("reason", "kind", "resolved")), http.StatusOK},
+		{"POST /api/v1/asks/{id}/answer", "text", token(http.MethodPost, func(f writingCheckFixture) string { return "/api/v1/asks/" + f.askAnswer + "/answer" }, field("text", "expected_edited_at", nil)), 0},
+		{"POST /api/v1/asks/{id}/resolve", "reason", session(post, func(f writingCheckFixture) string { return "/api/v1/asks/" + f.askResolve + "/resolve" }, field("reason", "kind", "resolved")), 0},
 		{"POST /api/v1/asks/{id}/decline", "note", token(http.MethodPost, func(f writingCheckFixture) string { return "/api/v1/asks/" + f.askDecline + "/decline" }, field("note")), 0},
 		{"POST /api/v1/issues/{key}/comments", "body", session(post, func(f writingCheckFixture) string { return "/api/v1/issues/" + f.issue + "/comments" }, field("body")), http.StatusCreated},
 		{"POST /api/v1/artifacts/{id}/comments", "body", session(post, func(f writingCheckFixture) string { return "/api/v1/artifacts/" + f.projectDocID + "/comments" }, field("body")), http.StatusCreated},
 		{"POST /api/v1/comments/{id}/reply", "body", session(post, func(f writingCheckFixture) string { return "/api/v1/comments/" + f.comment + "/reply" }, field("body", "attempt", 1)), 0},
 		{"PATCH /api/v1/comments/{id}", "body", token(http.MethodPatch, func(f writingCheckFixture) string { return "/api/v1/comments/" + f.comment }, field("body")), 0},
-		{"POST /api/v1/artifacts/{id}/rebuild", "markdown", token(http.MethodPost, func(f writingCheckFixture) string { return "/api/v1/artifacts/" + f.spec + "/rebuild" }, field("markdown")), 0},
+		{"POST /api/v1/artifacts/{id}/rebuild", "markdown", func(rig *writingCheckRig, text string) *httptest.ResponseRecorder {
+			rig.breakNextLoad(rig.fixture.rebuildID)
+			return rig.asTokenFor(checkWriter, http.MethodPost, "/api/v1/artifacts/"+rig.fixture.rebuildID+"/rebuild", map[string]any{"markdown": text})
+		}, 0},
 		{"POST /api/v1/artifacts/{id}/reviews", "reason", token(http.MethodPost, func(f writingCheckFixture) string { return "/api/v1/artifacts/" + f.notesID + "/reviews" }, field("reason", "state", "changes_requested")), 0},
 		// The versioned review names the version its writer read, which must be the version the
 		// review records: the document's latest settled version, as no approval request is open on
@@ -454,13 +522,13 @@ func proseRouteCases() []proseRouteCase {
 		{"POST /api/v1/projects/{key}/artifacts/{slug}/versions", "summary", session(post, func(f writingCheckFixture) string {
 			return "/api/v1/projects/WCK/artifacts/" + f.projectDocSlug + "/versions"
 		}, field("summary")), http.StatusCreated},
-		{"POST /api/v1/artifacts/{id}/edits", "ops[0].with", session(post, func(f writingCheckFixture) string { return "/api/v1/artifacts/" + f.editOneID + "/edits" }, replace), http.StatusOK},
+		{"POST /api/v1/artifacts/{id}/edits", "ops[0].with", session(post, func(f writingCheckFixture) string { return "/api/v1/artifacts/" + f.editOneID + "/edits" }, replace()), http.StatusOK},
 		{"POST /api/v1/issues/{key}/artifacts/{slug}/edits", "ops[0].with", session(post, func(f writingCheckFixture) string {
 			return "/api/v1/issues/" + f.issue + "/artifacts/" + f.editTwoSlug + "/edits"
-		}, replace), http.StatusOK},
+		}, replace()), http.StatusOK},
 		{"POST /api/v1/projects/{key}/artifacts/{slug}/edits", "ops[0].with", session(post, func(f writingCheckFixture) string {
 			return "/api/v1/projects/WCK/artifacts/" + f.projectDocSlug + "/edits"
-		}, replace), http.StatusOK},
+		}, replace()), http.StatusOK},
 	}
 }
 
@@ -500,10 +568,12 @@ func (rig *writingCheckRig) multipartUpload(target, name, contentType, content, 
 // TestTheWritingCheckRecordsAndWritesOnEveryProseRoute is the check's behaviour on every route
 // the registry marks: a body breaking an enabled rule is written at once and recorded findings
 // with the rule, its field and its reader, and a clean one is recorded clean. A route whose text
-// no person reads (readerNone) writes the body, recorded exempt_no_reader. The cases are held to
-// the registry: a route that starts to carry prose needs a case here. Every reader in the rig is
-// alice: she holds the issue, the project defaults to her, she wrote the comment and the message
-// the replies answer, and she opened the direct conversation.
+// no person reads (readerNone) writes the body, recorded exempt_no_reader. A write the route
+// refuses records nothing, as it writes nothing else (recordTakenWrites), and every route takes
+// at least one of its writes, which records exactly one row. The cases are held to the registry:
+// a route that starts to carry prose needs a case here. Every reader in the rig is alice: she
+// holds the issue, the project defaults to her, she wrote the comment and the message the replies
+// answer, and she opened the direct conversation.
 func TestTheWritingCheckRecordsAndWritesOnEveryProseRoute(t *testing.T) {
 	rig := newWritingCheckRig(t, writingCheckOn(nil))
 	cases := proseRouteCases()
@@ -520,32 +590,46 @@ func TestTheWritingCheckRecordsAndWritesOnEveryProseRoute(t *testing.T) {
 		t.Run(c.route, func(t *testing.T) {
 			rig.t = t
 			method, route, _ := strings.Cut(c.route, " ")
-			rig.clearEvents()
-			written := c.call(rig, badProse)
-			if written.Code == http.StatusUnprocessableEntity || (c.wantStatus != 0 && written.Code != c.wantStatus) {
-				t.Fatalf("bad text: %d %s, want %d", written.Code, written.Body.String(), c.wantStatus)
+			taken := 0
+			// write writes text through the route and answers the one row a write that took place
+			// recorded, and false for a write the route refused, which must have recorded none.
+			write := func(text, what string) (writingCheckEventRow, bool) {
+				t.Helper()
+				rig.clearEvents()
+				written := c.call(rig, text)
+				if written.Code == http.StatusUnprocessableEntity || (c.wantStatus != 0 && written.Code != c.wantStatus) {
+					t.Fatalf("%s: %d %s, want %d", what, written.Code, written.Body.String(), c.wantStatus)
+				}
+				if written.Code < 200 || written.Code >= 300 {
+					if events := rig.events(); len(events) != 0 {
+						t.Errorf("%s was refused (%d %s) and recorded %+v, want no row", what, written.Code, written.Body.String(), events)
+					}
+					return writingCheckEventRow{}, false
+				}
+				taken++
+				return rig.lastEvent(what), true
 			}
+			defer func() {
+				if taken == 0 {
+					t.Errorf("the route took none of its writes, so none shows it records one: give its case a write it takes")
+				}
+			}()
 			if writingCheckReaderRules[c.route] == readerNone {
-				if event := rig.lastEvent("bad text to no person"); event.Outcome != writingCheckNoReader || event.Reader != "" ||
-					event.Route != route || event.Method != method {
+				if event, took := write(badProse, "bad text to no person"); took && (event.Outcome != writingCheckNoReader || event.Reader != "" ||
+					event.Route != route || event.Method != method) {
 					t.Errorf("event = %+v, want %s with no reader", event, writingCheckNoReader)
 				}
 				return
 			}
-			event := rig.lastEvent("bad text")
-			if event.Outcome != writingCheckFindings || event.Route != route || event.Method != method || event.Reader != "alice" ||
-				!slices.Equal(event.Rules, []string{badRule}) || !slices.Equal(event.Fields, []string{c.field}) {
+			if event, took := write(badProse, "bad text"); took && (event.Outcome != writingCheckFindings || event.Route != route || event.Method != method || event.Reader != "alice" ||
+				!slices.Equal(event.Rules, []string{badRule}) || !slices.Equal(event.Fields, []string{c.field})) {
 				t.Errorf("bad text event = %+v, want %s with %s in %s and reader alice", event, writingCheckFindings, badRule, c.field)
-			}
-			rig.clearEvents()
-			if written := c.call(rig, cleanProse); written.Code == http.StatusUnprocessableEntity {
-				t.Fatalf("clean text: %d %s", written.Code, written.Body.String())
 			}
 			want := writingcheck.OutcomeClean
 			if c.route == "POST /api/v1/agents/{session_id}/artifacts" {
 				want = writingCheckUnreadUpload
 			}
-			if event := rig.lastEvent("clean text"); event.Outcome != want || event.Reader != "alice" {
+			if event, took := write(cleanProse, "clean text"); took && (event.Outcome != want || event.Reader != "alice") {
 				t.Errorf("clean event = %+v, want %s with reader alice", event, want)
 			}
 		})

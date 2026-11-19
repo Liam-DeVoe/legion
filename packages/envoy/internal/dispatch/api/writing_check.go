@@ -21,9 +21,12 @@ import (
 // request carries prose (writing_check_fields.go) calls writingCheck once the request is decoded
 // and its writer resolved, and before it opens a transaction, takes a lock or writes anything: the
 // check may call a model, and no database transaction waits on it. The check refuses no write:
-// every write it reads goes on. Every decision the check makes for a write is one row of
-// writing_check_events, inserted outside the write's transaction, after the decision and before
-// the answer; a failed insert is logged and fails nothing.
+// every write it reads goes on. Every decision the check makes for a write that took place is one
+// row of writing_check_events. The check keeps the row on the request (keepWritingCheck), and the
+// route's layer (recordTakenWrites) inserts it once the handler answered the write 2xx, outside
+// the write's transaction, which has ended by then, and before the request ends. A write the route
+// refused after the check - a closed issue, an unknown check, a delivery never made - records
+// nothing, as it writes nothing else. A failed insert is logged and fails nothing.
 
 // The outcomes writingCheck records besides the checker's own (writingcheck.Outcome*) and the
 // actor rule's exemptions (writingcheck.Exempt*).
@@ -103,7 +106,7 @@ func (s *server) recordPersonTyped(r *http.Request, actor model.Actor, input any
 		event.Detail = "the reader could not be decided: " + err.Error()
 	}
 	event.Reader = reader
-	s.recordWritingCheck(r.Context(), event)
+	s.keepWritingCheck(r, event)
 }
 
 // WritingCheckModel is the model the writing check's reader calls, as GET /api/v1/writing-check
@@ -173,7 +176,8 @@ func writingCheckReads(actor model.Actor) (checked bool, exemption string) {
 type unreadUploadCarrier interface{ unreadUpload() string }
 
 // writingCheck runs the writing check over the prose input carries (proseFieldsOf), for the write
-// actor makes, records its decision, and reports whether the write goes on, which it always does:
+// actor makes, keeps its decision for the record of the write once it took place
+// (keepWritingCheck), and reports whether the write goes on, which it always does:
 // the check refuses no write. It reads a write only when the actor rule says an agent makes it
 // (writingCheckReads), a person reads it (writingCheckReader) and no plugin generated it
 // (generatedText), and it records that person on every row. Call it once input is decoded and
@@ -217,17 +221,17 @@ func (s *server) writingCheck(_ http.ResponseWriter, r *http.Request, actor mode
 	event.Reader = readerOf
 	if generatedText(r, method+" "+route) {
 		event.Outcome = writingCheckGenerated
-		s.recordWritingCheck(r.Context(), event)
+		s.keepWritingCheck(r, event)
 		return true
 	}
 	if checked, exemption := writingCheckReads(actor); !checked {
 		event.Outcome = exemption
-		s.recordWritingCheck(r.Context(), event)
+		s.keepWritingCheck(r, event)
 		return true
 	}
 	if readerOf == "" {
 		event.Outcome = writingCheckNoReader
-		s.recordWritingCheck(r.Context(), event)
+		s.keepWritingCheck(r, event)
 		return true
 	}
 	started := time.Now()
@@ -258,18 +262,20 @@ func (s *server) writingCheck(_ http.ResponseWriter, r *http.Request, actor mode
 	case result.Outcome != writingcheck.OutcomeClean:
 		event.Detail = "the write went through with the structure rules alone"
 	}
-	s.recordWritingCheck(r.Context(), event)
+	s.keepWritingCheck(r, event)
 	return true
 }
 
 // writingCheckTokenID is the personal token a write was made with, "" for any other credential:
 // the token an actor's act names, else the one the request's own credential presented, so a
-// daemon-named write made with a person's token is recorded under that token.
+// daemon-named write made with a person's token is recorded under that token. The credential is
+// read on a resolution that names nobody on the access-log line (unloggedResolution), which the
+// handler's own resolution of actor named already.
 func (s *server) writingCheckTokenID(r *http.Request, actor model.Actor) string {
 	if actor.Act != nil && actor.Act.TokenID != "" {
 		return actor.Act.TokenID
 	}
-	caller, _, err := s.optionalActor(r)
+	caller, _, err := s.optionalActor(unloggedResolution(r))
 	if err != nil || caller.Credential == nil {
 		return ""
 	}
@@ -286,6 +292,79 @@ func (s *server) recordWritingCheck(ctx context.Context, event store.WritingChec
 		slog.Warn("dispatch: record a writing check decision", "route", event.Method+" "+event.Route,
 			"outcome", event.Outcome, "error", err)
 	}
+}
+
+// writingCheckRowsKey carries a write's writingCheckRows from the route's layer that records them
+// (recordTakenWrites) to the check that decides them (keepWritingCheck).
+type writingCheckRowsKey struct{}
+
+// writingCheckRows are the rows the writing check decided for one write, kept until its handler
+// has answered it.
+type writingCheckRows struct{ events []store.WritingCheckEvent }
+
+// keepWritingCheck keeps event, the check's decision about r's write, for the route's layer to
+// record once the write took place (recordTakenWrites). A write served outside that layer, which
+// no route of the table is, has it recorded at once, as no answer of its own is read.
+func (s *server) keepWritingCheck(r *http.Request, event store.WritingCheckEvent) {
+	if kept, ok := r.Context().Value(writingCheckRowsKey{}).(*writingCheckRows); ok {
+		kept.events = append(kept.events, event)
+		return
+	}
+	s.recordWritingCheck(r.Context(), event)
+}
+
+// recordTakenWrites is a write route's layer for the writing check's rows: it records the rows
+// the check kept for the write (keepWritingCheck) once handler answered it 2xx, which a route
+// answers only for a write that took place, a write the reviewer holds among them. A write the
+// handler refused leaves no row, as it leaves no other: a refusal leaves every table as it found
+// it (TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused). Every transaction of the
+// handler has ended when it returns, so the insert takes a connection of its own, and it runs on
+// a context the client's going away does not cancel, since the write it records has committed
+// whatever the client does next.
+func (s *server) recordTakenWrites(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		kept := &writingCheckRows{}
+		answer := &answerStatus{ResponseWriter: w}
+		handler(answer, r.WithContext(context.WithValue(r.Context(), writingCheckRowsKey{}, kept)))
+		if len(kept.events) == 0 || !answer.taken() {
+			return
+		}
+		ctx := context.WithoutCancel(r.Context())
+		for _, event := range kept.events {
+			s.recordWritingCheck(ctx, event)
+		}
+	}
+}
+
+// answerStatus is a handler's writer that keeps the status the handler answered with.
+type answerStatus struct {
+	http.ResponseWriter
+	// status is the first status the handler gave, 0 until it gives one.
+	status int
+}
+
+func (w *answerStatus) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+// Write is the answer's body; a first Write without WriteHeader answers 200, as net/http's does.
+func (w *answerStatus) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+// Unwrap is the writer this one wraps, for http.ResponseController.
+func (w *answerStatus) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// taken reports whether the handler answered 2xx, a handler that wrote nothing included, which
+// net/http answers 200.
+func (w *answerStatus) taken() bool {
+	return w.status == 0 || (w.status >= 200 && w.status < 300)
 }
 
 // writingCheckState is the body of GET /api/v1/writing-check: the check as this process runs it.

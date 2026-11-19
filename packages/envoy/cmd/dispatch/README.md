@@ -3816,12 +3816,12 @@ A reader fault (`reader_timeout`, `reader_error`, `reader_malformed`, `reader_bu
 
 ### Records
 
-Each decision is one row of `writing_check_events`:
+Each decision about a write that took place is one row of `writing_check_events`:
 the route and method, the actor's kind and id, the act's session, the personal token's row id where the write was made with one, the outcome, the rules broken and their fields, the code stage's candidate count, how long the model reader took, `reader`, the login of the person who reads the text (null where no person does), on every row, and `project`, the project of the text's issue or document where the writer records it.
 The outcomes are `findings` (a sentence breaks a rule; the write went on), `clean`, `exempt_person`, `exempt_daemon`, `exempt_system`, `exempt_unread_upload`, `exempt_no_reader`, `exempt_generated`, and the reader's fail-open outcomes with `no_model`.
 The table also admits the reviewer's outcomes (`held`, `passed`, `edited`, `posted_as_written`, `rewrite_posted`, `posted_unreviewed`, `reviewed_after`), a person's typed command (`exempt_person_typed`) and each Rewrite a person asks for (`rewrite_requested`, its `reader` the person who asked), which the reviewer and Rewrite record.
-A write that carries no prose text is not recorded.
-The server inserts the row outside the write's transaction, after the decision and before the answer; an insert that fails is logged and the write goes on.
+A write that carries no prose text is not recorded, and neither is a write the route refuses after the check (a closed issue, an unknown check, a delivery never made), which writes nothing else either.
+The server inserts the row once the route answered the write with a 2xx status, outside the write's transaction, which has ended by then, and before the request ends; an insert that fails is logged with the route and the write stands.
 A daily sweep deletes the rows older than 90 days (Background loops, above).
 
 `GET /api/v1/writing-check` answers the check as this process runs it:

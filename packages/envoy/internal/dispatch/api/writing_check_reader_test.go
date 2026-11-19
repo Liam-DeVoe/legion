@@ -4,8 +4,12 @@ import (
 	"context"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // --- the reader rule table -------------------------------------------------------------------
@@ -86,14 +90,11 @@ func (rig *writingCheckRig) noProjectDefault() {
 }
 
 // wantRead writes badProse through call and holds it to a write the check read, recorded findings
-// with reader. The check refuses no write, so the status is the route's own and is only held to
-// not being 422; a route whose write needs a state the rig does not build answers after the
-// check has recorded its decision.
+// with reader. The check refuses no write, and a write the route refuses records nothing
+// (recordTakenWrites), so the write must take place: the rig builds the state each write needs.
 func (rig *writingCheckRig) wantRead(what, reader string, call func() int) {
 	rig.t.Helper()
-	rig.clearEvents()
-	if code := call(); code == http.StatusUnprocessableEntity {
-		rig.t.Errorf("%s: 422, want the route's own answer: the check refuses no write", what)
+	if !rig.wantTaken(what, call) {
 		return
 	}
 	if event := rig.lastEvent(what); event.Outcome != writingCheckFindings || event.Reader != reader {
@@ -105,14 +106,24 @@ func (rig *writingCheckRig) wantRead(what, reader string, call func() int) {
 // recorded exempt_no_reader with no reader.
 func (rig *writingCheckRig) wantUnread(what string, call func() int) {
 	rig.t.Helper()
-	rig.clearEvents()
-	if code := call(); code == http.StatusUnprocessableEntity {
-		rig.t.Errorf("%s: 422, want it written: no person reads it", what)
+	if !rig.wantTaken(what, call) {
 		return
 	}
 	if event := rig.lastEvent(what); event.Outcome != writingCheckNoReader || event.Reader != "" {
 		rig.t.Errorf("%s: event = %+v, want %s with no reader", what, event, writingCheckNoReader)
 	}
+}
+
+// wantTaken runs call on a cleared record and reports whether the route took the write, the one
+// kind of write the check's decision is recorded for.
+func (rig *writingCheckRig) wantTaken(what string, call func() int) bool {
+	rig.t.Helper()
+	rig.clearEvents()
+	if code := call(); code < 200 || code >= 300 {
+		rig.t.Errorf("%s: %d, want the write taken, whose decision alone is recorded", what, code)
+		return false
+	}
+	return true
 }
 
 // session writes body as the agent session checkWriter and answers the status.
@@ -193,9 +204,28 @@ func (rig *writingCheckRig) insertID(statement string, args ...any) string {
 	return id
 }
 
+// wantReader holds the reader the check decides for a write of route, as checkWriter, on the
+// record the path values name, with input the write's decoded body, to reader. It reads the rule
+// itself (writingCheckReader) rather than a record: it is for a text every route refuses a write
+// on, whose decision is recorded nowhere (recordTakenWrites).
+func (rig *writingCheckRig) wantReader(what, reader, route string, values map[string]string, input any) {
+	rig.t.Helper()
+	method, _, _ := strings.Cut(route, " ")
+	request := httptest.NewRequest(method, "/", nil)
+	for name, value := range values {
+		request.SetPathValue(name, value)
+	}
+	got, err := rig.served.writingCheckReader(context.Background(), request, route, model.Actor{Kind: "session", ID: checkWriter}, input)
+	if err != nil || got != reader {
+		rig.t.Errorf("%s: the reader is %q (%v), want %s", what, got, err, reader)
+	}
+}
+
 // TestTheWritingCheckReaderOfTextOnAnIssuesDocument: a comment or an ask on an issue's document
 // names the document and no issue, and is read by that issue's assignee, not by the project's
-// default; a reply to a person's comment on the document is read by that person.
+// default; a reply to a person's comment on the document is read by that person. Every route
+// refuses a write on such a text, since the owner check takes a document only where no issue
+// holds it (unlinkedArtifactRead), so the rule is read for each route directly (wantReader).
 func TestTheWritingCheckReaderOfTextOnAnIssuesDocument(t *testing.T) {
 	rig := newWritingCheckRig(t, writingCheckOn(nil))
 	rig.exec(`update projects set default_assignee = 'dana' where key = 'WCK'`)
@@ -211,27 +241,22 @@ func TestTheWritingCheckReaderOfTextOnAnIssuesDocument(t *testing.T) {
 		rig.fixture.notesID, `{"kind":"session","id":"s-other"}`)
 	handed := rig.insertID(`insert into asks (artifact_id, author, question, asked_of) values ($1::uuid, $2::jsonb, 'Which disk should the server use?', 'bob') returning id::text`,
 		rig.fixture.notesID, `{"kind":"session","id":"s-other"}`)
-	reply := map[string]any{"body": badProse, "attempt": 1}
-	question := map[string]any{"question": badProse}
+	on := func(id string) map[string]string { return map[string]string{"id": id} }
+	answering := func(id string) commentInput { return commentInput{Body: badProse, ReplyTo: &id} }
+	issue := map[string]string{"key": rig.fixture.issue}
 
-	rig.wantRead("a reply to a session's comment on the document", "alice", rig.session(http.MethodPost, "/api/v1/comments/"+agentComment+"/reply", reply))
-	rig.wantRead("an edit of a session's comment on the document", "alice", func() int {
-		return rig.asTokenFor(checkWriter, http.MethodPatch, "/api/v1/comments/"+agentComment, map[string]any{"body": badProse}).Code
-	})
-	rig.wantRead("a new comment answering a session's comment on the document", "alice", rig.session(http.MethodPost,
-		"/api/v1/issues/"+rig.fixture.issue+"/comments", map[string]any{"body": badProse, "reply_to": agentComment}))
-	rig.wantRead("an edit of an ask on the document", "alice", rig.session(http.MethodPatch, "/api/v1/asks/"+ask, question))
-	rig.wantRead("an answer to a session's ask on the document", "alice", func() int {
-		return rig.asTokenFor(checkWriter, http.MethodPost, "/api/v1/asks/"+ask+"/answer", map[string]any{"text": badProse, "expected_edited_at": nil}).Code
-	})
-	rig.wantRead("an edit of an ask on the document handed to bob", "bob", rig.session(http.MethodPatch, "/api/v1/asks/"+handed, question))
+	rig.wantReader("a reply to a session's comment on the document", "alice", "POST /api/v1/comments/{id}/reply", on(agentComment), nil)
+	rig.wantReader("an edit of a session's comment on the document", "alice", "PATCH /api/v1/comments/{id}", on(agentComment), nil)
+	rig.wantReader("a new comment answering a session's comment on the document", "alice",
+		"POST /api/v1/issues/{key}/comments", issue, answering(agentComment))
+	rig.wantReader("an edit of an ask on the document", "alice", "PATCH /api/v1/asks/{id}", on(ask), nil)
+	rig.wantReader("an answer to a session's ask on the document", "alice", "POST /api/v1/asks/{id}/answer", on(ask), nil)
+	rig.wantReader("an edit of an ask on the document handed to bob", "bob", "PATCH /api/v1/asks/{id}", on(handed), nil)
 
-	rig.wantRead("a reply to bob's comment on the document", "bob", rig.session(http.MethodPost, "/api/v1/comments/"+bobComment+"/reply", reply))
-	rig.wantRead("a new comment answering bob's comment on the document", "bob", rig.session(http.MethodPost,
-		"/api/v1/issues/"+rig.fixture.issue+"/comments", map[string]any{"body": badProse, "reply_to": bobComment}))
-	rig.wantRead("an edit of a session's reply to bob on the document", "bob", func() int {
-		return rig.asTokenFor(checkWriter, http.MethodPatch, "/api/v1/comments/"+agentReplyToBob, map[string]any{"body": badProse}).Code
-	})
+	rig.wantReader("a reply to bob's comment on the document", "bob", "POST /api/v1/comments/{id}/reply", on(bobComment), nil)
+	rig.wantReader("a new comment answering bob's comment on the document", "bob",
+		"POST /api/v1/issues/{key}/comments", issue, answering(bobComment))
+	rig.wantReader("an edit of a session's reply to bob on the document", "bob", "PATCH /api/v1/comments/{id}", on(agentReplyToBob), nil)
 }
 
 // TestTheWritingCheckReaderOfADirectConversation: a session's reply in a person's direct
@@ -243,6 +268,8 @@ func TestTheWritingCheckReaderOfADirectConversation(t *testing.T) {
 	reply := map[string]any{"body": badProse, "attempt": 1}
 	fromBob := rig.openConversation("user", "bob", checkWriter)
 	fromSession := rig.openConversation("session", "s-other", checkWriter)
+	rig.deliverMessage(fromBob, checkWriter)
+	rig.deliverMessage(fromSession, checkWriter)
 
 	rig.wantRead("a direct message to bob", "bob", rig.session(http.MethodPost, "/api/v1/messages/"+fromBob+"/reply", reply))
 	rig.wantUnread("a reply between two sessions", rig.session(http.MethodPost, "/api/v1/messages/"+fromSession+"/reply", reply))
@@ -267,6 +294,8 @@ func TestTheWritingCheckReaderOfAProjectDocument(t *testing.T) {
 	rig := newWritingCheckRig(t, writingCheckOn(nil))
 	rig.exec(`update projects set default_assignee = 'dana' where key = 'WCK'`)
 	edit := map[string]any{"ops": []map[string]any{{"op": "replace", "find": "Seed paragraph here.", "with": badProse}}}
+	// The second edit replaces what the first wrote, so it finds what it replaces.
+	editAgain := map[string]any{"ops": []map[string]any{{"op": "replace", "find": badProse, "with": "We will spin up the queue."}}}
 	edits := "/api/v1/projects/WCK/artifacts/" + rig.fixture.projectDocSlug + "/edits"
 	comments := "/api/v1/artifacts/" + rig.fixture.projectDocID + "/comments"
 	upload := map[string]any{"name": "runbook", "content": badProse}
@@ -276,7 +305,7 @@ func TestTheWritingCheckReaderOfAProjectDocument(t *testing.T) {
 	rig.wantRead("a new project document", "dana", rig.session(http.MethodPost, "/api/v1/projects/WCK/artifacts", upload))
 
 	rig.noProjectDefault()
-	rig.wantUnread("an edit of a project document with no default assignee", rig.session(http.MethodPost, edits, edit))
+	rig.wantUnread("an edit of a project document with no default assignee", rig.session(http.MethodPost, edits, editAgain))
 	rig.wantUnread("a comment on a project document with no default assignee", rig.session(http.MethodPost, comments, map[string]any{"body": badProse}))
 	// A new document of its own: the runbook above was written, and a version that adds no block
 	// gives the check nothing to read.

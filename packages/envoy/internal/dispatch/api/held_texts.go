@@ -950,7 +950,7 @@ func (s *server) tellNotPosted(ctx context.Context, writer string, frame reviewe
 	}
 	s.tellWriter(ctx, systemFrame{
 		id: frame.ID, body: body, writer: writer, key: "held-not-posted:" + frame.ID, mode: "steer",
-		expects: contracts.ExpectsReplyNone,
+		expects: contracts.ExpectsReplyUnset,
 	}, "")
 }
 
@@ -974,14 +974,16 @@ func (s *server) tellNearCopy(ctx context.Context, row heldRow, copies []model.D
 	}
 	s.tellWriter(ctx, systemFrame{
 		id: row.id, body: body, writer: row.writer, key: "held-near-copy:" + row.id, mode: "steer",
-		expects: contracts.ExpectsReplyNone,
+		expects: contracts.ExpectsReplyUnset,
 	}, "posted as a near copy of "+strings.Join(keys, ", "))
 }
 
 // tellWriter sends frame, a notice about the held text frame.id that wants no reply, to its writer
 // session, as the findings frame is sent (sendSystemFrame), and adds to the held text's detail
 // about, where given, and whether its writer was told: a text with no writer session, or whose
-// writer session has gone, gets no frame, and a send that failed is named with its error.
+// writer session has gone, gets no frame, and a send that failed is named with its error. A
+// notice leaves expects_reply out (ExpectsReplyUnset) rather than write the literal false, which a
+// listener built before #2903 answers 400 to (commentExpectsReply says why).
 func (s *server) tellWriter(ctx context.Context, frame systemFrame, about string) {
 	told := "its writer was told"
 	switch gone, known := s.writerGone(ctx, frame.writer); {

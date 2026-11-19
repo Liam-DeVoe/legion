@@ -183,8 +183,10 @@ describe.skipIf(!dispatchStackEnabled)(
 
       const printed = await ask(issue.key, QUESTION);
 
-      const id = /^Asked (\S+) on /m.exec(printed)?.[1];
-      if (id === undefined) throw new Error(`dispatch ask printed no ask id: ${printed}`);
+      // The CLI says the ask is held, not that it was asked, and names the id it reserved.
+      const id = /^Held for review \(reviewing\): ask (\S+) on /m.exec(printed)?.[1];
+      if (id === undefined) throw new Error(`dispatch ask printed no held ask id: ${printed}`);
+      expect(printed).not.toMatch(/^Asked /m);
       // The id the CLI printed is the held text's: the write was held, for the person who reads
       // the issue, and its review is running.
       const held = await asMachine<HeldRead>("GET", `/api/v1/held/${id}`);

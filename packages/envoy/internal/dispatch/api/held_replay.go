@@ -202,7 +202,9 @@ func (s *server) serveMounted(answer http.ResponseWriter, request *http.Request)
 	s.mux.ServeHTTP(answer, request)
 }
 
-// captureCaller is the caller r resolved, kept for a replay.
+// captureCaller is the caller r resolved, kept for a replay. A caller whose handler resolved its
+// actor first passes unloggedResolution(r), so the capture leaves the access-log line naming the
+// session that resolution named.
 func (s *server) captureCaller(r *http.Request) (heldCaller, error) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
@@ -263,7 +265,7 @@ func (s *server) reviewReply(w http.ResponseWriter, r *http.Request, actor model
 	if setting != ReviewHold {
 		return &postedReview{kind: kind, text: text, subject: subject, event: event}, true
 	}
-	caller, err := s.captureCaller(r)
+	caller, err := s.captureCaller(unloggedResolution(r))
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return nil, false

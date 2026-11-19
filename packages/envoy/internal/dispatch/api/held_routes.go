@@ -340,7 +340,7 @@ func (s *server) editHeldDecisionBlock(w http.ResponseWriter, r *http.Request, r
 		s.writeHandlerError(w, err)
 		return
 	}
-	caller, err := s.captureCaller(r)
+	caller, err := s.captureCaller(unloggedResolution(r))
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return

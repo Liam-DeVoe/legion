@@ -148,11 +148,12 @@ const SCHEMA_REFUSAL_DELAYS_MS = [0, 1_000, 2_000, 4_000, 8_000] as const;
 const NEWER_CONTENT_RELOAD_MS = 60_000;
 
 /** What the live editor lets the reader do. A closed issue's document takes comments by quote (the
- * bar's Comment alone): the server admits every socket on a closed issue read-only, so its
- * admission cannot say whether this editor's schema is outdated too. On an open issue a read-only
- * admission means it is, and the document takes nothing until a reload, since this editor's
- * reading of it may not be the server's. A reading column (`page` false) takes neither edits nor
- * comments: a reader who clicks into the text beside a list is only reading. */
+ * bar's Comment, beside Define, which writes nothing): the server admits every socket on a closed
+ * issue read-only, so its admission cannot say whether this editor's schema is outdated too. On an
+ * open issue a read-only admission means it is, and the document takes nothing until a reload,
+ * since this editor's reading of it may not be the server's. A reading column (`page` false)
+ * takes neither edits nor comments: a reader who clicks into the text beside a list is only
+ * reading. */
 function editorAccess(
   page: boolean,
   isClosed: boolean,

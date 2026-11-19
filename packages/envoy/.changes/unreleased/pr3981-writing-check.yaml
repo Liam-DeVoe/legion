@@ -11,9 +11,10 @@ body: |-
   session. It does not read a person's own write, the Legion daemon's write or a write Dispatch
   makes. The server decides who reads the text from the record, never from the text, and a write
   that no person reads is recorded `exempt_no_reader`.
-  Each decision is one row of the new table `writing_check_events`, with its outcome (`findings`,
-  `clean` or an `exempt_*` outcome), its route, its writer, the rules it broke and its reader. A
-  daily sweep deletes the rows older than 90 days.
+  Each decision about a write that took place is one row of the new table `writing_check_events`,
+  with its outcome (`findings`, `clean` or an `exempt_*` outcome), its route, its writer, the rules
+  it broke and its reader; a write the route refuses after the check records no row. A daily sweep
+  deletes the rows older than 90 days.
   `GET /api/v1/writing-check` answers the check as the process runs it: its rules, the rules it
   leaves out and why, and the detector's state.
   The image's third-party notices now carry the licence of the ported rules and of the data the

@@ -897,6 +897,11 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 // (keyedReplays), nil for a row that has none.
 func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFunc {
 	handler := route.Handler
+	if route.Method != http.MethodGet {
+		// Innermost, so the answer it reads is the handler's own: the writing check's rows of a
+		// write are recorded once its handler answered it 2xx, and a refused write records none.
+		handler = s.recordTakenWrites(handler)
+	}
 	// A session's read by id of a held text answers 409 HELD_TEXT with the held id.
 	handler = s.answerHeldRead(route, handler)
 	upload := route.Method+" "+route.Pattern == issueUploadRoute
@@ -1370,6 +1375,17 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		// the request's own credential reads it from optionalActor (callerHoldsScope).
 		// Not Proven: the body named this session and the credential proved none.
 	}, nil
+}
+
+// unloggedResolution is r on a context that names nobody on its access-log line
+// (accesslog.Detached), for a layer that resolves the caller again after the request's own
+// resolution named it, to read the credential the request presented rather than to admit it: the
+// writing check's personal token (writingCheckTokenID) and a kept write's caller (captureCaller,
+// where the handler resolved its actor first). The request's own resolution notes a bearer's
+// credential and then the session its body names (bearerSessionActor), and the last note wins, so
+// such a second resolution would put the bare credential back on the line in the session's place.
+func unloggedResolution(r *http.Request) *http.Request {
+	return r.WithContext(accesslog.Detached(r.Context()))
 }
 
 // writeAuthenticationError answers a caller that did not resolve: 401 NO_IDENTITY, or 503
