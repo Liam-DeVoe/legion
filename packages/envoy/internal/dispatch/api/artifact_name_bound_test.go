@@ -44,7 +44,7 @@ func nameBoundTargets(issueKey, session string) []nameBoundTarget {
 // one, and writes nothing. A name whose key is exactly the bound is stored, read back by its slug,
 // and takes a second version.
 func TestANewArtifactNamePastTheBoundIsRefused(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "CORE", "Long artifact names", "Context paragraph.\n")
 	const session = "session-0123456789abcdef"
 	bound := fmt.Sprintf("past the %d bytes", maxNewArtifactKeyBytes)
@@ -58,7 +58,7 @@ func TestANewArtifactNamePastTheBoundIsRefused(t *testing.T) {
 	// writes doc_settlements_pending whenever it likes.
 	stored := func(t *testing.T) map[string]string {
 		t.Helper()
-		all := databaseFingerprint(t, database)
+		all := databaseFingerprint(t, served)
 		return map[string]string{"artifacts": all["artifacts"], "artifact_versions": all["artifact_versions"], "events": all["events"], "refs": all["refs"]}
 	}
 

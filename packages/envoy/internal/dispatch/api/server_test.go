@@ -456,12 +456,15 @@ func multipartRequest(t *testing.T, handler http.Handler, target string, fields 
 	return response
 }
 
-// databaseFingerprint hashes every row of every table, so a test can tell a request wrote nothing
-// anywhere: no row inserted, updated or deleted. A test whose earlier requests left writes running
-// waits them out before its first fingerprint (awaitBackgroundWrites): one that commits between two
-// fingerprints reads as the write of the request between them.
-func databaseFingerprint(t *testing.T, database *store.Store) map[string]string {
+// databaseFingerprint hashes every row of every table of served's database, so a test can tell a
+// request wrote nothing anywhere: no row inserted, updated or deleted. It first waits out every
+// write served's earlier requests left running past their answers (awaitBackgroundWrites): one
+// that commits between two fingerprints would read as the write of the request between them. It
+// takes the server rather than the store so that no fingerprint can be taken without that wait.
+func databaseFingerprint(t *testing.T, served *server) map[string]string {
 	t.Helper()
+	awaitBackgroundWrites(t, served)
+	database := served.deps.Store
 	ctx := context.Background()
 	rows, err := database.Pool.Query(ctx, `select tablename from pg_tables where schemaname = 'public'`)
 	if err != nil {

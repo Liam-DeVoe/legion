@@ -52,9 +52,9 @@ func (g *gatedProjectMark) ProjectMark(ctx context.Context, artifactID, markID s
 // whether the close was seen.
 func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 	// The seeded spec's settlement takes the owner lock this test holds; keep it out of the queue.
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Closed while waiting", "A spec")
-	before := databaseFingerprint(t, database)
+	before := databaseFingerprint(t, served)
 
 	closer, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -86,7 +86,7 @@ func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 	}
 	// The close changed the issue row; the refused ask changed nothing at all: no ask, no event,
 	// no part row.
-	after := databaseFingerprint(t, database)
+	after := databaseFingerprint(t, served)
 	delete(before, "issues")
 	delete(after, "issues")
 	assertUnchanged(t, "an ask refused for a close it waited out", before, after)
@@ -425,7 +425,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	t.Run("a refused guard", func(t *testing.T) {
 		var service *docs.Service
 		var gate *firstReplaceGate
-		handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
 			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 			gate = &firstReplaceGate{
@@ -458,14 +458,14 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 			t.Fatalf("decide the suggestion behind the accept: %v", err)
 		}
 		// The accept's read phase wrote nothing, so this is the database as it stood before it.
-		before := databaseFingerprint(t, database)
+		before := databaseFingerprint(t, served)
 		release()
 
 		response := awaitResponse(t, responses)
 		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"ALREADY_ACTIONED"`) {
 			t.Fatalf("accept of a suggestion decided behind it: status=%d body=%s, want 409 ALREADY_ACTIONED", response.Code, response.Body.String())
 		}
-		assertUnchanged(t, "an accept whose guard refused in its write phase", before, databaseFingerprint(t, database))
+		assertUnchanged(t, "an accept whose guard refused in its write phase", before, databaseFingerprint(t, served))
 		assertDocumentUnchanged(t, service, artifactID)
 	})
 
@@ -475,7 +475,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	// written in the transaction.
 	t.Run("a unique violation", func(t *testing.T) {
 		var service *docs.Service
-		handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
 			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 			return service
@@ -489,13 +489,13 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		`, issueKey); err != nil {
 			t.Fatalf("take the issue's next sequence number: %v", err)
 		}
-		before := databaseFingerprint(t, database)
+		before := databaseFingerprint(t, served)
 
 		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
 		if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"code":"INTERNAL"`) {
 			t.Fatalf("accept whose event append collides: status=%d body=%s, want 500 INTERNAL", response.Code, response.Body.String())
 		}
-		assertUnchanged(t, "an accept whose event append failed in its write phase", before, databaseFingerprint(t, database))
+		assertUnchanged(t, "an accept whose event append failed in its write phase", before, databaseFingerprint(t, served))
 		assertDocumentUnchanged(t, service, artifactID)
 	})
 
@@ -517,7 +517,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	// other statement of the batch ran on the server, and the whole transaction goes.
 	t.Run("a comment whose event collides", func(t *testing.T) {
 		var service *docs.Service
-		handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
 			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 			return service
@@ -525,7 +525,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		handler = withDeadline(handler)
 		issue := createInteractionIssue(t, handler, "TEST", "Failed comment write phase", "foo")
 		takeNextSeq(t, database, issue.Key)
-		before := databaseFingerprint(t, database)
+		before := databaseFingerprint(t, served)
 
 		response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
 			"body": "See dispatch://" + issue.Key + ".", "anchor": map[string]any{"artifact": "spec", "quote": "foo"},
@@ -534,14 +534,14 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"code":"INTERNAL"`) {
 			t.Fatalf("comment whose event append collides: status=%d body=%s, want 500 INTERNAL", response.Code, response.Body.String())
 		}
-		assertUnchanged(t, "a comment whose event append failed in its write phase", before, databaseFingerprint(t, database))
+		assertUnchanged(t, "a comment whose event append failed in its write phase", before, databaseFingerprint(t, served))
 		assertDocumentUnchanged(t, service, issue.PrimaryArtifactID)
 	})
 
 	// A message writes without a document ledger, its insert, references, event and stamp one batch
 	// of their own (store.RunWrite): the event's collision takes the message's row with it.
 	t.Run("a message whose event collides", func(t *testing.T) {
-		handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 			service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
 			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 			return service
@@ -549,7 +549,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		handler = withDeadline(handler)
 		issue := createInteractionIssue(t, handler, "TEST", "Failed message write phase", "foo")
 		takeNextSeq(t, database, issue.Key)
-		before := databaseFingerprint(t, database)
+		before := databaseFingerprint(t, served)
 
 		response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
 			"body": "Status: see dispatch://" + issue.Key + ".", "actor": sessionActor(),
@@ -557,6 +557,6 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"code":"INTERNAL"`) {
 			t.Fatalf("message whose event append collides: status=%d body=%s, want 500 INTERNAL", response.Code, response.Body.String())
 		}
-		assertUnchanged(t, "a message whose event append failed in its write phase", before, databaseFingerprint(t, database))
+		assertUnchanged(t, "a message whose event append failed in its write phase", before, databaseFingerprint(t, served))
 	})
 }
