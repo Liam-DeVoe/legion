@@ -4039,6 +4039,167 @@ test("Enter puts the caret in a node, and Escape gives the row back", async ({ b
   }
 });
 
+/** A box's background before anything is drawn behind it, as computed. */
+const TRANSPARENT = "rgba(0, 0, 0, 0)";
+
+/** The ids of the rows the outline marks as taking typing, `[data-editable]` (`useNodeEditing.ts`'s
+ *  `nodeEditable`), in the order they are drawn. */
+function editableRows(page: Page): Promise<string[]> {
+  return issuePage(page)
+    .locator("[data-node-row][data-editable]")
+    .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-node-id") ?? "<no id>"));
+}
+
+/** What the cue that a block takes typing draws on `row` (`styles.css`'s `dispatch-edit-cue`), as
+ *  computed: the row's cursor, and the background of its card, which is where the tint is. */
+function rowCue(row: Locator): Promise<{ readonly background: string; readonly cursor: string }> {
+  return row.evaluate((element) => {
+    const card = element.querySelector(":scope > [data-node-card]");
+    return {
+      background: card === null ? "<no card>" : getComputedStyle(card).backgroundColor,
+      cursor: getComputedStyle(element).cursor,
+    };
+  });
+}
+
+/** The outline the cue draws on the box a row's editor scrolls in, as computed, and whether the
+ *  focus is inside that box. */
+function editorBoxRule(row: Locator): Promise<{
+  readonly color: string;
+  readonly focused: boolean;
+  readonly offset: string;
+  readonly style: string;
+  readonly width: string;
+}> {
+  return row.locator("[data-editor-box]").evaluate((box) => {
+    const style = getComputedStyle(box);
+    return {
+      color: style.outlineColor,
+      focused: box.matches(":focus-within"),
+      offset: style.outlineOffset,
+      style: style.outlineStyle,
+      width: style.outlineWidth,
+    };
+  });
+}
+
+/** The page's faint pane and its ink as the browser computes them from the palette (`styles.css`'s
+ *  `@theme`), which the cue is drawn in. */
+function cueColours(page: Page): Promise<{ readonly ink: string; readonly pane: string }> {
+  return page.evaluate(() => {
+    const probe = document.createElement("span");
+    probe.style.color = "var(--color-page-ink)";
+    probe.style.backgroundColor = "var(--color-page-pane)";
+    document.body.append(probe);
+    const style = getComputedStyle(probe);
+    const colours = { ink: style.color, pane: style.backgroundColor };
+    probe.remove();
+    return colours;
+  });
+}
+
+/** Opens the issue `key` and, once the page has put the focus on a row of its own, takes it off
+ *  the outline and moves the pointer away, so no row is drawn focused or under the pointer. */
+async function openWithNoRowFocused(page: Page, key: string): Promise<void> {
+  await gotoIssue(page, `/issues/${key}`);
+  await expectIssuePageDrawn(page);
+  await expect
+    .poll(async () => (await focusedRow(page)) !== null, {
+      message: "the page opens with the focus on no row",
+    })
+    .toBe(true);
+  await focusThePage(page);
+  await page.mouse.move(0, 0);
+}
+
+// A block that takes typing says so. Under the pointer, a row whose node Enter puts the caret in
+// - a block of one of the issue's documents, on an open issue - draws the text cursor and the
+// page's faint pane behind its card; once Enter has put the caret in it, the box its editor
+// scrolls in draws a 1 px outline in the page's ink just inside its edge, which takes no room. A
+// comment's row takes no typing and draws neither, and neither does any block of a closed issue,
+// whose documents are read-only. Each is read as computed style, the rows by the mark the outline
+// gives a row that takes typing.
+// SLOW(>=2s): the whole issue seeded and loaded, Enter waited on until the statement's editor
+// opens, then the issue closed and loaded again.
+test("an editable row shows it takes typing under the pointer and at focus, and a comment row and a closed issue's block show neither", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
+    const statement = blockNodeId(specSlug, requirementBlockId(2));
+    const check = blockNodeId(verificationSlug, seeded.checks.noResult);
+    const comment = seeded.comments.threads[0] ?? "";
+    await openWithNoRowFocused(page, seeded.key);
+    const colours = await cueColours(page);
+    const statementRow = nodeRow(page, statement).first();
+    const commentRow = nodeRow(page, comment).first();
+
+    // The statement's row and the check's are marked as taking typing, and the comment's is not.
+    await expect
+      .poll(async () => (await editableRows(page)).includes(statement), {
+        message: "no row the outline marks as taking typing ([data-editable]) is the statement's",
+      })
+      .toBe(true);
+    const marked = await editableRows(page);
+    expect(marked, "the check's row is not marked as taking typing").toContain(check);
+    expect(marked, "the comment's row is marked as taking typing").not.toContain(comment);
+
+    // Under the pointer the statement's row draws the text cursor and the pane behind its card,
+    // and drew neither before.
+    expect(
+      await rowCue(statementRow),
+      "the statement's row draws a cue with no pointer on it"
+    ).toEqual({ background: TRANSPARENT, cursor: "auto" });
+    await statementRow.hover();
+    await expect
+      .poll(() => rowCue(statementRow), {
+        message: "the statement's row under the pointer draws no text cursor and no tint",
+      })
+      .toEqual({ background: colours.pane, cursor: "text" });
+
+    // The comment's row under the pointer draws neither.
+    await commentRow.hover();
+    await nextFrames(page);
+    expect(await rowCue(commentRow), "the comment's row under the pointer draws a cue").toEqual({
+      background: TRANSPARENT,
+      cursor: "auto",
+    });
+
+    // Once Enter has put the caret in the statement, its editor's box draws the outline.
+    await focusRow(page, statement);
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretInNode(page), { message: "Enter did not put the caret in the statement" })
+      .toBe(true);
+    await expect
+      .poll(() => editorBoxRule(statementRow), {
+        message: "the box of the statement's editor draws no 1 px rule in the ink at focus",
+      })
+      .toEqual({ color: colours.ink, focused: true, offset: "-1px", style: "solid", width: "1px" });
+    await page.keyboard.press("Escape");
+    await expect
+      .poll(() => caretInNode(page), { message: "Escape did not take the caret out" })
+      .toBe(false);
+
+    // Closed, the issue's documents are read-only: no row is marked, and the statement's row
+    // under the pointer draws neither.
+    await patchIssue(seeded.key, { status: "done" });
+    await openWithNoRowFocused(page, seeded.key);
+    expect(
+      await editableRows(page),
+      "a row of the closed issue is marked as taking typing"
+    ).toEqual([]);
+    await statementRow.hover();
+    await nextFrames(page);
+    expect(
+      await rowCue(statementRow),
+      "the closed issue's statement under the pointer draws a cue"
+    ).toEqual({ background: TRANSPARENT, cursor: "auto" });
+  });
+});
+
 /** Where `after` differs from `before`: the stretch of each that differs, with a few characters
  *  around it, for a failure to say where an edit landed. */
 function changeIn(before: string, after: string): string {

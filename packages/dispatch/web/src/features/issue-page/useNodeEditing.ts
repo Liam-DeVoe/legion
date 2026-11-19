@@ -80,6 +80,24 @@ export function abortOnReaderAct(then?: () => void): AbortController {
 }
 
 /**
+ * Whether `node`'s row takes typing, and so draws the cue that it does (`styles.css`). It is
+ * Enter's own rule - the node is a block of one of the issue's documents (`documentOfNode`),
+ * which Enter puts the caret in (`useNodeEditing`'s `edit`), a statement and a check among them -
+ * on an issue that is open. A closed issue's documents take comments by quote and no edit
+ * (`ProofDocument`'s `editorAccess`), so none of its blocks takes typing, though Enter still
+ * opens the editor there. Every other node is no block of a document the issue holds - the
+ * issue, a child issue, an ask, a comment, a message, a result, a block of another issue's
+ * document such as one above it - and takes no caret at all.
+ */
+export function nodeEditable(
+  node: Pick<TreeNode, "id">,
+  artifacts: ReadonlyMap<string, Artifact>,
+  isClosed: boolean
+): boolean {
+  return !isClosed && documentOfNode(node.id, artifacts) !== undefined;
+}
+
+/**
  * The caret in a node's own text, where that text lives: the node's block of its own document,
  * with the collaborative cursors and the comment chord it has there.
  *

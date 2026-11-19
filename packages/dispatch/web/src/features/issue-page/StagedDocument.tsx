@@ -51,7 +51,7 @@ export function StagedDocument({
     <>
       {resting ? <div className="flex min-w-0 flex-col" ref={stage} /> : null}
       <DocumentStage artifactId={artifact.id}>
-        <EditorBox>
+        <EditorBox readOnly={isClosed}>
           {user.data === undefined ? (
             <p>Loading document…</p>
           ) : (
@@ -107,12 +107,23 @@ export function StagedDocument({
  * `!`, since the editor's stylesheets stand outside Tailwind's layers and would win over a
  * utility. A collaborator's caret label near a line's end hangs back toward the line's start
  * rather than past the box's end (`@legion/proof-editor`'s `collab-cursor-plugin.ts`).
+ *
+ * The box carries the page's cue that a block takes typing (`dispatch-edit-cue`, `styles.css`):
+ * the text cursor and the page's faint pane under the pointer, and a 1 px rule in the page's ink
+ * inside its edge while the editor in it holds the focus, which takes no room in the box. A
+ * document that takes no edit, a closed issue's (`readOnly`), draws none of it.
  */
-export function EditorBox({ children }: { children: ReactNode }): ReactNode {
+export function EditorBox({
+  children,
+  readOnly = false,
+}: {
+  children: ReactNode;
+  readOnly?: boolean;
+}): ReactNode {
   return (
     <div className="min-w-0 [overflow-anchor:none]">
       <div
-        className="max-h-[calc(100dvh-var(--issue-identity-height,0px)-var(--issue-composer-height,0px))] overflow-y-auto overscroll-contain [&_.ProseMirror]:[overflow-wrap:anywhere]! [&_.dispatch-reference]:max-w-[min(24em,100%)]!"
+        className={`${readOnly ? "" : "dispatch-edit-cue "}max-h-[calc(100dvh-var(--issue-identity-height,0px)-var(--issue-composer-height,0px))] overflow-y-auto overscroll-contain [&_.ProseMirror]:[overflow-wrap:anywhere]! [&_.dispatch-reference]:max-w-[min(24em,100%)]!`}
         {...{ [EDITOR_BOX_ATTRIBUTE]: "" }}
       >
         {children}
