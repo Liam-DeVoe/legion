@@ -649,19 +649,21 @@ func lockArtifactOwner(ctx context.Context, tx pgx.Tx, artifactID string) (artif
 		return artifactOwner{}, false, fmt.Errorf("lock and read document issue: %w", err)
 	}
 	// The artifacts row was read before that lock was granted, and a removal holds the issue's
-	// row from its first read to its commit (api.removeArtifact): a read that found the row can
-	// be describing a document whose every row the removal deleted while this waited for the
-	// lock. So the row is read once more now that the lock is held, and in a statement of its
-	// own, for the reason lockedHead reads the durable head in a statement of its own: under
-	// read committed a statement reads the snapshot it started with, and the lock's wait
-	// re-fetches the row it waited for and nothing else, so a subquery of the statement above
-	// would still read the document as it stood before the removal committed. Under the lock no
-	// removal can run, so what this reads holds for the rest of the caller's transaction.
+	// owner lock from its first read to its commit (api.removeArtifact, beginArtifactWrite), which
+	// the lock above waits for no longer than the write lock bound (store.LockOwnerAndRead,
+	// refused store.ErrPoolBusy past it): a read that found the row can be describing a document
+	// whose every row the removal deleted while this waited for the lock. So the row is read once
+	// more now that the lock is held, and in a statement of its own, for the reason lockedHead
+	// reads the durable head in a statement of its own: under read committed a statement reads
+	// the snapshot it started with, and the lock's wait re-fetches the row it waited for and
+	// nothing else, so a subquery of the statement above would still read the document as it
+	// stood before the removal committed. Under the lock no removal can run, so what this reads
+	// holds for the rest of the caller's transaction.
 	//
-	// It locks no row: every delete of an artifacts row takes the issue's row first
-	// (beginArtifactWrite), so the lock already held orders them, and a lock here would take the
-	// two rows in the opposite order from the reads that lock an artifacts row before they read
-	// an issue (inboxReadLockDocuments).
+	// It locks no row: the one delete of an issue document's artifacts row, the removal's, takes
+	// the issue's owner lock first (beginArtifactWrite), so the lock already held orders them, and
+	// a lock here would take the two rows in the opposite order from the reads that lock an
+	// artifacts row before they read an issue (inboxReadLockDocuments).
 	var exists bool
 	if err := tx.QueryRow(ctx, `select true from artifacts where id = $1`, artifactID).Scan(&exists); err != nil {
 		return artifactOwner{}, false, fmt.Errorf("re-read document owner under its issue's lock: %w", err)

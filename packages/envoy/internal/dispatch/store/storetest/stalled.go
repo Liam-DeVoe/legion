@@ -66,7 +66,8 @@ func (s *StalledSocket) StallAfterSent(matches func(sent []byte) bool) { s.match
 
 // SimpleQuery matches the simple-query message pgx writes for query and nothing else. pgx sends
 // a statement with no arguments that way (pgx.Conn.exec), which is how it opens a transaction:
-// `begin` (pgx.TxOptions.beginSQL).
+// `begin` (pgx.TxOptions.beginSQL), which the request pool sends with its transaction's lock bound
+// in the same message (store.RequestBeginStatement).
 func SimpleQuery(query string) func(sent []byte) bool {
 	frame := append([]byte{'Q'}, binary.BigEndian.AppendUint32(nil, uint32(len(query)+5))...)
 	frame = append(append(frame, query...), 0)

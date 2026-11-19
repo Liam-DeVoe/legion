@@ -551,8 +551,9 @@ func (s *settlement) settlePass(parent context.Context) (settleStep, settleOutco
 //
 // The transaction's first statement bounds its own idle time (store.BoundIdleInTransaction). It
 // takes the document owner's lock, which every request writing the document waits on until the
-// owner lock's wait runs out, and the document's advisory lock, which such a request waits on with
-// no lock_timeout, so one orphaned with its connection would hold them until Postgres noticed; the
+// owner lock's wait runs out, and the document's advisory lock, which such a request waits on until
+// the write lock bound runs out, so one orphaned with its connection would hold them, refusing
+// those requests, until Postgres noticed; the
 // settlements pool's connections carry no bound of their own, because the settlement's warm-up load
 // folds on that pool in a read that may sit idle for longer. A transaction it could not bound is
 // rolled back here.

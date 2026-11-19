@@ -418,14 +418,15 @@ func TestAWriteStatementOutsideATransactionTheDatabaseDropsIsAnOutcomeNobodyKnow
 //
 // The stall is armed on the BEGIN message itself, so it is this write's transaction that stalls
 // and no other call of the pool (storetest.SimpleQuery; pgx sends an argument-less statement as
-// a simple query, and `begin` is how it opens a transaction).
+// a simple query, and the request pool opens a transaction with one: its BEGIN and its lock bound,
+// store.RequestBeginStatement).
 func TestAWriteWhoseBeginTheDatabaseStopsAnsweringIsRefusedDatabaseBusy(t *testing.T) {
 	socket := storetest.NewStalledSocket(store.RequestsPool)
 	logs := captureDebugLog(t)
 	handler, _, _ := newTestServer(t, testServerOptions{dialRequestPool: socket.Dial, settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "The database stops answering a BEGIN", "A spec")
 
-	socket.StallAfterSent(storetest.SimpleQuery("begin"))
+	socket.StallAfterSent(storetest.SimpleQuery(store.RequestBeginStatement(pgx.TxOptions{})))
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments",
 		map[string]any{"body": "A comment whose transaction never opened"}, "alice")
 

@@ -129,8 +129,9 @@ const warnCompactionForget = "dispatch: take a document with nothing to fold off
 //
 // The transaction's first statement bounds its own idle time (store.BoundIdleInTransaction), as a
 // compaction's write does (writeCompaction): the document's lock is one every request writing the
-// document waits on with no lock_timeout, and the compaction pool's connections carry no bound of
-// their own.
+// document waits on until the write lock bound runs out (store.LockWithinBound), so one orphaned
+// with its connection would refuse those requests until Postgres noticed, and the compaction
+// pool's connections carry no bound of their own.
 func forgetCompactionCandidate(ctx context.Context, pool *store.RawPool, room string) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {

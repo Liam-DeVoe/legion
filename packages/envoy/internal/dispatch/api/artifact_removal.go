@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // removeArtifact removes a document of an issue that is still untouched: one made by typing a
@@ -86,7 +87,7 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, clear := range artifactRemovalClears(artifact) {
-		if _, err := tx.Exec(r.Context(), clear.statement, clear.args...); err != nil {
+		if err := clear.run(r.Context(), tx); err != nil {
 			s.writeHandlerError(w, r, fmt.Errorf("clear the %s of the removed document: %w", clear.what, err))
 			return
 		}
@@ -286,11 +287,25 @@ func projectDocumentRemovalRefusal(artifact model.Artifact) error {
 }
 
 // artifactClear is one statement the removal runs before it deletes the artifact row, with the
-// rows it clears named for the error a failure reports.
+// rows it clears named for the error a failure reports. withinBound runs it in the write lock bound
+// (store.WriteBatch.QueueWithinBound), for the clear whose rows another owner's writers lock.
 type artifactClear struct {
-	what      string
-	statement string
-	args      []any
+	what        string
+	statement   string
+	args        []any
+	withinBound bool
+}
+
+// run runs clear's statement in tx: in one bounded batch when it is withinBound, where a wait that
+// runs the bound out is store.ErrPoolBusy, and as a plain statement otherwise.
+func (clear artifactClear) run(ctx context.Context, tx pgx.Tx) error {
+	if !clear.withinBound {
+		_, err := tx.Exec(ctx, clear.statement, clear.args...)
+		return err
+	}
+	var write store.WriteBatch
+	write.QueueWithinBound("", clear.statement, clear.args...)
+	return write.Send(ctx, tx)
 }
 
 // artifactRemovalClears is every row the artifact's own delete leaves behind that this route can
@@ -331,6 +346,14 @@ func artifactRemovalClears(artifact model.Artifact) []artifactClear {
 		{what: "search rows", statement: `delete from document_search where artifact_id = $1`, args: id},
 		{what: "compaction owed", statement: `delete from doc_compaction_owed where artifact_id = $1`, args: id},
 		{what: "search terms owed", statement: `delete from search_term_queue where artifact_id = $1`, args: id},
-		{what: "inbox threads", statement: `delete from user_threads where artifact_id = $1`, args: id},
+		// The removal holds the issue's owner lock, while every other locker of a user_threads row
+		// takes the artifact's (replies.go, inbox_read.go, inbox_dismiss.go and the trigger
+		// writers), so the owner lock orders none of them against this delete. Today the delete
+		// matches no row: the thread trigger writes artifact_id only for a thread with no issue, a
+		// project document's (20261105093501), the removal refuses a project document
+		// (artifactRowIsUntouched) and any document a comment or an ask points at
+		// (artifactIsUntouched), and nothing moves an artifact's issue_key. It is the cleanup if
+		// one of those stops holding, and it waits for a holder within the write lock bound.
+		{what: "inbox threads", statement: `delete from user_threads where artifact_id = $1`, args: id, withinBound: true},
 	}
 }

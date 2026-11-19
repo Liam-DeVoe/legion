@@ -403,9 +403,12 @@ const issueClaimedNow = "greatest(updated_at, now())"
 // unless the caller read that moment itself and passes it as at: a caller whose write phase
 // reads no row back writes the value explicitly (claimWrite), and reads it as that same
 // transaction's now(), so the three stamps still carry one value. The statement returns the
-// updated_at it left, which is not always the value it wrote - greatest keeps a later one a
-// writer holding the row alone stamped while this transaction waited for it - so the answer
-// carries what the row holds.
+// updated_at it left, which is not always the value it wrote - greatest keeps a later one that a
+// writer holding the row without the issue's owner lock stamped while this transaction waited for
+// the row: every writer of this build takes that lock first, so only a process of an earlier build
+// does (store.OwnerLockProtocol), and a request's transaction waits for it no longer than the
+// write lock bound (the request pool's lock_timeout, store.Pool.Begin) - so the answer carries
+// what the row holds.
 func issueClaimStatement(key string, holder *model.Actor, at time.Time) (string, []any, error) {
 	var actor any
 	claimedAt := "null"
@@ -582,9 +585,12 @@ func claimLegionManagedStatus(ctx context.Context, tx pgx.Tx, key string) *bool 
 // claim's update, the event's append and the commit, which go to the server as one batch
 // (INFRA-636). The issue the answer and the event's payload carry is the read issue with the
 // claim this write gives it, not a second read of the row: a claim change moves nothing else in
-// the row, and every other writer of the row takes the issue's owner lock, which this
-// transaction holds. Only updated_at can move under a writer that takes the row alone, so it
-// comes back from the update itself (queueIssueClaim), which costs no statement.
+// the row, and every other writer of the row in this build takes the issue's owner lock, which
+// this transaction holds. A process of an earlier build writes the row without that lock
+// (store.OwnerLockProtocol), and this transaction's update waits for such a writer no longer than
+// the write lock bound (the request pool's lock_timeout, store.Pool.Begin); only updated_at can
+// move under it, so it comes back from the update itself (queueIssueClaim), which costs no
+// statement.
 func (s *server) claimWrite(
 	ctx context.Context,
 	key string,

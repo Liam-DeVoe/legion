@@ -44,9 +44,11 @@ const poolSizeParam = "pool_max_conns"
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
 // SharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
 // string that names its database. It is the request pool (RequestsPool): its connections carry
-// dispatch-requests in application_name, and its acquires are bounded at requestAcquireBound.
-// Every connection it opens scans timestamptz in UTC (scanTimestampsInUTC), as do the pools
-// Pool.separate copies from its configuration.
+// dispatch-requests in application_name and the write lock bound in lock_timeout, and its acquires
+// are bounded at requestAcquireBound. Every connection it opens scans timestamptz in UTC
+// (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration, and is
+// refused where its session does not carry the lock bound its configuration asks for
+// (requireLockBound, connected).
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	declared, err := declaresPoolSize(databaseURL)
 	if err != nil {
@@ -63,7 +65,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	config.MaxConns = SharedPoolSize
 	configurePool(config, RequestsPool, requestAcquireBound)
-	config.AfterConnect = scanTimestampsInUTC
+	config.AfterConnect = connected
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("open Postgres pool: %w", err)
@@ -75,6 +77,16 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		return nil, fmt.Errorf("ping Postgres: %w", err)
 	}
 	return &Store{Pool: NewPool(pool)}, nil
+}
+
+// connected readies each new connection of a pool opened from Open's configuration, the separate
+// pools copied from it included: its timestamps scan in UTC (scanTimestampsInUTC), and a session
+// that does not carry the lock_timeout its pool asks for is refused (requireLockBound).
+func connected(ctx context.Context, conn *pgx.Conn) error {
+	if err := scanTimestampsInUTC(ctx, conn); err != nil {
+		return err
+	}
+	return requireLockBound(ctx, conn)
 }
 
 // scanTimestampsInUTC makes every timestamptz a connection scans come back in UTC, whatever zone

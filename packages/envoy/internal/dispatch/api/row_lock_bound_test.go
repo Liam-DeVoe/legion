@@ -52,10 +52,11 @@ type heldRowRequest struct {
 // dismiss (each with the row its own lock order reaches first), and an agent's read mark's prune.
 // Then one row per write of such a row that waited on it with no lock taken first: the accept's
 // write of its attempt, an agent's read mark's own row, an architecture source's save and removal,
-// and, below the handlers, a mention sender's record of its resolution and its settle, a keyed
-// repeat's claim of an owed mention (a write of its own on the background pool), and a direct
-// message sender's settle and claim renewal, each refused store.ErrPoolBusy, which the routes that
-// reach them answer 503 as above.
+// a document's removal's clear of the inbox threads that name it (whose other writers take the
+// document's owner lock, where the removal holds its issue's), and, below the handlers, a mention
+// sender's record of its resolution and its settle, a keyed repeat's claim of an owed mention (a
+// write of its own on the background pool), and a direct message sender's settle and claim
+// renewal, each refused store.ErrPoolBusy, which the routes that reach them answer 503 as above.
 // The bound is the test's (store.WithLockWaitForTest) rather than production's ten seconds, and the
 // holder is a transaction of the test's own that holds the row until the test lets it go.
 func TestARequestBehindARowAnotherTransactionHoldsIsRefusedBusyAtItsBound(t *testing.T) {
@@ -262,6 +263,30 @@ func TestARequestBehindARowAnotherTransactionHoldsIsRefusedBusyAtItsBound(t *tes
 			},
 		},
 		{
+			name: "a document's removal behind an inbox thread row that names the document",
+			arrange: func(t *testing.T) heldRowRequest {
+				handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+				createInteractionIssue(t, handler, "TEST", "A spec of its own", "# Spec\n\nA passage.\n")
+				issue := titleIssue(t, handler, "A document made by mistake")
+				document := emptyDocument(t, handler, issue.Key, "Lauch notes")
+				// No write of Dispatch's names an issue's document in a thread row - the thread
+				// trigger records artifact_id only for a thread with no issue, a project document's -
+				// so the row is planted directly: the removal's clear is the cleanup for the day that
+				// rule stops holding (artifactRemovalClears).
+				if _, err := database.Pool.Exec(context.Background(), `
+					insert into user_threads (login, thread_id, kind, project_key, artifact_id, read_through)
+					values ('alice', gen_random_uuid(), 'comment', $1, $2, now())`, issue.Project, document.ID); err != nil {
+					t.Fatalf("plant an inbox thread row naming the document: %v", err)
+				}
+				return heldRowRequest{
+					handler: handler, database: database,
+					hold: `select 1 from user_threads where artifact_id = $1 for update`, holdArgs: []any{document.ID},
+					method: http.MethodDelete, path: "/api/v1/artifacts/" + document.ID,
+					written: http.StatusNoContent,
+				}
+			},
+		},
+		{
 			name: "a mention sender's record of its resolution behind its attempt's row",
 			arrange: func(t *testing.T) heldRowRequest {
 				database, served, comment, claim := reopenedMentionAttempt(t, true)
@@ -434,6 +459,94 @@ func TestARequestBehindARowAnotherTransactionHoldsIsRefusedBusyAtItsBound(t *tes
 			case arranged.call == nil && again.Code != arranged.written:
 				t.Fatalf("the request sent again once the row was free: status=%d body=%s, want %d",
 					again.Code, again.Body.String(), arranged.written)
+			}
+		})
+	}
+}
+
+// A statement of a request transaction that waits on a lock no bounded wait of its own covers - a
+// plain advisory lock, a plain locking read - waits no longer than a write's lock bound (the
+// store's lockWait), on the request pool exactly as production opens it (storetest.Open, through
+// store.Open): the transaction carries the bound from its BEGIN (store.Pool.Begin), and the
+// pool's connections carry it for a statement outside a transaction. Postgres refuses the wait
+// lock_not_available (55P03), lock_timeout covering an advisory lock as it covers a row lock, and
+// the refusal is answered as every lock wait that ran out its bound is: store.IsPoolBusy, which
+// the api's error mapping (admission.WriteUnserved, writeHandlerError) answers 503 DATABASE_BUSY
+// with Retry-After. Once the lock is free the same statement goes through. The bound is the
+// test's (store.WithLockWaitForTest), which a request transaction's BEGIN takes from its context;
+// the test gives up well before production's ten seconds, which the connection's own setting
+// would end the wait at.
+func TestAPlainLockWaitOfARequestTransactionIsRefusedBusyAtTheWriteLockBound(t *testing.T) {
+	const bound = time.Second
+	database := storetest.Open(t)
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx, `create table plain_lock_wait (id int primary key); insert into plain_lock_wait values (1)`); err != nil {
+		t.Fatalf("make a row to hold: %v", err)
+	}
+	for _, row := range []struct {
+		name, lock string
+		args       []any
+	}{
+		{name: "a plain advisory lock behind a key another transaction holds", lock: `select pg_advisory_xact_lock($1)`, args: []any{int64(592622)}},
+		{name: "a plain locking read behind a row another transaction holds", lock: `select id from plain_lock_wait where id = $1 for update`, args: []any{1}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			holder, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the holder: %v", err)
+			}
+			defer func() { _ = holder.Rollback(ctx) }()
+			if _, err := holder.Exec(ctx, row.lock, row.args...); err != nil {
+				t.Fatalf("hold the lock: %v", err)
+			}
+			request := store.WithLockWaitForTest(store.WithTransactionTracking(ctx), bound)
+			lock := func() error {
+				tx, err := database.Pool.Begin(request)
+				if err != nil {
+					return fmt.Errorf("begin the request transaction: %w", err)
+				}
+				defer func() { _ = tx.Rollback(ctx) }()
+				if _, err := tx.Exec(request, row.lock, row.args...); err != nil {
+					return fmt.Errorf("take the lock: %w", err)
+				}
+				return tx.Commit(request)
+			}
+
+			answered := make(chan error, 1)
+			started := time.Now()
+			go func() { answered <- lock() }()
+			if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting < 1 {
+				t.Fatalf("the request transaction never queued behind the held lock")
+			}
+			var refused error
+			select {
+			case refused = <-answered:
+			case <-time.After(bound + 4*time.Second):
+				waited := time.Since(started)
+				_ = holder.Rollback(ctx)
+				<-answered
+				t.Fatalf("the request transaction was still waiting on the held lock %s after it began, past a write's lock bound of %s: "+
+					"the request pool bounds no plain lock wait", waited.Round(time.Millisecond), bound)
+			}
+			waited := time.Since(started)
+			if !store.IsPoolBusy(refused) {
+				t.Fatalf("the request transaction behind the held lock: %v, want a refusal store.IsPoolBusy reads", refused)
+			}
+			if waited < bound {
+				t.Fatalf("the request transaction was refused %s after it began, inside its bound of %s", waited.Round(time.Millisecond), bound)
+			}
+			answer := httptest.NewRecorder()
+			if !admission.WriteUnserved(answer, request, refused, true) || answer.Code != http.StatusServiceUnavailable ||
+				!strings.Contains(answer.Body.String(), `"code":"`+admission.CodeDatabaseBusy+`"`) || answer.Header().Get("Retry-After") == "" {
+				t.Fatalf("the refusal answered: status=%d Retry-After=%q body=%s, want 503 %s with Retry-After",
+					answer.Code, answer.Header().Get("Retry-After"), answer.Body.String(), admission.CodeDatabaseBusy)
+			}
+
+			if err := holder.Rollback(ctx); err != nil {
+				t.Fatalf("let the lock go: %v", err)
+			}
+			if err := lock(); err != nil {
+				t.Fatalf("the request transaction once the lock was free: %v", err)
 			}
 		})
 	}

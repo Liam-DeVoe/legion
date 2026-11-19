@@ -204,9 +204,12 @@ func ownerLockArgs(keys []string) []any {
 // (ErrPoolBusy, leaveBoundedWait): a request answers 503 DATABASE_BUSY with Retry-After and its
 // client sends the write again; a background pass logs it and tries again at its next tick; a
 // settlement stops short and its pending row resumes it. Without it the wait ended only with its
-// holder: a write has no deadline once admitted (api's defaultReadDeadline) and no other bound of
-// a write's sets a lock_timeout, so a writer queued behind a stalled holder held its pool
-// connection, and a request its admission unit, for as long as that holder stood.
+// holder: a write has no deadline once admitted (api's defaultReadDeadline), so a writer queued
+// behind a stalled holder held its pool connection, and a request its admission unit, for as long
+// as that holder stood. It is the request pool's lock_timeout too, on every connection and in every
+// transaction (configurePool, Pool.begin), so a request's statement that no bounded wait covers
+// waits no longer than this either, and is refused lock_not_available, which IsPoolBusy reads as
+// busy; a bounded wait still refuses inside its savepoint, leaving its transaction usable.
 //
 // It is the commit's bound (commitTimeout), because that is how long a holder that has not stalled
 // keeps such a lock past its read phase: it holds it through its write phase's statements and its
@@ -335,8 +338,9 @@ func leaveBoundedWait(ctx context.Context, q OwnerLocker, wait string, err error
 	return heldPastItsBound(wait, err)
 }
 
-// ranOutItsBound reports whether err is a lock statement of a bounded wait that ran out its
-// bound: lock_not_available (55P03), which lock_timeout raises.
+// ranOutItsBound reports whether err is a statement whose wait for a lock ran out its bound:
+// lock_not_available (55P03), which lock_timeout raises - a bounded wait's lock statement, or a
+// plain statement under the request pool's own bound (IsPoolBusy).
 func ranOutItsBound(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "55P03"
@@ -767,9 +771,15 @@ func (read *guardedRead) scan(results pgx.BatchResults) error {
 // QueueLockOwner queues owner's lock (LockOwner) on a write phase's batch, for a statement after it
 // in the same batch that the lock guards: a write that takes its owner's lock again where the
 // transaction took it in its read phase, which returns at once. It carries no fleet read: the
-// transaction's read phase made the one it acts on. Its failure is wrapped as LockOwner wraps it.
+// transaction's read phase made the one it acts on. The lock waits within the write lock bound
+// (WriteBatch.QueueWithinBound), because not every write took it in its read phase: a create's
+// owner is new (a project's create appends on the project it inserts), and an append can name an
+// owner beside the one its read phase locked (an anchor refresh's appends on the ask's or the
+// comment's own owner). An admitted write has no deadline, so a bare wait there lasted as long as
+// another holder of that key stood; a wait that runs the bound out is ErrPoolBusy. Its failure is
+// otherwise wrapped as LockOwner wraps it.
 func QueueLockOwner(b *WriteBatch, owner Owner) {
-	b.Queue(fmt.Sprintf("lock %s %s", owner.Kind, owner.Key), ownerLock, OwnerLockNamespace, owner.LockKey())
+	b.QueueWithinBound(fmt.Sprintf("lock %s %s", owner.Kind, owner.Key), ownerLock, OwnerLockNamespace, owner.LockKey())
 }
 
 // lockKeys is each owner's lock key, in owners' order.

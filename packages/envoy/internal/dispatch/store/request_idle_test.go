@@ -138,9 +138,9 @@ func TestPostgresEndsARequestTransactionLeftIdlePastItsBound(t *testing.T) {
 }
 
 // Postgres ends a background-pool transaction left idle past that same bound. A background writer
-// takes the issue rows and the document locks a request's write waits on, and no request's write
-// sets a lock_timeout, so an orphaned background transaction would hold them until Postgres
-// noticed its socket was gone. A rooms connection's transaction idle just as long keeps its
+// takes the issue rows and the document locks a request's write waits on, which a request then
+// waits on only to the write lock bound and is refused past it, so an orphaned background
+// transaction would refuse those requests until Postgres noticed its socket was gone. A rooms connection's transaction idle just as long keeps its
 // transaction.
 func TestPostgresEndsABackgroundTransactionLeftIdlePastItsBound(t *testing.T) {
 	const bound = 300 * time.Millisecond

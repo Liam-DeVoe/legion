@@ -128,8 +128,9 @@ func (b *Broker) Append(ctx context.Context, tx pgx.Tx, e model.Event) (model.Ev
 // takes that lock first through LockOwners, whose wait is bounded (store.LockOwners), so a lock
 // another writer holds past the bound is refused store.ErrPoolBusy and the transaction, which the
 // caller then rolls back, commits nothing. Append alone would take the lock in its own batch
-// (lockEventOwner), whose wait for a lock the transaction does not hold yet has no bound. It costs
-// the lock's round trip; the append's own lock then returns at once.
+// (lockEventOwner), whose wait is bounded too (store.QueueLockOwner) but fails the whole write
+// phase where LockOwners refuses before anything else of it runs. It costs the lock's round trip;
+// the append's own lock then returns at once.
 func (b *Broker) AppendAfterWrite(ctx context.Context, tx pgx.Tx, e model.Event) (model.Event, error) {
 	if err := b.LockOwners(ctx, tx, e); err != nil {
 		return model.Event{}, err

@@ -523,8 +523,13 @@ func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, erro
 // begin is the body both transaction entry points share, on what target gave them: target runs in
 // the exported method, as it does in every exported method that hands out one of this pool's
 // connections, so a refusal records the caller that asked for the transaction rather than one of
-// this pool's own frames. A transaction on a pinned connection gives it back when it ends.
+// this pool's own frames. A transaction on a pinned connection gives it back when it ends. A
+// request-pool transaction opens with its own lock bound (requestBegin), keeping options'
+// isolation level, access mode and deferrable mode.
 func (p *Pool) begin(ctx context.Context, on connection, done func(), options pgx.TxOptions) (pgx.Tx, error) {
+	if p.name == RequestsPool {
+		options.BeginQuery = requestBegin(ctx, options)
+	}
 	tx, err := on.BeginTx(ctx, options)
 	if err != nil {
 		finished(done)
@@ -541,6 +546,88 @@ func (p *Pool) begin(ctx context.Context, on connection, done func(), options pg
 		beforeCommit: beforeCommit,
 		readOnly:     options.AccessMode == pgx.ReadOnly,
 	}, nil
+}
+
+// requestBegin is the statement a request-pool transaction opens with (Pool.begin): the BEGIN pgx
+// would send for options, then SET LOCAL lock_timeout at the write lock bound (lockWait), or at the
+// bound a test put on ctx (lockWaitSetting), in the one simple-protocol message pgx sends an
+// argument-less statement as (pgx.Conn.BeginTx runs it with Exec), so the transaction holds the
+// bound at no round trip more than its BEGIN. The connection carries the same bound
+// (configurePool), but a session setting holds only where the connection is the session's: behind
+// a pooler that hands each transaction whichever server connection is free, only the
+// transaction's own setting is sure to be the one its statements wait under. It is local to the
+// transaction and ends with it, and a bounded wait inside it keeps it and gives it back
+// (boundedWaitKeep, boundedWaitRestore). The production bound's statements are built once
+// (requestBegins), so a request's begin builds no string.
+func requestBegin(ctx context.Context, options pgx.TxOptions) string {
+	wait := lockWaitSetting(ctx)
+	if begin, ok := requestBegins[options]; ok && wait == lockWaitDefault {
+		return begin
+	}
+	return renderRequestBegin(options, wait)
+}
+
+// requestBegins is requestBegin's statement at the production bound for every combination of
+// pgx's standard transaction options.
+var requestBegins = func() map[pgx.TxOptions]string {
+	begins := map[pgx.TxOptions]string{}
+	for _, isoLevel := range []pgx.TxIsoLevel{"", pgx.Serializable, pgx.RepeatableRead, pgx.ReadCommitted, pgx.ReadUncommitted} {
+		for _, accessMode := range []pgx.TxAccessMode{"", pgx.ReadWrite, pgx.ReadOnly} {
+			for _, deferrableMode := range []pgx.TxDeferrableMode{"", pgx.Deferrable, pgx.NotDeferrable} {
+				options := pgx.TxOptions{IsoLevel: isoLevel, AccessMode: accessMode, DeferrableMode: deferrableMode}
+				begins[options] = renderRequestBegin(options, lockWaitDefault)
+			}
+		}
+	}
+	return begins
+}()
+
+// renderRequestBegin is requestBegin's statement for options at wait, lock_timeout's value: the
+// caller's own BEGIN where options names one, else the one pgx renders from options (begin, then
+// the isolation level, the access mode and the deferrable mode options sets, in that order), then
+// SET LOCAL lock_timeout. wait is lockTimeoutSetting's whole milliseconds and their unit, so it is
+// written into the text as a literal: the simple protocol takes no parameters.
+func renderRequestBegin(options pgx.TxOptions, wait string) string {
+	begin := options.BeginQuery
+	if begin == "" {
+		begin = "begin"
+		if options.IsoLevel != "" {
+			begin += " isolation level " + string(options.IsoLevel)
+		}
+		if options.AccessMode != "" {
+			begin += " " + string(options.AccessMode)
+		}
+		if options.DeferrableMode != "" {
+			begin += " " + string(options.DeferrableMode)
+		}
+	}
+	return begin + "; set local " + lockTimeoutParam + " = '" + wait + "'"
+}
+
+// RequestBeginStatement is the statement the request pool opens a transaction with options with,
+// at production's bound (requestBegin): a test that stalls a request's BEGIN on the wire matches
+// that message (storetest.SimpleQuery).
+func RequestBeginStatement(options pgx.TxOptions) string {
+	return requestBegin(context.Background(), options)
+}
+
+// WaitForLocksUntilDeadline opts tx out of the request pool's write lock bound (requestBegin): it
+// sets tx's lock_timeout, for tx alone, to the time ctx's deadline leaves, so a lock tx waits for
+// is refused (lock_not_available) at that deadline rather than at lockWait. It is for the one
+// request-pool transaction that waits for a lock longer than a commit by design, and under a
+// deadline of its own: the boot's dashboard publish and prune (dashboard.Publish, dashboard.Prune),
+// which wait for another process's publish of the same build or asset across that publish's whole
+// upload, a statement per file, within the boot's publish deadline. A ctx with no deadline leaves
+// the write lock bound as it is. It costs the transaction a round trip.
+func WaitForLocksUntilDeadline(ctx context.Context, tx pgx.Tx) error {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `select set_config('lock_timeout', $1, true)`, lockTimeoutSetting(time.Until(deadline))); err != nil {
+		return fmt.Errorf("set the transaction's lock_timeout to its deadline: %w", err)
+	}
+	return nil
 }
 
 // BeforeCommit is a step every transaction a request opens takes just before its COMMIT, inside
