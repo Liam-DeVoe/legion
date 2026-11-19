@@ -111,8 +111,9 @@ type knownSessionsOpts struct {
 	// repairAttemptWindow (withKnownSessionAttemptContext, export_test.go): a context the test
 	// ends itself. Nil outside tests.
 	attemptBound func(context.Context) (context.Context, context.CancelFunc)
-	// openWait is the wait of the one request that asks for the bucket (knownJetStream),
-	// knownBucketOpenWait unless a test lengthens it (withKnownSessionOpenWait, export_test.go).
+	// openWait is the wait of each retry attempt's request for the bucket (knownJetStream),
+	// knownBucketOpenWait unless a test lengthens it (withKnownSessionOpenWait, export_test.go);
+	// the store's first attempt (OpenKnownSessions) always waits knownBucketOpenWait.
 	openWait time.Duration
 	// watch is what a test adds to the options the store's watcher is built with
 	// (withKnownSessionWatch, export_test.go): a clock to move past the stale bound, or a short
@@ -173,7 +174,7 @@ type KnownSessions struct {
 	retryFirst   time.Duration
 	retryMax     time.Duration
 	watchOptions []kvwatch.Option
-	// openWait is the wait of each attempt's request for the bucket (knownJetStream).
+	// openWait is the wait of each retry attempt's request for the bucket (knownJetStream).
 	openWait time.Duration
 
 	// mu guards records and topics, which are kept in step: every record the copy stores or
@@ -299,11 +300,11 @@ func OpenKnownSessions(ctx context.Context, conn *nats.Conn, options ...KnownSes
 	// A connection that gives no JetStream context can open nothing, now or later. It is this
 	// function's one error, read here so the caller is answered it rather than meeting it on
 	// every attempt; each attempt builds a context of its own, on the connection it runs against.
-	if _, err := knownJetStream(conn, opts.openWait); err != nil {
+	if _, err := knownJetStream(conn, knownBucketOpenWait); err != nil {
 		return nil, err
 	}
 	s := newKnownSessions(conn, opts)
-	kv, err := openKnownBucket(ctx, conn, opts.replicas, opts.openWait)
+	kv, err := openKnownBucket(ctx, conn, opts.replicas, knownBucketOpenWait)
 	if err != nil {
 		s.logger().Warn("the known-session bucket is not open; this listener answers no session's 30-day record and writes none until an attempt of its own opens the bucket",
 			slog.String("bucket", bus.KnownSessionBucket), slog.String("error", err.Error()))

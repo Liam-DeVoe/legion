@@ -27,9 +27,10 @@ func withKnownSessionAttemptContext(bound func(context.Context) (context.Context
 	return func(o *knownSessionsOpts) { o.attemptBound = bound }
 }
 
-// withKnownSessionOpenWait sets the wait of each attempt's request for the bucket in place of
+// withKnownSessionOpenWait sets the wait of each retry attempt's request for the bucket in place of
 // knownBucketOpenWait (knownJetStream), so a test can hold a lookup the server leaves unanswered
-// past the test's own end. It is test-only.
+// past the test's own end. The store's first attempt keeps knownBucketOpenWait, so a store opened
+// with this option still opens. It is test-only.
 func withKnownSessionOpenWait(d time.Duration) KnownSessionsOption {
 	return func(o *knownSessionsOpts) { o.openWait = d }
 }

@@ -46,14 +46,15 @@ func openUnopenedStore(t *testing.T, ctx context.Context, extra ...KnownSessions
 // a reconnect hook's move and the next attempt are not held behind it.
 //
 // The row reads no clock to decide. The test ends each attempt's window itself
-// (withKnownSessionAttemptContext), and the lookup's own wait is an hour
+// (withKnownSessionAttemptContext), and the retry's lookups wait an hour
 // (withKnownSessionOpenWait), past the test's end, with the proxy holding every byte (Freeze) on
 // a connection whose user the server drops the lookup for: nothing but the window ends an attempt.
 // Each attempt asks for its window while it holds repairMu, and the retry is one goroutine that
 // takes repairMu again for its next attempt, so attempt n+1 asking for its window is attempt n
 // having let the lock go. The row ends three windows and counts three such releases. A row that
 // fails ends at the test's deadline. The store's first attempt is made on a context already ended,
-// so it sends nothing and arms the retry at once.
+// so it sends nothing and arms the retry at once; with the lookup unbounded (the second control)
+// it waits its own knownBucketOpenWait first.
 //
 // The controls are the attempt run on the store's context rather than its window, and the lookup
 // unbounded by the attempt's context: either way attempt 1 holds the lock after its window ends,
