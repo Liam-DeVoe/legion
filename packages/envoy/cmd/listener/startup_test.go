@@ -288,10 +288,18 @@ func TestAListenerWhoseClusterHasTooFewMembersForItsCopiesStaysUnreadyUntilTheyJ
 // bucketDeniedConfig is a NATS server whose one nkey user may publish to anything but KV bucket
 // bucket: the grant of a hub that does not grant the bucket to its listeners.
 func bucketDeniedConfig(user, bucket string) string {
+	return publishDeniedConfig(user, "$JS.API.STREAM.*."+"KV_"+bucket, "$JS.API.CONSUMER.*."+"KV_"+bucket+".>", "$KV."+bucket+".>")
+}
+
+// publishDeniedConfig is a NATS server whose one nkey user may publish to anything but the
+// subjects deny names, and subscribe to anything.
+func publishDeniedConfig(user string, deny ...string) string {
+	quoted := make([]string, len(deny))
+	for i, subject := range deny {
+		quoted[i] = strconv.Quote(subject)
+	}
 	return "jetstream {}\nauthorization {\n  users = [ { nkey: " + strconv.Quote(user) + ", permissions: { publish: { allow: [\">\"], deny: [" +
-		strconv.Quote("$JS.API.STREAM.*."+"KV_"+bucket) + ", " +
-		strconv.Quote("$JS.API.CONSUMER.*."+"KV_"+bucket+".>") + ", " +
-		strconv.Quote("$KV."+bucket+".>") + "] } } } ]\n}\n"
+		strings.Join(quoted, ", ") + "] } } } ]\n}\n"
 }
 
 // A store bucket the listener's NATS user may not use follows the rule the durable and the
@@ -328,6 +336,45 @@ func TestAListenerWhoseGrantRefusesAStoreBucketNamesItAtEachTryAndStaysUnready(t
 		}
 	}
 	requireLiveAndStarting(t, listener, while)
+}
+
+// The notification stream's read and create follow the rule a refused store bucket follows
+// (TestAListenerWhoseGrantRefusesAStoreBucketNamesItAtEachTryAndStaysUnready). A NATS user whose
+// grant lacks the stream's API subjects, its read ($JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS) and its
+// create, connects, and the start's ensure of the stream is refused: the listener stays up and not
+// ready, /livez 204 and /healthz 503 "starting", and connects again (connectListener), naming the
+// refusal at ERROR at each try (streamRefusedLine) with the stream, the grant that lacks it, the
+// refused read and the server's text, after a wait of 1 s and then 2 s (nextRefusedWait). Every pod
+// of a machine connects as the same NATS user, so each would be refused alike. Once the server
+// restarts with a grant that has them, a later try creates the stream and the listener is ready.
+// Before, the start exited 1 at the refusal, logging "NATS connect failed".
+func TestAListenerWhoseGrantRefusesTheNotificationStreamStaysUnreadyUntilTheGrantHasIt(t *testing.T) {
+	seed, public := testnats.User(t)
+	read, create := "$JS.API.STREAM.INFO."+bus.Stream, "$JS.API.STREAM.CREATE."+bus.Stream
+	server, uri := testnats.StartConfig(t, publishDeniedConfig(public, read, create), []string{"-js"}, false)
+	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "box-stream-refused",
+		"NATS_NKEY_SEED="+seed, "ENVOY_INSTANCE_ID=pod-stream-refused")
+	const while = "the NATS grant refused the read and create of " + bus.Stream
+	refusals := func() []map[string]any {
+		return linesIn(listener.Output.String(), streamRefusedLine,
+			map[string]any{"level": "ERROR", "stream": bus.Stream, "grant": listenerGrant, "subject": read})
+	}
+	for deadline := time.Now().Add(30 * time.Second); len(refusals()) < 2; time.Sleep(200 * time.Millisecond) {
+		requireLiveAndStarting(t, listener, while)
+		if time.Now().After(deadline) {
+			t.Fatalf("the listener named the refused read of %s %d times at ERROR within 30 s, want it named at each try:\n%s",
+				bus.Stream, len(refusals()), listener.Output.String())
+		}
+	}
+	for index, wait := range []string{"1s", "2s"} {
+		if record := refusals()[index]; record["retry_in"] != wait || !strings.Contains(fmt.Sprint(record["error"]), `Permissions Violation for Publish to "`+read+`"`) {
+			t.Fatalf("refusal %d = %v, want retry_in %s and the server's violation of %s", index+1, record, wait, read)
+		}
+	}
+	requireLiveAndStarting(t, listener, while)
+
+	server.Restart(t, publishDeniedConfig(public))
+	listener.waitHealthy(t)
 }
 
 // A connection the start opens once its stores are open, the session consumers' and then the role

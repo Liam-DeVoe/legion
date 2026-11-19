@@ -1071,6 +1071,9 @@ const (
 	// relayRepliesRefusedLine is the session relay's reply subscription
 	// (bus.SessionConsumers.SubscribeReplies, startSessionRelays).
 	relayRepliesRefusedLine = "session relay reply subscription refused by the NATS grant; retrying"
+	// streamRefusedLine is the notification stream's read or create (connectListener,
+	// bus.ConnectOwningStream), with the stream and the grant.
+	streamRefusedLine = "notification stream refused by the NATS grant; retrying"
 )
 
 // waitOutGrantRefusal logs line at ERROR for err, a start step's request the NATS grant refused:
@@ -1090,8 +1093,8 @@ func waitOutGrantRefusal(logger *logging.Logger, wait *time.Duration, line strin
 	*wait = nextRefusedWait(*wait)
 }
 
-// listenerGrant names the grant that gives the listener's NATS user its KV buckets, for the line
-// that reports a bucket the grant refuses.
+// listenerGrant names the grant that gives the listener's NATS user its KV buckets and its
+// notification stream, for the lines that report a bucket or the stream the grant refuses.
 const listenerGrant = "infra/core ListenerPermissions"
 
 // natsConnectionError reports whether err is a failure to reach NATS, or to get an answer from it,
@@ -1128,11 +1131,14 @@ func natsConnectionError(err error) bool {
 // (bus.ConnectOwningStream), as instance, at the deployment's replica count and byte limit and
 // with the buckets it keeps (listenerStreamOptions), by the start rule (cmd/listener/README.md,
 // "Start"): a stream the server cannot take in its cluster's present state is tried again after
-// waitOutClusterState, a NATS that cannot be reached (natsConnectionError) every startRetry for as
-// long as it takes, so a listener started before its NATS waits for it rather than exiting, and
-// any other failure ends the process after one ERROR naming it.
+// waitOutClusterState; a read or create of the stream the NATS grant refuses (bus.ErrPublishDenied,
+// which the stream's ensure returns as the server's refusal arrives) after waitOutGrantRefusal,
+// each try logging streamRefusedLine at ERROR with the refused subject and the server's text; and
+// a NATS that cannot be reached (natsConnectionError) every startRetry for as long as it takes, so
+// a listener started before its NATS waits for it rather than exiting. Any other failure ends the
+// process after one ERROR naming it.
 func connectListener(cfg config.Service, instance string, logger *logging.Logger) *bus.Client {
-	clusterWait := clusterStateWait{next: durableBindPoll}
+	clusterWait, refusedWait := clusterStateWait{next: durableBindPoll}, durableBindPoll
 	for {
 		options := append(listenerStreamOptions(cfg), bus.WithName("envoy-listener "+instance))
 		client, err := bus.ConnectOwningStream(cfg.NATSURLs, options...)
@@ -1143,7 +1149,15 @@ func connectListener(cfg config.Service, instance string, logger *logging.Logger
 			waitOutClusterState(logger, &clusterWait, slog.String("stream", bus.Stream), cfg.NATSReplicas, code, err)
 			continue
 		}
+		if errors.Is(err, bus.ErrPublishDenied) {
+			waitOutGrantRefusal(logger, &refusedWait, streamRefusedLine, err, slog.String("stream", bus.Stream), slog.String("grant", listenerGrant))
+			continue
+		}
 		if !natsConnectionError(err) {
+			// A credential the server refuses (nats.ErrAuthorization) ends the start here too, and
+			// is not waited out as a refused grant is: it is the listener's own configuration, and a
+			// restarted pod reads its credential again, so a crash loop that carries this line is
+			// the signal that gets it fixed.
 			logger.Error("NATS connect failed", slog.String("error", err.Error()))
 			os.Exit(1)
 		}

@@ -11,7 +11,11 @@ body: |-
     bucket refused by the NATS grant; retrying`), a store bucket (`KV bucket refused by the NATS
     grant; retrying`, with the bucket and the grant), the role lane in both its queue groups (`role
     lane refused by the NATS grant; retrying`) and the session relay's reply subscription (`session
-    relay reply subscription refused by the NATS grant; retrying`). Until the spent-proof bucket
+    relay reply subscription refused by the NATS grant; retrying`). The `ENVOY_NOTIFICATIONS`
+    stream's read and create are logged and tried again the same way (`notification stream
+    refused by the NATS grant; retrying`, with the stream and the grant), while a NATS credential
+    the server refuses still ends the start, as the listener's own setting that a restarted pod
+    reads again. Until the spent-proof bucket
     opens, a request that presents a broker access token is answered 503 `service starting` with
     `Retry-After: 1`, so no token is taken without its spent-proof check. A nats-server release
     below the listener's floor is logged at ERROR at each try (`nats-server release below the
