@@ -110,8 +110,8 @@ test("an email address written into a spec is a mailto link in the editor and in
 // path that holds a hyphenated service account is text, and the account named alone is one link to
 // the whole address. Before the rule both readers, Go's and the editor's engine, linked the path's
 // `hosts@…` alone, which names another account.
-const account = "agent-hosts@theorem-research.iam.gserviceaccount.com";
-const resourcePath = `projects/theorem-research/serviceAccounts/${account}`;
+const account = "agent-hosts@example-project.iam.gserviceaccount.com";
+const resourcePath = `projects/example-project/serviceAccounts/${account}`;
 const grant = `Grant act-as on ${account}.`;
 
 test("a resource path holding a hyphenated address is text, and the address alone is one mailto link", async ({

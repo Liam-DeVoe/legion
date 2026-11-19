@@ -28,9 +28,9 @@ func TestLinkifyReadsWhatTheEngineReads(t *testing.T) {
 		{"see http\\://x.test/a_ b", `text "see " | text "http://x.test/a_" link http://x.test/a_ | text " b"`},
 		{"x;https://a.test/*b* c", `text "x;" | text "https://a.test/*b" link https://a.test/*b | text "* c"`},
 		{"\"www.a.test/?u=https://b.test\"", `text "\"" | text "www.a.test/?u=" link http://www.a.test/?u= | text "https://b.test" link https://b.test | text "\""`},
-		{"Grant act-as on agent-hosts@theorem-research.iam.gserviceaccount.com.", `text "Grant act-as on " | text "agent-hosts@theorem-research.iam.gserviceaccount.com" link mailto:agent-hosts@theorem-research.iam.gserviceaccount.com | text "."`},
-		{"projects/theorem-research/serviceAccounts/agent-hosts@theorem-research.iam.gserviceaccount.com", `text "projects/theorem-research/serviceAccounts/agent-hosts@theorem-research.iam.gserviceaccount.com"`},
-		{"serviceAccounts/482450377695-compute@developer.gserviceaccount.com", `text "serviceAccounts/482450377695-compute@developer.gserviceaccount.com"`},
+		{"Grant act-as on agent-hosts@example-project.iam.gserviceaccount.com.", `text "Grant act-as on " | text "agent-hosts@example-project.iam.gserviceaccount.com" link mailto:agent-hosts@example-project.iam.gserviceaccount.com | text "."`},
+		{"projects/example-project/serviceAccounts/agent-hosts@example-project.iam.gserviceaccount.com", `text "projects/example-project/serviceAccounts/agent-hosts@example-project.iam.gserviceaccount.com"`},
+		{"serviceAccounts/123456789012-compute@developer.gserviceaccount.com", `text "serviceAccounts/123456789012-compute@developer.gserviceaccount.com"`},
 		{"a/b.c@example.com", `text "a/b.c@example.com"`},
 		{"a/b+c@example.com", `text "a/b+c@example.com"`},
 		{"a/b_c@example.com", `text "a/b_c@example.com"`},
@@ -85,9 +85,9 @@ func TestLinkifyLinksAnEmailWholeOrNotAtAll(t *testing.T) {
 	rows := []struct{ markdown, written string }{
 		// Before: a link to `hosts@…`, `compute@…` and `c@…` after the path's last `-`, `.`, `+`
 		// or `_`, where the transform searched again once the `/` refused the address.
-		{"projects/theorem-research/serviceAccounts/agent-hosts@theorem-research.iam.gserviceaccount.com", "projects/theorem-research/serviceAccounts/agent-hosts@theorem-research.iam.gserviceaccount.com"},
+		{"projects/example-project/serviceAccounts/agent-hosts@example-project.iam.gserviceaccount.com", "projects/example-project/serviceAccounts/agent-hosts@example-project.iam.gserviceaccount.com"},
 		{"projects/p/serviceAccounts/agent-hosts@example.com", "projects/p/serviceAccounts/agent-hosts@example.com"},
-		{"serviceAccounts/482450377695-compute@developer.gserviceaccount.com", "serviceAccounts/482450377695-compute@developer.gserviceaccount.com"},
+		{"serviceAccounts/123456789012-compute@developer.gserviceaccount.com", "serviceAccounts/123456789012-compute@developer.gserviceaccount.com"},
 		{"a/b.c@example.com", "a/b.c@example.com"},
 		{"a/b+c@example.com", "a/b+c@example.com"},
 		{"a/b_c@example.com", "a/b_c@example.com"},
@@ -120,7 +120,7 @@ func TestLinkifyLinksAnEmailWholeOrNotAtAll(t *testing.T) {
 		// run is `agent-`, and the link takes it.
 		{"`SA:`agent&#45;hosts@example.com", "`SA:`[agent-hosts@example.com](mailto:agent-hosts@example.com)"},
 		// The controls.
-		{"Grant act-as on agent-hosts@theorem-research.iam.gserviceaccount.com.", "Grant act-as on [agent-hosts@theorem-research.iam.gserviceaccount.com](mailto:agent-hosts@theorem-research.iam.gserviceaccount.com)."},
+		{"Grant act-as on agent-hosts@example-project.iam.gserviceaccount.com.", "Grant act-as on [agent-hosts@example-project.iam.gserviceaccount.com](mailto:agent-hosts@example-project.iam.gserviceaccount.com)."},
 		{"agent-hosts@example.com", "[agent-hosts@example.com](mailto:agent-hosts@example.com)"},
 		{"x agent-hosts@example.com", "x [agent-hosts@example.com](mailto:agent-hosts@example.com)"},
 		{"serviceAccounts/agenthosts@example.com", "serviceAccounts/agenthosts@example.com"},
@@ -135,7 +135,7 @@ func TestLinkifyLinksAnEmailWholeOrNotAtAll(t *testing.T) {
 		{"*agent*&#45;hosts@example.com", "*agent*-[hosts@example.com](mailto:hosts@example.com)"},
 		{"`agent`&#45;hosts@example.com", "`agent`-[hosts@example.com](mailto:hosts@example.com)"},
 		{"[agent-hosts@example.com](mailto:agent-hosts@example.com)", "[agent-hosts@example.com](mailto:agent-hosts@example.com)"},
-		{"agent-[hosts@theorem-research.iam.gserviceaccount.com](mailto:hosts@theorem-research.iam.gserviceaccount.com)", "agent-[hosts@theorem-research.iam.gserviceaccount.com](mailto:hosts@theorem-research.iam.gserviceaccount.com)"},
+		{"agent-[hosts@example-project.iam.gserviceaccount.com](mailto:hosts@example-project.iam.gserviceaccount.com)", "agent-[hosts@example-project.iam.gserviceaccount.com](mailto:hosts@example-project.iam.gserviceaccount.com)"},
 		{"agent-[\\[hosts@example.com](mailto:[hosts@example.com)", "agent-[\\[hosts@example.com](mailto:[hosts@example.com)"},
 		{"<agent-hosts@example.com>", "[agent-hosts@example.com](mailto:agent-hosts@example.com)"},
 		{"agent-<hosts@example.com>", "agent-[hosts@example.com](mailto:hosts@example.com)"},

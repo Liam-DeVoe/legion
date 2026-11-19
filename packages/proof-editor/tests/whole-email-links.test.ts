@@ -97,13 +97,13 @@ interface Row {
 /** The rows whose reading the rule changes. */
 const CHANGED_ROWS: readonly Row[] = [
   {
-    // Before: `projects/theorem-research/serviceAccounts/agent-` and a link to
-    // `hosts@theorem-research.iam.gserviceaccount.com`, which names another account.
+    // Before: `projects/example-project/serviceAccounts/agent-` and a link to
+    // `hosts@example-project.iam.gserviceaccount.com`, which names another account.
     markdown:
-      "projects/theorem-research/serviceAccounts/agent-hosts@theorem-research.iam.gserviceaccount.com",
+      "projects/example-project/serviceAccounts/agent-hosts@example-project.iam.gserviceaccount.com",
     runs: [
       plain(
-        "projects/theorem-research/serviceAccounts/agent-hosts@theorem-research.iam.gserviceaccount.com"
+        "projects/example-project/serviceAccounts/agent-hosts@example-project.iam.gserviceaccount.com"
       ),
     ],
   },
@@ -113,8 +113,8 @@ const CHANGED_ROWS: readonly Row[] = [
   },
   {
     // Before: a link to `compute@developer.gserviceaccount.com`.
-    markdown: "serviceAccounts/482450377695-compute@developer.gserviceaccount.com",
-    runs: [plain("serviceAccounts/482450377695-compute@developer.gserviceaccount.com")],
+    markdown: "serviceAccounts/123456789012-compute@developer.gserviceaccount.com",
+    runs: [plain("serviceAccounts/123456789012-compute@developer.gserviceaccount.com")],
   },
   {
     // Before, for each of the three: a link to `c@example.com`.
@@ -211,10 +211,10 @@ const CHANGED_ROWS: readonly Row[] = [
 const CONTROL_ROWS: readonly Row[] = [
   {
     // R4's example: the address alone is linked whole.
-    markdown: "Grant act-as on agent-hosts@theorem-research.iam.gserviceaccount.com.",
+    markdown: "Grant act-as on agent-hosts@example-project.iam.gserviceaccount.com.",
     runs: [
       plain("Grant act-as on "),
-      address("agent-hosts@theorem-research.iam.gserviceaccount.com"),
+      address("agent-hosts@example-project.iam.gserviceaccount.com"),
       plain("."),
     ],
   },
@@ -265,8 +265,8 @@ const CONTROL_ROWS: readonly Row[] = [
   {
     // ... as a rendering stored before the rule writes the early link it read, ...
     markdown:
-      "agent-[hosts@theorem-research.iam.gserviceaccount.com](mailto:hosts@theorem-research.iam.gserviceaccount.com)",
-    runs: [plain("agent-"), address("hosts@theorem-research.iam.gserviceaccount.com")],
+      "agent-[hosts@example-project.iam.gserviceaccount.com](mailto:hosts@example-project.iam.gserviceaccount.com)",
+    runs: [plain("agent-"), address("hosts@example-project.iam.gserviceaccount.com")],
   },
   {
     // ... one whose text starts with the `[` its source starts with, ...
@@ -405,7 +405,7 @@ for (const context of CONTEXTS) {
  * and a URL.
  */
 const NO_SUCH_LINK = [
-  "# Grant act-as on agent-hosts@theorem-research.iam.gserviceaccount.com.",
+  "# Grant act-as on agent-hosts@example-project.iam.gserviceaccount.com.",
   "",
   "xé-agent@example.com, serviceAccounts/agenthosts@example.com and x &#233;agent@example.com.",
   "See agent\\-hosts@example.com.",

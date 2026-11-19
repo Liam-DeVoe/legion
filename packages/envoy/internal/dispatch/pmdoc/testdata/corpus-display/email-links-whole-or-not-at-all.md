@@ -1,8 +1,8 @@
-Grant act-as on agent-hosts@theorem-research.iam.gserviceaccount.com.
+Grant act-as on agent-hosts@example-project.iam.gserviceaccount.com.
 
-projects/theorem-research/serviceAccounts/agent-hosts@theorem-research.iam.gserviceaccount.com
+projects/example-project/serviceAccounts/agent-hosts@example-project.iam.gserviceaccount.com
 
-serviceAccounts/482450377695-compute@developer.gserviceaccount.com
+serviceAccounts/123456789012-compute@developer.gserviceaccount.com
 
 a/b.c@example.com, a/b+c@example.com and a/b_c@example.com
 
@@ -47,4 +47,4 @@ www\.a'b@c.test and a@b.co+c@d.co
 | projects/p/serviceAccounts/agent-hosts@example.com |
 | x agent&#45;hosts@example.com |
 
-agent-[hosts@theorem-research.iam.gserviceaccount.com](mailto:hosts@theorem-research.iam.gserviceaccount.com), agent-<hosts@example.com>, a/<hosts@example.com>, [agent-hosts@example.com](mailto:agent-hosts@example.com) and <agent-hosts@example.com>
+agent-[hosts@example-project.iam.gserviceaccount.com](mailto:hosts@example-project.iam.gserviceaccount.com), agent-<hosts@example.com>, a/<hosts@example.com>, [agent-hosts@example.com](mailto:agent-hosts@example.com) and <agent-hosts@example.com>
