@@ -2732,6 +2732,39 @@ func TestDispatchRefusesAServiceAccountListWithNoAudience(t *testing.T) {
 	}
 }
 
+// A value Dispatch refuses at boot (cmd/dispatch checkAccessSettings) is refused when the stack
+// plans, naming the input, so one typo never reaches a Deployment whose one replica would then not
+// start: an account that is no service account's subject (a comma in one would also split it in
+// two, as the list is rendered comma-joined), an access account a set oidcAccounts leaves out, and
+// an owner fallback that is no lowercase email.
+func TestDispatchRefusesAnAccessValueDispatchWouldRefuseAtBoot(t *testing.T) {
+	const reader = "system:serviceaccount:legion:reader"
+	for _, row := range []struct {
+		name, want string
+		edit       func(*gcp.DispatchArgs)
+	}{
+		{"an oidc account that is no subject", "oidcAccounts[0]", func(a *gcp.DispatchArgs) { a.OidcAccounts = []string{"envoy-broker"} }},
+		{"an access account with a comma", "accessAccounts[0]", func(a *gcp.DispatchArgs) {
+			a.AccessAccounts = []string{dispatchBrokerAccount + "," + reader}
+		}},
+		{"an access account the oidc accounts leave out", "accessAccounts[0]", func(a *gcp.DispatchArgs) {
+			a.OidcAccounts = []string{dispatchBrokerAccount}
+			a.AccessAccounts = []string{reader}
+		}},
+		{"an owner fallback that is no email", "projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = "owner" }},
+		{"an owner fallback that is not lowercase", "projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = "Owner@example.com" }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := dispatchArgs()
+			args.OidcAudience = dispatchOidcAudience
+			row.edit(args)
+			m, err := runDispatch(t, args, true)
+			require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: "+row.want)
+			require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types())
+		})
+	}
+}
+
 // projectOwnerFallback renders DISPATCH_PROJECT_OWNER_FALLBACK, the member Dispatch makes, at boot,
 // the owner of every project the migration left without one, and renders nothing when it is unset.
 func TestDispatchRendersTheProjectOwnerFallbackOnlyWhenSet(t *testing.T) {

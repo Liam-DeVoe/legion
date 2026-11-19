@@ -74,7 +74,9 @@ type Credential struct {
 	TokenName string
 	// Projects are the projects the credential may use, sorted: a personal token's
 	// agent_tokens.projects, a broker token's list. Empty is a credential that names none, which
-	// sees only the public projects its person sees (internal/dispatch/access, the rule).
+	// sees only the public projects its person sees (internal/dispatch/access, the rule). No token
+	// read fills it yet, and no read resolves a viewer yet: the two come together, so until then
+	// every credential names no list.
 	Projects []string
 	// ReadOnly is a broker-issued token that holds only the scope read (brokertoken.ScopeRead):
 	// one the secrets broker minted from a read entry, naming a service and a session and no

@@ -1495,12 +1495,16 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					}
 					return lines
 				}
-				resolveWith(t, verifying(""))
+				boot := resolveWith(t, verifying(""))
+				if lines := warnings(); len(lines) != 0 {
+					t.Fatalf("resolveBootConfig logged %v; it only reads the environment, and main logs the warning", lines)
+				}
+				warnEveryServiceAccountAdmitted(boot)
 				if lines := warnings(); len(lines) != 1 || lines[0]["level"] != "WARN" || lines[0]["audience"] != "dispatch" {
 					t.Fatalf("an audience and no list logged %v, want one WARN naming the audience", lines)
 				}
-				resolveWith(t, verifying(listed))
-				resolveWith(t, nil)
+				warnEveryServiceAccountAdmitted(resolveWith(t, verifying(listed)))
+				warnEveryServiceAccountAdmitted(resolveWith(t, nil))
 				if lines := warnings(); len(lines) != 1 {
 					t.Errorf("a list, then no audience, logged the warning again: %v", lines)
 				}

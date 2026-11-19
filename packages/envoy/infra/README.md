@@ -1352,7 +1352,11 @@ negative `signingKeyGenerations` entry, which names no resource, or a repeated o
 render the same key twice and which the server refuses at its boot, missing inputs, and nkey
 seeds in its own name and in plain inputs before it registers a resource; it
 refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, an
-`oidcIssuer`, `oidcAccounts` or `accessAccounts` with no `oidcAudience`, an `outsideOrigin` that
+`oidcIssuer`, `oidcAccounts` or `accessAccounts` with no `oidcAudience`, an `oidcAccounts` or
+`accessAccounts` entry that is not a service account's subject
+(`system:serviceaccount:<namespace>:<name>`, so no entry holds a comma), an `accessAccounts` entry
+a set `oidcAccounts` leaves out, a `projectOwnerFallback` that is not a lowercase email (the three
+refusals Dispatch would otherwise make at boot), an `outsideOrigin` that
 breaks the rule the paragraph on it above states, a `publicOrigin` that breaks the rule its own
 paragraph states or is set beside the tailnet inputs, an `iapAudience` without `publicOrigin` or
 `signInDomain` or beside `signInClientId`, `signInClientSecret`, `signInOutside` or

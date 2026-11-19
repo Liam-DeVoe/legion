@@ -531,6 +531,7 @@ func main() {
 	serviceTokens := serviceTokenVerifier(boot)
 	if serviceTokens != nil {
 		slog.Info("dispatch: verifying service-account tokens", "issuer", boot.OIDCIssuer, "audience", boot.OIDCAudience)
+		warnEveryServiceAccountAdmitted(boot)
 		go serviceTokens.Run(ctx)
 	}
 
@@ -1537,11 +1538,18 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		}
 		boot.DevSignIn = true
 	}
+	return boot, nil
+}
+
+// warnEveryServiceAccountAdmitted logs one WARN when the deployment verifies service-account tokens
+// and names no account: every account whose token the issuer signs for the audience is then
+// admitted, as before DISPATCH_OIDC_ACCOUNTS existed. main calls it beside the line that says the
+// tokens are verified; resolveBootConfig only reads the environment.
+func warnEveryServiceAccountAdmitted(boot bootConfig) {
 	if boot.OIDCAudience != "" && len(boot.OIDCAccounts) == 0 {
 		slog.Warn("dispatch: DISPATCH_OIDC_ACCOUNTS is unset, so every service account whose token the issuer signs for the audience is admitted; list the accounts that call Dispatch to admit only them",
 			"issuer", boot.OIDCIssuer, "audience", boot.OIDCAudience)
 	}
-	return boot, nil
 }
 
 // commaList is the comma-separated list the setting name holds, each entry trimmed; a value blank
