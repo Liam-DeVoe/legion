@@ -849,19 +849,19 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// What the update answers it found and left, handed to the command bar's landing of this
-	// request, which records it in this transaction (goingRecordAnswer): as the route answers it
-	// below, with the last_seq the write phase's events leave.
-	goingRecordAnswer(r.Context(), http.StatusOK, func() any {
-		recorded := after
-		recorded.LastSeq = appendedIssueLastSeq(key, appended)
-		return issueUpdated{Issue: recorded, Previous: previous, RankPlace: rankPlace}
-	})
+	// What the update answers it found and left, with the last_seq the write phase's events leave:
+	// the record the command bar's landing of this request makes in this transaction
+	// (goingRecordAnswer) and the response below are this one value, built by this one function.
+	updated := func() issueUpdated {
+		answered := after
+		answered.LastSeq = appendedIssueLastSeq(key, appended)
+		return issueUpdated{Issue: answered, Previous: previous, RankPlace: rankPlace}
+	}
+	goingRecordAnswer(r.Context(), http.StatusOK, func() any { return updated() })
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	after.LastSeq = appendedIssueLastSeq(key, appended)
 	// A change of closed_at reaches the document rooms of every process, this one's included, from
 	// the commit itself: migration 20261101181500's trigger notifies, and each process closes its
 	// rooms of the issue's documents so their browsers reconnect with the scope the issue now
@@ -873,7 +873,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		// It runs after the publish so every event reaches subscribers in commit order.
 		s.sweepClosedIssueAsks(outlivingTheClient(r), key, withdrawn, actor)
 	}
-	WriteJSON(w, http.StatusOK, withAdvice(issueUpdated{Issue: after, Previous: previous, RankPlace: rankPlace}, advice))
+	WriteJSON(w, http.StatusOK, withAdvice(updated(), advice))
 }
 
 // appendedIssueLastSeq is the issue's last_seq once the write phase has run: the sequence of the

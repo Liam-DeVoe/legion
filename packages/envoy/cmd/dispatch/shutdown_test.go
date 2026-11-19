@@ -488,7 +488,7 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 			close(entered)
 			<-release
 			background.Wait()
-		}, func() {}, func() {}, nil)
+		}, func() {}, func() {}, nil, nil)
 	}()
 	select {
 	case <-entered:
@@ -619,7 +619,7 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		shutdown(server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped)
+		shutdown(server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped, nil)
 	}()
 	select {
 	case <-done:
@@ -778,7 +778,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 		// As main does: the stop of the intakes, which begins as ctx is cancelled, is what shutdown
 		// waits for beside the delivery sockets.
 		served <- serveUntilStopped(ctx, cancel, &http.Server{Handler: http.NotFoundHandler()}, listener, documentService,
-			database.Pool, func() {}, stopIntakes, func() {}, nil, nil)
+			database.Pool, func() {}, stopIntakes, func() {}, nil, nil, nil)
 	}()
 	cancel()
 	select {

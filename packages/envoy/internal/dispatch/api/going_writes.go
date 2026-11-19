@@ -46,11 +46,13 @@ const goingInProcessAddr = "unix:agent"
 // credential, carries no credential header, and is served by the whole chain a request off the
 // network is (server.inProcess), at the server's public origin (PublicOrigin) - its scheme and
 // its host, so a route that writes a link names the public address - with no TLS state and
-// goingInProcessAddr for its peer.
+// goingInProcessAddr for its peer. limit is the most of an answer's body it keeps, the rest cut
+// (recordedAnswer); 0 keeps it whole.
 type goingInProcess struct {
 	handler      http.Handler
 	caller       resolvedCaller
 	scheme, host string
+	limit        int
 }
 
 // goingDoer is the route table called in-process as caller, at origin, the server's public origin
@@ -86,6 +88,12 @@ func (s *server) goingBarDoer(r *http.Request, run string) (GoingDoer, error) {
 // its body it does not declare rather than ignoring it (judgeUndeclaredMembers): sender and route
 // are one build.
 func (d goingInProcess) Do(request *http.Request) (*http.Response, error) {
+	return d.serve(request).response(request), nil
+}
+
+// serve serves request in-process as Do does, and answers what its route answered, kept whole or
+// cut at the doer's limit.
+func (d goingInProcess) serve(request *http.Request) *recordedAnswer {
 	request.URL.Scheme, request.URL.Host, request.Host = d.scheme, d.host, d.host
 	request.TLS = nil
 	request.RemoteAddr = goingInProcessAddr
@@ -93,7 +101,7 @@ func (d goingInProcess) Do(request *http.Request) (*http.Response, error) {
 	ctx = context.WithValue(ctx, requestKeyClaimKey{}, nil)
 	ctx = context.WithValue(ctx, goingInProcessKey{}, true)
 	ctx = store.WithoutBeforeCommit(ctx)
-	if landing, carries := ctx.Value(goingLandingKey{}).(goingLanding); carries {
+	if landing, carries := ctx.Value(goingLandingKey{}).(goingLandingStep); carries {
 		running := &atomic.Bool{}
 		running.Store(true)
 		defer running.Store(false)
@@ -101,9 +109,16 @@ func (d goingInProcess) Do(request *http.Request) (*http.Response, error) {
 		ctx = context.WithValue(context.WithValue(ctx, goingLandingKey{}, nil), goingAnswerKey{}, sink)
 		ctx = store.WithBeforeCommit(ctx, landing.step(running, sink))
 	}
-	answer := &recordedAnswer{header: http.Header{}}
+	answer := &recordedAnswer{header: http.Header{}, limit: d.limit}
 	d.handler.ServeHTTP(answer, request.WithContext(ctx))
-	return answer.response(request), nil
+	return answer
+}
+
+// goingLandingStep is a landing a request carries on its context (goingLandingKey): the record of
+// a write's or an undo's request on its run (goingLanding), or of a run call's request in
+// going_landings (goingRunLanding). Its step records it in the route's own transaction.
+type goingLandingStep interface {
+	step(running *atomic.Bool, sink *goingAnswerSink) store.BeforeCommit
 }
 
 // goingInProcessKey marks the context of a request goingInProcess.Do serves.
@@ -119,13 +134,16 @@ func goingServedInProcess(ctx context.Context) bool {
 // recordedAnswer is what a handler answers, kept whole: an in-process route's answer to a going
 // write, and a test hook's acknowledgement of what its handler's error writer wrote. The first
 // status written is the answer's, and a body written with none is a 200's, as net/http's own
-// writer has it. It has no Unwrap, Flush or Hijack: it is no connection, so a layer that reaches
-// for one (a read deadline on the body's drain) reaches nothing, and nothing of the caller's own
-// connection.
+// writer has it. A limit above 0 keeps that much of the body and drops the rest, marking the
+// answer cut, while the handler writes on as though all of it was taken. It has no Unwrap, Flush
+// or Hijack: it is no connection, so a layer that reaches for one (a read deadline on the body's
+// drain) reaches nothing, and nothing of the caller's own connection.
 type recordedAnswer struct {
 	header http.Header
 	status int
 	body   bytes.Buffer
+	limit  int
+	cut    bool
 }
 
 func (a *recordedAnswer) Header() http.Header { return a.header }
@@ -139,6 +157,11 @@ func (a *recordedAnswer) WriteHeader(status int) {
 func (a *recordedAnswer) Write(body []byte) (int, error) {
 	if a.status == 0 {
 		a.status = http.StatusOK
+	}
+	if a.limit > 0 && a.body.Len()+len(body) > a.limit {
+		a.body.Write(body[:a.limit-a.body.Len()])
+		a.cut = true
+		return len(body), nil
 	}
 	return a.body.Write(body)
 }

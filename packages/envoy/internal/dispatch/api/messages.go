@@ -441,7 +441,7 @@ func (s *server) createStoredMessage(
 	// attempt the bar reads by that id (goingWriteClaim.sentDelivery). It holds no attempt yet: the
 	// first is sent and settled after this commit.
 	if issueKey == nil {
-		goingRecordAnswer(ctx, http.StatusCreated, newShapedMessage(message, false))
+		goingRecordAnswer(ctx, http.StatusCreated, func() any { return newShapedMessage(message, false) })
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return model.Message{}, nil, err

@@ -700,8 +700,10 @@ func (s *server) claimWrite(
 	}
 	// What the claim routes answer of this write (claimCycle), handed to the command bar's landing
 	// of the request, which records it in this transaction (goingRecordAnswer).
-	goingRecordAnswer(ctx, http.StatusOK, claimAnswer{Issue: applied.issue, LegionManagedStatus: applied.legionManagedStatus,
-		ClaimChanged: applied.event.ID != 0, PreviousClaim: applied.previous})
+	goingRecordAnswer(ctx, http.StatusOK, func() any {
+		return claimAnswer{Issue: applied.issue, LegionManagedStatus: applied.legionManagedStatus,
+			ClaimChanged: applied.event.ID != 0, PreviousClaim: applied.previous}
+	})
 	if err := tx.Commit(ctx); err != nil {
 		return claimApplied{}, err
 	}

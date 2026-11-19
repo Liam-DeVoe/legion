@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -221,6 +222,11 @@ type Deps struct {
 	// it empty, which is one identity for every such build and is why a deploy is what it is
 	// for rather than a key anything depends on being unique.
 	BuildCommit string
+	// GoingRuns wakes the agent's waiting claims and renews at each announcement on
+	// GoingRunsChannel, which cmd/dispatch registers it for on its listener hub; nil is a server
+	// no announcement reaches, which register gives a signal of its own, so its claims and renews
+	// wait out their bounds.
+	GoingRuns *GoingRunSignal
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -307,6 +313,8 @@ type DepsInput struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
 	BuildCommit string
+	// GoingRuns is the signal of GoingRunsChannel; see Deps.GoingRuns.
+	GoingRuns *GoingRunSignal
 }
 
 // NewDeps parses boot configuration once and returns API dependencies.
@@ -394,6 +402,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Metrics:                input.Metrics,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
+		GoingRuns:              input.GoingRuns,
 	}, nil
 }
 
@@ -452,7 +461,10 @@ type server struct {
 	// is performed through, as its caller, so every check a route makes runs on it exactly as on
 	// a request off the network (going_writes.go). Its requests name their caller on their
 	// context and carry no cookie, so the origin check passes them. register sets it.
-	inProcess       http.Handler
+	inProcess http.Handler
+	// goingRuns wakes the agent's waiting claims and renews (going_agent.go): Deps.GoingRuns, or a
+	// signal of the server's own where it is nil.
+	goingRuns       *GoingRunSignal
 	adviceQueryHook func(context.Context, pgx.Tx, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
@@ -690,7 +702,8 @@ type RouteMux interface {
 // started the relay, or at once under the test hooks.
 func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
-	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon}
+	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon,
+		ListenAgent: s.listenAgentAtItsDirectory, GoingRunShape: goingRunShape}
 }
 
 // Background is the work a registered server does beside answering its requests, for the process
@@ -698,6 +711,13 @@ func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
 type Background struct {
 	// Wait is the wait Register describes, for shutdown.
 	Wait func()
+	// ListenAgent listens for the agent process on its Unix socket, under a secret of its own
+	// (AgentListener): agent.sock in $XDG_RUNTIME_DIR/dispatch-agent, or in a directory of its own
+	// under the system's temporary directory where that is unset, each of mode 0700.
+	ListenAgent func() (*AgentListener, error)
+	// GoingRunShape is the highest saved shape of a command-bar run this build reads, which the
+	// process writes into its row of server_processes (processes.Instance.GoingRunShape).
+	GoingRunShape int
 	// ResumeDeliveries is one pass of the delivery sweep (resumeOwedDeliveries): every delivery a
 	// process that died left owed is sent, once, under its own attempt number. The maintenance loop
 	// runs it (RunMaintenanceSweep).
@@ -761,11 +781,18 @@ func (b *backgroundWork) done() {
 	}
 }
 
-// goDetached runs work on a goroutine of its own, counted until it returns.
+// goDetached runs work on a goroutine of its own, counted until it returns. A panic in work is
+// recovered and logged with its stack: a delivery, a run of the command bar or any other work a
+// request leaves running stops alone, and the process serves on.
 func (b *backgroundWork) goDetached(work func()) {
 	b.start()
 	go func() {
 		defer b.done()
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				slog.Error("dispatch: detached work panicked", "panic", recovered, "stack", string(debug.Stack()))
+			}
+		}()
 		work()
 	}()
 }
@@ -840,6 +867,10 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	}
 	s.going = going
 	s.inProcess = EnforceCookieOrigin(deps.ServerURL, mux)
+	s.goingRuns = deps.GoingRuns
+	if s.goingRuns == nil {
+		s.goingRuns = NewGoingRunSignal()
+	}
 	goingReads, err := goingReadRoutesOf(routes)
 	if err != nil {
 		// A read tool naming a row this table does not serve would offer a read nothing judges

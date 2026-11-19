@@ -530,6 +530,9 @@ func main() {
 	// decider is nil where the deployment configured no decision model or named one the
 	// measurement does not hold, which newDecider logs: the server boots and decides nothing.
 	decider := newDecider(boot.Decision)
+	// The command bar's agent waits for a ready run, and for its person's Stop, on the NOTIFYs of
+	// api.GoingRunsChannel, which the listener hub below delivers to this signal.
+	goingRuns := api.NewGoingRunSignal()
 
 	built := routes.AppContextOptions{
 		SigningKey:     signingKey,
@@ -551,6 +554,7 @@ func main() {
 		AgentPublisher: agentPublisher,
 		Files:          fileStore,
 		Lifetime:       ctx,
+		GoingRuns:      goingRuns,
 	}
 	// Set only when configured: a nil *oidc.LazyVerifier in the interface field would read as a
 	// configured verifier, and every JWT-shaped bearer would be sent to it.
@@ -834,6 +838,8 @@ func main() {
 	if appCfg != nil {
 		gitHubReadsWake = listenerHub.Wake(githubreads.Channel)
 	}
+	listenerHub.Handle(api.GoingRunsChannel, goingRuns.Notify)
+	listenerHub.OnConnected(goingRuns.Wake)
 
 	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
 	// project_key (migration 20261109120000) is the project each embeddings row belongs to, the
@@ -1122,6 +1128,7 @@ func main() {
 		SchemaCreatable:  pmdoc.SchemaCreatable(),
 		EmbedderIdentity: embedderIdentity,
 		FileStore:        fileStore != nil,
+		GoingRunShape:    background.GoingRunShape,
 	}, registryPruneLeases, announcer)
 	if err != nil {
 		// A deploy that stops this process while the registration waits for a refusing peer's
@@ -1138,6 +1145,15 @@ func main() {
 	// The CI reconcile loop started before this, so it has been reading the holder and finding
 	// nothing; from here each of its passes records its counts under this process's row.
 	ciInstance.set(registration.ID)
+	// The command bar's agent process makes every read and write of its runs as a call to this
+	// server over a Unix socket only this process's user can open (api.AgentListener). A socket
+	// this process cannot make leaves the runs waiting for one that can, and Dispatch serves on.
+	var agent agentShutdown
+	if listening, err := background.ListenAgent(); err != nil {
+		slog.Warn("dispatch: listen for the command bar's agent; its runs wait for a server process that does", "error", err)
+	} else {
+		agent = listening
+	}
 	// The importer's flights outlive the ticker's context, so they are closed inside the
 	// background wait: shutdown runs it before waitUntilIdle and pool.Close, and a sync still
 	// fetching then would write into a closing pool.
@@ -1146,7 +1162,7 @@ func main() {
 		appCtx.Architecture().Close()
 	}
 	if err := serveUntilStopped(ctx, cancel, server, listener, documentService, database.Pool, waitBackground, waitIntakes,
-		deregisterAfterDrain(registration), registration.Lost(), outboxStopped); err != nil {
+		deregisterAfterDrain(registration), registration.Lost(), outboxStopped, agent); err != nil {
 		slog.Error("dispatch: serve", "error", err)
 		os.Exit(1)
 	}

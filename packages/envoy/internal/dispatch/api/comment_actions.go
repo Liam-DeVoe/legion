@@ -556,7 +556,9 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 	if found != nil {
 		// What the resolve answers it found and left, handed to the command bar's landing of this
 		// request, which records it in this transaction (goingRecordAnswer).
-		goingRecordAnswer(r.Context(), http.StatusOK, resolvedComment{shapedComment: newShapedComment(comment, false), Previous: *found})
+		goingRecordAnswer(r.Context(), http.StatusOK, func() any {
+			return resolvedComment{shapedComment: newShapedComment(comment, false), Previous: *found}
+		})
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)

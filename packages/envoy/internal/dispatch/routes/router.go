@@ -181,6 +181,9 @@ type AppContextOptions struct {
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
 	// fence; BuildAppContext refuses it for a non-loopback ServerURL.
 	DevSignIn bool
+	// GoingRuns wakes the command-bar agent's waiting claims and renews; cmd/dispatch registers it
+	// on its listener hub for api.GoingRunsChannel. See api.Deps.GoingRuns.
+	GoingRuns *api.GoingRunSignal
 }
 
 // BuildAppContext bundles the shared HTTP-handler state.
@@ -243,6 +246,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Metrics:                opts.Metrics,
 		DashboardEntry:         opts.DashboardEntry,
 		BuildCommit:            opts.BuildCommit,
+		GoingRuns:              opts.GoingRuns,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)

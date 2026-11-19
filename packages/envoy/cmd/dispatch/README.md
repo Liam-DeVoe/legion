@@ -3636,6 +3636,20 @@ A run asked by a credential that acts as a person keeps a record in `going_runs`
 The record stays for seven days, past the hour its request's rows are kept, so a turn can be undone after a reload and from any page.
 `GET /api/v1/me/going-runs` answers the caller's own runs of those seven days, newest first, with `?issue=`, `?q=` and `?undoable=true`; the maintenance sweep deletes a record past seven days, and the writes and undo routes answer `404 GOING_RUN_NOT_FOUND` for it.
 
+A run's agent process (`envoy-dispatch agent`) makes every read and write of a run as a call to this server over a Unix socket (`going/agentwire`, `api/going_agent.go`): `agent.sock` in `$XDG_RUNTIME_DIR/dispatch-agent`, or in a directory of the process's own under the system's temporary directory where that is unset, each of mode 0700.
+Each call carries the 32-byte secret the server made when it started, compared in constant time; a call without it, or with another one, is refused `UNAUTHORIZED`.
+A run is a row of `going_runs`: a claim takes the oldest queued run, or a working one whose lease ran out, whose `shape` this build reads (it writes the highest it reads into `server_processes.going_run_shape`), under a fresh lease token for 30 s, with at most 3 runs working and 20 queued for one person.
+A renew extends the leases for 30 s and is answered after 10 s, or at once when the person stops a run of them; a claim waits up to 25 s; both are woken by `NOTIFY dispatch_going_runs`.
+Every step, call and end carries the lease token, which the server checks in the transaction that writes it, so an owner whose lease ended writes nothing.
+The server runs at most 16 calls at once, each on a context of its own bounded at 60 s, keeps at most 1 MiB of an answer and marks the rest cut, and answers a route that panics `CALL_PANICKED` and serves on.
+A write runs only as an approved row of the run's plan (`WRITE_NOT_APPROVED` otherwise), and each request it sends in-process writes its `going_landings` row in the route's own transaction, keyed by the run, the step, the call and the request's number.
+A second try of a call answers each request that landed from its row and sends the rest.
+In this process a second try waits for a first try still running, at most 60 s, then answers from its rows or fails `CALL_UNKNOWN`.
+In another process it does not wait: it runs, its landing's insert waits on the first try's row at its commit, and once the first try commits its change rolls back and it answers from the first try's row.
+A message's or a comment's delivery recovery point goes into its landing's `recovery`, and the delivery sweep sends a landed message that has no delivery attempt.
+A GitHub read goes through the server's GitHub App, only for a repository Dispatch maps to a project the person can read; a web read goes only to an address in the person's words or in a tool result of the run, connects only to a public address, checked on each connection after the DNS answer and on each redirect, and stops at 1 MiB or 10 s, marked cut.
+At shutdown, after the HTTP drain, the server answers no claim a run, answers every waiting renew at once, closes the agent's standard input where a supervisor set that, waits for the calls in flight until 5 s before its stop grace ends, and closes the socket.
+
 ## Keyed writes
 
 Every `POST` and `PATCH` route takes an optional `Idempotency-Key` request header naming the intent behind the write, the same on every retry of it and new for every new one (the IETF `Idempotency-Key` draft; Google AIP-155).

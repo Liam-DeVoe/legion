@@ -316,19 +316,20 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// (model.Ask's own comment, and AskEventPayloadSchema in packages/contracts, which strips it).
 	ask.WaitingOnPerson = waitingOnPerson
 	appended = append(appended, event)
-	// The ask this request opened, handed to the command bar's landing of this request, which
-	// records it in this transaction (goingRecordAnswer): as the route answers it below, with the
-	// id of the event that opened it, which the write phase fills in.
-	goingRecordAnswer(r.Context(), http.StatusCreated, func() any {
-		recorded := ask
-		recorded.OpenedEventID = &event.ID
-		return newShapedAsk(recorded, false)
-	})
+	// The ask as this route answers it, with the id of the event that opened it, which the write
+	// phase fills in: the record the command bar's landing of this request makes in this
+	// transaction (goingRecordAnswer) and the response below are this one value, built by this one
+	// function, the response's display trees aside.
+	answered := func(trees bool) shapedAsk {
+		opened := ask
+		opened.OpenedEventID = &event.ID
+		return newShapedAsk(opened, trees)
+	}
+	goingRecordAnswer(r.Context(), http.StatusCreated, func() any { return answered(false) })
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	ask.OpenedEventID = &event.ID
 	s.publish(r.Context(), appendedEvents(appended...)...)
 	s.storeDisplayTrees(r.Context(), ask.ID, texttrees.AskWrittenTexts(nil, ask.Question, ask.Options)...)
 	// The related-item check. An ask on an issue searches that issue's project and, normally, rides its check's
@@ -351,7 +352,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		trees: trees,
 	})
 	trees.resolve()
-	WriteJSON(w, http.StatusCreated, withSuggestions(newShapedAsk(ask, wantsDisplayTrees(r)), advice, suggestions))
+	WriteJSON(w, http.StatusCreated, withSuggestions(answered(wantsDisplayTrees(r)), advice, suggestions))
 }
 
 // editAskInput is the body of PATCH /api/v1/asks/{id}.
@@ -647,7 +648,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	// What the edit answers it found and left, handed to the command bar's landing of this
 	// request, which records it in this transaction (goingRecordAnswer).
-	goingRecordAnswer(r.Context(), http.StatusOK, askEdited{shapedAsk: newShapedAsk(ask, false), Previous: found})
+	goingRecordAnswer(r.Context(), http.StatusOK, func() any { return askEdited{shapedAsk: newShapedAsk(ask, false), Previous: found} })
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return

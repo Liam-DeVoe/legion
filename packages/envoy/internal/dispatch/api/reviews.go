@@ -732,41 +732,10 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	ask.WaitingOnPerson = waitingOnPerson
 	// The approval as this request leaves it: awaiting, waiting on whom the request now waits on.
 	approval := approvalAfterRequest(*artifact.Approval, *ask)
-	// What this request answers it did - the ask, whether it opened it, and 201 where it wrote
-	// anything - handed to the command bar's landing of this request, which records it in this
-	// transaction (goingRecordAnswer): as the route answers it below, with the id of the event
-	// that opened the request, which the write phase fills in.
-	sunkStatus := http.StatusOK
-	if len(appended) > 0 {
-		sunkStatus = http.StatusCreated
-	}
-	goingRecordAnswer(r.Context(), sunkStatus, func() any {
-		recorded := *ask
-		if opened != nil {
-			recorded.OpenedEventID = &opened.ID
-		}
-		sunkAsk := newShapedAsk(recorded, false)
-		return approvalRequestResponse{Ask: &sunkAsk, Opened: open == nil, ArtifactID: artifact.ID, Version: version,
-			Approval: newArtifactApprovalRead(approval, false), Coverage: coverage, CoverageUnread: coverageUnread}
-	})
-	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if opened != nil {
-		// The id of the event that opened the request is known once the write phase has run.
-		ask.OpenedEventID = &opened.ID
-	}
-	s.publish(r.Context(), appendedEvents(appended...)...)
-	// The question this request wrote: the one it opened the approval ask with, or the rewording
-	// a renewal left on the open ask (renewApprovalAsk).
-	if ask != nil {
-		s.storeDisplayTrees(r.Context(), ask.ID, ask.Question)
-	}
 	// 201 says this request opened the request, reworded it or handed it to the human; 200 says the
 	// open request already stood as asked, whether or not it made its requester a follower
 	// (ask.follower_added, renewApprovalAsk). A rewording is never this route's only write: the
-	// hand-back that follows it appends an event of its own, which is published here, while the
+	// hand-back that follows it appends an event of its own, which is published below, while the
 	// rewording's goes to the ledger and is published by Commit.
 	status := http.StatusOK
 	for _, event := range appended {
@@ -775,18 +744,39 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 			break
 		}
 	}
-	var askAnswer *shapedAsk
-	if ask != nil {
-		read := newShapedAsk(*ask, trees)
-		askAnswer = &read
+	// What this request answers it did - the ask, with the id of the event that opened the request,
+	// which the write phase fills in, whether it opened it, and the approval it leaves: the record
+	// the command bar's landing of this request makes in this transaction (goingRecordAnswer) and
+	// the response below are this one value, under the one status above, built by this one
+	// function, the response's display trees aside. The reason, like the question, is read where it
+	// stands: the write beside it stored its tree. The approval is the one this request's queued
+	// writes leave (approvalAfterRequest), which no read of this transaction could answer from the
+	// rows.
+	answer := func(trees bool) approvalRequestResponse {
+		var answered *shapedAsk
+		if ask != nil {
+			read := *ask
+			if opened != nil {
+				read.OpenedEventID = &opened.ID
+			}
+			shaped := newShapedAsk(read, trees)
+			answered = &shaped
+		}
+		return approvalRequestResponse{Ask: answered, Opened: open == nil, ArtifactID: artifact.ID, Version: version,
+			Approval: newArtifactApprovalRead(approval, trees), Coverage: coverage, CoverageUnread: coverageUnread}
 	}
-	// The reason, like the question above, is read where it stands: the write beside it stored
-	// its tree. The approval is the one this request's queued writes leave
-	// (approvalAfterRequest), which no read of this transaction could answer from the rows.
-	WriteJSON(w, status, approvalRequestResponse{Ask: askAnswer, Opened: open == nil, ArtifactID: artifact.ID, Version: version,
-		Approval:       newArtifactApprovalRead(approval, trees),
-		Coverage:       coverage,
-		CoverageUnread: coverageUnread})
+	goingRecordAnswer(r.Context(), status, func() any { return answer(false) })
+	if err := ledger.Commit(r.Context()); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.publish(r.Context(), appendedEvents(appended...)...)
+	// The question this request wrote: the one it opened the approval ask with, or the rewording
+	// a renewal left on the open ask (renewApprovalAsk).
+	if ask != nil {
+		s.storeDisplayTrees(r.Context(), ask.ID, ask.Question)
+	}
+	WriteJSON(w, status, answer(trees))
 }
 
 // approvalAfterRequest is the document's approval as this request's writes leave it: the approval

@@ -875,7 +875,9 @@ func (s *server) storeArtifact(
 	}
 	// What the upload answers it wrote and wrote over, handed to the command bar's landing of this
 	// request, which records it in this transaction (goingRecordAnswer).
-	goingRecordAnswer(r.Context(), http.StatusCreated, artifactUploadResponse{Artifact: artifact, Version: version, PreviousVersion: previousVersion})
+	goingRecordAnswer(r.Context(), http.StatusCreated, func() any {
+		return artifactUploadResponse{Artifact: artifact, Version: version, PreviousVersion: previousVersion}
+	})
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1477,8 +1479,9 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	// The tokens of the document the edit found and left, read in this transaction, handed to the
 	// command bar's landing of this request, which records them in it (goingRecordAnswer).
-	goingRecordAnswer(r.Context(), http.StatusOK, editArtifactResponse{Applied: edit.Applied, Changed: edit.Changed,
-		Token: edit.Token, PreviousToken: edit.PreviousToken})
+	goingRecordAnswer(r.Context(), http.StatusOK, func() any {
+		return editArtifactResponse{Applied: edit.Applied, Changed: edit.Changed, Token: edit.Token, PreviousToken: edit.PreviousToken}
+	})
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
