@@ -19,8 +19,8 @@
  * `dashboard-pages-file.test.ts` renders it again and fails when the committed file differs, so a
  * tab added to `ISSUE_TABS` fails that test until the file is written again.
  */
-import { primarySpec, roleDocument } from "../../api/issue-cache";
 import type { Artifact, DocumentRole, IssueDetails } from "../../api/types";
+import { issueDocuments } from "../issue/issue-documents";
 import {
   buildDispatchReference,
   buildProjectPath,
@@ -28,7 +28,7 @@ import {
   ISSUE_DOCUMENT_SEGMENTS,
   ISSUE_TABS,
   type IssueRoute,
-  issueTabForRoute,
+  type IssueTab,
   parseIssuePath,
   referencedArtifact,
   referenceRouteFromHref,
@@ -69,23 +69,13 @@ const issue = {
   | "decisions_artifact_id"
 >;
 
-/** The document the issue page draws at route, as `IssuePage.tsx` chooses it: the Spec tab draws
- *  the spec, the Verification, Plan and Decisions tabs the issue's document of that role, and the
- *  Artifacts tab the document the route names by slug; every other tab draws none. */
+/** The document the issue page draws at route: the active tab's document, by the page's own
+ *  choice (`issueDocuments`, which `IssuePage.tsx` draws each tab from); a tab with no document
+ *  draws none. */
 function drawnDocument(route: IssueRoute): Artifact | undefined {
-  const selected =
-    route.kind === "artifact"
-      ? issue.artifacts?.find(({ slug }) => slug === route.slug)
-      : primarySpec(issue);
-  const tab = issueTabForRoute(route, selected);
-  if (tab === "spec") {
-    return primarySpec(issue);
-  }
-  const role = roles.find((each) => each === tab);
-  if (role !== undefined) {
-    return roleDocument(issue, role);
-  }
-  return tab === "artifacts" && route.kind === "artifact" ? selected : undefined;
+  const { activeTab, drawn } = issueDocuments(route, issue);
+  const byTab: Partial<Record<IssueTab, Artifact | undefined>> = drawn;
+  return byTab[activeTab];
 }
 
 /** Every page of the issue: its own, each tab's, and each document's by each segment. */
