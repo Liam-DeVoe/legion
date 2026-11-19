@@ -2294,18 +2294,8 @@ READS = (
     ("test", "packages/dispatch/web/src/fonts/inter/package.json",
      "scripts/third-party-notices.test.ts:102-105 (thirdPartyNotices over the font file's path)"),
     ("test", "packages/dispatch/web/src/fonts/inter/LICENSE.txt", "the same thirdPartyNotices call"),
-    ("test", "packages/contracts/fixtures/priority-ids.json", "scripts/priorities-seed.test.ts:30"),
-    ("test", "packages/contracts/src/dispatch-api-limits.ts",
-     "scripts/priorities-seed.test.ts:3, scripts/priorities-seed.ts:62 and "
-     "scripts/priorities-seed-ids.ts:8, by relative path"),
-    ("test", "scripts/priorities-seed-ids.ts",
-     "scripts/priorities-seed.test.ts:7 and scripts/priorities-seed.ts:73, by relative path"),
     ("dispatch_browser", "packages/contracts/fixtures/priority-ids.json",
      "packages/dispatch/e2e/priorities.e2e.ts:44"),
-    ("priorities_seed_check_test", "scripts/priorities-seed-ids.ts",
-     "scripts/priorities-seed-check.sh:352-353, which imports it through bun --eval"),
-    ("priorities_seed_check_test", "packages/contracts/src/dispatch-api-limits.ts",
-     "scripts/priorities-seed-ids.ts:8, loaded by the same bun --eval"),
 )
 
 doc = yaml.safe_load(Path(sys.argv[1]).read_text())

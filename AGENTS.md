@@ -260,12 +260,12 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   packages/dispatch's recipe builds `@legion/contracts` before it runs a test, as its `e2e` recipe does:
   rows of `e2e/__tests__` list a Playwright configuration, and Playwright evaluates it under Node, which reads that package's build output rather than its sources.
 
-- `bun test scripts/third-party-notices.test.ts && bun test scripts/semantic-line-breaks.test.ts && bun test scripts/priorities-seed.test.ts && bun test scripts/semantic-line-breaks.guides.test.ts && bun test scripts/dispatch && bun test scripts/approval-eval && bun test scripts/e2e/lib && bun test scripts/conflicts && bun test scripts/sessions`
+- `bun test scripts/third-party-notices.test.ts && bun test scripts/semantic-line-breaks.test.ts && bun test scripts/semantic-line-breaks.guides.test.ts && bun test scripts/dispatch && bun test scripts/approval-eval && bun test scripts/e2e/lib && bun test scripts/conflicts && bun test scripts/sessions`
 
   The Bun tests under `scripts/`, which is no workspace.
-  ci.yaml's `test` job runs the first seven, one step each and in that order (`.github/workflows/ci-job-test.yaml`), and runs no other Bun test under `scripts/`.
-  Six of those seven steps carry no `if:` of their own and run on every run of the job.
-  The fourth, `bun test scripts/semantic-line-breaks.guides.test.ts`, checks the guides' own layout and is gated: it runs when the change touches a file of the `guide_layout` filter, or when the `changes` job did not succeed.
+  ci.yaml's `test` job runs the first six, one step each and in that order (`.github/workflows/ci-job-test.yaml`), and runs no other Bun test under `scripts/`.
+  Five of those six steps carry no `if:` of their own and run on every run of the job.
+  The third, `bun test scripts/semantic-line-breaks.guides.test.ts`, checks the guides' own layout and is gated: it runs when the change touches a file of the `guide_layout` filter, or when the `changes` job did not succeed.
   `bun test scripts/conflicts` runs in the `conflicts-script` job instead (`.github/workflows/ci-job-conflicts-script.yaml`), after that job's biome and tsc steps over the same directory.
   `bun test scripts/sessions` runs in the `sessions-script` job instead (`.github/workflows/ci-job-sessions-script.yaml`), which starts the PostgreSQL server that suite refuses to run without (`LEGION_TEST_PG_DSN`); the `test` job keeps that directory's biome and tsc steps.
   The `lint` job also runs one file of the `scripts/e2e/lib` suite, `bun test scripts/e2e/lib/nats-image.test.ts`, on every change.

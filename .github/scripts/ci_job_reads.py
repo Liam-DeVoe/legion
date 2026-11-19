@@ -1993,21 +1993,19 @@ SESSIONS_STEP = "Test the session message-wait script"
 # gates name, through the anchors ci.yaml holds each of these lists under, so a change to a
 # harness or its subject selects the job and exactly that step's gate is true in it.
 #
-# Every harness under .github/scripts sources test-lib.sh for its `check`, `is` and `summary`,
-# so each of those gates reads it and a change to it runs them all;
-# scripts/priorities-seed-check.test.sh, which is not among them, carries its own helpers.
+# Every harness sources test-lib.sh for its `check`, `is` and `summary`, so each of those gates
+# reads it and a change to it runs them all.
 SCRIPTS = ".github/scripts"
 TEST_LIB = f"{SCRIPTS}/test-lib.sh"
 
 
-def harness(filter, step, harness_script, subjects, lib=True):
-    """A gate for one harness step of the test job: the harness itself, test-lib.sh where the
-    harness sources it, and `subjects`, the (path, why) pairs of what else that step reads - the
+def harness(filter, step, harness_script, subjects):
+    """A gate for one harness step of the test job: the harness itself, test-lib.sh, which the
+    harness sources, and `subjects`, the (path, why) pairs of what else that step reads - the
     script it tests first among them. The gate is the step's, so its `if:` must test this
     filter and no other (rule 2)."""
-    entries = [(harness_script, at("test", step))]
-    if lib:
-        entries.append((TEST_LIB, f"{harness_script} sources it for check/is/summary"))
+    entries = [(harness_script, at("test", step)),
+               (TEST_LIB, f"{harness_script} sources it for check/is/summary")]
     return gate(filter, "test", step=step,
                 reads=reads(*entries, *subjects))
 
@@ -2204,28 +2202,14 @@ SCRIPT_TEST_GATES = [
     harness("disk_watch_test", "Test the machine watch", f"{SCRIPTS}/disk_watch.test.sh", [
         (f"{SCRIPTS}/disk_watch.py", "the module under test"),
     ]),
-    # The one harness of the job that is not under .github/scripts and sources no test-lib.sh.
-    # The check it tests loads the seed's own priorityId and rowKeys through bun at run time, from
-    # scripts/priorities-seed-ids.ts, so the step reads that module and every module it loads;
-    # check-ts-filters.sh derives no shell step's run-time loads. That closure, measured with
-    # `bun build --metafile` of the module, is the module itself and
-    # packages/contracts/src/dispatch-api-limits.ts, which imports nothing, so the two files stand
-    # for it rather than the globs of the packages the rest of the seed loads.
-    harness("priorities_seed_check_test", "Test the priorities seed check (a stand-in Dispatch)",
-            "scripts/priorities-seed-check.test.sh", [
-        ("scripts/priorities-seed-check.sh", "the script under test (scripts/priorities-seed-check.test.sh:16 names it)"),
-        ("scripts/priorities-seed-ids.ts", "scripts/priorities-seed-check.sh:352-353 imports it through bun --eval (the path at :100)"),
-        ("packages/contracts/src/dispatch-api-limits.ts", "scripts/priorities-seed-ids.ts:8 imports it by relative path, "
-                                                          "loaded by the same bun --eval"),
-    ], lib=False),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
         (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:76-78)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
-        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2444 imports this table to derive the plain step's -run lists"),
-        ("AGENTS.md", "check-ci-filters.test.sh:2888-2923 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2434 imports this table to derive the plain step's -run lists"),
+        ("AGENTS.md", "check-ci-filters.test.sh:2878-2913 holds the guide's slow-suite list to the jobs the full-ci label gates"),
         (".github/workflows/ci-job-typecheck.yaml", "check-ci-filters.test.sh runs its darwin vet step's own run text "
                                                     "over a module with a negated tag"),
     ]),
@@ -2413,24 +2397,16 @@ GATES = [
         ("scripts/third-party-notices.ts", "scripts/third-party-notices.test.ts:5,139"),
         ("scripts/semantic-line-breaks.test.ts", at("test", "Test the semantic line-break checker")),
         ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.test.ts:6,28 spawns it"),
-        ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),
-        ("scripts/priorities-seed.ts", "scripts/priorities-seed.test.ts:6 imports it"),
-        ("scripts/priorities-seed-ids.ts", "scripts/priorities-seed.test.ts:7 and scripts/priorities-seed.ts:73 import it"),
-        (f"{FIX}/priority-ids.json", "scripts/priorities-seed.test.ts:30 reads the shared list of the priority id "
-                                     "rule's cases by path"),
         ("scripts/e2e/**", f"{at('test', 'bun test scripts/e2e/lib')} (lib/script-functions.test.ts:105-108 scans scripts/e2e/*.sh and lib/*); "
                            f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
-        (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:3-9 (tsc -p scripts/dispatch); "
-                        "scripts/priorities-seed.ts:62, priorities-seed-ids.ts:8 and priorities-seed.test.ts:3 import "
-                        "dispatch-api-limits.ts by relative path"),
+        (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:3-9 (tsc -p scripts/dispatch)"),
         (TEST_FIXTURES_SRC, f"{at('test', 'bun test scripts/e2e/lib')} and the other bun test steps import @legion/test-fixtures"),
         # The envoy-client sources, and broker-client's with them, are the shared read below:
         # scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:17-22, envoy-bridge.ts:11
         # and scripts/dispatch/ask-census.ts:10-18 import @legion/envoy-client/*, and the
         # scripts/dispatch typecheck holds seven broker-client sources in its own program.
         ("packages/envoy-client/test/fake-dispatch.ts", "scripts/e2e/lib/agent-replay.test.ts:4-7 imports it by path"),
-        ("scripts/dispatch/**", f"{at('test', 'Lint the Dispatch census script')}, typecheck and test; "
-                                "scripts/priorities-seed.test.ts:5 imports __tests__/held-deadlines.ts"),
+        ("scripts/dispatch/**", f"{at('test', 'Lint the Dispatch census script')}, typecheck and test"),
         ("scripts/github-apps/**", f"{at('test', 'Lint the GitHub App registration script')} and typecheck"),
         ("scripts/sessions/**", f"{at('test', 'Lint the session message-wait script')} and typecheck; the suite "
                                 f"itself is {SESSIONS_JOB}'s, the one step of this job that needed a database"),
@@ -2456,8 +2432,7 @@ GATES = [
         ("packages/*/.changie.yaml", f"{at('test', FOLD_CHECK_STEP)}: fold-check renders each listed package's fragments with that package's own changie configuration"),
         ("packages/*/.changes/unreleased/**", f"{at('test', FOLD_CHECK_STEP)}: fold-check renders every fragment a listed package holds"),
     ) + envoy_client_dep("scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:17-22, envoy-bridge.ts:11; "
-                         "scripts/dispatch/ask-census.ts:10-18 (tsc -p scripts/dispatch); scripts/priorities-seed.ts:63-72 "
-                         "and priorities-seed.test.ts:4")
+                         "scripts/dispatch/ask-census.ts:10-18 (tsc -p scripts/dispatch)")
       + setup_go("test", f"{DAEMON}/go.mod")
       + biome(at("test", "Lint the Dispatch census script")) + bun_job("test")),
 
@@ -2465,7 +2440,7 @@ GATES = [
     # job that needs a database (scripts/sessions/__tests__/message-wait.test.ts:20-28 refuses
     # without LEGION_TEST_PG_DSN, since a store it cannot measure is a measurement of nothing),
     # and a Postgres service on the test job would start one for every change that selects any
-    # of its thirty-two harness steps. The test reads the script it spawns and nothing else: both
+    # of its thirty-nine harness steps. The test reads the script it spawns and nothing else: both
     # are under scripts/sessions, and both import node: builtins and bun alone, so the job
     # installs no dependencies and this filter names no lockfile.
     gate("sessions_script", SESSIONS_JOB, reads=reads(
