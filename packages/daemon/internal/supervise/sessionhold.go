@@ -351,7 +351,7 @@ func (m *Machine) releaseSessions(ctx context.Context, free []Hold) error {
 			return nil
 		}
 		m.log.Warn("supervise: the secrets broker did not release a claim's session names; they stay held",
-			"claim", m.claim.Token, "names", len(names), "attempt", attempt, "error", err)
+			"names", len(names), "attempt", attempt, "error", err)
 		if attempt == releaseAttempts || m.deps.Clock.Sleep(releasing, time.Duration(attempt)*time.Second) != nil {
 			break
 		}

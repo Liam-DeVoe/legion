@@ -823,20 +823,12 @@ test("drops a malformed targeted frame that has no reply address", async () => {
 })
 
 /** The variables a pod's broker trade reads beside DISPATCH_URL, which `isolatePaneEnvironment`
- *  leaves alone: each test that sets one restores the process's own value after it. */
+ *  leaves alone: each test that sets one restores the process's own value after it. They are
+ *  broker-client's own list, less the home directories every process keeps. */
 const brokerVariables = [
   "DISPATCH_TOKEN_BROKER",
-  "AGENT_SECRETS_URL",
-  "AGENT_SECRETS_MACHINE_IDENTITY",
-  "AGENT_SECRETS_MACHINE_TOKEN_FILE",
-  "AGENT_SECRETS_MACHINE_AUDIENCE",
-  "AGENT_SECRETS_KEY_DIR",
-  "AGENT_SECRETS_SESSION",
-  "AGENT_SECRETS_PROJECTS",
-  "AGENT_SECRETS_SIGNIN_DIR",
-  "AGENT_SECRETS_PERSON",
-  "PERSON_SIGNIN_TRADE",
-] as const
+  ...BROKER_VARIABLES.filter((name) => name !== "HOME" && name !== "XDG_STATE_HOME"),
+]
 
 test("the user-turn router's Dispatch client trades under the session's id", async () => {
   const original = brokerVariables.map((name) => [name, process.env[name]] as const)

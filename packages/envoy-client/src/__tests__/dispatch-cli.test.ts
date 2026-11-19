@@ -1677,9 +1677,10 @@ describe("dispatch api", () => {
     hostname: "127.0.0.1",
     async fetch(request) {
       trades.push(new URLSearchParams(await request.text()).get("session") ?? "no session");
-      accessTokens.push(fixtureSecret("access"));
+      const accessToken = fixtureSecret("access");
+      accessTokens.push(accessToken);
       return Response.json({
-        access_token: accessTokens[accessTokens.length - 1],
+        access_token: accessToken,
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
         token_type: "DPoP",
         expires_in: 600,
