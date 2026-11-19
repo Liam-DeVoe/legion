@@ -146,7 +146,8 @@ func TestALaunchKeepsAnIssuePodWhateverOfItsShapeMoved(t *testing.T) {
 // that is not there.
 //
 // That process never registers, so its claim never answers the round it was started for, and a
-// round waits for every claim of its pod with a session but a failed one (daemon's askedClaims).
+// round waits for every claim of its pod with a session but a failed one and one that has left
+// the round's pod (daemon's askedClaims, waitingClaims).
 // The round that would have replaced the pod is therefore blocked by the pod it is replacing — a
 // resume or a relaunch starts a claim into that pod while the round is open — and only an operator
 // drain ends it, which is the outage this issue exists to end.

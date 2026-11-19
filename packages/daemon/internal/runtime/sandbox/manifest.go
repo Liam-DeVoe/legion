@@ -426,8 +426,8 @@ type keptPod struct {
 // in). A role in a kept pod that carries no enrollment is told of none, so it reports a resource
 // it cannot reach rather than a secrets grant it never had, and its generation is recorded as
 // carrying no broker URL, so moving the broker's URL never reads as StaleAddress and never
-// repoints that role mid-turn: the update round replaces its pod once every worker has answered,
-// or at the round's bound.
+// repoints that role mid-turn: the update round replaces its pod once every worker but a failed
+// one and one that has left the round's pod has answered, or at the round's bound.
 //
 // The launch reads the pod from the Sandbox's stored template, the pod's own build (keptBy), and
 // an observation from the live pod; neither a kubelet nor an admission webhook takes a volume off

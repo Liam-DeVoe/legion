@@ -435,10 +435,11 @@ type FailureBudget struct {
 // UpdateStalled is what an update-stalled controller notice carries: the update round the daemon
 // opened over an issue's pod, and why something holds it past its bound. Round is the round's
 // identity (supervise.Claim.UpdateRound), Pod the pod it was opened over, and Reasons the drift
-// the round was opened for, as the ask states it. Waiting is every claim the round asked, each
-// marked with whether it answered, so the controller can ask the operator to act on a suspended
-// claim rather than read the whole claims list to find out who the round asked; what
-// each entry says is UpdateWaiting's. The notice's issue is the outbox row's own.
+// the round was opened for, as the ask states it. Waiting is every claim of the round with a
+// session but a failed one, one that has left the round's pod included, each marked with whether
+// it answered, so the controller can ask the operator to act on a suspended claim rather than
+// read the whole claims list to find out who the round asked; what each entry says is
+// UpdateWaiting's. The notice's issue is the outbox row's own.
 //
 // Reasons is one string, never a list: a single reason carries ", " inside it already — a moved
 // address reads `<where> <held>, now <handed>`, a pod-shape drift `image <was>, now <now>`, and a

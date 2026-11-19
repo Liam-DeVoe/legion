@@ -1,8 +1,9 @@
 package daemon
 
 // The round's bound (dispatch://INFRA-2981 R2, R3, R5, R6, R8): a round ends as soon as every
-// claim it asks has answered and no turn runs, and at its bound — pod_update_grace_minutes after
-// it opened — whatever its roles said. An operator's suspension is the one wait the bound does not
+// claim it waits for has answered (each claim with a session but a failed one and one that has
+// left the round's pod) and no turn runs, and at its bound — pod_update_grace_minutes after it
+// opened — whatever its roles said. An operator's suspension is the one wait the bound does not
 // step over, and the controller is told only of a round something holds past its bound, once, at
 // the bound. Each test moves the rig's held clock to the moment it decides at, and names that
 // moment in what it asserts.
@@ -53,7 +54,8 @@ func (r *podUpdateRig) replacementClocks() func() []time.Time {
 }
 
 // wantWaiting holds a notice's list to exactly the roles of want, each marked answered as want
-// says: every late-round notice lists every claim the round asks (waitingOf).
+// says: every late-round notice lists every claim with a session but a failed one, one that has
+// left the round's pod included (waitingOf).
 func wantWaiting(t *testing.T, notice record.ControllerNotice, want map[claim.Role]bool) {
 	t.Helper()
 	if notice.Update == nil || len(notice.Update.Waiting) != len(want) {

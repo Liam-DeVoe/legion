@@ -692,8 +692,9 @@ func (r *podUpdateRig) awaitReplacement(n int, what string) []fake.Call {
 }
 
 // The round's early end: before its bound, the pod is replaced only once every claim that blocks
-// the round has answered. A claim with no session — a role nothing has ever launched — blocks
-// nothing.
+// the round has answered, but a failed one and one that has left the round's pod, which the round
+// neither asks nor waits for (askedClaims, waitingClaims). A claim with no session — a role
+// nothing has ever launched — blocks nothing.
 func TestPodUpdateReplacesThePodOnlyOnceEveryBlockingClaimHasAnswered(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
@@ -884,7 +885,8 @@ func TestPodUpdateHoldsTheReplacementWhileAClaimIsWorking(t *testing.T) {
 // unpushed work. The pod is not replaced, and the controller is told once, at the bound itself —
 // not before it, and not a bound after the last answer — naming the suspension, which is what
 // brings the operator (dispatch://INFRA-2981 R5, R6; verification's c-no-stall). The notice
-// lists every claim the round asks, each with whether it answered, and the store takes the row.
+// lists every claim with a session but a failed one, one that has left the round's pod included,
+// each with whether it answered, and the store takes the row.
 func TestPodUpdateToldOnceAtTheBoundOfARoundAnOperatorsSuspensionHolds(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true,
@@ -1042,10 +1044,11 @@ const podUpdateAccountDrift = "account default, now legion-worker"
 // configuration has since moved off used to be replaced by the next launch of any of its roles,
 // which cut every turn running in the pod and deleted its disk with everything unpushed still on
 // it. The account is now one of PodDrift's reasons for every pod a round covers, so a round
-// opened on that reason alone does what a round does: every worker claim of the issue is asked
-// and answers, and only then is the pod replaced and the claims let go of the round. The rest of
-// the round's machinery is held by the tests around this one; this one holds the daemon's half of
-// the account's path, with PodDrift's half held in the sandbox package.
+// opened on that reason alone does what a round does: every worker claim of the issue but a
+// failed one and one that has left the round's pod is asked and answers, and only then is the pod
+// replaced and the claims let go of the round. The rest of the round's machinery is held by the
+// tests around this one; this one holds the daemon's half of the account's path, with PodDrift's
+// half held in the sandbox package.
 func TestPodUpdateCarriesAnAccountDriftedPodToItsReplacement(t *testing.T) {
 	roles := []claim.Role{claim.RoleArchitect, claim.RoleImplementer}
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleArchitect), readyWorker(claim.RoleImplementer))
@@ -1077,10 +1080,10 @@ func TestPodUpdateCarriesAnAccountDriftedPodToItsReplacement(t *testing.T) {
 
 // Drift that clears while a round is open — the operator put the configuration back — ends
 // nothing. A round, once opened, ends only by replacing its pod or because that pod is gone: it
-// has already asked every worker in the pod to push its work and to start no new work, each has
-// answered or is about to, and no path is left that lets one carry on in a pod it was told would
-// be replaced. So the pod is replaced here too, which is one restart of each worker in its own
-// session.
+// has already asked every worker of the issue but a failed one and one that has left the round's
+// pod to push its work and to start no new work, each of those has answered or is about to, and
+// no path is left that lets one carry on in a pod it was told would be replaced. So the pod is
+// replaced here too, which is one restart of each worker in its own session.
 func TestPodUpdateReplacesThePodWhenTheDriftClearsUnderAnOpenRound(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
@@ -2345,11 +2348,12 @@ func TestPodUpdateTellsNobodyOfAPodlessRoundEveryWorkerHasAnswered(t *testing.T)
 	}
 }
 
-// The no-pod notice lists every claim the round asks, each marked with whether it answered, and
-// names the operator's suspension that holds the round. A round where one worker answered and
-// another did not is held past its bound by the operator alone: the bound steps over the answer
-// it lacks, and not over the person's hold. The list is the same one every late-round notice
-// carries (waitingOf), so the controller reads what each role said.
+// The no-pod notice lists every claim with a session but a failed one, one that has left the
+// round's pod included, each marked with whether it answered, and names the operator's suspension
+// that holds the round. A round where one worker answered and another did not is held past its
+// bound by the operator alone: the bound steps over the answer it lacks, and not over the
+// person's hold. The list is the same one every late-round notice carries (waitingOf), so the
+// controller reads what each role said.
 func TestPodUpdatePodlessNoticeMarksWhichWorkersAnswered(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)

@@ -249,13 +249,14 @@ type PodUpdateOpen struct {
 	Reasons string
 }
 
-// UpdateTask is the text a pod's update round asks each role with. round is the round, which the
-// role answers with. reasons is what the daemon found, as Claim.UpdateReasons holds it. endsAt is
-// the moment the round ends at the latest: the round's recorded opening (Claim.UpdateOpenedAt)
-// plus pod_update_grace_minutes. The sweep (internal/daemon) builds the text from the round's
-// record, so the text names one moment for every role of the round, and the text rides
-// record.UpdateAsk to the role's own Envoy topic. That message can arrive in the middle of a
-// turn, so the text tells the role to act now rather than after the turn.
+// UpdateTask is the text a pod's update round asks a role with; the round asks each role but a
+// failed one and one that has left the round's pod (Claim.OwesUpdateAsk). round is the round,
+// which the role answers with. reasons is what the daemon found, as Claim.UpdateReasons holds it.
+// endsAt is the moment the round ends at the latest: the round's recorded opening
+// (Claim.UpdateOpenedAt) plus pod_update_grace_minutes. The sweep (internal/daemon) builds the
+// text from the round's record, so the text names one moment for every role of the round, and
+// the text rides record.UpdateAsk to the role's own Envoy topic. That message can arrive in the
+// middle of a turn, so the text tells the role to act now rather than after the turn.
 //
 // The text names the round's own id, and the role passes it back in its answer
 // (PodUpdateSignalled): an answer counts only for the round whose ask the role read, so the id
@@ -2966,7 +2967,8 @@ func (m *Machine) clearUpdate() {
 // podUpdateSignalled records the worker's answer to the round's ask — its work is pushed, and the
 // process holding this claim may now be replaced — and the head it reported, which nothing
 // verifies. It changes no state: the round's own sweep is what reads the signal and replaces the
-// process, once every claim the round asks has answered and no turn runs, or at the round's bound.
+// process, once every claim the round waits for has answered (each claim with a session but a
+// failed one and one that has left the round's pod) and no turn runs, or at the round's bound.
 //
 // The answer counts for one round only: the one whose update message the worker read, which that
 // message named and which the answer carries back (UpdateTask). An answer for any other round is

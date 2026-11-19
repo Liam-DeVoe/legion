@@ -16,6 +16,8 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -618,29 +620,14 @@ func TestPodUpdateSweepOwesAnAskWhereTheClaimsOwnRecordOwesOne(t *testing.T) {
 	}
 }
 
-// The sweep's list (unaskedClaims) holds a claim exactly where the claim has a session and its own
-// record owes it an ask (supervise's Claim.OwesUpdateAsk), over every mix of these facts of a
-// claim: every state a claim can be in (supervise.States), every role a claim can be on
-// (claim.Roles, and the controller's, which is none of them), and each of a session, a delivered
-// ask, an answer, a leave of the round's pod, another round and a process locator, set or not,
-// which is 64 claims for each state and role. A state or a role added to those lists joins the
-// test without an edit. With the test above it holds the one rule of whom a round asks: that test
-// fails when the rule loses a case, and this one fails when the sweep refuses or owes a claim by a
-// statement of its own over those facts that the rule does not make, such as a filter of its own
-// on one state, on one role or on a locator present or absent, its own failed filter put back
-// while the rule's failed case is taken out, or its left-pod check taken out. Neither test fails
-// for a statement of the sweep's own that agrees with the rule in every case, such as that failed
-// filter put back with the rule whole: it changes no claim's answer, and it shows here the first
-// time the rule changes and the two disagree.
-//
-// The negative control is the sweep's own failed filter put back with the rule's failed case taken
-// out: this test then fails on each failed claim with a session that the rule owes an ask, and the
-// test above passes. The test also fails when its set holds no owed or no refused claim, since
-// such a set shows nothing.
-func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoes(t *testing.T) {
-	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+// sweepFacts is the claims the two tests below hold the sweep to the rule over: every state a
+// claim can be in (supervise.States), every role a claim can be on (claim.Roles, and the
+// controller's, which is none of them), and each of a session, a delivered ask, an answer, a leave
+// of the round's pod, another round and a process locator, set or not, which is 64 claims for each
+// state and role. A state or a role added to those lists joins both tests without an edit.
+func sweepFacts(at time.Time) []supervise.Claim {
 	roles := append(slices.Clone(claim.Roles), claim.RoleController)
-	checked, owedSeen, refusedSeen := 0, 0, 0
+	var claims []supervise.Claim
 	for _, state := range supervise.States() {
 		for _, role := range roles {
 			for bits := range 1 << 6 {
@@ -664,27 +651,170 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoes(t *testing.T) {
 				if bits&32 != 0 {
 					c.Locator = &runtime.Locator{Claim: c.Token, Incarnation: "inc-1"}
 				}
-				owed, why := c.OwesUpdateAsk(podUpdateRound)
-				want := c.Session != "" && owed
-				asking := unaskedClaims([]supervise.Claim{c}, podUpdateRound)
-				got := len(asking) == 1 && asking[0].Token == c.Token
-				if got != want || len(asking) > 1 {
-					t.Errorf("a %s %s claim, session %q, locator %t, asked %v, answered %v, left %q, in round %q: the sweep owes it an ask = %t (%d claims), the rule says owed=%t (%v); want the sweep to owe it one exactly where the rule does and it has a session",
-						c.State, c.Role, c.Session, c.Locator != nil, c.UpdateTaskedAt != nil, c.UpdateSignalledAt != nil, c.UpdateLeftRound, c.UpdateRound, got, len(asking), owed, why)
-				}
-				checked++
-				if want {
-					owedSeen++
-				} else {
-					refusedSeen++
-				}
+				claims = append(claims, c)
 			}
+		}
+	}
+	return claims
+}
+
+// The sweep's list (unaskedClaims) holds a claim exactly where the claim has a session and its own
+// record owes it an ask (supervise's Claim.OwesUpdateAsk), over every mix of the facts of a claim
+// sweepFacts names. With the test above it holds the one rule of whom a round asks: that test
+// fails when the rule loses a case, and this one fails when the sweep refuses or owes a claim by a
+// statement of its own over those facts that the rule does not make, such as a filter of its own
+// on one state, on one role or on a locator present or absent, its own failed filter put back
+// while the rule's failed case is taken out, or its left-pod check taken out. The test after it
+// holds the same over every other field of a claim. None of the three fails for a statement of
+// the sweep's own that agrees with the rule in every case, such as that failed filter put back
+// with the rule whole: it changes no claim's answer, and it shows here the first time the rule
+// changes and the two disagree.
+//
+// The negative control is the sweep's own failed filter put back with the rule's failed case taken
+// out: this test then fails on each failed claim with a session that the rule owes an ask, and the
+// test above passes. The test also fails when its set holds no owed or no refused claim, since
+// such a set shows nothing.
+func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoes(t *testing.T) {
+	checked, owedSeen, refusedSeen := 0, 0, 0
+	for _, c := range sweepFacts(time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)) {
+		owed, why := c.OwesUpdateAsk(podUpdateRound)
+		want := c.Session != "" && owed
+		asking := unaskedClaims([]supervise.Claim{c}, podUpdateRound)
+		got := len(asking) == 1 && asking[0].Token == c.Token
+		if got != want || len(asking) > 1 {
+			t.Errorf("a %s %s claim, session %q, locator %t, asked %v, answered %v, left %q, in round %q: the sweep owes it an ask = %t (%d claims), the rule says owed=%t (%v); want the sweep to owe it one exactly where the rule does and it has a session",
+				c.State, c.Role, c.Session, c.Locator != nil, c.UpdateTaskedAt != nil, c.UpdateSignalledAt != nil, c.UpdateLeftRound, c.UpdateRound, got, len(asking), owed, why)
+		}
+		checked++
+		if want {
+			owedSeen++
+		} else {
+			refusedSeen++
 		}
 	}
 	if owedSeen == 0 || refusedSeen == 0 {
 		t.Fatalf("checked %d claims, %d owed and %d refused: a set with no owed or no refused claim shows nothing", checked, owedSeen, refusedSeen)
 	}
 	t.Logf("checked %d claims: %d owed an ask, %d refused one", checked, owedSeen, refusedSeen)
+}
+
+// The sweep's list holds a claim exactly where the claim has a session and its own record owes it
+// an ask, whatever else the claim holds. For each exported field of supervise.Claim, every claim
+// of sweepFacts that leaves that field empty is held to the rule again with the field set
+// (setSomething). So a filter of the sweep's own on a field the test above does not vary — the
+// claim's pending task, the round's told mark, a budget, the claim's issue — fails here, on the
+// claims with a session the rule owes an ask: a sweep that skipped every claim holding a task
+// would leave a working role unasked until the round's bound, and every other test of the sweep
+// passes under it. A field added to the claim joins the test without an edit, and a field of a
+// type this test cannot set fails it, so no field is left out unseen.
+//
+// Each field is set to one value, and one field at a time. So this test does not fail for a
+// filter of the sweep's own on one value of a field other than the one it sets: a filter on a
+// claim an operator suspended (supervise.SuspendedByOperator) passes it, since SuspendedBy is set
+// to "x" here, and so does a filter on two fields set together. Nor does it fail for a filter
+// that agrees with the rule in every case, as the test above says.
+//
+// The negative control is a filter of the sweep's own on a pending task (Claim.Pending): this
+// test then fails with Pending set, and the test above passes. The test also fails when it tried
+// no field, or its set holds no owed or no refused claim, since such a set shows nothing.
+func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds(t *testing.T) {
+	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	base := sweepFacts(at)
+	typ := reflect.TypeOf(supervise.Claim{})
+	checked, owedSeen, refusedSeen, fields := 0, 0, 0, 0
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		tried, wrong, example := 0, 0, ""
+		for _, c := range base {
+			v := reflect.ValueOf(&c).Elem().Field(i)
+			if !v.IsZero() {
+				continue
+			}
+			if !setSomething(v, at) {
+				t.Fatalf("the field %s (%s) cannot be set, so this test cannot try it", field.Name, field.Type)
+			}
+			tried++
+			owed, why := c.OwesUpdateAsk(podUpdateRound)
+			want := c.Session != "" && owed
+			asking := unaskedClaims([]supervise.Claim{c}, podUpdateRound)
+			got := len(asking) == 1 && asking[0].Token == c.Token
+			if got != want || len(asking) > 1 {
+				wrong++
+				if example == "" {
+					example = fmt.Sprintf("a %s %s claim, session %q, locator %t, asked %v, answered %v, left %q, in round %q: the sweep owes it an ask = %t (%d claims), the rule says owed=%t (%v)",
+						c.State, c.Role, c.Session, c.Locator != nil, c.UpdateTaskedAt != nil, c.UpdateSignalledAt != nil, c.UpdateLeftRound, c.UpdateRound, got, len(asking), owed, why)
+				}
+			}
+			checked++
+			if want {
+				owedSeen++
+			} else {
+				refusedSeen++
+			}
+		}
+		if tried > 0 {
+			fields++
+		}
+		if wrong > 0 {
+			t.Errorf("with %s set, the sweep disagrees with the rule on %d of %d claims, for example %s; want the sweep to owe an ask exactly where the rule does and the claim has a session",
+				field.Name, wrong, tried, example)
+		}
+	}
+	if fields == 0 || owedSeen == 0 || refusedSeen == 0 {
+		t.Fatalf("checked %d claims over %d fields, %d owed and %d refused: a set with no field tried, or no owed or no refused claim, shows nothing", checked, fields, owedSeen, refusedSeen)
+	}
+	t.Logf("checked %d claims over %d fields of a claim: %d owed an ask, %d refused one", checked, fields, owedSeen, refusedSeen)
+}
+
+// setSomething sets v, an empty field, to a value that is not empty: at for a time, "x" for a
+// string, 1 for a number, true for a bool, a new value for a pointer, one element for a slice or
+// a map, and, for a struct, its first exported field this can set. It reports whether it set v.
+func setSomething(v reflect.Value, at time.Time) bool {
+	if v.Type() == reflect.TypeOf(time.Time{}) {
+		v.Set(reflect.ValueOf(at))
+		return true
+	}
+	switch v.Kind() {
+	case reflect.String:
+		v.SetString("x")
+	case reflect.Bool:
+		v.SetBool(true)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		v.SetInt(1)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		v.SetUint(1)
+	case reflect.Float32, reflect.Float64:
+		v.SetFloat(1)
+	case reflect.Pointer:
+		p := reflect.New(v.Type().Elem())
+		setSomething(p.Elem(), at)
+		v.Set(p)
+	case reflect.Slice:
+		s := reflect.MakeSlice(v.Type(), 1, 1)
+		setSomething(s.Index(0), at)
+		v.Set(s)
+	case reflect.Map:
+		m := reflect.MakeMap(v.Type())
+		k := reflect.New(v.Type().Key()).Elem()
+		setSomething(k, at)
+		e := reflect.New(v.Type().Elem()).Elem()
+		setSomething(e, at)
+		m.SetMapIndex(k, e)
+		v.Set(m)
+	case reflect.Struct:
+		for i := range v.NumField() {
+			if v.Type().Field(i).IsExported() && setSomething(v.Field(i), at) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+	return true
 }
 
 // stoppingPublisher delivers through the listener and then cancels the context its row runs

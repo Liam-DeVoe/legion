@@ -410,10 +410,10 @@ type Claim struct {
 	// the pod the claim runs on, which every claim of that pod shares, and PluginRoundPrefix and
 	// the daemon's contract the per-claim round of a claim whose plugin is behind this daemon. A
 	// round ends when the process it waits for is replaced. The daemon asks each role of the
-	// round and replaces the pod once every asked role has answered and no turn runs, or at the
-	// round's bound (pod_update_grace_minutes) whatever the roles answered, an operator's
-	// suspension excepted. Work that a role did not push goes with the disk the replacement
-	// deletes.
+	// round but a failed one and one that has left the round's pod (OwesUpdateAsk), and replaces
+	// the pod once every asked role has answered and no turn runs, or at the round's bound
+	// (pod_update_grace_minutes) whatever the roles answered, an operator's suspension excepted.
+	// Work that a role did not push goes with the disk the replacement deletes.
 	UpdateRound string
 	// UpdateReasons is what the round was opened for, as the daemon found the drift: the task's
 	// text and the operator's reading of why this pod is being replaced.
@@ -421,7 +421,8 @@ type Claim struct {
 	// UpdateOpenedAt is the round's own clock — when the round was opened on this claim — and
 	// UpdateTaskedAt is when the round's ask reached a session of this claim's role
 	// (record.UpdateAsk, Machine.PublishUpdateAsk), nil until one has: the mark that makes the
-	// sweep ask each claim of a round until one ask reaches it, and never after.
+	// sweep ask each claim of a round the rule owes an ask (OwesUpdateAsk) until one ask reaches
+	// it, and never after.
 	// UpdateSignalledAt is when the worker answered ready_for_update, nil until it has.
 	UpdateOpenedAt    *time.Time
 	UpdateTaskedAt    *time.Time
@@ -1651,7 +1652,8 @@ const (
 // the claim has failed. Each of those makes an ask of round needless, because the round publishes
 // once per claim, an answer stands for its round, and a failed claim runs no turn.
 //
-// It is the one statement of whom a round asks. The sweep reads it where it enqueues an ask
+// It is the one statement of whom a round asks, which is neither a failed claim nor one that has
+// left the round's pod. The sweep reads it where it enqueues an ask
 // (internal/daemon's unaskedClaims), and the outbox's row reads it again under this claim's lock
 // where it publishes that ask (PublishUpdateAsk), because the row runs after the enqueue and the
 // claim can move in between: its role can answer, the daemon can start it again in another pod,

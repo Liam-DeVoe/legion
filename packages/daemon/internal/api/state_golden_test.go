@@ -351,10 +351,11 @@ func populatedState(t *testing.T) State {
 								},
 							},
 							// The pod's update round, which every claim of that pod shares: the round
-							// asks each role, and the daemon replaces the pod once every asked role has
-							// answered and no turn runs, or at the round's bound
-							// (pod_update_grace_minutes) whatever the roles answered, an operator's
-							// suspension excepted. This one has answered, and reported the head it
+							// asks each role but a failed one and one that has left the round's pod,
+							// and the daemon replaces the pod once every asked role has answered and
+							// no turn runs, or at the round's bound (pod_update_grace_minutes)
+							// whatever the roles answered, an operator's suspension excepted. This
+							// one has answered, and reported the head it
 							// pushed. The reasons are the round's own, so every claim of the pod
 							// carries the same text: what the worker answering is told to act on.
 							UpdateRound:   "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",

@@ -1765,8 +1765,9 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 //
 // A topic with no live holder (notify.ErrNoHolder) is logged on one line and ends the row with
 // nothing marked: the ask is lost, not given, and the sweep's next reading of the round asks the
-// claim again (askRound). The round waits for every claim it asks until its bound, and a claim
-// the ask never reached has nothing to answer: a fresh session that has not claimed its topic yet
+// claim again (askRound). Until its bound the round waits for every claim with a session but a
+// failed one and one that has left the round's pod, and a claim the ask never reached has
+// nothing to answer: a fresh session that has not claimed its topic yet
 // is the ordinary case, and a mark that counted such an ask as given held BET-1291's and BET-690's
 // rounds for hours on 2026-11-17 (dispatch://INFRA-4109 R4). Every other failure of the publish
 // keeps the ordinary retry, as phaseEnded's does: a holder that did not confirm in time, one that
