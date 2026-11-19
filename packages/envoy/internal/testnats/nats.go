@@ -256,6 +256,9 @@ type Server struct {
 	log        *logCapture
 	relay      *relay
 	url        string
+	// host is the loopback address both the relay and the server's own client port listen on
+	// (startOn), so a client reaches the server on that address alone.
+	host string
 	// name is the server_name StartCluster gives a member, "" for a lone server.
 	name string
 
@@ -410,7 +413,7 @@ func (s *Server) Reload(t testing.TB, config string) error {
 		t.Fatalf("write the new configuration: %v", err)
 	}
 	defer func() { _ = os.Remove(pending) }()
-	opts, err := serverOptions(pending, s.args, s.store)
+	opts, err := serverOptions(pending, s.args, s.store, s.host)
 	if err != nil {
 		return err
 	}
@@ -552,16 +555,16 @@ const hostOnlyConfig = "host: 127.0.0.1\n"
 // its command line after it (so -js for JetStream, -DV for the protocol trace), behind a relay
 // holding the port of the URL it returns, and returns it once it accepts connections. When the
 // test ends the server is shut down, the relay closed and the server's directory removed; until
-// then AwaitConsumerStored finds the server by the relay address its URL names. The relay listens
-// on 127.0.0.1; startOn is start with the relay on another loopback address. It is newServer
-// launched: every helper of this package that starts a server is a call on it, and a cluster
-// member a test starts later is newServer alone (StartClusterPart).
+// then AwaitConsumerStored finds the server by the relay address its URL names. The relay and the
+// server's own client port listen on 127.0.0.1; startOn is start with both on another loopback
+// address. It is newServer launched: every helper of this package that starts a server is a call
+// on it, and a cluster member a test starts later is newServer alone (StartClusterPart).
 func start(t testing.TB, config string, serverArgs []string) *Server {
 	t.Helper()
 	return startOn(t, "127.0.0.1", config, serverArgs)
 }
 
-// startOn is start with the relay listening on host.
+// startOn is start with the relay and the server's own client port listening on host.
 func startOn(t testing.TB, host, config string, serverArgs []string) *Server {
 	t.Helper()
 	server := newServer(t, host, config, serverArgs)
@@ -595,6 +598,7 @@ func newServer(t testing.TB, host, config string, serverArgs []string) *Server {
 		args:       serverArgs,
 		log:        &logCapture{},
 		url:        "nats://" + address,
+		host:       host,
 	}
 	server.relay = newRelay(listener, server.address, true)
 	registerServer(address, server)
@@ -616,7 +620,7 @@ func newServer(t testing.TB, host, config string, serverArgs []string) *Server {
 // connections.
 func (s *Server) launch(t testing.TB) {
 	t.Helper()
-	opts, err := serverOptions(s.configPath, s.args, s.store)
+	opts, err := serverOptions(s.configPath, s.args, s.store, s.host)
 	if err != nil {
 		t.Fatalf("read the NATS configuration: %v", err)
 	}
@@ -662,12 +666,12 @@ const (
 )
 
 // serverOptions parses the configuration at path and serverArgs as nats-server parses its own
-// command line, then imposes what this rig owns: loopback, a client and a monitoring port the
-// server picks, the test's own store, no signal handlers, path as the configuration file, and the
-// lame duck's timing when the configuration sets none (rigLameDuck). serverArgs replace
-// nats-server's defaults rather than add to them, as the arguments after the image's own command
-// do.
-func serverOptions(path string, serverArgs []string, store string) (*natsserver.Options, error) {
+// command line, then imposes what this rig owns: a client port the server picks on host, a
+// monitoring port it picks on 127.0.0.1, the test's own store, no signal handlers, path as the
+// configuration file, and the lame duck's timing when the configuration sets none (rigLameDuck).
+// serverArgs replace nats-server's defaults rather than add to them, as the arguments after the
+// image's own command do.
+func serverOptions(path string, serverArgs []string, store, host string) (*natsserver.Options, error) {
 	flags := flag.NewFlagSet("nats-server", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	silent := func() {}
@@ -681,7 +685,7 @@ func serverOptions(path string, serverArgs []string, store string) (*natsserver.
 	if err != nil {
 		return nil, err
 	}
-	opts.Host = "127.0.0.1"
+	opts.Host = host
 	opts.Port = -1
 	opts.HTTPHost = "127.0.0.1"
 	opts.HTTPPort = -1
