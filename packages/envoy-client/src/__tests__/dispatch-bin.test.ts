@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { fakeSearchResponse } from "./fake-search-response";
 
@@ -32,6 +33,9 @@ const ASK = {
 const QUERY = "json api";
 
 const makeDirectory = temporaryDirectories("dispatch-bin");
+
+/** The Dispatch bearer the entry is handed. */
+const TOKEN = fixtureSecret("dsp");
 
 /** Every request the stub served, as `METHOD /path?query`, since the last test began. */
 let requests: string[] = [];
@@ -112,7 +116,7 @@ async function runEntry(
         DISPATCH_HOST: "omp",
         DISPATCH_SESSION_ID: "ses-bin",
         DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-        DISPATCH_TOKEN: "test-token",
+        DISPATCH_TOKEN: TOKEN,
       },
       stdout: "pipe",
       stderr: "pipe",

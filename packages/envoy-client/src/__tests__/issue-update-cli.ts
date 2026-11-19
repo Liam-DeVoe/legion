@@ -1,4 +1,5 @@
 import { afterAll, beforeEach } from "bun:test";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
@@ -33,6 +34,9 @@ const ISSUE = {
   external_links: [],
   artifacts: [],
 };
+
+/** The Dispatch bearer each command is handed. */
+const TOKEN = fixtureSecret("dsp");
 
 /** What one CLI run printed and the code it exited with. */
 export interface CliRun {
@@ -109,7 +113,7 @@ export function useIssueUpdateCli(
         {
           HOME: stateDir,
           DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-          DISPATCH_TOKEN: "test-token",
+          DISPATCH_TOKEN: TOKEN,
           DISPATCH_STATE_DIR: stateDir,
           DISPATCH_HOST: "omp",
           DISPATCH_SESSION_ID: "ses-1",

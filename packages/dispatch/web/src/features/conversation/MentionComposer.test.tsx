@@ -21,6 +21,7 @@ import type {
 } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
 import type { AgentText } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { relativeTimeLabel } from "../refs/Timestamp";
 import {
   KEYED_SEND_ATTEMPT_MS,
@@ -1621,6 +1622,9 @@ test("Ctrl+Enter sends while Enter, whitespace, and IME composition leave the dr
 });
 
 test("reply mode shows the quote, sends reply_to, and cancels by chip or Escape", async () => {
+  // The quote is read in the commit that mounts the composer, which only a loaded engine draws
+  // (`MarkdownPreview`): the first body of a file takes the asynchronous path.
+  await warmMarkdownRenderer();
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
   const user = userEvent.setup();
   let cancelled = 0;

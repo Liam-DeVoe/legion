@@ -16,6 +16,7 @@ import type {
   MyReplyThreadRow,
 } from "../../api/types";
 import { thePageLeftItThere } from "../doc/readers-place";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { plannerAgentRow } from "../threads/replies-fixture";
 import { ThreadBody } from "./ThreadBody";
 import { ThreadRowCard } from "./ThreadRowCard";
@@ -297,6 +298,9 @@ test("a reply the session took as a user turn says so and links the live view", 
 });
 
 test("a session the live list no longer holds says so and offers no composer", async () => {
+  // The reply is read as soon as the ended note shows, and only a loaded engine has drawn it by
+  // then (`MarkdownBody`): the first body of a file takes the asynchronous path.
+  await warmMarkdownRenderer();
   spy("listAgents", []);
   spy("listAgentMessages", [
     {
@@ -349,6 +353,9 @@ test("a listed session whose capabilities hold no delivery mode warns the same w
 });
 
 test("a comment thread's card draws the quote it is anchored to and the thread whole", async () => {
+  // The thread is read in the commit that mounts its card, which only a loaded engine draws
+  // (`MarkdownBody`): the first body of a file takes the asynchronous path.
+  await warmMarkdownRenderer();
   spy("getIssue", { closed_at: null } as unknown as IssueDetails);
   spy("listComments", [
     comment("comment-1", "The retry budget is too small."),
