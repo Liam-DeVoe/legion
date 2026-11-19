@@ -2687,6 +2687,65 @@ describe("red_fixture", () => {
     expect(after.checksExit).toBe(0);
   });
 
+  // Catches: a re-run that settles the moment it is pressed. On GitHub the re-run's attempt is
+  // queued, then in progress, for minutes, and GitHub refuses a second press while the run still
+  // runs (red-at-the-head.md, measured on run 43686474806). A stand-in whose reads follow the
+  // press at once, and whose press publishes the settlement, hands a role that reads in the turn
+  // that pressed the re-run the result the page has it wait for, and puts the settlement into
+  // that same turn, where the scorer reads the role's one read on its wake as a poll (INFRA-1303:
+  // j-head-2, j-nos1-3 and l-head-2 of the batch of record at 6a643564, each woken 0.08 to 15 s
+  // after its press).
+  test("in the turn that pressed it, the re-run's attempt is in progress, unsettled and not pressed again", async () => {
+    const run = ownFixture("a");
+    expect((await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"])).exit).toBe(0);
+    const press = ghCalls(run).find((call) => call.argv[0] === "run" && call.argv[1] === "rerun");
+    expect(press !== undefined && "published" in press).toBe(false);
+    const runs = await gh(run, [
+      "api",
+      `repos/${RED_REPO}/actions/runs?head_sha=${RED_HEAD}&event=pull_request&per_page=100`,
+      "--jq",
+      `.workflow_runs[] | select(.id == ${RED_RUN_ID}) | [.run_attempt, .status, (.conclusion // "")] | @tsv`,
+    ]);
+    const [attempt, status, conclusion] = (outputLines(runs.stdout)[0] ?? "").split("\t");
+    expect({
+      exit: runs.exit,
+      attempt,
+      running: status === "queued" || status === "in_progress",
+      conclusion,
+    }).toEqual({ exit: 0, attempt: "2", running: true, conclusion: "" });
+    expect((await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"])).exit).not.toBe(0);
+  });
+
+  // Catches: a pull request body whose check line contradicts the world's Verification document.
+  // A reviewer world whose round goes on (world i) holds k1 as `after_merge` (worker_world, through
+  // seed.ts tester-proof after-merge-check), and worker_fixture wrote "Check k1 (before_merge):
+  // pass … recorded by implementer" into every world's body, a false claim a reviewer rightly
+  // requests changes for (INFRA-1303: i-head-5 of the batch of record at 6a643564; 10 of world i's
+  // 15 runs named the mismatch). The line an `after_merge` check carries before the merge is
+  // pr-body.md's `- Check <block id> (after_merge): not yet run`.
+  test("each world's pull request body names k1 as that world's Verification document writes it", async () => {
+    const checkLines = async (world: RedWorld) =>
+      outputLines(
+        (
+          await gh(redFixture(world), [
+            "pr",
+            "view",
+            String(RED_PR),
+            "--repo",
+            RED_REPO,
+            "--json",
+            "body",
+            "--jq",
+            ".body",
+          ])
+        ).stdout
+      ).filter((line) => line.startsWith("- Check k1 "));
+    expect(await checkLines("i")).toEqual(["- Check k1 (after_merge): not yet run"]);
+    expect(await checkLines("a")).toEqual([
+      expect.stringMatching(/^- Check k1 \(before_merge\): pass at /),
+    ]);
+  });
+
   // The routes are the world's in their content alone, so one row runs the page's six calls in
   // every world. Catches: a call of the page that falls through to the stand-in's 404, a read of
   // the counted set answered by worker_fixture's generic graphql route, which holds a review
