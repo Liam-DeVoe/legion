@@ -131,6 +131,14 @@ jobs:
         # the image already. With the apt call goes this step's removal of the runner image's
         # chrome-stable apt source, which it carried only because that source's index
         # intermittently failed `apt-get update` and took `--with-deps` down with it.
+        #
+        # The 4-minute bound is the one dispatch-browser.yaml's multiprocess job gives its step of
+        # this name, for the same three archives (Chrome for Testing, its headless shell and
+        # ffmpeg) and Playwright's up to five attempts across its download hosts inside it; this
+        # step took 10 s in job 135592911448 of run 44533492400. Without a bound a hung download
+        # would hold the job to its 25 minutes, which .github/scripts/package_installs.py refuses
+        # in a required workflow.
+        timeout-minutes: 4
         run: bunx playwright install chromium
         working-directory: docs/site
       # The screenshots' harness builds the Dispatch server (packages/dispatch/e2e/run-server.sh)

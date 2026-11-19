@@ -125,6 +125,11 @@ name: CI
 # one at main), only on a miss of the exact key, and into the scope of the ref it was dispatched
 # on. check-ci-filters.sh's cache-family rule reads a workflow's own actions/cache steps and not a
 # composite action's, so this paragraph is the one record of the two actions' restores and saves.
+# One family more is no Go family: apt-<os>-<arch>-<release>-<hash>, the .deb files and checksums
+# of .github/apt-packages.txt's pins, which daemon-go, pi-envoy, claude-envoy and dispatch-ui
+# restore before their install step and install with no network (.github/scripts/apt-cache.sh),
+# and ci-caches.yaml's apt job fills; .github/scripts/package_installs.py refuses any other
+# package install in this workflow's jobs.
 #
 # Runners: a job of this workflow, or of a workflow it calls, runs on ubuntu-24.04-arm unless it
 # needs an x86_64 machine, and runs on ubuntu-24.04 then. The two pools queue apart, and both
@@ -380,6 +385,8 @@ jobs:
       # go, which a test-fixtures job without Go no longer runs.
       go_command_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_command_test }}
       select_e2e_proofs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.select_e2e_proofs_test }}
+      apt_cache_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.apt_cache_test }}
+      package_installs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.package_installs_test }}
       go_tagged_tests_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_tagged_tests_test }}
       ci_ok_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_test }}
       ci_ok_report_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_report_test }}
@@ -1033,6 +1040,9 @@ jobs:
               - 'packages/daemon/**'
               - *daemon_envoy_deps
               - *dispatch_server
+              # Its tmux install runs this script over these pins.
+              - '.github/scripts/apt-cache.sh'
+              - '.github/apt-packages.txt'
               # internal/intake/redelivered_test.go:298-299 builds ./cmd/listener with
               # testbuild.EnvoyBinary, beside the Dispatch server dispatch_server covers.
               - *listener_command
@@ -1314,6 +1324,9 @@ jobs:
               # which install-claude-code installs.
               - '.claude-code-pin'
               - '.github/actions/install-claude-code/**'
+              # Its zsh install runs this script over these pins.
+              - '.github/scripts/apt-cache.sh'
+              - '.github/apt-packages.txt'
               # tests/daemon-api-version.test.ts:15 and its neighbours.
               - 'packages/contracts/fixtures/daemon-api/**'
               # tests/envoy-channel-stall.test.ts:5-12 imports three modules of envoy-client's
@@ -1630,6 +1643,18 @@ jobs:
               # it names, one row per scripts/e2e/*.sh.
               - '.github/e2e-scripts.json'
               - 'scripts/e2e/*.sh'
+            apt_cache_test: &apt_cache_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/apt-cache.test.sh'
+              - '.github/scripts/apt-cache.sh'
+            package_installs_test: &package_installs_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/package-installs.test.sh'
+              - '.github/scripts/package_installs.py'
             go_tagged_tests_test: &go_tagged_tests_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1849,6 +1874,8 @@ jobs:
               - *go_build_offline_test
               - *go_command_test
               - *select_e2e_proofs_test
+              - *apt_cache_test
+              - *package_installs_test
               - *go_tagged_tests_test
               - *ci_ok_test
               - *ci_ok_report_test
@@ -2424,6 +2451,9 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-pi-envoy.yaml'
               - *bun_install
+              # Its tmux install runs this script over these pins.
+              - '.github/scripts/apt-cache.sh'
+              - '.github/apt-packages.txt'
               - 'packages/pi-envoy/**'
               - 'packages/pi-shared/src/**'
               # The omp harness and the skills guard (extensions/dispatch-first-omp.test.ts:12,
@@ -2554,6 +2584,9 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-dispatch-ui.yaml'
               - *bun_install
+              # Its zsh install runs this script over these pins.
+              - '.github/scripts/apt-cache.sh'
+              - '.github/apt-packages.txt'
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
               # This job's tsc program of packages/dispatch compiles the shared test fixtures its
@@ -5258,6 +5291,8 @@ jobs:
       go_build_offline_test: ${{ needs.changes.outputs.go_build_offline_test }}
       go_command_test: ${{ needs.changes.outputs.go_command_test }}
       select_e2e_proofs_test: ${{ needs.changes.outputs.select_e2e_proofs_test }}
+      apt_cache_test: ${{ needs.changes.outputs.apt_cache_test }}
+      package_installs_test: ${{ needs.changes.outputs.package_installs_test }}
       go_tagged_tests_test: ${{ needs.changes.outputs.go_tagged_tests_test }}
       ci_ok_test: ${{ needs.changes.outputs.ci_ok_test }}
       ci_ok_report_test: ${{ needs.changes.outputs.ci_ok_report_test }}

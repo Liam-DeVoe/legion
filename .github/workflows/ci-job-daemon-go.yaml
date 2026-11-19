@@ -133,9 +133,25 @@ jobs:
 
       # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
       # supervises under tmux and refuses to start without it, which is also what the Stage 1
-      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:133-134).
+      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:133-134). Its .deb files come from the
+      # apt cache .github/workflows/ci-caches.yaml's apt job fills, keyed on the runner's release
+      # (the first step), its architecture and the hash of the pins and the script, and the
+      # install reads no mirror. A miss fetches under the bound .github/scripts/apt-cache.sh's
+      # header gives, 240 s at most, inside the step's 5 minutes: a mirror that hangs, as the azure
+      # one did for 68 minutes of this job's limit in run 44523167376, fails this step naming the
+      # pin and the host instead. On a change to the pins or the script the key misses and the
+      # prefix restores the newest entry, which the install takes when it holds tmux's pin.
+      - name: Read the runner's release for the apt cache key
+        id: apt-image
+        run: .github/scripts/apt-cache.sh image >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/apt
+          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ steps.apt-image.outputs.image }}-${{ hashFiles('.github/apt-packages.txt', '.github/scripts/apt-cache.sh') }}
+          restore-keys: ${{ format('apt-{0}-{1}-{2}-', runner.os, runner.arch, steps.apt-image.outputs.image) }}
       - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
+        timeout-minutes: 5
+        run: .github/scripts/apt-cache.sh install .github/apt-packages.txt "$RUNNER_TEMP/apt" tmux
 
       # The workspace and boundary tests drive a real jj, the one the worker image ships (its
       # working-copy filters are among what they plant), and the daemon resolves jj at boot and

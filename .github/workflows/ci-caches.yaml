@@ -87,6 +87,13 @@ name: CI caches
 # restore is gone is what check-ci-filters.sh refuses, so the two jobs that wrote them are gone
 # with them.
 #
+# A second entry that is no Go family: the apt job's, the .deb files and checksums of every pin of
+# .github/apt-packages.txt, which daemon-go and pi-envoy (tmux), claude-envoy and dispatch-ui (zsh),
+# dispatch-unit-repeat.yaml's harness lane (zsh) and e2e.yaml's proofs (their rows' packages)
+# restore and install with no network (.github/scripts/apt-cache.sh, whose header says how). Its
+# key is the runner's OS, architecture and release and the hash of that list and that script, so
+# a pin moves to another version, or the script changes, with a fresh entry on the next push.
+#
 # go-docs is not here: docs-pages.yaml saves it on this same push, from the build job it shares
 # with ci.yaml's docs job. The Bun cache is not here either: .github/actions/setup-bun reads and
 # writes it on main, and five workflows that run there call it.
@@ -837,3 +844,50 @@ jobs:
         with:
           path: ${{ runner.temp }}/elan
           key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
+
+  # The apt entry: the .deb files of every pin of .github/apt-packages.txt with what each depends
+  # on, and their checksums, which the install steps of daemon-go, pi-envoy, claude-envoy,
+  # dispatch-ui, dispatch-unit-repeat.yaml and e2e.yaml read with no network. One leg per runner
+  # those jobs run on: daemon-go, pi-envoy, dispatch-unit-repeat's legs and e2e's proofs on
+  # ubuntu-24.04, claude-envoy and dispatch-ui on ubuntu-24.04-arm, since a .deb is a binary of its
+  # architecture. The first step reads the runner's release for the key, as each reader's does,
+  # so the two keys are the same text (check-ci-filters.sh holds them to it). The fetch runs as the
+  # runner's user, into directories of its own, and installs nothing; it retries as an install's
+  # miss does, under the bound .github/scripts/apt-cache.sh's header gives, which the step's 5
+  # minutes are above. Entries are small - about 30 MB, measured in an ubuntu:24.04 container on
+  # 2026-11-19 - so no job deletes the one a new key supersedes: GitHub drops it after seven days
+  # unread.
+  apt:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    # A checkout, the lookup and, on a miss, one fetch: the step's own bound and the save.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the runner's release for the apt cache key
+        id: apt-image
+        run: .github/scripts/apt-cache.sh image >> "$GITHUB_OUTPUT"
+
+      - id: apt
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/apt
+          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ steps.apt-image.outputs.image }}-${{ hashFiles('.github/apt-packages.txt', '.github/scripts/apt-cache.sh') }}
+          lookup-only: true
+
+      - name: Fetch every pinned package with what it depends on
+        if: steps.apt.outputs.cache-hit != 'true'
+        timeout-minutes: 5
+        run: .github/scripts/apt-cache.sh fill .github/apt-packages.txt "$RUNNER_TEMP/apt"
+
+      - if: steps.apt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/apt
+          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ steps.apt-image.outputs.image }}-${{ hashFiles('.github/apt-packages.txt', '.github/scripts/apt-cache.sh') }}

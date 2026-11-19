@@ -196,6 +196,14 @@ on:
         description: "ci.yaml's needs.changes.outputs.select_e2e_proofs_test: select-e2e-proofs.test.sh and what it tests."
         type: string
         required: true
+      apt_cache_test:
+        description: "ci.yaml's needs.changes.outputs.apt_cache_test: apt-cache.test.sh and what it tests."
+        type: string
+        required: true
+      package_installs_test:
+        description: "ci.yaml's needs.changes.outputs.package_installs_test: package-installs.test.sh and what it tests."
+        type: string
+        required: true
       go_tagged_tests_test:
         description: "ci.yaml's needs.changes.outputs.go_tagged_tests_test: go-tagged-tests.test.sh and what it tests."
         type: string
@@ -478,6 +486,19 @@ jobs:
       - name: Test the e2e proof selector
         if: inputs.changes-result != 'success' || inputs.select_e2e_proofs_test == 'true'
         run: .github/scripts/select-e2e-proofs.test.sh
+
+      # The apt install the jobs that need tmux or zsh run before their tests, under a stand-in
+      # apt-get, dpkg-deb, dpkg-query and sudo: a hit, a miss, a miss whose every attempt fails, a
+      # file that does not match its checksum and a list line that is no pin.
+      - name: Test the apt cache install the jobs run before their tests
+        if: inputs.changes-result != 'success' || inputs.apt_cache_test == 'true'
+        run: .github/scripts/apt-cache.test.sh
+
+      # The rule that refuses a package install of a required job off that cached path, over
+      # trees of its own.
+      - name: Test the package install rule
+        if: inputs.changes-result != 'success' || inputs.package_installs_test == 'true'
+        run: .github/scripts/package-installs.test.sh
 
       # The lister the build-tag steps take their `-run` from, over fixture packages and over
       # this repository's own tagged test files.
