@@ -71,11 +71,14 @@ func (g *rig) leaveTheStore() {
 // disk-pressure sentence with no container of this pod over its request, which names
 // ephemeral-storage and no limit the pod passed and must not be told as the spec's limit; a
 // message naming over its request only a container this pod's spec does not hold; and a node's
-// refusal at admission, which carries the same reason and no condition and passed no limit.
+// refusal at admission, which carries the same reason and no condition and passed no limit. The
+// pod's line tells the end in the words of the cause it carries: a container over its request as
+// the same eviction carrying the condition is told, never as a limit of the pod's own it did not
+// pass, and any other end in words naming no container of the pod over its request.
 func TestPlainCauseAnEvictionWithNoDisruptionTargetIsMarkedWithTheCauseItsMessageNames(t *testing.T) {
 	checkSelfEvictions(t, []selfEviction{
 		{name: "the pod's own limit", message: "Pod ephemeral local storage usage exceeds the total limit of containers 10Gi. ",
-			want: runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: bytesOf("10Gi")}},
+			want: runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: bytesOf("10Gi")}, words: evictedForItsOwnUse},
 		{name: "a container's limit", message: `Container roles exceeded its local ephemeral storage limit "40Gi". `,
 			want: runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: bytesOf("40Gi")}},
 		{name: "an emptyDir's sizeLimit", message: `Usage of EmptyDir volume "role-homes" exceeds the limit "4Gi". `,
@@ -83,16 +86,18 @@ func TestPlainCauseAnEvictionWithNoDisruptionTargetIsMarkedWithTheCauseItsMessag
 		{name: "a limit sentence whose limit does not parse, read from the spec",
 			message: `Container roles exceeded its local ephemeral storage limit "unreadable". `,
 			want:    runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: bytesOf("80Gi")}},
-		{name: "a node disk-pressure sentence with no container over its request gets no cause", message: lowOnDisk},
-		{name: "a node's refusal at admission", message: "The node had condition: [DiskPressure]. "},
+		{name: "a node disk-pressure sentence with no container over its request gets no cause", message: lowOnDisk, words: evictedForItsOwnUse},
+		{name: "a node's refusal at admission", message: "The node had condition: [DiskPressure]. ", words: evictedForItsOwnUse},
 		{name: "a node memory-pressure message naming this pod's container over its request",
 			message: lowOnMemory + rolesOverMemoryRequest,
 			want: runtime.DeathCause{Kind: runtime.DeathMemoryRequest, Container: runtime.IssuePodContainer,
-				Use: bytesOf("9437188Ki"), Request: bytesOf("8Gi")}},
+				Use: bytesOf("9437188Ki"), Request: bytesOf("8Gi")},
+			words: evictedOverRequest[runtime.DeathMemoryRequest]},
 		{name: "a node disk-pressure message naming this pod's container over its request",
 			message: lowOnDisk + rolesOverDiskRequest,
 			want: runtime.DeathCause{Kind: runtime.DeathDiskRequest, Container: runtime.IssuePodContainer,
-				Use: bytesOf("7Gi"), Request: bytesOf("6Gi")}},
+				Use: bytesOf("7Gi"), Request: bytesOf("6Gi")},
+			words: evictedOverRequest[runtime.DeathDiskRequest]},
 		{name: "a message naming over its request a container that is not this pod's",
 			message: lowOnDisk + "Container planner was using 12Gi, request is 1Gi, has larger consumption of ephemeral-storage. "},
 	})
@@ -130,16 +135,18 @@ func TestPGDiskADiskLimitEvictionCarriesWhetherTheLimitCountedTheTestDatabase(t 
 
 // selfEviction is one `Evicted` end with no DisruptionTarget condition of the tester's pod: the
 // kubelet's message, the volumes the pod's spec holds beside the one every pod of the rig has
-// (podObject), and the cause the pod's death carries.
+// (podObject), the cause the pod's death carries and, where the case names them, the words the
+// pod's line tells the end in.
 type selfEviction struct {
 	name, message string
 	volumes       []corev1.Volume
 	want          runtime.DeathCause
+	words         string
 }
 
 // checkSelfEvictions ends the tester's pod of a reservedIssuePod as each case says and checks that
-// its claim observes it Gone, read neither way, with the case's cause, the pod gone from the store
-// or not.
+// its end is told in the case's words where it names them, and that its claim observes it Gone,
+// read neither way, with the case's cause, the pod gone from the store or not.
 func checkSelfEvictions(t *testing.T, cases []selfEviction) {
 	t.Helper()
 	for _, tc := range cases {
@@ -156,7 +163,9 @@ func checkSelfEvictions(t *testing.T, cases []selfEviction) {
 					p.Spec.Volumes = append(p.Spec.Volumes, tc.volumes...)
 					p.Status = status
 				})
-				g.podEndHeld(recorded)
+				if end := g.podEndHeld(recorded); tc.words != "" && end.cause != tc.words {
+					t.Fatalf("read the end in the words %q, want %q", end.cause, tc.words)
+				}
 				if gone {
 					g.leaveTheStore()
 				}

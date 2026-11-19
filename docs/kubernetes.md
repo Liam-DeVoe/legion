@@ -433,8 +433,10 @@ Then:
 - The image's own build runs `legion-testpg check` and a real `initdb`, start, `create database` and extension read as the runtime user, so a build whose server package or script stops working fails there rather than at every pod's start.
 
 - **A disk of its own.**
-  `runtime.kubernetes.test_postgres_disk` takes a size, a Kubernetes quantity such as `20Gi`, and is off when absent.
+  `runtime.kubernetes.test_postgres_disk` takes a size, a Kubernetes quantity of at least `4Gi` such as `20Gi`, and is off when absent.
   The loader refuses a value that is no positive quantity (`runtime.kubernetes.test_postgres_disk must be a positive Kubernetes quantity`), and refuses the key in a file that does not set `test_postgres: true` (`runtime.kubernetes.test_postgres_disk is the disk of the pod's own test database, so it requires runtime.kubernetes.test_postgres: true`), at `legion config check` as at boot.
+  It refuses a size under `4Gi` too, naming the size it read, as in `runtime.kubernetes.test_postgres_disk is 2Gi, under the 4Gi least size: the launcher resets the test database while its disk has under 2 GiB free, so a smaller disk would be reset at every check`.
+  A disk of about 2 GiB never shows 2 GiB free, since the filesystem's metadata and its root reserve are not free to the server, so the check below would reset it at every tick; the least size leaves room above that floor for a fresh cluster and its WAL.
   Where it is set, every issue pod that runs the test database keeps the cluster on a generic ephemeral volume of that size in place of the `testpg` `emptyDir`, mounted at the same path:
   a `ReadWriteOnce` claim on the class the issue's own disk is claimed on (`storage_class`, or the microVM block's in a microVM pod), made with the pod and deleted with it, as the issue's disk is (`issuePod.mainVolumes`, `podkind.go`).
   The kubelet's ephemeral-storage limit counts a pod's `emptyDir` volumes, its containers' writable layers and its logs, and not a volume a claim provides ([Local ephemeral storage](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#local-ephemeral-storage), [Generic ephemeral volumes](https://kubernetes.io/docs/concepts/storage/ephemeral-volumes/#generic-ephemeral-volumes)), so a test database that fills its disk can no longer get its pod evicted.
@@ -3118,7 +3120,7 @@ runtime:
       resources: { cpu: 1, memory: 4Gi, ephemeral_storage: 2Gi, ephemeral_storage_request: 1Gi }   # the defaults
     setup: [/bin/sh, -c, '<command>']   # optional: run in every role's namespace before each start of its Oh My Pi (below)
     test_postgres: true         # optional, default false: every issue pod's roles container serves its own PostgreSQL for tests (A test database in the pod, above)
-    test_postgres_disk: 20Gi    # optional, default none: the test database's own disk, a generic ephemeral volume of this size that the pod's ephemeral-storage limit does not count; needs test_postgres: true (A test database in the pod, above)
+    test_postgres_disk: 20Gi    # optional, default none: the test database's own disk, a generic ephemeral volume of this size, at least 4Gi, that the pod's ephemeral-storage limit does not count; needs test_postgres: true (A test database in the pod, above)
     memory_guard:               # optional: the memory guard in each gVisor issue pod's launcher; a microVM issue pod runs the guest watch instead (The memory guard in an issue pod, Memory in a microVM pod, below)
       issue_pods: { enabled: true, act_percent: 85, floor_percent: 10, wait_seconds: 5, interval_milliseconds: 100 }   # the defaults
     volume_trim: { enabled: true, high_percent: 85, low_percent: 70, min_age_minutes: 15, interval_seconds: 60 }   # optional, the defaults: the cache trimmer in each issue pod's launcher (below)
@@ -8065,7 +8067,7 @@ the node mounts the share and gVisor's gofer serves it to the sandbox.
 An inline `csi` volume is not offered because a CSI driver runs outside gVisor's isolation with privileged access to the node ([GKE Sandbox, External dependencies](https://cloud.google.com/kubernetes-engine/docs/concepts/sandbox-pods#limitations)), so a pod naming an arbitrary driver would reach past the sandbox;
 a share behind a CSI driver is mounted through a claim the operator made, whose driver the cluster's administrator chose.
 `host_path` is refused too: Autopilot refuses a host path, and one would hand the agent the node's files.
-A claim named as Legion's own claims are (`issue-legion-…`, `cache-legion-…`, and `tree-legion-…` of the earlier layout) is refused at load, since every pod would then mount an issue's workspace or a repository cache.
+A claim named as Legion's own claims are (`issue-legion-…`, `cache-legion-…`, an issue pod's own disk `legion-…-issue` and its test database's disk `legion-…-testpg`, and `tree-legion-…` of the earlier layout) is refused at load, since every pod would then mount an issue's workspace, one pod's test database or a repository cache.
 The server must be an IP address or an ASCII DNS name with no scheme, port or path, and neither the node's loopback nor an unspecified address, and the export a clean absolute path;
 the claim a Kubernetes name, named by one volume only (the kubelet mounts a claim's volume once per pod, so two volumes of one claim would let one's `read_only` decide the other's;
 mount the one volume at each path instead).

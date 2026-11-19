@@ -763,15 +763,30 @@ func readTestPostgres(value *yaml.Node) (bool, error) {
 	return on, nil
 }
 
+// leastTestPostgresDisk is the smallest test_postgres_disk the loader takes. The launcher resets
+// the test database whenever its disk has under 2 GiB free (launcher.testPGResetFloor), and a
+// disk of about 2 GiB never shows that much free, since the filesystem's metadata and its root
+// reserve are not free to the server, so the launcher would reset it at every check. The least
+// size is that floor with room above it for a fresh cluster and its WAL.
+const leastTestPostgresDisk = "4Gi"
+
 // readTestPostgresDisk reads `runtime.kubernetes.test_postgres_disk`, "" when absent: a positive
-// Kubernetes quantity, read as issue_volume is (readQuantity). It is refused while test_postgres
-// is not true, naming both keys: a disk for a test database no pod runs is a mistake the operator
-// must see, not a setting the daemon may drop without a word.
+// Kubernetes quantity, read as issue_volume is (readQuantity), of at least leastTestPostgresDisk.
+// A smaller size is refused naming the size and the least one, since the launcher would reset the
+// test database on it at every check. It is refused while test_postgres is not true, naming both
+// keys: a disk for a test database no pod runs is a mistake the operator must see, not a setting
+// the daemon may drop without a word.
 func readTestPostgresDisk(value *yaml.Node, testPostgres bool) (string, error) {
 	const key = kubernetesKey + ".test_postgres_disk"
 	size, err := readQuantity(value, key)
-	if err != nil || size == "" || testPostgres {
+	if err != nil || size == "" {
 		return size, err
+	}
+	if below(size, leastTestPostgresDisk) {
+		return "", fmt.Errorf("%s is %s, under the %s least size: the launcher resets the test database while its disk has under 2 GiB free, so a smaller disk would be reset at every check", key, size, leastTestPostgresDisk)
+	}
+	if testPostgres {
+		return size, nil
 	}
 	return "", fmt.Errorf("%s is the disk of the pod's own test database, so it requires %s.test_postgres: true", key, kubernetesKey)
 }

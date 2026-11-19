@@ -19,17 +19,14 @@ import (
 // which leaves the table as main has it, the resume's own anchor (20261111181500), and the pull
 // request's read stamp (20261112070503), which dispatch://INFRA-3027 adds on top of this branch
 // and which a database the main before this branch migrated lacks as surely as this branch's own,
-// so the upgrade applies it after them. The nine versions of main's above the claim-death
-// charge, the drop of the waiting-for-slot notice (20261109060737), the retirement's write mark
-// (20261109191929), the backward-move counts with the hook prompt (20261110225246), the
-// unmarked start of a phase past its review (20261110233602), the kind of the rule that wrote a
-// release mark (20261111001612), the issue's movement time (20261111010031), the declined ask
-// (20261111021610), the tree-stalled mark (20261111041503) and the claim's failure cause
-// (20261111212544), are
-// main's own and are applied as main's run applied them. Not every version of this branch's
-// stands below main's newest: a migration's version is a timestamp rather than a place in a line,
-// and the ones above it are the phase entry's own (20261111225552, dispatch://INFRA-2800), which
-// this branch wrote after main's claim-failure cause, and the others the paragraphs below name.
+// so the upgrade applies it after them. Every embedded version at or below mainsNewestMigration
+// that thisBranchsMigrations does not name is main's own, main's newest, the claim's failure cause
+// (20261111212544), among them, and is applied as main's run applied it (the loop below), so this
+// paragraph keeps no list of main's versions to drift at each merge. Not every version of this
+// branch's stands below main's newest: a migration's version is a timestamp rather than a place in
+// a line, and the ones above it are the phase entry's own (20261111225552, dispatch://INFRA-2800),
+// which this branch wrote after main's claim-failure cause, and the others the paragraphs below
+// name.
 //
 // A branch migration this list forgets would be applied as one of main's, which is a database no
 // deployment ever has, so the test below holds the list against the embedded set: every version
@@ -91,9 +88,9 @@ import (
 // other version of the list that writes outbox_kind_check, the role-holders publication's
 // included, and above the reviewer's reviewed commit, and no version above it writes that check,
 // so it is the last of the list an upgrade applies to outbox_kind_check, and it restates
-// 20261116165926's kinds with step_record, so it is the last word of outbox_kind_check. The count of starts of each step
-// (20261117004117) creates tables and a function of its own, and its roll forward
-// (20261117064152) changes nothing on a database no rollback touched; neither touches
+// 20261116165926's kinds with step_record, so it is the last word of outbox_kind_check. The count
+// of starts of each step (20261117004117) creates tables and a function of its own, and its roll
+// forward (20261117064152) changes nothing on a database no rollback touched; neither touches
 // outbox_kind_check.
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
