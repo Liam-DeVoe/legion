@@ -194,6 +194,25 @@ On the project's Documents tab, the list of documents takes the same row keys:
 | `Enter` | Open the focused document (from the row) |
 | `Shift+O` | Open the focused document in a new tab |
 
+## Table columns
+
+The tables of the List, the Priorities page, a priority's page and the Delivery page's list take
+these keys on a column's grip, the thin bar at the right edge of the column's header. `Tab` goes to
+each grip.
+
+| Keys | Action |
+| --- | --- |
+| `→` / `←` | Make the column 10 px wider / narrower, while its grip has the focus |
+| `Shift+→` / `Shift+←` | Make the column 50 px wider / narrower, while its grip has the focus |
+| `Enter` | Give the column its default width, while its grip has the focus |
+
+A column does not become narrower or wider than its limits. A double-click on the grip also gives
+the column its default width. The **Move** menu in a column's header moves the column one place to
+the left or to the right. The menu shows only the moves that the column can make. A pinned column
+has no **Move** menu, and no move takes a column past a pinned column. After a move, the focus
+stays on the menu's button. While a grip or a **Move** menu has the focus, `j` and `k` still go to
+the next and previous row.
+
 ## Board
 
 | Keys | Action |

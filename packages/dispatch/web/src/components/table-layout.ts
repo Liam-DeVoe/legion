@@ -10,7 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { readLayout, type StoredColumns, writeLayout } from "./table-storage";
+import { readLayout, STORED_WIDTH, type StoredColumns, writeLayout } from "./table-storage";
 
 /** The columns a table pins at its left edge while it scrolls sideways, and how they fit the
  *  box it is drawn in. */
@@ -56,6 +56,8 @@ export interface TableLayoutModel {
   readonly attachBox: (node: HTMLDivElement | null) => void;
   readonly boxHeight: number;
   readonly boxWidth: number;
+  /** The narrowest each column is drawn at, from the caller (`LayoutColumns.minimums`). */
+  readonly minimums: Readonly<Partial<Record<string, number>>>;
   readonly order: ColumnOrderState;
   readonly pagerRef: RefObject<HTMLDivElement | null>;
   /** The widths the window allows and the columns pinned at its left. */
@@ -68,6 +70,9 @@ export interface TableLayoutModel {
   readonly visibility: VisibilityState;
 }
 
+/** The minimums of a caller that names none, held once so the model's field keeps one object. */
+const NO_MINIMUMS: Readonly<Partial<Record<string, number>>> = {};
+
 /** The column order a drag leaves behind: `dragged` taken out of `current` and put back
  *  immediately before `before`. A drop on itself, or on an id the order does not hold, leaves
  *  the order as it was. */
@@ -77,6 +82,21 @@ export function reorder(current: readonly string[], dragged: string, before: str
   const next = current.filter((id) => id !== dragged);
   next.splice(next.indexOf(before), 0, dragged);
   return next;
+}
+
+/** The narrowest and the widest width the keys of a column's grip set: within the bounds its
+ *  drawn width already obeys - the column's own `minSize` and `maxSize`, which TanStack also holds
+ *  the pointer's drag to, and the caller's `minimum` (`LayoutColumns.minimums`) - and within the
+ *  widths the stored layout keeps (`STORED_WIDTH`), so a width that a key sets is kept after a
+ *  reload. */
+export function widthBounds(
+  column: { readonly maxSize?: number; readonly minSize?: number },
+  minimum = 0
+): { readonly max: number; readonly min: number } {
+  return {
+    max: Math.min(column.maxSize ?? STORED_WIDTH.max, STORED_WIDTH.max),
+    min: Math.max(column.minSize ?? 0, minimum, STORED_WIDTH.min),
+  };
 }
 
 /**
@@ -206,6 +226,7 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     attachBox,
     boxHeight,
     boxWidth,
+    minimums: columns.minimums ?? NO_MINIMUMS,
     order,
     pagerRef,
     responsive,

@@ -480,6 +480,140 @@ test("keeps its own columns' widths, order and visibility under the whole key it
   });
 });
 
+/** The deploys with bounds on one column's width: Minutes is drawn at TanStack's 150 px until a
+ *  reader changes it, never narrower than this caller's 120 px, nor wider than its own 200 px. */
+const BOUNDED_COLUMNS: ColumnDef<Deploy>[] = COLUMNS.map((column) =>
+  column.id === "minutes" ? { ...column, maxSize: 200 } : column
+);
+const BOUNDED_LAYOUT: LayoutColumns = { ...LAYOUT_COLUMNS, minimums: { minutes: 120 } };
+
+// R12 of dispatch://INFRA-2160 and the architect's ruling on it: a column's width changes by keys
+// on its grip as well as by a drag. The grip is a Tab stop, a separator whose value is the width
+// and whose bounds are the ones the drawn width obeys; ArrowRight and ArrowLeft step the width,
+// Shift takes a larger step, and Enter gives the column back its first width, as a double-click
+// does. The width is the one the layout stores, under the table's key.
+test("a column's grip takes the focus, and its keys change, bound and reset the column's width", async () => {
+  const user = userEvent.setup();
+  draw(<Deploys columns={BOUNDED_COLUMNS} layoutColumns={BOUNDED_LAYOUT} />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  const header = within(table).getByRole("columnheader", { name: /Minutes/ });
+  const grip = within(table).getByRole("separator", { name: "Resize Minutes" });
+  expect(grip).toHaveAttribute("tabindex", "0");
+  expect(grip).toHaveAttribute("aria-orientation", "vertical");
+  expect([grip.getAttribute("aria-valuemin"), grip.getAttribute("aria-valuemax")]).toEqual([
+    "120",
+    "200",
+  ]);
+  const width = () => [header.style.width, grip.getAttribute("aria-valuenow")];
+  const stored = () => JSON.parse(localStorage.getItem("deploys") ?? "{}").sizing;
+  expect(width()).toEqual(["150px", "150"]);
+
+  act(() => grip.focus());
+  await user.keyboard("{ArrowRight}");
+  expect(width(), "ArrowRight widens the column by a step").toEqual(["160px", "160"]);
+  await user.keyboard("{Shift>}{ArrowRight}{/Shift}");
+  expect(width(), "Shift+ArrowRight stops at the column's widest").toEqual(["200px", "200"]);
+  await user.keyboard("{Shift>}{ArrowLeft}{/Shift}");
+  expect(width(), "Shift+ArrowLeft narrows the column by a larger step").toEqual(["150px", "150"]);
+  await user.keyboard("{Shift>}{ArrowLeft}{/Shift}{ArrowLeft}");
+  expect(width(), "the arrows stop at the caller's narrowest").toEqual(["120px", "120"]);
+  expect(stored()).toEqual({ minutes: 120 });
+
+  await user.keyboard("{Enter}");
+  expect(width(), "Enter gives the column back its first width").toEqual(["150px", "150"]);
+  expect(stored()).toEqual({});
+  expect(grip, "the grip keeps the focus through its keys").toHaveFocus();
+});
+
+// R12: a column moves by its header's menu as well as by a drag. Move left and Move right are
+// offered only where a column that is not pinned stands on that side; a move writes the order a
+// drop writes, under the table's key; and the menu leaves the focus on its trigger in the moved
+// column's header.
+test("a column's move menu moves it left or right, offering only the moves the column can make", async () => {
+  const user = userEvent.setup();
+  draw(<Deploys />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  const headings = () =>
+    within(table)
+      .getAllByRole("columnheader")
+      .map((header) => header.querySelector("button")?.textContent);
+  const offered = async (name: string) => {
+    await user.click(within(table).getByRole("button", { name: `Move ${name}` }));
+    const choices = within(screen.getByRole("menu", { name: `Move ${name}` }))
+      .getAllByRole("menuitem")
+      .map((choice) => choice.textContent);
+    await user.keyboard("{Escape}");
+    return choices;
+  };
+  expect(await offered("Deploy")).toEqual(["Move right"]);
+  expect(await offered("State")).toEqual(["Move left", "Move right"]);
+  expect(await offered("Region")).toEqual(["Move left"]);
+
+  const trigger = () => within(table).getByRole("button", { name: "Move State" });
+  act(() => trigger().focus());
+  await user.keyboard("{Enter}{Enter}");
+  expect(headings(), "Move left").toEqual(["Deploy", "State", "Service", "Minutes", "Region"]);
+  expect(trigger(), "the focus stays on the moved column's menu").toHaveFocus();
+  await user.keyboard("{Enter}{ArrowDown}{Enter}");
+  await user.keyboard("{Enter}{ArrowDown}{Enter}");
+  expect(headings(), "Move right, twice").toEqual([
+    "Deploy",
+    "Service",
+    "Minutes",
+    "State",
+    "Region",
+  ]);
+  expect(trigger(), "the focus stays on the moved column's menu").toHaveFocus();
+  expect(JSON.parse(localStorage.getItem("deploys") ?? "{}").order).toEqual([
+    "deploy",
+    "service",
+    "minutes",
+    "state",
+    "region",
+  ]);
+});
+
+// A pinned column has no drag, and no drop takes a column past one: it has no move menu, and the
+// column beside it is offered no move onto it.
+test("a pinned column has no move menu, and no move passes one", async () => {
+  draw(<Deploys layoutColumns={PINNED_LAYOUT} layoutKey="pinned" />, 1400);
+
+  const table = await screen.findByRole("table", { name: "Deploys pinned" });
+  expect(within(table).queryByRole("button", { name: "Move Deploy" })).toBeNull();
+  expect(within(table).queryByRole("button", { name: "Move Service" })).toBeNull();
+  await userEvent.setup().click(within(table).getByRole("button", { name: "Move State" }));
+  expect(
+    within(screen.getByRole("menu", { name: "Move State" }))
+      .getAllByRole("menuitem")
+      .map((choice) => choice.textContent)
+  ).toEqual(["Move right"]);
+});
+
+// The page's keymap reads a key the grip and the menu do not take as it reads it on the header's
+// sort: `j` from either walks the rows of the table it is in.
+test("the grip and the move menu leave j to the rows, as the header's sort does", async () => {
+  const user = userEvent.setup();
+  draw(
+    <KeymapProvider>
+      <Scope />
+      <Deploys />
+    </KeymapProvider>
+  );
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  const [first] = table.querySelectorAll<HTMLElement>("[data-deploy-row]");
+  for (const control of [
+    within(table).getByRole("separator", { name: "Resize Minutes" }),
+    within(table).getByRole("button", { name: "Move Minutes" }),
+  ]) {
+    act(() => control.focus());
+    await user.keyboard("j");
+    expect(first, `j from ${control.getAttribute("aria-label")}`).toHaveFocus();
+  }
+});
+
 // The issue table's layout rules are the issue table's, not a column name's: a table with its own
 // `title` and `status` keeps the hidden state and the widths its reader stored, at a desktop box
 // and at a phone's, and pins nothing.

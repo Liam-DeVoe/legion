@@ -243,6 +243,8 @@ export const tableFilterActive = "bg-sky-100 text-sky-700 dark:bg-sky-900 dark:t
 registerText("active table filter", pair(P.SKY_700, P.SKY_300), pair(P.SKY_100, P.SKY_900));
 export const tableResizeActive = "bg-sky-500 dark:bg-sky-400";
 export const tableResizeHover = "hover:bg-sky-300 dark:hover:bg-sky-700";
+/** A column's grip while it holds the keyboard's focus: the dragged grip's colour. */
+export const tableResizeFocus = "focus-visible:bg-sky-500 dark:focus-visible:bg-sky-400";
 /** `linkText`, unqualified, also renders directly inside a `SURFACE_MUTED`/`SURFACE_RECESSED`
  * container in several places (an unfurled reference card, a Conversation turn's recessed quote
  * box) — `LINK` is a single fixed pair, so these are the same values already checked above, just

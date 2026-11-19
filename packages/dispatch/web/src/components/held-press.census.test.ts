@@ -34,14 +34,6 @@ const PENDING_WORDS = [
 
 const PENDING_WORD = new RegExp(`(?:^|_)(?:${PENDING_WORDS.join("|")})(?:_|$)`);
 
-/** The sites another change converts, each by its file and its expression as listed. */
-const ALLOWED: readonly { readonly file: string; readonly expression: string }[] = [
-  { expression: "retrying", file: "web/src/components/QueryError.tsx" },
-  { expression: "busy !== undefined", file: "web/src/components/RefusableButton.tsx" },
-  { expression: "sending", file: "web/src/features/conversation/MentionComposer.tsx" },
-];
-const ALLOWED_REASON = "cybermonklabs/legion#4177 fixes these; remove each entry when it lands";
-
 /** `isPending` → `is_pending`, `SEND_PENDING` → `send_pending`: an identifier as its words. */
 function words(name: string): string {
   return name
@@ -192,18 +184,6 @@ describe("no control is disabled while its write is out", () => {
   });
 
   test("no disabled={…} names a pending state: hold the control (heldPress)", () => {
-    const offenders = FOUND.filter(
-      (found) =>
-        !ALLOWED.some((site) => site.file === found.file && site.expression === found.expression)
-    ).map(({ expression, file, line }) => `${file}:${line}: ${expression}`);
-    expect(offenders).toEqual([]);
-  });
-
-  test(`every allowed site still offends (${ALLOWED_REASON})`, () => {
-    const stale = ALLOWED.filter(
-      (site) =>
-        !FOUND.some((found) => found.file === site.file && found.expression === site.expression)
-    ).map(({ expression, file }) => `${file}: ${expression} - ${ALLOWED_REASON}`);
-    expect(stale).toEqual([]);
+    expect(FOUND.map(({ expression, file, line }) => `${file}:${line}: ${expression}`)).toEqual([]);
   });
 });

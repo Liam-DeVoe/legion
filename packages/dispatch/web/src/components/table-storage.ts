@@ -30,6 +30,10 @@ export interface StoredColumns {
   readonly pins?: { readonly wide: { readonly columns: readonly string[] } };
 }
 
+/** The widths a stored column width is kept within: a width outside them is dropped as the layout
+ *  is read, so the keys of a column's grip set none outside them (`widthBounds`). */
+export const STORED_WIDTH = { max: 2000, min: 36 } as const;
+
 /** Everything stored under `key`, or nothing where the browser refuses or the value is not an
  *  object this can read a field out of. */
 export function readStore(key: string): Record<string, unknown> {
@@ -66,8 +70,8 @@ export function readLayout(
       ids.includes(id) &&
       typeof size === "number" &&
       Number.isFinite(size) &&
-      size >= 36 &&
-      size <= 2000
+      size >= STORED_WIDTH.min &&
+      size <= STORED_WIDTH.max
         ? [[id, size]]
         : []
     )

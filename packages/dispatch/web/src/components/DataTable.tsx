@@ -31,19 +31,22 @@ import {
   borderDefault,
   surfaceBg,
   surfaceMutedBg,
+  surfaceMutedHoverBg,
   tableResizeActive,
+  tableResizeFocus,
   tableResizeHover,
   textMutedOnCanvas,
   textMutedOnSurfaceMuted,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../theme/classes";
+import { ChoiceMenu, type MenuChoice } from "./ChoiceMenu";
 import { ColumnFilter } from "./ColumnFilter";
 import { CONTROL } from "./control-names";
 import { useFocusPlace } from "./focus-place";
 import { Pager, type PagerOptions } from "./Pager";
 import { type FocusRow, type RowKeymap, useRowKeymap } from "./table-keys";
-import { reorder, type TableLayoutModel } from "./table-layout";
+import { reorder, type TableLayoutModel, widthBounds } from "./table-layout";
 
 /** TanStack's own renderer for a header or a cell, re-exported: the core is the one place the
  *  table library is imported as a value, and a page that draws its own rows needs this to turn
@@ -404,15 +407,61 @@ export interface DataTableProps<Row> {
   readonly trailingWidth?: number;
 }
 
-/** One header cell: its sort control, which doubles as the handle that drags the column
- *  elsewhere, its filter, and the edge that resizes it. */
+/** How far a key on a column's grip changes the column's width, in px: an arrow alone, and an
+ *  arrow with Shift. */
+export const GRIP_STEP = { plain: 10, shift: 50 } as const;
+
+/** The mark on a column's move menu, by which its header cell finds it again after a move. */
+const MOVE_MENU_ATTRIBUTE = "data-column-move";
+
+/** The two arrows a column's move menu shows: the column goes left or right. */
+function MoveIcon(): ReactNode {
+  return (
+    <svg
+      aria-hidden="true"
+      className="size-3.5"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={1.5}
+      viewBox="0 0 16 16"
+    >
+      <path d="M5 4.5 1.5 8 5 11.5M11 4.5 14.5 8 11 11.5M1.5 8h13" />
+    </svg>
+  );
+}
+
+/**
+ * One header cell: its sort control, which doubles as the handle that drags the column
+ * elsewhere, its move menu, its filter, and the grip on its edge that resizes it.
+ *
+ * The grip is a Tab stop as well as a pointer's handle (`role="separator"`, with the width as its
+ * value): ArrowLeft and ArrowRight change the width by `GRIP_STEP.plain`, with Shift by
+ * `GRIP_STEP.shift`, within `widthBounds`, and Enter gives the column back its first width, as a
+ * double-click does. Both paths write the same widths (`onColumnSizingChange`, the layout's
+ * `setSizing`). The grip takes only those keys, with `preventDefault`, so the page's keymap,
+ * which skips a handled key, reads every other key as it reads it on the header's other
+ * controls: `j` and `k` still walk the rows.
+ *
+ * The move menu (`ChoiceMenu`) offers Move left and Move right, each only where a column that
+ * is not pinned stands on that side, and writes the order a drop writes (`reorder`): the column
+ * dropped on its left neighbour, or its right neighbour dropped on the column. A pinned
+ * column has no move menu, as it has no drag. The menu hands the focus back to its trigger as it
+ * closes; the move then draws the cell at its new place, which React does by taking the cell out
+ * of its row and putting it back, and a cell taken out loses the focus to the page. So the cell
+ * gives the trigger the focus again once the move is drawn.
+ */
 function TableHeaderCell<TData>({
   dragColumn,
   fills,
   header,
+  left,
+  minimum,
   openFilter,
   order,
   renderFilter,
+  right,
   setDragColumn,
   setOpenFilter,
   setOrder,
@@ -423,11 +472,19 @@ function TableHeaderCell<TData>({
    *  `fillColumn`. Its header names no width, and a fixed table gives such a column the rest. */
   fills: boolean;
   header: Header<TData, unknown>;
+  /** The column drawn on this one's left, where Move left puts this one before it: undefined
+   *  for a pinned column, and where no column, or a pinned one, stands there. */
+  left: string | undefined;
+  /** The narrowest the caller draws this column (`TableLayoutModel.minimums`). */
+  minimum: number | undefined;
   openFilter: string | undefined;
-  /** The columns in the order they are shown, which a drop rewrites. */
+  /** The columns in the order they are shown, which a drop or a move rewrites. */
   order: readonly string[];
   /** Draws this column's filter, which the cell never chooses for itself. */
   renderFilter: ColumnFilterRenderer<TData>;
+  /** The column drawn on this one's right, which Move right puts before this one: undefined for
+   *  a pinned column, and where no column stands there. */
+  right: string | undefined;
   setDragColumn: (id: string | undefined) => void;
   setOpenFilter: (id: string | undefined) => void;
   setOrder: (next: string[]) => void;
@@ -437,6 +494,30 @@ function TableHeaderCell<TData>({
 }): ReactNode {
   const column = header.column;
   const pinned = column.getIsPinned() === "left";
+  const heading = column.columnDef.header;
+  const name = typeof heading === "string" ? heading : column.id;
+  const cell = useRef<HTMLTableCellElement>(null);
+  // Set by a move from this cell's menu, and read once that move is drawn.
+  const moved = useRef(false);
+  useLayoutEffect(() => {
+    if (!moved.current) return;
+    moved.current = false;
+    const trigger = cell.current?.querySelector<HTMLElement>(`[${MOVE_MENU_ATTRIBUTE}]`);
+    if (trigger !== document.activeElement) trigger?.focus();
+  });
+  const moves: MenuChoice<"left" | "right">[] = [
+    ...(left === undefined ? [] : [{ label: "Move left", value: "left" as const }]),
+    ...(right === undefined ? [] : [{ label: "Move right", value: "right" as const }]),
+  ];
+  const width = Math.round(header.getSize());
+  const bounds = widthBounds(column.columnDef, minimum);
+  const filter = column.getCanFilter()
+    ? renderFilter({
+        column,
+        onOpenChange: (open) => setOpenFilter(open ? column.id : undefined),
+        open: openFilter === column.id,
+      })
+    : null;
   return (
     <th
       aria-sort={
@@ -455,6 +536,7 @@ function TableHeaderCell<TData>({
         setOrder(reorder(order, dragColumn, column.id));
         setDragColumn(undefined);
       }}
+      ref={cell}
       style={{
         width: fills ? undefined : header.getSize(),
         left: pinned ? column.getStart("left") : undefined,
@@ -485,21 +567,64 @@ function TableHeaderCell<TData>({
         ) : (
           flexRender(column.columnDef.header, header.getContext())
         )}
-        {column.getCanFilter()
-          ? renderFilter({
-              column,
-              onOpenChange: (open) => setOpenFilter(open ? column.id : undefined),
-              open: openFilter === column.id,
-            })
-          : null}
+        {moves.length === 0 ? (
+          filter
+        ) : (
+          <span className="flex shrink-0 items-center gap-0 md:gap-1">
+            <ChoiceMenu
+              choices={moves}
+              face="Move"
+              label={`Move ${name}`}
+              marks={{ [MOVE_MENU_ATTRIBUTE]: column.id }}
+              onChoose={(side) => {
+                const neighbour = side === "left" ? left : right;
+                if (neighbour === undefined) return;
+                moved.current = true;
+                setOrder(
+                  side === "left"
+                    ? reorder(order, column.id, neighbour)
+                    : reorder(order, neighbour, column.id)
+                );
+              }}
+              triggerClassName={`inline-flex min-h-11 min-w-8 items-center justify-center rounded p-1 md:min-h-8 md:min-w-6 ${textMutedOnCanvas} ${surfaceMutedHoverBg}`}
+            >
+              <MoveIcon />
+            </ChoiceMenu>
+            {filter}
+          </span>
+        )}
       </span>
       {column.getCanResize() ? (
+        // biome-ignore lint/a11y/useSemanticElements: the grip is a focusable separator, the WAI-ARIA window splitter whose value is the width, laid over the header's edge; an `<hr>` is a thematic break between blocks of content.
         <span
-          aria-hidden
-          className={`absolute top-0 right-0 h-full w-1.5 cursor-col-resize touch-none select-none ${column.getIsResizing() ? tableResizeActive : tableResizeHover}`}
+          aria-label={`Resize ${name}`}
+          aria-orientation="vertical"
+          aria-valuemax={bounds.max}
+          aria-valuemin={bounds.min}
+          aria-valuenow={width}
+          className={`absolute top-0 right-0 h-full w-1.5 cursor-col-resize touch-none select-none ${tableResizeFocus} ${column.getIsResizing() ? tableResizeActive : tableResizeHover}`}
           onDoubleClick={() => column.resetSize()}
+          onKeyDown={(event) => {
+            if (event.altKey || event.ctrlKey || event.metaKey) return;
+            if (event.key === "Enter") {
+              event.preventDefault();
+              column.resetSize();
+              return;
+            }
+            const direction =
+              event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : undefined;
+            if (direction === undefined) return;
+            event.preventDefault();
+            const step = direction * (event.shiftKey ? GRIP_STEP.shift : GRIP_STEP.plain);
+            header.getContext().table.setColumnSizing((sizing) => ({
+              ...sizing,
+              [column.id]: Math.min(bounds.max, Math.max(bounds.min, width + step)),
+            }));
+          }}
           onMouseDown={header.getResizeHandler()}
           onTouchStart={header.getResizeHandler()}
+          role="separator"
+          tabIndex={0}
         />
       ) : null}
     </th>
@@ -626,21 +751,35 @@ export function DataTable<Row>({
             <thead>
               {headerGroups.map((group, index) => (
                 <tr aria-rowindex={index + 1} key={group.id}>
-                  {group.headers.map((header) => (
-                    <TableHeaderCell
-                      dragColumn={dragColumn}
-                      fills={filled && header.column.id === fillColumn}
-                      header={header}
-                      key={header.id}
-                      openFilter={openFilter}
-                      order={columnOrder}
-                      renderFilter={drawFilter}
-                      setDragColumn={setDragColumn}
-                      setOpenFilter={onOpenFilterChange}
-                      setOrder={layout.setOrder}
-                      stacked={layout.boxWidth < 640 && header.column.id === stackColumn}
-                    />
-                  ))}
+                  {group.headers.map((header, place) => {
+                    // The columns drawn either side that a move may pass: none for a pinned
+                    // column, and none that is pinned, as a drop takes no pinned column either.
+                    const [left, right] = [group.headers[place - 1], group.headers[place + 1]].map(
+                      (side) =>
+                        header.column.getIsPinned() === false &&
+                        side?.column.getIsPinned() === false
+                          ? side.column.id
+                          : undefined
+                    );
+                    return (
+                      <TableHeaderCell
+                        dragColumn={dragColumn}
+                        fills={filled && header.column.id === fillColumn}
+                        header={header}
+                        key={header.id}
+                        left={left}
+                        minimum={layout.minimums[header.column.id]}
+                        openFilter={openFilter}
+                        order={columnOrder}
+                        renderFilter={drawFilter}
+                        right={right}
+                        setDragColumn={setDragColumn}
+                        setOpenFilter={onOpenFilterChange}
+                        setOrder={layout.setOrder}
+                        stacked={layout.boxWidth < 640 && header.column.id === stackColumn}
+                      />
+                    );
+                  })}
                   {trailingWidth === 0 ? null : (
                     <th
                       className={`sticky top-0 z-20 border-b ${borderDefault} ${surfaceBg}`}

@@ -6172,9 +6172,11 @@ declare global {
 /** Puts R12's reading of `page` on its `window`, so each key press reads where the focus went in
  *  one call. What it puts there runs in the page, and reads nothing of this module's: what R12
  *  counts as a control - a link, a button, a checkbox, a radio, a select, a menu trigger, a text
- *  field and a tab, a disclosure's `<summary>` among the buttons - shown in the viewport, leaving
- *  out a control that takes no press (`:disabled`) and a link inside a document the reader can
- *  edit, which R2's Alt+Enter opens rather than Tab. */
+ *  field and a tab, a disclosure's `<summary>` among the buttons, and a table column's grip, the
+ *  one separator that takes the focus (`role="separator"` with a `tabindex`, the architect's
+ *  ruling of dispatch://INFRA-2160/comment/fe52ffac-4f51-4669-be7e-f26e8994fc13) - shown in the
+ *  viewport, leaving out a control that takes no press (`:disabled`) and a link inside a
+ *  document the reader can edit, which R2's Alt+Enter opens rather than Tab. */
 async function installReach(page: Page): Promise<void> {
   await page.evaluate(() => {
     // Once for each document: a page the app moves to in place keeps what it put here.
@@ -6200,6 +6202,7 @@ async function installReach(page: Page): Promise<void> {
       '[role="menuitemradio"]',
       '[role="menuitemcheckbox"]',
       '[aria-haspopup]:not([aria-haspopup="false"])',
+      '[role="separator"][tabindex]',
     ].join(", ");
     let listed: Element[] = [];
     let first: Element | null = null;
@@ -6752,6 +6755,113 @@ test("k-keyboard-reach: on a project's List and Board, Tab reaches every control
   await expectKeyboardReach(page, {
     name: "the project's Board",
     rows: { key: "j", selector: "[data-board-card]" },
+  });
+});
+
+/** A column of a shared table, worked by the keyboard alone (R12, by the architect's ruling of
+ *  dispatch://INFRA-2160/comment/fe52ffac-4f51-4669-be7e-f26e8994fc13): Tab from the page's start
+ *  reaches the column's grip; ArrowRight widens the header's box, Shift+ArrowLeft then narrows it
+ *  below where it began, and Enter gives it back that first width; and the column's Move menu,
+ *  two Shift+Tabs back past its filter, moves it one place right, which swaps it with the column
+ *  on its right, and leaves the focus on the menu's trigger. The caller names a column that
+ *  starts wider than its minimum, with a filter and a column on its right that is not pinned. */
+async function expectColumnKeys(
+  page: Page,
+  at: { readonly column: string; readonly name: string; readonly table: Locator }
+): Promise<void> {
+  const step = (text: string) => `k-keyboard-reach: ${at.name}: ${text}`;
+  const grip = at.table.getByRole("separator", { exact: true, name: `Resize ${at.column}` });
+  // A `has` locator is read inside each header, so it starts from the page, not from the table.
+  const header = at.table.getByRole("columnheader").filter({
+    has: page.getByRole("separator", { exact: true, name: `Resize ${at.column}` }),
+  });
+  const width = async () => (await header.boundingBox())?.width ?? 0;
+  const order = () =>
+    at.table
+      .getByRole("columnheader")
+      .evaluateAll((cells) =>
+        cells.map((cell) =>
+          (cell.querySelector("button")?.textContent ?? cell.textContent ?? "")
+            .replace(/[▲▼]/g, "")
+            .trim()
+        )
+      );
+
+  await page.evaluate(() => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) active.blur();
+  });
+  await tabTo(page, grip, step(`Tab reaches the ${at.column} column's grip`));
+  // The grip took the focus inside the Tab's own key press, and the header it stands in was drawn
+  // with the rows the caller waited for, so its box is read at rest.
+  const first = await width();
+  expect(first, step(`the ${at.column} column has a box`)).toBeGreaterThan(0);
+  await page.keyboard.press("ArrowRight");
+  await expect
+    .poll(width, { message: step("ArrowRight on the grip widens the column") })
+    .toBeGreaterThan(first);
+  await page.keyboard.press("Shift+ArrowLeft");
+  await expect
+    .poll(width, {
+      message: step("Shift+ArrowLeft narrows it by more than ArrowRight widened it"),
+    })
+    .toBeLessThan(first);
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(async () => Math.round(await width()), {
+      message: step("Enter gives the column back its first width"),
+    })
+    .toBe(Math.round(first));
+  await expect(grip, step("the grip keeps the focus through its keys")).toBeFocused();
+
+  const menu = at.table.getByRole("button", { exact: true, name: `Move ${at.column}` });
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Shift+Tab");
+  await expect(
+    menu,
+    step("two Shift+Tabs from the grip reach the column's Move menu")
+  ).toBeFocused();
+  // The header's order is drawn with the header, which the reads above waited on.
+  const before = await order();
+  const place = before.indexOf(at.column);
+  expect(place, step(`the header row names ${at.column}`)).toBeGreaterThanOrEqual(0);
+  const after = [...before];
+  after.splice(place, 2, before[place + 1] ?? "", at.column);
+  await page.keyboard.press("Enter");
+  await expect(
+    page
+      .getByRole("menu", { name: `Move ${at.column}` })
+      .getByRole("menuitem")
+      .last(),
+    step("the Move menu offers Move right")
+  ).toHaveText("Move right");
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(order, { message: step(`Move right swaps ${at.column} with the column on its right`) })
+    .toEqual(after);
+  await expect(menu, step("the focus stays on the moved column's Move menu")).toBeFocused();
+}
+
+// SLOW(>=2s): the review corpus seeded, and a column of the List and one of the Priorities page
+// resized, given back their widths and moved, by the keyboard alone.
+test("k-keyboard-reach: on a project's List and on the Priorities page, the keyboard alone resizes a column by its grip, gives it back its width, and moves it by its menu", async ({
+  page,
+}) => {
+  const seed = await seedReviewRoutes({ boundMs: expectTimeout });
+  await page.setViewportSize(WIDE);
+  await openIssuesTab(page, seed.project, "List");
+  await expect(page.locator("[data-issue-row]").first()).toBeVisible();
+  await expectColumnKeys(page, {
+    column: "Epic",
+    name: "the project's List",
+    table: page.getByRole("table", { name: "Project issues table" }),
+  });
+  await openReviewRoute(page, seed, "priorities");
+  await expectColumnKeys(page, {
+    column: "Owner",
+    name: "the Priorities page",
+    table: page.getByRole("table", { name: "Priorities table" }),
   });
 });
 

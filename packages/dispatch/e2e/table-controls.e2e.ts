@@ -5849,6 +5849,9 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
         await page
           .getByRole("button", { exact: true, name: `Add a priority to ${seed.header}` })
           .click();
+        // The trigger reads `Loading priorities…` until the priorities' read answers, and then
+        // `Choose a priority`: the value the row compares Escape's against is the settled one.
+        await expect(advance).toContainText("Choose a priority");
       },
       trigger: advance,
       value: shown(advance),
