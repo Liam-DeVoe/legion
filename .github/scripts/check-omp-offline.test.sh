@@ -2,23 +2,36 @@
 # Tests for `check-omp-offline.sh`: a Go test that starts Oh My Pi in a function that never calls
 # testbin's offline helper is refused, by its door (testbin.OMP) and by its exec.Command alike, and
 # so is a TypeScript start whose environment calls neither ompOffline nor ompEnv; the helper form
-# and the reasoned form of each pass; a reason six lines up is too far; a start spelled in a
-# comment or a string starts nothing; a regular expression holding a backtick hides no start after
-# it; a Sync start under the helper is refused, since the helper's listener cannot answer while the
-# call holds the event loop; a helper that stopped naming HTTPS_PROXY fails every start it would
-# pass; and a scan that read nothing, or found no start where testbin exists, reports UNKNOWN and
-# exits 2.
+# and the reasoned form of each pass; a reason on the start's own line or five lines up passes, and
+# one six lines up is too far; a start spelled in a comment or a string starts nothing; a regular
+# expression holding a backtick hides no start after it; a Sync start under the helper is refused,
+# since the helper's listener cannot answer while the call holds the event loop; a helper that
+# stopped naming HTTPS_PROXY, or an environment helper that stopped calling its own, fails; and a
+# scan that read nothing, read no file of one language, or found no start where testbin or the
+# harness exists, reports UNKNOWN and exits 2.
 #
+# Each form the check's header names has a row, which fails when the check stops seeing that form.
 # The binary is followed by its value, whatever its name: a spawn of process.env.LEGION_TEST_OMP
-# itself, a name bound to it, Bun.env, a constant naming it, a function of another file that
-# returns it, Bun.which("omp"), a joined or a literal path, a shell's -c, Bun's $`...`, execSync
-# and exec of a command string, each read as shell; in Go exec.LookPath("omp"), filepath.Join(...,
-# "omp"), a literal path, a function of another file of the package that returns it, bash -c, and a
-# binary from a helper that calls OMPOffline itself. The helper counts only in the start's own call
-# or environment: one in the next statement holds nothing, and an environment the call names, or
-# a closure is given at its every call, is followed to it. A start in a file that is no test code
-# is not read, and one in a helper under __tests__ is. Last, the real repository passes over a
-# count of starts it actually found.
+# itself, a name bound to it, Bun.env, an env's [KEY] by the name or by a constant naming it,
+# OMP_BIN, a function of the file or of the module it is imported from that returns it (a + or a
+# template ending /omp included), a parameter its function's call is given, either part of ?? or
+# ||, Bun.which, which, path.join, path.resolve, "omp", a literal path, and the names ompPath and
+# binary; in Go exec.LookPath("omp"), filepath.Join(..., "omp"), a literal path, a function or
+# method of the package or of the package that qualifies the call, LEGION_OMP_PATH, a parameter,
+# and a binary from a helper that calls OMPOffline itself. The starts: Bun.spawn, Bun.spawnSync,
+# spawn, execFile, execFileSync, execFileAsync, execa and execaSync whose program is the binary
+# (after env, or a shell's -c), and exec, execSync, execAsync and Bun's $`...` of a shell string,
+# whose omp is a start after nice, timeout, command, exec or env, in a $(...), after && or ;, or in
+# a shell's -c, and no start as another program's argument; in Go exec.Command and
+# exec.CommandContext, and inside testbin a start of its own OMP under its own OMPOffline. The
+# helper counts only in the start's own call or environment: one in the next statement holds
+# nothing, nor does one in the function that returns the program, and an environment the call
+# names, or a closure is given at its every call, is followed to it; a Go door passes by a helper
+# anywhere in its top-level function, its closures included. Test code is a Go _test.go file or a
+# file of testbin, and a TypeScript or JavaScript .test. or .spec. file or a file under test/,
+# tests/ or __tests__/; a start in a file that is no test code is not read, nor is one under
+# testdata, node_modules, dist, .git or .jj. Last, the real repository passes over a count of
+# starts it actually found.
 #
 # Each case builds a miniature tree under a temporary directory and symlinks the real script into
 # it, so the script under test is the file CI runs: it resolves its root from its own path, which
@@ -204,6 +217,29 @@ EOF
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the exec" "$(contains "$out" 'distant_test.go:10:')"
+
+echo "case: a Go reason on the start's own line, or five lines up, passes"
+root=$(fixture go_reason_reach)
+put "$root" packages/daemon/internal/daemon/reach_test.go <<'EOF'
+package daemon
+
+func installPlugins(t *testing.T, omp string, environ []string) {
+	same := exec.Command(omp, "plugin", "install", "dir") // omp-offline: environ is the caller's, which testbin.OMPEnviron makes.
+	same.Env = environ
+	// omp-offline: environ is the caller's, which testbin.OMPEnviron makes.
+	_ = 1
+	_ = 2
+	_ = 3
+	_ = 4
+	five := exec.Command(omp, "plugin", "install", "dir")
+	five.Env = environ
+}
+EOF
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "passes the reason on its own line" "$(is "$(contains "$out" 'reach_test.go:4:')" false)"
+check "passes the reason five lines up" "$(is "$(contains "$out" 'reach_test.go:11:')" false)"
+check "counts both reasons" "$(contains "$out" 'offline helper (3) or carries a reason (2)')"
 
 echo "case: a Go start spelled in a comment or a string starts nothing"
 root=$(fixture go_prose)
@@ -447,6 +483,51 @@ check "passes cmd: with the helper in its env" "$(is "$(named paths-omp.test.ts 
 check "names the literal path, alone in its file" "$(named literal-omp.test.ts 2)"
 check "names a command line spawn gives a shell, alone in its file" "$(named shell-string-omp.test.ts 3)"
 
+echo "case: the binary by path.resolve, which, \"omp\", OMP_BIN, an env's [\"LEGION_TEST_OMP\"], either part of ||, a + or a template a function of the file returns, a parameter, and ompPath"
+root=$(fixture ts_spellings)
+put "$root" packages/pi-envoy/extensions/spellings-omp.test.ts <<'EOF'
+import path from "node:path";
+import which from "which";
+const resolved = path.resolve(home, "bin", "omp");
+const found = await which("omp");
+const either = process.env.OTHER_TOOL || process.env.LEGION_TEST_OMP;
+function joined(): string {
+  return home + "/.local/bin/omp";
+}
+function templated(): string {
+  return `${home}/.local/bin/omp`;
+}
+function start(program: string) {
+  return Bun.spawn([program, "models"], { env: { HOME: "/tmp/home" } });
+}
+
+test("each", async () => {
+  await Bun.spawn([resolved, "models"], { env: { HOME: "/tmp/home" } }).exited;
+  await Bun.spawn([found, "models"], { env: { HOME: "/tmp/home" } }).exited;
+  await Bun.spawn(["omp", "models"], { env: { HOME: "/tmp/home" } }).exited;
+  await Bun.spawn([process.env["OMP_BIN"]!, "models"], { env: { HOME: "/tmp/home" } }).exited;
+  await Bun.spawn([process.env["LEGION_TEST_OMP"]!, "models"], { env: { HOME: "/tmp/home" } }).exited;
+  await Bun.spawn([either, "models"], { env: { HOME: "/tmp/home" } }).exited;
+  await Bun.spawn([joined(), "models"], { env: { HOME: "/tmp/home" } }).exited;
+  await Bun.spawn([templated(), "models"], { env: { HOME: "/tmp/home" } }).exited;
+  await Bun.spawn([ompPath, "models"], { env: { HOME: "/tmp/home" } }).exited;
+  await start(process.env.LEGION_TEST_OMP!).exited;
+});
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names path.resolve's" "$(named spellings-omp.test.ts 17)"
+check "names which's" "$(named spellings-omp.test.ts 18)"
+check "names \"omp\" itself" "$(named spellings-omp.test.ts 19)"
+check "names the env's [\"OMP_BIN\"], which no name of the binary spells" "$(named spellings-omp.test.ts 20)"
+check "names the env's [\"LEGION_TEST_OMP\"]" "$(named spellings-omp.test.ts 21)"
+check "names the second part of ||" "$(named spellings-omp.test.ts 22)"
+check "names a + of strings a function of the file returns" "$(named spellings-omp.test.ts 23)"
+check "names a template a function of the file returns" "$(named spellings-omp.test.ts 24)"
+check "names ompPath" "$(named spellings-omp.test.ts 25)"
+check "names the parameter its function's call is given" "$(named spellings-omp.test.ts 13)"
+check "counts the ten" "$(contains "$out" '10 problems over the 13 starts of Oh My Pi')"
+
 echo "case: the environment a method is given is followed to its calls"
 root=$(fixture ts_method)
 put "$root" packages/pi-envoy/extensions/method-omp.test.ts <<'EOF'
@@ -482,6 +563,102 @@ check "refuses the Sync one under the helper" "$(contains "$out" 'exec-omp.test.
 check "passes exec under the helper" "$(is "$(named exec-omp.test.ts 8)" false)"
 check "counts the four" "$(contains "$out" '3 problems over the 7 starts of Oh My Pi')"
 
+echo "case: execFile, execFileSync, execFileAsync, execa and execaSync are starts; the helper passes each but the Sync ones, which a reason passes"
+root=$(fixture ts_execfile)
+put "$root" packages/pi-envoy/extensions/execfile-omp.test.ts <<'EOF'
+import { execFile, execFileSync } from "node:child_process";
+import { execa, execaSync } from "execa";
+const pinned = process.env.LEGION_TEST_OMP as string;
+
+test("bare", async () => {
+  execFile(pinned, ["models", "list"], { env: { HOME: "/tmp/home" } }, () => {});
+  execFileSync(pinned, ["models", "list"], { env: { HOME: "/tmp/home" } });
+  await execFileAsync(pinned, ["models", "list"], { env: { HOME: "/tmp/home" } });
+  await execa(pinned, ["models", "list"], { env: { HOME: "/tmp/home" } });
+  execaSync(pinned, ["models", "list"], { env: { HOME: "/tmp/home" } });
+});
+test("helped", async () => {
+  execFile(pinned, ["models", "list"], { env: { HOME: "/tmp/home", ...ompOffline(cleanup) } }, () => {});
+  await execFileAsync(pinned, ["models", "list"], { env: { HOME: "/tmp/home", ...ompOffline(cleanup) } });
+  await execa(pinned, ["models", "list"], { env: { HOME: "/tmp/home", ...ompOffline(cleanup) } });
+  execFileSync(pinned, ["models", "list"], { env: { HOME: "/tmp/home", ...ompOffline(cleanup) } });
+  execaSync(pinned, ["models", "list"], { env: { HOME: "/tmp/home", ...ompOffline(cleanup) } });
+});
+test("reasoned", () => {
+  // omp-offline: models list reads only the catalog the test wrote into HOME.
+  execFileSync(pinned, ["models", "list"], { env: { HOME: "/tmp/home" } });
+  // omp-offline: models list reads only the catalog the test wrote into HOME.
+  execaSync(pinned, ["models", "list"], { env: { HOME: "/tmp/home" } });
+});
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the bare execFile" "$(named execfile-omp.test.ts 6)"
+check "names the bare execFileSync" "$(named execfile-omp.test.ts 7)"
+check "names the bare execFileAsync" "$(named execfile-omp.test.ts 8)"
+check "names the bare execa" "$(named execfile-omp.test.ts 9)"
+check "names the bare execaSync" "$(named execfile-omp.test.ts 10)"
+check "passes execFile under the helper" "$(is "$(named execfile-omp.test.ts 13)" false)"
+check "passes execFileAsync under the helper" "$(is "$(named execfile-omp.test.ts 14)" false)"
+check "passes execa under the helper" "$(is "$(named execfile-omp.test.ts 15)" false)"
+check "refuses execFileSync under the helper" "$(contains "$out" 'execfile-omp.test.ts:16: a Sync start of Oh My Pi')"
+check "refuses execaSync under the helper" "$(contains "$out" 'execfile-omp.test.ts:17: a Sync start of Oh My Pi')"
+check "passes the reasoned execFileSync and execaSync" "$(is "$(contains "$out" 'execfile-omp.test.ts:2[13]:')" false)"
+check "counts the twelve" "$(contains "$out" '7 problems over the 15 starts of Oh My Pi')"
+
+echo "case: execAsync of a command string is a start, read as shell, and the helper passes it"
+root=$(fixture ts_exec_async)
+put "$root" packages/pi-envoy/extensions/exec-async-omp.test.ts <<'EOF'
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
+const execAsync = promisify(exec);
+const pinned = process.env.LEGION_TEST_OMP as string;
+
+test("each", async () => {
+  await execAsync(`${pinned} models list`, { env: { HOME: "/tmp/home" } });
+  await execAsync(`${pinned} models list`, { env: { HOME: "/tmp/home", ...ompOffline(cleanup) } });
+});
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the bare execAsync" "$(named exec-async-omp.test.ts 7)"
+check "passes execAsync under the helper" "$(is "$(named exec-async-omp.test.ts 8)" false)"
+check "counts the two" "$(contains "$out" '1 problems over the 5 starts of Oh My Pi')"
+
+echo "case: a shell string's omp after nice, timeout, command, exec or env, in a \$(...), after ;, or in a shell's -c is a start, and an argv's after env; as another program's argument it is none"
+root=$(fixture ts_wrapped)
+put "$root" packages/pi-envoy/extensions/wrapped-omp.test.ts <<'EOF'
+import { exec } from "node:child_process";
+
+test("wrapped", () => {
+  exec("nice -n 5 omp models list", { env: { HOME: "/tmp/home" } }, () => {});
+  exec("timeout 30 omp models list", { env: { HOME: "/tmp/home" } }, () => {});
+  exec("command omp models list", { env: { HOME: "/tmp/home" } }, () => {});
+  exec("exec omp models list", { env: { HOME: "/tmp/home" } }, () => {});
+  exec("env HOME=/tmp/home omp models list", { env: { HOME: "/tmp/home" } }, () => {});
+  exec("echo $(omp models list)", { env: { HOME: "/tmp/home" } }, () => {});
+  exec("cd /tmp/home; omp models list", { env: { HOME: "/tmp/home" } }, () => {});
+  exec("bash -c 'omp models list'", { env: { HOME: "/tmp/home" } }, () => {});
+  Bun.spawn(["env", "HOME=/tmp/home", process.env.LEGION_TEST_OMP!, "models"], { env: { HOME: "/tmp/home" } });
+  exec("timeout 30 omp models list", { env: { HOME: "/tmp/home", ...ompOffline(cleanup) } }, () => {});
+  exec("nice -n 5 echo omp; timeout 30 grep omp models.log", { env: { HOME: "/tmp/home" } }, () => {});
+});
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names it after nice -n 5" "$(named wrapped-omp.test.ts 4)"
+check "names it after timeout 30" "$(named wrapped-omp.test.ts 5)"
+check "names it after command" "$(named wrapped-omp.test.ts 6)"
+check "names it after exec" "$(named wrapped-omp.test.ts 7)"
+check "names it after env" "$(named wrapped-omp.test.ts 8)"
+check "names it in a \$(...)" "$(named wrapped-omp.test.ts 9)"
+check "names it after ;" "$(named wrapped-omp.test.ts 10)"
+check "names it in a shell's -c" "$(named wrapped-omp.test.ts 11)"
+check "names it after env in an argv" "$(named wrapped-omp.test.ts 12)"
+check "passes it after timeout under the helper" "$(is "$(named wrapped-omp.test.ts 13)" false)"
+check "reads omp as echo's and grep's argument, no start" "$(is "$(named wrapped-omp.test.ts 14)" false)"
+check "counts the ten" "$(contains "$out" '9 problems over the 13 starts of Oh My Pi')"
+
 echo "case: a helper in the next statement holds nothing"
 root=$(fixture ts_next)
 put "$root" packages/pi-envoy/extensions/next-omp.test.ts <<'EOF'
@@ -494,6 +671,22 @@ EOF
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the spawn" "$(named next-omp.test.ts 2)"
+
+echo "case: a function that returns the binary and calls the helper holds nothing for the start it hands the binary to"
+root=$(fixture ts_split)
+put "$root" packages/pi-envoy/extensions/split-omp.test.ts <<'EOF'
+function pinned(): string {
+  ompOffline(cleanup);
+  return process.env.LEGION_TEST_OMP!;
+}
+
+test("split", async () => {
+  await Bun.spawn([pinned(), "models"], { env: { HOME: "/tmp/home" } }).exited;
+});
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the spawn" "$(named split-omp.test.ts 7)"
 
 echo "case: an environment the call names, or a function of the file builds, is followed to the helper"
 root=$(fixture ts_env_name)
@@ -544,6 +737,38 @@ EOF
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names its start" "$(named omp-helper.ts 2)"
+
+echo "case: a helper under tests/, a .spec. file and a JavaScript test are test code; nothing under testdata, node_modules, dist, .git or .jj is read"
+root=$(fixture ts_files)
+put "$root" packages/pi-envoy/tests/omp-runner.ts <<'EOF'
+export async function models(home: string) {
+  await Bun.spawn([process.env.LEGION_TEST_OMP!, "models"], { env: { HOME: home } }).exited;
+}
+EOF
+put "$root" packages/pi-envoy/extensions/models-omp.spec.ts <<'EOF'
+test("models", async () => {
+  await Bun.spawn([process.env.LEGION_TEST_OMP!, "models"], { env: { HOME: "/tmp/home" } }).exited;
+});
+EOF
+put "$root" packages/pi-envoy/extensions/models-omp.test.js <<'EOF'
+test("models", async () => {
+  await Bun.spawn([process.env.LEGION_TEST_OMP, "models"], { env: { HOME: "/tmp/home" } }).exited;
+});
+EOF
+for skipped in testdata node_modules dist .git .jj; do
+  put "$root" "packages/pi-envoy/$skipped/skipped-omp.test.ts" <<'EOF'
+test("models", async () => {
+  await Bun.spawn([process.env.LEGION_TEST_OMP!, "models"], { env: { HOME: "/tmp/home" } }).exited;
+});
+EOF
+done
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the start in the helper under tests/" "$(named tests/omp-runner.ts 2)"
+check "names the start in the .spec. file" "$(named models-omp.spec.ts 2)"
+check "names the start in the JavaScript test" "$(named models-omp.test.js 2)"
+check "reads no file under the five skipped directories" "$(is "$(contains "$out" 'skipped-omp')" false)"
+check "counts the three" "$(contains "$out" '3 problems over the 6 starts of Oh My Pi in 7 test files read')"
 
 echo "case: a Go exec of the binary under any name: LookPath, a joined path, a literal path, a function or method that returns it, env, bash -c"
 root=$(fixture go_values)
@@ -664,6 +889,69 @@ check "fails" "$(is "$status" 1)"
 check "names the exec" "$(named split_test.go 10)"
 check "passes the door, in the helper that calls OMPOffline" "$(is "$(named split_test.go 5)" false)"
 
+echo "case: a Go exec.CommandContext, a function of the package that qualifies the call and a start inside testbin are read; a door passes by a helper in its function's closure, or around its closure"
+root=$(fixture go_more)
+put "$root" packages/daemon/internal/rigs/rigs.go <<'EOF'
+package rigs
+
+func Binary() string {
+	return os.Getenv("LEGION_TEST_OMP")
+}
+EOF
+put "$root" packages/daemon/internal/podsafety/more_test.go <<'EOF'
+package podsafety
+
+func TestContext(t *testing.T) {
+	ctx := context.Background()
+	omp := testbin.OMP(t)
+	bare := exec.CommandContext(ctx, omp, "models", "list")
+	bare.Env = []string{"HOME=" + t.TempDir()}
+	helped := exec.CommandContext(ctx, omp, "models", "list")
+	helped.Env = testbin.OMPEnviron(t, t.TempDir())
+	fromRigs := exec.Command(rigs.Binary(), "models")
+	fromRigs.Env = []string{"HOME=" + t.TempDir()}
+}
+
+func TestSubtest(t *testing.T) {
+	omp := testbin.OMP(t)
+	t.Run("models", func(t *testing.T) {
+		cmd := exec.Command(omp, "models", "list")
+		cmd.Env = testbin.OMPEnviron(t, t.TempDir())
+	})
+}
+
+func TestOuter(t *testing.T) {
+	environ := testbin.OMPEnviron(t, t.TempDir())
+	t.Run("models", func(t *testing.T) {
+		cmd := exec.Command(testbin.OMP(t), "models", "list")
+		cmd.Env = environ
+	})
+}
+EOF
+put "$root" packages/daemon/internal/testbin/run.go <<'EOF'
+package testbin
+
+func runBare(t *testing.T) {
+	cmd := exec.Command(OMP(t), "models", "list")
+	cmd.Env = []string{"HOME=" + t.TempDir()}
+}
+
+func runHelped(t *testing.T) {
+	cmd := exec.Command(OMP(t), "models", "list")
+	cmd.Env = append([]string{"HOME=" + t.TempDir()}, OMPOffline(t))
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the bare exec.CommandContext" "$(named more_test.go 6)"
+check "passes the exec.CommandContext under the helper" "$(is "$(named more_test.go 8)" false)"
+check "names the binary from a function of the package that qualifies the call" "$(named more_test.go 10)"
+check "passes the door whose function calls the helper in a closure" "$(is "$(named more_test.go 15)" false)"
+check "passes the door in a closure whose function calls the helper" "$(is "$(named more_test.go 25)" false)"
+check "names the bare start inside testbin" "$(named testbin/run.go 4)"
+check "passes the start inside testbin under its own OMPOffline" "$(is "$(named testbin/run.go 9)" false)"
+check "counts them" "$(contains "$out" '3 problems over the 13 starts of Oh My Pi in 6 test files read (Go 12, TypeScript 1)')"
+
 echo "case: the nearest assignment before a start decides its environment"
 root=$(fixture go_nearest)
 put "$root" packages/daemon/internal/podsafety/nearest_test.go <<'EOF'
@@ -750,6 +1038,31 @@ check "fails" "$(is "$status" 1)"
 check "names the Go helper" "$(contains "$out" 'omp.go:9: no Go OMPOffline that names HTTPS_PROXY')"
 check "names the environment helper that calls no ompOffline" "$(contains "$out" 'omp-harness.ts:1: ompEnv does not call ompOffline')"
 
+echo "case: a TypeScript ompOffline that stopped naming HTTPS_PROXY fails, and so does a Go OMPEnviron that calls no OMPOffline"
+root=$(fixture helper_unnamed)
+put "$root" packages/pi-shared/test/omp-offline.ts <<'EOF'
+export function ompOffline(cleanup: (() => Promise<void>)[]): { readonly HOME: string } {
+  return { HOME: "/tmp/home" };
+}
+EOF
+put "$root" packages/daemon/internal/testbin/omp.go <<'EOF'
+package testbin
+
+import "testing"
+
+func OMPEnviron(t *testing.T, home string) []string {
+	return []string{"HOME=" + home}
+}
+
+func OMPOffline(t *testing.T) string {
+	return "HTTPS_PROXY=http://127.0.0.1:1"
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the TypeScript helper" "$(contains "$out" 'omp-offline.ts:1: no TypeScript ompOffline that names HTTPS_PROXY')"
+check "names the Go environment helper that calls no OMPOffline" "$(contains "$out" 'omp.go:5: OMPEnviron does not call OMPOffline')"
+
 echo "case: an empty tree is UNKNOWN"
 root=$(empty nothing)
 run_check "$root"
@@ -762,6 +1075,26 @@ rm "$root/packages/daemon/internal/podsafety/helped_test.go"
 run_check "$root"
 check "exits 2" "$(is "$status" 2)"
 check "says the reading sees none" "$(contains "$out" 'UNKNOWN: packages/daemon/internal/testbin exists and no Go test starts Oh My Pi')"
+
+echo "case: Go tests with no TypeScript test file are UNKNOWN"
+root=$(fixture go_only)
+rm -r "$root/packages/pi-shared"
+run_check "$root"
+check "exits 2" "$(is "$status" 2)"
+check "names the language it could not read" "$(contains "$out" 'UNKNOWN: read no TypeScript test file')"
+
+echo "case: the harness with no TypeScript start anywhere is UNKNOWN"
+root=$(fixture no_ts_start)
+put "$root" packages/pi-shared/test/omp-harness.ts <<'EOF'
+import { ompOffline } from "./omp-offline";
+
+function ompEnv(home: string, cleanup: (() => Promise<void>)[]): Record<string, string> {
+  return { HOME: home, ...ompOffline(cleanup) };
+}
+EOF
+run_check "$root"
+check "exits 2" "$(is "$status" 2)"
+check "says the reading sees none" "$(contains "$out" 'UNKNOWN: packages/pi-shared/test/omp-harness.ts exists and no TypeScript test starts Oh My Pi')"
 
 # The count matters as much as the exit status here: a script that resolved the wrong root would
 # scan nothing and could not print this line, and one whose patterns went blind would print a
