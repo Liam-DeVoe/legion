@@ -20,9 +20,9 @@ import (
 // taken out of the analysis fails the row that plants it, and so does a package taken out of the
 // ones the source test reads (outcomePaths). Each clean row plants the reads of the words the
 // analysis lets pass — asking whether there are any, logging them, comparing an outcome or an
-// error by identity, reading another field of a struct whose one field holds them — and must
-// report nothing anywhere in the copy, so no row passes on a copy the analysis would report
-// anyway.
+// error by identity, comparing the outcome a call minted from them, reading another field of a
+// struct whose one field holds them — and must report nothing anywhere in the copy, so no row
+// passes on a copy the analysis would report anyway.
 func TestOutcomeSourceFindsEachPlantedShape(t *testing.T) {
 	fileset := gotoken.NewFileSet()
 	imports := outcomeImporter(t, fileset)
@@ -106,14 +106,20 @@ func plantShape(t *testing.T, fileset *gotoken.FileSet, imports types.Importer, 
 // plantedShapes is each shape the negative control of c-the-outcome-is-not-a-string names, one per
 // row: a match of a refusal's text by a matcher of each of strings, bytes, slices, maps and
 // regexp; by ==, !=, each ordered comparison, a switch case and a map key; a match of a constant
-// holding the busy words; a match of a variable that ranges over the text; a match of a struct
-// field the text is written into in the same function, by a literal, its address, a positional
-// literal or an assignment; a match of the result of LastRefusal(); and a match of err.Error()
-// where err is a prompt send's answer. The matchers of cmp, path, path/filepath, fmt and sort
-// follow, then a match of a text compared through a pointer to it, and a clean row for each of the
-// four packages. The analysis finds each shape by one route alone — its source, the range, the
-// field or the pointer it passes through, if any, and its matcher, or the busy words its constant
-// holds — so taking any of those out of the analysis fails that row.
+// holding the busy words; a match of a variable that ranges over a list or a map of the texts; a
+// match of a struct field the text is written into in the same function, by a literal, its
+// address, a positional literal or an assignment; a match of the result of LastRefusal(); and a
+// match of err.Error() where err is a prompt send's answer. The matchers of cmp, path,
+// path/filepath, fmt and sort follow, then a match of a text compared through a pointer to it; a
+// prompt send's err.Error() in the stream, through its call and its Prompt, and in the runtime; a
+// turn outcome's Message and its report's, which hold what LastRefusal returns; a conversion of
+// the text to a type whose underlying type is string — runtime.Outcome or a package's own —
+// compared by ==, as a map key, by a switch and by slices.Contains, and through a variable given
+// it; a package-level string written in one function and compared in another; and a clean row
+// for each of the four packages. The analysis finds each shape by one route alone — its source,
+// the range, the field, the pointer, the conversion or the package's variable it passes through,
+// if any, and its matcher, or the busy words its constant holds — so taking any of those out of
+// the analysis fails that row.
 var plantedShapes = []struct {
 	name, path, source string
 	// clean is a row of reads the analysis lets pass, which must report nothing.
@@ -227,7 +233,7 @@ func plantedShape(answer string) bool {
 	return strings.HasPrefix(answer, plantedBusy)
 }
 `},
-	{name: "a variable that ranges over RefusalReason in runtime", path: runtimePath, source: `package runtime
+	{name: "a variable that ranges over a list of RefusalReason in runtime", path: runtimePath, source: `package runtime
 
 func plantedShape(err error) bool {
 	for _, reason := range []string{RefusalReason(err)} {
@@ -376,6 +382,128 @@ func plantedShape(err error) bool {
 	return *p == "Agent is busy"
 }
 `},
+	{name: "strings.HasPrefix of a prompt send's err.Error() through the stream's call in stream", path: streamPath, source: `package stream
+
+import (
+	"context"
+	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
+)
+
+func (c *Conn) plantedShape(ctx context.Context) bool {
+	_, err := c.call(ctx, shimwire.Prompt{ID: "planted", DeliveryID: "delivery", Message: "task"}, "planted", "delivery")
+	return err != nil && strings.HasPrefix(err.Error(), "Agent is")
+}
+`},
+	{name: "== of a prompt send's err.Error() through the stream's Prompt in stream", path: streamPath, source: `package stream
+
+import "context"
+
+func plantedShape(ctx context.Context, c *Conn) bool {
+	err := c.Prompt(ctx, "delivery", "task")
+	return err != nil && err.Error() == "Agent is busy"
+}
+`},
+	{name: "strings.Contains of a runtime.Conn's Prompt err.Error() in runtime", path: runtimePath, source: `package runtime
+
+import (
+	"context"
+	"strings"
+)
+
+func plantedShape(ctx context.Context, conn Conn) bool {
+	err := conn.Prompt(ctx, "delivery", "task")
+	return err != nil && strings.Contains(err.Error(), "Agent is")
+}
+`},
+	{name: "== of a turn outcome's Message in supervise", path: supervisePath, source: `package supervise
+
+func plantedShape(o TurnOutcome) bool {
+	return o.Refused && o.Message == "Agent is busy"
+}
+`},
+	{name: "strings.Contains of a turn outcome report's Message in supervise", path: supervisePath, source: `package supervise
+
+import "strings"
+
+func plantedShape(r RequestTurnOutcome) bool {
+	return strings.Contains(r.Message, "credit balance")
+}
+`},
+	{name: "== of runtime.Outcome of a late refusal's Error in supervise", path: supervisePath, source: `package supervise
+
+import "github.com/sjawhar/legion/daemon/internal/runtime"
+
+func plantedShape(refusal StreamLateRefusal) bool {
+	return runtime.Outcome(refusal.Error) == runtime.OutcomeAgentBusy
+}
+`},
+	{name: "== of Outcome of RefusalReason in runtime", path: runtimePath, source: `package runtime
+
+func plantedShape(err error) bool {
+	return Outcome(RefusalReason(err)) == OutcomeAgentBusy
+}
+`},
+	{name: "a map key of Outcome of RefusalReason in runtime", path: runtimePath, source: `package runtime
+
+func plantedShape(err error, busy map[Outcome]bool) bool {
+	return busy[Outcome(RefusalReason(err))]
+}
+`},
+	{name: "a switch on runtime.Outcome of a prompt result's Error in stream", path: streamPath, source: `package stream
+
+import "github.com/sjawhar/legion/daemon/internal/runtime"
+
+func plantedShape(result PromptResult) bool {
+	switch runtime.Outcome(result.Error) {
+	case runtime.OutcomeAgentBusy:
+		return true
+	}
+	return false
+}
+`},
+	{name: "== of a refusal's Reason converted to the package's own string type in stream", path: streamPath, source: `package stream
+
+type plantedKind string
+
+func plantedShape(refusal *RefusedError) bool {
+	return plantedKind(refusal.Reason) == "Agent is"
+}
+`},
+	{name: "slices.Contains of a response's Error converted to the package's own string type in claudebridge", path: claudebridgePath, source: `package claudebridge
+
+import (
+	"slices"
+
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
+)
+
+type plantedKind string
+
+func plantedShape(answer shimwire.Response) bool {
+	return slices.Contains([]plantedKind{"Agent is busy"}, plantedKind(answer.Error))
+}
+`},
+	{name: "a variable given runtime.Outcome of a late refusal's Error and compared in supervise", path: supervisePath, source: `package supervise
+
+import "github.com/sjawhar/legion/daemon/internal/runtime"
+
+func plantedShape(refusal StreamLateRefusal) bool {
+	outcome := runtime.Outcome(refusal.Error)
+	return outcome == runtime.OutcomeAgentBusy
+}
+`},
+	{name: "a package-level string written in one function and compared in another in runtime", path: runtimePath, source: `package runtime
+
+var plantedReason string
+
+func plantedKeep(err error) { plantedReason = RefusalReason(err) }
+
+func plantedShape() bool {
+	return plantedReason == "Agent is busy"
+}
+`},
 	{name: "clean reads in supervise", path: supervisePath, clean: true, source: `package supervise
 
 import (
@@ -408,6 +536,10 @@ func plantedEnd(c Claim) bool {
 	}
 	return slices.Contains(ended.Kinds, "task")
 }
+
+func plantedMinted(refused PromptRefused) bool {
+	return sendOutcome(refused.Err) == runtime.OutcomeAgentBusy || runtime.RefusalOutcome(refused.Err) != runtime.OutcomePromptRefused
+}
 `},
 	{name: "clean reads in runtime", path: runtimePath, clean: true, source: `package runtime
 
@@ -426,9 +558,14 @@ func plantedShape(err error) string {
 `},
 	{name: "clean reads in stream", path: streamPath, clean: true, source: `package stream
 
-func plantedShape(refusal *RefusedError, result PromptResult) string {
+import "github.com/sjawhar/legion/daemon/internal/runtime"
+
+func plantedShape(c *Conn, refusal *RefusedError, result PromptResult, code string) string {
 	if refusal.Reason == "" && result.Error == "" {
 		return ""
+	}
+	if c.promptRefusal(refusal.Reason, code) == runtime.OutcomeAgentBusy && result.Outcome == runtime.OutcomeAgentBusy {
+		return "busy"
 	}
 	return "refused: " + refusal.RefusalReason() + "; " + result.Error
 }
