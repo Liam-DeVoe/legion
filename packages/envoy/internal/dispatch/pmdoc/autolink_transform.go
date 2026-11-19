@@ -3,6 +3,7 @@ package pmdoc
 import (
 	"bytes"
 	"iter"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -24,8 +25,9 @@ const decodedLabelAttr = "pmdocDecodedLabel"
 // bareAutolinkAttr is the attribute marking an autolink a reader made from bare text, the
 // tokenizer's or the transform's (bareAutolink), with its source offsets, a text.Segment: its
 // emails are the links wholeEmailLinks holds to the rule, and the rule reads through each such
-// link that would not read on into the text after it (readsOnInto). goldmark's `<…>` autolink,
-// which the writer wrote, carries none.
+// link that would not read on into the text after it (readsOnInto) and that the renderer can
+// write bare (writtenExplicitOnly). goldmark's `<…>` autolink, which the writer wrote, carries
+// none.
 const bareAutolinkAttr = "pmdocBareAutolink"
 
 // autolinkText is the text an autolink shows and the href it links to: an email's mailto: URL
@@ -529,20 +531,20 @@ func (piece textPiece) sourceAt(offset int) (*ast.Text, int, bool) {
 // `alice@example.com/bob-smith@example.com`, the link goes, and its text joins the text around it,
 // while a link a reader made that the run reaches into stays. Except: where that run holds such a
 // character and a web address that GFM links in the joined text (one starting www., http:// or
-// https://) reaches into the address, the email link the reader made stays, as the base stores
-// it, and no web-address link is made (webAddressReachesInto): `q/&#45;www.a.bhosts@example.com`
-// keeps its link to `www.a.bhosts@example.com`, since both readers link the web address in
+// https://) reaches into the address, the email link stays as the reader made it, and no
+// web-address link is made (webAddressReachesInto): `q/&#45;www.a.bhosts@example.com` keeps its
+// link to `www.a.bhosts@example.com`, since both readers link the web address in
 // `q/-www.a.bhosts@example.com`, however its dots are spelled. A second exception, because the
 // renderer cannot write that earlier link bare there: where the earlier link the reader made stands
 // next to an email link the writer wrote (`[…](mailto:…)` or `<…@…>`), or its text starts `_www.`,
-// the base's reading stays (writtenExplicitOnly): that link ends the run as the writer's markup
-// does. With no run before the link nothing changes: `xé-agent@example.com` keeps
-// `-agent@example.com`, since `é` ends the walk. A link the writer wrote, `[…](mailto:…)`,
-// `[…][label]` or `<…>`, is never changed. The text just before a link is the engine's one text
-// node there: the text and string nodes before it, back to another node or to a text a hard break
-// ends (linkRuns), decoded, so a character reference or an escape in the run counts as its
-// character. A container's links are read in order, so the text a link that went has joined is
-// the text before the next one.
+// the email link stays as the reader made it (writtenExplicitOnly): the earlier link ends the run
+// as the writer's markup does. With no run before the link nothing changes:
+// `xé-agent@example.com` keeps `-agent@example.com`, since `é` ends the walk. A link the writer
+// wrote, `[…](mailto:…)`, `[…][label]` or `<…>`, is never changed. The text just before a link is
+// the engine's one text node there: the text and string nodes before it, back to another node or
+// to a text a hard break ends (linkRuns), decoded, so a character reference or an escape in the
+// run counts as its character. A container's links are read in order, so the text a link that
+// went has joined is the text before the next one.
 func wholeEmailLinks(parent ast.Node, source []byte) {
 	for container := range textContainers(parent) {
 		for child := container.FirstChild(); child != nil; {
@@ -574,7 +576,8 @@ func wholeEmailLink(link *ast.AutoLink, span text.Segment, source []byte) {
 walk:
 	for node := link.PreviousSibling(); node != nil; node = node.PreviousSibling() {
 		var value string
-		// through is whether node is a link a reader made that the walk reads through.
+		// through is whether node is a link a reader made that the walk reads through, whose text
+		// is then value.
 		through := false
 		switch node := node.(type) {
 		case *ast.Text:
@@ -591,10 +594,11 @@ walk:
 			value = decodeMarkdownText(rawValue(node, source))
 			pieces = append(pieces, textPiece{node: node, value: value})
 		default:
-			autolink, ok := node.(*ast.AutoLink)
-			if ok {
-				_, bare := autolink.AttributeString(bareAutolinkAttr)
-				through = bare && !readsOnInto(autolink, source) && !writtenExplicitOnly(autolink, source)
+			if autolink, ok := node.(*ast.AutoLink); ok {
+				if _, bare := autolink.AttributeString(bareAutolinkAttr); bare {
+					value, _ = autolinkText(autolink, source)
+					through = !readsOnInto(autolink, value, source) && !writtenExplicitOnly(autolink, value, source)
+				}
 			}
 			if !through {
 				if endsInRunCharacter(node, source) {
@@ -605,7 +609,6 @@ walk:
 				}
 				break walk
 			}
-			value, _ = autolinkText(autolink, source)
 		}
 		end := len(value)
 		for end > 0 && rfcAtext(value[end-1]) {
@@ -657,31 +660,30 @@ walk:
 	parent.ReplaceChild(parent, link, moved)
 }
 
-// readsOnInto reports whether link, an autolink a reader made from bare text, would read on into
-// the text after it were it written bare, so that it ends an email's run as the writer's markup
-// does (wholeEmailLinks): an email link where the character after it continues the email
-// pattern's domain, a `-`, `_`, letter or digit, or a `.` before one; a web link where the
-// transform's URL pattern (findURLs), searched over its text and the text after it, links no
+// readsOnInto reports whether link, an autolink a reader made from bare text whose text is label,
+// would read on into the text after it were it written bare, so that it ends an email's run as the
+// writer's markup does (wholeEmailLinks): an email link where the character after it continues
+// the email pattern's domain, a `-`, `_`, letter or digit, or a `.` before one; a web link where
+// the transform's URL pattern (findURLs), searched over its text and the text after it, links no
 // address that starts and ends where the link does. The text after it is the decoded text and
 // string nodes and the text of the links a reader made, up to another node or through the text
-// that ends its line.
-func readsOnInto(link *ast.AutoLink, source []byte) bool {
-	label, _ := autolinkText(link, source)
+// that ends its line, and no further than the answer reads: for an email, two characters past it;
+// for a web link, through the first node whose text holds a space, a tab or a line ending, which
+// no URL holds, so a URL found from the link's start ends before it.
+func readsOnInto(link *ast.AutoLink, label string, source []byte) bool {
 	email := link.AutoLinkType == ast.AutoLinkEmail
 	var joined strings.Builder
 	joined.WriteString(label)
 follow:
 	for node := link.NextSibling(); node != nil && !(email && joined.Len() >= len(label)+2); node = node.NextSibling() {
+		from := joined.Len()
 		switch node := node.(type) {
-		case *ast.Text:
-			value, _ := decodeMarkdown(rawValue(node, source), true)
-			joined.WriteString(value)
-			if node.SoftLineBreak() || node.HardLineBreak() {
+		case *ast.Text, *ast.String:
+			joined.WriteString(decodeMarkdownText(rawValue(node, source)))
+			if text, ok := node.(*ast.Text); ok && (text.SoftLineBreak() || text.HardLineBreak()) {
 				joined.WriteByte('\n')
 				break follow
 			}
-		case *ast.String:
-			joined.WriteString(decodeMarkdownText(rawValue(node, source)))
 		case *ast.AutoLink:
 			if _, bare := node.AttributeString(bareAutolinkAttr); !bare {
 				break follow
@@ -690,6 +692,9 @@ follow:
 			joined.WriteString(text)
 		default:
 			break follow
+		}
+		if !email && strings.ContainsAny(joined.String()[from:], " \t\r\n") {
+			break
 		}
 	}
 	value := joined.String()
@@ -701,34 +706,34 @@ follow:
 	return len(urls) == 0 || urls[0].start != 0 || urls[0].end != len(label)
 }
 
-// writtenExplicitOnly reports whether link, an autolink a reader made from bare text, is one the
-// renderer cannot write bare, so that it ends an email's run as the writer's markup does
-// (wholeEmailLinks), decided from the tree: it stands next to an email link the writer wrote, the
-// node before it, past text and string nodes made only of a run's characters (rfcAtext) on its
-// line, being a link or an autolink the writer wrote whose href is a mailto: URL; or its text
-// starts `_` and goes on `www.`, in any case. Beside the writer's email link the renderer writes
-// both explicit or both bare, and either reads back otherwise; and it escapes the `_`, after which
-// both readers read the text from `www.` as a web address.
-func writtenExplicitOnly(link *ast.AutoLink, source []byte) bool {
-	if label, _ := autolinkText(link, source); len(label) >= len("_www.") && label[0] == '_' && strings.EqualFold(label[1:len("_www.")], "www.") {
+// writtenExplicitOnly reports whether link, an autolink a reader made from bare text whose text is
+// label, is one the renderer cannot write bare, so that it ends an email's run as the writer's
+// markup does (wholeEmailLinks), decided from the tree: it stands next to an email link the writer
+// wrote, the node before it, past text and string nodes made only of a run's characters (rfcAtext)
+// on its line, being a link or an autolink the writer wrote whose href is a mailto: URL; or its
+// text starts `_` and goes on `www.`, in any case. Beside the writer's email link the renderer
+// writes both explicit or both bare, and either reads back otherwise; and it escapes the `_`,
+// after which both readers read the text from `www.` as a web address.
+func writtenExplicitOnly(link *ast.AutoLink, label string, source []byte) bool {
+	if len(label) >= len("_www.") && strings.EqualFold(label[:len("_www.")], "_www.") {
 		return true
 	}
 	for node := link.PreviousSibling(); node != nil; node = node.PreviousSibling() {
 		var value string
 		switch node := node.(type) {
-		case *ast.Text:
-			if node.SoftLineBreak() || node.HardLineBreak() {
+		case *ast.Text, *ast.String:
+			if text, ok := node.(*ast.Text); ok && (text.SoftLineBreak() || text.HardLineBreak()) {
 				return false
 			}
-			value, _ = decodeMarkdown(rawValue(node, source), true)
-		case *ast.String:
 			value = decodeMarkdownText(rawValue(node, source))
 		case *ast.Link:
 			return mailtoHref(string(node.Destination))
 		case *ast.AutoLink:
-			_, bare := node.AttributeString(bareAutolinkAttr)
+			if _, bare := node.AttributeString(bareAutolinkAttr); bare {
+				return false
+			}
 			_, href := autolinkText(node, source)
-			return !bare && mailtoHref(href)
+			return mailtoHref(href)
 		default:
 			return false
 		}
@@ -768,14 +773,11 @@ func webAddressReachesInto(link *ast.AutoLink, source []byte) bool {
 join:
 	for node := first; node != nil; node = node.NextSibling() {
 		switch node := node.(type) {
-		case *ast.Text:
-			value, _ := decodeMarkdown(rawValue(node, source), true)
-			joined.WriteString(value)
-			if node.SoftLineBreak() || node.HardLineBreak() {
+		case *ast.Text, *ast.String:
+			joined.WriteString(decodeMarkdownText(rawValue(node, source)))
+			if text, ok := node.(*ast.Text); ok && (text.SoftLineBreak() || text.HardLineBreak()) {
 				break join
 			}
-		case *ast.String:
-			joined.WriteString(decodeMarkdownText(rawValue(node, source)))
 		default:
 			if node != ast.Node(link) {
 				break join
@@ -786,12 +788,9 @@ join:
 			end = joined.Len()
 		}
 	}
-	for _, url := range findURLs(joined.String()) {
-		if url.start < end && url.end > start {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(findURLs(joined.String()), func(url foundLink) bool {
+		return url.start < end && url.end > start
+	})
 }
 
 // rfcAtext reports whether c is a character RFC 5322 allows in an email's local part: its atext,

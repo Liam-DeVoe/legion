@@ -71,7 +71,7 @@ func (s *server) markKeptAcrossRenderers(
 			continue
 		}
 		version, read := versions[decision.Kept.ChangedVersion]
-		if !read || version.refused {
+		if !read {
 			continue
 		}
 		kept, held := version.decisions[keys[i]]

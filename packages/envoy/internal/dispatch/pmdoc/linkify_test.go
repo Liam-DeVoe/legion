@@ -269,19 +269,23 @@ func TestLinkifyLinksAnEmailWholeOrNotAtAll(t *testing.T) {
 }
 
 // refusedEmailShape is a row of testdata/refused-email-shapes.jsonl: a document holding an email
-// address, the set it came from, whether a write of it was refused before the rule's last change
-// (at c5fef1fc, f3de85fb or the narrowed rule alone, and at main 7ce89a9b, where measured), the
-// cause, a note where the row's reading was ruled on, and its inline runs as Go and the engine
-// read it, each its text, or a node that is no text as its type in brackets, and the href of the
-// link over it, if any.
+// address, the cause a write of it was once refused for, if any, a note where the row's reading
+// was ruled on, and its inline runs as Go and the engine read it, each its text, or a node that is
+// no text as its type in brackets, and the href of the link over it, if any. The file also
+// records, under set and refused, where each shape was measured; no test reads them.
 type refusedEmailShape struct {
-	Set       string          `json:"set"`
-	Markdown  string          `json:"markdown"`
-	Refused   map[string]bool `json:"refused"`
-	Mechanism *string         `json:"mechanism"`
-	Note      string          `json:"note"`
-	Runs      []inlineRun     `json:"runs"`
+	Markdown  string      `json:"markdown"`
+	Mechanism string      `json:"mechanism"`
+	Note      string      `json:"note"`
+	Runs      []inlineRun `json:"runs"`
 }
+
+// The notes of two kinds of row of testdata/refused-email-shapes.jsonl start with these
+// (TestLinkifyStoresEveryRefusedShape).
+const (
+	secondAddressNote = "a second address after an email link"
+	explicitOnlyNote  = "an earlier link the renderer cannot write bare"
+)
 
 // inlineRun is one inline node of a reading: its text, and the href of the link over it, or "".
 type inlineRun struct {
@@ -312,21 +316,21 @@ func inlineRuns(doc *Node) []inlineRun {
 }
 
 // R4 (INFRA-4224) stores every email address, so a write the rule once refused is stored now. The
-// rows are the 66 shapes of the round-5 review of INFRA-4224 (its infra-4224-r5-refused-shapes.jsonl,
-// copied whole), 55 of them refused at c5fef1fc - the run reaching into a link a reader made (cause
-// A), or a dropped link leaving a web address (cause B) - and 11 every build stores; and 5 more of
-// cause B beyond the review, where the web address is inside the local part or opens with a
-// scheme. The engine's packages/proof-editor/tests/whole-email-links.test.ts reads the same rows.
-// Each is read as the row says Go and the engine read it, a write of it is not refused
-// (ParseForWrite), its rendering reads back as its tree, and the engine reads the markdown and the
-// rendering as Go reads the markdown. A row of cause B keeps the email link the reader made and
-// gets no web-address link. Four of the 11, noted as the architect's four, hold a second address
-// that a reader links from inside it, after an email link that would not read on into it
-// (`alice@example.com/bob-smith@example.com`): they store with no link on the second address, as
-// c5fef1fc stored them. The last four, noted as the probe's four, are the shapes the 50,000-shape
-// probe found that the narrowed rule refuses, where the earlier link the reader made stands next to
-// an email link the writer wrote or starts `_www.`: they store with the base's reading, the later
-// address linked as the reader linked it.
+// rows are 66 shapes, 55 of them once refused - the run reaching into a link a reader made (cause
+// A), or a dropped link leaving a web address (cause B) - and 11 every build stores; 5 more of
+// cause B, where the web address is inside the local part or opens with a scheme; and 4 whose
+// earlier link the renderer cannot write bare. The engine's
+// packages/proof-editor/tests/whole-email-links.test.ts reads the same rows. Each is read as the
+// row says Go and the engine read it, a write of it is not refused (ParseForWrite), its rendering
+// reads back as its tree, and the engine reads the markdown and the rendering as Go reads the
+// markdown. A row of cause B keeps the email link the reader made and gets no web-address link.
+// Four of the 11, noted secondAddressNote, hold a second address that a reader links from inside
+// it, after an email link that would not read on into it
+// (`alice@example.com/bob-smith@example.com`): they store with no link on the second address. The
+// last four, noted explicitOnlyNote, are shapes the run rule refuses without its second exception
+// (writtenExplicitOnly), where the earlier link the reader made stands next to an email link the
+// writer wrote or starts `_www.`: they store as the reader read them, the later address linked as
+// the reader linked it.
 func TestLinkifyStoresEveryRefusedShape(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("testdata", "refused-email-shapes.jsonl"))
 	if err != nil {
@@ -341,7 +345,7 @@ func TestLinkifyStoresEveryRefusedShape(t *testing.T) {
 		shapes = append(shapes, shape)
 	}
 	if len(shapes) != 75 {
-		t.Fatalf("testdata/refused-email-shapes.jsonl holds %d shapes, want the review's 66 and 9 more", len(shapes))
+		t.Fatalf("testdata/refused-email-shapes.jsonl holds %d shapes, want 75", len(shapes))
 	}
 	docs := make([]*Node, len(shapes))
 	noted := map[string]int{}
@@ -364,7 +368,7 @@ func TestLinkifyStoresEveryRefusedShape(t *testing.T) {
 		if back, err := Parse(rendering); err != nil || !back.Equal(doc) {
 			t.Errorf("%q is written %q, which Go reads back as %s (%v), not %s", shape.Markdown, rendering, inlineSummaries(back), err, inlineSummaries(doc))
 		}
-		if shape.Mechanism != nil && *shape.Mechanism == "B" {
+		if shape.Mechanism == "B" {
 			emails := 0
 			for _, run := range runs {
 				if strings.HasPrefix(run.Link, "mailto:") {
@@ -377,17 +381,22 @@ func TestLinkifyStoresEveryRefusedShape(t *testing.T) {
 				t.Errorf("%q holds no email link", shape.Markdown)
 			}
 		}
-		links := len(slices.DeleteFunc(slices.Clone(runs), func(run inlineRun) bool { return run.Link == "" }))
+		links := 0
+		for _, run := range runs {
+			if run.Link != "" {
+				links++
+			}
+		}
 		switch {
-		case strings.HasPrefix(shape.Note, "the architect's four"):
+		case strings.HasPrefix(shape.Note, secondAddressNote):
 			// The first address alone is linked.
-			noted["the architect's four"]++
+			noted[secondAddressNote]++
 			if links != 1 {
 				t.Errorf("%q holds %d links, want the first address's alone", shape.Markdown, links)
 			}
-		case strings.HasPrefix(shape.Note, "the probe's four"):
-			// The base's reading: the earlier link and the later address's both.
-			noted["the probe's four"]++
+		case strings.HasPrefix(shape.Note, explicitOnlyNote):
+			// As the reader read it: the earlier link and the later address's both.
+			noted[explicitOnlyNote]++
 			if links < 2 {
 				t.Errorf("%q holds %d links, want the earlier link's and the later address's", shape.Markdown, links)
 			}
@@ -395,8 +404,8 @@ func TestLinkifyStoresEveryRefusedShape(t *testing.T) {
 		docs[index] = doc
 		markdowns = append(markdowns, shape.Markdown, rendering)
 	}
-	if noted["the architect's four"] != 4 || noted["the probe's four"] != 4 {
-		t.Errorf("testdata/refused-email-shapes.jsonl notes %v, want the architect's four and the probe's four", noted)
+	if noted[secondAddressNote] != 4 || noted[explicitOnlyNote] != 4 {
+		t.Errorf("testdata/refused-email-shapes.jsonl notes %v, want four of %q and four of %q", noted, secondAddressNote, explicitOnlyNote)
 	}
 	readings := engineReadings(t, markdowns)
 	for index, shape := range shapes {

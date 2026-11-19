@@ -126,18 +126,26 @@ function drawnTexts(seed: number, count: number): string[] {
 
 const DRAWN = drawnTexts(4224, 5000);
 
+/** Each of `texts` with the web addresses remark-gfm's transform links in it, for both tests. */
+function searched(texts: readonly string[]): { text: string; found: [number, number][] }[] {
+  return texts.map((text) => ({ text, found: transformed(text) }));
+}
+
+const SEARCHED_ROWS = searched(ROWS);
+const SEARCHED_DRAWN = searched(DRAWN);
+
 test("remark-gfm's transform links a web address in most rows and a fifth of the drawn texts", () => {
-  expect(ROWS.filter((text) => transformed(text).length > 0).length).toBeGreaterThan(15);
-  expect(DRAWN.filter((text) => transformed(text).length > 0).length).toBeGreaterThan(1000);
+  expect(SEARCHED_ROWS.filter(({ found }) => found.length > 0).length).toBeGreaterThan(15);
+  expect(SEARCHED_DRAWN.filter(({ found }) => found.length > 0).length).toBeGreaterThan(1000);
 });
 
 for (const [name, texts] of [
-  ["the rows", ROWS],
-  ["5000 drawn texts", DRAWN],
+  ["the rows", SEARCHED_ROWS],
+  ["5000 drawn texts", SEARCHED_DRAWN],
 ] as const) {
   test(`the copy finds the web addresses remark-gfm's transform links: ${name}`, () => {
-    for (const text of texts) {
-      expect(webAddressesIn(text), JSON.stringify(text)).toEqual(transformed(text));
+    for (const { text, found } of texts) {
+      expect(webAddressesIn(text), JSON.stringify(text)).toEqual(found);
     }
   });
 }

@@ -455,11 +455,13 @@ for (const context of CONTEXTS) {
 }
 
 /**
- * A shape a write was refused for before the rule's last change, with the runs Go reads: the 66
- * the round-5 review of INFRA-4224 listed (its `infra-4224-r5-refused-shapes.jsonl`), 5 more of
- * cause B, and the four a 50,000-shape probe found that the run rule refuses without its second
- * exception. Go's `TestLinkifyStoresEveryRefusedShape` holds Go to the same file. Each is read
- * whole, in the block it is written in, in all three pipelines.
+ * A shape of Go's `testdata/refused-email-shapes.jsonl`, with the runs Go reads: 55 a write was
+ * refused for before the rule's last change, where the run reaches into a link a reader made or a
+ * dropped link leaves a web address, and 11 every build stores; 5 more where a dropped link leaves
+ * a web address inside the local part or opening with a scheme; and four whose earlier link the
+ * renderer cannot write bare, which the run rule refuses without its second exception. Go's
+ * `TestLinkifyStoresEveryRefusedShape` holds Go to the same file. Each is read whole, in the block
+ * it is written in, in all three pipelines.
  */
 interface RefusedShape {
   readonly markdown: string;

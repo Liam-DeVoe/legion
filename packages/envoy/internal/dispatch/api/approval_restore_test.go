@@ -232,6 +232,21 @@ func respellVersion(t *testing.T, database *store.Store, artifactID string, numb
 	return respelled
 }
 
+// refuseVersion stores version number of artifactID as a build of another renderer version could
+// have stored markdown this build's parser refuses: the version's markdown after a link reference
+// definition, which pmdoc refuses (refusals.go), stamped stamp (renderer_version, nil for none).
+// It returns the markdown it stored.
+func refuseVersion(t *testing.T, database *store.Store, artifactID string, number int, stamp *int) string {
+	t.Helper()
+	refused := "[spec]: https://example.com/spec\n\n" + versionText(t, database, artifactID, number)
+	if _, err := database.Pool.Exec(context.Background(), `
+		update artifact_versions set markdown = $3, renderer_version = $4 where artifact_id = $1 and number = $2
+	`, artifactID, number, refused, stamp); err != nil {
+		t.Fatalf("store version %d as markdown this build refuses: %v", number, err)
+	}
+	return refused
+}
+
 // A renderer change (pmdoc.RendererVersion) leaves every version stored before it in its
 // renderer's spelling of the document, so the restore compares an approved version that another
 // renderer version stored as this build renders it (docs.restoresVersionText). alice approves

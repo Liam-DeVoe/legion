@@ -10,9 +10,10 @@ import (
 
 // emailShapeSets fix the shapes TestLinkifyStoresEveryGeneratedAddress builds, so a failure
 // reproduces: each seed of the generator, and how many shapes it draws from it. Each bound is the
-// smallest that still draws its seed's shapes of the probe's four (testdata/refused-email-shapes.jsonl),
-// which the run rule refuses without its second exception (writtenExplicitOnly): seed 4224's
-// 11,598th shape, seed 7's 2,921st and 12,879th, and seed 99's 4,760th.
+// smallest that still draws its seed's shapes whose earlier link the renderer cannot write bare
+// (explicitOnlyNote, testdata/refused-email-shapes.jsonl), which the run rule refuses without its
+// second exception (writtenExplicitOnly): seed 4224's 11,598th shape, seed 7's 2,921st and
+// 12,879th, and seed 99's 4,760th.
 var emailShapeSets = []struct {
 	seed  uint64
 	bound int
@@ -109,9 +110,9 @@ func TestLinkifyStoresEveryGeneratedAddress(t *testing.T) {
 	const most = 5
 	began := time.Now()
 	failures := 0
-	fail := func(format string, args ...any) {
+	fail := func(seed uint64, index int, shape emailShape, format string, args ...any) {
 		t.Helper()
-		t.Errorf(format, args...)
+		t.Errorf("seed %d, shape %d: %q in %s: %s", seed, index, shape.text, shape.container, fmt.Sprintf(format, args...))
 		if failures++; failures == most {
 			t.Fatalf("stopped after %d failures", most)
 		}
@@ -139,18 +140,17 @@ func TestLinkifyStoresEveryGeneratedAddress(t *testing.T) {
 	}
 	for _, set := range emailShapeSets {
 		for index, shape := range emailShapes(set.seed, set.bound) {
-			name := fmt.Sprintf("seed %d, shape %d: %q in %s", set.seed, index, shape.text, shape.container)
 			doc, err := Parse(shape.markdown)
 			if err != nil {
-				fail("%s: Parse(%q): %v", name, shape.markdown, err)
+				fail(set.seed, index, shape, "Parse(%q): %v", shape.markdown, err)
 				continue
 			}
 			if _, err := ParseForWrite(shape.markdown, nil); err != nil {
-				fail("%s: a write of %q is refused: %v", name, shape.markdown, err)
+				fail(set.seed, index, shape, "a write of %q is refused: %v", shape.markdown, err)
 			}
 			rendering := mustRender(t, doc)
 			if back, err := Parse(rendering); err != nil || !back.Equal(doc) {
-				fail("%s: %q is written %q, which Go reads back as %s (%v), not %s", name, shape.markdown, rendering, inlineSummaries(back), err, inlineSummaries(doc))
+				fail(set.seed, index, shape, "%q is written %q, which Go reads back as %s (%v), not %s", shape.markdown, rendering, inlineSummaries(back), err, inlineSummaries(doc))
 			}
 			shapes = append(shapes, drawn{emailShape: shape, seed: set.seed, index: index, doc: doc, atMarkdown: forEngine(shape.markdown), atRendering: forEngine(rendering)})
 		}
@@ -160,7 +160,7 @@ func TestLinkifyStoresEveryGeneratedAddress(t *testing.T) {
 	for _, shape := range shapes {
 		for _, at := range []int{shape.atMarkdown, shape.atRendering} {
 			if engine := readings[at]; engine == nil || !withoutBlockIDs(engine).Equal(withoutBlockIDs(shape.doc)) {
-				fail("seed %d, shape %d: %q in %s: the engine reads %q as %s, and Go reads %q as %s", shape.seed, shape.index, shape.text, shape.container, markdowns[at], inlineSummaries(engine), shape.markdown, inlineSummaries(shape.doc))
+				fail(shape.seed, shape.index, shape.emailShape, "the engine reads %q as %s, and Go reads %q as %s", markdowns[at], inlineSummaries(engine), shape.markdown, inlineSummaries(shape.doc))
 			}
 		}
 	}

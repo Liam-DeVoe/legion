@@ -278,8 +278,7 @@ func documentAdding(doc, block *Node) *Node {
 // covers on the side that holds it, or, for a link that reads back to another target, both
 // targets. Those words are also what tells this misread from another in the block
 // (misread.differs), so the same mark difference among other words is the same misread. A text
-// that reads back otherwise is named as it was before marks were named: by both texts, and by the
-// span that differs.
+// that reads back otherwise is named by both texts, and by the span that differs.
 func TestMisreadNamesTheFirstRunWhoseMarksDiffer(t *testing.T) {
 	text := func(value string, marks ...Mark) *Node { return &Node{Type: "text", Text: value, Marks: marks} }
 	doc := func(children ...*Node) *Node {

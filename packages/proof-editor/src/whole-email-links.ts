@@ -38,16 +38,17 @@
  * `alice@example.com/bob-smith@example.com`, the `%` of `a.b+c_d%e-f@example.com` and the `&` of
  * `agent&amp;hosts@example.com` are local-part characters GFM does not link. Except: where that
  * run holds such a character and a web address that GFM links in the joined text (one starting
- * www., http:// or https://) reaches into the address, the email link the reader made stays, as
- * the base stores it, and no web-address link is made (`webAddressReachesInto`):
+ * www., http:// or https://) reaches into the address, the email link stays as remark-gfm made
+ * it, and no web-address link is made (`webAddressReachesInto`):
  * `q/&#45;www.a.bhosts@example.com` keeps its link to `www.a.bhosts@example.com`, since both
  * readers link the web address in `q/-www.a.bhosts@example.com`, however its dots are spelled. A
  * second exception, because the renderer cannot write that earlier link bare there: where the
  * earlier link the reader made stands next to an email link the writer wrote (`[…](mailto:…)` or
- * `<…@…>`), or its text starts `_www.`, the base's reading stays (`writtenExplicitOnly`): that
- * link ends the run as the writer's markup does. With no run before the link nothing changes:
- * `xé-agent@example.com` keeps `-agent@example.com`, since `é` ends the walk. A link the writer
- * wrote, `[…](mailto:…)`, `[…][label]` or `<…>`, is never changed.
+ * `<…@…>`), or its text starts `_www.`, the email link stays as remark-gfm made it
+ * (`writtenExplicitOnly`): the earlier link ends the run as the writer's markup does. With no run
+ * before the link nothing changes: `xé-agent@example.com` keeps `-agent@example.com`, since `é`
+ * ends the walk. A link the writer wrote, `[…](mailto:…)`, `[…][label]` or `<…>`, is never
+ * changed.
  *
  * Import only, as `./nested-links.ts` is: a unified transformer runs on parse and never on
  * `stringify`, so registering it on the editor's shared remark processor cannot change what the
@@ -222,13 +223,25 @@ export function webAddressesIn(value: string): [number, number][] {
 }
 
 /**
+ * A character no web address holds: the URL pattern's path runs up to the first of them, and its
+ * protocol and domain hold none.
+ */
+const URL_END = /[ \t\r\n]/;
+
+/**
  * Whether `joined`, the text a link that went would leave, holds a web address the transform
  * links that reaches into `joined.slice(from, to)`, the link's own text, so that the link stays
  * (the rule's exception): a fresh read of that text would link the web address, which no
- * spelling of it stops, since both readers search the decoded text.
+ * spelling of it stops, since both readers search the decoded text. The search starts after the
+ * last `URL_END` before the link's text: a web address before that character ends before it, and
+ * one after it starts as at the start of a text, since `previous` takes whitespace.
  */
 function webAddressReachesInto(joined: string, from: number, to: number): boolean {
-  return webAddressesIn(joined).some(([start, end]) => start < to && end > from);
+  let word = from;
+  while (word > 0 && !URL_END.test(joined.charAt(word - 1))) word -= 1;
+  return webAddressesIn(joined.slice(word)).some(
+    ([start, end]) => start < to - word && end > from - word
+  );
 }
 
 /**
@@ -238,17 +251,22 @@ function webAddressReachesInto(joined: string, from: number, to: number): boolea
  * a `-`, `_`, letter or digit, or a `.` before one; a web link where the transform's URL search
  * (`webAddressesIn`), over its text and the text after it, links no address that starts and ends
  * where the link does. The text after it is the text nodes and the text of the links remark-gfm
- * made, up to any other node.
+ * made, up to any other node, and no further than the answer reads: for an email, two
+ * characters past its text; for a web link, through the first node whose text holds a
+ * `URL_END`, which no URL holds, so a URL found from the link's start ends before it.
  */
 function readsOnInto(children: MdastNode[], at: number, label: TextNode, source: string): boolean {
+  const email = children[at].url === `mailto:${label.value}`;
   let joined = label.value;
   for (let next = at + 1; next < children.length; next += 1) {
+    if (email && joined.length >= label.value.length + 2) break;
     const node = children[next];
     const value = isText(node) ? node.value : bareLinkText(node, source)?.value;
     if (value === undefined) break;
     joined += value;
+    if (!email && URL_END.test(value)) break;
   }
-  if (children[at].url === `mailto:${label.value}`) {
+  if (email) {
     return /^(?:[-\w]|\.[-\w])/.test(joined.slice(label.value.length));
   }
   const [first] = webAddressesIn(joined);

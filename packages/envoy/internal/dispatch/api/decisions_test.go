@@ -949,20 +949,13 @@ func TestALinkWhoseVersionTheParserRefusesStaysAsItIs(t *testing.T) {
 		{"op": "replace", "find": "Replaced by the table above.", "with": "Replaced by the table above, in May."},
 	})
 
-	ctx := context.Background()
-	stored := versionText(t, database, id, 1)
-	refused := "[spec]: https://example.com/spec\n\n" + stored
+	another := pmdoc.RendererVersion - 1
+	refused := refuseVersion(t, database, id, 1, &another)
 	if !strings.Contains(refused, table.Text+"\n") {
-		t.Fatalf("version 1 = %q; the test needs it to hold the decision as %q", stored, table.Text)
+		t.Fatalf("version 1 = %q; the test needs it to hold the decision as %q", refused, table.Text)
 	}
 	if _, err := pmdoc.ParseRendering(refused); err == nil {
 		t.Fatalf("pmdoc reads %q; the test needs markdown it refuses", refused)
-	}
-	another := pmdoc.RendererVersion - 1
-	if _, err := database.Pool.Exec(ctx, `
-		update artifact_versions set markdown = $2, renderer_version = $3 where artifact_id = $1 and number = 1
-	`, id, refused, another); err != nil {
-		t.Fatalf("store version 1 as markdown this build refuses: %v", err)
 	}
 
 	decision := decisionNamed(t, readIssueDecisions(t, handler, key), tableDecision)
@@ -1011,14 +1004,9 @@ func TestADecisionsViewParsesEachStoredVersionOnce(t *testing.T) {
 	ctx := context.Background()
 	another := pmdoc.RendererVersion - 1
 	respelled := respellVersion(t, database, id, version.Number, &another)
-	refused := "[spec]: https://example.com/spec\n\n" + versionText(t, database, id, 1)
+	refused := refuseVersion(t, database, id, 1, &another)
 	if _, read := decisionCuts(refused); read {
 		t.Fatalf("the parser reads %q; the test needs markdown it refuses", refused)
-	}
-	if _, err := database.Pool.Exec(ctx, `
-		update artifact_versions set markdown = $2, renderer_version = $3 where artifact_id = $1 and number = 1
-	`, id, refused, another); err != nil {
-		t.Fatalf("store version 1 as markdown this build refuses: %v", err)
 	}
 	kept := strings.Replace(steps.Text, "- first\n\n- second", "- first\n- second", 1)
 	for blockID, sum := range map[string]string{steps.BlockID: decisionTextSum(kept), table.BlockID: decisionTextSum(table.Text + " Unread.")} {
