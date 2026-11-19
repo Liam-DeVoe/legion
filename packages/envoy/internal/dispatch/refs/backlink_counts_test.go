@@ -379,6 +379,23 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		insertReference(t, tx, "comment", citingComment, target[0], target[1])
 	}
 	insertReference(t, tx, "artifact", specID, "block", notesBlock)
+	// The references of a document whose row names its node, which the store answers
+	// (store.GraphEdgesArtifactRefs): the notes document, marked, cites CORE-1 through a row and
+	// the tuple its version index states beside it, which the tuple arm answers; cites the spec
+	// through a row whose tuple a process of the release before never stated, which no arm
+	// answers; and states a mention of the component CORE/core whose row that release deleted with
+	// no retraction, which no arm answers either.
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{graphstore.ArtifactNode(notesRef, "CORE", "", alice, stated)}, []graphstore.Tuple{
+		graphstore.ArtifactMentions(notesRef, "issue", "CORE-1", true, alice, stated),
+		graphstore.ArtifactMentions(notesRef, "component", "CORE/core", true, alice, stated),
+	}); err != nil {
+		t.Fatalf("state the notes document and its mentions: %v", err)
+	}
+	execFixture(t, tx, "mark the notes document", `
+		update artifacts set node_kind = 'artifact', node_address = ref_key where id = $1::uuid
+	`, notesID)
+	insertReference(t, tx, "artifact", notesID, "issue", "CORE-1")
+	insertReference(t, tx, "artifact", notesID, "artifact", specRef)
 	insertReference(t, tx, "message", rootMessage, "artifact", notesRef)
 	// A source of a node kind this build cannot address, written straight into refs as a newer
 	// build would leave it: the mention arm's from_kind filter is what keeps it out of a count.

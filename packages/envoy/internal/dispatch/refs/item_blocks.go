@@ -169,11 +169,11 @@ func replaceItemRefs(
 	if err != nil {
 		return nil, err
 	}
-	changed, err := replaceRefs(ctx, tx, string(kind), itemID, text.Refs(located), nil)
+	reconciled, err := replaceRefs(ctx, tx, string(kind), itemID, text.Refs(located), nil)
 	if err != nil {
 		return nil, err
 	}
-	return append(changed, moved...), nil
+	return append(reconciled.changed(), moved...), nil
 }
 
 // IndexItem records body, written at `at` (the created_at of an insert, the edited_at of an

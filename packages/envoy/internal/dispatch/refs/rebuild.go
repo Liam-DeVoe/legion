@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -179,6 +180,13 @@ func loadSourceIDs(ctx context.Context, pool Pool, query string) ([]string, erro
 // of that source's own transaction, so a rebuild still never holds the whole table: making the
 // rebuild one transaction instead would order it against every writer at once and hold every
 // source's row for the length of the pass, which is minutes on a large database.
+//
+// A document's reconcile states the edges it moved in the node and tuple store in the same
+// transaction, after its refs rows (artifactMentions): a mentions tuple to each target it
+// inserted and a retraction to each it deleted, dated at its rows' own created_at, the
+// transaction's now(). The rebuild appends no event, so each is appended at the sentinel and an
+// assertion keeps its row's source_seq, none, as its legacy_source_seq (graphstore.Caused with
+// NoEvent).
 func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL string) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -190,8 +198,18 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 		return false, err
 	}
 	located := NewReader(ctx, tx, fromKind, fromID, serverURL).Mentions(body)
-	if _, err := replaceRefs(ctx, tx, fromKind, fromID, text.Refs(located), nil); err != nil {
+	moved, err := replaceRefs(ctx, tx, fromKind, fromID, text.Refs(located), nil)
+	if err != nil {
 		return false, err
+	}
+	if fromKind == graphstore.KindArtifact {
+		mentions, err := artifactMentions(ctx, tx, fromID, moved, nil)
+		if err != nil {
+			return false, err
+		}
+		if err := graphstore.Caused(ctx, tx, graphstore.Uncaused{Tuples: mentions}, graphstore.NoEvent); err != nil {
+			return false, fmt.Errorf("state the references of document %s: %w", fromID, err)
+		}
 	}
 	return true, tx.Commit(ctx)
 }

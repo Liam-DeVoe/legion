@@ -11,6 +11,7 @@ package refs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -20,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -57,11 +59,11 @@ func ReplaceCounted(
 	body string,
 ) (model.ReferenceChanges, error) {
 	found := text.Refs(r.Mentions(body))
-	changed, err := replaceRefs(ctx, tx, r.kind, r.id, found, nil)
+	moved, err := replaceRefs(ctx, tx, r.kind, r.id, found, nil)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
-	return CountedChanges(ctx, tx, changed)
+	return CountedChanges(ctx, tx, moved.changed())
 }
 
 // ReplaceCountedEdit is ReplaceCounted for an edit of an ask's question from previous to body. It
@@ -74,11 +76,11 @@ func ReplaceCountedEdit(
 	previous, body string,
 ) (model.ReferenceChanges, error) {
 	found := text.Refs(r.Mentions(body))
-	changed, err := replaceRefs(ctx, tx, r.kind, r.id, found, nil)
+	moved, err := replaceRefs(ctx, tx, r.kind, r.id, found, nil)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
-	return CountedChanges(ctx, tx, append(changed, editedHeadTargets(previous, body, found)...))
+	return CountedChanges(ctx, tx, append(moved.changed(), editedHeadTargets(previous, body, found)...))
 }
 
 // editedHeadTargets is what an edit of an ask's question or a comment's body from previous to body,
@@ -105,6 +107,11 @@ func editedHeadTargets(previous, body string, found []text.Ref) []Target {
 // the ones whose edges the version inserted or deleted, and so is each of moved, the targets the
 // same write moved elsewhere - the version's blocks and their mentions (IndexBlocks) - so its event
 // names them all.
+//
+// Its second result is what the reconcile states in the node and tuple store (artifactMentions):
+// the mentions tuple of each edge it inserted and the retraction of each it deleted, dated at
+// versionAt, which the caller appends under the event it goes on to record for the version
+// (graphstore.Caused), in this same transaction, as it appends the version's block index.
 func ReplaceDocumentCounted(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -114,40 +121,46 @@ func ReplaceDocumentCounted(
 	found []text.Ref,
 	moved []Target,
 	excerpts map[Target]model.GraphExcerpt,
-) (model.ReferenceChanges, error) {
-	changed, err := replaceRefs(ctx, tx, "artifact", artifactID, found, &versionAt)
+) (model.ReferenceChanges, []graphstore.UncausedTuple, error) {
+	reconciled, err := replaceRefs(ctx, tx, graphstore.KindArtifact, artifactID, found, &versionAt)
 	if err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, nil, err
 	}
-	changed = append(changed, moved...)
+	mentions, err := artifactMentions(ctx, tx, artifactID, reconciled, &versionAt)
+	if err != nil {
+		return model.ReferenceChanges{}, nil, err
+	}
+	changed := append(reconciled.changed(), moved...)
 	if excerpts == nil {
 		if err := ClearExcerpts(ctx, tx, artifactID); err != nil {
-			return model.ReferenceChanges{}, err
+			return model.ReferenceChanges{}, nil, err
 		}
-		return CountedChanges(ctx, tx, changed)
+		changes, err := CountedChanges(ctx, tx, changed)
+		return changes, mentions, err
 	}
 	recorded, err := RecordExcerpts(ctx, tx, artifactID, version, excerpts)
 	if err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, nil, err
 	}
-	return CountedChanges(ctx, tx, append(changed, recorded...))
+	changes, err := CountedChanges(ctx, tx, append(changed, recorded...))
+	return changes, mentions, err
 }
 
 // replaceRefs reconciles the Dispatch references written by one source with found: targets no
 // longer mentioned are deleted, new ones inserted with insertedAt as created_at (nil: now()), and
-// an edge that persists keeps its created_at and source_seq. It returns the targets whose inbound
-// edges moved — deleted or inserted, oldest state first — so ReplaceCounted and its variants can
-// resolve the ones a reader refreshes by name (CountedChanges). Only targets of a node kind this
-// build knows (nodeKinds) are deleted: during a release a newer build writes the same sources, and
-// an edge to a node kind it added is one this build cannot read out of the body, so it keeps that
-// edge.
+// an edge that persists keeps its created_at and source_seq. It answers what moved (reconciled),
+// so ReplaceCounted and its variants can resolve the targets a reader refreshes by name
+// (CountedChanges) and a document's writers can state the edges it moved (artifactMentions). Only
+// targets of a node kind this build knows (nodeKinds) are deleted: during a release a newer build
+// writes the same sources, and an edge to a node kind it added is one this build cannot read out
+// of the body, so it keeps that edge.
 //
 // It settles what the source owes the re-index queue (settleOwed): this text has now been read
 // with the whole grammar, so a write this build makes costs the drain nothing and only an older
 // build's write stays owed.
-func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time) ([]Target, error) {
+func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time) (reconciled, error) {
 	kinds, ids := refTargets(found)
-	changed, err := scanTargets(tx.Query(ctx, `
+	dropped, err := scanTargets(tx.Query(ctx, `
 		delete from refs
 		where from_kind = $1 and from_id = $2 and to_kind = any($5)
 		  and not exists (
@@ -157,25 +170,121 @@ func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found 
 		returning to_kind, to_id
 	`, fromKind, fromID, kinds, ids, nodeKinds))
 	if err != nil {
-		return nil, fmt.Errorf("clear references: %w", err)
+		return reconciled{}, fmt.Errorf("clear references: %w", err)
 	}
+	moved := reconciled{dropped: dropped}
 	if len(kinds) > 0 {
-		added, err := scanTargets(tx.Query(ctx, `
+		rows, err := tx.Query(ctx, `
 			insert into refs (from_kind, from_id, to_kind, to_id, created_at)
 			select $1, $2, target.kind, target.id, coalesce($5::timestamptz, now())
 			from unnest($3::text[], $4::text[]) as target(kind, id)
 			on conflict (from_kind, from_id, to_kind, to_id) do nothing
-			returning to_kind, to_id
-		`, fromKind, fromID, kinds, ids, insertedAt))
-		if err != nil {
-			return nil, fmt.Errorf("write reference: %w", err)
+			returning to_kind, to_id, created_at
+		`, fromKind, fromID, kinds, ids, insertedAt)
+		if err == nil {
+			moved.inserted, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (insertedRef, error) {
+				var inserted insertedRef
+				err := row.Scan(&inserted.target.Kind, &inserted.target.ID, &inserted.createdAt)
+				return inserted, err
+			})
 		}
-		changed = append(changed, added...)
+		if err != nil {
+			return reconciled{}, fmt.Errorf("write reference: %w", err)
+		}
 	}
 	if err := settleOwed(ctx, tx, fromKind, fromID); err != nil {
-		return nil, err
+		return reconciled{}, err
 	}
-	return changed, nil
+	return moved, nil
+}
+
+// reconciled is what one source's reconcile moved (replaceRefs): the targets of the rows its
+// delete dropped, and the rows its insert inserted, each with the created_at it was written at.
+type reconciled struct {
+	dropped  []Target
+	inserted []insertedRef
+}
+
+// insertedRef is one refs row a reconcile inserted: its target and its created_at.
+type insertedRef struct {
+	target    Target
+	createdAt time.Time
+}
+
+// changed is the targets whose inbound edges the reconcile moved, oldest state first: those it
+// deleted, then those it inserted.
+func (r reconciled) changed() []Target {
+	changed := slices.Clone(r.dropped)
+	for _, inserted := range r.inserted {
+		changed = append(changed, inserted.target)
+	}
+	return changed
+}
+
+// artifactMentions is what one reconcile of document artifactID's references (replaceRefs) states
+// of them in the node and tuple store, in the transaction that wrote the rows: the mentions tuple
+// out of the document's node (graphstore.ArtifactMentions) to each target whose row the insert
+// inserted, dated at that row's own created_at, and its retraction to each target whose row the
+// delete dropped, dated at the time the reconcile wrote the document's references at (insertedAt,
+// else the transaction's now(), which a row the same reconcile inserts is dated at too). A row
+// that survives states nothing: its tuple stands from the write that inserted it.
+//
+// An assertion's legacy_source_seq is its row's source_seq. The insert writes none, and the event
+// that records the version stamps the row with its own id in the same transaction (Stamp, docs'
+// stampVersionEvent), which is the cause the caller appends the tuple under, so the tuple takes
+// that cause (graphstore.UncausedTuple's LegacyFromCause). A reconcile no event records -
+// rebuild-refs - appends at the sentinel (graphstore.Caused with NoEvent), where the tuple keeps
+// none, as its row does. A retraction's row is gone and it takes none.
+//
+// A document whose row names no node, which a process of the release before wrote, states
+// nothing, nor does a far end past graphstore.MaxAddressBytes: each such row is the view's arm
+// over refs to answer (store.ArtifactReferenceRowUnmarked). Each fact is signed by the first author
+// of the document's newest version, or by the document's own author where that version names
+// none, as the backfill signs the facts of a document's bytes (graphcensus' nameArtifactNodes).
+// A source of any other kind - a comment, a message, an ask - states nothing here.
+func artifactMentions(ctx context.Context, tx pgx.Tx, artifactID string, moved reconciled, insertedAt *time.Time) ([]graphstore.UncausedTuple, error) {
+	id, ok := canonicalUUID(artifactID)
+	if !ok || len(moved.dropped)+len(moved.inserted) == 0 {
+		return nil, nil
+	}
+	var refKey string
+	var marked bool
+	var retractedAt time.Time
+	var writer []byte
+	switch err := tx.QueryRow(ctx, `
+		select a.ref_key, a.node_kind is not null, coalesce($2::timestamptz, now()),
+		       coalesce((select v.authors->0 from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1), a.created_by)
+		from artifacts a where a.id = $1::uuid
+	`, id, insertedAt).Scan(&refKey, &marked, &retractedAt, &writer); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, nil
+	case err != nil:
+		return nil, fmt.Errorf("read the node of document %s: %w", artifactID, err)
+	}
+	if !marked || !graphstore.AddressFits(refKey) {
+		return nil, nil
+	}
+	var who model.Actor
+	if err := json.Unmarshal(writer, &who); err != nil {
+		return nil, fmt.Errorf("decode the writer of document %s: %w", artifactID, err)
+	}
+	mentions := make([]graphstore.UncausedTuple, 0, len(moved.dropped)+len(moved.inserted))
+	for _, target := range moved.dropped {
+		if graphstore.AddressFits(target.ID) {
+			mentions = append(mentions, graphstore.UncausedTuple{
+				Tuple: graphstore.ArtifactMentions(refKey, target.Kind, target.ID, false, who, retractedAt),
+			})
+		}
+	}
+	for _, inserted := range moved.inserted {
+		if graphstore.AddressFits(inserted.target.ID) {
+			mentions = append(mentions, graphstore.UncausedTuple{
+				Tuple:           graphstore.ArtifactMentions(refKey, inserted.target.Kind, inserted.target.ID, true, who, inserted.createdAt),
+				LegacyFromCause: true,
+			})
+		}
+	}
+	return mentions, nil
 }
 
 // settleOwed deletes the row one source owes the re-index queue (refs_grammar_owed), in the write's

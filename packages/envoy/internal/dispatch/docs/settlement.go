@@ -1294,7 +1294,7 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 	}
 	// What the pass stated waits for those events: each document's part is caused by its own
 	// (graphstore.Caused).
-	if err := causeRoomFacts(ctx, tx, room, index.facts, events); err != nil {
+	if err := causeRoomFacts(ctx, tx, room, index, versions, events); err != nil {
 		return graphstore.NoEvent, err
 	}
 	return last, nil

@@ -1399,7 +1399,7 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 		if err != nil {
 			return false, false, false, err
 		}
-		if err := causeRoomFacts(ctx, tx, room, index.facts, events); err != nil {
+		if err := causeRoomFacts(ctx, tx, room, index, versions, events); err != nil {
 			return false, false, false, err
 		}
 		for _, indexed := range slices.Sorted(maps.Keys(versions)) {
@@ -1472,14 +1472,18 @@ func (s *Service) indexRoom(ctx context.Context, tx pgx.Tx, room string, version
 	if err != nil {
 		return roomIndex{}, err
 	}
-	return roomIndex{changes: changes, facts: roomFacts(write, room, refKey, documents)}, nil
+	facts, references := roomFacts(write, room, refKey, documents)
+	return roomIndex{changes: changes, facts: facts, references: references}, nil
 }
 
 // roomIndex is what one pass over an issue room did (indexRoom): the reference changes it moved,
-// and what it stated, by the document each fact is of.
+// what it stated, by the document each fact is of, and apart from those the facts of the edges
+// the room's own references moved (refs.ReplaceDocumentCounted), which no one document's version
+// is the cause of (causeRoomFacts).
 type roomIndex struct {
-	changes model.ReferenceChanges
-	facts   map[string]graphstore.Uncaused
+	changes    model.ReferenceChanges
+	facts      map[string]graphstore.Uncaused
+	references []graphstore.UncausedTuple
 }
 
 // roomFacts parts write, what one pass over the issue room room stated, by the document each fact
@@ -1487,8 +1491,9 @@ type roomIndex struct {
 // of the room (refKey's), and a tuple out of one, is of the document documents names for that
 // block - the one whose fragment holds it, or, for a block the pass stated gone, the one its row
 // held - and every other, an author's node, say, is of the tree artifact, room, whose own fragment
-// belongs to no other document.
-func roomFacts(write graphstore.Uncaused, room, refKey string, documents map[string]string) map[string]graphstore.Uncaused {
+// belongs to no other document. A tuple out of the tree artifact's own node is one of the room's
+// references, written under the tree artifact, and is answered apart.
+func roomFacts(write graphstore.Uncaused, room, refKey string, documents map[string]string) (map[string]graphstore.Uncaused, []graphstore.UncausedTuple) {
 	documentOf := func(kind, id string) string {
 		if kind == refs.BlockNodeKind {
 			if block, ok := strings.CutPrefix(id, refKey+"#"); ok {
@@ -1506,19 +1511,33 @@ func roomFacts(write graphstore.Uncaused, room, refKey string, documents map[str
 		part.Nodes = append(part.Nodes, node)
 		parts[document] = part
 	}
+	var references []graphstore.UncausedTuple
 	for _, tuple := range write.Tuples {
+		if tuple.FromKind == graphstore.KindArtifact && tuple.FromID == refKey {
+			references = append(references, tuple)
+			continue
+		}
 		document := documentOf(tuple.FromKind, tuple.FromID)
 		part := parts[document]
 		part.Tuples = append(part.Tuples, tuple)
 		parts[document] = part
 	}
-	return parts
+	return parts, references
 }
 
 // causeRoomFacts appends what an issue room's pass stated, each document's part under that
 // document's event (events, by document id), in the order of the documents' ids; a part of a
 // document no event is given for is appended at the sentinel, as a version no event recorded is.
-func causeRoomFacts(ctx context.Context, tx pgx.Tx, room string, facts map[string]graphstore.Uncaused, events map[string]int64) error {
+// The facts of the room's own references go with the part of the document whose event stamps
+// their rows (roomReferencesDocument), so each assertion takes its row's source_seq.
+func causeRoomFacts(ctx context.Context, tx pgx.Tx, room string, index roomIndex, versions refs.Versions, events map[string]int64) error {
+	facts := index.facts
+	if len(index.references) > 0 {
+		document := roomReferencesDocument(room, versions, events)
+		part := facts[document]
+		part.Tuples = append(part.Tuples, index.references...)
+		facts[document] = part
+	}
 	for _, document := range slices.Sorted(maps.Keys(facts)) {
 		event, held := events[document]
 		if !held {
@@ -1529,4 +1548,24 @@ func causeRoomFacts(ctx context.Context, tx pgx.Tx, room string, facts map[strin
 		}
 	}
 	return nil
+}
+
+// roomReferencesDocument is the document whose event stampVersionEvent stamps the references a
+// pass over the issue room room wrote with: the room's references are dated at the time of the
+// tree artifact's own version, or of the newest version the pass covers where the tree holds none
+// (indexRenderedVersion), and stampVersionEvent stamps them, in ascending document id, with the
+// event of the first document of versions written at that time that an event recorded. A room
+// with no such document is room itself, whose part no event is given for where it holds no
+// version, as its references' rows keep no source_seq.
+func roomReferencesDocument(room string, versions refs.Versions, events map[string]int64) string {
+	own, held := versions[room]
+	if !held {
+		_, own = versions.Newest(room)
+	}
+	for _, document := range slices.Sorted(maps.Keys(versions)) {
+		if versions[document].At.Equal(own.At) && events[document] != graphstore.NoEvent {
+			return document
+		}
+	}
+	return room
 }

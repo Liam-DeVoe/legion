@@ -728,6 +728,12 @@ var indexPasses = map[string]string{
 	// states now, found by an anti-join since the row names no tuple: the tuple is the marker, as a
 	// version's node is the versions pass's. It states only what levels that node with its own row.
 	"graphcensus/census_anchors.go#writeAnchorBatch": "each comments row's own anchor, read again under its owner row, and the anchored_in its node states",
+	// The backfill of the references a document makes: each refs row of a document whose row
+	// names its node, its own content, read again under its document's owner row, and the
+	// mentions that node states now, found by an anti-join both ways since refs names no tuple: the
+	// tuple is the marker, as an anchor's is. It states only the tuple of a row that holds none, and
+	// retracts only a tuple whose row is gone.
+	"graphcensus/census_refs.go#writeReferenceBatch": "each refs row of a document whose row names its node, read again under its owner row, and the mentions that node states",
 	// The backfill of the components a process of the release before wrote (dispatch://INFRA-1253
 	// R9): each components row its marker does not mark, its own content and the parent it names,
 	// read again under its source's row, with the part_of its node holds now, so it states only the
@@ -826,6 +832,11 @@ var indexPasses = map[string]string{
 	// above. It reads a node's stored values and authors only to state what moved.
 	"refs/decision_nodes.go#IndexDecisionNodes": "the version's render and the credential its write proved",
 	"refs/refs.go#Stamp":                        "the event that recorded the write",
+	// rebuild-refs' reconcile of one source: a document's text, read under its owner row, and
+	// what the reconcile moved of that document's refs rows, whose tuples it states at the
+	// sentinel beside them (refs' artifactMentions). It reads no side of a projection to mend the
+	// other: both follow from the text.
+	"refs/rebuild.go#replaceInTx": "the source's text, read under the lock an edit of it takes, and the refs rows its reconcile moved",
 }
 
 // projectedWrite matches one statement of a Go source file that writes a projected table or the

@@ -102,7 +102,7 @@ func TestADocumentVersionLeavesItsScopeOwed(t *testing.T) {
 	}
 
 	reader := NewReader(ctx, tx, "artifact", document, refsGrammarServer)
-	if _, err := ReplaceDocumentCounted(ctx, tx, document, 1, versionAt,
+	if _, _, err := ReplaceDocumentCounted(ctx, tx, document, 1, versionAt,
 		text.Refs(reader.Mentions("Blocked on CORE-1.")), nil, nil); err != nil {
 		t.Fatalf("index the version: %v", err)
 	}

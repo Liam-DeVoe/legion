@@ -18,7 +18,7 @@ import (
 
 // BacklinkCounts is how many edges point at each of ids, in one grouped query: the number a
 // list carries beside a row, counted the same way the rows behind it are listed. It unions only
-// the arms of graph_edges that can point at a node of toKind - the six mention arms every kind
+// the arms of graph_edges that can point at a node of toKind - the seven mention arms every kind
 // has and the structural arms declared for that kind (backlinkArms) - and counts them in one
 // statement, each arm read through its own index, rather than leaving the planner the whole
 // 26-arm view on every call. The counts are the view's, arm for arm, but for an issue's own tree
@@ -314,8 +314,8 @@ func blockRefCarries(fromKind, alias string) string {
 // and a component's part_of its parent and depends_on another component and an issue's affects a
 // component, which components, component_depends and issue_component_members project
 // (dispatch://INFRA-1253, migration 20261118023219). It is the list the view's tuple arms render
-// (migrations 20261109215947, 20261116094101, 20261116184707, 20261117020856, 20261117140000 and
-// 20261118023219) and the list the announcer writes into
+// (migrations 20261109215947, 20261116094101, 20261116184707, 20261117020856, 20261117140000,
+// 20261118023219 and 20261119100000) and the list the announcer writes into
 // server_build_announcements.tuple_kinds (startup.Deps), which is how the release that deletes an
 // old arm of the view reads whether the release a rollback would reach writes that arm's kinds as
 // tuples too. A child that moves another relation into the store adds its kinds here, so the arm
@@ -326,6 +326,11 @@ func blockRefCarries(fromKind, alias string) string {
 // constraint or a component, and a document's to its issue as attached_to. A session's, a page's
 // and a block's placement are part_of tuples no arm renders, and a block's membership of its
 // document stays in_document.
+//
+// mentions in it is an artifact source's too, not a block's alone: a document's version index and
+// rebuild-refs write a mentions tuple out of the document's node beside each refs row of the
+// document (artifactMentions), which the view answers while that row stands (migration
+// 20261119100000).
 //
 // The list carries this build's capabilities too (processes.Capabilities): issue_room, which no
 // relation kind spells, is how a reader of the announcements tells a build that serves the issue
@@ -816,17 +821,17 @@ func BacklinkKinds() []string {
 
 // mentionBacklinkArms is the arms of graph_edges whose edge kind and target kind are columns
 // rather than literals: refs, the four tables of block references, and the store's own tuples,
-// which hold the links of a document block whose row names its node. Every node kind gets those
-// six, since a mention can name any node; a document's block gets a seventh, an answered ask's
-// shaped, which points at a block alone. The target kind is written as a literal (see
-// BacklinkCounts), and excludeKinds the caller's excluded edge kinds, bound as $4 - on these arms
-// the edge kind is a column, so an exclusion is a predicate and never drops an arm, and an empty
-// list adds nothing.
+// which hold a document's own mentions where its row names its node and the links of a document
+// block whose row names its node. Every node kind gets those seven, since a mention can name any
+// node; a document's block gets an eighth, an answered ask's shaped, which points at a block
+// alone. The target kind is written as a literal (see BacklinkCounts), and excludeKinds the
+// caller's excluded edge kinds, bound as $4 - on these arms the edge kind is a column, so an
+// exclusion is a predicate and never drops an arm, and an empty list adds nothing.
 //
 // Each arm carries the visibility predicate of the node its mention comes from: the refs arm's
 // source kind is a column, so it binds the registry over every kind at once (VisibleEnd, over
-// the from side's spelling of an id), and each block arm's source is a block of the kind its
-// table holds.
+// the from side's spelling of an id), the store's reading of a document's mentions binds the
+// document's, and each block arm's source is a block of the kind its table holds.
 func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string {
 	exclude := ""
 	if len(excludeKinds) > 0 {
@@ -838,15 +843,33 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 			where r.to_kind = '` + target.kind + `' and ` + keyed + rest + exclude + ` and ` + visible
 	}
 	arms := []string{
-		// refs_to (to_kind, to_id). heldByABlock belongs on this arm alone: it is gated on
-		// kind = 'mentions' and from_kind in artifact, comment, message, ask, and refs is the
-		// only arm of the view that can emit that pair, every other arm fixing from_kind as a
-		// literal that is none of the four. Its exists probes carry no position filter, as the
-		// view's readers do not. The source-kind filter is this arm's alone for the same reason:
-		// every other arm's from_kind is a literal, or one of a list of literals (storedSQL), of a
-		// kind nodeRegistry resolves, so the filter would drop nothing there.
-		arm(`refs r`, ` and r.from_kind = any($2) and not `+heldByABlock("r"),
+		// refs_to (to_kind, to_id), over the rows the store states no tuple of
+		// (store.ReferenceNotStated): every source's but a document's whose row names its node,
+		// and a far end past the store's bound. heldByABlock belongs on this arm and the store's
+		// reading of the same mentions below alone: it is gated on kind = 'mentions' and
+		// from_kind in artifact, comment, message, ask, and those two are the only arms of the
+		// view that can emit that pair, every other arm fixing from_kind as a literal that is none
+		// of the four. Its exists probes carry no position filter, as the view's readers do not.
+		// The source-kind filter is this arm's alone for the same reason: every other arm's
+		// from_kind is a literal, or one of a list of literals (storedSQL), of a kind nodeRegistry
+		// resolves, so the filter would drop nothing there.
+		arm(`refs r`, ` and r.from_kind = any($2) and `+store.ReferenceNotStated+` and not `+heldByABlock("r"),
 			VisibleEnd(`r.from_kind`, `r.from_id`, false, backlinkSeen)),
+		// The mentions of a document whose row names its node, in the store, read through
+		// graph_tuples_inbound: each current mentions tuple out of the document's node, joined to
+		// the artifacts row naming that node by its ref_key, counted only while the refs row of the
+		// pair stands, the document named by its uuid, as the view's tuple arm reads it
+		// (store.GraphEdgesArtifactRefs). A block of the document holding a link to the same target
+		// is counted in the mention's place, as the refs arm's heldByABlock says, of the document the
+		// row names; its own test of the document is the view's state rule and this registry's
+		// predicate made out of one read of the document's node row (liveVisibleNode).
+		arm(`graph_tuples r join artifacts mentioning on mentioning.ref_key = r.from_id and mentioning.node_kind is not null`,
+			` and r.from_kind = '`+graphstore.KindArtifact+`' and r.kind = '`+graphstore.TupleMentions+`' and `+currentTuple("r")+`
+			and exists (select 1 from refs projected
+				where projected.from_kind = r.from_kind and projected.from_id = mentioning.id::text
+					and projected.to_kind = r.to_kind and projected.to_id = r.to_id)
+			and not `+documentBlockHolds("r", "mentioning.id::text"),
+			liveVisibleNode(graphstore.KindArtifact, `r.from_id`)),
 		// block_refs_to (to_kind, to_id), over the rows that name no node. The view's own arm
 		// lists a block[] pointer's row only while block_ref_listed holds, the types test a
 		// typed block's pointer carries, and a row with no limit is listed without the call;

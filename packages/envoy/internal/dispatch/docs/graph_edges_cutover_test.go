@@ -56,7 +56,7 @@ const askArmsDeletedBy = "dispatch://INFRA-1098"
 // twice. The fate of each is printed with the list, so a reader sees which arms are left and who
 // takes each.
 var graphEdgesArms = []graphEdgesArm{
-	{relation: "refs", fate: "a mention of any node from an item; no child has moved it"},
+	{relation: "refs", fate: "a mention of any node from an item, and a document's while its row names no node or its far end is past the store's bound; the store answers a document's other mentions; no child has moved the rest"},
 	{relation: "issues", fate: "child_of over the rows that name no node; the store answers the rest (dispatch://INFRA-1253), and dispatch://INFRA-1098 deletes this arm"},
 	{relation: "issue_links", fate: "blocked_by over the rows that name no node; the store answers the rest as needs (dispatch://INFRA-1253), and dispatch://INFRA-1098 deletes this arm"},
 	{relation: "artifacts", fate: "attached_to over the rows that name no node; dispatch://INFRA-1098 deletes this arm"},
@@ -432,11 +432,12 @@ func (r graphEdgesReading) answering(edge graphEdge) (view int, arms []int, tupl
 // readEachArm takes one reading and fails unless every row was answered by the arm its own
 // projection row decides: the whole view equals the previous release's over the same rows, each of
 // the four arms answers exactly the rows of its kind whose row carries no node, and the tuple arm
-// exactly the rows of the moved kinds whose row carries it. The rows of the tuple arm's class
-// `store` (storeClass), which the previous release has no arm for, are set apart from both
-// readings first and held, in the whole view and in the tuple arm alike, to exactly the rows the
-// fixture stated of them (stored). It fails as well unless this build's backlink counts are the
-// previous release's over the same rows (requireBacklinkCountsAsThePreviousRelease).
+// exactly the rows of the moved kinds whose row carries it and the mentions of each document whose
+// row names its node (referenceStoredInTheStore). The rows of the tuple arm's class `store`
+// (storeClass), which the previous release has no arm for, are set apart from both readings first
+// and held, in the whole view and in the tuple arm alike, to exactly the rows the fixture stated
+// of them (stored). It fails as well unless this build's backlink counts are the previous
+// release's over the same rows (requireBacklinkCountsAsThePreviousRelease).
 func readEachArm(t *testing.T, database *store.Store, stage string, moved []movedArm, tuple movedArm, stored []graphEdgeRow) graphEdgesReading {
 	t.Helper()
 	reading := graphEdgesReading{
@@ -454,6 +455,12 @@ func readEachArm(t *testing.T, database *store.Store, stage string, moved []move
 	unmarked := make([][]graphEdgeRow, len(moved))
 	var marked []graphEdgeRow
 	for _, row := range reading.previous {
+		if row.fromKind == graphstore.KindArtifact && row.kind == graphstore.TupleMentions {
+			if referenceStoredInTheStore(t, database, row) {
+				marked = append(marked, row)
+			}
+			continue
+		}
 		index, ok := movedArmOf(moved, row)
 		if !ok {
 			continue
@@ -473,6 +480,22 @@ func readEachArm(t *testing.T, database *store.Store, stage string, moved []move
 		"the tuple arm answers it", tupled, "the previous release reads it from a row that carries its node", marked)
 	reading.counts = requireBacklinkCountsAsThePreviousRelease(t, database, stage)
 	return reading
+}
+
+// referenceStoredInTheStore reads whether the refs row behind row, a document's mention, is one
+// the store answers (migration 20261119100000): its document's artifacts row names its node, and
+// its far end is inside the store's bound. Any other such row is the arm over refs'.
+func referenceStoredInTheStore(t *testing.T, database *store.Store, row graphEdgeRow) bool {
+	t.Helper()
+	var stored bool
+	if err := database.Pool.QueryRow(context.Background(), `
+		select a.node_kind is not null and octet_length(r.to_id) <= $5
+		from refs r left join artifacts a on a.id::text = r.from_id
+		where r.from_kind = $1 and r.from_id = $2 and r.to_kind = $3 and r.to_id = $4
+	`, row.fromKind, row.fromID, row.toKind, row.toID, graphstore.MaxAddressBytes).Scan(&stored); err != nil {
+		t.Fatalf("read the refs row behind %s: %v", row, err)
+	}
+	return stored
 }
 
 // storeClass is whether row is one the tuple arms answer as the class `store` (migration

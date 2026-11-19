@@ -301,6 +301,11 @@ var storeWriteCallSites = []string{
 	// nodes' anchored_in read again under them, then the tuples that level the two through Write
 	// at the sentinel (graphcensus' TestTheAnchorBatchTakesTheStoreLockOrder).
 	"graphcensus/census_anchors.go#writeAnchorBatch",
+	// The backfill's pass over the references a document makes: the owner rows the batch's
+	// documents stand under first, then the refs rows and their documents' nodes' mentions read
+	// again under them, then the mentions tuples each row owes through Write at the sentinel
+	// (graphcensus' TestTheReferenceBatchTakesTheStoreLockOrder).
+	"graphcensus/census_refs.go#writeReferenceBatch",
 	// The backfill's passes over the components a process of the release before wrote with no
 	// node (dispatch://INFRA-1253 R9): the architecture source rows of the batch's projects first,
 	// in ascending (project, id), then the rows read again under them, then the component nodes and
@@ -382,6 +387,11 @@ var storeWriteCallSites = []string{
 	// caller holds, after the block index's own nodes where that runs and on its own above the
 	// deferral bound, its tuples and cause waiting for the same event (the sites of Caused above).
 	"refs/decision_nodes.go#IndexDecisionNodes",
+	// rebuild-refs' reconcile of one source: a document's owner row first (lockDocumentOwner),
+	// then its refs rows, then the mentions tuples of the rows the reconcile inserted and deleted,
+	// through Caused at the sentinel, since no event records the rebuild (refs'
+	// TestARebuildOfADocumentsReferencesTakesTheStoreLockOrder).
+	"refs/rebuild.go#replaceInTx",
 }
 
 // TestEveryStoreWriteCallSiteIsListed reads the module's source, every Go file but the tests,

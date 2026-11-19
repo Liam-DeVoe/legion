@@ -116,15 +116,27 @@ func blockKindList(kinds ...string) string {
 // not reached holds no block link, so its own edge stays; an ask's question part holds the links
 // its row holds, so the row's edge is the one hidden.
 func heldByABlock(alias string) string {
-	holders := []string{blockHolds(alias, "artifact", "block_refs", "artifact_id"), `(` + alias + `.from_kind = 'artifact' and ` +
-		alias + `.to_kind = '` + BlockNodeKind + `' and exists (
-		select 1 from block_refs b where b.to_kind = '` + BlockNodeKind + `' and b.to_id = ` + ResolvedBlockSQL(alias+".to_id") + `
-		and b.artifact_id::text = ` + alias + `.from_id))`}
+	holders := []string{`(` + alias + `.from_kind = 'artifact' and ` + documentBlockHolds(alias, alias+".from_id") + `)`}
 	for _, item := range itemKinds {
 		tables, _ := item.tables()
 		holders = append(holders, blockHolds(alias, string(item), tables.refs, tables.item))
 	}
 	return `(` + alias + `.kind = 'mentions' and (` + strings.Join(holders, " or ") + `))`
+}
+
+// documentBlockHolds is heldByABlock's test of a document's mention edge alias: a block of the
+// document whose uuid as text the SQL expression document names holds a link of any kind to the
+// edge's target, at the address the edge names or, for a block, at the node that address resolves
+// to (ResolvedBlockSQL). The document is an expression of its own because the store's reading of a
+// document's mention (mentionBacklinkArms) names the document by its node, whose uuid it reads
+// off the document's row, where the view's edge names it by its uuid.
+func documentBlockHolds(alias, document string) string {
+	return `(exists (
+		select 1 from block_refs b where b.to_kind = ` + alias + `.to_kind and b.to_id = ` + alias + `.to_id
+		and b.artifact_id::text = ` + document + `)
+		or ` + alias + `.to_kind = '` + BlockNodeKind + `' and exists (
+		select 1 from block_refs b where b.to_kind = '` + BlockNodeKind + `' and b.to_id = ` + ResolvedBlockSQL(alias+".to_id") + `
+		and b.artifact_id::text = ` + document + `))`
 }
 
 // blockHolds is true of a graph_edges row alias written by an item of fromKind when one of the

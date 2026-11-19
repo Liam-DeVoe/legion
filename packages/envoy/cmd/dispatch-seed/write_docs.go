@@ -158,10 +158,15 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	// document's highest: refs.MarkStaleExcerpts re-owes a mention whose excerpt_version is
 	// below max(artifact_versions.number), so a seed that wrote 1 would leave every one of the
 	// 28-version documents owed, which settle.go's owedWorkCounts refuses and a server started
-	// on the data set would rewrite.
-	if _, err := refs.ReplaceDocumentCounted(ctx, tx, document.ID, document.Versions, versionAt,
-		text.Refs(located), moved, refs.MentionExcerpts(latest, blocks, located)); err != nil {
+	// on the data set would rewrite. What it states of the references it writes is appended at the
+	// sentinel, as the block index's is above.
+	_, mentions, err := refs.ReplaceDocumentCounted(ctx, tx, document.ID, document.Versions, versionAt,
+		text.Refs(located), moved, refs.MentionExcerpts(latest, blocks, located))
+	if err != nil {
 		return fmt.Errorf("index references: %w", err)
+	}
+	if err := graphstore.Caused(ctx, tx, graphstore.Uncaused{Tuples: mentions}, graphstore.NoEvent); err != nil {
+		return fmt.Errorf("record what the references stated: %w", err)
 	}
 	if document.Primary {
 		if err := docs.RecordTaskProgressMarkdown(ctx, tx, document.ID, latest); err != nil {

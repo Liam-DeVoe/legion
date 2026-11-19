@@ -133,7 +133,8 @@ func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string
 // nodes, their values and their ties' rows from rendered, the tree the write left - for a room,
 // every fragment joined, each block carrying its fragment's document (rendered.documents). The
 // targets those ties moved are counted with the references'. What the pass stated is answered for
-// the caller's event, as the block index's is. The references take artifactID's own version, as
+// the caller's event, as the block index's is, with what the references' reconcile stated of the
+// edges it moved (refs.ReplaceDocumentCounted). The references take artifactID's own version, as
 // indexRenderedVersion dates them. Each document of versions takes this build's own index mark
 // first (oweVersionsIndex), as indexDocument's unrendered one does, so a version the release
 // before indexes first during a roll is drained by this build once the roll ends.
@@ -160,7 +161,8 @@ func (s *Service) indexDeferredVersion(ctx context.Context, tx pgx.Tx, artifactI
 	if err := settleRoomDocumentsOwed(ctx, tx, artifactID, versions); err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	changes, err := replaceVersionRefs(ctx, tx, artifactID, own.Number, own.At, reader.Mentions(markdown), moved, nil)
+	changes, mentions, err := replaceVersionRefs(ctx, tx, artifactID, own.Number, own.At, reader.Mentions(markdown), moved, nil)
+	write.Tuples = append(write.Tuples, mentions...)
 	return changes, write, err
 }
 
@@ -192,8 +194,7 @@ func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID strin
 			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 		}
 		_, newest := versions.Newest(artifactID)
-		changes, err := s.indexUnrenderedVersion(ctx, tx, artifactID, versions[artifactID].Number, newest.At, markdown)
-		return changes, graphstore.Uncaused{}, err
+		return s.indexUnrenderedVersion(ctx, tx, artifactID, versions[artifactID].Number, newest.At, markdown)
 	}
 	return s.indexRenderedVersion(ctx, tx, artifactID, versions, versions, false, markdown, offsetBlocks(rendered.offsets, rendered.documents), rendered.tree, settled)
 }
@@ -309,7 +310,7 @@ func (s *Service) indexDocumentInRoom(ctx context.Context, tx pgx.Tx, room strin
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	var facts graphstore.Uncaused
+	facts := graphstore.Uncaused{Tuples: index.references}
 	for _, id := range slices.Sorted(maps.Keys(index.facts)) {
 		facts = graphstore.Joined(facts, index.facts[id])
 	}
@@ -349,7 +350,8 @@ func offsetBlocks(offsets []pmdoc.BlockOffset, documents map[string]string) []mo
 // Its second result is what the pass states in the node and tuple store, which the caller
 // appends under that same event (graphstore.Caused): the pass writes the block nodes
 // itself, because the foreign key on the projection rows needs them, and holds its tuples back
-// because on the request path the event does not exist yet.
+// because on the request path the event does not exist yet. The tuples of the edges the
+// document's own references moved go with them (refs.ReplaceDocumentCounted).
 //
 // The typed nodes' facts take the version of each block's own document, as the blocks' do. The
 // document's own references - artifactID's, an issue room's tree artifact's, which belong to no
@@ -421,7 +423,8 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	if err := settleRoomDocumentsOwed(ctx, tx, artifactID, versions); err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	changes, err := replaceVersionRefs(ctx, tx, artifactID, own.Number, own.At, located, moved, refs.MentionExcerpts(markdown, blocks, located))
+	changes, mentions, err := replaceVersionRefs(ctx, tx, artifactID, own.Number, own.At, located, moved, refs.MentionExcerpts(markdown, blocks, located))
+	write.Tuples = append(write.Tuples, mentions...)
 	return changes, write, err
 }
 
@@ -461,16 +464,21 @@ func blockPointers(blocks []model.ArtifactBlock, tree *pmdoc.Node) []refs.Pointe
 // indexUnrenderedVersion indexes one document version with no rendering, written at versionAt, in
 // a transaction holding the document's owner row: its references alone. It indexes no blocks and
 // marks the document's mentions owed an excerpt (refs.ClearExcerpts) for the excerpt
-// reconciliation, which reads the document itself.
-func (s *Service) indexUnrenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string) (model.ReferenceChanges, error) {
+// reconciliation, which reads the document itself. Its second result is what the references'
+// reconcile stated of the edges it moved, for the caller's event (indexRenderedVersion's).
+func (s *Service) indexUnrenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	reader := refs.NewReader(ctx, tx, "artifact", artifactID, s.serverURL)
-	return replaceVersionRefs(ctx, tx, artifactID, version, versionAt, reader.Mentions(markdown), nil, nil)
+	changes, mentions, err := replaceVersionRefs(ctx, tx, artifactID, version, versionAt, reader.Mentions(markdown), nil, nil)
+	return changes, graphstore.Uncaused{Tuples: mentions}, err
 }
 
 // replaceVersionRefs reconciles the document's references, dated versionAt, to the mentions
 // located in its version, stores excerpts on them (nil: marks them owed), and counts the targets
-// moved, which its blocks and their mentions moved, as well (refs.ReplaceDocumentCounted).
-func replaceVersionRefs(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, located []text.Located, moved []refs.Target, excerpts map[refs.Target]model.GraphExcerpt) (model.ReferenceChanges, error) {
+// moved, which its blocks and their mentions moved, as well (refs.ReplaceDocumentCounted). It
+// answers beside the counts the tuple of each edge the reconcile inserted and the retraction of
+// each it deleted, which its caller appends with the rest of the version's index under the
+// version's event.
+func replaceVersionRefs(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, located []text.Located, moved []refs.Target, excerpts map[refs.Target]model.GraphExcerpt) (model.ReferenceChanges, []graphstore.UncausedTuple, error) {
 	return refs.ReplaceDocumentCounted(ctx, tx, artifactID, version, versionAt, text.Refs(located), moved, excerpts)
 }
 
