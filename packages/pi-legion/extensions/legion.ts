@@ -58,6 +58,7 @@ import {
 } from "@legion/pi-shared/stall-watchdog";
 import { clearStartupTurn } from "@legion/pi-shared/startup-turn";
 import { subagentSessionCheck } from "@legion/pi-shared/subagent-session";
+import { heldTakeNote, taskWaitingNote } from "@legion/pi-shared/task-take";
 import { logger } from "@oh-my-pi/pi-utils";
 import {
   type CapabilityBudgets,
@@ -279,8 +280,9 @@ export default function legionExtension(pi: PiApi): void {
     project: process.env.LEGION_PROJECT,
     limits,
     log: logger,
-    // The next change of dispatch://INFRA-4130 wires this to the claim's take (`taskPending`).
-    taskPending: () => false,
+    // A take the claim holds is the next turn (dispatch://INFRA-4130 R6): neither a settle's
+    // continuation nor a timer's reminder starts one ahead of it.
+    taskPending: () => claimSession.taskPending(),
   });
 
   // The model fallback (src/model-fallback.ts) on the cooldown machine
@@ -413,6 +415,7 @@ export default function legionExtension(pi: PiApi): void {
     persistedTranscript,
     runTask,
     exitProcess: (code) => exitProcess(code),
+    now: Date.now,
   });
   const controllerSession = createControllerSession({
     daemon: roleDaemon,
@@ -480,6 +483,9 @@ export default function legionExtension(pi: PiApi): void {
         context: () => paneContext,
         // `pi`'s own method, called on `pi` as every other send of this entry is.
         sendMessage: (message, options) => pi.sendMessage(message, options),
+        // The take's text is the turn after an abort while a take is pending.
+        taskPending: () => claimSession.taskPending(),
+        log: logger,
       }),
       exits: createStallExits({
         stateDir: requiredEnvironment(process.env, "LEGION_STATE_DIR"),
@@ -561,9 +567,23 @@ export default function legionExtension(pi: PiApi): void {
     if (subagentEvent(context)) return;
     stallWatch?.executionEnded(event);
   });
+  // After the stall watch has the result, the session's own tool result carries the notes it owes
+  // (dispatch://INFRA-4130): R1's, of the claim's own task that waits for this run to end, for a
+  // phase worker alone; and R2's, one for each take of another claim of the issue the daemon
+  // holds behind this claim's turn, for every claim session. The host hands the model this
+  // `additionalContext` with the result, as a `developer` message in its next request: it carries
+  // no task, joins no message queue and starts no turn. A subagent's result is not the session's
+  // and carries none.
   pi.on("tool_result", async (event, context) => {
-    if (subagentEvent(context)) return;
+    if (subagentEvent(context)) return undefined;
     stallWatch?.resultDelivered(event);
+    const notes: string[] = [];
+    const waiting = phaseWorkerSession(context) ? claimSession.taskNote() : undefined;
+    if (waiting !== undefined) notes.push(taskWaitingNote(waiting));
+    if (claimSession.capability(context.sessionManager.getSessionId()) !== undefined) {
+      for (const { role, task } of claimSession.heldNotes()) notes.push(heldTakeNote(role, task));
+    }
+    return notes.length === 0 ? undefined : { additionalContext: notes.join("\n\n") };
   });
   // The turn is over, so every call it held open is closed and no step runs for one of them, and
   // the turn's one abort goes with them so the next turn aborts for itself (`turnEnded` in

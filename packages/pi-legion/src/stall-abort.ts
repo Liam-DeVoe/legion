@@ -33,6 +33,12 @@ import type { StallWatchdogAborter } from "@legion/pi-shared/stall-watchdog";
  * `pi-shared/src/phase-stall.ts:172-176`), so a worker restarting itself would reset that check's
  * own count of what it has reminded about.
  *
+ * **No message while the claim's take is pending** (dispatch://INFRA-4130 R6). The run the abort
+ * ended asks the take of an owed task at its `agent_end`, and the take's text starts the next run,
+ * which is that task's turn; a message of the worker's own would start a turn ahead of it. So the
+ * message is not sent while the take is pending (`TaskTake.pending`), read when the message
+ * would go, after the abort, and one line says why.
+ *
  * **Both halves fail loudly, and the ladder goes on.** A host with no `abort()`, an `abort()`
  * that throws or whose Promise rejects, and a message the host refuses each throw from here; the
  * detector records what happened and carries the call to the last step at the next gap, rather
@@ -51,6 +57,12 @@ export interface StallAborterDeps {
   /** `pi.sendMessage`: the host's own delivery, which queues the message and starts a turn on
    * it. */
   readonly sendMessage: PiApi["sendMessage"];
+  /** Whether the claim's take is pending (`ClaimSession.taskPending`): its task's text is the
+   * next turn, so the message is not sent. */
+  readonly taskPending: () => boolean;
+  readonly log: {
+    readonly info: (message: string, context?: Record<string, unknown>) => void;
+  };
 }
 
 /** The detector's `StallWatchdogAborter`: the host's `abort()`, and the one message the worker
@@ -69,11 +81,18 @@ export function createStallAborter(deps: StallAborterDeps): StallWatchdogAborter
       await abort.call(context);
     },
 
-    sendMessage: (text: string): void => {
+    sendMessage: (text: string): "sent" | "held" => {
+      if (deps.taskPending()) {
+        deps.log.info(
+          "legion: a stall abort sent no restart message, because a take of the claim's task is pending: the task's text, sent at the end of the run the abort ended, starts the next run"
+        );
+        return "held";
+      }
       deps.sendMessage(
         { customType: STALL_RESTART_MESSAGE, content: text, display: true },
         { deliverAs: "steer", triggerTurn: true }
       );
+      return "sent";
     },
   };
 }
