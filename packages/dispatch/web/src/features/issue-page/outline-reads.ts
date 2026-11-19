@@ -1,12 +1,12 @@
 import { useQueries } from "@tanstack/react-query";
 
 import { api } from "../../api/client";
-import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
+import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { refetchFailedOnFocus } from "../refs/reference-target";
 import type { IssueTreeReads, TreeNode } from "./issue-tree";
-import { issueAsksQuery, useIssueTree } from "./useIssueTree";
+import { issueAsksQuery, treeDocumentIds, useIssueTree } from "./useIssueTree";
 
 /** What each read the outline waits on takes: a copy of the tree's own rule for its reads,
  *  `useIssueTree.ts`'s `EVENT_FRESH`, which this file is to import once that file exports it.
@@ -34,6 +34,11 @@ export interface OutlineReads {
   /** Whether every read the tree's nodes come from holds its answer: `reads.held`, and every
    *  document the tree reads holding its blocks (`IssueTreeView.blocksHeld`). */
   readonly readsHeld: boolean;
+  /** Whether every read the tree's rows come from has answered, with its data or with its
+   *  failure: the six reads here and every document's blocks. It is what the page's first focus
+   *  waits on, since until then a read still out can draw rows above the row it would land on,
+   *  and a failed read answers too, where `readsHeld` would wait for ever. */
+  readonly readsSettled: boolean;
   /** The whole tree (`useIssueTree`). */
   readonly root: TreeNode;
 }
@@ -54,14 +59,23 @@ export interface OutlineReads {
 export function useOutlineReads(issue: IssueDetails): OutlineReads {
   const { blocksHeld, root } = useIssueTree(issue);
   const key = issue.key;
-  const reads = useQueries({
-    combine: (answers): OutlineReads["reads"] => {
+  const documents = useQueries({
+    combine: (answers) => answers.every((answer) => !answer.isPending),
+    // The keys and the freshness `useIssueTree` reads each document's blocks under, so these
+    // cost no request of their own.
+    queries: treeDocumentIds(issue).map((id) => ({ ...artifactBlocksQuery(id), ...EVENT_FRESH })),
+  });
+  const { reads, settled } = useQueries({
+    combine: (answers): { reads: OutlineReads["reads"]; settled: boolean } => {
       const [, , , asks, comments, messages] = answers;
       return {
-        asks: asks.data,
-        comments: comments.data,
-        held: answers.every((answer) => answer.data !== undefined),
-        messages: messages.data,
+        reads: {
+          asks: asks.data,
+          comments: comments.data,
+          held: answers.every((answer) => answer.data !== undefined),
+          messages: messages.data,
+        },
+        settled: answers.every((answer) => !answer.isPending),
       };
     },
     queries: [
@@ -77,5 +91,5 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
       },
     ],
   });
-  return { reads, readsHeld: reads.held && blocksHeld, root };
+  return { reads, readsHeld: reads.held && blocksHeld, readsSettled: settled && documents, root };
 }

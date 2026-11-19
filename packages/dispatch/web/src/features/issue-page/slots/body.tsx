@@ -55,7 +55,7 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   // that the issue holds nothing would be false on every cold load, so the outline draws nothing
   // in its place; so would `q` and `w` saying there is no question or decision to go to, so they
   // say nothing.
-  const { reads, readsHeld, root } = useOutlineReads(issue);
+  const { reads, readsHeld, readsSettled, root } = useOutlineReads(issue);
   const key = issue.key;
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the words filter would not have matched still draws it. An item
@@ -151,6 +151,7 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
             {...(ancestor === undefined ? {} : { landingReport: KEY_REPORTS.agents_thread })}
             onEditing={onEditing}
             readsHeld={readsHeld}
+            readsSettled={readsSettled}
             {...(request === undefined ? {} : { request })}
             reveal={ancestor ?? addressed.reveal}
             root={view.root}

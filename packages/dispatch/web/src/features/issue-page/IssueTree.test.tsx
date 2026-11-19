@@ -292,6 +292,7 @@ function renderTree(
     emptyLine,
     isClosed = false,
     readsHeld = true,
+    readsSettled = true,
     reveal,
   }: {
     artifacts?: Artifact[];
@@ -300,6 +301,7 @@ function renderTree(
     emptyLine?: string;
     isClosed?: boolean;
     readsHeld?: boolean;
+    readsSettled?: boolean;
     reveal?: readonly TreeNode[];
   } = {}
 ) {
@@ -308,7 +310,7 @@ function renderTree(
   });
   if (decisions !== undefined) client.setQueryData(["decisions", KEY], decisions);
   const edited: (string | undefined)[] = [];
-  const reads = { held: readsHeld };
+  const reads = { held: readsHeld, settled: readsSettled };
   const tree = { root };
   const editedDocument: { set?: OnEditing } = {};
   const seen: { path?: string } = {};
@@ -339,6 +341,7 @@ function renderTree(
                       editedDocument.set?.(artifactId, onEditor);
                     }}
                     readsHeld={reads.held}
+                    readsSettled={reads.settled}
                     reveal={reveal}
                     root={tree.root}
                     rootRow
@@ -368,6 +371,13 @@ function renderTree(
     redraw: () => view.rerender(draw()),
     reread: (next: TreeNode) => {
       tree.root = next;
+      view.rerender(draw());
+    },
+    /** Draws `next` with every read answered, as the last read to answer draws it. */
+    settle: (next: TreeNode) => {
+      tree.root = next;
+      reads.held = true;
+      reads.settled = true;
       view.rerender(draw());
     },
     ...view,
@@ -5613,13 +5623,66 @@ test("the open question the page opens on is held on screen as the page grows, u
   }
 });
 
-// The page's reads answer one after another, and a node whose parent's read has not answered
-// yet sits under the issue until it does. A read that then draws the first row under its parent
-// gives that row another key, and its old element leaves the page with the focus, which the
-// browser drops to the body. The page opened with the focus on no row (the browser row `an open
-// question is unfolded and on the first screen`, at 1440 by 900 and at 390 by 664): the opening
-// read the body as the focus somebody else had placed. It takes it again, on the first row.
-test("the page opens on its first row when a later read draws the row it focused under another key", async () => {
+/** Lets `count` animation frames pass, in which the opening gives any focus it has asked for. */
+async function framesPass(count = 3): Promise<void> {
+  for (let frame = 0; frame < count; frame += 1) {
+    await act(() => new Promise<void>((done) => requestAnimationFrame(() => done())));
+  }
+}
+
+// The reads answer one after another, and the outline's first rows were whatever had arrived:
+// the issue's children come with the issue, before the spec's blocks. The opening focused the
+// first row drawn, and a second later the row a later read drew above it, with no act of the
+// reader's: a second announcement to a screen reader, and `j` or Enter pressed in that second
+// acted on the wrong row. The first focus waits until every read has answered and lands once,
+// on the first row they order, and a question that arrives after it moves nothing.
+test("the page's first focus waits for the reads and lands once, on the first row they order", async () => {
+  setViewport(1440);
+  const child = node({ id: "comment-2", text: "The child's words.", type: "comment" });
+  const first = node({ id: "comment-1", text: "The first words.", type: "comment" });
+  const focusedRows: string[] = [];
+  const note = (event: FocusEvent) => {
+    const row = (event.target as HTMLElement).closest?.("[data-node-row]");
+    if (row !== null && row !== undefined) focusedRows.push(row.getAttribute("data-node-id") ?? "");
+  };
+  document.addEventListener("focusin", note);
+  try {
+    const view = renderTree(node({ children: [child], id: KEY, type: "issue" }), {
+      readsHeld: false,
+      readsSettled: false,
+    });
+    await waitFor(() => expect(rowsFor(view.container, "comment-2").length).toBe(1));
+    await framesPass();
+    expect(focusedRows, "the page focused a row before its reads had answered").toEqual([]);
+    view.settle(node({ children: [first, child], id: KEY, type: "issue" }));
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    // A question that waits on the reader arrives after the landing.
+    view.reread(
+      node({
+        children: [
+          first,
+          child,
+          node({ id: "ask-1", question: true, text: "Which flag?", type: "ask", waiting: true }),
+        ],
+        id: KEY,
+        type: "issue",
+      })
+    );
+    await waitFor(() => expect(rowsFor(view.container, "ask-1").length).toBe(1));
+    await framesPass();
+    expect(focusedRows, "the page's first focus moved after it landed").toEqual(["comment-1"]);
+    view.unmount();
+  } finally {
+    document.removeEventListener("focusin", note);
+  }
+});
+
+// A read after the page opened on its first row can draw that row's node under a parent that
+// has arrived since, folded over it, which takes the row out of the page with the focus, and the
+// browser drops it to the body. The page then held the focus on no row (the browser row `an open
+// question is unfolded and on the first screen`, at 1440 by 900 and at 390 by 664). The opening,
+// whose node the page draws nowhere now, ends, and the focus goes to the row at its place.
+test("a read that draws the first row's node nowhere gives the focus to the row now at its place", async () => {
   setViewport(1440);
   const reply = node({ id: "comment-2", text: "A reply.", type: "comment" });
   const later = node({ id: "comment-9", text: "Later words.", type: "comment" });
@@ -5650,9 +5713,10 @@ test("the page opens on its first row when a later read draws the row it focused
 
 // The same where the read draws the row the opening focused again, under its new parent, and a
 // row above it: the parent holds an open question that waits on somebody else, so its branch is
-// drawn. The row's old element leaves the page with the focus, and the opening gives it to the
-// outline's first row as it now is.
-test("a focus a redraw drops while the page opens goes back to the outline's first row", async () => {
+// drawn. The row's old element leaves the page with the focus, and the opening gives it back to
+// the same node's new row: the first row drawn above it now takes none, since the page's first
+// focus lands once and moves to no other row.
+test("a focus a redraw drops while the page opens goes back to the same node's new row", async () => {
   setViewport(1440);
   const theirs = node({ id: "ask-theirs", question: true, text: "Not yours?", type: "ask" });
   const later = node({ id: "comment-9", text: "Later words.", type: "comment" });
@@ -5682,7 +5746,7 @@ test("a focus a redraw drops while the page opens goes back to the outline's fir
   expect(drawnAgain).toHaveLength(1);
   expect(drawnAgain).not.toContain(theirsKey);
   await waitFor(() =>
-    expect(focusedRow(container), "the row drawn again lost the focus").toBe("comment-1")
+    expect(focusedRow(container), "the row drawn again lost the focus").toBe("ask-theirs")
   );
 });
 
@@ -6174,11 +6238,10 @@ test("a focus a script puts on a control before the question's landing frame sta
   }
 });
 
-// While the question's landing waits for its frame, the first row the opening focused before
-// keeps the focus, which is still the opening's: reads that draw the tree again meanwhile end
+// While the question's landing waits for its frame, reads that draw the tree again meanwhile end
 // nothing, and the opening goes on - here through a later read that draws the question's row
-// again under another key.
-test("the first row the opening focused keeps the opening's focus while the question's landing waits", async () => {
+// again under another key, which gives the focus back to the question's new row.
+test("reads that draw the tree again while the question's landing waits end nothing, and the opening goes on", async () => {
   setViewport(1440);
   const first = node({ id: "comment-1", text: "The first words.", type: "comment" });
   const question = node({
@@ -6190,16 +6253,14 @@ test("the first row the opening focused keeps the opening's focus while the ques
   });
   const frames = framesByHand();
   try {
-    const tree = renderPageTree(node({ children: [first], id: KEY, type: "issue" }));
-    const { container } = tree.view;
-    await frames.run();
-    expect(focusedRow(container)).toBe("comment-1");
-    // The asks' read answers, and other reads draw the tree again before the landing's frame.
     const asking = node({ children: [first, question], id: KEY, type: "issue" });
+    const tree = renderPageTree(asking);
+    const { container } = tree.view;
+    // Other reads draw the tree again before the landing's frame.
     tree.redraw(asking);
     tree.redraw(asking);
     await frames.run();
-    expect(focusedRow(container), "the question whose read answered took no focus").toBe("ask-1");
+    expect(focusedRow(container), "the question that waits took no focus").toBe("ask-1");
 
     // A later read places the question under a node that has arrived since.
     tree.redraw(
@@ -6222,64 +6283,6 @@ test("the first row the opening focused keeps the opening's focus while the ques
     expect(
       focusedRow(container),
       "the question's row drawn again lost the focus: a redraw while its landing waited ended the opening"
-    ).toBe("ask-1");
-  } finally {
-    frames.restore();
-  }
-});
-
-// The same where a read draws the first row the opening focused again under another key before
-// the question's landing frame: the row's old element leaves the page with the focus, which the
-// browser drops to the body, where nobody holds it, and the opening goes on. Read as somebody
-// else's focus - on neither the row the landing found it on nor the question's - it ended the
-// opening: the frame still landed on the question, and the next read that drew the question's
-// row again under another key left the focus on the page.
-test("a focus a redraw drops from the first row while the question's landing waits is still the opening's", async () => {
-  setViewport(1440);
-  const theirs = node({ id: "ask-theirs", question: true, text: "Not yours?", type: "ask" });
-  const question = node({
-    id: "ask-1",
-    question: true,
-    text: "Which flag?",
-    type: "ask",
-    waiting: true,
-  });
-  // A node that has arrived since, holding `one`: a thread the frontier opens, since what it
-  // holds is an open question.
-  const thread = (id: string, one: TreeNode) =>
-    node({ children: [one], held: 1, id, text: "A thread.", type: "comment" });
-  const frames = framesByHand();
-  try {
-    const tree = renderPageTree(node({ children: [theirs], id: KEY, type: "issue" }));
-    const { container } = tree.view;
-    await frames.run();
-    expect(focusedRow(container)).toBe("ask-theirs");
-    const firstRow = rowsFor(container, "ask-theirs")[0];
-
-    // The asks' read answers, and before the landing's frame a later read places the first row
-    // under a node that has arrived since.
-    tree.redraw(node({ children: [theirs, question], id: KEY, type: "issue" }));
-    tree.redraw(
-      node({ children: [thread("comment-1", theirs), question], id: KEY, type: "issue" })
-    );
-    expect(rowsFor(container, "ask-theirs"), "the read drew the first row nowhere").toHaveLength(1);
-    expect(rowsFor(container, "ask-theirs")[0], "the read kept the first row").not.toBe(firstRow);
-    expect(document.activeElement).toBe(document.body);
-    await frames.run();
-    expect(focusedRow(container), "the question's landing took no focus").toBe("ask-1");
-
-    // A later read places the question under a node that has arrived since.
-    tree.redraw(
-      node({
-        children: [thread("comment-1", theirs), thread("comment-2", question)],
-        id: KEY,
-        type: "issue",
-      })
-    );
-    await frames.run();
-    expect(
-      focusedRow(container),
-      "the question's row drawn again lost the focus: the first row's redraw while the landing waited ended the opening"
     ).toBe("ask-1");
   } finally {
     frames.restore();
@@ -7729,6 +7732,11 @@ function renderAddressedBody(
   );
   const view = render(draw());
   return {
+    /** Goes back one entry, as the browser's Back does: the entry keeps its own location key. */
+    back: () =>
+      act(async () => {
+        await held.navigate?.(-1);
+      }),
     client,
     follow: (to: string) =>
       act(async () => {
@@ -7738,6 +7746,39 @@ function renderAddressedBody(
     view,
   };
 }
+
+// A fold of a branch on an address's own path lets it go of the hold for that following. The fold
+// was kept under the following's location key, and Back gives an earlier entry's own key back:
+// coming back to the address drew its node nowhere, folded under the branch. Following anything
+// else forgets the fold, so Back holds the path again and draws the node.
+test("Back to an address after a fold on its path draws its node again", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS);
+    const { container } = body.view;
+    await waitFor(() => expect(focusedRow(container)).toBe("head-a"));
+    await body.follow(buildIssuePath({ id: "reply-b", key: KEY, kind: "comment" }));
+    await waitFor(() => expect(focusedRow(container)).toBe("reply-b"));
+    await user.keyboard("{ArrowLeft}");
+    await waitFor(() => expect(focusedRow(container)).toBe("head-b"));
+    await user.keyboard("{ArrowLeft}");
+    await waitFor(() => expect(rowsFor(container, "reply-b").length).toBe(0));
+
+    await body.follow(`/issues/${KEY}`);
+    await body.back();
+    await waitFor(() =>
+      expect(
+        rowsFor(container, "reply-b").length,
+        "Back to the address drew its node nowhere, folded under the branch"
+      ).toBe(1)
+    );
+    expect(rowsFor(container, "head-b")[0]?.getAttribute("aria-expanded")).toBe("true");
+  } finally {
+    names.mockRestore();
+  }
+});
 
 // The architect's rule for an address of a node of the issue: following a link to it opens the
 // branches above the node and puts the focus on its row. A zoom the reader held on another branch
@@ -8091,9 +8132,10 @@ test("a line drawn after the reader's row left the outline and they pressed a co
 
 // The line saying the outline holds no row of the block a `#b-` address names is drawn once the
 // last of the tree's reads answers, which can be after a read that answered first drew the rows
-// and the reader moved to one of them by a key: drawn in place of the outline, it takes the focus
-// the outline took off the page with it, as an item's line does. Here the messages' read is the
-// last to answer.
+// and the reader moved to one of them by keys: the page places no focus of its own until every
+// read has answered, so they entered the outline with Tab. Drawn in place of the outline, the
+// line takes the focus the outline took off the page with it, as an item's line does. Here the
+// messages' read is the last to answer.
 test("the line that names no row of a block, drawn in place of the outline after the reader moved to a row, takes the focus", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -8109,6 +8151,7 @@ test("the line that names no row of a block, drawn in place of the outline after
       [["issue-messages", KEY]]
     );
     await waitFor(() => expect(messages).toHaveBeenCalled());
+    await user.tab();
     await moveOnFromFirstRow(user, view.container);
 
     await act(async () => answer.resolve([]));
