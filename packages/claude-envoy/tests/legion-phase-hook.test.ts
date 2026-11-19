@@ -9,7 +9,9 @@ import {
 } from "@legion/envoy-client/transport"
 import { type ActivityInput, createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
+import { OWED_READ_BOUND_MS } from "@legion/pi-shared/phase-reminder"
 import { owedReminder } from "@legion/pi-shared/phase-stall"
+import { ACTIVITY_REPORT_BOUND_MS } from "@legion/pi-shared/session-activity"
 import {
   createPhaseHookEndpoint,
   PHASE_HOOK_REFUSAL,
@@ -41,6 +43,21 @@ const REMINDER = owedReminder(WORK)
 /** The stand-in daemon's answers to `POST /legion/v1/claims/owed`. */
 const owesWork = () => Response.json({ owes: true, work: WORK })
 const owesNothing = () => Response.json({ owes: false, work: "" })
+
+/** A route of the stand-in daemon that takes each request and never answers it. The request stays
+ * open until its caller aborts it, and then fails as `fetch` does. `signals` holds the signal each
+ * request carried, so a case reads whether its caller aborted it. */
+function answersNever() {
+  const signals: (AbortSignal | undefined)[] = []
+  const route = (init: RequestInit | undefined): Promise<Response> => {
+    const signal = init?.signal ?? undefined
+    signals.push(signal)
+    const open = Promise.withResolvers<Response>()
+    signal?.addEventListener("abort", () => open.reject(signal.reason), { once: true })
+    return open.promise
+  }
+  return { route, signals }
+}
 
 /**
  * The four numbers every case runs on, through the environment the endpoint is given: no test
@@ -108,7 +125,9 @@ async function harness(
     /** Whether the daemon refuses every activity report: the hook still answers its worker. */
     readonly reportActivityFails?: boolean
     /** What the daemon answers `claims/owed`: that the claim owes `WORK`, unless given. */
-    readonly owed?: () => Response
+    readonly owed?: (init: RequestInit | undefined) => Response | Promise<Response>
+    /** What the daemon answers `claims/activity`: the empty 204, unless given. */
+    readonly activity?: (init: RequestInit | undefined) => Response | Promise<Response>
   } = {},
 ): Promise<Harness> {
   const directory = await mkdtemp(join(tmpdir(), "claude-envoy-phase-hook-"))
@@ -122,10 +141,14 @@ async function harness(
   let owed = options.owed ?? owesWork
   const asked: unknown[] = []
   const fetchStub = (async (input, init) => {
-    if (new URL(input.toString()).pathname === "/legion/v1/claims/owed") {
+    const { pathname } = new URL(input.toString())
+    if (pathname === "/legion/v1/claims/owed") {
       atRead = await record()
       asked.push(JSON.parse(String(init?.body)))
-      return owed()
+      return owed(init)
+    }
+    if (pathname === "/legion/v1/claims/activity") {
+      return options.activity?.(init) ?? new Response(null, { status: 204 })
     }
     return Response.json({ error: "no stand-in route" }, { status: 404 })
   }) as typeof fetch
@@ -144,9 +167,12 @@ async function harness(
       turnsStarted += 1
     },
     readOwed: (question, signal) => daemon.owed(question, { signal }),
-    reportActivity: async (input) => {
+    // Through the daemon client, as the channel server sends it, so the signal the bound aborts
+    // reaches the stand-in daemon's request.
+    reportActivity: async (input, signal) => {
       reports.push(input)
       if (options.reportActivityFails === true) throw new Error("the daemon refused the report")
+      await daemon.activity(input, { signal })
     },
     inbox:
       options.inbox === false
@@ -400,6 +426,58 @@ test("a report the daemon refuses still leaves the worker its reminder", async (
     await close()
   }
 })
+
+// INFRA-2746 R7: the `Stop` hook awaits the owed read and then the activity report, and Claude
+// Code ends the hook at 30 s. Each wait has its bound, so a daemon that answers neither route costs
+// the turn end the two bounds, about 6 s, and is left no open request.
+test(
+  "a Stop finishes inside its bound when the daemon answers no route",
+  async () => {
+    const owed = answersNever()
+    const activity = answersNever()
+    const { endpoint, inbox, lines, close } = await harness({
+      record: recorded("active", 0),
+      claim: implementer,
+      owed: owed.route,
+      activity: activity.route,
+    })
+    try {
+      const started = performance.now()
+      const answer = await endpoint.handle({ event: "Stop", lastAssistantMessage: "Pushed." })
+      const elapsed = performance.now() - started
+
+      expect(elapsed).toBeLessThan(OWED_READ_BOUND_MS + ACTIVITY_REPORT_BOUND_MS + 1_000)
+      // The read failed, so the turn ends with no reminder.
+      expect(answer).toEqual({})
+      expect(inbox).toEqual([])
+      // Each bound aborted the request it cut off, rather than only ending the wait for it.
+      expect(owed.signals).toHaveLength(1)
+      expect(owed.signals[0]?.aborted).toBe(true)
+      expect(activity.signals).toHaveLength(1)
+      expect(activity.signals[0]?.aborted).toBe(true)
+      // Each failure is logged with its bound as its cause.
+      expect(
+        lines.filter(
+          (line) =>
+            line.startsWith(
+              "warn: legion: the daemon did not say what this claim owes; no reminder is sent",
+            ) && line.includes(`"cause":"no answer within ${OWED_READ_BOUND_MS}ms"`),
+        ),
+      ).toHaveLength(1)
+      expect(
+        lines.filter(
+          (line) =>
+            line.startsWith(
+              "warn: legion: this session's activity report did not reach the daemon",
+            ) && line.includes(`"error":"no answer within ${ACTIVITY_REPORT_BOUND_MS}ms"`),
+        ),
+      ).toHaveLength(1)
+    } finally {
+      await close()
+    }
+  },
+  OWED_READ_BOUND_MS + ACTIVITY_REPORT_BOUND_MS + 10_000,
+)
 
 test("a session holding no claim reports nothing", async () => {
   const { endpoint, reports, close } = await harness({ record: recorded("active", 0) })

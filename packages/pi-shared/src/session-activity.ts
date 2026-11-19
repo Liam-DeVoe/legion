@@ -3,6 +3,7 @@ import type {
   LegionActivityRequestBody,
   LegionSessionActivityBody,
 } from "@legion/contracts/legion-api";
+import { withBound } from "./daemon-client";
 import type { ClaimCapability } from "./legion-phase-ops";
 
 /**
@@ -10,10 +11,13 @@ import type { ClaimCapability } from "./legion-phase-ops";
  * whether the session's pod may be released: work of the session's own still running in the
  * background, and the phase reminder's armed wake.
  *
- * The module is pure. It builds a report, compares two of them and renders the request that
- * carries one; the hosts — `packages/pi-legion/extensions/legion.ts` at `session_stop` and on a
- * change, `packages/claude-envoy/src/legion-phase-hook.ts` at the `Stop` hook — are what send it.
- * Neither host decides what the report says, so the two say the same thing about the same session.
+ * The module builds a report, compares two of them, renders the request that carries one and
+ * sends that request under its bound (`reportActivityWithin`). The hosts decide when to send it:
+ * `packages/pi-legion/extensions/legion.ts` at `session_stop` and on a change, and
+ * `packages/claude-envoy/src/legion-phase-hook.ts` at the `Stop` hook and when a timer clears the
+ * reminder wake.
+ * Neither host decides what the report says, or how long it waits for the daemon to take it, so
+ * the two say the same thing about the same session.
  *
  * A claim with no report after its last turn is never released, so a host that reports nothing
  * holds its pod rather than losing it: every failure here is a report not sent.
@@ -133,4 +137,46 @@ export function sessionActivityRequest(input: {
     secret: claim.secret,
     activity: input.report,
   };
+}
+
+/**
+ * How long a host waits for the daemon to take one activity report: 3 s, the same bound as the
+ * owed read (`OWED_READ_BOUND_MS` in `src/phase-reminder.ts`). Each host's turn-end handler awaits
+ * the report, so this bound is part of the handler's own bound (dispatch://INFRA-2746/spec#b-r7).
+ *
+ * These are every wait of the two handlers. Oh My Pi's `session_stop` handler for a phase worker
+ * (`packages/pi-legion/extensions/legion.ts`) waits on `phaseReminder.settle`, whose one daemon
+ * read is the owed check, bounded at `OWED_READ_BOUND_MS` (3 s); on `pi.appendEntry` from the
+ * reminder's `writeEntry`, which runs in the process; and on the activity report, bounded here.
+ * For an architect it waits on the activity report alone. Claude Code's `Stop` hook
+ * (`packages/claude-envoy/src/legion-phase-hook.ts`) waits on `reminder.settle`, the same owed
+ * check, and on `sendActivity`, bounded here. So when the daemon does not answer, each handler
+ * returns within about 6 s. That is well inside the 30 s Oh My Pi gives a handler, and the 30 s
+ * Claude Code gives the `Stop` hook (`packages/claude-envoy/scripts/build.ts`). Before this bound
+ * the report waited for as long as the daemon did: INFRA's daemon log of 2026-11-13 holds 249
+ * `session_stop` handler timeouts (`handler timed out after 30000ms`), and a 250th line that
+ * quotes one of them. pi-envoy's own `session_stop` handlers are another extension, with a limit
+ * of their own.
+ *
+ * A report the bound cuts off is a report not sent, and it costs each host this. On Oh My Pi, a
+ * failed report clears `lastActivity`, so the next 5 s reading (`SESSION_ACTIVITY_PERIOD_MS`)
+ * sends it again. On Claude Code, which reports only at `Stop` and when a timer clears the
+ * reminder wake, the claim stays unreported until its next report, and for that time the idle
+ * release holds its pod (`IdleHoldUnreported` in `packages/daemon/internal/workflow/idle.go`).
+ */
+export const ACTIVITY_REPORT_BOUND_MS = 3_000;
+
+/**
+ * Sends `request` through `send` and waits at most `ACTIVITY_REPORT_BOUND_MS` for the daemon to
+ * take it. At the bound the signal `send` was handed is aborted, so the request does not stay
+ * open, and the promise rejects with `no answer within 3000ms` (`withBound` in
+ * `src/daemon-client.ts`, which also bounds the owed read). `send` is the host's
+ * `LegionDaemonClient.activity`, given the signal. Both hosts send every report through this,
+ * and each keeps its own handling of a rejection.
+ */
+export function reportActivityWithin(
+  send: (request: LegionActivityRequestBody, signal: AbortSignal) => Promise<void>,
+  request: LegionActivityRequestBody
+): Promise<void> {
+  return withBound((signal) => send(request, signal), ACTIVITY_REPORT_BOUND_MS);
 }

@@ -7,7 +7,7 @@ import {
   type PublishInput,
   type PublishResult,
 } from "@legion/envoy-client/transport";
-import type { OwedInput } from "./daemon-client";
+import { type OwedInput, withBound } from "./daemon-client";
 import type { ClaimCapability } from "./legion-phase-ops";
 import {
   LAST_MESSAGE_LIMIT,
@@ -196,26 +196,9 @@ function roleUnheld(error: unknown): boolean {
   return body.reason === "unclaimed" || body.reason === "holder_lapsed";
 }
 
-/** `work`'s answer, or a rejection once `ms` have passed without one, when the signal `work` was
- * handed is aborted so what it started does not outlive the bound (`withinBudget` in
- * `src/capability-report.ts` is the same shape, with a fallback answer in place of the throw). */
-async function withBound<T>(work: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> {
-  const controller = new AbortController();
-  const deadline = Promise.withResolvers<T>();
-  const timer = setTimeout(() => {
-    const late = new Error(`no answer within ${ms}ms`);
-    deadline.reject(late);
-    controller.abort(late);
-  }, ms);
-  try {
-    return await Promise.race([work(controller.signal), deadline.promise]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 /** What `claim` owes, asked through `readOwed` with the claim's own credential and bounded by
- * `ms` (`withBound`). The phase reminder's owed check and the stall watch's notice
+ * `ms` (`withBound` in `src/daemon-client.ts`, which also bounds the turn-end activity report).
+ * The phase reminder's owed check and the stall watch's notice
  * (`pi-legion/src/stall-evidence.ts`) both ask it this way, so the two ask the same question.
  * Each catches its own failure and logs its own line, because a read that fails means something
  * different to each: the reminder reminds no one, and the notice goes to the tree's architect. */

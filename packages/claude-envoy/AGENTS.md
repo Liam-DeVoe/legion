@@ -155,7 +155,8 @@ server, which `--mcp-config` registers under that bare name
 (`packages/daemon/internal/claudelaunch`) — calling the tool `legion_phase_hook` that
 `src/envoy-channel-server.ts` registers from `phaseHookToolDefinition()`. Claude Code substitutes
 each `${…}` as a string, which the endpoint parses. `Stop` (30 s, since its answer waits on the
-runner's owed check, bounded at `OWED_READ_BOUND_MS`) carries `${last_assistant_message}`
+runner's owed check, bounded at `OWED_READ_BOUND_MS`, and on the activity report, bounded at
+`ACTIVITY_REPORT_BOUND_MS`) carries `${last_assistant_message}`
 and `${stop_hook_active}`; `StopFailure` (10 s) the last message; `PostToolUse` and
 `PostToolUseFailure` (10 s) `${tool_name}` and `${agent_id}`; `UserPromptSubmit` (10 s)
 `${prompt}`. They belong to the generated `legion/` plugin alone, never to `hooks/hooks.json`:

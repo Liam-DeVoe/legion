@@ -41,6 +41,7 @@ import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi
 import { legionRoleClaimBridge } from "@legion/pi-shared/role-claim-bridge";
 import {
   asyncJobKinds,
+  reportActivityWithin,
   type SessionActivityReport,
   sameSessionActivity,
   sessionActivity,
@@ -327,6 +328,11 @@ export default function legionExtension(pi: PiApi): void {
    * that content changed, so the cost between turns is one object comparison, and five seconds
    * bounds how stale the daemon's view of a job that just started can be against a release rule
    * measured in minutes.
+   *
+   * Every report is sent under `ACTIVITY_REPORT_BOUND_MS` (`reportActivityWithin`), because
+   * `session_stop` awaits it: a daemon that does not answer holds the turn end here for at most
+   * 3 s, so the handler stays inside Oh My Pi's 30 s limit. A report the bound cuts off is a
+   * failed report like any other.
    */
   const SESSION_ACTIVITY_PERIOD_MS = 5_000;
   let lastActivity: SessionActivityReport | undefined;
@@ -357,7 +363,10 @@ export default function legionExtension(pi: PiApi): void {
     if (request === undefined) return;
     lastActivity = report;
     try {
-      await roleDaemon().activity(request);
+      await reportActivityWithin(
+        (body, signal) => roleDaemon().activity(body, { signal }),
+        request
+      );
     } catch (error) {
       // The daemon did not take it, so it is not what the daemon holds: the next reading sends
       // again whether or not its content moved.

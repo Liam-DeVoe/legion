@@ -13,6 +13,7 @@ import {
 import { type PhaseStallEntry, phaseStallEntryFrom } from "@legion/pi-shared/phase-stall"
 import {
   CLAUDE_BACKGROUND_TASK_KIND,
+  reportActivityWithin,
   sessionActivity,
   sessionActivityRequest,
 } from "@legion/pi-shared/session-activity"
@@ -171,8 +172,11 @@ export interface PhaseHookDeps {
    * no one. */
   readonly readOwed: (input: OwedInput, signal: AbortSignal) => Promise<LegionOwed>
   /** Sends this session's activity report to the daemon (`LegionDaemonClient.activity`), so the
-   * idle rule can decide whether the pane's pod may be released (INFRA-945). */
-  readonly reportActivity: (input: ActivityInput) => Promise<void>
+   * idle rule can decide whether the pane's pod may be released (INFRA-945). The request is to
+   * abort with `signal`, which is aborted once `ACTIVITY_REPORT_BOUND_MS` passes without an
+   * answer (`reportActivityWithin`, `@legion/pi-shared/session-activity`), so a daemon that hangs
+   * is left no open request. */
+  readonly reportActivity: (input: ActivityInput, signal: AbortSignal) => Promise<void>
   /** Writes one line into the session over the bridge's inbox, which turns it into a user turn,
    * and resolves once the bridge has queued it. Undefined for a session outside a Legion pane,
    * where nothing can reach the worker between its turns. */
@@ -416,7 +420,9 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
    *
    * A report that does not reach the daemon is logged and dropped: the turn's reminder is what
    * the hook owes its worker, and a claim with no report after its last turn is held rather than
-   * released.
+   * released. The report is bounded at `ACTIVITY_REPORT_BOUND_MS` (`reportActivityWithin`),
+   * because the `Stop` hook awaits it: a daemon that does not answer holds the turn end here for
+   * at most 3 s. A report the bound cuts off leaves the claim unreported until its next report.
    */
   const sendActivity = async (claim: ClaimCapability, backgroundWork: boolean): Promise<void> => {
     const request = sessionActivityRequest({
@@ -429,7 +435,7 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     })
     if (request === undefined) return
     try {
-      await deps.reportActivity(request)
+      await reportActivityWithin(deps.reportActivity, request)
     } catch (error) {
       deps.log.warn("legion: this session's activity report did not reach the daemon", {
         issue: claim.issue,

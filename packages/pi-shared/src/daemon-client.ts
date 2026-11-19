@@ -114,8 +114,14 @@ export interface LegionDaemonClient {
     input: z.input<typeof LegionTurnOutcomeRequest>
   ) => Promise<z.output<typeof LegionTurnOutcomeResponse>>;
   /** The session's report of what it is doing, after each of its turns and whenever the report's
-   * content changes. It is authenticated by the claim, as `ready` is, and answers 204. */
-  readonly activity: (input: ActivityInput) => Promise<void>;
+   * content changes. It is authenticated by the claim, as `ready` is, and answers 204. `signal`
+   * aborts the request, its answer's body included: both hosts send the report under
+   * `ACTIVITY_REPORT_BOUND_MS` (`reportActivityWithin` in `src/session-activity.ts`) and abort it
+   * at the bound rather than leave it open. */
+  readonly activity: (
+    input: ActivityInput,
+    options?: { readonly signal?: AbortSignal }
+  ) => Promise<void>;
   /** What this session's claim owes now, read from the daemon's record, and what that work is
    * called (`POST /legion/v1/claims/owed`). It is authenticated by the claim, as `activity` is,
    * and changes nothing. `signal` aborts the request, its answer's body included: the phase
@@ -389,6 +395,31 @@ export async function retryWhileDaemonRestarts<T>(
   }
 }
 
+/** `work`'s answer, or a rejection once `ms` have passed without one, when the signal `work` was
+ * handed is aborted so what it started does not outlive the bound. The rejection, and the abort's
+ * reason, is `no answer within <ms>ms`. The phase reminder's owed read (`readOwedWithin` in
+ * `src/phase-reminder.ts`) and the turn-end activity report (`reportActivityWithin` in
+ * `src/session-activity.ts`) are bounded through it, so a daemon that does not answer is named
+ * the same way in both log lines. `withinBudget` in `packages/pi-legion/src/capability-report.ts`
+ * is the same shape, with a fallback answer in place of the throw. */
+export async function withBound<T>(
+  work: (signal: AbortSignal) => Promise<T>,
+  ms: number
+): Promise<T> {
+  const controller = new AbortController();
+  const deadline = Promise.withResolvers<T>();
+  const timer = setTimeout(() => {
+    const late = new Error(`no answer within ${ms}ms`);
+    deadline.reject(late);
+    controller.abort(late);
+  }, ms);
+  try {
+    return await Promise.race([work(controller.signal), deadline.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** `body` read through `schema`, or the reason it is not what the schema describes. The answer
  * schemas ignore a key they do not name, so a body carrying a field this build's contract has no
  * name for is read and that field left out of the value; what is refused is a body that is not
@@ -513,7 +544,7 @@ export function createLegionDaemonClient(
         LegionTurnOutcomeResponse,
         input
       ),
-    activity: (input) => acknowledge("/legion/v1/claims/activity", input),
+    activity: (input, options) => acknowledge("/legion/v1/claims/activity", input, options?.signal),
     // async, so a request the contract refuses comes back as a rejected promise, not a throw.
     owed: async (input, options) =>
       post("/legion/v1/claims/owed", LegionOwedRequest, LegionOwedResponse, input, options?.signal),
