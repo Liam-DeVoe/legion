@@ -60,7 +60,7 @@ func TestTheHeadsAReaderDrawsCutNoReferenceInHalf(t *testing.T) {
 func TestEveryHeadCutOfDispatchTextIsListed(t *testing.T) {
 	exempt := map[string]string{
 		"api/messages.go messageReplyPreview": "the parent's text a reply's event and delivery frame carry, which an agent reads as written",
-		"api/results.go cutWords":             "a check's line in the pull request body, which GitHub draws, not Dispatch",
+		"api/results.go cut":                  "a check's line in the pull request body, which GitHub draws, not Dispatch",
 		"api/results_ci.go ciObserved":        "a CI run's output, a check result's observed text drawn as the characters it is",
 		"api/results_ci.go ciUnreadDetail":    "the server's own words on a CI read it could not make, quoting GitHub's error",
 		"embed/embed.go boundBatch":           "the input of an embedding, which no person reads",
