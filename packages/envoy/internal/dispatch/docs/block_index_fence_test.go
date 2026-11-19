@@ -170,7 +170,7 @@ func writeVersionThroughTheRealPath(t *testing.T, service *Service, artifactID, 
 		t.Fatalf("encode the version event's payload: %v", err)
 	}
 	event := appendDocumentEvent(t, ctx, tx, "artifact.version", payload)
-	if err := graphstore.Caused(ctx, tx, result.Blocks, event); err != nil {
+	if err := causeInWritePhase(joined, tx, result.Blocks, event); err != nil {
 		t.Fatalf("append what the version's block index stated: %v", err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
@@ -527,7 +527,7 @@ func requireTheVersionWriteIsFenced(t *testing.T, database *store.Store, service
 			if err != nil {
 				return err
 			}
-			if err := graphstore.Caused(ctx, tx, write, event); err != nil {
+			if err := causeInWritePhase(joined, tx, write, event); err != nil {
 				return fmt.Errorf("append what the index stated: %w", err)
 			}
 			return ledger.Commit(ctx)

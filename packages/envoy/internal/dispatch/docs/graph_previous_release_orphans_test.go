@@ -48,11 +48,11 @@ func TestARollTickStatesGoneTheNodeOfADocumentThePreviousReleaseRemoved(t *testi
 }
 
 // The build's debt of the object pass is in its cursor row, so whichever process of the build
-// holds the lease next runs the pass: a process's joining tick finds 25 orphaned documents, states
-// the bound of 20 gone, keeps the debt and is full; a tick of another process of the build, which
-// joins nothing and finds no other build, reads that debt, states the 5 left gone and clears it;
-// and a document removed after that, with nothing owed, is owed by its removal's event, so the
-// next tick states it gone.
+// holds the lease next runs the pass: a process's first tick finds 25 orphaned documents, states
+// the bound of 20 gone, keeps the debt and is full; a tick of another process of the build, one
+// that finished a pass of its own a moment ago, so that only the debt owes it the pass, reads that
+// debt, states the 5 left gone and clears it; and a document removed after that, with nothing
+// owed, is owed by its removal's event, so the next tick states it gone.
 //
 // Its control is the debt cleared whatever the pass left: the second process's tick then runs no
 // pass, and the 5 stay orphaned.
@@ -66,11 +66,11 @@ func TestTheObjectPassDebtCrossesProcessesAndClearsOnceThePassFinishes(t *testin
 	}
 	joined := awaitedBlockIndexTick(t, first)
 	if joined.OrphansGone != orphanedNodesSwept || !joined.Full || objectNodesOwed(t, database) == nil {
-		t.Fatalf("the joining tick stated %d orphan(s) gone, full %t, owed %v; want the bound of %d, a full tick and the debt kept",
+		t.Fatalf("the first tick stated %d orphan(s) gone, full %t, owed %v; want the bound of %d, a full tick and the debt kept",
 			joined.OrphansGone, joined.Full, objectNodesOwed(t, database), orphanedNodesSwept)
 	}
 	second := blockIndexProcess(t, database, "")
-	second.eventCursorJoined.Store(true)
+	second.objectPassFinished.Store(time.Now().UnixNano())
 	if tick := awaitedBlockIndexTick(t, second); tick.OrphansGone != 5 || objectNodesOwed(t, database) != nil {
 		t.Errorf("the other process's tick stated %d orphan(s) gone and left the debt at %v, want the 5 left and the debt cleared",
 			tick.OrphansGone, objectNodesOwed(t, database))

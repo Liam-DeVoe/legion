@@ -98,16 +98,26 @@ func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database
 	`, payload).Scan(&event); err != nil {
 		t.Fatalf("record the document's event: %v", err)
 	}
-	if err := graphstore.Caused(ctx, tx, documentNode, event); err != nil {
+	if err := causeInWritePhase(joined, tx, documentNode, event); err != nil {
 		t.Fatalf("append what the document's node write stated: %v", err)
 	}
-	if err := graphstore.Caused(ctx, tx, write, event); err != nil {
+	if err := causeInWritePhase(joined, tx, write, event); err != nil {
 		t.Fatalf("append what the write's block index stated: %v", err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit the document write: %v", err)
 	}
 	return artifactID
+}
+
+// causeInWritePhase queues the append of what written stated under event, the event that caused
+// it, on the write phase of the ledger ctx joins tx to, after every write queued so far, as the
+// routes queue it after their event (graphstore.QueueCaused). The node write it moves onto that
+// event is queued there as well and runs only once the ledger commits, so an append run at once
+// would run before the rows it settles exist. A transaction no ledger joins runs it at once
+// (write).
+func causeInWritePhase(ctx context.Context, tx pgx.Tx, written graphstore.Uncaused, event int64) error {
+	return write(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueCaused(b, written, event) })
 }
 
 // countRows is one count over the document's rows of a table keyed by artifact_id.
@@ -516,7 +526,7 @@ var indexPasses = map[string]string{
 	// project or between the parties it belongs to, and caused by the event the create appends.
 	"api/reviews.go#openApprovalAsk":             "the approval request the request opens and the ask.opened it appended",
 	"docs/ask_blocks.go#createAskBlock":          "the ask block the settlement opens and the document that holds it",
-	"api/messages.go#writeMessageNode":           "the message the request stores, its issue, and the root of the thread it answers",
+	"api/artifacts.go#queueNewArtifact":          "the document the upload creates, the node the store holds at its address, and the event the upload appends",
 	"api/messages.go#createStoredMessage":        "the message the request stores and the event it appended",
 	"api/message_delivery.go#insertSessionReply": "the session's reply the request stores and the event it appended",
 	"api/broadcasts.go#writeBroadcast":           "each copy the broadcast stores and the event it appended for it",
@@ -556,6 +566,14 @@ var indexPasses = map[string]string{
 	"graphcensus/backfill.go#writeBlockBatch":    "each pre-store document_blocks row's own content and the document it is in",
 	"graphcensus/backfill.go#writeBlockRefBatch": "each pre-store block_refs row's own content",
 	"graphcensus/backfill.go#writeCommentBatch":  "each pre-store comments row's own content",
+	// The comment write both of the comment batch's writers share: the node of each comment the
+	// write stated, named on that comment's own row (graphcensus.CommentWrite).
+	"graphcensus/backfill.go#NameNodes": "the comments rows whose nodes the write stated",
+	// The block-index tick's write of the comments the events after its cursor name whose rows name
+	// no node: the backfill's write of each such row, read from the row's own content, with the
+	// event that stored it as its cause (graphcensus.CommentsNamingNoNode). It reads no side of a
+	// projection to mend the other and leaves alone a row that names its node.
+	"docs/block_index_roll.go#writeCommentsTheEventsName": "each comments row an event after the cursor names that names no node, and the event that stored it",
 	// The backfill of the roles. A role, its page and the page's part_of it have no projection
 	// row, so there is no projection to read one side of: the batch's input is the roles the
 	// store census holds to a node, which a row addresses now or an event of the log ever
@@ -648,7 +666,7 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // SessionRecorded writes a session's node through arms of its own, and a pass that wrote the
 // store through it alone would otherwise be read as no writer at all, and FillScopes is the
 // backfill's fill of the project of a node stored with none.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|SessionRecorded|WriteArms|WriteArmsUncaused|EraseNode|FillScopes)\b`)
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|QueueWrite|QueueNodes|QueueCaused|Authored|Reached|SessionRecorded|QueueAuthored|QueueReached|QueueSessionRecorded|WriteArms|WriteArmsUncaused|EraseNode|FillScopes)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

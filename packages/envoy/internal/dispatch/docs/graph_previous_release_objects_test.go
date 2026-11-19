@@ -356,17 +356,17 @@ func requireProjectComplete(t *testing.T, database *store.Store, want []string, 
 // lock order at the tick's own call site (writeObjectNodesAnotherBuildWrote), as graphcensus's
 // TestEveryBackfillBatchTakesTheStoreLockOrder holds writeObjectBatch under the backfill: the tick
 // runs on a pool of one connection, so every statement of it goes through the backend the test
-// reads, while a process of the release before serves. The pass takes the owner row of the
+// reads, while a process of the release before serves. The pass takes the owner lock of the
 // document the release before uploaded, then the document's node row, then appends its tuples
 // under the document's own artifact.created event, and never the project's row. While it waits
-// behind the owner row it may hold no lock of the marking that runs before it in the same tick:
-// the pass runs after the marking's transaction commits, so the cursor row and the
-// document_block_versions rows the marking locks are let go of first.
+// behind the owner lock it may hold no lock of the event read that runs before it in the same
+// tick: the pass runs after the event read's transaction commits, so the cursor row and the
+// document_block_versions rows the read's marking locks are let go of first.
 //
-// Its controls are the pass run inside the marking's transaction, which holds the cursor row
-// while it waits behind the owner row (on one connection the pass then waits for its own
-// connection and the run never answers), and writeObjectBatch without its owner rows, which never
-// queues behind the owner row.
+// Its controls are the pass run inside the event read's transaction, which holds the cursor row
+// while it waits behind the owner lock (on one connection the pass then waits for its own
+// connection and the run never answers), and writeObjectBatch without its owner locks, which
+// never queues behind the owner lock.
 func requireTheRollTicksObjectPassLockOrder(t *testing.T) {
 	database, _ := blockIndexService(t)
 	ctx := context.Background()
@@ -405,30 +405,31 @@ func requireTheRollTicksObjectPassLockOrder(t *testing.T) {
 	if err := ticker.Pool.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
 		t.Fatalf("read the tick's backend: %v", err)
 	}
-	// The horizon is proven before the tick, so its marking starts this build's cursor and takes
-	// its row, and the document_block_versions row the upload's event names, in a transaction of
-	// its own: what the pass must let go of before it takes an owner row. The horizon observes
-	// through a pool of its own (blockIndexHorizon), so the one connection stays the tick's.
+	// The horizon is proven before the tick, so its event read starts this build's cursor and
+	// takes its row, and the document_block_versions row the upload's event names, in a
+	// transaction of its own: what the pass must let go of before it takes an owner lock. The
+	// horizon observes through a pool of its own (blockIndexHorizon), so the one connection stays
+	// the tick's.
 	awaited, cancelAwait := context.WithTimeout(ctx, time.Minute)
 	defer cancelAwait()
 	if _, err := service.blockIndexHorizon().Await(awaited); err != nil {
 		t.Fatalf("await the event log's safe horizon: %v", err)
 	}
 
-	owner := lockstep.HoldRow(t, database, &lockstep.Hold{
-		Name: "issue CORE-1's row", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: "CORE-1",
-		Statement: "select closed_at is null from issues where key = $1 for no key update",
+	owner := lockstep.HoldOwner(t, database, &lockstep.Hold{
+		Name: "issue CORE-1's owner lock", Step: lockstep.StepOwner, Taken: true,
+		Statement: lockstep.OwnerLockStatement,
 		Unlocked:  []string{"graph_nodes", "graph_tuples", "block_index_event_cursors", "document_block_versions"},
-	}, `select 1 from issues where key = $1 for update`, "CORE-1")
+	}, store.IssueOwner("CORE-1"))
 	node := lockstep.Hold{
 		Name: ref + "'s node row", Step: lockstep.StepNode, Taken: true,
-		Kind: graphstore.KindArtifact, ID: ref, Statement: "with incoming as (",
+		Kind: graphstore.KindArtifact, ID: ref, Statement: "insert into graph_nodes (",
 	}
 	lockstep.Begin(t, database, &node)
 	if err := graphstore.Write(ctx, node.Tx, []graphstore.Node{graphstore.ArtifactNode(ref, "CORE", "", alice, now)}, nil); err != nil {
 		t.Fatalf("hold %s: %v", node.Name, err)
 	}
-	state := lockstep.Hold{Name: ref + "'s state tuple", Step: lockstep.StepTuple, Taken: true, Statement: "insert into graph_tuples ("}
+	state := lockstep.Hold{Name: ref + "'s state tuple", Step: lockstep.StepTuple, Taken: true, Statement: "with written as ("}
 	lockstep.Begin(t, database, &state)
 	if err := graphstore.Write(ctx, state.Tx, nil, []graphstore.Tuple{{
 		FromKind: graphstore.KindArtifact, FromID: ref, Kind: graphstore.AttributeState,
@@ -456,10 +457,10 @@ func requireTheRollTicksObjectPassLockOrder(t *testing.T) {
 	if !tick.AnotherBuild || tick.ObjectNodes != 1 {
 		t.Errorf("the roll tick wrote %d object node(s) and found another build %t, want the document's node and another build", tick.ObjectNodes, tick.AnotherBuild)
 	}
-	// The marking's transaction ran and committed in this tick, holding the cursor row while it
-	// did: it started the cursor at the horizon and recorded the other build.
-	if cursor := blockIndexEventCursor(t, database, ""); !cursor.anotherBuildSeen {
-		t.Errorf("the tick's marking left the cursor at %+v, want another build seen: the pass was not followed after the marking's transaction", cursor)
+	// The event read's transaction ran and committed in this tick, holding the cursor row while
+	// it did: it started the cursor at the horizon.
+	if cursor := blockIndexEventCursor(t, database, ""); cursor == 0 {
+		t.Errorf("the tick's event read left no cursor: the pass was not followed after the event read's transaction")
 	}
 	held, found, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, ref)
 	if err != nil || !found || held.State != graphstore.StateLive || held.Project != "CORE" || held.SourceEvent != created {

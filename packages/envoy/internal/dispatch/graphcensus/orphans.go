@@ -70,13 +70,13 @@ var ErrNotOrphaned = errors.New("the node is not an orphaned document's")
 // its issue naming the address, and at the sentinel where there is none. Only who states it
 // differs, the block-index tick (sweepActor), since the person who removed it is the event's.
 //
-// It takes the store's lock order: the issue's row first (events.LockOwnerRows), as the removal
-// and every create of a document of that issue take it, then the node's row `for update`, and
-// only under that lock reads whether a row stands at the address. A create of this build writes
-// the node and then the row in one transaction, holding the node's row until it commits, so a
-// create that got there first has committed its row when the read runs, and the node is left: the
-// answer is ErrNotOrphaned, as it is for every node it leaves. An address that names no issue is
-// no removable document's, which only an issue's are, and is left too.
+// It takes the store's lock order: the issue's owner lock first (events.LockOwnerRows), as the
+// removal and every create of a document of that issue take it, then the node's row `for
+// update`, and only under that lock reads whether a row stands at the address. A create of this
+// build writes the node and then the row in one transaction under that owner lock, so a create
+// that got there first has committed its row when the read runs, and the node is left: the answer
+// is ErrNotOrphaned, as it is for every node it leaves. An address that names no issue is no
+// removable document's, which only an issue's are, and is left too.
 func StateOrphanedGone(ctx context.Context, database *store.Store, ref string) error {
 	issue, _, found := strings.Cut(ref, "/")
 	if !found {

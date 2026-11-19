@@ -8,45 +8,87 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestBaseAttributeFactsHoldEachAttributesOwnValue holds the facts a writer with no cause yet
-// hands to Caused (WriteArmsUncaused) to what the node arm states for a node it makes: its
-// visibility and state, its project or its parties where it carries one, each under its own
-// value, and nothing of an attribute it does not carry.
-func TestBaseAttributeFactsHoldEachAttributesOwnValue(t *testing.T) {
+// TestAnUncausedWriteStatesEachAttributesOwnValue holds what a writer with no cause yet has
+// appended once its cause comes (Caused) to what the store states for a node it makes: its
+// visibility and state, its project or its parties where it carries one, each under its own value
+// and the cause, and nothing of an attribute it does not carry. Both uncaused writers leave the
+// mark that names those attributes (nodeMark): the node write of WriteUncaused and the arms of
+// WriteArmsUncaused.
+func TestAnUncausedWriteStatesEachAttributesOwnValue(t *testing.T) {
+	database := storetest.Open(t)
 	at := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
 	who := model.Actor{Kind: "user", ID: "alice"}
+	const cause = int64(9500002)
+	writers := map[string]func(context.Context, pgx.Tx, Node) (Uncaused, error){
+		"WriteUncaused": func(ctx context.Context, tx pgx.Tx, node Node) (Uncaused, error) {
+			return WriteUncaused(ctx, tx, []Node{node}, nil)
+		},
+		"WriteArmsUncaused": func(ctx context.Context, tx pgx.Tx, node Node) (Uncaused, error) {
+			arms, params, held, err := WriteArmsUncaused(1, []Node{node}, nil, nil)
+			if err != nil {
+				return Uncaused{}, err
+			}
+			_, err = tx.Exec(ctx, "with "+arms+"\nselect count(*) from graph_nodes_written", params...)
+			return held, err
+		},
+	}
 	for name, test := range map[string]struct {
-		node Node
+		node func(suffix string) Node
 		want map[string]string
 	}{
-		"a node in a project": {IssueNode("CORE-9", "CORE", who, at), map[string]string{
+		"a node in a project": {func(suffix string) Node { return IssueNode("CORE-9"+suffix, "CORE", who, at) }, map[string]string{
 			AttributeVisibility: VisibilityProject, AttributeState: StateLive, AttributeProject: "CORE",
 		}},
-		"a node between parties": {MessageNode("m-9", "", []string{PartySession("s-9"), PartyPerson("Bob")}, who, at), map[string]string{
+		"a node between parties": {func(suffix string) Node {
+			return MessageNode("m-9"+suffix, "", []string{PartySession("s-9"), PartyPerson("Bob")}, who, at)
+		}, map[string]string{
 			AttributeVisibility: VisibilityProject, AttributeState: StateLive, AttributeParties: "person:bob session:s-9",
 		}},
-		"a node of neither": {PersonNode("carol", who, at, NoEvent), map[string]string{
+		"a node of neither": {func(suffix string) Node { return PersonNode("carol"+suffix, who, at, NoEvent) }, map[string]string{
 			AttributeVisibility: VisibilityProject, AttributeState: StateLive,
 		}},
 	} {
-		t.Run(name, func(t *testing.T) {
-			held := map[string]string{}
-			facts, err := BaseAttributeFacts([]Node{test.node})
-			if err != nil {
-				t.Fatalf("BaseAttributeFacts: %v", err)
-			}
-			for _, fact := range facts {
-				held[fact.Kind] = fact.ToID
-			}
-			if !maps.Equal(held, test.want) {
-				t.Errorf("BaseAttributeFacts holds %v, want %v", held, test.want)
-			}
-		})
+		for writer, write := range writers {
+			t.Run(name+" through "+writer, func(t *testing.T) {
+				node := test.node("-" + writer)
+				runInOneTransaction(t, database, writer, func(ctx context.Context, tx pgx.Tx) error {
+					held, err := write(ctx, tx, node)
+					if err != nil {
+						return err
+					}
+					return Caused(ctx, tx, held, cause)
+				})
+				held := map[string]string{}
+				rows, err := database.Pool.Query(context.Background(), `
+					select kind, to_id, source_event from graph_tuples
+					where from_kind = $1 and from_id = $2 and to_kind = $3
+				`, node.Kind, node.ID, KindValue)
+				if err != nil {
+					t.Fatalf("read the base attributes of %s/%s: %v", node.Kind, node.ID, err)
+				}
+				var kind, value string
+				var event int64
+				if _, err := pgx.ForEachRow(rows, []any{&kind, &value, &event}, func() error {
+					if event != cause {
+						t.Errorf("%s/%s states %s under event %d, want the cause %d", node.Kind, node.ID, kind, event, cause)
+					}
+					held[kind] = value
+					return nil
+				}); err != nil {
+					t.Fatalf("read the base attributes of %s/%s: %v", node.Kind, node.ID, err)
+				}
+				if !maps.Equal(held, test.want) {
+					t.Errorf("%s states %v of %s/%s, want %v", writer, held, node.Kind, node.ID, test.want)
+				}
+			})
+		}
 	}
 }
 
@@ -110,27 +152,18 @@ func TestANodeStatesItsProjectOnce(t *testing.T) {
 		requireNeverStated(t, ctx, database, node.Kind, node.ID, AttributeProject)
 	})
 
-	t.Run("WriteUncaused holds the project and parties with the other base attributes", func(t *testing.T) {
+	t.Run("WriteUncaused and Caused state the parties with the other base attributes", func(t *testing.T) {
 		node := ArtifactNode("agent/s-2/photo-png", "", "s-2", who, at)
-		tx, err := database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("begin: %v", err)
-		}
-		defer tx.Rollback(ctx)
-		write, err := WriteUncaused(ctx, tx, []Node{node}, nil)
-		if err != nil {
-			t.Fatalf("write the node: %v", err)
-		}
-		stated := map[string]string{}
-		for _, tuple := range write.Tuples {
-			stated[tuple.Kind] = tuple.ToID
-		}
-		wantStated := map[string]string{
-			AttributeVisibility: VisibilityProject, AttributeState: StateLive, AttributeParties: "session:s-2",
-		}
-		if !maps.Equal(stated, wantStated) {
-			t.Errorf("WriteUncaused holds %v, want %v", stated, wantStated)
-		}
+		runInOneTransaction(t, database, "the uncaused write", func(ctx context.Context, tx pgx.Tx) error {
+			write, err := WriteUncaused(ctx, tx, []Node{node}, nil)
+			if err != nil {
+				return err
+			}
+			return Caused(ctx, tx, write, 9500003)
+		})
+		requireProjectRow(t, ctx, database, node.Kind, node.ID, "", []string{"session:s-2"})
+		requireStatedOnce(t, ctx, database, node.Kind, node.ID, AttributeParties, "session:s-2")
+		requireNeverStated(t, ctx, database, node.Kind, node.ID, AttributeProject)
 	})
 
 	t.Run("the publisher's arms state the project of a node they make", func(t *testing.T) {
