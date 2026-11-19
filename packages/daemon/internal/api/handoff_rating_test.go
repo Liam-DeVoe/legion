@@ -611,11 +611,12 @@ func TestPlanRatingCasesGolden(t *testing.T) {
 // A completion of an issue held from its retro meets the workflow's refusal, never the rating
 // rule: a held issue's phase runs no role, so the workflow refuses every completion of it
 // HANDOFF_NOT_CURRENT_PHASE, with nothing recorded, and the retro run again once the hold is
-// retried is the one rated. Read by the rating rule, the held issue is no retro (phase.Of answers
-// the implementer's own phase for held), so a rated completion was told to send it again without
-// the rating, and the unrated one sent then was refused all the same. Each row is an issue of its
-// own, held from its retro with the implementer's claim still live, from a plugin that rates; the
-// control is the same claim and completion on an issue in its retro, which the workflow takes.
+// retried is the one rated. Read by the rating rule, the held issue would be no retro (phase.Of
+// answers the implementer's own phase for held), so the rule would tell a rated completion to send
+// it again without the rating, and the workflow would refuse that one all the same. Each row is an
+// issue of its own, held from its retro with the implementer's claim still live, from a plugin that
+// rates; the control is the same claim and completion on an issue in its retro, which the workflow
+// takes.
 func TestAHeldIssuesCompletionMeetsTheWorkflowsRefusalAndNotTheRatingRule(t *testing.T) {
 	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	for i, row := range []struct {
