@@ -196,11 +196,11 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 // or a re-admission over either has no run to end, and the end of a step with no count would be
 // written for one that never ran.
 func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, end StepEnd) error {
-	if !recordsSteps(before) || planHold(before) {
+	if !recordsSteps(before) {
 		return nil
 	}
 	w, err := e.walk(ctx, tx, before)
-	if err != nil {
+	if err != nil || planHold(before, w.Stored) {
 		return err
 	}
 	at := record.StandsAt(before)
@@ -415,11 +415,11 @@ func (e *Engine) EndRunningStep(ctx context.Context, tx pgx.Tx, before record.Is
 // again only when a later version of the plan starts the task at its first step, and a parent held
 // for its children has started no retro.
 func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	if !recordsSteps(issue) || planHold(issue) {
+	if !recordsSteps(issue) {
 		return nil
 	}
 	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
+	if err != nil || planHold(issue, w.Stored) {
 		return err
 	}
 	place, _, _, ok := stepAt(w, record.StandsAt(issue))

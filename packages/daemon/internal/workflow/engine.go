@@ -513,8 +513,13 @@ func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil {
 		return nil, err
 	}
-	switch issue.Hold.Reason {
-	case record.HoldForChildren:
+	w, err := e.walk(ctx, tx, released)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case !planHold(issue, w.Stored):
+	case issue.Hold.Reason == record.HoldForChildren:
 		beneath, err := e.openBeneath(ctx, tx, issue)
 		if err != nil {
 			return nil, err
@@ -522,11 +527,7 @@ func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Is
 		e.logOnCommit(ctx, "workflow: a todo leaves the hold of a root that waits for the issues beneath it; the last of them to leave starts its retro",
 			"issue", issue.Key, "beneath", beneath)
 		return nil, e.WriteIssue(ctx, tx, released)
-	case record.HoldTaskStopped:
-		w, err := e.walk(ctx, tx, released)
-		if err != nil {
-			return nil, err
-		}
+	default:
 		if !w.Place.Started() {
 			return nil, e.waitForFirstStep(ctx, tx, released, w, restartReason)
 		}

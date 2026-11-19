@@ -70,8 +70,13 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if err != nil {
 		return err
 	}
+	// A parent whose plan rows a way back dropped is held by no plan (planHold): it is a plain
+	// hold, which a retry releases, and nothing starts a retro its task cannot stand at.
+	if !w.Stored {
+		return nil
+	}
 	steps := w.steps()
-	if !w.Stored || len(steps) == 0 || w.Place != (record.TaskPlace{Kind: record.PlaceRetro}) {
+	if len(steps) == 0 || w.Place != (record.TaskPlace{Kind: record.PlaceRetro}) {
 		return fmt.Errorf("start the held retro of %s: task %s stands at %+v of the line %v, not at its retro", parent.Key, w.Task, w.Place, w.Line)
 	}
 	last, err := e.phaseRow(ctx, tx, parent.Key, phase.RoleFor(steps[len(steps)-1]))

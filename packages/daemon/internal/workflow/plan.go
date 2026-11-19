@@ -259,10 +259,12 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 // the issues beneath it in place of its retro (record.HoldForChildren). No path that resumes the
 // work of a held issue resumes such a hold: a later version of the plan or a person's todo on a
 // root ends a task's stop (restartTask, or waitForFirstStep for a task stopped before its first
-// step), and the last issue beneath the parent to leave starts its retro. An issue with no plan rows
-// is never held so.
-func planHold(issue record.Issue) bool {
-	return issue.Phase == phase.Held && issue.Hold != nil &&
+// step), and the last issue beneath the parent to leave starts its retro. stored says whether the
+// issue's run has plan rows: no plan holds a run that has none, so a hold of either reason on such
+// a run, which the roll-forward of a way back that left its reason finds, is a plain hold that a
+// retry releases.
+func planHold(issue record.Issue, stored bool) bool {
+	return stored && issue.Phase == phase.Held && issue.Hold != nil &&
 		(issue.Hold.Reason == record.HoldTaskStopped || issue.Hold.Reason == record.HoldForChildren)
 }
 
@@ -273,8 +275,12 @@ func planHold(issue record.Issue) bool {
 // again: for a stopped task a later version of its plan (RetryOfStoppedTask), for a parent held
 // for its children the last of them to leave (RetryOfHeldParent, naming each one still open).
 func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue) (*intake.Refusal, error) {
-	if !planHold(issue) {
+	if issue.Phase != phase.Held || issue.Hold == nil {
 		return nil, nil
+	}
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil || !planHold(issue, w.Stored) {
+		return nil, err
 	}
 	if issue.Hold.Reason == record.HoldForChildren {
 		beneath, err := e.openBeneath(ctx, tx, issue)
@@ -282,10 +288,6 @@ func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Is
 			return nil, err
 		}
 		return intake.RetryOfHeldParent(issue.Key, beneath), nil
-	}
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return nil, err
 	}
 	return intake.RetryOfStoppedTask(issue.Key, w.Task), nil
 }
@@ -318,7 +320,11 @@ func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue
 		return noRunReported, err
 	case left:
 		return leftPhaseReported, nil
-	case planHold(issue) && issue.Hold.Reason == record.HoldTaskStopped && issue.Hold.From == reported:
+	case issue.Hold != nil && issue.Hold.Reason == record.HoldTaskStopped && issue.Hold.From == reported:
+		w, err := e.walk(ctx, tx, issue)
+		if err != nil || !planHold(issue, w.Stored) {
+			return noRunReported, err
+		}
 		return stoppedStepReported, nil
 	}
 	return noRunReported, nil
@@ -766,7 +772,7 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 	if !recorded {
 		return intake.Result{}, nil
 	}
-	ends := len(stopped) > 0 && planHold(*issue) && issue.Hold.Reason == record.HoldTaskStopped
+	ends := len(stopped) > 0 && planHold(*issue, stored != nil) && issue.Hold.Reason == record.HoldTaskStopped
 	if !started && !ends {
 		return intake.Result{}, nil
 	}

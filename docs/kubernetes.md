@@ -2106,14 +2106,16 @@ A `controller_notice` row takes every kind an architect is told, these three amo
 It writes one new supervise op, `step_stop`: the stop of the process of the step a stopped task ran, with its session kept.
 An earlier release decodes a `notice`, a `controller_notice` and a `supervise` row strictly: its decode refuses a notice kind it does not know (`unknown notice kind`, `validNoticeKinds` in `record/outbox.go`), a field it does not hold, such as `stoppedBy`, and an op it does not know (`unknown supervise operation`, `validSuperviseOp`), which is no permanent refusal for those kinds (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll-forward.
 The refusal of a `step_stop` row also fails every read of that role's run at that generation, because `RoleRuns` in `record/store.go` decodes the queued supervise rows of each run it reads, and the transaction that makes the read fails with it.
+This release also writes two new reasons of a hold on `issues.hold_reason`: `task-stopped`, an issue its owner or a failed step stopped the task of, and `children`, a parent whose plan has no acceptance step, held before its retro for the issues beneath it.
+An earlier release serves `holdReason` as the record holds it, and its plugin reads the key with the one value `escalated` (`LegionStateResponse` in that release's `packages/contracts/src/legion-api.ts`) and refuses the whole state body for another, so every agent's `read_record` and each completion's read of the state on that project would fail while any issue stands held for either reason.
 
 At the rollback, with the daemon stopped and before the earlier image is pinned, run the way back below, with `<PROJECT>` the key of the project whose daemon rolls back.
 It drops the three tables and the two columns and deletes the migration's version row, so the roll-forward's `Migrate` runs the migration again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
 That part is owed to the roll-forward, not to the earlier release.
 Left in place, the place a task stands at goes stale while the earlier release moves its issue along today's fixed line, and after the roll-forward the walk would start that issue from the stale place.
-With the tables and the columns dropped, each issue the earlier release moved has no plan rows after the roll-forward and goes on as it did.
-It also deletes the queued rows that the earlier release cannot decode, which are owed to that release: the notices and the controller notices of the three kinds, and the `step_stop` rows.
-The outbox is shared by every project's daemon on the database, so each of those deletes takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project, since a project key holds no hyphen).
+With the tables and the columns dropped, each issue the earlier release moved has no plan rows after the roll-forward and walks today's line.
+It also deletes the queued rows that the earlier release cannot decode, and clears the two hold reasons it cannot read, which are owed to that release: the notices and the controller notices of the three kinds, the `step_stop` rows, and each `task-stopped` and `children` reason, which leaves that issue held with no reason, a plain hold.
+The outbox and the issue records are shared by every project's daemon on the database, so each of those deletes and the update take the rows of the project that rolls back alone (`split_part(issue, '-', 1)` and `split_part(key, '-', 1)` are a row's project, since a project key holds no hyphen).
 The tables and the columns are the database's, so every project's daemon on it rolls back too: run the block once for each project, and a later run drops nothing again and deletes that project's rows.
 
 ```sh
@@ -2125,6 +2127,7 @@ drop table if exists issue_plans;
 alter table phases drop column if exists step_task, drop column if exists step_place;
 delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' in ('task-stopped', 'retro-held', 'plan-not-taken') and split_part(issue, '-', 1) = '<PROJECT>';
 delete from outbox where kind = 'supervise' and payload->>'op' = 'step_stop' and split_part(issue, '-', 1) = '<PROJECT>';
+update issues set hold_reason = null where hold_reason in ('task-stopped', 'children') and split_part(key, '-', 1) = '<PROJECT>';
 delete from schema_version where version = 20261117034837;
 commit;
 SQL
@@ -2138,6 +2141,10 @@ A deleted `retro-held` notice is a hold its parent's architect is never told of,
 A deleted `plan-not-taken` notice is a plan of an earlier owner that the issue's architect is never told its first step passed over, so it is not asked to give that plan again as its own.
 A deleted controller notice of one of those kinds is the same telling, lost to the controller.
 A deleted `step_stop` row costs the stop of one step's process: that process runs on until its issue closes, and the way back drops the task's stop with the plan rows.
+An issue whose `task-stopped` reason the way back cleared is a plain hold under the earlier release: its architect's retry, or a person's `todo` on a root, starts the role of the phase it is held from again, the step the stop ended, on today's line.
+A parent whose `children` reason it cleared is a plain hold too, and the earlier release does not wait for the issues beneath it: a retry would start the parent's next phase while they still run, so leave it held until they leave the workflow, or park it by hand.
+The counts of returns of a task lived on its `plan_tasks` row, which this release wrote in place of the implementer's phases row; the earlier release reads that row's counts again, which stood still while this release ran the issue, so `review_round_cap` and the work-back hooks count from those older values.
+After a roll-forward, an issue still held for either reason with no plan rows, which a way back run without the update leaves, is read as a plain hold too: no plan holds a run that has no plan rows, so a retry releases it, and the last issue beneath such a parent to leave starts no retro.
 
 #### Rolling back the release whose update round ends at its bound
 

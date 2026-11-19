@@ -225,3 +225,71 @@ func TestTheOwnerStepsWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCannotRea
 		})
 	}
 }
+
+// The way back also clears the two reasons of a hold this release writes, task-stopped and
+// children, on the issues of the project that rolls back: the release before serves holdReason as
+// the record holds it, and its plugin reads the key with the one value escalated and refuses the
+// whole state for another. Each such issue stays held from its phase with no reason, a plain hold.
+// An escalated hold keeps its reason, and another project's hold of either reason stands. The
+// control: the update with its project predicate taken off clears the other project's too.
+func TestTheOwnerStepsWayBackClearsItsProjectsTwoNewHoldReasons(t *testing.T) {
+	ctx := context.Background()
+	const issuePredicate = " and split_part(key, '-', 1) = '<PROJECT>'"
+	scoped := ownerStepsWayBack(t)
+	unscoped := strings.ReplaceAll(scoped, issuePredicate, "")
+	holds := []struct {
+		key    string
+		reason record.Hold
+	}{
+		{"LEGION-208", record.Hold{From: phase.Testing, Reason: record.HoldTaskStopped}},
+		{"LEGION-209", record.Hold{From: phase.Reviewing, Reason: record.HoldForChildren}},
+		{"LEGION-210", record.Hold{From: phase.Testing, Reason: record.HoldEscalated}},
+		{"OTHER-208", record.Hold{From: phase.Testing, Reason: record.HoldTaskStopped}},
+		{"OTHER-209", record.Hold{From: phase.Reviewing, Reason: record.HoldForChildren}},
+	}
+	for _, tc := range []struct {
+		name      string
+		block     string
+		otherKept bool
+	}{
+		{name: "control: the update without its project predicate clears the other project's holds too", block: unscoped},
+		{name: "the update clears the two reasons of the project that rolls back alone", block: scoped, otherKept: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.otherKept && unscoped == scoped {
+				t.Fatalf("the way back of %s holds no %q: no update names the project that rolls back", ownerStepsMigration, issuePredicate)
+			}
+			store := emptyStore(t)
+			if _, err := store.Migrate(ctx); err != nil {
+				t.Fatalf("migrate: %v", err)
+			}
+			for _, h := range holds {
+				hold := h.reason
+				project := strings.SplitN(h.key, "-", 2)[0]
+				issue := record.Issue{Key: h.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: h.key, Project: project,
+					Title: h.key, Phase: phase.Held, Hold: &hold, Generation: 1, Status: "testing", Rank: "U"}
+				if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error { return record.NewStore().PutIssue(ctx, tx, issue) }); err != nil {
+					t.Fatalf("seed %s: %v", h.key, err)
+				}
+			}
+			if _, err := store.Pool().Exec(ctx, strings.ReplaceAll(tc.block, "<PROJECT>", "LEGION"), pgx.QueryExecModeSimpleProtocol); err != nil {
+				t.Fatalf("run the way back %s's header carries: %v", ownerStepsMigration, err)
+			}
+			for _, h := range holds {
+				var reason, from *string
+				if err := store.Pool().QueryRow(ctx, "select hold_reason, held_from from issues where key = $1", h.key).Scan(&reason, &from); err != nil {
+					t.Fatalf("read %s: %v", h.key, err)
+				}
+				cleared := h.reason.Reason != record.HoldEscalated && (strings.HasPrefix(h.key, "LEGION-") || !tc.otherKept)
+				switch {
+				case from == nil || *from != string(h.reason.From):
+					t.Errorf("%s is held from %v after the way back, want it still held from %s", h.key, from, h.reason.From)
+				case cleared && reason != nil:
+					t.Errorf("%s keeps the hold reason %q, want it cleared to a plain hold", h.key, *reason)
+				case !cleared && (reason == nil || *reason != string(h.reason.Reason)):
+					t.Errorf("%s holds the reason %v after the way back, want %q kept", h.key, reason, h.reason.Reason)
+				}
+			}
+		})
+	}
+}
