@@ -401,23 +401,14 @@ func refuseParentTooDeep(ctx context.Context, tx pgx.Tx, child, parent string) e
 		"moving %s under %s would put the deepest issue under it %s below its root; an issue sits at most %d links below its root", child, parent, depth, parentDepthCap)
 }
 
-// waitNode is one half of an issue in the dependency graph. An issue starts after the issues it
-// needs are done and after its parent starts; it is done after it starts and after its children
-// are done. Splitting the two halves lets sibling dependencies stand while still refusing a child
-// that waits on its parent, or a parent that waits on its descendant.
-type waitNode struct {
-	key  string
-	done bool
-}
-
 // assertParentLeavesNoDependencyCycle checks a parent link already written in tx. The link adds
-// two waits: the parent's done waits on the child's done, and the child's start waits on the
-// parent's start.
+// two waits between the halves of the two issues (refs.IssueHalf): the parent's done waits on
+// the child's done, and the child's start waits on the parent's start.
 func assertParentLeavesNoDependencyCycle(ctx context.Context, tx pgx.Tx, child, parent string) error {
-	if err := assertNoWaitPath(ctx, tx, []waitNode{{key: child, done: true}}, waitNode{key: parent, done: true}); err != nil {
+	if err := assertNoWaitPath(ctx, tx, []refs.IssueHalf{{Key: child, Done: true}}, refs.IssueHalf{Key: parent, Done: true}); err != nil {
 		return err
 	}
-	return assertNoWaitPath(ctx, tx, []waitNode{{key: parent}}, waitNode{key: child})
+	return assertNoWaitPath(ctx, tx, []refs.IssueHalf{{Key: parent}}, refs.IssueHalf{Key: child})
 }
 
 // writeIssueNeeds validates the issues issue waits on and writes the set waits names: the
@@ -455,11 +446,11 @@ func writeIssueNeeds(ctx context.Context, tx pgx.Tx, issue, project, caller stri
 			return nil, refuseWaitOutsideCallerProject(waits.member, caller, target, targetProject)
 		}
 	}
-	from := make([]waitNode, len(waits.targets))
+	from := make([]refs.IssueHalf, len(waits.targets))
 	for index, target := range waits.targets {
-		from[index] = waitNode{key: target, done: true}
+		from[index] = refs.IssueHalf{Key: target, Done: true}
 	}
-	if err := assertNoWaitPath(ctx, tx, from, waitNode{key: issue}); err != nil {
+	if err := assertNoWaitPath(ctx, tx, from, refs.IssueHalf{Key: issue}); err != nil {
 		return nil, err
 	}
 	held, err := graphstore.CurrentOut(ctx, tx, graphstore.KindIssue, issue, []string{graphstore.TupleNeeds})
@@ -538,53 +529,69 @@ func writeIssueNeeds(ctx context.Context, tx pgx.Tx, issue, project, caller stri
 	return tuples, nil
 }
 
-// assertNoWaitPath refuses a wait whose head reaches its tail, stopping at parentDepthCap.
-// The caller serializes blocker and parent changes, so traversal needs only plain reads.
-func assertNoWaitPath(ctx context.Context, tx pgx.Tx, from []waitNode, goal waitNode) error {
-	seen := map[waitNode]bool{}
+// assertNoWaitPath refuses a wait whose head reaches its tail, stopping at parentDepthCap. Each
+// step reads what the halves it reached wait through, from the rows that project those relations
+// - a start's parent and the issues it needs, a done's children - and takes what each half waits
+// on by the split's one rule (refs.IssueHalf). The caller serializes blocker and parent changes,
+// so traversal needs only plain reads.
+func assertNoWaitPath(ctx context.Context, tx pgx.Tx, from []refs.IssueHalf, goal refs.IssueHalf) error {
+	seen := map[refs.IssueHalf]bool{}
 	frontier := from
 	for depth := 0; len(frontier) > 0; depth++ {
 		if depth > parentDepthCap {
 			return errorf(http.StatusConflict, "DEPENDENCY_CYCLE", "the dependency graph is deeper than %d links", parentDepthCap)
 		}
+		var reached []refs.IssueHalf
 		var starts, dones []string
 		for _, node := range frontier {
-			halves := []waitNode{node, {key: node.key}}
-			if !node.done {
-				halves = halves[:1]
-			}
-			for _, half := range halves {
+			for _, half := range node.Halves() {
 				if half == goal {
-					return errorf(http.StatusConflict, "DEPENDENCY_CYCLE", "%s would wait on itself through blocked_by and parent links", goal.key)
+					return errorf(http.StatusConflict, "DEPENDENCY_CYCLE", "%s would wait on itself through blocked_by and parent links", goal.Key)
 				}
 				if seen[half] {
 					continue
 				}
 				seen[half] = true
-				if half.done {
-					dones = append(dones, half.key)
+				reached = append(reached, half)
+				if half.Done {
+					dones = append(dones, half.Key)
 				} else {
-					starts = append(starts, half.key)
+					starts = append(starts, half.Key)
 				}
 			}
 		}
 		rows, err := tx.Query(ctx, `
-			select parent_key, false from issues where key = any($1) and parent_key is not null
-			union
-			select target_key, true from issue_links where issue_key = any($1) and kind = 'blocked_by'
-			union
-			select key, true from issues where parent_key = any($2)
+			select key, 'parent', parent_key from issues where key = any($1) and parent_key is not null
+			union all
+			select issue_key, 'needs', target_key from issue_links where issue_key = any($1) and kind = 'blocked_by'
+			union all
+			select parent_key, 'child', key from issues where parent_key = any($2)
 		`, starts, dones)
 		if err != nil {
 			return err
 		}
-		frontier, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (waitNode, error) {
-			var node waitNode
-			return node, row.Scan(&node.key, &node.done)
-		})
-		if err != nil {
+		waits := map[string]refs.IssueWaits{}
+		var key, relation, far string
+		if _, err := pgx.ForEachRow(rows, []any{&key, &relation, &far}, func() error {
+			held := waits[key]
+			switch relation {
+			case "parent":
+				held.Parent = far
+			case "needs":
+				held.Needs = append(held.Needs, far)
+			default:
+				held.Children = append(held.Children, far)
+			}
+			waits[key] = held
+			return nil
+		}); err != nil {
 			return err
 		}
+		var next []refs.IssueHalf
+		for _, half := range reached {
+			next = append(next, half.Waits(waits[half.Key])...)
+		}
+		frontier = next
 	}
 	return nil
 }

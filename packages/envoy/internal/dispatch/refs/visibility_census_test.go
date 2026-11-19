@@ -460,6 +460,22 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		}
 		return err
 	})
+	// The tree is reserved for its author at its root issue: the author reads its plan node and
+	// that node's needs, and another reader reads no node of it.
+	planned := seedPlanOrder(t, ctx, database)
+	for _, reader := range []model.Actor{who, privateReader} {
+		record("PlanOrder", "PlanOrder of "+planned+" as "+reader.ID, func() error {
+			order, err := PlanOrder(ctx, recorder, reader, planned)
+			switch {
+			case err != nil:
+			case reader.ID == who.ID && len(order.Order) < 5:
+				err = fmt.Errorf("the tree of %s answers its author the order %+v, want both issues' halves and the plan node: with no plan node the read never reaches its read of the needs", planned, order.Order)
+			case reader.ID != who.ID && len(order.Order) != 0:
+				err = fmt.Errorf("the tree of %s, reserved for its author at its root, answers another reader the order %+v, want none", planned, order.Order)
+			}
+			return err
+		})
+	}
 	return reads
 }
 
@@ -518,6 +534,45 @@ func seedConversation(t *testing.T, ctx context.Context, database *store.Store) 
 		t.Fatalf("commit the conversation seed: %v", err)
 	}
 	return issue
+}
+
+// seedPlanOrder writes one issue tree with a plan, and answers its root's key: PLAN-1, reserved
+// for its author (reserveForAuthor), with its child PLAN-2, and a plan node of PLAN-1 that needs
+// PLAN-2, indexed as a write of this build indexes it. PlanOrder reads the needs of the nodes its
+// walk found: with no plan node the census would read only the walk.
+func seedPlanOrder(t *testing.T, ctx context.Context, database *store.Store) string {
+	t.Helper()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the plan order seed: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	const root = "PLAN-1"
+	createReferenceProject(t, tx, "PLAN")
+	createReferenceIssue(t, tx, root, "PLAN")
+	if _, err := tx.Exec(ctx, `
+		insert into issues (key, project_key, number, title, created_by, rank, parent_key)
+		values ('PLAN-2', 'PLAN', 2, 'The child', '{"kind":"user","id":"alice"}', 'U', $1)
+	`, root); err != nil {
+		t.Fatalf("create the child of %s: %v", root, err)
+	}
+	reserveForAuthor(t, tx, graphstore.KindIssue, root)
+	artifact, _ := createReferenceArtifact(t, tx, root, "PLAN", "spec")
+	markdown, blocks := documentOf([]part{{"t1", planTaskType, "After the child."}})
+	at := writeAuthoredVersion(t, tx, artifact, 1, markdown, privateAuthor)
+	pointers := []Pointer{{Block: "t1", BlockType: planTaskType, Kind: "needs",
+		Target: text.Ref{Kind: graphstore.KindIssue, IssueKey: "PLAN-2", ID: "PLAN-2"}, Targets: []string{planTaskType}}}
+	_, _, write, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, 1, at), markdown, blocks, nil, pointers, TypedFacts{})
+	if err != nil {
+		t.Fatalf("index the plan of %s: %v", root, err)
+	}
+	if err := graphstore.Caused(ctx, tx, write, graphstore.NoEvent); err != nil {
+		t.Fatalf("append what the plan of %s stated: %v", root, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the plan order seed: %v", err)
+	}
+	return root
 }
 
 // storeReads is every exported function of this package that reads the store, read out of the

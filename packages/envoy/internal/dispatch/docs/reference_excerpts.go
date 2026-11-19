@@ -317,13 +317,14 @@ func (s *Service) indexDocumentInRoom(ctx context.Context, tx pgx.Tx, room strin
 	return index.changes, facts, nil
 }
 
-// offsetBlocks is the blocks a render's offsets name, as the block index takes them, each carrying
-// the document documents names for it where the render is an issue room's (renderedTree's
-// documents).
+// offsetBlocks is the blocks a render's offsets name, as the block index takes them, each with
+// the attributes its opening line wrote, which the index states a plan node's size from
+// (refs.AttributePlanSize), and carrying the document documents names for it where the render is
+// an issue room's (renderedTree's documents).
 func offsetBlocks(offsets []pmdoc.BlockOffset, documents map[string]string) []model.ArtifactBlock {
 	blocks := make([]model.ArtifactBlock, len(offsets))
 	for index, offset := range offsets {
-		blocks[index] = model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To, Document: documents[offset.ID]}
+		blocks[index] = model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To, Attributes: offset.Attributes, Document: documents[offset.ID]}
 	}
 	return blocks
 }

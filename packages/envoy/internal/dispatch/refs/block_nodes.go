@@ -1590,7 +1590,8 @@ func (p *authoredPlaces) target(ref text.Ref, resolved authoredResolution, above
 // markdown, its children's text included, which document_block_texts projects; and
 // AttributePlacement, which says what decides the block's parent: PlacementText, the text it
 // stands in, for every block the rendering places, and PlacementAuthored for an authored node,
-// whose parent its author decides (placeAuthored).
+// whose parent its author decides (placeAuthored). A plan node holds one more, AttributePlanSize,
+// the `size` its opening line writes (blockSize).
 const (
 	AttributeRank      = "rank"
 	AttributePlacement = "placement"
@@ -1598,17 +1599,53 @@ const (
 	PlacementAuthored  = "authored"
 )
 
-// heldBlockValue is what the store holds now of one block the values pass reads: its current
-// rank, "" where it holds none, whether it holds a current text value, and its current placement,
-// "" where it holds none.
-type heldBlockValue struct {
-	rank, placement string
-	text            bool
+// AttributePlanSize is the value a plan node says how big it is by: the plan_task attribute
+// `size`, a duration in days as its author wrote it, a value of the node since it points at
+// nothing, and absent where its author wrote none. An artifact's `size` (graphstore.AttributeSize)
+// is its bytes, on a node of another kind.
+const AttributePlanSize = "size"
+
+// blockSize is the size block's opening line writes, which the render read off the block
+// (model.ArtifactBlock.Attributes): its `size` attribute where it is a plan_task, and "" for a
+// plan_task that writes none and for a block of any other type, which declares no size.
+func blockSize(block model.ArtifactBlock) string {
+	if block.Type != planTaskType {
+		return ""
+	}
+	for _, attribute := range block.Attributes {
+		if attribute.Name == AttributePlanSize {
+			return attribute.Value
+		}
+	}
+	return ""
 }
 
-// reconcileBlockValues states the rank, the text and the placement of every block placement
-// placed, in the pass's own transaction and dated at its own time (indexedDocument.at). It
-// returns the values it states, which the caller appends with the pass's other facts.
+// WrittenSizeSQL is blockSize read back off the store rather than off a render: as SQL over the
+// document_blocks row alias, the size its block's opening line writes in the newest text its
+// document_block_texts rows hold - the `size="..."` of that text's first line, which the renderer
+// writes in that form (pmdoc's renderTypedAttributes) and which no other attribute of a plan_task,
+// each a reference, can hold - for a plan_task, and null for a block of any other type, for one
+// whose line writes none and for one no row holds a text of. It is the row side of the census of a
+// plan node's size (graphcensus' block_size).
+func WrittenSizeSQL(alias string) string {
+	return `(case when ` + alias + `.type = '` + planTaskType + `' then substring(split_part((
+			select written.text from document_block_texts written
+			where written.artifact_id = ` + alias + `.artifact_id and written.block_id = ` + alias + `.block_id and written.text is not null
+			order by written.version desc limit 1), chr(10), 1) from ' ` + AttributePlanSize + `="([^"]*)"') end)`
+}
+
+// heldBlockValue is what the store holds now of one block the values pass reads: its current
+// rank, "" where it holds none, whether it holds a current text value, its current placement, ""
+// where it holds none, and its current size, "" where it holds none.
+type heldBlockValue struct {
+	rank, placement, size string
+	text                  bool
+}
+
+// reconcileBlockValues states the rank, the text, the placement and, for a plan node, the size of
+// every block placement placed, in the pass's own transaction and dated at its own time
+// (indexedDocument.at). It returns the values it states, which the caller appends with the pass's
+// other facts.
 //
 // It reads what the store holds of every one of those blocks in one statement (heldBlockValues)
 // and states a value only where it moves: a rank where the block's place among its siblings moved
@@ -1616,11 +1653,15 @@ type heldBlockValue struct {
 // row the pass wrote, so the text value and the document_block_texts row move together - or
 // where the block holds no current text yet, and a placement where the block holds none or
 // another: PlacementAuthored for an authored node (placeAuthored), PlacementText for every other
-// block. So a block a version only moved takes its new parent and its new rank here although
-// the pass writes no row of it, a re-index of a document nothing moved states nothing, and the
-// first index of a document, or the first pass to reach a block an earlier build indexed, gives
-// every block all three. A block the version dropped is no block the pass places: it keeps the
-// values it held, and its node, stated gone, says it is no part of the version.
+// block. A size is stated where the block's opening line writes one the node does not hold
+// (blockSize), and the size the node holds is retracted where the line writes none - its author
+// took it out, or the block is no plan node any more - so a block that holds no size and writes
+// none states nothing. So a block a version only moved takes its new parent and its new rank here
+// although the pass writes no row of it, a re-index of a document nothing moved states nothing,
+// and the first index of a document, or the first pass to reach a block an earlier build indexed,
+// gives every block its rank, its text, its placement and any size it writes. A block the version
+// dropped is no block the pass places: it keeps the values it held, and its node, stated gone,
+// says it is no part of the version.
 //
 // stale is IndexBlocks' (standsAtVersion): another release indexed the document after the store
 // last stated its blocks, and rewrote the rows and the document_block_texts of each block whose
@@ -1656,36 +1697,47 @@ func reconcileBlockValues(
 		}})
 	}
 	for index, id := range placement.ids {
+		block := nodes[placement.placed[index]]
 		if ranks[index] != held[index].rank {
 			value(id, AttributeRank, ranks[index])
 		}
 		if _, wrote := changed[id]; wrote || stale || !held[index].text {
-			block := nodes[placement.placed[index]]
 			value(id, graphstore.AttributeText, markdown[block.From:block.To])
 		}
 		placed := PlacementText
-		if authoredType(nodes[placement.placed[index]].Type) {
+		if authoredType(block.Type) {
 			placed = PlacementAuthored
 		}
 		if held[index].placement != placed {
 			value(id, AttributePlacement, placed)
 		}
+		switch size := blockSize(block); {
+		case size == held[index].size:
+		case size != "":
+			value(id, AttributePlanSize, size)
+		default:
+			tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+				FromKind: BlockNodeKind, FromID: blockNodeAddress(document.refKey, id), Kind: AttributePlanSize,
+				ToKind: graphstore.KindValue, ToID: held[index].size,
+				At: document.at, Who: document.writer, Asserted: false,
+			}})
+		}
 	}
 	return tuples, nil
 }
 
-// heldBlockValues reads, in one statement, the current rank, text and placement of each block of
-// ids, as graphstore.CurrentValue reads one value - the newest tuple under the attribute's name,
-// kept while it asserts - through graph_tuples_values, one probe a value. Each lateral writes
-// to_kind = 'value' into its text rather than binding it, as CurrentValue does, because
-// graph_tuples_values is partial on that predicate: a bound kind is a parameter the planner of a
-// generic plan cannot match the index's predicate against. Of a block's text it reads whether one
-// is held and not the text itself, which no comparison here needs. It answers the blocks in ids'
-// order, and names each by its id, building its address from refKey as every other statement of
-// the pass does.
+// heldBlockValues reads, in one statement, the current rank, text, placement and size of each
+// block of ids, as graphstore.CurrentValue reads one value - the newest tuple under the
+// attribute's name, kept while it asserts - through graph_tuples_values, one probe a value. Each
+// lateral writes to_kind = 'value' into its text rather than binding it, as CurrentValue does,
+// because graph_tuples_values is partial on that predicate: a bound kind is a parameter the
+// planner of a generic plan cannot match the index's predicate against. Of a block's text it reads
+// whether one is held and not the text itself, which no comparison here needs. It answers the
+// blocks in ids' order, and names each by its id, building its address from refKey as every other
+// statement of the pass does.
 func heldBlockValues(ctx context.Context, tx pgx.Tx, refKey string, ids []string) ([]heldBlockValue, error) {
 	rows, err := tx.Query(ctx, `
-		select coalesce(rank.held, ''), coalesce(text.held, false), coalesce(placement.held, '')
+		select coalesce(rank.held, ''), coalesce(text.held, false), coalesce(placement.held, ''), coalesce(size.held, '')
 		from unnest($1::text[]) with ordinality as block (id, position)
 		left join lateral (
 			select case when t.asserted then t.to_id end as held from graph_tuples t
@@ -1705,8 +1757,14 @@ func heldBlockValues(ctx context.Context, tx pgx.Tx, refKey string, ids []string
 			  and t.to_kind = '`+graphstore.KindValue+`'
 			order by t.seq desc limit 1
 		) placement on true
+		left join lateral (
+			select case when t.asserted then t.to_id end as held from graph_tuples t
+			where t.from_kind = $2 and t.from_id = $3 || '#' || block.id and t.kind = $7
+			  and t.to_kind = '`+graphstore.KindValue+`'
+			order by t.seq desc limit 1
+		) size on true
 		order by block.position
-	`, ids, BlockNodeKind, refKey, AttributeRank, graphstore.AttributeText, AttributePlacement)
+	`, ids, BlockNodeKind, refKey, AttributeRank, graphstore.AttributeText, AttributePlacement, AttributePlanSize)
 	if err != nil {
 		return nil, err
 	}
@@ -1714,7 +1772,7 @@ func heldBlockValues(ctx context.Context, tx pgx.Tx, refKey string, ids []string
 	held := make([]heldBlockValue, 0, len(ids))
 	for rows.Next() {
 		var value heldBlockValue
-		if err := rows.Scan(&value.rank, &value.text, &value.placement); err != nil {
+		if err := rows.Scan(&value.rank, &value.text, &value.placement, &value.size); err != nil {
 			return nil, err
 		}
 		held = append(held, value)

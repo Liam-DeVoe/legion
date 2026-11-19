@@ -16,9 +16,10 @@ import (
 // blockProjections are the census's kinds of the document blocks (projections): a block against
 // its document_blocks row, the links out of a block against its block_refs rows, and the rank
 // and the text every block holds (dispatch://INFRA-1253/spec#b-r-one-tree), each against the
-// block's row, the document each block of an issue room is in against its issue_room_blocks
-// row (room_block), and who wrote each block whose node records its authors against the version
-// that first held it (block_author).
+// block's row, and the size every plan node holds against the opening line of its block's text,
+// the document each block of an issue room is in against its issue_room_blocks row (room_block),
+// and who wrote each block whose node records its authors against the version that first held it
+// (block_author).
 //
 // A row of an issue room is keyed by the room's tree artifact, and the document the block is in
 // is the one its issue_room_blocks row names (refs.BlockDocumentSQL), whose in_document the block
@@ -151,6 +152,28 @@ var blockProjections = []projection{{
 		where d.node_kind is not null and octet_length(d.node_id) <= ` + addressBound + ` and not ` + roomOwed("d.artifact_id"),
 	nodes: `
 		select n.id, md5(n.id || '|' || coalesce(encode(sha256(convert_to(` + currentValue(graphstore.AttributeText) + `, 'UTF8')), 'hex'), ''))
+		from graph_nodes n
+		where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n") + ` and not ` + blockDocumentOwed("n"),
+	pastBound: `
+		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
+	emptyAgrees: true,
+}, {
+	name:     "block_size",
+	nodeKind: refs.BlockNodeKind,
+	table:    "document_block_texts",
+	note: "the size of every plan node of a document that owes no block index, a value no table projects: the row" +
+		" side is each document_blocks row that names its node, and the digest is the size the first line of its" +
+		" newest document_block_texts text writes (refs.WrittenSizeSQL, a plan_task's size attribute), or none," +
+		" against the size value its node holds now, so a plan node whose line writes a size its node does not" +
+		" hold, and a node holding a size its line does not write, are each a difference; a block of a document" +
+		" still owed its index, or of an issue room any artifact of which is, is on neither side, since the" +
+		" reconciliation writes its size, and a census of documents that all owe theirs reads none of this kind",
+	rows: `
+		select 'block_size ' || d.node_id, d.node_kind, d.node_address, md5(d.node_id || '|' || coalesce(` + refs.WrittenSizeSQL("d") + `, ''))
+		from document_blocks d
+		where d.node_kind is not null and octet_length(d.node_id) <= ` + addressBound + ` and not ` + roomOwed("d.artifact_id"),
+	nodes: `
+		select n.id, md5(n.id || '|' || coalesce(` + currentValue(refs.AttributePlanSize) + `, ''))
 		from graph_nodes n
 		where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n") + ` and not ` + blockDocumentOwed("n"),
 	pastBound: `
@@ -395,11 +418,11 @@ const blockDrainKind = "block_index_drain"
 // own mark, document_block_versions.store_owed_at (migration 20261116221539), as the block pass
 // marks each document whose rows it names (writeBlockBatch), so the block-index reconciliation
 // (docs.Service.RunBlockIndexReconciliation) indexes each again, under the fence it already takes,
-// and gives every block an earlier build indexed what that build did not write: its rank, its text
-// and its placement, and, for a top-level block of an issue's spec, Verification or plan document,
-// its part_of to the issue (refs.IndexBlocks). That index writes no document_blocks row for a
-// block whose text is unchanged, so no block's changed_version and no document_block_texts row
-// moves for it.
+// and gives every block an earlier build indexed what that build did not write: its rank, its
+// text, its placement and, for a plan node whose opening line writes one, its size, and, for a
+// top-level block of an issue's spec, Verification or plan document, its part_of to the issue
+// (refs.IndexBlocks). That index writes no document_blocks row for a block whose text is
+// unchanged, so no block's changed_version and no document_block_texts row moves for it.
 //
 // The mark is not the null version refs.RebuildAll sets. A pod of the release before this one,
 // during a roll or after a rollback, reads a null version as its own debt: it indexes the
