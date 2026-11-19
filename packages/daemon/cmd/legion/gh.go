@@ -779,38 +779,30 @@ var ghSentFileOptions = map[string]leakguard.StdinUse{
 // ghSentFiles are the files the parsed command would send to GitHub as content, each named once
 // and each named by the option it came from, for the leak guard to read the text of
 // (leakguard.GhRequest.Files), and the use the command makes of standard input
-// (leakguard.GhRequest.StdinUse). command is the leaf's path. The files are never nil, so a
-// command that sends no file is a command the guard reads no file of, rather than one it reads
-// the argv of again with tables of its own. A file a field names (`-F <name>=@<path>` in `gh api`)
-// carries the field's name (leakguard.GhFile.Field), which is what tells the guard that the file
-// of a `gh api graphql` call's `query` field is a GraphQL query.
+// (leakguard.GhRequest.StdinUse). command is the leaf's path. What each option's value names is
+// leakguard.GhSent's rule, the one the guard's own reader of a bare argv keeps to, so the two
+// readers cannot name one call's files two ways. The files are never nil, so a command that
+// sends no file is a command the guard reads no file of, rather than one it reads the argv of
+// again with tables of its own. A file a field names (`-F <name>=@<path>` in `gh api`) carries
+// the field's name (leakguard.GhFile.Field), which is what tells the guard that the file of a `gh
+// api graphql` call's `query` field is a GraphQL query.
 //
 // A value of `-`, and an `@-`, is standard input, which the guard reads through the shared
 // check's own handshake and never opens as a file. What is answered for it instead is the use
 // the option that named it makes of it (ghSentFileOptions), since that says what the input is:
 // `gh api --input -` makes it a JSON request body, a `--field <name>=@-` the value of a field, and
 // each other option text GitHub stores as it stands. `gh workflow run --json`, where its last
-// value is true (ghArgs.bools), names it too: gh reads the run's inputs from it as one JSON object
-// (testdata/gh-help/workflow_run.txt), and GitHub keeps each input apart, so it is a JSON request
-// body, read one string at a time. Only the command path says so, since `--json` takes the names
-// of fields to print in every other gh command. Two options naming it with different uses
-// answer leakguard.StdinUnknown: only one of them can have the input, this cannot say which, and
-// the guard then reads the input both ways, which errs toward reading more. The options are read
-// in the order their names sort, since a parse holds each option's values together and not the
-// argv's order across options, and a report that named two files must name them the same way
-// twice.
+// value is true (ghArgs.bools), names it too (leakguard.GhSent.UsesStdin): gh reads the run's
+// inputs from it as one JSON object (testdata/gh-help/workflow_run.txt), and GitHub keeps each
+// input apart, so it is a JSON request body, read one string at a time. Only the command path
+// says so, since `--json` takes the names of fields to print in every other gh command. Two
+// options naming it with different uses answer leakguard.StdinUnknown: only one of them can have
+// the input, this cannot say which, and the guard then reads the input both ways, which errs
+// toward reading more. The options are read in the order their names sort, since a parse holds
+// each option's values together and not the argv's order across options, and a report that named
+// two files must name them the same way twice.
 func ghSentFiles(command []string, parsed ghArgs) (files []leakguard.GhFile, stdinUse leakguard.StdinUse) {
-	files = []leakguard.GhFile{}
-	stdinNamed := false
-	// namesStdin is one option naming standard input with use: the input has the first one's
-	// use, and leakguard.StdinUnknown once another's differs, in whichever order they come.
-	namesStdin := func(use leakguard.StdinUse) {
-		if !stdinNamed {
-			stdinUse, stdinNamed = use, true
-		} else if stdinUse != use {
-			stdinUse = leakguard.StdinUnknown
-		}
-	}
+	sent := leakguard.GhSent{Files: []leakguard.GhFile{}}
 	for _, name := range slices.Sorted(maps.Keys(ghSentFileOptions)) {
 		use, option := ghSentFileOptions[name], "--"+name
 		for _, value := range parsed.values[name] {
@@ -824,22 +816,13 @@ func ghSentFiles(command []string, parsed ghArgs) (files []leakguard.GhFile, std
 				}
 				path, field = strings.TrimPrefix(after, "@"), fieldName
 			}
-			switch {
-			case path == "-":
-				namesStdin(use)
-				continue
-			case path == "":
-				continue
-			case slices.ContainsFunc(files, func(file leakguard.GhFile) bool { return file.Path == path }):
-				continue
-			}
-			files = append(files, leakguard.GhFile{Option: option, Path: path, Field: field})
+			sent.Names(option, path, field, use)
 		}
 	}
 	if parsed.bools["json"] && slices.Equal(command, []string{"workflow", "run"}) {
-		namesStdin(leakguard.StdinRequestBody)
+		sent.UsesStdin(leakguard.StdinRequestBody)
 	}
-	return files, stdinUse
+	return sent.Files, sent.StdinUse
 }
 
 // ghCallerToken is the first of GH_TOKEN and GITHUB_TOKEN that env sets, in gh's own order,

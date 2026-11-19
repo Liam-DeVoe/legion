@@ -396,8 +396,8 @@ func TestTheFilesAGhCallWouldSend(t *testing.T) {
 		{name: "an option with no value at all", args: []string{"pr", "comment", "1", "--body-file"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := readGhArgv(tc.args); !slices.Equal(got.files, tc.want) || got.stdin != tc.stdin {
-				t.Fatalf("readGhArgv(%q) read the files %v and standard input %v; want %v and %v", tc.args, got.files, got.stdin, tc.want, tc.stdin)
+			if got := readGhArgv(tc.args); !slices.Equal(got.sent.Files, tc.want) || got.sent.StdinUse != tc.stdin {
+				t.Fatalf("readGhArgv(%q) read the files %v and standard input %v; want %v and %v", tc.args, got.sent.Files, got.sent.StdinUse, tc.want, tc.stdin)
 			}
 		})
 	}
@@ -562,8 +562,8 @@ func TestGhStandardInputIsReadAsTheCommandUsesIt(t *testing.T) {
 		{"gh pr create's -F", []string{"pr", "create", "-F", "-"}, StdinText, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if argv := readGhArgv(tc.args); argv.stdin != tc.use || !slices.Equal(argv.stdinFields, tc.fields) || argv.files != nil {
-				t.Fatalf("readGhArgv(%q) read standard input as %v, by the fields %q, and the files %v; want %v, by %q, and no file", tc.args, argv.stdin, argv.stdinFields, argv.files, tc.use, tc.fields)
+			if argv := readGhArgv(tc.args); argv.sent.StdinUse != tc.use || !slices.Equal(argv.sent.stdinFields, tc.fields) || argv.sent.Files != nil {
+				t.Fatalf("readGhArgv(%q) read standard input as %v, by the fields %q, and the files %v; want %v, by %q, and no file", tc.args, argv.sent.StdinUse, argv.sent.stdinFields, argv.sent.Files, tc.use, tc.fields)
 			}
 			cleared(t, ghFieldCall(t, GhRequest{Args: tc.args, Stdin: strings.NewReader(escaped)}))
 			reports(t, refusal(t, ghFieldCall(t, GhRequest{Args: tc.args, Stdin: strings.NewReader(plain)})).Lines, stdin+": "+leakguardtest.PairClass)

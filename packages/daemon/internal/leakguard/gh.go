@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -213,15 +212,15 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 				Why:  call.upload + " uploads the file it names, which this guard does not read, so the call sends nothing; write the text in --body or --body-file, which it reads",
 			}
 		}
-		files = call.files
+		files = call.sent.Files
 		if use == StdinUnknown {
-			use = call.stdin
+			use = call.sent.StdinUse
 		}
 	}
 	records := call.records
 	if len(answer.Stdin) > 0 {
 		stdin := Record{Label: "the gh call's standard input", Text: string(answer.Stdin)}
-		records = append(records, stdinRecords(stdin, use, call.stdinFields, call.graphQL)...)
+		records = append(records, stdinRecords(stdin, use, call.sent.stdinFields, call.graphQL)...)
 	}
 	for _, named := range files {
 		text, err := readGhFile(named)
@@ -250,19 +249,13 @@ type ghArgv struct {
 	graphQL bool
 	// records are the records of the argv, in the order it writes them.
 	records []Record
-	// files are the files the argv names for gh to send to GitHub as content, each named once, in
-	// the order the argv writes them; stdin is the use of standard input its options name, and
-	// stdinNamed whether any names one; and upload is the first option of ghUnreadUploads it
-	// names, "" for none. These four are the fallback, for a caller that hands the guard a bare
-	// argv (GhRequest.Files nil).
-	files      []GhFile
-	stdin      StdinUse
-	stdinNamed bool
-	upload     string
-	// stdinFields are the names of the fields whose value is standard input, each `-F <name>=@-`
-	// and `--field <name>=@-`, in the order the argv writes them. A -f or --raw-field sends `@-`
-	// as those two characters and reads no input, so it names none.
-	stdinFields []string
+	// sent is what the argv's options name for gh to send, in the order the argv writes them
+	// (GhSent): the files and the use of standard input; and upload is the first option of
+	// ghUnreadUploads it names, "" for none. These are the fallback, for a caller that hands the
+	// guard a bare argv (GhRequest.Files nil). The names of the fields whose value is standard
+	// input, which sent holds too (GhSent.stdinFields), are read for every call (stdinRecords).
+	sent   GhSent
+	upload string
 }
 
 // readGhArgv reads args, a gh call's argv, once, for everything GhCall asks of it: whether the
@@ -301,19 +294,35 @@ func readGhArgv(args []string) ghArgv {
 // ghLeaf is a command of gh's whose options readGhArgv reads by their arity, as gh's own parser
 // does: its path, and the long options and the letters of the short ones that take a value
 // written as the argument after them. Every other option of it takes none, and a long option
-// written `--name=value` holds its own.
+// written `--name=value` holds its own. The rest of it is what readLeaf reads in one of these
+// commands and not in the other, so that readLeaf asks the leaf and never which leaf it is.
 type ghLeaf struct {
 	path  []string
 	long  map[string]bool
 	short string
+	// endpoint is whether the command's first positional argument is an endpoint, which says
+	// whether the call is GraphQL (ghAPIGraphQLEndpoint): `gh api`'s.
+	endpoint bool
+	// bodyOption is the option whose value names the request body, a file or, as `-`, standard
+	// input: `gh api`'s --input (inputOption). "" is a command with none, and no option.
+	bodyOption string
+	// stdinBodyOption is the boolean option that, true, makes standard input the request body:
+	// `gh workflow run`'s --json (jsonInputsOption). "" is a command with none, and no option.
+	stdinBodyOption string
 }
 
 // ghLeaves are the commands of ghLeaf: `gh api` and `gh workflow run`, the two whose help gives
 // them gh's field options (ghFieldOptions).
 var (
-	ghAPILeaf         = ghLeaf{path: []string{"api"}, long: ghAPIValueOptions, short: ghAPIShortValueOptions}
-	ghWorkflowRunLeaf = ghLeaf{path: []string{"workflow", "run"}, long: ghWorkflowRunValueOptions, short: ghWorkflowRunShortValueOptions}
-	ghLeaves          = []*ghLeaf{&ghAPILeaf, &ghWorkflowRunLeaf}
+	ghAPILeaf = ghLeaf{
+		path: []string{"api"}, long: ghAPIValueOptions, short: ghAPIShortValueOptions,
+		endpoint: true, bodyOption: inputOption,
+	}
+	ghWorkflowRunLeaf = ghLeaf{
+		path: []string{"workflow", "run"}, long: ghWorkflowRunValueOptions, short: ghWorkflowRunShortValueOptions,
+		stdinBodyOption: jsonInputsOption,
+	}
+	ghLeaves = []*ghLeaf{&ghAPILeaf, &ghWorkflowRunLeaf}
 )
 
 // ghAPIValueOptions are `gh api`'s long options that take a value, and ghAPIShortValueOptions the
@@ -422,21 +431,23 @@ func ghLeafOf(args []string) (*ghLeaf, int) {
 // which is read so too (stdinRecords); the field's own value is then the path or the `@-`, read as
 // written.
 //
-// `gh api`'s endpoint is its first positional argument, the first past the bare `--` where none
-// comes before it; a `-` alone is a positional to pflag. Its `--input <path>` names the request
-// body's file, and its `--input -` standard input (names).
+// `gh api`'s endpoint (ghLeaf.endpoint) is its first positional argument, the first past the bare
+// `--` where none comes before it; a `-` alone is a positional to pflag. Its `--input <path>`
+// (ghLeaf.bodyOption) names the request body's file, and its `--input -` standard input
+// (GhSent.Names).
 //
-// `gh workflow run`'s `--json` (jsonInputsOption) is a boolean, `--json` or `--json=<bool>`, whose
-// last value is the one pflag keeps; a value that is no boolean leaves it as it was, since gh
-// refuses that call itself. Where it ends true, gh reads the run's inputs from standard input as
-// one JSON object, so after the walk standard input is named as a request body (names), by the
-// rule of every other option that names it. The argument itself is read as any argument is.
+// `gh workflow run`'s `--json` (ghLeaf.stdinBodyOption) is a boolean, `--json` or
+// `--json=<bool>`, whose last value is the one pflag keeps; a value that is no boolean leaves it
+// as it was, since gh refuses that call itself. Where it ends true, gh reads the run's inputs from
+// standard input as one JSON object, so after the walk standard input is named as a request body
+// (GhSent.UsesStdin), by the rule of every other option that names it. The argument itself is
+// read as any argument is.
 func (argv *ghArgv) readLeaf(args []string, leaf *ghLeaf, start int) {
-	api, run := leaf == &ghAPILeaf, leaf == &ghWorkflowRunLeaf
-	// endpoint is whether the endpoint has been read, which only gh api has; queries are the
-	// indices in records of the query fields' values, read as GraphQL where the call is; and
-	// inputs is whether gh workflow run reads its inputs from standard input.
-	endpoint, queries, inputs := !api, []int(nil), false
+	// endpointNext is whether the next positional argument is the endpoint, which in a command
+	// that has one it is until the endpoint is read; queries are the indices in records of the
+	// query fields' values, read as GraphQL where the call is; and stdinBody is whether the
+	// leaf's stdinBodyOption is true.
+	endpointNext, queries, stdinBody := leaf.endpoint, []int(nil), false
 read:
 	for i := start; i < len(args); i++ {
 		arg := args[i]
@@ -444,7 +455,7 @@ read:
 		var attached bool
 		switch {
 		case arg == "--":
-			if !endpoint && i+1 < len(args) {
+			if endpointNext && i+1 < len(args) {
 				argv.graphQL = ghAPIGraphQLEndpoint(args[i+1])
 			}
 			for ; i < len(args); i++ {
@@ -455,8 +466,8 @@ read:
 			option, value, attached = strings.Cut(arg, "=")
 			if !attached && !leaf.long[option] {
 				argv.argument(args, i)
-				if run && option == jsonInputsOption {
-					inputs = true
+				if option == leaf.stdinBodyOption {
+					stdinBody = true
 				}
 				continue
 			}
@@ -469,8 +480,8 @@ read:
 			option, value, attached = "-"+arg[letter:letter+1], strings.TrimPrefix(arg[letter+1:], "="), letter+1 < len(arg)
 		default:
 			argv.argument(args, i)
-			if !endpoint {
-				endpoint, argv.graphQL = true, ghAPIGraphQLEndpoint(arg)
+			if endpointNext {
+				endpointNext, argv.graphQL = false, ghAPIGraphQLEndpoint(arg)
 			}
 			continue
 		}
@@ -485,59 +496,75 @@ read:
 			at, value = i, args[i]
 		}
 		if typed, field := ghFieldOptions[option]; field {
-			if argv.field(args, at, option, value, typed) {
-				queries = append(queries, len(argv.records)-1)
+			if query := argv.field(args, at, option, value, typed); query >= 0 {
+				queries = append(queries, query)
 			}
 			continue
 		}
 		argv.argument(args, at)
-		switch {
-		case api && option == inputOption:
-			argv.names(option, value, "", StdinRequestBody)
-		case run && option == jsonInputsOption:
+		// An option here is never "", which is the leaf's word for an option it does not have.
+		switch option {
+		case leaf.bodyOption:
+			argv.sent.Names(option, value, "", StdinRequestBody)
+		case leaf.stdinBodyOption:
 			if on, err := strconv.ParseBool(value); err == nil {
-				inputs = on
+				stdinBody = on
 			}
 		}
 	}
-	if inputs {
-		argv.names(jsonInputsOption, "-", "", StdinRequestBody)
+	if stdinBody {
+		argv.sent.UsesStdin(StdinRequestBody)
 	}
-	if !argv.graphQL || len(queries) == 0 {
-		return
+	if argv.graphQL {
+		argv.records = spliceQueries(argv.records, queries)
 	}
-	records := make([]Record, 0, len(argv.records))
-	for k, record := range argv.records {
+}
+
+// spliceQueries is records with the record at each index of queries, ascending, replaced by the
+// records of the GraphQL query it holds (queryRecords): the values of a `gh api graphql` call's
+// query fields (readLeaf), which are queries once the endpoint, which may come after them, says
+// the call is one.
+func spliceQueries(records []Record, queries []int) []Record {
+	if len(queries) == 0 {
+		return records
+	}
+	spliced := make([]Record, 0, len(records))
+	for k, record := range records {
 		if len(queries) > 0 && queries[0] == k {
 			queries = queries[1:]
-			records = append(records, queryRecords(record)...)
+			spliced = append(spliced, queryRecords(record)...)
 			continue
 		}
-		records = append(records, record)
+		spliced = append(spliced, record)
 	}
-	argv.records = records
+	return spliced
 }
 
 // field reads value, the value of the field option option held by args[at] (readLeaf), typed
-// where option is -F or --field, and answers whether its last record is the value of a field
-// named query, which is the query should the call be `gh api graphql`. A value with no `=`
-// (`-f <name>`, gh's empty array `key[]`) is the argument, read whole. A typed field whose value
-// is `@<path>` names a file gh reads the value from, and `@-` standard input (names); such a
-// field's value is the `@<path>` as written, and no query.
-func (argv *ghArgv) field(args []string, at int, option, value string, typed bool) (query bool) {
+// where option is -F or --field, and answers the index in records of the field's value where that
+// value is a field named query, which is the query should the call be `gh api graphql`, and -1
+// where it is not. A value with no `=` (`-f <name>`, gh's empty array `key[]`) is the argument,
+// read whole. A typed field whose value is `@<path>` names a file gh reads the value from, and
+// `@-` standard input (GhSent.Names); such a field's value is the `@<path>` as written, and no
+// query.
+func (argv *ghArgv) field(args []string, at int, option, value string, typed bool) int {
 	name, text, found := strings.Cut(value, "=")
 	if !found {
 		argv.argument(args, at)
-		return false
+		return -1
 	}
 	label := "the gh call's field " + name
-	argv.records = append(argv.records, Record{Label: label + " (name)", Text: name}, Record{Label: label, Text: text})
-	path, fromFile := strings.CutPrefix(text, "@")
-	if !typed || !fromFile {
-		return name == graphQLQuery
+	argv.records = append(argv.records, Record{Label: label + " (name)", Text: name})
+	valueAt := len(argv.records)
+	argv.records = append(argv.records, Record{Label: label, Text: text})
+	if path, fromFile := strings.CutPrefix(text, "@"); typed && fromFile {
+		argv.sent.Names(option, path, name, StdinField)
+		return -1
 	}
-	argv.names(option, path, name, StdinField)
-	return false
+	if name != graphQLQuery {
+		return -1
+	}
+	return valueAt
 }
 
 // readOther reads args, the argv of a command none of ghLeaves is. Each argument is one record,
@@ -595,37 +622,71 @@ func (argv *ghArgv) readOther(args []string) {
 			argv.argument(args, i)
 			value = args[i]
 		}
-		argv.names(option, value, "", StdinText)
+		argv.sent.Names(option, value, "", StdinText)
 	}
 }
 
-// names reads path, the value of option where it names a file gh sends (field, the name of the
+// GhSent is what a gh call's options name for gh to send to GitHub beside its argv: the files it
+// sends as content, and the use it makes of standard input. Its two methods are the one rule for
+// what such an option names (Names, UsesStdin), and both readers of a gh call keep to it: this
+// package's own, over a bare argv in the argv's order (readGhArgv), and cmd/legion's, over its
+// parse of the command by gh's help, in the order the options' names sort (its ghSentFiles). So
+// the two cannot name one call's files, or its input, two ways.
+//
+// The zero GhSent has named nothing, and its Files stay nil until a file is named: a caller that
+// must tell a parse that found no file from no parse at all (GhRequest.Files) starts it with
+// empty, non-nil Files.
+type GhSent struct {
+	// Files are the files named, each once, in the order they were named.
+	Files []GhFile
+	// StdinUse is the use the call makes of standard input: the first use named, and
+	// StdinUnknown where none is or where a second that differs from it is (UsesStdin).
+	StdinUse StdinUse
+	// stdinNamed is whether any use of standard input is named, which tells a first use from a
+	// second.
+	stdinNamed bool
+	// stdinFields are the names of the fields whose value is standard input, each `-F <name>=@-`
+	// and `--field <name>=@-`, in the order they were named, by which the guard reads that input
+	// (stdinRecords). A -f or --raw-field sends `@-` as those two characters and reads no input,
+	// so it names none.
+	stdinFields []string
+}
+
+// Names reads path, the value of option where it names a file gh sends (field, the name of the
 // field the file's text is the value of, "" for any other option): standard input, used as use
 // says, where path is `-`; nothing where it is empty; and a file to send for any other path,
 // which is named once, since a second record of one file is a second open and a second line of
 // the same report.
 //
 // Standard input is no file to open: the shared check's exit-4 handshake buffers that input and
-// GhCall records it already (askAgain). What is kept is the use the option makes of it, and the
-// field's name. Two options that name it with uses that differ leave its use StdinUnknown, since
-// only one of them can have the input, and the guard then reads it both ways.
-func (argv *ghArgv) names(option, path, field string, use StdinUse) {
+// GhCall records it already (askAgain). What is kept is the use the option makes of it
+// (UsesStdin), and the field's name.
+func (sent *GhSent) Names(option, path, field string, use StdinUse) {
 	switch path {
 	case "":
 	case "-":
 		if field != "" {
-			argv.stdinFields = append(argv.stdinFields, field)
+			sent.stdinFields = append(sent.stdinFields, field)
 		}
-		switch {
-		case !argv.stdinNamed:
-			argv.stdin, argv.stdinNamed = use, true
-		case argv.stdin != use:
-			argv.stdin = StdinUnknown
-		}
+		sent.UsesStdin(use)
 	default:
-		if !slices.ContainsFunc(argv.files, func(file GhFile) bool { return file.Path == path }) {
-			argv.files = append(argv.files, GhFile{Option: option, Path: path, Field: field})
+		if !slices.ContainsFunc(sent.Files, func(file GhFile) bool { return file.Path == path }) {
+			sent.Files = append(sent.Files, GhFile{Option: option, Path: path, Field: field})
 		}
+	}
+}
+
+// UsesStdin names standard input with use: for an option's `-` (Names), and on its own for an
+// option that makes standard input an input with no path to name it by, `gh workflow run --json`,
+// whose true makes it the run's inputs (StdinRequestBody). Two that name it with uses that differ
+// leave its use StdinUnknown, in whichever order they come, since only one of them can have the
+// input, and the guard then reads it both ways.
+func (sent *GhSent) UsesStdin(use StdinUse) {
+	switch {
+	case !sent.stdinNamed:
+		sent.StdinUse, sent.stdinNamed = use, true
+	case sent.StdinUse != use:
+		sent.StdinUse = StdinUnknown
 	}
 }
 
@@ -636,7 +697,7 @@ func (argv *ghArgv) argument(args []string, i int) {
 
 // stdinRecords is the records of record, the call's buffered standard input, by the use the call
 // makes of it (StdinUse), and fields, the names of the fields whose value it is
-// (ghArgv.stdinFields). As the request body it is read as JSON (jsonBody). As text it is one
+// (GhSent.stdinFields). As the request body it is read as JSON (jsonBody). As text it is one
 // record: a body option's input is the body. Of no known use it is read both ways, the raw record
 // and the strings of a JSON document beside it, which errs toward reading more.
 //
@@ -673,197 +734,6 @@ func stdinRecords(record Record, use StdinUse, fields []string, graphQL bool) []
 	}
 	decoded, _ := jsonFields(record, graphQL)
 	return append([]Record{record}, decoded...)
-}
-
-// jsonBody is the records of record, a request body GitHub parses as JSON: the strings of the
-// document where its text is exactly one (jsonFields), and record itself, raw, where it is not.
-// A text that is not one document is no body GitHub parses, and is read as the one record it
-// was: a Markdown body named by `--input` by mistake is still read.
-//
-// Two of a gh call's records are such a body: `gh api --input <file>`, whose whole file is the
-// request body, and standard input named by `gh api --input -`, which the shared check's exit-4
-// handshake has buffered. A `-F <name>=@<path>` field's file is not, since gh makes one JSON
-// string of its bytes, escaping them itself: the file holds the text GitHub shows.
-func jsonBody(record Record, graphQL bool) []Record {
-	if fields, ok := jsonFields(record, graphQL); ok {
-		return fields
-	}
-	return []Record{record}
-}
-
-// jsonFields is the records of the strings record's text holds where that text is exactly one
-// JSON document, and false where it is not: no JSON at all, a document with more after it, or
-// two documents. A string is one record, an object's names and values alike, labelled
-// "<record>, JSON <path>" and a name "<record>, JSON <path> (name)", the path written as jq
-// writes it (`.body`, `.comments[0].body`, `."a b"`, and `.` for the document itself) within the
-// bounds jsonLabel keeps. An empty string makes no record: it holds no text a rule can match.
-//
-// A body is read one string at a time because GitHub stores it one string at a time: a review's
-// body and each of its comments' bodies are texts of their own, shown apart, and a rule that
-// needs two words on one line (`<name>[^\n]*<word>`) matches only where one stored text holds
-// both. A compact document puts every field on one line, so a raw read of it would join a name
-// in the review's body to an unrelated word in its fifth comment, and refuse a write that
-// publishes neither beside the other.
-//
-// No raw read of one document is needed beside its strings. Every text GitHub stores from a JSON
-// body is a decoded string value, and the bytes between the strings — the punctuation, the
-// numbers, `true`, `false`, `null` and the whitespace — hold none: a number and the three
-// literals are values of the schema's, stored as no text of the caller's, and make no record. The
-// decoded string is also the one a rule must read: a string's escapes hide its text from the
-// rules, `\u0074` being a letter no pattern reads in the bytes, and an escape inside a name parts
-// the halves of a word. The document is read as tokens rather than as a value, so every value of
-// a duplicate key is read, though a parser keeps one of them: which one is GitHub's parser's to
-// say, and the guard does not guess.
-//
-// In a `gh api graphql` call (graphQL), the document's top-level `query` is a GraphQL query, and
-// is read one literal at a time (graphQLRecords), labelled "<record>, JSON .query, GraphQL string
-// <k>".
-func jsonFields(record Record, graphQL bool) ([]Record, bool) {
-	decoder := json.NewDecoder(strings.NewReader(record.Text))
-	// A number is kept as its text rather than parsed, so that one past a float64's range is a
-	// number still, and not an error that sends the document to the raw read.
-	decoder.UseNumber()
-	var fields []Record
-	// open are the arrays and objects the next token stands inside, the outermost first, and path
-	// the steps from the document to the innermost of them, one for each but the document itself.
-	// A label is rendered from path when its string is read (jsonLabel), so that no string's
-	// label costs the length of the path it stands at.
-	var open []jsonOpen
-	var path []string
-read:
-	for {
-		token, err := decoder.Token()
-		if err != nil {
-			return nil, false
-		}
-		// at is the path of the value token is or opens: path and, inside an array or an object,
-		// the step to that value.
-		at := path
-		if n := len(open); n > 0 {
-			inner := &open[n-1]
-			switch {
-			case token == json.Delim('}') || token == json.Delim(']'):
-				open = open[:n-1]
-				if len(open) == 0 {
-					break read
-				}
-				path = path[:len(path)-1]
-				continue
-			case inner.array:
-				at = append(path, "["+strconv.Itoa(inner.next)+"]")
-				inner.next++
-			case inner.member == "":
-				// The decoder hands an object nothing but a string where a name stands.
-				name, _ := token.(string)
-				inner.member = jqMember(name)
-				if name != "" {
-					fields = append(fields, Record{Label: jsonLabel(record.Label, append(path, inner.member)) + " (name)", Text: name})
-				}
-				continue
-			default:
-				at = append(path, inner.member)
-				inner.member = ""
-			}
-		}
-		switch value := token.(type) {
-		case json.Delim:
-			if len(open) > 0 {
-				path = at
-			}
-			open = append(open, jsonOpen{array: value == '['})
-			continue
-		case string:
-			if value == "" {
-				break
-			}
-			field := Record{Label: jsonLabel(record.Label, at), Text: value}
-			if graphQL && len(at) == 1 && at[0] == "."+graphQLQuery {
-				fields = append(fields, queryRecords(field)...)
-			} else {
-				fields = append(fields, field)
-			}
-		}
-		if len(open) == 0 {
-			break
-		}
-	}
-	// The document is the whole text only where what follows it is whitespace to the end.
-	if _, err := decoder.Token(); err != io.EOF {
-		return nil, false
-	}
-	return fields, true
-}
-
-// jsonOpen is an array or an object of a JSON document being read (jsonFields): for an array,
-// the index of its next element; and for an object, the step to the member whose value comes
-// next (jqMember), "" where a name comes next.
-type jsonOpen struct {
-	array  bool
-	next   int
-	member string
-}
-
-// The bounds of a JSON path in a label (jsonLabel), so that a label stays short whatever the
-// document is: a body can nest thousands of objects, and a label holding the whole path would
-// cost each string of such a body the length of its path, which for the whole body grows with the
-// square of its depth. A path of more than maxPathSteps steps is shown as its first
-// pathStepsShownBefore steps, "…", and its last pathStepsShownAfter; and a step is shown to
-// maxStepShown bytes (jqMember).
-const (
-	maxPathSteps         = 8
-	pathStepsShownBefore = 2
-	pathStepsShownAfter  = 5
-	maxStepShown         = 64
-)
-
-// jsonLabel is the label of the string at path, its steps from the document, of the document
-// record labels, within the bounds above.
-func jsonLabel(record string, path []string) string {
-	var label strings.Builder
-	label.WriteString(record)
-	label.WriteString(", JSON ")
-	if len(path) == 0 {
-		label.WriteString(".")
-		return label.String()
-	}
-	if len(path) > maxPathSteps {
-		for _, step := range path[:pathStepsShownBefore] {
-			label.WriteString(step)
-		}
-		label.WriteString("…")
-		path = path[len(path)-pathStepsShownAfter:]
-	}
-	for _, step := range path {
-		label.WriteString(step)
-	}
-	return label.String()
-}
-
-// jqMember is the step of a jq path to the member name: `.name` for a name jq writes bare, a
-// letter or an underscore and then letters, digits and underscores, and `."name"` quoted as JSON
-// quotes it for every other, so that a name holding a newline or a quote cannot break the label
-// it stands in. A step longer than maxStepShown bytes is cut there, on a rune boundary, and "…"
-// marks the cut: a name can be a whole body long, and its step is in the label of every string
-// beneath it.
-func jqMember(name string) string {
-	bare := name != ""
-	for i, c := range name {
-		letter := c == '_' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
-		bare = bare && (letter || i > 0 && '0' <= c && c <= '9')
-	}
-	step := "." + name
-	if !bare {
-		var quoted strings.Builder
-		encoder := json.NewEncoder(&quoted)
-		encoder.SetEscapeHTML(false)
-		// A string always encodes: the error is a writer's, and a Builder's write never fails.
-		_ = encoder.Encode(name)
-		step = "." + strings.TrimSuffix(quoted.String(), "\n")
-	}
-	if len(step) > maxStepShown {
-		step = step[:runeBack(step, maxStepShown, 0)] + "…"
-	}
-	return step
 }
 
 // maxGhFile is the most this package reads from one file a gh call would send, and from the
