@@ -330,7 +330,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"lastStartFailure": current.LastStartFailure,
 			// The pending task reduced to the five facts a reader decides on, and never its
 			// text: that one is held, which the key's presence says, its phase, when it was
-			// queued, how many sends failed and the last send error.
+			// queued, how many of its takes failed to adopt the working copy and the last such error.
 			"pendingTask": map[string]any{
 				"phase":         current.Pending.Phase,
 				"queuedAt":      current.Pending.QueuedAt,

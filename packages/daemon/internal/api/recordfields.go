@@ -112,7 +112,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "PendingCause", Column: ColumnAgents, Keys: []string{"pendingCause"},
 		Reason: "names the cause of the death whose relaunch is in flight, which an architect reads while `failure` is still empty"},
 	{Field: "Pending", Column: ColumnAgents, Keys: []string{"pendingTask"},
-		Reason: "reduced to what a reader decides on — that one is held, its phase, when it was queued, how many sends failed and the last send error — and never its text, which the operator route serves whole"},
+		Reason: "reduced to what a reader decides on — that one is held, its phase, when it was queued, how many of its takes failed to adopt the working copy and the last such error — and never its text, which the operator route serves whole"},
 	{Field: "BootTokenHash", Column: ColumnWithheld,
 		Reason: "a secret: the hash the shim's hello and the agent's registration are resolved by"},
 	{Field: "CapabilityHash", Column: ColumnWithheld,

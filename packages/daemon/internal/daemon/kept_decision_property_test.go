@@ -3043,7 +3043,7 @@ func (r *keptRun) report() {
 // One telling more is accepted, and only one: a decision carried to the architect of a tree its
 // issue has left, by a row composed before it left (leftBefore). Such a row's task or catch-up
 // names the reference in text written while the issue was still in that tree, and the row can be
-// prompted or published long after — a start whose launch kept failing, a task held on the claim
+// taken or published long after — a start whose launch kept failing, a task held on the claim
 // until its root heard again. For a decision a move carried on, telling the old architect pays
 // nothing of what the new architect is owed, whether it reached that architect before the move or
 // after it, and the decision is owed to the new tree all the same, so its architect is told it
