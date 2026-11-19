@@ -413,9 +413,6 @@ func ListGroups(ctx context.Context, q Querier) ([]model.AccessGroup, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list groups: %w", err)
 	}
-	if groups == nil {
-		groups = []model.AccessGroup{}
-	}
 	return groups, nil
 }
 
@@ -523,14 +520,12 @@ func DeleteGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name string,
 		return nil, fmt.Errorf("take group %s off its lists: %w", name, err)
 	}
 	slices.Sort(projects)
-	if len(projects) > 0 {
-		owners := make([]store.Owner, len(projects))
-		for index, project := range projects {
-			owners[index] = store.ProjectOwner(project)
-		}
-		if err := store.LockOwners(ctx, tx, owners...); err != nil {
-			return nil, fmt.Errorf("lock the projects that listed group %s: %w", name, err)
-		}
+	owners := make([]store.Owner, len(projects))
+	for index, project := range projects {
+		owners[index] = store.ProjectOwner(project)
+	}
+	if err := store.LockOwners(ctx, tx, owners...); err != nil {
+		return nil, fmt.Errorf("lock the projects that listed group %s: %w", name, err)
 	}
 	changes := make([]model.Event, 0, len(projects)+1)
 	for _, project := range projects {
