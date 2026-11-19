@@ -59,10 +59,13 @@ import (
 // settings it read, the first input day of each project's series it has read, each project's
 // LegionSince, what it has written, and the page's own reads and writes: the delivery days it has
 // read, the days it has written and the projects whose unowned-p0 row of today it has written.
+// now is the pass's moment, which every row is built as of; clock is the refresher's clock, which
+// each page reads afresh for its change cursor (page).
 type refresh struct {
 	store      *Store
 	build      string
 	now, today time.Time
+	clock      func() time.Time
 	batch      int
 	projects   []string
 	known      map[string]bool
@@ -263,54 +266,68 @@ func (w *pageWork) restarts(projects []string) []walkKey {
 // A database holding no cursor row has committed no pass: the cursors start at the feeds' heads,
 // and every walk begins, which builds every day the feeds' history could name. A change cursor
 // that may have passed over changes it never read (delivery.CursorLost, judged on the database's
-// clock for the change and on the pass's moment, which every pass stamps its cursors with, for
-// the pass) moves to the log's head, and every walk begins again, which covers every change the
-// log ever held.
+// clock for the change and on the page's own reading of the refresher's clock against when a page
+// last read the change log to its end) moves to the log's head, and every walk begins again,
+// which covers every change the log ever held.
+//
+// The page reads the clock once, before its reads, and that one reading is what the lost-cursor
+// check is judged at and what a read of the change log to its end stamps (delivery.ChangeCursor):
+// a page shorter than limit, a move to the head, and the first read. A full page moves the change
+// cursor and carries its ReadAt forward, so a pass that catches up a backlog of changes, judged
+// page by page, finds the cursor lost once the retention has passed since the last read of the
+// whole log, a prune having taken changes after it meanwhile. The rows are built as of the pass's
+// moment (now), whatever the page's reading.
 func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error) {
 	r.beginPage()
-	cursors, err := r.store.readRefresherCursors(ctx)
+	checked := r.clock()
+	cursors, committed, err := r.store.readRefresherCursors(ctx)
 	if err != nil {
 		return false, err
 	}
 	work := newPageWork()
-	positions := map[string]delivery.ChangeCursor{}
+	var moved feedCursors
 	full := false
-	if len(cursors) == 0 {
+	if !committed {
 		head, err := delivery.ChangesHead(ctx, r.store.database.Pool)
 		if err != nil {
 			return false, fmt.Errorf("read the head of the delivery changes: %w", err)
 		}
-		positions[changesCursor], positions[eventsCursor] = head, delivery.ChangeCursor{Seq: safe}
+		head.ReadAt = checked
+		moved = feedCursors{changes: head, events: safe}
 		work.restartAll()
 	} else {
-		after := cursors[changesCursor]
-		lost, err := delivery.CursorLost(ctx, r.store.database.Pool, after, r.now)
+		after := cursors.changes
+		lost, err := delivery.CursorLost(ctx, r.store.database.Pool, after, checked)
 		if err != nil {
 			return false, fmt.Errorf("read the delivery change at %d: %w", after.Seq, err)
 		}
 		if lost {
-			if positions[changesCursor], err = delivery.ChangesHead(ctx, r.store.database.Pool); err != nil {
+			if moved.changes, err = delivery.ChangesHead(ctx, r.store.database.Pool); err != nil {
 				return false, fmt.Errorf("read the head of the delivery changes: %w", err)
 			}
+			moved.changes.ReadAt = checked
 			work.restartAll()
 		} else {
 			changes, err := delivery.ChangesSince(ctx, r.store.database.Pool, after.Seq, limit)
 			if err != nil {
 				return false, fmt.Errorf("read the delivery changes after %d: %w", after.Seq, err)
 			}
-			positions[changesCursor] = after
+			moved.changes = after
 			for _, change := range changes {
 				at := change.At
-				positions[changesCursor] = delivery.ChangeCursor{Seq: change.Seq, At: &at}
+				moved.changes.Seq, moved.changes.At = change.Seq, &at
 				work.addChange(change)
 			}
 			full = len(changes) == limit
+			if !full {
+				moved.changes.ReadAt = checked
+			}
 		}
-		events, err := r.store.readRefresherEvents(ctx, cursors[eventsCursor].Seq, safe, limit)
+		events, err := r.store.readRefresherEvents(ctx, cursors.events, safe, limit)
 		if err != nil {
 			return false, err
 		}
-		positions[eventsCursor] = delivery.ChangeCursor{Seq: events.position}
+		moved.events = events.position
 		full = full || events.full
 		work.addEvents(events)
 	}
@@ -327,7 +344,7 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 	if err := r.apply(ctx, work); err != nil {
 		return false, err
 	}
-	if err := r.commitPage(ctx, positions, work.restarts(r.projects)); err != nil {
+	if err := r.commitPage(ctx, moved, work.restarts(r.projects)); err != nil {
 		return false, err
 	}
 	return full, nil

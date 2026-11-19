@@ -85,13 +85,13 @@ const refresherPage = 1000
 // transaction of its own per project (WriteProjectDay).
 const walkBatch = 28
 
-// The cursors, one row of eval_days_cursor each, named for the feed they are read by.
+// The cursors, one row of eval_days_cursor each, named for the feed they are read by (feedCursors).
 const (
 	changesCursor = "delivery_changes"
 	eventsCursor  = "events"
 )
 
-// refresherCursors is the two cursors in one list, which is how a pass writes them.
+// refresherCursors is the two cursors in one list, which is how a pass reads them.
 var refresherCursors = []string{changesCursor, eventsCursor}
 
 // The walks of eval_days_walks, by family: the delivery and CI rows of every project (one walk,
@@ -259,6 +259,7 @@ func (r refreshed) sorted() []string {
 // once is what says a walk has days left (RefreshThrough).
 func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresherSchedule, seeds *seeding) (refreshed, time.Time, error) {
 	r := s.newRefresh(deps.Build, sched.now().UTC(), sched.batch)
+	r.clock = sched.now
 	if _, err := delivery.DrainPending(ctx, s.database.Pool); err != nil {
 		return r.report, time.Time{}, err
 	}
@@ -299,10 +300,13 @@ func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresher
 	return r.report, next, nil
 }
 
-// newRefresh is the state of one pass that builds as build, as of now, batch days of each walk.
+// newRefresh is the state of one pass that builds as build, as of now, batch days of each walk. Its
+// clock stands at now, which a caller that runs a page on its own keeps or replaces; refresh gives
+// it the loop's (refresherSchedule.now), so each page reads the time it runs at.
 func (s *Store) newRefresh(build string, now time.Time, batch int) *refresh {
 	return &refresh{
 		store: s, build: build, now: now, today: measures.Midnight(now), batch: batch,
+		clock:  func() time.Time { return now },
 		report: refreshed{days: map[builtDay]bool{}},
 		first:  map[walkKey]map[string]time.Time{}, since: map[string]LegionSince{},
 	}
@@ -336,49 +340,67 @@ func (r *refresh) nextPass(ctx context.Context, pending bool) (time.Time, error)
 	return next, nil
 }
 
-// readRefresherCursors is where each feed stands, by cursor name; no row at all is a database no
-// refresher pass has committed on. A cursor is the position the last committed pass read through
-// (Seq); for the change cursor, when the change at that position was recorded
-// (delivery_changes.at), which tells a change pruned in its time from one lost
-// (delivery.CursorLost), nil for the event cursor and for a position no change holds; and when the
-// last committed pass ran as of (ReadAt), which tells a log pruned past changes no pass read while
-// the refresher stood still.
-func (s *Store) readRefresherCursors(ctx context.Context) (map[string]delivery.ChangeCursor, error) {
-	rows, err := s.database.Pool.Query(ctx, `select name, position, at, updated_at from eval_days_cursor where name = any($1)`, refresherCursors)
-	if err != nil {
-		return nil, fmt.Errorf("read the eval day-row refresher's cursors: %w", err)
-	}
-	cursors := map[string]delivery.ChangeCursor{}
-	var name string
-	var cursor delivery.ChangeCursor
-	if _, err := pgx.ForEachRow(rows, []any{&name, &cursor.Seq, &cursor.At, &cursor.ReadAt}, func() error {
-		cursors[name] = cursor
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read the eval day-row refresher's cursors: %w", err)
-	}
-	return cursors, nil
+// feedCursors is where the refresher's two feeds stand, the rows of eval_days_cursor: the change
+// cursor (delivery.ChangeCursor), which the lost-cursor rule judges, and the id of the last event
+// a committed page read.
+type feedCursors struct {
+	changes delivery.ChangeCursor
+	events  int64
 }
 
-// commitPage moves the two cursors to the positions a page read, stamped with the moment the pass
-// ran as of, and begins again each walk the page's changes call for, in one transaction: the days
-// the page named are written before it, so a crash between the two reads the same changes again,
-// and a walk the changes begin again is recorded with the cursor that passed them.
-func (r *refresh) commitPage(ctx context.Context, cursors map[string]delivery.ChangeCursor, restarts []walkKey) error {
+// readRefresherCursors is where each feed stands, and false where no row exists at all, a database
+// no refresher pass has committed on. The event cursor is the id the last committed page read
+// through. The change cursor is the seq the last committed page read through (Seq); when the
+// change at that seq was recorded (delivery_changes.at), which tells a change pruned in its time
+// from one lost (delivery.CursorLost), nil for a seq no change holds; and when a page last read
+// the change log to its end (ReadAt, the row's updated_at), which tells a log pruned past changes
+// no page read since.
+func (s *Store) readRefresherCursors(ctx context.Context) (feedCursors, bool, error) {
+	rows, err := s.database.Pool.Query(ctx, `select name, position, at, updated_at from eval_days_cursor where name = any($1)`, refresherCursors)
+	if err != nil {
+		return feedCursors{}, false, fmt.Errorf("read the eval day-row refresher's cursors: %w", err)
+	}
+	var cursors feedCursors
+	var name string
+	var position int64
+	var at *time.Time
+	var stamped time.Time
+	read, err := pgx.ForEachRow(rows, []any{&name, &position, &at, &stamped}, func() error {
+		switch name {
+		case changesCursor:
+			cursors.changes = delivery.ChangeCursor{Seq: position, At: at, ReadAt: stamped}
+		case eventsCursor:
+			cursors.events = position
+		}
+		return nil
+	})
+	if err != nil {
+		return feedCursors{}, false, fmt.Errorf("read the eval day-row refresher's cursors: %w", err)
+	}
+	return cursors, read.RowsAffected() > 0, nil
+}
+
+// commitPage moves the two cursors to the positions a page read and begins again each walk the
+// page's changes call for, in one transaction: the days the page named are written before it, so
+// a crash between the two reads the same changes again, and a walk the changes begin again is
+// recorded with the cursor that passed them. The event cursor is stamped with the moment the pass
+// ran as of, and the change cursor with its ReadAt, when a page last read the change log to its
+// end (page), which the lost-cursor rule reads and which a full page leaves where it stood.
+func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts []walkKey) error {
 	tx, err := r.store.database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the eval day-row refresher's cursors: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	positions, ats := make([]int64, len(refresherCursors)), make([]*time.Time, len(refresherCursors))
-	for i, name := range refresherCursors {
-		positions[i], ats[i] = cursors[name].Seq, cursors[name].At
-	}
 	if _, err := tx.Exec(ctx, `
 		insert into eval_days_cursor (name, position, at, updated_at)
-		select name, position, at, $4 from unnest($1::text[], $2::bigint[], $3::timestamptz[]) as given(name, position, at)
+		select name, position, at, read_at
+		from unnest($1::text[], $2::bigint[], $3::timestamptz[], $4::timestamptz[]) as given(name, position, at, read_at)
 		on conflict (name) do update set position = excluded.position, at = excluded.at, updated_at = excluded.updated_at
-	`, refresherCursors, positions, ats, r.now); err != nil {
+	`, []string{changesCursor, eventsCursor},
+		[]int64{cursors.changes.Seq, cursors.events},
+		[]*time.Time{cursors.changes.At, nil},
+		[]time.Time{cursors.changes.ReadAt, r.now}); err != nil {
 		return fmt.Errorf("move the eval day-row refresher's cursors: %w", err)
 	}
 	if len(restarts) > 0 {
@@ -473,12 +495,16 @@ func (r *refresh) recordWalk(ctx context.Context, key walkKey, next time.Time) e
 	return nil
 }
 
-// RefresherAge answers how long before now the refresher's last pass committed, measured from the
-// moment that pass ran as of, and false when no pass has committed on this database. Every pass
-// stamps both its cursors whether or not its feeds held anything new (commitPage), so the age is
-// how long ago the last pass ran, not how long ago the last change arrived: the freshness the eval
-// list states of the computed evals' day rows. A caller whose clock stands behind the writing
-// process's reads a negative age, as it would of any moment another process stamped.
+// RefresherAge answers how long before now the refresher last read its feeds, as the oldest of its
+// two cursors' updated_at, and false when no pass has committed on this database. Every pass
+// stamps the event cursor with the moment it ran as of, whether or not its feed held anything new,
+// and the change cursor with the moment one of its pages last read the change log to its end
+// (commitPage). So the age is the time since the last pass ran, or since a pass last read the
+// change log to its end, whichever is older: a pass catching up a backlog of changes reads as old
+// as its last read of the whole log. It is not how long ago the last change arrived: it is the
+// freshness the eval list states of the computed evals' day rows. A caller whose clock stands
+// behind the writing process's reads a negative age, as it would of any moment another process
+// stamped.
 func (s *Store) RefresherAge(ctx context.Context, now time.Time) (time.Duration, bool, error) {
 	var oldest *time.Time
 	if err := s.database.Pool.QueryRow(ctx, `select min(updated_at) from eval_days_cursor`).Scan(&oldest); err != nil {

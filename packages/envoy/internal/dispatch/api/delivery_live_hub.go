@@ -254,13 +254,12 @@ type hubGeneration struct {
 	views map[string]*deliveryView // by canonical view key
 	conns map[deliveryLiveConn]map[string]*deliverySub
 
-	// changeSeq and changeAt are the last delivery change read and its at, to tell a reset log,
-	// and changeRead when the hub last read the log, to tell one pruned past changes it never read;
-	// epoch counts the resets, so a recompute that read across one stores no change position.
-	changeSeq  int64
-	changeAt   time.Time
-	changeRead time.Time
-	epoch      int64
+	// change is where the hub stands in the delivery change log (delivery.ChangeCursor): the last
+	// change read and its at, to tell a reset log, and its ReadAt the hub's last read of the log to
+	// its end, to tell one pruned past changes it never read; epoch counts the resets, so a
+	// recompute that read across one stores no change position.
+	change delivery.ChangeCursor
+	epoch  int64
 	// p0 is the open P0 issues (OpenP0Keys), kept current from issue event payloads.
 	p0 map[string]struct{}
 	// fresh is the freshness row as last heard, and sent the verdict last sent; known is false

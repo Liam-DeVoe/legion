@@ -244,10 +244,17 @@ func OldestChangeSeq(ctx context.Context, q Querier) (int64, error) {
 	return seq, err
 }
 
-// ChangeCursor is where one reader of the change log stands: the seq of the last change it read
-// (0 before it read any), when the log recorded that change (its at, nil where the reader holds
-// none: a position no change held), and when the reader last read the log, by the reader's own
-// clock (ReadAt: the moment its last committed pass ran as of, or its last read of the log).
+// ChangeCursor is where one reader of the change log stands in that log, and is a cursor of that
+// log alone: the seq of the last change it read (0 before it read any), when the log recorded that
+// change (At, nil where the reader holds none: a position no change held), and when the reader last
+// read the log to its end, by the reader's own clock (ReadAt). A read reaches the end where it
+// finds no change after the last one it took, a page shorter than its limit, and so does a move to
+// the log's head (ChangesHead, on a first read or a lost cursor). A full page moves Seq and At and
+// carries the earlier ReadAt forward, since the reader has not seen the log's end since.
+//
+// A reader reads its clock afresh for each page, before that page's read: the one reading is the
+// now its lost-cursor check is judged at (CursorLost) and the ReadAt a read to the end stamps, so
+// a catch-up that runs for hours is judged at the moment of each page and not at its start.
 type ChangeCursor struct {
 	Seq    int64
 	At     *time.Time
@@ -255,10 +262,10 @@ type ChangeCursor struct {
 }
 
 // CursorLost reports whether cursor may have passed over changes its reader never read, as of
-// now on the reader's own clock. It is the one rule every reader of the log judges its cursor by
-// (the eval day-row refresher, the delivery live hub and the Legion facts consumer): a reader
-// whose cursor is lost reads again everything the changes could have named, and any other reads
-// on after its cursor.
+// now, the reader's own clock as it read it for this page (ChangeCursor). It is the one rule every
+// reader of the log judges its cursor by (the eval day-row refresher, the delivery live hub and the
+// Legion facts consumer): a reader whose cursor is lost reads again everything the changes could
+// have named, and any other reads on after its cursor.
 //
 // The cursor is lost where the log holds rows and its newest seq is below the cursor's: the
 // sequence went backwards (a TRUNCATE ... RESTART IDENTITY, a restore), so a reader that read on
@@ -274,15 +281,17 @@ type ChangeCursor struct {
 //   - the change was recorded less than ChangeRetention ago by the database's clock, the clock
 //     its at was written by and PruneChanges cuts by, so no prune took it: a log reset, or rows
 //     deleted by hand;
-//   - the reader has read nothing for longer than ChangeRetention before now, by its own clock,
-//     the one ReadAt is stamped by: while it stood still a prune may have taken changes after
-//     its cursor that it never read.
+//   - the reader has not read the log to its end for longer than ChangeRetention before now, by
+//     its own clock, the one ReadAt is stamped by: since that read a prune may have taken changes
+//     after its cursor that it never read, while it stood still or while it caught up a backlog
+//     a full page at a time.
 //
-// A change gone after its retention while its reader read the log within it was pruned in its
-// time, as the prune takes the change a cursor rests on whenever a day brings no newer one, and
-// is no loss: the reader's last read found nothing after it, and every change recorded since is
-// younger than the retention and still in the log. A cursor with no At is judged by ReadAt alone.
-// A cursor at 0 has read nothing and lost nothing.
+// A change gone after its retention while its reader read the log to its end within the retention
+// was pruned in its time and is no loss: that read took every change the log then held, so every
+// change the reader has not read was recorded since, is younger than the retention and is still in
+// the log. That is the routine prune of a quiet day, which takes the change a cursor rests on
+// whenever a day brings no newer one. A cursor with no At is judged by ReadAt alone. A cursor at 0
+// has read nothing and lost nothing.
 //
 // The change at the cursor, the log's newest seq and the database's clock are one statement's,
 // so they describe one log.
@@ -314,7 +323,8 @@ func CursorLost(ctx context.Context, q Querier, cursor ChangeCursor, now time.Ti
 // it is moved to the log's head (the eval day-row refresher's and the Legion facts consumer's on
 // their first read and on a lost cursor, the delivery live hub's on its first read and on a lost
 // one), and the position a hub's recompute reads through. The two are one row of one statement,
-// so they name one change. ReadAt is zero: when its reader read the log is the reader's to stamp.
+// so they name one change. ReadAt is zero: a move to the head is a read of the log to its end,
+// which the reader that moves its cursor there stamps by its own clock (ChangeCursor).
 func ChangesHead(ctx context.Context, q Querier) (ChangeCursor, error) {
 	var head ChangeCursor
 	err := q.QueryRow(ctx, `select seq, at from delivery_changes order by seq desc limit 1`).Scan(&head.Seq, &head.At)

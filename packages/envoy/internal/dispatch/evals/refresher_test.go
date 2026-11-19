@@ -389,12 +389,12 @@ func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing
 	if report, _ := r.pass(t); len(report.days) != 0 {
 		t.Errorf("a pass after the walk wrote %v, want nothing: the walk's own eval_days changes name no day", report.sorted())
 	}
-	cursors, err := r.registry.readRefresherCursors(t.Context())
+	cursors, _, err := r.registry.readRefresherCursors(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	head := r.changesHead(t)
-	if got := cursors[changesCursor]; got.Seq != head.Seq || got.At == nil || head.At == nil || !got.At.Equal(*head.At) {
+	if got := cursors.changes; got.Seq != head.Seq || got.At == nil || head.At == nil || !got.At.Equal(*head.At) {
 		t.Errorf("the changes cursor stands at %d recorded %v, want the log's head %d recorded %v", got.Seq, got.At, head.Seq, head.At)
 	}
 	age, found, err := r.registry.RefresherAge(t.Context(), r.now.Add(time.Minute))

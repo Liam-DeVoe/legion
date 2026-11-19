@@ -9,16 +9,17 @@ import (
 
 // TestAPrunedCursorChangeComputesNothingWholeAndAVanishedYoungOneDoes: the change the change
 // cursor rests on passes its 24 hours and is pruned (delivery.PruneChanges), as the prune takes it
-// after a quiet day, while every pass committed within the retention: that is no loss, and the
-// pass after the prune computes no project whole. The change the cursor rests on leaving the log
-// younger than its retention, as a reset log or a delete by hand takes it, is a loss no one can
-// name, and the pass after it computes every project whole. So is a change pruned after its
-// retention when no pass had committed for longer than the retention: while the consumer stood
-// still the prune may have taken changes after the cursor that no pass read. A prune that empties
-// the log is no loss, since the next change continues the sequence above the cursor; a log whose
-// sequence restarted below the cursor (TRUNCATE ... RESTART IDENTITY, a restore), holding rows
-// below it and none at it, is a loss whatever the age of the change the cursor rested on, since a
-// cursor read on would read nothing until the new seqs passed it.
+// after a quiet day, while every pass read the change log to its end within the retention: that is
+// no loss, and the pass after the prune computes no project whole. The change the cursor rests on
+// leaving the log younger than its retention, as a reset log or a delete by hand takes it, is a
+// loss no one can name, and the pass after it computes every project whole. So is a change pruned
+// after its retention when no pass had read the change log to its end for longer than the
+// retention: while the consumer stood still the prune may have taken changes after the cursor that
+// no pass read. A prune that empties the log is no loss, since the next change continues the
+// sequence above the cursor; a log whose sequence restarted below the cursor (TRUNCATE ... RESTART
+// IDENTITY, a restore), holding rows below it and none at it, is a loss whatever the age of the
+// change the cursor rested on, since a cursor read on would read nothing until the new seqs passed
+// it.
 func TestAPrunedCursorChangeComputesNothingWholeAndAVanishedYoungOneDoes(t *testing.T) {
 	run := newConsumer(t, 2)
 	project := run.fixture.Project
