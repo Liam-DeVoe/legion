@@ -62,9 +62,10 @@
 # project scope none, the service READ_SERVICE and the session READ_SESSION, and names no person
 # and no project. Dispatch serves such a token on the routes its read list names (today GET
 # /api/v1/projects/{key}/architecture alone) and answers it 403 READ_ONLY_TOKEN on every other
-# route, which packages/dispatch/e2e/read-token-live.ts drives against this stack and a
-# `bun run dispatch:local` Dispatch. A read entry fixes its session, so its pod needs no
-# registration below, and the broker refuses one with 409 SESSION_FIXED.
+# route; cmd/broker/token_exchange_test.go (the exchange, on the real binary) and
+# internal/dispatch/api/read_only_token_test.go (Dispatch's read list) hold both halves in CI.
+# A read entry fixes its session, so its pod needs no registration below, and the broker refuses
+# one with 409 SESSION_FIXED.
 #
 # SERVICE is registered under both halves a service needs: BROKER_SERVICE_LOGINS names the
 # account that logs in as it, and BROKER_SERVICES names the account its pods run as
@@ -681,10 +682,9 @@ dev-broker: ready.
   exchanges the same way for a token that only reads: service $READ_SERVICE, session
   $READ_SESSION, no person and no project (BROKER_EXCHANGE_READ_ACCOUNTS). Its entry fixes that
   session, so its pod needs no registration and a registration of it is refused 409
-  SESSION_FIXED. To drive it against a Dispatch, start one from packages/dispatch with
+  SESSION_FIXED. To use it against a Dispatch of your own, start one from packages/dispatch with
   DISPATCH_E2E_AGENT_SECRETS_URL=$PUBLIC_URL and
-  DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$ACCOUNT_TOKEN_FILE before bun run dispatch:local,
-  and run e2e/read-token-live.ts as its header says.
+  DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$ACCOUNT_TOKEN_FILE before bun run dispatch:local.
 EOF
 
 wait "$BROKER_PID"

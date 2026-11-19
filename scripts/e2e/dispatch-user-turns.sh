@@ -57,6 +57,9 @@ set -euo pipefail
 # This rig's NATS is a throwaway server with no users. nats.go refuses an nkey when the server sends
 # no nonce, so no process here inherits an operator's seed.
 unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE NATS_DAEMON_NKEY_SEED NATS_DAEMON_NKEY_SEED_FILE
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go too: require_loopback_dsn in
+# scripts/e2e/lib/loopback-dsn.sh says why a caller of the loopback guard clears the three.
+unset PGHOSTADDR PGSERVICE PGSERVICEFILE
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 work=$(mktemp -d "/tmp/legion-e2e-user-turns.$$.XXXXXXXX")

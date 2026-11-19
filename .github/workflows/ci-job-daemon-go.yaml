@@ -99,7 +99,7 @@ jobs:
       # One service for all three: the Go daemon's unit tests' Postgres, the broker rig its
       # agentsecrets contract tests drive (brokertest.NewRig skips without
       # BROKER_TEST_DATABASE_URL), and the Stage 1 script's. Setting LEGION_E2E_PG_DSN is what tells
-      # the script not to start a container of its own — that path is the devbox's.
+      # the script not to start a container of its own, the path a run with no DSN takes.
       LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       LEGION_E2E_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable

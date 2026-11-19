@@ -1010,8 +1010,7 @@ jobs:
             # (internal/api/state_golden_test.go:868, internal/intake/intake_test.go:802), the
             # agents internal/prompts/roles_test.go:261 stats, the tools skill its :689 holds
             # roles/mechanics/headless.md to, the merge gate internal/workflow/engine_test.go:432
-            # holds the reviewer's prompt to, the GitHub App helper
-            # internal/api/real_github_test.go:44 sources, and the examples and
+            # holds the reviewer's prompt to, and the examples and
             # docs its tests hold to the code (cmd/legion/config_example_test.go:164,
             # internal/config/controller_test.go:214, internal/config/kubernetes_test.go:1474).
             # No bun_install and no skills/** - the two pages of skills/ this filter names are all
@@ -1060,7 +1059,6 @@ jobs:
               # for the reviewed commit it must name as the task does.
               - 'skills/legion-worker/references/tools.md'
               - 'skills/legion-worker/references/merge-gate.md'
-              - 'scripts/e2e/lib/github-apps.sh'
               # The Stage 1 proof: the script, the rig it sources, the helpers the rig runs, and
               # the two plugin manifests it copies with jq into the plugins its home holds
               # (stage1-skeleton.sh:202-203).

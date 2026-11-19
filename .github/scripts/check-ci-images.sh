@@ -387,8 +387,8 @@ NO_CI_JOB = "no CI job runs it"
 FETCHES_NOTHING = "a CI job runs it, and it fetches nothing"
 
 # Every file outside the reach that may name mirror.gcr.io, and the one ground that admits it.
-# `no CI job runs it`: the devbox live proofs and their libraries, the compose files, the
-# walkthrough recorder, the corpus copy a developer restores on a devbox, and documentation.
+# `no CI job runs it`: the compose files, the walkthrough recorder, the corpus copy a developer
+# restores on their own machine, and documentation.
 # `a CI job runs it, and it fetches nothing`: a script a CI job runs whose mirror.gcr.io text no
 # job ever hands to a registry — dev-postgres.test.sh, which the envoy-go-checks job runs,
 # installs a fake `docker` on PATH; the load test's cluster copy (packages/envoy/loadtest/cluster/),

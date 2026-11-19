@@ -61,8 +61,7 @@ document's versions, a request made again opened a new row, so there each arriva
 and, from the round's first request on, an answer or reply on a decision block in the document
 the request names: a choice the human raises while the request is open becomes such a block, and
 the hand-back after its answer responds to that turn. A round with more arrivals than human turns
-plus one is flagged. `scripts/e2e/lib/design-gate-approval-requests.jq` reads the same arrivals
-for the stage 4b proof.
+plus one is flagged.
 
 ## Display read census
 

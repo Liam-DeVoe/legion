@@ -3225,7 +3225,7 @@ loopback with `--host-resolver-rules`, and its `baseURL` is
 `http://dispatch-e2e.test:<PLAIN_HTTP_PORT>`. `e2e/plain-http-proxy.ts` listens there and forwards
 HTTP and WebSocket requests to the server under test at that server's own loopback origin, which
 the dev sign-in host fence requires. So the page's origin is a plain-HTTP host name that is not
-loopback - what a LAN address, a tailnet name or the phone of the manual check gets - where
+loopback - what a LAN address, a tailnet name or a real phone gets - where
 `isSecureContext` is false and `crypto.randomUUID` is undefined. The proxy keeps the server's fence
 for itself: a request whose `Host` is not `dispatch-e2e.test:<PLAIN_HTTP_PORT>` is answered
 `421 HOST_MISMATCH` before anything is forwarded, since the proxy sends the target's own `Host`
@@ -3595,9 +3595,10 @@ touch input, and user agent, and runs only the tests tagged `@phone`
 (`grep: phoneTagged` in `e2e/playwright.config.ts`). Those tests cover the
 navigation drawer, the margin's bottom sheet and the phone Thread dialog,
 touch gestures and touch-sized controls, the compact Inbox and top bar, and
-the live view's phone layout. It does not replace the manual phone check: run
-the server on a tailnet-reachable address, open it from a phone, open the
-review panel, and answer an open ask in Waiting on you.
+the live view's phone layout. What a real phone does beyond them is the
+tester's to drive on the real surface when a change reaches the phone layout:
+the server on a tailnet-reachable address, opened from a phone, the review
+panel opened, and an open ask answered in Waiting on you.
 
 A phone width here is one under 768 px, where `PHONE_VIEWPORT_QUERY`
 (`(max-width: 767px)`, `web/src/features/shell/useDialog.ts`) matches; a desktop
