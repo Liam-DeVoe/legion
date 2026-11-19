@@ -30,8 +30,20 @@ test("questionLine keeps inline code without its backticks", () => {
 
 test("questionLine reads a backslash-escaped punctuation mark as the mark alone", () => {
   expect(questionLine("1\\. Verify Linux")).toBe("1. Verify Linux");
-  // Escaped, a star is a star and not emphasis; inside code the backslash is the code's own.
-  expect(questionLine("Ship \\*all\\* of `a\\.b`")).toBe("Ship *all* of a\\.b");
+  // Escaped, a star is a star and not emphasis.
+  expect(questionLine("Ship \\*all\\* of it")).toBe("Ship *all* of it");
+  // Escaped backticks outside code are backticks, and open no code span.
+  expect(questionLine("Type \\`ls\\` here")).toBe("Type `ls` here");
+});
+
+test("questionLine keeps a code span's backslashes and stars as written", () => {
+  // A backslash escapes nothing inside code, so one before the closing backtick is the code's
+  // own, and the span still closes there.
+  expect(questionLine("Use `C:\\temp\\`")).toBe("Use C:\\temp\\");
+  expect(questionLine("Open `\\\\server\\share` now")).toBe("Open \\\\server\\share now");
+  expect(questionLine("Escape `a\\.b` and `a*b*c`")).toBe("Escape a\\.b and a*b*c");
+  // A run of backticks nothing closes is backticks as written.
+  expect(questionLine("A stray ` backtick")).toBe("A stray ` backtick");
 });
 
 test("questionLine takes the first line that holds anything", () => {

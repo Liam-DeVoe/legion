@@ -10,6 +10,7 @@ import { IssuesTable } from "../project/IssuesTable";
 import type { ShownColumnId } from "../project/issues-table-columns";
 import type { IssueListing } from "../project/issues-table-data";
 import { runningIssueStatuses } from "../project/issues-table-model";
+import { useKeymapScope } from "../shell/keymap";
 import { NewPriority } from "./NewPriority";
 import { PrioritiesTable } from "./PrioritiesTable";
 import { PARKED_STATUSES } from "./priorities-model";
@@ -49,8 +50,11 @@ function countsLine(by: Readonly<Record<string, number>> | null): string {
     .join(" · ");
 }
 
-/** One fault's tab: what the fault is and how many issues it holds and where, on one line, so
- *  the Issues table over them, the last thing on the page, has the rest of the window. */
+/** One fault's tab: what the fault is and how many issues it holds and where, on one line from
+ *  a tablet's width up, so the Issues table over them, the last thing on the page, has the rest
+ *  of the window. A narrower screen wraps the sentence and gives the counts a line of their own,
+ *  cut where it ends: thirteen priorities' counts wrapped whole pushed the table off a phone's
+ *  first screen. */
 function FaultPanel({
   by,
   children,
@@ -68,9 +72,11 @@ function FaultPanel({
   const counted = `${count} ${count === 1 ? "issue" : "issues"}${counts === "" ? "" : ` · ${counts}`}`;
   return (
     <section aria-label={label} className="space-y-2">
-      <p className={`flex min-w-0 gap-x-4 text-sm ${textSecondaryOnCanvas}`}>
-        <span className="shrink-0">{line}</span>
-        <span className="min-w-0 truncate" title={counted}>
+      <p
+        className={`flex flex-wrap gap-x-4 gap-y-1 text-sm sm:flex-nowrap ${textSecondaryOnCanvas}`}
+      >
+        <span className="min-w-0 sm:shrink-0">{line}</span>
+        <span className="min-w-0 basis-full truncate sm:basis-auto" title={counted}>
           {counted}
         </span>
       </p>
@@ -91,6 +97,12 @@ export function PrioritiesPage(): ReactNode {
   const [params, setParams] = useSearchParams();
   const asked = params.get(TAB_PARAM);
   const tab: PrioritiesTab = asked === "none" || asked === "parked" ? asked : "order";
+  // The keys every table of the application is walked with (`j`, `k`, `o`, Enter, `x`), which
+  // each table registers in the `project` scope. A tab draws one table, so one table holds them;
+  // the work under an opened priority is a second, mounted after the priorities table and so
+  // registered after it, and the priorities table's bindings, found first, answer every key: `j`
+  // and `k` walk the priorities, and `o` and Enter open whichever row has the focus.
+  useKeymapScope("project");
   // What the page draws of one read, built once that read answers rather than once a render:
   // the titles are what the parked list's columns are declared over, so a map built afresh
   // would rebuild that table's columns on every refetch of anything.

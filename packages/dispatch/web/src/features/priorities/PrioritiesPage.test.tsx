@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 import { api } from "../../api/client";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import { KeymapProvider } from "../shell/KeymapProvider";
 import { PrioritiesPage } from "./PrioritiesPage";
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
@@ -121,10 +122,13 @@ function answerListing(issues: readonly IssueSummary[]) {
       );
 }
 
-/** The address the page is at, and how it got there, which a tab writes with replace. */
+/** The address the page is at, and how it got there: a tab writes with replace, and a row the
+ *  keyboard opens pushes. */
 function Address() {
   const location = useLocation();
-  return <output data-testid="address">{`${useNavigationType()} ${location.search}`}</output>;
+  return (
+    <output data-testid="address">{`${useNavigationType()} ${location.pathname}${location.search}`}</output>
+  );
 }
 
 /** The page as a signed-in person sees it at `at`, with the reads it makes answered from
@@ -155,8 +159,10 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true, at
   const view = render(
     <MemoryRouter initialEntries={[at]}>
       <QueryClientProvider client={client}>
-        <PrioritiesPage />
-        <Address />
+        <KeymapProvider>
+          <PrioritiesPage />
+          <Address />
+        </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -235,7 +241,7 @@ test("the page opens on the priorities, and each fault is a tab of its own the a
   const faults = await screen.findByRole("table", {
     name: "Issues in flight under no priority table",
   });
-  expect(screen.getByTestId("address").textContent).toBe("REPLACE ?tab=none");
+  expect(screen.getByTestId("address").textContent).toBe("REPLACE /priorities?tab=none");
   expect(screen.queryByRole("table", { name: "Priorities table" })).toBeNull();
   expect(screen.getByText("Issues being worked that advance no priority.")).toBeDefined();
   expect(screen.getByText("1 issue · CORE 1")).toBeDefined();
@@ -246,7 +252,7 @@ test("the page opens on the priorities, and each fault is a tab of its own the a
   const parked = await screen.findByRole("table", {
     name: "Priority issues in backlog or icebox table",
   });
-  expect(screen.getByTestId("address").textContent).toBe("REPLACE ?tab=parked");
+  expect(screen.getByTestId("address").textContent).toBe("REPLACE /priorities?tab=parked");
   expect(screen.getAllByRole("table")).toEqual([parked]);
   expect(
     screen.getByText("Issues under a priority that stand in the backlog or the icebox.")
@@ -257,7 +263,7 @@ test("the page opens on the priorities, and each fault is a tab of its own the a
 
   await user.click(screen.getByRole("tab", { name: "Priorities 3" }));
   expect(await screen.findByRole("table", { name: "Priorities table" })).toBeDefined();
-  expect(screen.getByTestId("address").textContent).toBe("REPLACE ?tab=order");
+  expect(screen.getByTestId("address").textContent).toBe("REPLACE /priorities?tab=order");
 });
 
 test("an address naming a fault's tab opens on it", async () => {
@@ -419,24 +425,36 @@ test("with no priority a reader who may not write one is shown only the sentence
   expect(screen.queryByRole("button", { name: "New priority" })).toBeNull();
 });
 
-test("a row counts the work in flight, waiting, parked and closed in the last 7 days", async () => {
+test("a row counts the work in flight, waiting and parked, and shows what closed and moved when asked", async () => {
+  const user = userEvent.setup();
   page(FIFTEEN);
   const row = await screen.findByRole("row", { name: "#1 Legion works reliably first" });
-  const cells = within(row)
-    .getAllByRole("cell")
-    .map((cell) => cell.textContent);
+  const texts = (of: HTMLElement) =>
+    within(of)
+      .getAllByRole("cell")
+      .map((cell) => cell.textContent);
   // In flight is in_progress, testing, needs_review and retro; waiting is todo and triage; the
-  // third count is backlog and icebox; the fourth is what the read says closed in 7 days.
-  expect(cells.slice(3, 7)).toEqual(["7", "12", "0", "22"]);
-  // The newest event is read as a time, whose words follow the clock.
+  // third count is backlog and icebox. The two columns about the past open hidden.
+  expect(
+    screen.getAllByRole("columnheader").map((header) => header.textContent?.replace("Filter", ""))
+  ).toEqual(["#▲", "Priority", "Owner", "In flight", "Waiting", "In backlog or icebox"]);
+  expect(texts(row).slice(3)).toEqual(["7", "12", "0"]);
+  expect(within(row).queryByRole("time")).toBeNull();
+
+  // Shown under Columns, the fourth count is what the read says closed in 7 days, and the
+  // newest event is read as a time, whose words follow the clock.
+  await user.click(
+    within(screen.getByRole("region", { name: "Priorities" })).getByRole("button", {
+      name: "Columns",
+    })
+  );
+  const menu = screen.getByRole("dialog", { name: "Columns" });
+  await user.click(within(menu).getByRole("checkbox", { name: "Closed, 7 days" }));
+  await user.click(within(menu).getByRole("checkbox", { name: "Newest event" }));
+  expect(texts(row).slice(3, 7)).toEqual(["7", "12", "0", "22"]);
   expect(within(row).getByRole("time").getAttribute("datetime")).toBe("2026-11-11T10:00:00Z");
   const second = screen.getByRole("row", { name: "#2 Linkage closure eval" });
-  expect(
-    within(second)
-      .getAllByRole("cell")
-      .map((cell) => cell.textContent)
-      .slice(3)
-  ).toEqual(["1", "0", "3", "2", "Never"]);
+  expect(texts(second).slice(3)).toEqual(["1", "0", "3", "2", "Never"]);
 });
 
 test("the first line of a description shows on a closed row and the whole of it when it opens", async () => {
@@ -562,6 +580,28 @@ test("the keyboard moves a priority one place, as the drag does", async () => {
     "legion-first",
     { rank: { after: "linkage-closure" } },
   ]);
+});
+
+test("j walks the priorities and Enter opens the focused row, an opened row's work included", async () => {
+  const user = userEvent.setup();
+  page(FIFTEEN, [issue("CORE-1", ["legion-first"])]);
+  const first = await screen.findByRole("row", { name: "#1 Legion works reliably first" });
+  first.focus();
+  await user.keyboard("j");
+  expect(document.activeElement?.getAttribute("aria-label")).toBe("#2 Linkage closure eval");
+  // Enter on the focused row opens the priority's own page, as its title link does.
+  await user.keyboard("{Enter}");
+  expect(screen.getByTestId("address").textContent).toBe("PUSH /priorities/linkage-closure");
+
+  // The work under an opened priority is a second table on the page. The priorities table's keys
+  // answer for both, and Enter opens the row that has the focus: here, an issue of that work.
+  await user.click(screen.getByRole("button", { name: "Open #1 Legion works reliably first" }));
+  const work = await screen.findByRole("region", {
+    name: "Work advancing Legion works reliably first",
+  });
+  (await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" })).focus();
+  await user.keyboard("{Enter}");
+  expect(screen.getByTestId("address").textContent).toBe("PUSH /issues/CORE-1");
 });
 
 test("the table's own view is in the address under its prefix", async () => {

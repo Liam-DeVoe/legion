@@ -36,6 +36,11 @@ const LAYOUT_KEY = "priorities";
 const VIEW_PREFIX = "p";
 /** The address prefix of the work under an opened row, which is the issues table's own view. */
 const WORK_PREFIX = "w";
+/** What the title leaves free at the box's right edge: the box's two borders and the widest
+ *  classic vertical scrollbar (17 px on Windows), so a box whose rows scroll draws no sideways
+ *  scrollbar beside it. */
+const EDGE_ROOM = 20;
+const TITLE_MIN = PRIORITY_COLUMNS_BY_ID.get("title")?.min ?? 0;
 
 /**
  * The priorities themselves: one row per priority in the one order, with the counts that say
@@ -55,8 +60,25 @@ export function PrioritiesTable({
 }): ReactNode {
   const { params, setParams, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
     useTableView(VIEW_PREFIX, PRIORITY_COLUMNS, PRIORITY_SORTING);
-  const layout = useTableLayout(LAYOUT_KEY, PRIORITY_LAYOUT);
-  const { attachAbove, boxWidth } = layout;
+  const shared = useTableLayout(LAYOUT_KEY, PRIORITY_LAYOUT);
+  const { attachAbove, boxWidth, responsive, sizing, visibility } = shared;
+  // In a desktop box the title takes the width the other shown columns leave, so the table fits
+  // the window and nothing scrolls sideways; a title the reader dragged keeps their width, and
+  // a phone's box keeps the widths the shared layout gives it.
+  const readerTitle = sizing.title;
+  const fitted = useMemo(() => {
+    if (boxWidth < 640 || readerTitle !== undefined) return responsive;
+    const others = PRIORITY_COLUMNS.reduce(
+      (sum, column) =>
+        column.id === "title" || visibility[column.id] === false
+          ? sum
+          : sum + (responsive.sizing[column.id] ?? column.size),
+      0
+    );
+    const title = Math.max(TITLE_MIN, boxWidth - others - EDGE_ROOM);
+    return { ...responsive, sizing: { ...responsive.sizing, title } };
+  }, [boxWidth, readerTitle, responsive, visibility]);
+  const layout = fitted === responsive ? shared : { ...shared, responsive: fitted };
   const [openId, setOpenId] = useState<string>();
   const [dragging, setDragging] = useState<string>();
   const [openFilter, setOpenFilter] = useState<string>();
@@ -183,15 +205,7 @@ export function PrioritiesTable({
   const visibleColumns = table.getVisibleLeafColumns().length;
 
   return (
-    // The priorities are few, so the box is as tall as its rows and every priority is on the
-    // page, with the work of an opened row directly under them; a box that filled the window
-    // (`useTableLayout`, which sizes every table's box so) would hide the last rows in a scroll
-    // inside the page, and the opened row's work under the fold. `h-auto!` outweighs the height
-    // the box is drawn with.
-    <section
-      aria-label="Priorities"
-      className="space-y-3 [&_[data-testid=priorities-table-scroll]]:h-auto!"
-    >
+    <section aria-label="Priorities" className="space-y-3">
       <div className="space-y-3" ref={attachAbove}>
         <TableToolbar
           searchLabel="Search priorities"

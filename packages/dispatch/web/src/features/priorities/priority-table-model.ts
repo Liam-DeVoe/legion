@@ -19,6 +19,8 @@ export interface TableColumn<Row> {
   readonly min: number;
   /** Kept at the left edge while the table scrolls sideways. */
   readonly pinned?: boolean;
+  /** Opens hidden, until the reader shows it under Columns. */
+  readonly hidden?: boolean;
   readonly sortable?: boolean;
   /** The text a typed filter matches, where this column filters by typing. */
   readonly text?: (row: Row) => string;
@@ -120,6 +122,9 @@ export function tableLayout<Row>(
   const minimums = Object.fromEntries(columns.map((column) => [column.id, column.min]));
   return {
     ids: columns.map((column) => column.id),
+    hiddenByDefault: Object.fromEntries(
+      columns.filter((column) => column.hidden).map(({ id }) => [id, false])
+    ),
     sizes: Object.fromEntries(columns.map((column) => [column.id, column.size])),
     minimums,
     pins: {

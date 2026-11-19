@@ -101,9 +101,11 @@ function TitleCell({ actions, item }: { actions: PriorityRowActions; item: Prior
         <ChevronIcon expanded={open} />
       </button>
       <div className="min-w-0 flex-1 space-y-1">
-        {/* The title is read here and renamed on the priority's own page, which it opens. */}
+        {/* The title is read here and renamed on the priority's own page, which it opens: a
+            click, or `o` and Enter on the focused row, which open the row's `data-issue-link`. */}
         <Link
           className={`flex w-full min-w-0 font-medium ${linkText} ${linkHoverText}`}
+          data-issue-link
           to={priorityPath(item.priority.id)}
         >
           <span

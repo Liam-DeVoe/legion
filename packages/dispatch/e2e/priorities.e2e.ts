@@ -175,13 +175,21 @@ async function chooseTab(page: Page, tab: keyof typeof TABS): Promise<void> {
   await expect(page).toHaveURL(new RegExp(`[?&]tab=${tab}(&|$)`));
 }
 
-/** How far below the window's bottom edge the pager under a tab's Issues table ends: at or
- *  above it, where that table is the last thing on the page and its box takes the window
- *  rather than standing under another table below the fold. */
+/** How far below the window's bottom edge the pager under a tab's table ends: at or above it,
+ *  where that table is the last thing on the page and its box takes the window rather than
+ *  standing under another table below the fold. */
 function pagerBelowWindow(page: Page): Promise<number> {
   return page
     .getByTestId("issues-table-pager")
     .evaluate((pager) => pager.getBoundingClientRect().bottom - window.innerHeight);
+}
+
+/** How much wider than its box the priorities table is: nothing, where every shown column fits
+ *  the window and no scrollbar runs along the box's bottom edge. */
+function prioritiesOverflow(page: Page): Promise<number> {
+  return page
+    .getByTestId("priorities-table-scroll")
+    .evaluate((box) => box.scrollWidth - box.clientWidth);
 }
 
 /** That the page as drawn says no date anything is wanted by, no portion of it done and no word
@@ -299,15 +307,10 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     // The counts under each priority: one in flight and one waiting under #1.
     await expect(firstRow.getByRole("cell").nth(3)).toHaveText("1");
     await expect(firstRow.getByRole("cell").nth(4)).toHaveText("1");
-    // Every priority is drawn in the page, and the table's box scrolls none of them away: it is
-    // as tall as its rows.
-    await expect
-      .poll(() =>
-        page
-          .getByTestId("priorities-table-scroll")
-          .evaluate((box) => box.scrollHeight - box.clientHeight)
-      )
-      .toBe(0);
+    // The table fits the window: no column runs past the box's right edge, and the pager under
+    // the box is on the first screen.
+    await expect.poll(() => prioritiesOverflow(page)).toBe(0);
+    await expect.poll(() => pagerBelowWindow(page)).toBeLessThanOrEqual(0);
 
     // Each fault is a tab of its own, which says what it is and how big it is, and neither is
     // a judgement. The tab draws its one table, and no other.
@@ -399,6 +402,78 @@ test("the priorities page opens on the order, and each fault list is a tab of it
       "href",
       "/issues/INFRA-2934"
     );
+
+    // On a phone each fault's sentence wraps and its counts take a line of their own: nothing
+    // on either tab runs past the screen's right edge.
+    await page.setViewportSize({ height: 844, width: 390 });
+    for (const tab of ["none", "parked"] as const) {
+      await chooseTab(page, tab);
+      await expect(
+        page.getByRole("table", {
+          exact: true,
+          name: tab === "none" ? NO_PRIORITY_TABLE : PARKED_TABLE,
+        })
+      ).toBeVisible();
+      await expect
+        .poll(() => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth))
+        .toBeLessThanOrEqual(0);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): twenty priorities written one after another, and the box scrolled.
+test("more priorities than the window holds scroll inside the table, under a header that stays", async ({
+  browser,
+}) => {
+  // One after another, so the order is the order they were written in. Each carries a
+  // description, whose first line every closed row shows under its title: twenty rows two lines
+  // tall are more than the box a 1280x900 window gives the table.
+  for (let place = 1; place <= 20; place += 1)
+    await createPriority({
+      description: `What priority ${place} is for.`,
+      owner: "alice",
+      title: `Priority number ${place}`,
+    });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await priorityPage(page);
+    await page.goto(PRIORITIES_PATH);
+    const box = page.getByTestId("priorities-table-scroll");
+    await expect(box.getByRole("row", { name: "#1 Priority number 1" })).toBeVisible();
+
+    // The table and its pager fit the window: the page itself scrolls nowhere, sideways or down,
+    // and the twenty rows scroll inside the box, which is the scroll this row reads next.
+    await expect.poll(() => prioritiesOverflow(page)).toBe(0);
+    await expect.poll(() => pagerBelowWindow(page)).toBeLessThanOrEqual(0);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => document.documentElement.scrollHeight - document.documentElement.clientHeight
+        )
+      )
+      .toBeLessThanOrEqual(0);
+    expect(
+      await box.evaluate((element) => element.scrollHeight - element.clientHeight)
+    ).toBeGreaterThan(0);
+
+    // Scrolled, the rows move under the header, which stays at the box's top edge.
+    const headerTop = () =>
+      box.evaluate(
+        (element) =>
+          (element.querySelector("thead th")?.getBoundingClientRect().top ?? Number.NaN) -
+          element.getBoundingClientRect().top
+      );
+    const before = await headerTop();
+    await box.evaluate((element) => {
+      element.scrollTop = 300;
+    });
+    await expect.poll(() => box.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    expect(await headerTop()).toBe(before);
+    await expect(box.getByRole("columnheader", { name: /^Priority/ })).toBeInViewport();
+    await expect(box.getByRole("row", { name: "#1 Priority number 1" })).not.toBeInViewport();
   } finally {
     await context.close();
   }

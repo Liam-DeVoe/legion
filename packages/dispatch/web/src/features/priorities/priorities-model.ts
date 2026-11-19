@@ -90,14 +90,18 @@ export function matchesPrioritySearch(item: PriorityItem, search: string): boole
 export const ownerOf = (item: PriorityItem): string =>
   item.priority.owner.trim() === "" ? "No owner" : item.priority.owner.trim();
 
-/** The four count columns are alike: a number, filtered by picking the numbers the rows hold,
- *  which is how a reader asks for the priorities with nothing in flight. */
-const COUNT_WIDTH = { size: 132, min: 132 };
+/** The count columns are alike: a number, filtered by picking the numbers the rows hold, which
+ *  is how a reader asks for the priorities with nothing in flight. Each is as wide as its header
+ *  needs beside its filter control, and no wider, so the table fits a desktop window. */
+const COUNT_WIDTH = { size: 112, min: 112 };
 
 /** Every column of the priorities table, left to right: the order and the title stay pinned at
- *  the left edge while the counts scroll. */
+ *  the left edge while the counts scroll. The two columns about the past - what closed and when
+ *  anything last moved - open hidden, so the table fits a 1280 px window beside the sidebar with
+ *  the work as it stands now: who owns each priority, what is in flight, waiting and parked.
+ *  Both are one tick away under Columns. */
 export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
-  { id: "order", header: "#", size: 72, min: 72, pinned: true, text: (item) => item.order },
+  { id: "order", header: "#", size: 76, min: 76, pinned: true, text: (item) => item.order },
   {
     id: "title",
     header: "Priority",
@@ -109,8 +113,8 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
   {
     id: "owner",
     header: "Owner",
-    size: 200,
-    min: 160,
+    size: 160,
+    min: 120,
     values: (item) => [ownerOf(item)],
     group: ownerOf,
   },
@@ -119,16 +123,24 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
   {
     id: "parked",
     header: "In backlog or icebox",
-    size: 180,
-    min: 180,
+    size: 196,
+    min: 196,
     values: (item) => [String(item.parked)],
   },
-  { id: "closed", header: "Closed, 7 days", ...COUNT_WIDTH, values: (i) => [String(i.closed)] },
+  {
+    id: "closed",
+    header: "Closed, 7 days",
+    size: 156,
+    min: 156,
+    hidden: true,
+    values: (i) => [String(i.closed)],
+  },
   {
     id: "newest",
     header: "Newest event",
-    size: 160,
-    min: 160,
+    size: 156,
+    min: 156,
+    hidden: true,
     values: (item) => [newestBucket(item.newest)],
     group: (item) => newestBucket(item.newest),
     order: AGES,
