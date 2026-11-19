@@ -1,5 +1,20 @@
 kind: Fixed
 body: |-
+  Every program of the module that opens a Postgres connection string reads it through
+  `pgsetting`: the Dispatch server's boot, `store.Open`, the census, the dev sign-in fence, the
+  secrets broker's store and its RDS IAM check, and the load tools' `-pg`. A value with a raw `@`
+  after its first `@`, whose user part pgx and Go's URL parser read apart, or one pgx cannot parse,
+  is refused by its length and the cause, with the words to write that `@` as `%40`, and a failed
+  connect names no user and no database.
+
+  The Dispatch server names each setting that can be a URL through `redact.URL`, which prints
+  nothing of a value that holds an `@`: `ENVOY_URL`, `DISPATCH_GITHUB_API_BASE`,
+  `DISPATCH_OIDC_ISSUER`, `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SERVER_URL`, the Azure endpoints and
+  the dev sign-in dashboard origin. `ENVOY_URL` and `DISPATCH_AGENT_SECRETS_URL` are refused at
+  boot by their length when net/url reads their user part apart, and the bus refuses such a NATS
+  URL before any connect. An HTTP call to such a setting names a failure by its class alone where
+  the URL does not print whole (`redact.RequestError`).
+
   A Postgres connection string that holds `://` but that pgx would read as keyword=value text (a
   scheme not in lower case, such as `POSTGRES://`, or white space around the URL) is refused by its
   length at every boot and opener (`pgsetting`), with words that say to write the scheme in lower

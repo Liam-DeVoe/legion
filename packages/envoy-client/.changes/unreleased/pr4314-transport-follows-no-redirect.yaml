@@ -8,3 +8,10 @@ body: |-
   where the redirect points (another origin by its scheme and host, another path of the same
   address, or no target) and what to correct in the Envoy URL. A send it refuses is thrown as it
   is, not as an `EnvoySendUnconfirmedError`.
+
+  So `EnvoyApiError`'s second argument is `{ tokens }` alone: its `redirectTo` is gone, since a
+  3xx is an `EnvoyRedirectError` and never an `EnvoyApiError`. `redirectOrigin` of
+  `@legion/envoy-client/excerpt` is gone too: the Dispatch client names where a 3xx points through
+  `redirectTarget` and `redirectedTo` of `@legion/envoy-client/redirect`, the one function every
+  client that refuses a redirect names it by, as `(redirecting to <origin>, which this client does
+  not follow)`.
