@@ -235,18 +235,31 @@ jobs:
     # multiprocess job's pinned build step below is read under this file's own `env:` and
     # defaults, so neither may grow a name outside that set.
     #
-    # The browser step's budget below is measured, on the two runs of the head that sharded this
-    # suite: 42334424798, the pull-request lane, and 42316487530, the full lane. Four legs each,
-    # the split those runs had (this job runs five now), in shard order, in seconds:
+    # The browser step's budget below is measured. It was first measured on the two runs of the
+    # head that sharded this suite into four legs: 42334424798, the pull-request lane, and
+    # 42316487530, the full lane, in shard order, in seconds:
     #
     #   step                                     pull-request lane        full lane
     #   Browser-test dispatch dashboard         413, 293, 307, 292  419, 297, 334, 295
     #   every other step summed                  76, 67, 72, 85      79, 76, 80, 77
     #
-    # The rule is in this file's head. The browser step's maximum is the full lane's 419 s, so
-    # 419 x 1.15 = 482 s -> 9 min, which is the bound this issue's R1 asks of the longest
-    # shard's browser step, and which the container does not move: it is the same rows in the
-    # same browsers.
+    # With five legs it is measured on two full-lane runs of one head, c1ea125d: 44455259784, a
+    # pull request's push, and 44455340996, a workflow_dispatch of ci.yaml, in shard order, in
+    # seconds:
+    #
+    #   step                                     pull request's push       workflow_dispatch
+    #   Browser-test dispatch dashboard         434, 383, 316, 403, 394  344, 325, 408, 298, 325
+    #   every other step summed                 116, 131, 132, 129, 127  126, 121, 121, 121, 120
+    #
+    # No run of that head took the pull-request lane, so its five legs are a computed reading and
+    # not a run: `playwright test --list` with that lane's projects, its `@pr` grep and
+    # `--shard=N/5` gives each leg's rows, and the push's own time of each row gives the legs 277,
+    # 160, 203, 154 and 147 s of rows, about 69 s on a leg's four workers at the most.
+    #
+    # The rule is in this file's head. The browser step's maximum is now the five-leg full lane's
+    # 434 s, so 434 x 1.15 = 499 s -> 9 min, which is the bound this issue's R1 asks of the
+    # longest shard's browser step, and which the container does not move: it is the same rows in
+    # the same browsers.
     #
     # The job budget below is the rule's arithmetic, read on sha256:ba003193, the build of commit
     # 47a222cd (run 42480325123, job 128730667606), and not on the digest this file pins, which
