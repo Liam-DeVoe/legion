@@ -141,13 +141,13 @@ func TestACompletionHidesNoNulBehindARepeatedMember(t *testing.T) {
 
 // Every route of the daemon's API that reads a JSON body refuses a NUL character in a string of
 // it, 400 naming the string's place, and no route answers such a body with a 5xx. The walk is over
-// the patterns the server's own mux mounted (routeMux), the table's (routes), the catch-all's and
-// any route's mounted beside them, so a route added without a row here fails the test until its
-// row says what it reads: a string member of its body, which carries the NUL; a body of no string
-// member, whose strict decoder refuses the member the NUL rides before it reads a string; or no
-// body, when its answer must be no decoder refusal at all, which would mean it reads the body after
-// all. A pattern that names no method (the catch-all) is sent a POST, and a route whose pattern
-// names a claim is sent a claim of its own, launched for it.
+// the server's own table (routes), which NewServer mounts whole and alone, the catch-all among
+// them, so a route added without a row here fails the test until its row says what it reads: a
+// string member of its body, which carries the NUL; a body of no string member, whose strict
+// decoder refuses the member the NUL rides before it reads a string; or no body, when its answer
+// must be no decoder refusal at all, which would mean it reads the body after all. A pattern that
+// names no method (the catch-all) is sent a POST, and a route whose pattern names a claim is sent
+// a claim of its own, launched for it.
 func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 	h, _ := newStaleHarness(t) // newHarness serving the state route too
 	type nulRow struct {
@@ -201,8 +201,13 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/operator/claims/{token}/close":          noBody,
 	}
 
+	served := (&server{}).routes()
+	if len(served) == 0 {
+		t.Fatal("the server's table holds no route: the test read nothing")
+	}
 	walked := map[string]bool{}
-	for i, pattern := range mountedPatterns(t, h.handler) {
+	for i, route := range served {
+		pattern := route.pattern
 		walked[pattern] = true
 		row, ok := rows[pattern]
 		if !ok {
@@ -236,27 +241,4 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 			t.Errorf("the row for %s names no route the server mounts", pattern)
 		}
 	}
-}
-
-// mountedPatterns is every pattern the handler NewServer built serves, in the order it mounted
-// them, read off its mux (routeMux) rather than off the table, so a route mounted beside the table
-// is among them.
-func mountedPatterns(t *testing.T, handler http.Handler) []string {
-	t.Helper()
-	tracking, ok := handler.(transactionTracking)
-	if !ok {
-		t.Fatalf("the server's handler is %T, want trackTransactions' over the API's mux", handler)
-	}
-	noting, ok := tracking.next.(requesterNoting)
-	if !ok {
-		t.Fatalf("the handler trackTransactions serves is %T, want noteRequesters' over the API's mux", tracking.next)
-	}
-	mux, ok := noting.next.(*routeMux)
-	if !ok {
-		t.Fatalf("the server's mux is %T, want the routeMux NewServer mounts every route on", noting.next)
-	}
-	if len(mux.patterns) == 0 {
-		t.Fatal("the server's mux records no pattern: this walk would prove nothing")
-	}
-	return mux.patterns
 }

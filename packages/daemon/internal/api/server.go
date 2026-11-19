@@ -487,9 +487,9 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		s.decisions = NewRouteDecisions()
 	}
 
-	mux := &routeMux{mux: http.NewServeMux()}
+	mux := http.NewServeMux()
 	for _, route := range s.routes() {
-		mux.handle(route.pattern, route.handler)
+		mux.HandleFunc(route.pattern, route.handler)
 	}
 	return &http.Server{
 		Addr:              net.JoinHostPort(bind, strconv.Itoa(port)),
@@ -505,26 +505,7 @@ type route struct {
 	handler http.HandlerFunc
 }
 
-// routeMux is the mux the daemon's API is served from, with the pattern of every route mounted on
-// it in the order NewServer mounted them. NewServer mounts every route through handle, so its
-// patterns are what the server serves, a route mounted beside the table included, and a test of a
-// rule every route keeps walks them (mountedPatterns) rather than the table.
-type routeMux struct {
-	mux      *http.ServeMux
-	patterns []string
-}
-
-// handle mounts handler at pattern and records the pattern.
-func (m *routeMux) handle(pattern string, handler http.HandlerFunc) {
-	m.mux.HandleFunc(pattern, handler)
-	m.patterns = append(m.patterns, pattern)
-}
-
-func (m *routeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	m.mux.ServeHTTP(w, r)
-}
-
-// routes is every route the API serves, the one table NewServer mounts.
+// routes is every route the API serves, the one table NewServer registers.
 func (s *server) routes() []route {
 	return []route{
 		{"GET /legion/v1/state", s.stateRoute},
@@ -587,16 +568,9 @@ func noRoute(w http.ResponseWriter, _ *http.Request) {
 // transaction can give back. A request handled on a goroutine of its own, outliving the request
 // or running beside it, takes a mark of its own (store.ForConcurrentWorker) rather than this one.
 func trackTransactions(handler http.Handler) http.Handler {
-	return transactionTracking{next: handler}
-}
-
-// transactionTracking is the handler trackTransactions returns: next serves each request, its
-// context marked. It is a type of its own so a test can reach the mux below it (noteRequesters'
-// handler, then routeMux).
-type transactionTracking struct{ next http.Handler }
-
-func (t transactionTracking) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	t.next.ServeHTTP(w, r.WithContext(store.WithTransactionTracking(r.Context())))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(w, r.WithContext(store.WithTransactionTracking(r.Context())))
+	})
 }
 
 // readyz answers the kubelet's readiness probe, which carries no token, from the daemon's

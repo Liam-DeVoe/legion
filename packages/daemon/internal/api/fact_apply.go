@@ -24,15 +24,9 @@ type requester struct {
 // in this one place because every route passes it, as trackTransactions marks every request for
 // the pool.
 func noteRequesters(handler http.Handler) http.Handler {
-	return requesterNoting{next: handler}
-}
-
-// requesterNoting is the handler noteRequesters returns: next serves each request, a requester in
-// its context. It is a type of its own so a test can reach the mux it serves (routeMux).
-type requesterNoting struct{ next http.Handler }
-
-func (n requesterNoting) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	n.next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requesterKey{}, &requester{})))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requesterKey{}, &requester{})))
+	})
 }
 
 // noteRequester notes token as the claim whose grant the request of ctx redeemed.
