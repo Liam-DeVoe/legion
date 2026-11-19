@@ -112,6 +112,11 @@ declare global {
      *  building its editor, with how many top-level blocks the editor holds after a batch
      *  (`watchThePageMove`); `undefined` for a page no row is listening to. */
     __thePageMoved?: (step: string, blocks: number) => void;
+    /** Handed each document socket `watchTheDocument`'s wrap of the page's WebSocket makes,
+     *  once the wrap's own listeners are on it, so a reader of that socket's frames listens
+     *  through the one wrap rather than a second one (`whatTheBuildServes` in
+     *  `large-documents-build-probe.ts`); `undefined` for a page no such reader is on. */
+    __documentSocketMade?: (socket: WebSocket) => void;
   }
 }
 
@@ -492,7 +497,9 @@ export async function watchTheDocument(page: Page): Promise<Announcements> {
       // This is the one wrap of the page's WebSocket, so it also says each document socket's
       // steps to `__thePageMoved` where a row listens for them (`watchThePageMove`), and adds
       // nothing to a socket where none does: every document socket's, since a reconnect is the
-      // page still moving.
+      // page still moving. And it hands each document socket to `__documentSocketMade` where
+      // another reader of its frames has put one (`whatTheBuildServes`), after its own
+      // listeners, so that reader needs no wrap of its own.
       const opening: NonNullable<Window["__documentOpening"]> = {};
       window.__documentOpening = opening;
       window.WebSocket = new Proxy(window.WebSocket, {
@@ -510,25 +517,25 @@ export async function watchTheDocument(page: Page): Promise<Announcements> {
             // would keep a page that has stopped opening looking busy.
             socket.addEventListener("message", () => moved("first frame", 0), { once: true });
           }
-          if (opening.socketCreatedMs !== undefined) {
-            return socket;
+          if (opening.socketCreatedMs === undefined) {
+            opening.socketCreatedMs = performance.now();
+            socket.addEventListener("open", () => {
+              opening.socketOpenedMs ??= performance.now();
+            });
+            socket.addEventListener("message", (event) => {
+              if (typeof event.data !== "string") {
+                opening.stateFrameMs ??= performance.now();
+              }
+            });
+            const sent = Object.getPrototypeOf(socket).send as WebSocket["send"];
+            socket.send = (data) => {
+              if (typeof data !== "string") {
+                opening.syncStep1Ms ??= performance.now();
+              }
+              sent.call(socket, data);
+            };
           }
-          opening.socketCreatedMs = performance.now();
-          socket.addEventListener("open", () => {
-            opening.socketOpenedMs ??= performance.now();
-          });
-          socket.addEventListener("message", (event) => {
-            if (typeof event.data !== "string") {
-              opening.stateFrameMs ??= performance.now();
-            }
-          });
-          const sent = Object.getPrototypeOf(socket).send as WebSocket["send"];
-          socket.send = (data) => {
-            if (typeof data !== "string") {
-              opening.syncStep1Ms ??= performance.now();
-            }
-            sent.call(socket, data);
-          };
+          window.__documentSocketMade?.(socket);
           return socket;
         },
       });

@@ -181,9 +181,11 @@ export interface TheBuildServed {
  *
  * A frame larger than `theirWordsInFramesUnderBytes` is left unread: the document's own state
  * frame is hundreds of kilobytes and carries no word of theirs, and decoding it would be this
- * probe holding the thread it is measuring. Only the first document socket is recorded. The
- * socket is wrapped as a `construct` proxy rather than a subclass for the reason
- * `large-documents-page.ts` gives: the page's transport subclasses `globalThis.WebSocket` too.
+ * probe holding the thread it is measuring. Only the first document socket is recorded, and it
+ * is read through `watchTheDocument`'s wrap of the page's WebSocket, which hands this each
+ * document socket it makes (`__documentSocketMade` in `large-documents-page.ts`): that is the
+ * one wrap a page carries, so a row that names `theirWords` calls `watchTheDocument` on the
+ * same page, as both rows that read a build through this do.
  *
  * Where `stepBlocks` names a count, the page says how far its editor's build has got each
  * time its own top-level block count crosses the next multiple of it, in the task it read
@@ -272,15 +274,15 @@ export async function whatTheBuildServes(
         }
         return held;
       };
-      let recording = false;
-      const theirs = words === undefined ? undefined : new RegExp(words, "g");
-      const read = new TextDecoder();
-      window.WebSocket = new Proxy(window.WebSocket, {
-        construct(made, args: [string | URL, (string | string[])?], asked) {
-          const socket = Reflect.construct(made, args, asked) as WebSocket;
-          if (recording || theirs === undefined || !String(args[0]).includes("/ws/doc/")) {
-            return socket;
-          }
+      // The first document socket's frames, read through `watchTheDocument`'s wrap of the
+      // page's WebSocket, which hands this each document socket it makes once its own
+      // listeners are on it (`__documentSocketMade`), so the page carries one wrap.
+      if (words !== undefined) {
+        const theirs = new RegExp(words, "g");
+        const read = new TextDecoder();
+        let recording = false;
+        window.__documentSocketMade = (socket) => {
+          if (recording) return;
           recording = true;
           socket.addEventListener("message", (event) => {
             const servedAt = Date.now();
@@ -291,9 +293,8 @@ export async function whatTheBuildServes(
               servedWords[word] ??= { atMs: servedAt, turn: servedIn };
             }
           });
-          return socket;
-        },
-      });
+        };
+      }
       let handedLast = Number.NEGATIVE_INFINITY;
       /** Whether a timer the probe handed over has still to run. One at a time, because what
        *  this row is about is how long the page waits for a timer, not how deep a queue of
