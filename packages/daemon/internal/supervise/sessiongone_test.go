@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -523,6 +524,52 @@ func TestARelaunchStartsNoProcessWhileTheCleanStopIsInFlight(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A relaunch holds its start for as long as the clean stop in flight runs, however long that is
+// (awaitSessionStops): the wait sets no timer of its own, and only the stop's end or the start's
+// own context ends it. The stop's budget (cleanSessionStopBudget in internal/daemon, 5 s) is what
+// bounds the wait; a wait that gave up sooner, on a time of its own, would start the relaunch
+// while a slow listener had still not answered the stop's read, and the relaunch would register
+// before it, which is the order the wait exists to prevent. The other relaunch tests end the stop
+// the moment the launch says it waits, so none of them sees such a wait. Here the stop stays in
+// flight for an hour. The test runs in a synctest bubble, so that hour passes on the bubble's
+// clock at once, and a timer the wait set for itself, of any length under the hour, fires in it.
+func TestARelaunchWaitsForTheCleanStopHoweverLongItRuns(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h, _ := sessionStops(t)
+		stopping := make(chan struct{})
+		h.m.deps.SessionGone = func(string) <-chan struct{} { return stopping }
+		h.reach(StateReady)
+		loc := h.locator()
+		died := make(chan error, 1)
+		go func() {
+			died <- h.m.Handle(h.ctx, RuntimeObservation{Observation: runtime.Observation{
+				Locator: loc, Kind: runtime.Gone, At: h.clock.Now()}})
+		}()
+		synctest.Wait()
+		if len(h.records.of(launchWaitsForSessionStop)) == 0 || len(h.calls("Resume")) != 0 {
+			close(stopping)
+			<-died
+			t.Fatalf("the death's relaunch logged %d waits for the clean stop in flight and resumed %d times, want it waiting and not resumed",
+				len(h.records.of(launchWaitsForSessionStop)), len(h.calls("Resume")))
+		}
+		time.Sleep(time.Hour)
+		synctest.Wait()
+		if resumes := h.calls("Resume"); len(resumes) != 0 {
+			close(stopping)
+			<-died
+			t.Fatalf("the relaunch resumed the session %d times while the clean stop had been in flight for an hour: the wait for the stop ended before the stop did", len(resumes))
+		}
+		close(stopping)
+		if err := <-died; err != nil {
+			t.Fatalf("the death's decision once the stop ended: %v", err)
+		}
+		h.m.Wait()
+		if resumed := h.wantCalls("Resume", 1)[0]; resumed.Spec.ResumeSessionFile != h.claim().SessionFile {
+			t.Fatalf("the relaunch resumed %q, want the recorded session %q", resumed.Spec.ResumeSessionFile, h.claim().SessionFile)
+		}
+	})
 }
 
 // Two clean stops of one session can be in flight at once. A death whose relaunch the wake pacing

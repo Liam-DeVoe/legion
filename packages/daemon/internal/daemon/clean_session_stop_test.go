@@ -55,7 +55,11 @@ type askedRoute struct {
 // held no longer. readStatus is a registry route that refuses the read instead of answering it,
 // and heldRead one that answers only once the test closes it (or the request's own context ends
 // first): a read still in flight when the daemon's stop begins, or, never closed, a read held
-// past the stop's own budget.
+// past the stop's own budget. heldDelete is a delete route that judges the delete only once the
+// test closes it, whatever became of the request meanwhile: a delete still on its way to the
+// listener, which lands after the daemon has stopped waiting for it. order is what happened at
+// the listener, in the order it happened: each read answered, each registration a process made
+// (register), and each delete judged.
 type listenerRecorder struct {
 	// mu guards what the routes and register read and write, since a stop's requests and a
 	// relaunch's registration reach the recorder on goroutines of their own. A test reads the
@@ -65,12 +69,17 @@ type listenerRecorder struct {
 	relaunched   *storedRegistration
 	readStatus   int
 	heldRead     chan struct{}
+	heldDelete   chan struct{}
 	read, delete askedRoute
 	entryRemoved bool
-	// arrived is closed when the first request of a stop reaches the listener, and settled once
-	// a delete has been answered: a stop runs on a goroutine, so a test waits on these rather
-	// than on the call it made.
-	arrived, settled chan struct{}
+	order        []string
+	// arrived is closed when the first request of a stop reaches the listener, deleteArrived when
+	// its delete does, and settled once a delete has been judged: a stop runs on a goroutine, so a
+	// test waits on these rather than on the call it made.
+	arrived, deleteArrived, settled chan struct{}
+	// readReleased and deleteReleased close heldRead and heldDelete once each, so a test that
+	// fails before it lets them go still lets them go when it ends (releaseHeld).
+	readReleased, deleteReleased sync.Once
 }
 
 // register is a process registering the session under test: the listener holds its
@@ -79,6 +88,33 @@ func (l *listenerRecorder) register(registration storedRegistration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.held = registration
+	l.order = append(l.order, "registered "+registration.clientInstanceID)
+}
+
+// releaseRead lets the held read be answered, and releaseDelete lets the held delete be judged;
+// releaseHeld lets both go, for a test that ends before it did.
+func (l *listenerRecorder) releaseRead() {
+	if l.heldRead != nil {
+		l.readReleased.Do(func() { close(l.heldRead) })
+	}
+}
+
+func (l *listenerRecorder) releaseDelete() {
+	if l.heldDelete != nil {
+		l.deleteReleased.Do(func() { close(l.heldDelete) })
+	}
+}
+
+func (l *listenerRecorder) releaseHeld() {
+	l.releaseRead()
+	l.releaseDelete()
+}
+
+// happened is what has happened at the listener so far, in order.
+func (l *listenerRecorder) happened() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.order)
 }
 
 // holding is the registration the listener holds now.
@@ -106,6 +142,12 @@ func (l *listenerRecorder) server(t *testing.T) *httptest.Server {
 		if r.Method != http.MethodDelete {
 			l.answerRead(w, r)
 			return
+		}
+		if l.deleteArrived != nil {
+			close(l.deleteArrived)
+		}
+		if l.heldDelete != nil {
+			<-l.heldDelete
 		}
 		l.answerDelete(w, r)
 		if l.settled != nil {
@@ -143,10 +185,12 @@ func (l *listenerRecorder) answerRead(w http.ResponseWriter, r *http.Request) {
 	}()
 	session := strings.TrimPrefix(r.URL.Path, "/v1/registry/")
 	if l.held.absent {
+		l.order = append(l.order, "read answered none")
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = fmt.Fprintf(w, `{"error":"no live session %s"}`, session)
 		return
 	}
+	l.order = append(l.order, "read answered "+l.held.clientInstanceID)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if l.held.clientInstanceID == "" {
@@ -164,6 +208,7 @@ func (l *listenerRecorder) answerRead(w http.ResponseWriter, r *http.Request) {
 func (l *listenerRecorder) answerDelete(w http.ResponseWriter, r *http.Request) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.order = append(l.order, "delete judged")
 	conditions, _ := url.ParseQuery(r.URL.RawQuery)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -212,7 +257,7 @@ func TestCleanSessionStopDeletesARegistrationWrittenBeforeTheProbesMoment(t *tes
 	server := listener.server(t)
 	var inFlight sessionStopsInFlight
 	defer inFlight.wait()
-	stop := cleanSessionStop(&inFlight, server.URL, "envoy-token", 0, quietLogger())
+	stop := cleanSessionStop(&inFlight, server.URL, "envoy-token", sessionStopOverrides{}, quietLogger())
 
 	stop("ses_dead")
 
@@ -329,6 +374,50 @@ func TestCleanSessionStopKeepsARelaunchThatRegisteredBeforeItsRead(t *testing.T)
 	}
 }
 
+// listenerBehind is how far the relaunch tests' listener clock runs behind the daemon's: far enough
+// that every registration it stamps during a row reads as written before the stop's moment, so
+// the moment keeps none and the client instance id is the relaunch's only guard.
+const listenerBehind = time.Minute
+
+// The lines a clean stop ends on, one per stop (sessionStop.send).
+const (
+	stopStoppedLine     = "the Envoy session of a role whose process is gone was stopped"
+	stopKeptLine        = "the Envoy listener kept the registration of a dead role's session"
+	stopUnreadLine      = "the Envoy listener did not answer what a dead role's session registration is, so no clean stop was sent"
+	stopUnconfirmedLine = "the Envoy listener did not confirm the clean stop of a dead role's session"
+	stopNoEntryLine     = "the Envoy listener answered no registration of a dead role's session, so none was stopped"
+)
+
+// relaunchRowEnd is the moment one row of the relaunch tests ends by: the test binary's deadline,
+// less what must still fit once the row has given up its last wait, the daemon's own stop at the
+// row's end, which d.stop waits for (stopBound of stopBudget). The daemon's boot, the clean stop's
+// read and delete, the request that relaunches the claim, and every wait of the row take their
+// time from it, so none of them has a fixed time of its own that a loaded machine can pass. A
+// binary with no deadline (-timeout 0) gives the row none, the zero time. A deadline that leaves
+// the row less than the clean stop's own budget (cleanSessionStopBudget) refuses the row by name:
+// run on less, its stop would get less time than production gives one.
+func relaunchRowEnd(t *testing.T) time.Time {
+	t.Helper()
+	deadline, ok := t.Deadline()
+	if !ok {
+		return time.Time{}
+	}
+	after := stopBound(stopBudget)
+	if left := time.Until(deadline) - after; left < cleanSessionStopBudget {
+		t.Fatalf("the test binary's deadline, %s, leaves this row %s once the daemon's stop at its end (%s) is set aside, less than the clean stop's own budget of %s: run it with a longer -timeout",
+			deadline.Format(time.RFC3339Nano), left, after, cleanSessionStopBudget)
+	}
+	return deadline.Add(-after)
+}
+
+// leftBefore is what is left before end, or no bound for the zero end.
+func leftBefore(end time.Time) time.Duration {
+	if end.IsZero() {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Until(end)
+}
+
 // relaunchRegistering is the fake runtime whose Resume brings the relaunched agent up: once the
 // runtime has started the process, that process registers the claim's session at the listener
 // under a client instance of its own (register), and resumed is closed.
@@ -350,128 +439,294 @@ func (r *relaunchRegistering) Resume(ctx context.Context, prev *runtime.Locator,
 	return loc, err
 }
 
+// relaunchAnswer is what the request that relaunched the claim was answered: its status, or -1
+// and the error it ended on.
+type relaunchAnswer struct {
+	status int
+	err    error
+}
+
+// relaunchRow is one way the daemon relaunches a claim in the same session: end ends the claim's
+// process, which sends the clean stop of its session, and relaunch brings the claim back, or is
+// nil where the daemon relaunches it unasked.
+type relaunchRow struct {
+	name     string
+	end      func(t *testing.T, r *relaunchRig)
+	relaunch func(r *relaunchRig) <-chan relaunchAnswer
+}
+
+// relaunchRows are the two relaunches the daemon starts in the same session: an operator's resume
+// of a suspended claim, which starts the process through Machine.start as a wake's resume of a
+// released claim does (R3 of the suspension's clean stop), and the relaunch a death decides in its
+// own decision.
+func relaunchRows() []relaunchRow {
+	return []relaunchRow{
+		{
+			name: "the operator's resume of a suspended claim",
+			end: func(t *testing.T, r *relaunchRig) {
+				if status, body := r.d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(r.token)+"/suspend", nil, true); status != http.StatusOK {
+					t.Fatalf("the operator's suspension = %d; body %s", status, body)
+				}
+			},
+			relaunch: func(r *relaunchRig) <-chan relaunchAnswer {
+				return r.relaunchRequest("/legion/v1/operator/claims/" + string(r.token) + "/resume")
+			},
+		},
+		{
+			name: "the relaunch a death decides",
+			end: func(t *testing.T, r *relaunchRig) {
+				r.rt.Emit(runtime.Observation{Locator: *r.d.claim(r.token).Locator, Kind: runtime.Gone, Detail: "pane gone"})
+			},
+		},
+	}
+}
+
+// relaunchRig is one row of the relaunch tests: the real daemon, a fake listener whose clock runs
+// listenerBehind the daemon's and that holds the stop's read, a runtime whose resume registers
+// the relaunch, and a ready claim. end is the moment the row ends by (relaunchRowEnd), and budget
+// the budget the daemon's clean stops were given, what was left before end when the row began.
+type relaunchRig struct {
+	t      *testing.T
+	d      *daemon
+	envoy  *listenerRecorder
+	rt     *relaunchRegistering
+	logs   *syncBuffer
+	token  claim.Token
+	end    time.Time
+	budget time.Duration
+}
+
+// startRelaunchRig boots the daemon against envoy, which the rig gives the ended process's
+// registration (inst_ended) and the channels a row waits on, and readies a claim. stopsEnd is the
+// daemon's sessionStopOverrides.end, nil for none. Whatever the row holds at the listener is let
+// go when the row ends, before the daemon's stop, so a row that fails holding the read or the
+// delete still ends at once.
+func startRelaunchRig(t *testing.T, envoy *listenerRecorder, stopsEnd <-chan struct{}) *relaunchRig {
+	t.Helper()
+	end := relaunchRowEnd(t)
+	r := &relaunchRig{t: t, envoy: envoy, logs: &syncBuffer{}, end: end, budget: leftBefore(end)}
+	envoy.held = storedRegistration{clientInstanceID: "inst_ended", lastSeen: time.Now().Add(-listenerBehind)}
+	envoy.arrived, envoy.settled = make(chan struct{}), make(chan struct{})
+	cfg := testConfig(t)
+	cfg.EnvoyURL = envoy.server(t).URL
+	r.rt = &relaunchRegistering{Runtime: fake.NewRuntime(), resumed: make(chan struct{})}
+	r.rt.register = func() {
+		envoy.register(storedRegistration{clientInstanceID: "inst_relaunched", lastSeen: time.Now().Add(-listenerBehind)})
+	}
+	o := fakeRuntime(r.rt, &built{})
+	o.sessionStop = sessionStopOverrides{budget: r.budget, end: stopsEnd}
+	r.d = startDaemonWithin(t, cfg, o, slog.New(slog.NewJSONHandler(r.logs, nil)), leftBefore(end))
+	t.Cleanup(envoy.releaseHeld)
+	r.token = r.d.spawn(api.SpawnRequest{Tree: "LEGION-9", Issue: "LEGION-9", Role: claim.RoleArchitect, Prompt: "Reply ready and wait."})
+	readyClaim(t, r.d, r.rt.Runtime, r.token)
+	return r
+}
+
+// await waits for done until the row's end.
+func (r *relaunchRig) await(what string, done <-chan struct{}) {
+	r.t.Helper()
+	select {
+	case <-done:
+	case <-time.After(leftBefore(r.end)):
+		r.t.Fatalf("the row's end came before %s; log:\n%s", what, r.logs)
+	}
+}
+
+// relaunchRequest sends the operator's request at path from a goroutine of its own. Its answer
+// waits, inside its decision, for the clean stop in flight (supervise.Machine.awaitSessionStops),
+// so it has no client timeout of its own (d.client's is 10 s): its context ends at the row's end.
+func (r *relaunchRig) relaunchRequest(path string) <-chan relaunchAnswer {
+	answered := make(chan relaunchAnswer, 1)
+	go func() {
+		ctx, cancel := context.Background(), context.CancelFunc(func() {})
+		if !r.end.IsZero() {
+			ctx, cancel = context.WithDeadline(ctx, r.end)
+		}
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.d.base+path, nil)
+		if err != nil {
+			answered <- relaunchAnswer{status: -1, err: err}
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+testOperatorToken)
+		resp, err := (&http.Client{Transport: r.d.transport}).Do(req)
+		if err != nil {
+			answered <- relaunchAnswer{status: -1, err: err}
+			return
+		}
+		resp.Body.Close()
+		answered <- relaunchAnswer{status: resp.StatusCode}
+	}()
+	return answered
+}
+
+// stopSentAndRelaunched ends the claim's process, waits for its clean stop to reach the
+// listener, sends the row's relaunch, and waits until the relaunch either comes up, which
+// registers it while the stop's read is still held, or says that it waits for the stop in flight.
+// It answers the relaunch request's answer, nil for a row with none.
+func (r *relaunchRig) stopSentAndRelaunched(row relaunchRow) <-chan relaunchAnswer {
+	r.t.Helper()
+	row.end(r.t, r)
+	r.await("the clean stop reached the listener", r.envoy.arrived)
+	var answered <-chan relaunchAnswer
+	if row.relaunch != nil {
+		answered = row.relaunch(r)
+	}
+	testwait.WithinPolling(r.t, leftBefore(r.end), testwait.Poll, "the relaunch to come up, or to wait for the clean stop in flight", func() bool {
+		select {
+		case <-r.rt.resumed:
+			return true
+		default:
+		}
+		return strings.Contains(r.logs.String(), `"msg":"supervise: the launch waits for the clean stop of the session the claim records"`)
+	})
+	return answered
+}
+
+// relaunchAnswered waits for the relaunch request's answer, which must be 200; a row with no
+// request passes nil.
+func (r *relaunchRig) relaunchAnswered(answered <-chan relaunchAnswer) {
+	r.t.Helper()
+	if answered == nil {
+		return
+	}
+	select {
+	case got := <-answered:
+		if got.status != http.StatusOK {
+			r.t.Fatalf("the request that relaunched the claim = %d (%v), want 200; log:\n%s", got.status, got.err, r.logs)
+		}
+	case <-time.After(leftBefore(r.end)):
+		r.t.Fatalf("the row's end came before the request that relaunched the claim was answered; log:\n%s", r.logs)
+	}
+}
+
+// stopEndedOn waits for the line the clean stop ended on, requires it to be want, and answers the
+// line's fields. A stop that ended on another line fails the row there, naming the budget the stop
+// ran under: a read held past it ends at that budget, and the row says so rather than wait for a
+// delete that will never come.
+func (r *relaunchRig) stopEndedOn(want string) map[string]any {
+	r.t.Helper()
+	var ended map[string]any
+	testwait.WithinPolling(r.t, leftBefore(r.end), testwait.Poll, "the clean stop to log how it ended", func() bool {
+		for _, line := range []string{stopStoppedLine, stopKeptLine, stopUnreadLine, stopUnconfirmedLine, stopNoEntryLine} {
+			if lines := loggedLines(r.t, r.logs.String(), line); len(lines) > 0 {
+				ended = lines[0]
+				return true
+			}
+		}
+		return false
+	})
+	if ended["msg"] != want {
+		r.t.Fatalf("the clean stop ended on %q, under its budget of %s, want %q; log:\n%s", ended["msg"], loggedBudget(ended), want, r.logs)
+	}
+	return ended
+}
+
+// wantStopBudget requires the line the clean stop ended on to name the budget the row gave the
+// daemon's stops: a stop given another is one the override (overrides.sessionStop) did not reach,
+// which would end this row's held read at the real budget under load.
+func (r *relaunchRig) wantStopBudget(ended map[string]any) {
+	r.t.Helper()
+	if budget, _ := ended["budget"].(float64); budget != float64(r.budget) {
+		r.t.Fatalf("the clean stop ran under a budget of %s, want the %s the row gave the daemon's stops (overrides.sessionStop); log:\n%s",
+			loggedBudget(ended), r.budget, r.logs)
+	}
+}
+
+// loggedBudget is the budget a clean stop's line names, which the JSON log writes in nanoseconds.
+func loggedBudget(line map[string]any) time.Duration {
+	budget, _ := line["budget"].(float64)
+	return time.Duration(budget)
+}
+
 // The relaunch that wakes a suspended claim, in the same session, is not removed by the clean
 // stop of the process before it, whatever the listener's clock says (R3 of the suspension's clean
-// stop), and neither is the relaunch a death decides at once. Each row is that case with the
-// relaunch the daemon itself starts: the listener's clock runs a minute behind the daemon's, so
-// every registration it stamps reads as written before the stop's moment and the moment keeps
-// none; the stop is sent and the listener holds its registry read; and the daemon relaunches the
-// claim while the read is held, so a relaunch that started at once would come up, and register,
-// before the read is answered. That read would hand back the relaunch's own client instance, the
-// delete would name it, and nothing would keep the relaunch's registration, which is what a
-// daemon whose starts do not wait does. The daemon starts no process of the claim while a clean
-// stop of its session is in flight, so the read answers the ended process's instance, the delete
-// removes that registration alone, and the relaunch's stays.
+// stop), and neither is the relaunch a death decides at once. Each row makes the daemon start a
+// relaunch while the listener holds the stop's read and its clock runs behind the daemon's
+// (listenerBehind), so every registration it stamps reads as written before the stop's moment and
+// the moment keeps none. A daemon whose start did not wait would bring the relaunch up, and
+// register it, while the read is held: the read would then hand back the relaunch's own client
+// instance, the delete would name it, and nothing would keep the relaunch's registration, which
+// is what happens at 46795520. The daemon starts no process of the claim while a clean stop of its
+// session is in flight, so the relaunch starts only once the stop's read and delete have
+// returned: the read answers the ended process's instance, the delete removes that registration
+// alone, and the relaunch's stays. No run of a fixed daemon can show a relaunch that registers
+// before the read, since the wait exists to prevent exactly that order; the row asserts the order
+// the daemon kept instead.
 //
 // A process the daemon did not start that registers the session before the read is the one case
 // left to the moment alone, which a listener clock behind the daemon's cannot keep: the client
 // instance is minted inside the agent's own process, and nothing the daemon records of the claim
 // names it, so the read is the stop's only way to learn it.
 //
-// The test holds no fixed time of its own over what the machine's load decides: the daemon's boot
-// and the stop's read and delete each have what is left of the test binary's deadline, less a
-// minute for the row's own steps (testwait.Bounded), so a slow boot or a slow relaunch is not read
-// as a daemon that never answered or a listener that never did.
+// The row's own waits, the daemon's boot, the stop's read and delete and the relaunch request all
+// end at the row's end (relaunchRowEnd), so a slow boot or a slow relaunch is not read as a daemon
+// that never answered or a listener that never did.
 func TestARelaunchIsNotRemovedByTheStopBeforeItWhenTheListenersClockIsBehind(t *testing.T) {
-	const listenerBehind = time.Minute
-	listenerNow := func() time.Time { return time.Now().Add(-listenerBehind) }
-	for _, tc := range []struct {
-		name string
-		// end ends the claim's process, which sends the clean stop of its session.
-		end func(t *testing.T, d *daemon, rt *relaunchRegistering, token claim.Token)
-		// relaunch brings the claim back in the same session and answers the status of the
-		// request that did, or nil where the daemon relaunches it unasked.
-		relaunch func(d *daemon, token claim.Token) <-chan int
-	}{
-		{
-			name: "the operator's resume of a suspended claim",
-			end: func(t *testing.T, d *daemon, _ *relaunchRegistering, token claim.Token) {
-				if status, body := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil, true); status != http.StatusOK {
-					t.Fatalf("the operator's suspension = %d; body %s", status, body)
-				}
-			},
-			relaunch: func(d *daemon, token claim.Token) <-chan int {
-				return operatorRequest(d, http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/resume", nil)
-			},
-		},
-		{
-			name: "the relaunch a death decides",
-			end: func(t *testing.T, d *daemon, rt *relaunchRegistering, token claim.Token) {
-				rt.Emit(runtime.Observation{Locator: *d.claim(token).Locator, Kind: runtime.Gone, Detail: "pane gone"})
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			// What is left of the binary's deadline, with no bound of the test's own when the
-			// binary has none (-timeout 0): the daemon's exit still ends the boot's wait.
-			left := testwait.Bounded(t, time.Duration(math.MaxInt64), time.Minute)
-			bound := testwait.Bounded(t, time.Minute, time.Second)
-			cfg := testConfig(t)
-			envoy := &listenerRecorder{
-				held:     storedRegistration{clientInstanceID: "inst_ended", lastSeen: listenerNow()},
-				heldRead: make(chan struct{}),
-				arrived:  make(chan struct{}),
-				settled:  make(chan struct{}),
-			}
-			cfg.EnvoyURL = envoy.server(t).URL
-			rt := &relaunchRegistering{Runtime: fake.NewRuntime(), resumed: make(chan struct{})}
-			rt.register = func() {
-				envoy.register(storedRegistration{clientInstanceID: "inst_relaunched", lastSeen: listenerNow()})
-			}
-			logs := &syncBuffer{}
-			o := fakeRuntime(rt, &built{})
-			o.sessionStopBudget = left
-			d := startDaemonWithin(t, cfg, o, slog.New(slog.NewJSONHandler(logs, nil)), left)
-			token := d.spawn(api.SpawnRequest{Tree: "LEGION-9", Issue: "LEGION-9", Role: claim.RoleArchitect, Prompt: "Reply ready and wait."})
-			readyClaim(t, d, rt.Runtime, token)
-
-			tc.end(t, d, rt, token)
-			select {
-			case <-envoy.arrived:
-			case <-time.After(bound):
-				t.Fatalf("the clean stop did not reach the listener within %s; log:\n%s", bound, logs)
-			}
-			var answered <-chan int
-			if tc.relaunch != nil {
-				answered = tc.relaunch(d, token)
-			}
-			// The relaunch either comes up, which registers it while the stop's read is still
-			// held, or says that it waits for the stop in flight; the read is answered only after
-			// one of the two.
-			testwait.Eventually(t, "the relaunch to come up, or to wait for the clean stop in flight", func() bool {
-				select {
-				case <-rt.resumed:
-					return true
-				default:
-				}
-				return strings.Contains(logs.String(), `"msg":"supervise: the launch waits for the clean stop of the session the claim records"`)
-			})
-			close(envoy.heldRead)
-			if answered != nil {
-				select {
-				case status := <-answered:
-					if status != http.StatusOK {
-						t.Fatalf("the request that relaunched the claim = %d, want 200; log:\n%s", status, logs)
-					}
-				case <-time.After(bound):
-					t.Fatalf("the request that relaunched the claim was not answered within %s; log:\n%s", bound, logs)
-				}
-			}
-			for what, done := range map[string]chan struct{}{"the relaunch to come up": rt.resumed, "the stop's delete to be answered": envoy.settled} {
-				select {
-				case <-done:
-				case <-time.After(bound):
-					t.Fatalf("waited %s for %s; log:\n%s", bound, what, logs)
-				}
-			}
+	for _, row := range relaunchRows() {
+		t.Run(row.name, func(t *testing.T) {
+			envoy := &listenerRecorder{heldRead: make(chan struct{})}
+			r := startRelaunchRig(t, envoy, nil)
+			answered := r.stopSentAndRelaunched(row)
+			envoy.releaseRead()
+			r.relaunchAnswered(answered)
+			r.await("the relaunch came up", r.rt.resumed)
+			ended := r.stopEndedOn(stopStoppedLine)
+			r.await("the stop's delete was judged", envoy.settled)
 
 			if held := envoy.holding(); held.absent || held.clientInstanceID != "inst_relaunched" {
 				t.Fatalf("the listener holds %+v once the stop's delete %q was answered, want the relaunch's registration, inst_relaunched: the stop of the process before it removed it",
 					held, envoy.delete.query)
 			}
 			if got := envoy.deleteConditions(t).Get("client_instance_id"); got != "inst_ended" {
-				t.Errorf("the stop's delete named client instance %q, want the ended process's own, inst_ended", got)
+				t.Fatalf("the stop's delete named client instance %q, want the ended process's own, inst_ended", got)
 			}
+			if got, want := envoy.happened(), []string{"read answered inst_ended", "delete judged", "registered inst_relaunched"}; !slices.Equal(got, want) {
+				t.Fatalf("the listener saw %q, want %q: the daemon starts the relaunch only once the stop's read and delete have returned", got, want)
+			}
+			r.wantStopBudget(ended)
+		})
+	}
+}
+
+// A stop that lands after the relaunch's registration keeps it, whatever the listener's clock
+// says (R3 of the suspension's clean stop: "is not removed by a stop that lands after its
+// registration"). The daemon's wait for the stop ends when the stop does, and a stop can end with
+// its delete still on its way to the listener: the budget ran out with the delete sent. Each row
+// lets the relaunch register after the stop's read and before its delete lands: the listener
+// answers the read, holds the delete, and the test then ends the stop's context
+// (sessionStopOverrides.end), as the end of its budget would, so the relaunch starts and
+// registers; only then does the listener judge the delete, with its clock behind the daemon's.
+// The delete names the ended process's instance, which the read answered, so the listener keeps
+// the relaunch's registration. At 46795520 the relaunch registers before the read is answered, the
+// read hands back the relaunch's own instance, and the delete that lands removes it.
+func TestAStopThatLandsAfterTheRelaunchsRegistrationKeepsIt(t *testing.T) {
+	for _, row := range relaunchRows() {
+		t.Run(row.name, func(t *testing.T) {
+			envoy := &listenerRecorder{heldRead: make(chan struct{}), heldDelete: make(chan struct{}), deleteArrived: make(chan struct{})}
+			stopsEnd := make(chan struct{})
+			r := startRelaunchRig(t, envoy, stopsEnd)
+			answered := r.stopSentAndRelaunched(row)
+			envoy.releaseRead()
+			r.await("the stop's delete reached the listener", envoy.deleteArrived)
+			close(stopsEnd)
+			r.relaunchAnswered(answered)
+			r.await("the relaunch came up", r.rt.resumed)
+			ended := r.stopEndedOn(stopUnconfirmedLine)
+			envoy.releaseDelete()
+			r.await("the stop's delete was judged", envoy.settled)
+
+			if held := envoy.holding(); held.absent || held.clientInstanceID != "inst_relaunched" {
+				t.Fatalf("the listener holds %+v once the stop's delete %q landed, want the relaunch's registration, inst_relaunched: the stop of the process before it removed it",
+					held, envoy.delete.query)
+			}
+			if got := envoy.deleteConditions(t).Get("client_instance_id"); got != "inst_ended" {
+				t.Fatalf("the stop's delete named client instance %q, want the ended process's own, inst_ended", got)
+			}
+			if got, want := envoy.happened(), []string{"read answered inst_ended", "registered inst_relaunched", "delete judged"}; !slices.Equal(got, want) {
+				t.Fatalf("the listener saw %q, want %q: the relaunch registers after the stop's read and before its delete lands", got, want)
+			}
+			r.wantStopBudget(ended)
 		})
 	}
 }
@@ -619,7 +874,7 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 	}
 	server := listener.server(t)
 	var inFlight sessionStopsInFlight
-	stop := cleanSessionStop(&inFlight, server.URL, "envoy-token", 0, quietLogger())
+	stop := cleanSessionStop(&inFlight, server.URL, "envoy-token", sessionStopOverrides{}, quietLogger())
 
 	returned := make(chan struct{})
 	go func() {
@@ -649,7 +904,7 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 // With no listener configured there is nothing to tell, and the machines are given no SessionGone
 // at all.
 func TestNoCleanSessionStopWithoutAListener(t *testing.T) {
-	if stop := cleanSessionStop(&sessionStopsInFlight{}, "", "", 0, quietLogger()); stop != nil {
+	if stop := cleanSessionStop(&sessionStopsInFlight{}, "", "", sessionStopOverrides{}, quietLogger()); stop != nil {
 		t.Fatal("a daemon with no Envoy listener was given a clean stop to call")
 	}
 }
@@ -668,7 +923,7 @@ func TestCleanSessionStopSentAfterTheFinalWaitBeganStillDeletesTheRegistration(t
 	}
 	server := listener.server(t)
 	var inFlight sessionStopsInFlight
-	stop := cleanSessionStop(&inFlight, server.URL, "envoy-token", 0, quietLogger())
+	stop := cleanSessionStop(&inFlight, server.URL, "envoy-token", sessionStopOverrides{}, quietLogger())
 	// Nothing is counted yet, so the wait returns at once, and from here it has begun.
 	inFlight.wait()
 

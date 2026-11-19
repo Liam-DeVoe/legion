@@ -20,6 +20,8 @@ import (
 	"github.com/sjawhar/envoy/roleholder"
 )
 
+// requestTimeout bounds one publish or role lookup (HTTPPublisher.client). The clean stop's read
+// and delete take no bound from it (HTTPPublisher.stops).
 const requestTimeout = 10 * time.Second
 
 // refusalBodyLimit bounds how much of a refused publish's body the error carries: the listener
@@ -176,12 +178,19 @@ type HTTPPublisher struct {
 	baseURL string
 	token   string
 	client  *http.Client
+	// stops sends the clean stop's registry read and session delete (ReadSessionRegistration,
+	// DeleteSession) with no timeout of its own, so the caller's context is their one bound: the
+	// daemon gives both one budget (sessionStop.send in packages/daemon/internal/daemon/daemon.go),
+	// and a timeout of the client's own would end them where that budget is the longer, as
+	// requestTimeout did for a test that holds the read past it.
+	stops *http.Client
 }
 
 // New creates a publisher for one Envoy listener. token is the listener's bearer
 // (`envoy_token_file`), sent on every publish; "" sends none, for a listener that requires none.
 func New(baseURL, token string) *HTTPPublisher {
-	return &HTTPPublisher{baseURL: strings.TrimRight(baseURL, "/"), token: token, client: &http.Client{Timeout: requestTimeout}}
+	return &HTTPPublisher{baseURL: strings.TrimRight(baseURL, "/"), token: token,
+		client: &http.Client{Timeout: requestTimeout}, stops: &http.Client{}}
 }
 
 // Publish posts the listener envelope that preserves the outbox row's idempotent delivery key.
@@ -366,7 +375,7 @@ const answerBodyLimit = 1 << 20
 // A 404 is no failure and no error: there is no registration for the stop to name, which is the
 // outcome the stop wanted, and Registered is false. Every other status is an error naming what
 // the listener said, as a refused delete is, and the caller then sends nothing (sessionStop.send
-// in packages/daemon/internal/daemon/daemon.go says why).
+// in packages/daemon/internal/daemon/daemon.go says why). ctx is the read's one bound (stops).
 func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session string) (SessionRegistration, error) {
 	target := fmt.Sprintf("%s/v1/registry/%s?include=unresponsive&view=registration", p.baseURL, url.PathEscape(session))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -376,7 +385,7 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 	if p.token != "" {
 		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
-	response, err := p.client.Do(request)
+	response, err := p.stops.Do(request)
 	if err != nil {
 		return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, err)
 	}
@@ -526,11 +535,11 @@ func unreadAnswer(what, status string, err error) error {
 // (ReadSessionRegistration), and names that one client process, which no comparison of moments
 // can. It is what makes carrying the moment undated safe: where the read answered the ended
 // process's own entry, a relaunch's registration is refused by its own identity, whatever the
-// daemon's clock and the listener's say about the moment. The read always answers before the
-// relaunch registers, since the machine starts no process of the claim while its clean stop is in
-// flight (supervise.Machine.awaitSessionStops): answered after the relaunch had registered, the
-// read would hand back the successor's id, only the moment would keep that registration, and a
-// listener clock behind this daemon's stamps it before the moment. The listener judges both at the
+// daemon's clock and the listener's say about the moment. The read answers before any relaunch the
+// daemon starts registers, since the machine starts no process of the claim while its clean stop
+// is in flight (supervise.Machine.awaitSessionStops): answered after the relaunch had registered,
+// the read would hand back the successor's id, only the moment would keep that registration, and
+// a listener clock behind this daemon's stamps it before the moment. The listener judges both at the
 // revision it deletes, under its own compare-and-swap (session.SessionRegistry.DeleteIf), so what
 // is stored when the delete lands decides it, and a delete that lands after the relaunch
 // registered meets the relaunch's own id. Against a listener that answers no
@@ -555,7 +564,8 @@ type DeleteConditions struct {
 // registry that holds no record for the session answers 404: it is already gone, which is the
 // outcome asked for, so that is no failure.
 //
-// The two conditions it carries, and why neither alone would do, are on DeleteConditions.
+// The two conditions it carries, and why neither alone would do, are on DeleteConditions. ctx is
+// the delete's one bound (stops).
 func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, conditions DeleteConditions) (SessionDeleted, error) {
 	target := fmt.Sprintf("%s/v1/sessions/%s?if_not_registered_after=%d",
 		p.baseURL, url.PathEscape(session), conditions.NotRegisteredAfter.UnixMilli())
@@ -569,7 +579,7 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 	if p.token != "" {
 		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
-	response, err := p.client.Do(request)
+	response, err := p.stops.Do(request)
 	if err != nil {
 		return SessionDeleted{}, fmt.Errorf("delete session %s: %w", session, err)
 	}
