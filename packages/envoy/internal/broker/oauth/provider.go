@@ -124,14 +124,18 @@ var ErrLoginEnded = errors.New("the machine login has ended")
 // Any other error from it is a 500 server_error.
 var ErrMachineKeyTaken = errors.New("another live machine login holds this key")
 
-// ErrSignInRevoked and ErrSignInMachineChanged are the two ExchangeConfig.PersonSignIns errors
-// (wrapped or not) that refuse a person's trade invalid_grant: that person has revoked the
-// sign-in this box key belongs to, and the sign-in this box key belongs to was made on another
-// machine. Either way the box signs in again with a key of its own. Any other error from it is
-// a 500 server_error.
+// ErrSignInRevoked, ErrSignInMachineChanged, ErrSignInSubjectChanged and ErrSignInSubjectReplaced
+// are the ExchangeConfig.PersonSignIns errors (wrapped or not) that refuse a person's trade
+// invalid_grant: that person has revoked the sign-in this box key belongs to; the sign-in this box
+// key belongs to was made on another machine, or by another account than the one the person's
+// token names, and either way the box signs in again with a key of its own; or the account the
+// person's token names no longer holds the person's address, which another account holds now.
+// Any other error from it is a 500 server_error.
 var (
-	ErrSignInRevoked        = errors.New("the person has revoked this machine's sign-in")
-	ErrSignInMachineChanged = errors.New("this sign-in was made on another machine")
+	ErrSignInRevoked         = errors.New("the person has revoked this machine's sign-in")
+	ErrSignInMachineChanged  = errors.New("this sign-in was made on another machine")
+	ErrSignInSubjectChanged  = errors.New("this sign-in was made by another account")
+	ErrSignInSubjectReplaced = errors.New("another account holds this person's address now")
 )
 
 // TokenHooks are the broker's own steps around a token request the library has validated.

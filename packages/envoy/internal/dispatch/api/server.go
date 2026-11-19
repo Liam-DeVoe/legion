@@ -48,6 +48,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -90,8 +91,11 @@ type Deps struct {
 	// NewIssueSession empty is an issue made with no conversation started on it.
 	NewIssueLabel   string
 	NewIssueSession string
-	ServerURL       string
-	Docs            docs.API
+	// Origins is the server's web origins, canonical first (text.NewOrigins of DepsInput.ServerURL
+	// and DepsInput.OutsideOrigin): a dashboard URL of either that a text or a request writes is
+	// read as the reference its page names.
+	Origins text.Origins
+	Docs    docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549), and its Identity
 	// is the only one search compares queries with (INFRA-393); nil means Dispatch has no
 	// embedder, and search answers keyword-only on every request, always setting
@@ -128,6 +132,14 @@ type Deps struct {
 	// /api/v1/access/projects/{key} and GET /api/v1/access/person; cmd/dispatch:
 	// DISPATCH_ACCESS_ACCOUNTS). Every other caller is 403 ACCESS_ACCOUNT_REQUIRED there.
 	AccessAccounts []string
+	// RestrictedAdmission is the sign-in rule's own answer to whether a restricted member would
+	// be signed in now (identity.SignInRule's AdmitsRestricted; cmd/dispatch hands the router its
+	// rule). A restricted member's personal token, and a broker-issued token naming them, act only
+	// while it admits them (restrictedOwnerAdmitted), so they stop at their next use when outside
+	// sign-in is off, no project names them, or their address is on a domain the Workspace owns.
+	// Nil, a server with no sign-in rule (header identity, dev sign-in), admits no restricted
+	// member. A full member's token never asks it.
+	RestrictedAdmission identity.RestrictedAdmission
 	// PrivateProjects are the keys of the projects this deployment has provisioned as private,
 	// sorted and each once (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS): only these can be made
 	// private (privateProjectProvisioned). Empty refuses every switch to private 409
@@ -148,6 +160,13 @@ type Deps struct {
 	// is unconfigured) means the feature is off: the pending list answers null, and every other
 	// handler that needs it answers 404 FEATURE_OFF.
 	AgentSecrets *agentsecrets.Client
+	// SignInIssuer is the issuer people sign in through (cmd/dispatch: DISPATCH_SIGNIN_ISSUER), as
+	// oidc.CanonicalIssuer spells it: the issuer of every Google account people records, which a
+	// machine login's approve names the approving account under (approveCredentialRecord) and the
+	// membership answer compares an account with (accountHolder). Empty for a deployment whose
+	// sign-in records no account (a Cognito pool's group, cmd/dispatch's accountIssuer) or that
+	// signs nobody in.
+	SignInIssuer string
 	// Files holds uploaded files' bytes outside Postgres (cmd/dispatch: DISPATCH_FILE_STORE_BUCKET);
 	// nil keeps them in each version's row, and a row that still holds bytes is served from the
 	// row either way (files.BackfillRows moves them).
@@ -205,6 +224,12 @@ type Deps struct {
 	// it empty, which is one identity for every such build and is why a deploy is what it is
 	// for rather than a key anything depends on being unique.
 	BuildCommit string
+	// Metrics is the process's metrics registry, which GET /metrics serves (getMetrics); nil, a
+	// test's server, serves an empty one.
+	Metrics http.Handler
+	// BrokerRevocationsSuperseded counts each revocation the broker answered superseded
+	// (NewBrokerRevocationsSuperseded); nil counts nothing.
+	BrokerRevocationsSuperseded *metrics.Counter
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -221,7 +246,10 @@ type DepsInput struct {
 	NewIssueLabel   string
 	NewIssueSession string
 	ServerURL       string
-	EnvoyURL        string
+	// OutsideOrigin is the second origin the server answers at (DISPATCH_OUTSIDE_ORIGIN; empty for
+	// none), which Deps.Origins reads dashboard URLs of beside ServerURL's.
+	OutsideOrigin string
+	EnvoyURL      string
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
@@ -245,6 +273,9 @@ type DepsInput struct {
 	// has checked each subject's form and that every access account is also admitted.
 	OIDCAccounts   []string
 	AccessAccounts []string
+	// RestrictedAdmission is Deps.RestrictedAdmission: the sign-in rule, which a restricted
+	// member's tokens are held to.
+	RestrictedAdmission identity.RestrictedAdmission
 	// PrivateProjects and BusProjects are Deps.PrivateProjects and Deps.BusProjects.
 	PrivateProjects []string
 	BusProjects     BusProjects
@@ -258,6 +289,9 @@ type DepsInput struct {
 	// projected Kubernetes ServiceAccount token, which the client presents on every broker call.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
+	// SignInIssuer is the issuer people sign in through; see Deps.SignInIssuer. NewDeps spells it as
+	// oidc.CanonicalIssuer does.
+	SignInIssuer string
 	// Files is the uploaded-file store; nil keeps files in Postgres. See Deps.Files.
 	Files            files.Store
 	TestHooksEnabled bool
@@ -285,6 +319,12 @@ type DepsInput struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
 	BuildCommit string
+	// Metrics is the process's metrics registry; see Deps.Metrics. cmd/dispatch passes the one
+	// its outbox counts on.
+	Metrics http.Handler
+	// BrokerRevocationsSuperseded is the process's count of revocations the broker answered
+	// superseded; see Deps.BrokerRevocationsSuperseded.
+	BrokerRevocationsSuperseded *metrics.Counter
 }
 
 // NewDeps parses boot configuration once and returns API dependencies.
@@ -303,12 +343,15 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if input.Events == nil {
 		input.Events = events.NewBroker()
 	}
+	// The `/` trimmed here is not redundant with parseServer, which trims one from each base path:
+	// together they read a server URL ending in `//` as the one ending in `/`.
+	origins := text.NewOrigins(strings.TrimSuffix(input.ServerURL, "/"), input.OutsideOrigin)
 	if input.Docs == nil {
 		input.Docs = docs.New(docs.Deps{
-			Store:     input.Store,
-			Events:    input.Events,
-			Identity:  input.Identity,
-			ServerURL: input.ServerURL,
+			Store:    input.Store,
+			Events:   input.Events,
+			Identity: input.Identity,
+			Origins:  origins,
 		})
 	}
 	var envoyClient *envoy.Client
@@ -333,6 +376,10 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if url := strings.TrimSpace(input.AgentSecretsURL); url != "" {
 		agentSecretsClient = agentsecrets.New(url, input.AgentSecretsTokenFile)
 	}
+	var signInIssuer string
+	if issuer := strings.TrimSpace(input.SignInIssuer); issuer != "" {
+		signInIssuer = oidc.CanonicalIssuer(issuer)
+	}
 	heartbeat := input.StreamHeartbeat
 	if heartbeat == 0 {
 		heartbeat = defaultStreamHeartbeat
@@ -344,7 +391,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		DefaultProject:         defaultProject,
 		NewIssueLabel:          newIssue.Label,
 		NewIssueSession:        newIssue.Session,
-		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
+		Origins:                origins,
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
 		Answerer:               input.Answerer,
@@ -355,11 +402,13 @@ func NewDeps(input DepsInput) (Deps, error) {
 		OIDC:                   input.OIDC,
 		OIDCAccounts:           input.OIDCAccounts,
 		AccessAccounts:         input.AccessAccounts,
+		RestrictedAdmission:    input.RestrictedAdmission,
 		PrivateProjects:        input.PrivateProjects,
 		BusProjects:            input.BusProjects,
 		BrokerTokens:           input.BrokerTokens,
 		AgentStream:            input.AgentStream,
 		AgentSecrets:           agentSecretsClient,
+		SignInIssuer:           signInIssuer,
 		Files:                  input.Files,
 		TestHooksEnabled:       input.TestHooksEnabled,
 		StreamHeartbeat:        heartbeat,
@@ -371,6 +420,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 		ListenerRosterUncached: input.ListenerRosterUncached,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
+		Metrics:                input.Metrics,
+		// The process's count of revocations the broker answered superseded.
+		BrokerRevocationsSuperseded: input.BrokerRevocationsSuperseded,
 	}, nil
 }
 
@@ -613,7 +665,7 @@ type queryer interface {
 // started the relay, or at once under the test hooks.
 func Register(mux *http.ServeMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
-	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.personEventHead, EventHorizon: s.horizon}
+	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, RevokeBrokerCredentials: s.revokeOwedBrokerCredentials, EventHead: s.personEventHead, EventHorizon: s.horizon}
 }
 
 // Background is the work a registered server does beside answering its requests, for the process
@@ -625,10 +677,17 @@ type Background struct {
 	// process that died left owed is sent, once, under its own attempt number. The maintenance loop
 	// runs it (RunMaintenanceSweep).
 	ResumeDeliveries func(context.Context) error
-	// EventHead is the event_head GET /auth/whoami answers a person (personEventHead): an id at or
-	// below which every event is already final, which a page resumes its first events subscription
-	// from, read as the highest id of an event that person can see (viewerEventHead).
-	EventHead func(ctx context.Context, person string) (int64, error)
+	// RevokeBrokerCredentials is one pass of the broker revocation loop
+	// (revokeOwedBrokerCredentials): the secrets broker is told of each Google account another
+	// account took an address from, and ends every credential that account holds there, and the
+	// revocation is settled once the broker confirms. It answers when the loop next needs a pass with
+	// no wake, the zero time for never. RunBrokerRevocations runs it.
+	RevokeBrokerCredentials func(context.Context) time.Time
+	// EventHead is the event_head GET /auth/whoami answers the person whose cookie the request
+	// carries (personEventHead): an id at or below which every event is already final, which a page
+	// resumes its first events subscription from, read as the highest id of an event that person
+	// can see (viewerEventHead), resolved from the request's own credential.
+	EventHead func(r *http.Request) (int64, error)
 	// EventHorizon answers the server's one events.Horizon (horizon(), event_stream_relay.go),
 	// built on the first call: the safe horizon every reader that pages the event log by a global
 	// id cursor reads up to. The suggestion outcome sweep takes it (RunSuggestionOutcomeSweep) so
@@ -716,6 +775,14 @@ func (b *backgroundWork) wait() {
 func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	if lifetime == nil {
 		panic("api.Register: the lifetime parameter is required: it is the context that ends the delivery hub, the event stream relay and every live socket (a test passes t.Context())")
+	}
+	if _, serves := deps.Docs.(http.Handler); serves {
+		if _, resolves := deps.Docs.(documentSocket); !resolves {
+			// The document socket is mounted for a document service that serves it, as it always
+			// was; its heartbeat asks that service how the caller resolves again, so a service
+			// that cannot say is refused rather than mounted with no re-check or left off the mux.
+			panic(fmt.Sprintf("api.Register: the document service %T serves the document socket but has no CallerResolves, which every heartbeat of that socket asks", deps.Docs))
+		}
 	}
 	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
 		ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
@@ -849,18 +916,34 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	}
 	// The two sockets are mounted beside the table, each with what it reads (readclass.Handle):
 	// a document room holds one document of a project, and the live socket carries events of
-	// projects, people's own state and the deployment's rows.
-	if websocket, ok := deps.Docs.(interface {
-		ServeHTTP(http.ResponseWriter, *http.Request)
-	}); ok {
+	// projects, people's own state and the deployment's rows. Each heartbeat resolves the caller
+	// as its socket's open did: the document socket by the cookie alone
+	// (docs.Service.CallerResolves), the live socket as every route does (callerStillResolves).
+	if websocket, ok := deps.Docs.(documentSocket); ok {
 		const pattern = "/ws/doc/{room}"
 		readclass.Handle(mux, []readclass.Class{readclass.Project}, "GET "+pattern,
-			accesslog.Handler(pattern, s.refuseUnlistedServiceAccount(s.whileCallerResolves(false, trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))))))
+			accesslog.Handler(pattern, s.refuseUnlistedServiceAccount(s.whileCallerResolves(cookieAlone(websocket.CallerResolves), false, trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))))))
 	}
 	const livePattern = "/ws/live"
 	readclass.Handle(mux, []readclass.Class{readclass.Project, readclass.People, readclass.Deployment}, "GET "+livePattern,
-		accesslog.Handler(livePattern, s.whileCallerResolves(true, s.decideBrokerToken(trackTransactions(s.refuseUnstorableParameters(livePattern, s.serveLiveSocket))))))
+		accesslog.Handler(livePattern, s.whileCallerResolves(s.callerStillResolves, true, s.decideBrokerToken(trackTransactions(s.refuseUnstorableParameters(livePattern, s.serveLiveSocket))))))
 	return s
+}
+
+// documentSocket is the document service's websocket: its handler, and the resolution of the
+// caller that handler's open admits a socket by, which the socket's heartbeat asks again.
+type documentSocket interface {
+	ServeHTTP(http.ResponseWriter, *http.Request)
+	CallerResolves(*http.Request) error
+}
+
+// cookieAlone is the document socket's resolution as whileCallerResolves asks it: the cookie alone
+// (docs.Service.CallerResolves), which answers no caller and so no grant a heartbeat compares (a
+// cookie's grant is the person's, which no list of projects or scopes narrows).
+func cookieAlone(resolves func(*http.Request) error) func(*http.Request) (model.Actor, bool, error) {
+	return func(r *http.Request) (model.Actor, bool, error) {
+		return model.Actor{}, true, resolves(r)
+	}
 }
 
 // refuseUnlistedServiceAccount holds the document socket, which admits a person by the cookie
@@ -887,27 +970,42 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 }
 
 // whileCallerResolves serves a connection that outlives its request, a websocket, only while its
-// caller resolves as the caller it was admitted as: on every StreamHeartbeat it resolves the
-// caller again, and once the caller no longer resolves (a logout, a membership the sign-in issuer
-// no longer confirms, a revoked token), or, with compareGrants, its credential now lists other
-// projects or holds other scopes than when the connection opened (sameCredentialGrant), it
-// cancels the connection's context, on which the document server and the live socket close the
-// socket (1008). The page opens a new one under what the credential holds now, so a token
-// narrowed to fewer projects reads nothing more of the ones it lost. Only the live socket compares
-// grants: the document socket admits a person by the cookie alone, whose grant no list of
-// projects or scopes narrows, so it reads nothing at open beyond its own admission
-// (TestASocketOpenReadsTheIssueAndTheCallerOnce). The check runs beside the handler, which holds
-// pooled connections of its own while it admits the socket, so it marks a context of its own for
-// the pool (store.ErrNestedAcquire), and it resolves on a context detached from the access-log
-// line, which names the caller the socket was admitted as (accesslog.Detached).
+// caller resolves as the caller it was admitted as: on every StreamHeartbeat it asks resolves
+// again, and once the caller no longer resolves (a logout, a membership the sign-in issuer no
+// longer confirms, a revoked token), or, where compareGrants holds, its credential now lists other
+// projects or holds other scopes than when the connection opened (sameCredentialGrant), or the
+// person it acts for is now restricted where they were not, or no longer restricted where they were
+// (memberKindPerson, personRestricted: the hourly confirmation restricted a member whose account
+// left the Workspace, or admitted a restricted one as full), it cancels the connection's context,
+// on which the document server and the live socket close the socket (1008). The page opens a new
+// one under what the credential holds now, so a token narrowed to fewer projects, or a person
+// restricted to the projects that name them, reads nothing more of the ones it lost: the live
+// socket's subscriptions read their reader again only at an event that can move what it sees
+// (movesSight) or an access announcement (the delivery hub), and a change of member kind appends no
+// event. That costs one read of people by its key per heartbeat for a cookie's or a personal
+// token's person (access.MemberKind), and one as the connection opens, and nothing more for a
+// broker-issued token's, whose own resolution reads it; a kind that cannot be read, or an open
+// whose resolution failed, closes the connection, as a caller that cannot be resolved does.
+// resolves is the socket's own resolution, with the credential precedence its open admitted the
+// caller by, so the heartbeat neither keeps a socket on a credential its open did not admit it by
+// nor closes one over such a credential; it answers the caller it resolved, and true when that
+// answer names no grant to compare (a broker-issued token's, callerStillResolves). Only the live
+// socket compares grants: the document socket admits a person by the cookie alone, whose grant no
+// list of projects or scopes narrows (cookieAlone), so it reads nothing at open beyond its own
+// admission (TestASocketOpenReadsTheIssueAndTheCallerOnce); a change of its person's member kind
+// closes it through the access announcement instead (docs.Service.recheckAccess). The check runs
+// beside the handler, which holds pooled connections of its own while it admits the socket, so it
+// marks a context of its own for the pool (store.ErrNestedAcquire), and it resolves on a context
+// detached from the access-log line, which names the caller the socket was admitted as
+// (accesslog.Detached).
 //
-// With compareGrants, the caller the connection opens as is resolved once, on the request, and
-// kept in its context (withCallerResolved), so the handler admits the caller the heartbeat compares
-// against and verifies the credential no second time
-// (TestTheLiveSocketVerifiesItsCredentialOnceAtOpen). A broker-issued token is decided once a
-// request already (decideBrokerToken), and the heartbeat compares no grant of one
-// (callerStillResolves), so nothing is resolved for it here.
-func (s *server) whileCallerResolves(compareGrants bool, handler http.HandlerFunc) http.HandlerFunc {
+// With compareGrants, a caller that is not a broker-issued token is resolved once as the
+// connection opens, on the request, and kept in its context (withCallerResolved), so the handler
+// admits the caller the heartbeat compares against and verifies the credential no second time
+// (TestTheLiveSocketResolvesItsCallerOnceAtOpen). A broker-issued token's proof is spent by the
+// handler's own decision (decideBrokerToken), so its open asks resolves, which reads the broker's
+// answer and the person's admission, the restricted answer the heartbeat compares with.
+func (s *server) whileCallerResolves(resolves func(*http.Request) (model.Actor, bool, error), compareGrants bool, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, closeConnection := context.WithCancel(r.Context())
 		defer closeConnection()
@@ -915,11 +1013,27 @@ func (s *server) whileCallerResolves(compareGrants bool, handler http.HandlerFun
 		served := r.WithContext(ctx)
 		// What the credential holds as the connection opens, before the handler admits it, so a
 		// change made while it is admitted is a change the first heartbeat sees. A caller that
-		// does not resolve is the handler's to refuse.
+		// does not resolve is the handler's to refuse; a resolution that fails here while the
+		// handler's succeeds (a pool with no connection free, a broker that did not answer) leaves
+		// nothing to hold the connection to, so it closes at the first heartbeat (openFailed) and
+		// the page opens a new one, rather than outliving a change of its person's member kind.
 		var admitted model.Actor
-		if _, presented := brokertoken.Presented(r); compareGrants && !presented {
-			served = s.withCallerResolved(served)
-			admitted, _, _ = s.optionalActor(served)
+		var person string
+		var admittedRestricted bool
+		var openFailed error
+		if compareGrants {
+			if _, presented := brokertoken.Presented(r); presented {
+				admitted, _, openFailed = resolves(check)
+			} else {
+				served = s.withCallerResolved(served)
+				admitted, _, openFailed = s.optionalActor(served)
+			}
+			if openFailed == nil {
+				person = memberKindPerson(admitted)
+				if person != "" {
+					admittedRestricted, openFailed = s.personRestricted(check.Context(), admitted, person)
+				}
+			}
 		}
 		go func() {
 			heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
@@ -929,21 +1043,59 @@ func (s *server) whileCallerResolves(compareGrants bool, handler http.HandlerFun
 				case <-ctx.Done():
 					return
 				case <-heartbeat.C:
-					// The check resolves the credential the request was admitted with, from a
-					// detached copy of that request, which for a broker-issued token asks the
-					// broker's answer alone rather than the proof the upgrade already spent
-					// (callerStillResolves). Every other credential is resolved exactly as it
-					// is on a request.
-					caller, broker, err := s.callerStillResolves(check)
-					if err != nil || (compareGrants && !broker && !sameCredentialGrant(admitted.Credential, caller.Credential)) {
+					if openFailed != nil {
 						closeConnection()
 						return
+					}
+					// The check resolves the credential the request was admitted with, from a
+					// detached copy of that request, as the socket's open resolved it (resolves).
+					caller, noGrant, err := resolves(check)
+					if err != nil || (compareGrants && !noGrant && !sameCredentialGrant(admitted.Credential, caller.Credential)) {
+						closeConnection()
+						return
+					}
+					if person != "" {
+						restricted, err := s.personRestricted(check.Context(), caller, person)
+						if err != nil || restricted != admittedRestricted {
+							closeConnection()
+							return
+						}
 					}
 				}
 			}
 		}()
 		handler(w, served)
 	}
+}
+
+// personRestricted is whether person, whom caller acts for (memberKindPerson), is a restricted
+// member, as the heartbeat of a connection that compares grants holds it: what caller's own
+// resolution read, when it read the member kind (a broker-issued token's, callerStillResolves,
+// whose admission reads it in its one statement), else one read of people by its key. Only
+// restricted is compared, never the stored kind, so a person no row holds (who acts as a full
+// member) and their first row, which records them full, are the same answer, and the connection
+// stays open across that row's insert.
+func (s *server) personRestricted(ctx context.Context, caller model.Actor, person string) (bool, error) {
+	if caller.Viewer != nil && caller.Viewer.Person == person {
+		return caller.Viewer.Restricted, nil
+	}
+	kind, err := access.MemberKind(ctx, s.deps.Store.Pool, person)
+	return kind == model.MemberRestricted, err
+}
+
+// memberKindPerson is the person whose member kind decides what caller sees, as the heartbeat of a
+// connection that compares grants reads it: a browser's person, a personal token's owner, or the
+// person a broker-issued token names (callerStillResolves answers it as the owner). It is "" for a
+// credential that acts for nobody: the deployment's shared token, a service account's token, and a
+// broker-issued token naming a service.
+func memberKindPerson(caller model.Actor) string {
+	switch {
+	case caller.Kind == "user":
+		return caller.ID
+	case caller.Owner != nil:
+		return *caller.Owner
+	}
+	return ""
 }
 
 // sameCredentialGrant reports whether two resolutions of one connection's credential grant the

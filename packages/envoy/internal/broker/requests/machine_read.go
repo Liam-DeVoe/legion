@@ -993,8 +993,8 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, names [
 }
 
 // RecordKind reads a credential-request record's own kind ("agent_secret" or
-// "launcher_credential") — the one column api.decideRecord needs before it knows which service's
-// ApplyDecision a record id belongs to. pgx.ErrNoRows means no such record.
+// "launcher_credential") — the one column api.decideRecord needs before it knows which service
+// decides a record id. pgx.ErrNoRows means no such record.
 func (m *Machine) RecordKind(ctx context.Context, recordID string) (string, error) {
 	var kind string
 	err := m.Store.Pool.QueryRow(ctx, `select kind from credential_requests where id=$1`, recordID).Scan(&kind)
@@ -1075,9 +1075,9 @@ const pendingForApproverQuery = `select cr.id, cr.kind, cr.body, cr.created_at, 
 // its code may decide it (record.MayDecide). The rule for
 // pending, which ReadRecord applies too: an agent_secret record is pending while its request is.
 // Every writer moves the request out of 'pending' together with the record's terminal event
-// (store.EndPendingRequests, ApplyDecision), but a request an ended enrollment cancelled before
-// endEnrollment wrote that event carries none, so the request row is the truth. A machine login
-// has no request row and is pending while it carries no terminal decision event, matching
+// (store.EndPendingRequests, applyDecisionAttempt), but a request an ended enrollment cancelled
+// before endEnrollment wrote that event carries none, so the request row is the truth. A machine
+// login has no request row and is pending while it carries no terminal decision event, matching
 // credential_request_decision's own partial index — see pendingForApproverQuery's own comment for
 // why that match requires a literal predicate, not record.TerminalEventNames() bound as a
 // parameter. The approver scan itself is credential_requests_approver
@@ -1134,7 +1134,7 @@ type RecordDecision struct {
 	// decided a record reads it beside Login (record.JudgeLogin).
 	Actor string
 	// Detail is what the decision records beside its event, empty when it records nothing. An
-	// agent_secret approval carries one exactly when ApplyDecision recorded the request denied
+	// agent_secret approval carries one exactly when its decision recorded the request denied
 	// rather than granted: because its requesting enrollment was no longer live, or because the
 	// secret's requesters tag no longer listed the session, which the broker denies in the
 	// approver's place (requests.PolicyDeniedActor).

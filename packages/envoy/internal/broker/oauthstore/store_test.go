@@ -275,8 +275,8 @@ func TestEndCredentialEndsItsTokensAndNoOthers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := oauthstore.EndCredential(ctx, tx, ended); err != nil {
-		t.Fatalf("EndCredential: %v", err)
+	if n, err := oauthstore.EndCredential(ctx, tx, ended); err != nil || n != 1 {
+		t.Fatalf("EndCredential = %d, %v; want the one live access token the credential's login holds", n, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)

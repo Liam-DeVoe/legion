@@ -480,7 +480,10 @@ func TestMachineActsForTheApproverAndWritesEveryProjectThePersonMay(t *testing.T
 
 // TestEveryDecisionScopesItsProject: the zero ProjectScope is what a Claims nobody built carries,
 // so no constructor may answer it; a later project check refuses a token that names neither a
-// project nor the person's whole reach.
+// project nor the person's whole reach. A person's own credential (Machine here; Person is held to
+// the person scope in its own test) is never named: Dispatch holds a named token to no account,
+// as an operator entry's (oauthwire.ProjectScopeNamed), so a person's credential decided named
+// would escape the account binding.
 func TestEveryDecisionScopesItsProject(t *testing.T) {
 	set := listed(t)
 	pod, err := set.Pod(podToken(workerAccount, podUID), "implementer-g1")

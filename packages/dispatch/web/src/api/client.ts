@@ -1,5 +1,7 @@
 import {
   AUTH_NO_IDENTITY,
+  AUTH_SIGNED_OUT_REASONS,
+  type AuthSignedOutReason,
   answerNotKept,
   DISPATCH_LOGIN_HEADER,
   everyBuildReadsSearch,
@@ -17,6 +19,7 @@ import {
   sleep,
 } from "@legion/contracts";
 
+import { setDispatchOrigins } from "./origins";
 import {
   type Answer,
   type Body,
@@ -88,6 +91,15 @@ interface ErrorPayload {
   error?: string;
   state?: UserIssueState;
   candidates?: readonly ErrorCandidate[];
+  reason?: string;
+  login?: string;
+}
+
+/** Why Dispatch signed the person out, and the address it signed out, as its `401
+ *  AUTH_NO_IDENTITY` names them (`AUTH_SIGNED_OUT_REASONS`). */
+export interface SignedOut {
+  readonly login: string;
+  readonly reason: AuthSignedOutReason;
 }
 
 export class ApiError extends Error {
@@ -102,6 +114,10 @@ export class ApiError extends Error {
    *  delta-seconds, as Dispatch sends with a 503 refusing excess load), in milliseconds;
    *  undefined when the response carried none. */
   readonly retryAfterMs: number | undefined;
+  /** Why Dispatch signed the person out, for its own `401 AUTH_NO_IDENTITY` naming a reason this
+   *  page knows and the address; undefined for every other answer, a sign-out's and an expired
+   *  cookie's 401 among them. */
+  readonly signedOut: SignedOut | undefined;
 
   constructor(status: number, payload: ErrorPayload, retryAfterMs?: number) {
     super(payload.error ?? `Dispatch request failed (${status})`);
@@ -111,7 +127,19 @@ export class ApiError extends Error {
     this.state = payload.state;
     this.candidates = payload.candidates;
     this.retryAfterMs = retryAfterMs;
+    this.signedOut = signedOutOf(status, payload);
   }
+}
+
+/** The reason and address a `401 AUTH_NO_IDENTITY` gives for a sign-out, when it gives a reason
+ *  `AUTH_SIGNED_OUT_REASONS` names and an address to name. */
+function signedOutOf(status: number, payload: ErrorPayload): SignedOut | undefined {
+  const { code, login, reason } = payload;
+  if (status !== 401 || code !== AUTH_NO_IDENTITY || typeof login !== "string" || login === "") {
+    return undefined;
+  }
+  const known = AUTH_SIGNED_OUT_REASONS.find((named) => named === reason);
+  return known === undefined ? undefined : { login, reason: known };
 }
 
 /** A request the browser could not get an answer to at all: the connection failed or dropped
@@ -313,6 +341,15 @@ export function isDeliveryNotConfigured(error: unknown): boolean {
   );
 }
 
+// A read of the whole deployment - the pending credential requests among them - answers this 403
+// to a viewer that is not open: a restricted member, or a credential that lists its projects. It
+// is definitive like the 404s above: the viewer is what it is, and retrying changes nothing.
+export function isDeploymentReadRefused(error: unknown): boolean {
+  return (
+    error instanceof ApiError && error.status === 403 && error.code === "DEPLOYMENT_READ_REFUSED"
+  );
+}
+
 // A stored document outside the Proof schema is a repairable state, not a transient failure:
 // retrying the read cannot repair it, while opening its live editor could let the browser rewrite it.
 export function isDocumentSchemaError(error: unknown): boolean {
@@ -380,16 +417,18 @@ export function isAgentListRefilling(error: unknown): boolean {
 }
 
 // The retry policy every query in the app shares: an auth outcome (401), a missing architecture
-// source, an unconfigured credential broker or delivery timeline, a stored document outside
-// Proof's schema, or a stored history that cannot load is definitive and retrying it changes
-// nothing; any other failure (dropped connection, a read past its deadline, 5xx, a document
-// holding content this build cannot read yet) is worth a couple of automatic attempts before
-// surfacing a Retry affordance to the user.
+// source, an unconfigured credential broker or delivery timeline, a read of the whole deployment
+// refused to a viewer that is not open, a stored document outside Proof's schema, or a stored
+// history that cannot load is definitive and retrying it changes nothing; any other failure
+// (dropped connection, a read past its deadline, 5xx, a document holding content this build
+// cannot read yet) is worth a couple of automatic attempts before surfacing a Retry affordance to
+// the user.
 export function isRetryableQueryError(error: unknown): boolean {
   return (
     !isUnauthorized(error) &&
     !isSourceNotFound(error) &&
     !isCredentialFeatureOff(error) &&
+    !isDeploymentReadRefused(error) &&
     !isDeliveryNotConfigured(error) &&
     !isDocumentSchemaError(error) &&
     !isDocumentUnloadable(error)
@@ -1821,9 +1860,13 @@ export class DispatchApiClient {
   }
 
   /** The signed-in person. `/auth/*` sits outside the `/api/v1` route table the document is
-   *  rendered from, so this one read names its path and its answer itself. */
-  whoAmI(): Promise<AuthenticatedUser> {
-    return this.json<AuthenticatedUser>("/auth/whoami");
+   *  rendered from, so this one read names its path and its answer itself. The origins the
+   *  answer names are the ones every dashboard URL is read against from then on
+   *  (`setDispatchOrigins`); an answer naming none leaves the page's own alone. */
+  async whoAmI(): Promise<AuthenticatedUser> {
+    const user = await this.json<AuthenticatedUser>("/auth/whoami");
+    setDispatchOrigins(user.origins ?? []);
+    return user;
   }
 
   /** Ends this browser's session. `/auth/logout` sits outside Dispatch's keyed layer and is the

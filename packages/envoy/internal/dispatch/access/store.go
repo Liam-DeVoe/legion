@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The refusals of the reads and writes below. Each is wrapped with what it names, so a caller
@@ -42,21 +43,6 @@ const (
 	PrincipalPerson = "person"
 	PrincipalGroup  = "group"
 )
-
-// ChangedChannel is the Postgres channel each write here that can move what someone sees - a
-// project's owner, visibility or access list, a group - notifies inside its own transaction, so
-// every Dispatch process hears it once the write commits and none hears a write that did not. It
-// carries no payload: a listener reads what it needs afresh. The document service closes on it each
-// socket whose person no longer reads its room (docs: Service.recheckAccess).
-const ChangedChannel = "dispatch_access_changed"
-
-// announceChange notifies ChangedChannel in tx, which Postgres delivers if tx commits.
-func announceChange(ctx context.Context, tx pgx.Tx) error {
-	if _, err := tx.Exec(ctx, `select pg_notify($1, '')`, ChangedChannel); err != nil {
-		return fmt.Errorf("announce the access change: %w", err)
-	}
-	return nil
-}
 
 // groupName is the form of a group's name, which access_groups' own check repeats.
 var groupName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
@@ -391,7 +377,7 @@ func appendProjectChange(ctx context.Context, tx pgx.Tx, ev *events.Broker, key,
 	if err := recordProjectChanges(ctx, tx, []int64{event.ID}, principal); err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
 	}
-	if err := announceChange(ctx, tx); err != nil {
+	if err := store.AnnounceAccessChange(ctx, tx); err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
 	}
 	return access, event, nil
@@ -559,7 +545,7 @@ func PutGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name, owner str
 	if err != nil {
 		return model.AccessGroup{}, model.Event{}, fmt.Errorf("append access_group.changed: %w", err)
 	}
-	if err := announceChange(ctx, tx); err != nil {
+	if err := store.AnnounceAccessChange(ctx, tx); err != nil {
 		return model.AccessGroup{}, model.Event{}, err
 	}
 	return group, event, nil
@@ -635,7 +621,7 @@ func DeleteGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name string,
 	if err := recordProjectChanges(ctx, tx, projectEvents, name); err != nil {
 		return nil, err
 	}
-	if err := announceChange(ctx, tx); err != nil {
+	if err := store.AnnounceAccessChange(ctx, tx); err != nil {
 		return nil, err
 	}
 	return appended, nil

@@ -60,7 +60,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One person's member kind as the membership answer spells it: {person, member_kind} for ?person= (full, restricted, or none for a login nobody has signed in with); no person is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it; every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
+    /** @description One person's member kind as the membership answer spells it: {person, member_kind} for ?person= (full, restricted, or none for a login nobody has signed in with), and holder for a question naming the account the credential being checked records (&account_issuer=&account_subject=), as the project answer carries it; no person, or half an account, is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it; every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
     get: operations["getApiV1AccessPerson"];
     put?: never;
     post?: never;
@@ -77,7 +77,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The membership answer the secrets broker reads: {project, visibility, owner, person, member_kind, visible, repositories, slack_channels} for ?person= (full, restricted, or none for a login nobody has signed in with; left out, member_kind is none and visible false): whether the read rule lets that person see the project at a browser, a person with no people row read as a full member, the repositories mapped to the project by their mapped and renamed names, and slack_channels, the owner's list, [] for none. A project the person cannot see still answers 200; an unknown key is 404 PROJECT_NOT_FOUND. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
+    /** @description The membership answer the secrets broker reads: {project, visibility, owner, person, member_kind, visible, repositories, slack_channels} for ?person= (full, restricted, or none for a login nobody has signed in with; left out, member_kind is none and visible false): whether the read rule lets that person see the project at a browser, a person with no people row read as a full member, the repositories mapped to the project by their mapped and renamed names, and slack_channels, the owner's list, [] for none. With &account_issuer=&account_subject=, the Google account the credential being checked records, the answer also carries holder: false when Dispatch records another account for the person (an account of another issuer included), and then visible is false; true when it records that one or none. A project the person cannot see still answers 200; an unknown key is 404 PROJECT_NOT_FOUND; half an account, or an account with no person, is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
     get: operations["getApiV1AccessProjectsByKey"];
     put?: never;
     post?: never;
@@ -3064,6 +3064,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/metrics": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The process's Prometheus metrics, for an open viewer; a restricted member or a credential that lists projects is 403 DEPLOYMENT_READ_REFUSED. */
+    get: operations["getMetrics"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -3118,6 +3135,7 @@ export interface components {
       state: string;
     };
     AccessAnswer: {
+      holder?: boolean;
       member_kind: string;
       owner: string;
       person: string;
@@ -5711,6 +5729,7 @@ export interface components {
       title?: null | string;
     };
     PersonAnswer: {
+      holder?: boolean;
       member_kind: string;
       person: string;
     };
@@ -6557,6 +6576,10 @@ export interface operations {
     parameters: {
       query?: {
         person?: string;
+        account_issuer?: string;
+        account_subject?: string;
+        account?: string;
+        credential_created_at?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -6590,6 +6613,10 @@ export interface operations {
     parameters: {
       query?: {
         person?: string;
+        account_issuer?: string;
+        account_subject?: string;
+        account?: string;
+        credential_created_at?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -14247,6 +14274,38 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["TestHookOK"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getMetrics: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description the Prometheus text exposition format the process's metrics registry writes (metrics.Registry.Handler), not JSON */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "text/plain": unknown;
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */

@@ -74,10 +74,13 @@ func TestEveryGETRouteHasAReadClass(t *testing.T) {
 }
 
 // documentSocket stands in for the document service, so the router mounts GET /ws/doc/{room}:
-// api.Register mounts it only for a document service that serves its websocket.
+// api.Register mounts it only for a document service that serves its websocket, and refuses one
+// that does not also say how the socket's caller resolves again, which its heartbeat asks.
 type documentSocket struct{ docs.API }
 
 func (documentSocket) ServeHTTP(http.ResponseWriter, *http.Request) {}
+
+func (documentSocket) CallerResolves(*http.Request) error { return nil }
 
 // servesGET reports whether a ServeMux pattern answers a GET: one whose method is GET, and one
 // that names no method.

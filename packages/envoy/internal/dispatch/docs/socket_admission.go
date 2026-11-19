@@ -664,3 +664,14 @@ func (s *Service) requestActor(r *http.Request) (model.Actor, error) {
 	accesslog.Note(r.Context(), accesslog.KindUser, login)
 	return model.Actor{Kind: "user", ID: login}, nil
 }
+
+// CallerResolves answers whether the caller a document socket was admitted as still resolves, by
+// the one resolution its open admitted it by (requestActor): the identity service's answer and
+// nothing else. So a cookie admitted the socket and only that cookie keeps it open, whatever else
+// its request carries: a bearer beside the cookie neither keeps the socket open once the cookie's
+// session ends nor closes it while that session holds. The API asks it on every heartbeat of an
+// open document socket (api.whileCallerResolves).
+func (s *Service) CallerResolves(r *http.Request) error {
+	_, err := s.requestActor(r)
+	return err
+}

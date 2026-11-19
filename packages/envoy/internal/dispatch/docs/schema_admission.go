@@ -252,10 +252,10 @@ func (s *Service) recheckSchemaAdmissions(ctx context.Context) error {
 	return nil
 }
 
-// accessChanged is access.ChangedChannel's handler, on its room-sync lane (roomSync.handlers): an
-// owner, a visibility, an access list or a group changed, in a transaction of any process, whose
-// commit announced it. The notification names nothing, so the pass reads every socket again
-// (recheckAccess).
+// accessChanged is store.AccessChangedChannel's handler, on its room-sync lane
+// (roomSync.handlers): an owner, a visibility, an access list, a group or a person's member kind
+// changed, in a transaction of any process, whose commit announced it. The notification names
+// nothing, so the pass reads every socket again (recheckAccess).
 func (s *Service) accessChanged(ctx context.Context, _ string) {
 	s.recheckAccess(ctx)
 }

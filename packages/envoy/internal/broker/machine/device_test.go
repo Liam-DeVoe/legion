@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/broker/store"
 )
 
 // withProvider gives svc an OAuth provider on its own database whose device codes last
@@ -116,7 +117,7 @@ func TestADeviceCodePastItsLifetimeMintsNothing(t *testing.T) {
 			'{session,expires_at,user_code}', to_jsonb(now() - interval '1 second'))`); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := svc.ApplyDecision(ctx, view.RecordID, true, testApprover, code); !errors.Is(err, ErrLoginExpired) {
+	if _, _, err := applyDecision(ctx, svc, view.RecordID, true, testApprover, code, store.IssuerSubject{}, nil); !errors.Is(err, ErrLoginExpired) {
 		t.Fatalf("ApplyDecision after the device code expired = %v, want ErrLoginExpired", err)
 	}
 	var n int

@@ -65,9 +65,14 @@ func expiryOf(answer Introspection) time.Time {
 // The service is carried as the broker answered it, which is set exactly where the person is
 // not (live refuses an answer naming neither). ProjectScope is carried whole beside them,
 // because a reader deciding what the token may do needs the scope itself and not only the
-// project rule read off it.
+// project rule read off it, and so is the account the token's credential records, which the
+// cache keeps with the rest of the answer.
 func callerOf(answer Introspection) Caller {
-	caller := Caller{Session: answer.Session, Person: answer.Person, Service: answer.Service, ProjectScope: answer.ProjectScope}
+	caller := Caller{Session: answer.Session, Person: answer.Person, Service: answer.Service, ProjectScope: answer.ProjectScope,
+		AccountIssuer: answer.AccountIssuer, AccountSubject: answer.AccountSubject}
+	if answer.CredentialCreatedAt > 0 {
+		caller.CredentialCreatedAt = time.Unix(answer.CredentialCreatedAt, 0).UTC()
+	}
 	if answer.ProjectScope == ProjectScopeNamed {
 		caller.Project = answer.Project
 	}

@@ -37,8 +37,8 @@ docker buildx imagetools inspect ghcr.io/cybermonklabs/legion/envoy:<that commit
 | --- | --- | --- |
 | Postgres | `DATABASE_URL` | Required. Dispatch keeps everything here and applies its own migrations at start. Leave `pool_max_conns` out of the URL; Dispatch refuses it. |
 | A shared agent token | `DISPATCH_AGENT_TOKEN` | Required to start. A fallback credential for agents, which sees only the public projects; agents normally use personal tokens made in Settings. To change it without locking agents out, set the new value followed by the old one, separated by a space, until every agent has moved, then the new one alone. |
-| Google sign-in | `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET`, and `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` | The OpenID Connect issuer people sign in through, Dispatch's client there and that client's secret, and exactly one of: the group a person must be in, through a Cognito sign-in pool; or the Google Workspace domain whose people may sign in, with Google itself as the issuer. Required for the default cookie sign-in. [Signing people in](#signing-people-in) covers both. |
-| The browser address | `DISPATCH_SERVER_URL` | The exact address people type, such as `https://dispatch.internal.example`. Dispatch's client at the issuer lists this address followed by `/auth/callback` as a callback URL. |
+| Google sign-in | `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET`, and `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` | The OpenID Connect issuer people sign in through, Dispatch's client there and that client's secret, and exactly one of: the group a person must be in, through a Cognito sign-in pool; or the Google Workspace domain whose people may sign in, with Google itself as the issuer. Required for the default cookie sign-in. `DISPATCH_SIGNIN_OUTSIDE=1` lets the people a project names sign in from outside the domain, and `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` names the organization's other domains, whose addresses only its own accounts sign in with. [Signing people in](#signing-people-in) covers all of it. |
+| The browser address | `DISPATCH_SERVER_URL` | The exact address people type, such as `https://dispatch.internal.example`. Dispatch's client at the issuer lists this address followed by `/auth/callback` as a callback URL. `DISPATCH_OUTSIDE_ORIGIN` is a second address, for people from outside ([People from outside the domain](#people-from-outside-the-domain)). |
 | The GitHub App | `DISPATCH_APP_CLIENT_ID`, `DISPATCH_APP_PEM_B64` | `DISPATCH_APP_PEM_B64` holds the App's private key as the PEM GitHub gives or the base64 of that PEM; a key that does not parse stops boot. Without the App the server starts, but the web app's GitHub reads answer `503` and architecture sources cannot be saved. |
 | A stable session key | `DISPATCH_SIGNING_KEY` | Signs sign-in cookies and seals the issuer's refresh tokens Dispatch stores. It holds one key, or several separated by spaces: the first signs and seals, and every one is accepted, which is how the key is changed without signing anyone out ([Changing the session key](#changing-the-session-key)). When unset, Dispatch creates one under `~/.local/share/dispatch`; keep that directory on a volume, or every restart signs everyone out. Give every server the same keys when you run more than one: a server whose keys another running server does not share refuses to start ([Running more than one copy](#running-more-than-one-copy)). |
 | An Envoy listener | `ENVOY_URL` | Where the Agents page finds live agent sessions. Defaults to `http://127.0.0.1:9020`. |
@@ -102,7 +102,8 @@ start, naming what is wrong.
 The Google client to create, in the Google Cloud console of the organization whose Workspace it
 is, is a **web application** OAuth client with `<DISPATCH_SERVER_URL>/auth/callback` as an
 authorized redirect URI. Set its OAuth consent screen's user type to **Internal**, so that only the
-organization's own accounts can complete the sign-in at Google. Google accepts an `https` redirect
+organization's own accounts can complete the sign-in at Google, unless people from outside sign in
+too (below). Google accepts an `https` redirect
 whose host ends in a public suffix, or plain `http` to a loopback address such as
 `http://127.0.0.1:8766/auth/callback` for a server on your own machine. Its client ID and secret
 are `DISPATCH_SIGNIN_CLIENT_ID` and `DISPATCH_SIGNIN_CLIENT_SECRET`. Dispatch asks Google for
@@ -128,37 +129,586 @@ A person is their email address, so an address that passes from one account to a
 person to Dispatch. With Google directly, Dispatch also records the Google account (its `sub`,
 which Google never reuses) that signed in to each address: when another account signs in to the
 same address, as when a Workspace admin gives a deleted account's address to a new one, Dispatch
-ends every session of the address before it signs the new account in, and the hourly confirmation
-ends them should the refreshed sign-in name another account. Through a Cognito pool there is no
-such record: the old holder of a reassigned address keeps the sessions they already have until
-their cookie expires, 30 days after it was issued, unless the pool user is removed from
-`DISPATCH_SIGNIN_GROUP` or disabled.
+ends every session of the address and revokes every agent token made under it before it signs
+the new account in, so nothing the old account signed in or made acts as the new one; the new
+account makes its own tokens in Settings. With a secrets broker configured
+(`DISPATCH_AGENT_SECRETS_URL`), whatever member kind the old account's row held, one of your
+people or an account from outside, Dispatch also tells the broker which account it replaced, and the broker
+ends every machine login the old account approved for its own machines, every sign-in it made
+on a machine with `agent-secrets login` and every session it holds on the broker's own approval
+page, whenever it made them, with the tokens issued under them,
+and refuses it any new one, a sign-in with a Google token it got before the address moved
+included. The new account's machines are left alone, however soon after its sign-in they log in.
+If the old account gets the address back while its revocation is still owed, Dispatch drops that
+revocation, so nothing the old account makes after taking the address back is ended, unless a call
+to the broker for it was already under way, and revokes only the account it took the address back
+from.
+Dispatch tries again every 30 seconds until the broker confirms. A broker token names the Google
+account the broker recorded for it, the account that signed in on the machine or approved the
+machine login, and Dispatch holds each token to that account: the new account's own tokens act
+throughout, the old account's are refused from the commit of the new account's sign-in, and a
+token of an account Dispatch does not record for its address acts only once that account has
+signed in to Dispatch. A token from a sign-in or machine login made before the broker recorded
+accounts names none and might be either account's, so Dispatch holds it to when the broker made
+that sign-in or login: made before the new account signed in to Dispatch, or less than five
+minutes after (the broker's clock and Dispatch's are two, and a skew refuses), it is refused for
+good; made later, it acts. A personal token that names no account is held to its own creation
+time the same way. Nothing waits on the broker's revocation for any of this. Deploy the broker
+that serves this before Dispatch, and set `DISPATCH_AGENT_SECRETS_URL` on every Dispatch process:
+a process without it records no revocation, so a replacement it serves is never revoked at the
+broker, where the old account's machine logins would go on reading secrets. A revocation the
+broker never confirms shows on `/metrics`
+(`envoy_dispatch_broker_revocation_oldest_owed_seconds` past a few minutes), one it answered
+`superseded` on `envoy_dispatch_broker_revocations_superseded_total` (below), and
+`envoy-dispatch clear-broker-revocation <email>` lists what is owed and, given the names it lists,
+settles those without the broker, so revoke the old account's machine logins at the broker first.
+A revocation settled without the broker, by that command or by a statement written by hand, tells
+the broker nothing, and the old account's credentials go on reading secrets there. It also leaves
+the broker refusing the account the address came back to, when the broker had recorded that
+account replaced: a revocation names the account that holds the address, and the broker stops
+refusing that account only when a revocation naming it reaches it. To have the server's loop pay
+it after all, which recovers both, record it again, naming the account the address records now
+as its holder, with the address as Dispatch holds it, the issuer and the replaced account's `sub`:
 
-Moving a deployment from the Cognito pool to a domain needs no session-generation bump: the first
-sign-in under the domain records a subject the address's row did not hold before, which ends
-every session of the address by itself (the same check that ends a reassigned address's sessions,
-above). It still needs the refresh-token step: revoke everyone's refresh tokens at the pool (a
-global sign-out, or disabling the app client), then clear any still stored in plain text —
-`update people set refresh_token = null, confirmed_at = null where refresh_token not like 'v1:%'`
-— before the cutover: domain mode's own retirement sends such a row's token to Google's
-revocation endpoint instead, which cannot revoke a token Google never issued, and logs an ERROR
-every boot until the row is cleared or its person signs in again. A person's own next sign-in
-under the domain overwrites their sealed pool token anyway, but someone who never signs in again
-keeps theirs in `people` indefinitely, still redeemable at the pool until it is revoked there.
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v email='<address>' -v issuer='https://accounts.google.com' -v subject='<the replaced sub>' <<'SQL'
+begin;
+select generation from user_sessions where login = :'email' for update;
+update broker_revocations set generation = generation + 1, holder_subject = (select sub from people where people.email = broker_revocations.email), session_generation = (select generation from user_sessions where user_sessions.login = broker_revocations.email), done_at = null, recorded_at = clock_timestamp() where email = :'email' and issuer = :'issuer' and subject = :'subject';
+commit;
+SQL
+```
 
-Moving the other way, from a domain back to the Cognito pool, needs both steps: the group sign-in
-path never records or compares a subject, so nothing ends the domain sessions on its own, and it
-never clears the recorded subject either. Revoke the refresh tokens at Google (remove the
-client's access), then clear them in Dispatch's database, clear the recorded subject along with
-them, and end every browser session,
-`update people set refresh_token = null, confirmed_at = null, sub = null; update user_sessions set generation = generation + 1`,
-and start Dispatch with the new settings. Skipping the session step there leaves a cookie issued
-before the switch valid: the first sign-in under the pool records a fresh confirmation for the
-address, and that cookie's generation still matches. Skipping the `sub` clear leaves a later
-return to domain mode unprotected: the same Google account signing in again finds its own
-`sub` still on the row, so nothing ends sessions a pool-era cookie still held. Everyone then signs
-in again under the new issuer; a refresh token left from the old one would be refused at the
-first hourly confirmation, and is still redeemable at the old issuer until it is revoked there.
+(`store.TestARevocationSettledByItselfIsPaidOnceRecordedAgain` runs this block.) The database
+holds a revocation to its writers and refuses every other write, its deletion included (migration
+`20261118152422`): a recording, like this one, names its holder, which must be the account the
+address records, and its session generation, which must be the address's own; a pass's claim
+stamps when it was tried; and only a settlement, like the command's, leaves one unpaid. The block
+locks the address's `user_sessions` row first, so a sign-out at the same moment waits for it,
+rather than moving the generation between the statement's read of it and the database's own
+check, which would refuse the statement.
+
+A machine login's approve or deny made through Dispatch reaches the broker only while its sender
+still holds the address, checked again once the request's body has arrived, however long the
+sender held the body back, so the old account can neither approve a machine login under the address
+nor deny one of the new account's.
+The hourly confirmation ends the sessions should the
+refreshed sign-in name another account. Through a Cognito pool there is no such record: the old
+holder of a reassigned address keeps the sessions they already have until their cookie expires,
+30 days after it was issued, unless the pool user is removed from `DISPATCH_SIGNIN_GROUP` or
+disabled, and keeps their agent tokens until someone revokes them.
+
+The broker refuses an account it was told no longer holds an address until a later revocation
+names that account as the holder, which only a sign-in to Dispatch that replaces another account
+sends. A statement written by hand that sets `people.sub` back to such an account, rather than the
+account signing in, skips the revocation that sign-in would have recorded, and that leaves a
+credential acting. Say A held the address and B took it: writing A back records no revocation of
+B, so B's machine logins and sign-ins stay live at the broker, which serves them secrets without
+asking Dispatch, and the broker goes on refusing A. To recover, do on Dispatch's database what that
+sign-in would have done, with the address as Dispatch holds it, the issuer and the `sub` the
+statement overwrote: settle every revocation still owed for the account the address records now
+(A), as a sign-in that takes an address back does, so the loop never pays one that would end what
+A holds; then record the revocation of the account the statement replaced (B), naming A as its
+holder, exactly as a sign-in records one. The block locks the address's `user_sessions` row
+first, as the one above does:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v email='<address>' -v issuer='https://accounts.google.com' -v subject='<the sub the statement overwrote>' <<'SQL'
+begin;
+select generation from user_sessions where login = :'email' for update;
+update broker_revocations set done_at = now() where email = :'email' and issuer = :'issuer' and subject = (select sub from people where people.email = :'email') and done_at is null;
+insert into broker_revocations (email, issuer, subject, holder_subject, recorded_at, session_generation) values (:'email', :'issuer', :'subject', (select sub from people where people.email = :'email'), clock_timestamp(), (select generation from user_sessions where user_sessions.login = :'email')) on conflict (email, issuer, subject) do update set generation = broker_revocations.generation + 1, holder_subject = excluded.holder_subject, recorded_at = excluded.recorded_at, session_generation = excluded.session_generation, done_at = null;
+commit;
+SQL
+```
+
+The server's loop then pays it: the broker ends B's credentials and, since a revoke naming A as the
+holder deletes its record of A, stops refusing A
+(`store.TestAnAccountWrittenBackByItselfIsRecoveredByRecordingTheSkippedRevocation` runs this
+block). A statement that records an account where the address recorded none overwrote no
+`sub`, and this recovery does not cover it: the first sign-in would also have revoked the address's
+personal tokens that recorded another account or none, and recorded a revocation of each other
+account, which nothing then records.
+
+Every block below that reads the broker's database reaches it with `psql`, which takes libpq's
+URL, while `BROKER_DATABASE_URL` is the broker's own, pgx's: a deployment sets `pool_max_conns`
+on it to size the broker's pool, and libpq refuses a URI parameter it does not know
+(`invalid URI query parameter`), so `psql "$BROKER_DATABASE_URL"` reads nothing and the sweep
+below would print `UNKNOWN: the broker database could not be read` for a reason that has nothing
+to do with the broker. So make a libpq URL once, from the broker's own, and use it where a block
+names `$BROKER_PSQL_URL`:
+
+```sh
+BROKER_PSQL_URL=$(printf '%s' "$BROKER_DATABASE_URL" | sed -E 's/(\?|&)pool_[a-z_]+=[^&]*/\1/g; s/&&+/\&/g; s/\?&/?/; s/[?&]$//')
+export BROKER_PSQL_URL
+```
+
+Those `pool_` parameters are the only ones the broker's deployment adds that libpq does not take;
+a URL without them is left as it is.
+
+A refusal the operator chooses to lift by itself, of an account the address records again, is
+cleared on the broker's database instead; it lifts that refusal and ends nothing, so it is no
+recovery from the write above. First check on Dispatch's database that the address records the
+account (`select sub from people where email = '<address>'`), then delete the broker's record of
+it on the broker's database, with the address in lowercase, the issuer as the broker spells it
+(`https://accounts.google.com`) and the account's `sub`. The broker refuses a delete from that
+table unless the deleting transaction first names the one row it deletes, by its own transaction
+id, in `broker.replaced_subject_delete`, as a JSON array of the transaction id, the address, the
+issuer and the `sub`, so the clear is one transaction that sets that marker for the row the
+operator chose to clear and then deletes it; a delete without the marker is refused:
+
+```sh
+psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -v person='<address>' -v issuer='https://accounts.google.com' -v subject='<sub>' <<'SQL'
+begin;
+select set_config('broker.replaced_subject_delete', jsonb_build_array(pg_current_xact_id()::text, :'person', :'issuer', :'subject')::text, true);
+delete from replaced_person_subjects where person = :'person' and issuer = :'issuer' and subject = :'subject';
+commit;
+SQL
+```
+
+The account's next sign-in trade at the broker then goes through
+(`store.TestAnOperatorsClearLetsAReplacedAccountTradeAgain` runs this block).
+
+Reset or restore Dispatch's database and the broker's together, never one alone, or replaced
+accounts keep live broker credentials: to reset, drop both, create both empty, and let each server
+migrate its own; to restore, restore both from backups taken at one moment. A Dispatch database
+made again starts every address's session generation over at 1, and one restored from a backup to
+an earlier point holds the lower generations it held then, while a broker database kept holds the
+generations its revokes recorded since. The broker then refuses every approve at such an address
+`403 APPROVER_REPLACED`, as checked before a replacement, and answers every revocation there
+`superseded`, ending nothing, so the accounts those revocations name keep their broker
+credentials, until the address's generation reaches the one the broker recorded. A broker
+database made again beside a Dispatch database kept has forgotten every refusal and every
+replacement Dispatch already paid, and is recovered like a broker database restored alone, with
+`-infinity` for the backup's moment (below).
+
+`envoy_dispatch_broker_revocations_superseded_total` counts each answer `superseded` the broker
+gives a revocation still owed, which Dispatch leaves owed, so the owed gauges above show it too,
+and logs at ERROR with the address, the replaced account's `sub`, both generations the broker
+compared and the address's generation at Dispatch now; the loop tries it again after its retry
+window, and the broker answers the same until the recovery below. Alert on the counter being above
+zero (`envoy_dispatch_broker_revocations_superseded_total > 0`), not on its `rate()`: it writes no
+sample until its first count, and any count is a broken pair. While the two databases agree,
+Dispatch's loop never hears that answer for a row still owed. It means Dispatch's session
+generation for the address is below the one the broker recorded (a Dispatch database recreated or
+restored alone, or a generation written by hand at either), and the broker ended nothing: the
+replaced account's broker credentials are still live, reading secrets the broker serves without
+asking Dispatch.
+
+The counter finds only an address that owes a revocation. An address whose generation at
+Dispatch is below the broker's with nothing owed has every approve refused `APPROVER_REPLACED`,
+and nothing counts it. So first sweep every address. This reads the generation the broker
+recorded for each address on the broker's database, compares it with Dispatch's on Dispatch's
+database, and lists every address below the broker's, owed or not; it writes nothing. The
+broker's rows reach Dispatch's `psql` through a file its own `\copy` reads, never as an argument:
+the kernel refuses a single argument longer than 128 KiB (`E2BIG`), which about 1,800 addresses
+reach. They are copied as CSV, the form `psql --csv` writes, so an address holding a comma, a
+quote or a backslash arrives as it left. The here-document is unquoted, since `\copy` takes the
+rest of its line as written and expands no psql variable, so the shell puts the file's name in;
+nothing else in the block is the shell's to expand. It prints `UNKNOWN` when it read no
+generation at the broker, which is no all-clear:
+
+```sh
+(
+set -o pipefail
+rows=$(mktemp) || exit 1
+trap 'rm -f "$rows"' EXIT
+psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At --csv -c "select person, session_generation from person_replacement_generations order by person" > "$rows" || { echo 'UNKNOWN: the broker database could not be read'; exit 1; }
+if [ ! -s "$rows" ]; then echo 'UNKNOWN: the broker database holds no recorded generation, so nothing was compared'; exit 1; fi
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
+create temp table broker_generations (person text, session_generation bigint);
+\copy broker_generations from '$rows' with (format csv)
+select b.person, b.session_generation as broker_generation, greatest(coalesce(u.generation, 0), coalesce(f.generation, 0)) as dispatch_generation from broker_generations b left join user_sessions u on u.login = b.person left join session_generation_floors f on f.login = b.person where greatest(coalesce(u.generation, 0), coalesce(f.generation, 0)) < b.session_generation order by b.person;
+SQL
+)
+```
+
+An address with no session row is listed at `0`, and so is one whose floor is below the broker's:
+the floor is the generation its first session row starts at (`session_generation_floors`,
+migration `20261119060414`), which the raise below writes, so an address the recovery has already
+handled is not listed again.
+
+Then take each address it lists, all of the address's revocations in one pass. Read, on the
+broker's database, the generation it recorded for the address:
+
+```sh
+psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -v person='<address>' <<'SQL'
+select session_generation from person_replacement_generations where person = :'person';
+SQL
+```
+
+and every account it refuses there, by `sub`:
+
+```sh
+psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -v person='<address>' <<'SQL'
+select subject from replaced_person_subjects where person = :'person' order by subject;
+SQL
+```
+
+and every account that still holds a live credential there and is not one it refuses, by `sub`: a
+sign-in of the person on a machine, a session of theirs on the broker's approval page, or a
+machine login of their own machines that the account approved. These are the accounts the broker
+would go on serving secrets to, each one Dispatch no longer knows of after a restore:
+
+```sh
+psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -v person='<address>' -v issuer='https://accounts.google.com' <<'SQL'
+select distinct a.subject from (select subject from person_signins where person = :'person' and revoked_at is null and issuer = :'issuer' and subject is not null union select subject from browser_sessions where login = :'person' and issuer = :'issuer' and subject is not null union select c.approver_subject from launcher_credentials c join credential_requests r on r.id = c.record_id and r.kind = 'launcher_credential' where r.approver = :'person' and c.service is null and c.revoked_at is null and c.approver_issuer = :'issuer' and c.approver_subject is not null) a(subject) where not exists (select 1 from replaced_person_subjects p where p.person = :'person' and p.issuer = :'issuer' and p.subject = a.subject) order by a.subject;
+SQL
+```
+
+On Dispatch's database, read the account the address records, and list every revocation it owes:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -At -v email='<address>' <<'SQL'
+select sub from people where email = :'email';
+SQL
+envoy-dispatch clear-broker-revocation '<address>'
+```
+
+Raise the address's session generation on Dispatch's database past every generation the lost
+history can have issued: the generation the broker recorded plus a million. Raising to exactly
+the broker's number would end fewer sessions than it reads as. A cookie carries its address and a
+generation, and a sign-in is admitted while the two match, so the cookies the replacement the
+broker's number came from issued — each carrying that very number, one its holder's sign-out
+ended included — would all match again on a database restored to before it, and every later step
+of the generation would revive the next lot in turn. A million is past every generation the lost
+history can have reached, short of an address whose generation moved a million times after the
+broker's last replacement, and the broker takes it as readily as its own number, since both are
+at or above the one it recorded. The second statement writes the same number as the address's
+floor, the generation its session row starts at: an address with no session row has nothing to
+raise, and no row can be made by hand (`user_sessions_login_fkey` needs a `people` row, which
+only a sign-in makes), so without the floor its first sign-in would start at 1, below the
+broker's, with every approve there refused `APPROVER_REPLACED` and nothing counting it. Each
+statement takes the greater of what it finds and the new number, so running the block again
+raises nothing:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v email='<address>' -v broker_generation='<the generation the broker recorded>' <<'SQL'
+update user_sessions set generation = greatest(generation, :'broker_generation'::bigint + 1000000) where login = :'email';
+insert into session_generation_floors (login, generation) values (:'email', :'broker_generation'::bigint + 1000000) on conflict (login) do update set generation = excluded.generation where excluded.generation > session_generation_floors.generation;
+SQL
+```
+
+Then decide which Google account holds the address now. Where the broker refuses no account the
+address records, Dispatch's record of it stands. Where the broker refuses the account `people`
+records, the two disagree and only the identity provider settles it, since the broker's refusal
+is as likely to be the stale side as Dispatch's row: a take-back whose revocation the lost
+database still owed leaves the broker refusing the account that holds the address now. So read
+which account holds the address in the Workspace directory, whose user `id` is the Google `sub`
+an ID token carries, with a token holding
+`https://www.googleapis.com/auth/admin.directory.user.readonly`. The token goes in a file curl
+reads the header from, never in the command's arguments, which every user of the box reads from
+`/proc/<pid>/cmdline` while it runs, as the machine-login sweep below does with its own token:
+
+```sh
+header=$(mktemp) || exit 1
+trap 'rm -f "$header"' EXIT
+printf 'Authorization: Bearer %s\n' "$DIRECTORY_TOKEN" >"$header"
+curl -sS --fail-with-body -H @"$header" "https://admin.googleapis.com/admin/directory/v1/users/<address>?projection=basic&viewType=admin_view" | jq -r '.id'
+```
+
+The directory answers `404` for an address that is no account of the organization (someone from
+outside the domain, [People from outside the domain](#people-from-outside-the-domain)). Ask that
+person to sign in, read the account the address records again, and take the branch below for what
+it then records: a sign-in by another account records that replacement itself, and one by the
+same account shows the broker's refusal is the stale side.
+
+**The account the address records holds it** — the broker refuses no account the address records,
+or the directory names the account it records. Then every account the live read listed holds
+credentials it should not, and the broker's refusal of the address's own account, if there is
+one, is the stale side. Do not revoke the address's personal tokens: they are the holder's.
+Settle every revocation the address owes whose `sub` the broker already refuses, which the broker
+applied after the backup, with `envoy-dispatch clear-broker-revocation`; and record a revocation
+of every other account — each the live read listed, and each other revocation the address owes,
+a row carrying no session generation included — with the written-back recovery above, which names
+the account the address records as the holder at the raised generation. The loop pays each: the
+broker ends that account's credentials, and, since a revoke names the holder, deletes its record
+of the holder, which lifts the refusal of the address's own account.
+
+If that records nothing at all, because the live read listed no account and the address owes
+nothing, and the broker still refuses the account the address records, lift that refusal with the
+broker clear above, which ends nothing.
+
+**Another account holds it** — the directory names an account the address does not record. Then
+Dispatch's row is stale: the database was restored to before the broker applied a later
+replacement of the account it records. Record no revocation of the address yet: each would name
+the stale account as its holder, and the broker would stop refusing the account the address was
+taken from. Instead, in one pass, revoke the address's personal tokens, which the restore may
+have brought back, and settle every revocation the list above printed with a session generation of
+its own, naming each as the list printed it. Leave the one the list prints `session generation
+none` owed: the broker refuses such a revoke on every call
+(`400 SESSION_GENERATION_REQUIRED`), so nothing applied it, and settling it would tell the broker
+nothing and lose the record that it is owed:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v email='<address>' <<'SQL'
+update agent_tokens set revoked_at = now() where canonical_login(owner) = :'email' and revoked_at is null;
+SQL
+envoy-dispatch clear-broker-revocation '<address>' '<subject>:<the generation the list printed>'...
+```
+
+Then leave the address to its holder's next sign-in: that sign-in replaces the stale account at a
+generation the broker applies, which ends the stale account's credentials at the broker and lifts
+the holder's own refusal. After it, run the live read again and record a revocation of each
+account it lists that is not the account the address records then, and record again any
+revocation still owed that carries no session generation, both with the written-back recovery
+above.
+
+`api.TestARestoredStaleHolderStaysRefusedAtTheBroker` runs the sweep, the reads and both branches
+from this page against Dispatch's database and a real broker's,
+`api.TestTheSweepListsEveryAddressBelowTheBrokers` the sweep alone,
+`api.TestAnAddressWithNoSessionRowStartsAtTheBrokersGeneration` the raise at an address with no
+session row, and `store.TestADispatchGenerationBelowTheBrokersIsRaisedToIt` the raise and the
+record-again.
+
+The other way round, when it is **the broker's database that was restored alone**, nothing above
+finds it: every revocation Dispatch paid before the restore is settled at Dispatch, so the loop
+claims none, the owed gauges and the superseded counter read zero, and the sweep lists no
+address, since Dispatch's generations are at or above the restored broker's. The broker, though,
+holds again every sign-in on a machine, machine login and approval-page session of the accounts
+those revocations named, and no record refusing them: each reads the secrets the broker serves
+without asking Dispatch. Dispatch refuses them itself from the replacing commit
+(`brokerAccountReplaced`), so this is about the broker's own secrets.
+
+So tell the broker again every revocation Dispatch settled at or after the moment the broker's
+backup was taken, less an hour. The hour is a margin, and the comparison needs one: the moment
+comes from the backup's own record, on another server's clock and often rounded to the minute or
+written as the backup's end rather than its snapshot point, while `done_at` is Dispatch's
+database's `now()`. A revocation the broker applied just after the snapshot, settled at Dispatch
+a few seconds before the moment as written, would otherwise be left out, and that account keeps
+its credentials at the broker with no gauge showing it. Telling the broker of a revocation it
+already holds costs one call and ends nothing: it answers the account already replaced, raises
+no generation and names the same holder. So the margin only has to cover the skew, and an hour
+covers a rounded moment too; widen it where the two clocks are further apart than that, or where
+the backup's moment is less exact.
+
+A broker database **made again**, rather than restored, has no such moment: it has forgotten
+every refusal and every replacement. Give the block `-infinity`, so it records again every
+revocation Dispatch has ever settled, and the loop tells the broker each. That is the whole of
+its recovery; nothing else below applies to it.
+
+The block records each again at its next generation, naming the account the address records now
+as its holder and the address's session generation, exactly as the record-again block above does
+for one row, and leaves alone a row whose account holds the address again (the broker must not be
+told that the holder was replaced) and one at an address that records no account. It locks the
+session row of every address it will write first, as the single-row blocks do, so a sign-out at
+one of those addresses waits for it rather than moving a generation between this statement's read
+of it and the database's own check, which would refuse the whole statement with 23514:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v backup='<the moment the broker''s backup was taken>' <<'SQL'
+begin;
+select u.generation from user_sessions u where u.login in (select r.email from broker_revocations r where r.done_at >= :'backup'::timestamptz - interval '1 hour') order by u.login for update;
+update broker_revocations set generation = generation + 1, holder_subject = (select sub from people where people.email = broker_revocations.email), session_generation = (select generation from user_sessions where user_sessions.login = broker_revocations.email), done_at = null, recorded_at = clock_timestamp() where done_at >= :'backup'::timestamptz - interval '1 hour' and (select sub from people where people.email = broker_revocations.email) is not null and (select sub from people where people.email = broker_revocations.email) <> broker_revocations.subject;
+commit;
+SQL
+```
+
+The loop then pays each, and the broker ends those accounts' credentials and refuses them again
+(`api.TestABrokerRestoredAloneIsRecoveredByTellingItAgainWhatWasSettledSince` runs this block
+against a real broker restored behind Dispatch). It recovers nothing the broker's backup already
+holds, and nothing of an address whose account changed at Google while the broker was down: for
+that, sweep as above once the broker is back. A revocation an operator settled by hand with
+`clear-broker-revocation` is recorded again too, which is right — the broker was never told —
+unless the account it names holds the address again, which the statement leaves out.
+
+A revocation an earlier head of this branch recorded holds no session generation, and the broker
+refuses a revoke without one (`400 SESSION_GENERATION_REQUIRED`), so the loop's ERROR line for it
+repeats each retry. It holds back no other revocation of its address; record it again with the
+record-again block, which gives it the address's generation.
+
+Moving a deployment between the Cognito pool and a domain, either way, ends every browser session
+and clears the refresh tokens at the cutover, and keeps the recorded Google accounts: the database
+refuses taking a recorded account off `people.sub` (migration `20261118041916`'s
+`people_binding_columns`, which replaced `20261117175133`'s trigger). Run each statement on its
+own, so a refusal of one does not undo another.
+
+From the Cognito pool to a domain: first end sign-in through the pool and the refresh tokens it
+issued, with two calls in this order, since no one Cognito call is documented to do both. Deleting
+Dispatch's app client stops sign-in through it: "After you delete an app client, users can no
+longer sign in to the associated application" (`DeleteUserPoolClient`,
+<https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_DeleteUserPoolClient.html>),
+but that page says nothing of the refresh tokens already issued. Signing each user out ends those:
+"Amazon Cognito no longer accepts a signed-out user's refresh tokens in refresh requests"
+(`AdminUserGlobalSignOut`,
+<https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_AdminUserGlobalSignOut.html>),
+but it leaves sign-in working, so it comes second. It ends every token the pool issued the user,
+for every app client of the pool, not Dispatch's alone. The pool's id is the last part of
+`DISPATCH_SIGNIN_ISSUER`, and a later return to the pool needs a new app client:
+
+```sh
+pool='<the pool id, the last part of DISPATCH_SIGNIN_ISSUER>'
+aws cognito-idp delete-user-pool-client --user-pool-id "$pool" --client-id '<DISPATCH_SIGNIN_CLIENT_ID>'
+aws cognito-idp list-users --user-pool-id "$pool" --query 'Users[].Username' --output text | tr '\t' '\n' |
+while read -r user; do
+  aws cognito-idp admin-user-global-sign-out --user-pool-id "$pool" --username "$user" || echo "NOT SIGNED OUT $user"
+done
+```
+
+Then stop every Dispatch process still running in pool mode, and only once the last has exited run
+the statements below and end the pool-era machine logins (further down), all before any Dispatch
+process starts with the new settings: a pool-mode process that serves after them can sign someone
+in through the pool at the new session generation, mint a personal token that records no account,
+or relay an approve that names none, and nothing here would end what it made. The statements clear
+the refresh tokens still stored in plain text, end every browser session, and revoke every personal
+token that records no Google account:
+
+```sql
+update people set refresh_token = null, confirmed_at = null where refresh_token not like 'v1:%';
+update user_sessions set generation = generation + 1;
+update agent_tokens set revoked_at = now() where subject is null and revoked_at is null;
+```
+
+Domain mode's own retirement would send a plain-text pool token to Google's revocation endpoint,
+which cannot revoke a token Google never issued, and log an ERROR every boot until the row is
+cleared or its person signs in again. A person's own next sign-in under the domain overwrites their
+sealed pool token anyway, but someone who never signs in again keeps theirs in `people`
+indefinitely, still redeemable at the pool until it is revoked there. Ending the sessions ends every
+pool-era cookie, whatever account the address's row records: an address that records no account
+has its sessions ended again by its first Google sign-in, and one that records an account from an
+earlier time in domain mode keeps it, with the time it was first recorded, so the same Google
+account signing in again is no replacement.
+
+That kept account is why the third statement is there. A personal token minted under the pool
+records no account, and it was minted after that recording, so without the statement Dispatch
+would admit it on the return and bind it to the recorded account: its approves would be relayed
+naming that account, though whoever the pool signed in as the address minted it. The statement
+revokes every personal token that records no account, those from before Dispatch recorded
+accounts on tokens included, which is what the first recording at the return did when the switch
+cleared `people.sub` (Dispatch then refused every token recording no account made before it); each
+person mints a new one once signed in. A token that records an account is untouched: Dispatch
+refuses one that records another account than the address's.
+
+The secrets broker serves a machine login without asking Dispatch, and a machine login approved
+under the pool records no approving account, since a pool-era approve names none. No statement
+here ends it, and neither did the step that cleared `people.sub`: it goes on reading the secrets
+its person may read. The broker has no call that ends every such login at once, so list them on
+the broker's database and revoke each as its approver, with the call Dispatch's machine-login page
+makes (**Revoke** on that page, signed in as the approver, ends them one at a time). The call takes
+the broker's URL, which Dispatch's `DISPATCH_AGENT_SECRETS_URL` holds, and a token of Dispatch's
+own ServiceAccount for the broker's audience (`BROKER_K8S_OIDC_AUDIENCE`), the kind of token
+Dispatch reads from `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE`. Mint one for the run: the broker
+refuses a token that lives longer than an hour (`ACCOUNT_TOKEN_TOO_LONG_LIVED`) and one that has
+expired (`ACCOUNT_TOKEN_EXPIRED`), so a list that takes longer needs another. The block runs in a
+subshell that keeps the token off every command line: it is written into a header file only the
+operator can read, which curl reads with `-H @file`, and the file is removed when the subshell
+ends, whether or not it fails. Each call that fails prints `NOT REVOKED <id>` after the broker's
+answer, and the last step reads the list again:
+
+```sh
+(
+umask 077
+header=$(mktemp) || exit 1
+trap 'rm -f "$header"' EXIT
+broker_url='<the URL in DISPATCH_AGENT_SECRETS_URL>'
+token=$(kubectl -n '<the namespace Dispatch runs in>' create token '<the ServiceAccount Dispatch runs as>' --audience '<the audience in BROKER_K8S_OIDC_AUDIENCE>' --duration 1h) || { echo 'no token was minted'; exit 1; }
+printf 'Authorization: Bearer %s\n' "$token" >"$header"
+unended() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select c.id, r.approver from launcher_credentials c join credential_requests r on r.id = c.record_id and r.kind = 'launcher_credential' where c.service is null and c.revoked_at is null and c.approver_subject is null"; }
+unended | while read -r id approver; do
+  curl -sS --fail-with-body -w '\n' -X POST -H @"$header" -d "{\"approver\":\"$approver\"}" "$broker_url/v1/launcher-credentials/$id/revoke-by-approver" || echo "NOT REVOKED $id"
+done
+if left=$(unended); then
+  if [ -z "$left" ]; then echo 'no machine login records no approving account'; else printf 'STILL LIVE:\n%s\n' "$left"; false; fi
+else
+  echo 'the broker database could not be read, so what is left is unknown'; false
+fi
+)
+```
+
+Only the first answer of the last step means done. `STILL LIVE` lists, by id and approver, each
+login no call ended, and the `NOT REVOKED` lines above give the broker's answer for it: for
+`ACCOUNT_TOKEN_EXPIRED` mint another token, for any other answer fix what it names, then run the
+whole block again until it answers `no machine login records no approving account`. An answer
+that the database could not be read says nothing about the logins: run it again once
+`$BROKER_DATABASE_URL` connects.
+
+That ends every person's machine login that records no approving account, those from before the
+broker recorded approving accounts (its migration 0032) included, with every session each
+enrolled; each machine logs in again (`agent-secrets machine login`) and its person approves the
+new code. A service's login, the Legion daemon's, is not among them. Until it runs, whoever the
+pool signed in as an address during the pool era keeps the machines that person logged in reading
+the address's secrets.
+
+From a domain back to the Cognito pool: revoke the refresh tokens at Google (remove the client's
+access). Then stop every Dispatch process still serving in domain mode, and only once the last has
+exited clear the tokens in Dispatch's database and end every browser session, before any Dispatch
+process starts with the new settings: a domain-mode process that serves after the statements can
+issue a cookie at the new session generation, which pool mode would then accept:
+
+```sql
+update people set refresh_token = null, confirmed_at = null;
+update user_sessions set generation = generation + 1;
+```
+
+and start Dispatch with the new settings. The group sign-in path never records or compares an
+account, so nothing would end the domain sessions on its own: skipping the session step leaves a
+cookie issued before the switch valid, since the first sign-in under the pool records a fresh
+confirmation and that cookie's generation still matches. The recorded accounts stay, unread under
+the pool, and a later return to domain mode ends the pool-era sessions, personal tokens and
+machine logins with the steps above. Everyone then signs in again under the new issuer; a refresh
+token left from the old one would be refused at the first hourly confirmation, and is still
+redeemable at the old issuer until it is revoked there.
+`store.TestTheModeSwitchRunsOnTheGuardedSchema` runs the five statements, in both directions,
+against the guarded schema.
+
+### People from outside the domain
+
+With Google directly, `DISPATCH_SIGNIN_OUTSIDE=1` also signs in a person whose Google account is
+outside the domain, as a **restricted member**, while a project they are to work on names them:
+the project's owner is that email, or its owner put the email on the project's access list. A
+group on an access list never admits such a person; only the email itself does. Their Google
+account's email must be verified, and an address on a domain the organization owns that is not
+one of the organization's own accounts is refused, with a page saying that such an address signs
+in only as an account of the organization. The organization's domains are `DISPATCH_SIGNIN_DOMAIN`
+and those `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists, comma-separated, such as
+`example.net,example.org`, each with its subdomains. Write an internationalized domain in Unicode,
+such as `bücher.example`, or as its A-labels, `xn--bcher-kva.example`: the two are the same domain,
+and an address written either way is on it. List every other domain the organization
+owns: then a personal Google account holding one of your people's addresses cannot sign in with
+it, even before your person ever has. Your own people sign in at an address on any of them as
+before, and without `DISPATCH_SIGNIN_OUTSIDE=1` the setting changes nothing. On a domain the
+organization owns that the setting does not list, an outside account still never takes the
+address of one of your people once they have signed in with it: it reaches a page saying the
+address belongs to a member of the organization, and your person stays signed in. An outside
+account that signed in with such an address before your person first did loses it at that first
+sign-in: Dispatch signs it out and revokes every agent token it made, so none of them acts as your
+person. An account from outside the organization holds no machine login at the secrets broker, so
+the machine logins your person made there are kept. Someone outside the domain whom no list names
+reaches a page saying that no project's
+access list names them. Dispatch checks again at least hourly, as for everyone, and signs the
+person out once no list names them, once their address is on a domain the organization owns
+(including one you add to `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` later), or once the setting is off.
+The sign-in page they then reach says why: that no project's access list names their address any
+more, that their address signs in only as an account of the organization, or that Dispatch no
+longer signs in accounts from outside the domain. The API's `401 NO_IDENTITY` says the same, as a
+`reason` of `NOT_LISTED`, `WORKSPACE_ADDRESS` or `OUTSIDE_SIGNIN_OFF` beside their address as
+`login`. A person who signs out, or whose sign-in simply expires, is told nothing more, and a
+deployment that never sets `DISPATCH_SIGNIN_OUTSIDE` answers as it always did.
+
+The agent tokens such a person makes in **Settings → Agent tokens**, and the tokens the secrets
+broker issues to their agents, follow the very rule that signs the person in, checked at every
+request rather than hourly: a token stops at once when the setting is off, when its owner's
+address is on a domain the organization owns (including one you add to
+`DISPATCH_SIGNIN_WORKSPACE_DOMAINS` later), or when no project names its owner any more, and the
+answer is `401 TOKEN_OWNER_NOT_ADMITTED`, saying which. None of these revokes the token, so it
+works again once all hold again; only another account's sign-in to the address revokes the
+Settings tokens, as above, after which each answers `401 TOKEN_REVOKED`. Your own people's tokens
+are not affected.
+
+For this the Google client's consent screen's audience is **External**. Dispatch asks for
+`openid`, `email` and `profile` alone, so the app can stay in Testing status with no list of test
+users, and its sign-ins do not lapse after seven days. Dispatch then names no domain to Google's
+chooser, so a person from outside sees their own accounts; your own people see every account in
+their browser and pick their organization's one.
+
+People from outside reach Dispatch however the deployment lets them, at its second address,
+`DISPATCH_OUTSIDE_ORIGIN`, such as `https://dispatch-outside.example.com`: an `https` address with no
+path, on another host than `DISPATCH_SERVER_URL`. Google must accept its callback as a redirect
+URI, so its host is a DNS name, not an IP address, whose top-level domain is on the public suffix
+list; Dispatch refuses to start with any other. A request to that host is answered as that
+address: the sign-in comes back to `<DISPATCH_OUTSIDE_ORIGIN>/auth/callback`, which the Google
+client lists as a second redirect URI, and a write from a page there must come from that address.
+A link to a Dispatch page written on either address opens on the address the reader is on.
 
 ## Changing the session key
 
@@ -428,7 +978,11 @@ itself.
 
 ## Metrics
 
-`GET /metrics` needs no credential either, so whoever reaches the server's HTTP port can read it.
+`GET /metrics` needs a credential, as every route but sign-in, `/healthz`, `/livez` and the
+dashboard's own files does: a caller that sees every public project reads it, the deployment's
+shared agent token among them, and a restricted member or a credential that lists its projects
+is refused `403 DEPLOYMENT_READ_REFUSED`. A caller with no credential is refused `401`, whatever
+address or network it comes from.
 It answers in the Prometheus text format with two counters.
 `envoy_dispatch_outbox_publish_failures_total` counts each destination of an event publish that
 was not reached, labelled `reason`. `denied` is a publish NATS refused under the server's own
@@ -647,5 +1201,6 @@ where not exists (select 1 from architecture_sources s where s.project_key = c.p
 
 ## The HTTP API
 
-`GET /api/v1` lists every API route with its method, who may call it, and a description. The
+`GET /api/v1` lists, to any signed-in person or agent credential, every API route with its
+method, who may call it, and a description. The
 [HTTP API reference](/legion/dispatch/reference/api/) is the same list.

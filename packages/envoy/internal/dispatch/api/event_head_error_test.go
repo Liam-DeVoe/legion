@@ -17,7 +17,7 @@ func TestAFailedEventHeadReadNamesNoPerson(t *testing.T) {
 	if _, err := seed.database.Pool.Exec(t.Context(), `alter table projects rename to projects_gone`); err != nil {
 		t.Fatalf("take the projects table away: %v", err)
 	}
-	_, err := seed.server.personEventHead(t.Context(), seedAlice)
+	_, err := seed.server.personEventHead(seed.readerRequest(t, callerAlice))
 	if err == nil {
 		t.Fatal("the event head of a person whose projects cannot be read answered no error")
 	}

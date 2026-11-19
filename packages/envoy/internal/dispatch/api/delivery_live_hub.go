@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -362,10 +361,11 @@ type hubGeneration struct {
 	wakeWork, wakeChanges, connected chan struct{}
 	barrier                          chan chan struct{}
 	// readersStale is set when something may have moved what a subscriber sees: an access change
-	// announced on access.ChangedChannel, a relayed event that can move it (movesSight, receive),
-	// or the listener's (re)connection, which may have missed an announcement. The worker resolves
-	// every sub's reader again before its next recompute (recheckStaleReaders), once for however
-	// many came since its last pass.
+	// announced on store.AccessChangedChannel (an access write, or a person's member kind
+	// changed), a relayed event that can move it (movesSight, receive), or the listener's
+	// (re)connection, which may have missed an announcement. The worker resolves every sub's
+	// reader again before its next recompute (recheckStaleReaders), once for however many came
+	// since its last pass.
 	readersStale atomic.Bool
 	// feeds hands the intake the relay subscription seedEvents took; one slot, as one runs at a
 	// time.
@@ -580,7 +580,7 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 	listener := &pglisten.Listener{
 		Owner:       "dispatch",
 		Dial:        h.dial,
-		Channels:    []string{deliveryChangesChannel, deliveryFreshnessChannel, access.ChangedChannel},
+		Channels:    []string{deliveryChangesChannel, deliveryFreshnessChannel, store.AccessChangedChannel},
 		ListenIdle:  h.listenIdle,
 		PingTimeout: h.pingTimeout,
 		Backoff:     h.backoff,
@@ -636,7 +636,7 @@ func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 		signal(g.wakeChanges)
 	case deliveryFreshnessChannel:
 		h.applyFreshness(g, payload)
-	case access.ChangedChannel:
+	case store.AccessChangedChannel:
 		g.readersStale.Store(true)
 		signal(g.wakeWork)
 	}

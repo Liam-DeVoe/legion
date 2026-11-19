@@ -2,7 +2,7 @@ import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-quer
 import { lazy, type ReactNode, type RefObject, Suspense, useEffect, useRef, useState } from "react";
 import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
-import { api, isNoIdentity, isUnauthorized } from "./api/client";
+import { ApiError, api, isNoIdentity, isUnauthorized, type SignedOut } from "./api/client";
 import { useEventFeed } from "./api/event-feed";
 import { useLiveSocketPill } from "./api/live-socket";
 import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
@@ -264,11 +264,16 @@ function InboxPage(): ReactNode {
 
 /** The sign-in page. A session that lapsed shows what it keeps for its person (`KeptWrites`), and
  *  its sign-in link asks nothing on leaving: the page comes back to this tab, where every kept
- *  write resumes (`Writes.leavingToSignIn`). */
-function SignInPage(): ReactNode {
+ *  write resumes (`Writes.leavingToSignIn`). A sign-in Dispatch ended says why first
+ *  (`signedOut`, from its `401`); a sign-out, a lapsed cookie and a deployment that gives no
+ *  reason show the page as it always read. */
+function SignInPage({ signedOut }: { signedOut: SignedOut | undefined }): ReactNode {
   const queryClient = useQueryClient();
   return (
     <ShellMessagePage title="Make the next decision clear.">
+      {signedOut === undefined ? null : (
+        <p className={`mt-3 font-medium ${textSecondaryOnSurface}`}>{signedOutWords(signedOut)}</p>
+      )}
       <p className={`mt-3 ${textSecondaryOnSurface}`}>
         Sign in to review your team&apos;s open decisions.
       </p>
@@ -286,6 +291,18 @@ function SignInPage(): ReactNode {
       <KeptWrites />
     </ShellMessagePage>
   );
+}
+
+/** Why Dispatch signed the person out, in plain words naming their address. */
+function signedOutWords({ login, reason }: SignedOut): string {
+  switch (reason) {
+    case "NOT_LISTED":
+      return `You were signed out because no Dispatch project's access list names ${login} any more.`;
+    case "OUTSIDE_SIGNIN_OFF":
+      return `You were signed out because Dispatch no longer signs in ${login} or any other account outside its Google Workspace domain.`;
+    case "WORKSPACE_ADDRESS":
+      return `You were signed out because ${login} is an address on a domain the Google Workspace owns, which signs in only as a Workspace account. Sign in with your Google Workspace account.`;
+  }
 }
 
 function ConnectionErrorPage({ onRetry }: { onRetry: () => void }): ReactNode {
@@ -1115,7 +1132,11 @@ export function AuthGate(): ReactNode {
   // A definitive auth outcome always wins, even over stale "signed in" data from before a
   // session expired or was revoked — otherwise a revoked user keeps the authenticated shell.
   if (signedOut) {
-    return <SignInPage />;
+    return (
+      <SignInPage
+        signedOut={whoAmI.error instanceof ApiError ? whoAmI.error.signedOut : undefined}
+      />
+    );
   }
   if (whoAmI.data !== undefined) {
     return <AuthenticatedApp user={whoAmI.data} />;

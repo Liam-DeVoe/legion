@@ -11,9 +11,11 @@ import (
 // c-a-private): GET /api/v1/whoami answers a credential that lists projects its projects, sorted,
 // and private_projects, the keys of that list the caller must treat as private: a private project,
 // and one the credential no longer sees whatever its visibility. A credential that lists nothing
-// answers neither field (R9).
+// answers neither field (R9). The deployment signs in people from outside its domain, the rule a
+// restricted member's token is held to (signInOutside), so erin's token acts while a project's
+// list names her: PUB's does throughout, and her token lists PRIV alone.
 func TestWhoamiAnswersAListedCredentialsProjectsAndWhichArePrivate(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	handler, database, _ := newTestServer(t, testServerOptions{signInOutside: true})
 	seedCredentialProjects(t, handler, database)
 	seedPeople(t, database, accessErin)
 	markRestricted(t, database, accessErin)
@@ -54,6 +56,9 @@ func TestWhoamiAnswersAListedCredentialsProjectsAndWhichArePrivate(t *testing.T)
 	// taken off its list, so erin no longer sees PRIV, and her token's PRIV answers private.
 	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/PRIV/access/people/"+accessErin, nil, accessCarol); response.Code != http.StatusOK {
 		t.Fatalf("carol names erin on PRIV's list: %d %s", response.Code, response.Body.String())
+	}
+	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/PUB/access/people/"+accessErin, nil, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("alice names erin on PUB's list: %d %s", response.Code, response.Body.String())
 	}
 	erins := mintListed(t, handler, accessErin, "erin-priv", []string{privateProject})
 	if _, err := database.Pool.Exec(t.Context(), `update projects set visibility = 'public' where key = $1`, privateProject); err != nil {

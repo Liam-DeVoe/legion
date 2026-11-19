@@ -96,11 +96,18 @@ func TestTheDocumentedClaimsAreTheClaimsAnExchangedTokenCarries(t *testing.T) {
 	}
 }
 
-// issuedClaims are the claim names an exchanged token carries, sorted: the keys decide writes onto
-// an exchange session over each kind of subject token and each project scope, and the launcher
-// credential a machine's exchange adds after decide has run. A scope that wrote a claim nothing
-// documents, or stopped writing one the list still carries, lands in this set.
-func issuedClaims(t *testing.T) []string {
+// claimsSubject is one kind of subject token decide decides on, with its actor token where the kind
+// takes one.
+type claimsSubject struct {
+	tokenType    string
+	token, actor map[string]any
+}
+
+// claimsDecider is a provider whose exchange decides each kind of subject token, and one subject
+// token of each kind it accepts: a pod's, whose entry gives the named project scope, a machine
+// access token's, whose scope is the person's, a machine's Google identity token, whose entry
+// names a service, and a person's own, with the machine's as the actor.
+func claimsDecider(t *testing.T) (*Provider, []claimsSubject) {
 	t.Helper()
 	policy, err := exchange.NewSet([]exchange.AccountEntry{{
 		Account: claimsPodAccount,
@@ -121,11 +128,7 @@ func issuedClaims(t *testing.T) []string {
 		// client's audience; the actor token below is the machine's, under Google's own.
 		PersonAudience: claimsDeviceAudience,
 	}}
-
-	subjects := []struct {
-		tokenType    string
-		token, actor map[string]any
-	}{{
+	return provider, []claimsSubject{{
 		tokenType: oauthwire.SubjectTokenTypeKubernetes,
 		token: map[string]any{
 			"sub":           claimsPodAccount,
@@ -160,26 +163,40 @@ func issuedClaims(t *testing.T) []string {
 			"email_verified": true,
 		},
 	}}
+}
 
+// decideOn runs provider's decide for subject on session, as an exchange of that kind would.
+func decideOn(t *testing.T, provider *Provider, subject claimsSubject, session *oauthstore.ExchangeSession) {
+	t.Helper()
+	request := &oauth2.Request{
+		Form: url.Values{
+			FormSubjectTokenType:  {subject.tokenType},
+			oauthwire.FormSession: {claimsSessionName},
+		},
+		Session: session,
+	}
+	if subject.actor != nil {
+		// Where the library puts an actor token it has validated, which decide reads a person's
+		// sign-in through (rfc8693.CustomJWTTypeHandler).
+		session.SetActorToken(subject.actor)
+	}
+	if _, err := provider.decide(context.Background(), request, subject.token); err != nil {
+		t.Fatalf("the exchange refused the %s subject token this check decides against: %v; "+
+			"the claims are then unknown and nothing is being held to the list", subject.tokenType, err)
+	}
+}
+
+// issuedClaims are the claim names an exchanged token carries, sorted: the keys decide writes onto
+// an exchange session over each kind of subject token and each project scope, and the launcher
+// credential a machine's exchange adds after decide has run. A scope that wrote a claim nothing
+// documents, or stopped writing one the list still carries, lands in this set.
+func issuedClaims(t *testing.T) []string {
+	t.Helper()
+	provider, subjects := claimsDecider(t)
 	issued := map[string]bool{}
 	for _, subject := range subjects {
 		session := oauthstore.NewExchangeSession()
-		request := &oauth2.Request{
-			Form: url.Values{
-				FormSubjectTokenType:  {subject.tokenType},
-				oauthwire.FormSession: {claimsSessionName},
-			},
-			Session: session,
-		}
-		if subject.actor != nil {
-			// Where the library puts an actor token it has validated, which decide reads a
-			// person's sign-in through (rfc8693.CustomJWTTypeHandler).
-			session.SetActorToken(subject.actor)
-		}
-		if _, err := provider.decide(context.Background(), request, subject.token); err != nil {
-			t.Fatalf("the exchange refused the %s subject token this check decides against: %v; "+
-				"the claims are then unknown and nothing is being held to the list", subject.tokenType, err)
-		}
+		decideOn(t, provider, subject, session)
 		// A decision that wrote no claim is this check failing open on the code's side, as an
 		// empty bullet list is on the document's.
 		if len(session.Extra) == 0 {

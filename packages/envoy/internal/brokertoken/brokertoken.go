@@ -151,8 +151,8 @@ var proofAlgorithmNames = func() []string {
 	return names
 }()
 
-// Caller is who a verified token names: what a writer is recorded under, and nothing else the
-// broker's answer carries. It never carries the token.
+// Caller is who a verified token names: what a writer is recorded under and the Google account
+// its credential records, and nothing else the broker's answer carries. It never carries the token.
 type Caller struct {
 	// Session is the session the writes are recorded as, which a Caller always names: an answer
 	// naming none is ErrNotASession and never reaches one.
@@ -174,6 +174,20 @@ type Caller struct {
 	// to its person" from every other answer, and an absent or misspelt scope must not read as
 	// ProjectScopePerson.
 	ProjectScope string
+	// AccountIssuer and AccountSubject are the Google account the token's credential records at
+	// the broker (Introspection's AccountIssuer and AccountSubject): the person token that made
+	// the sign-in the token was minted under, or the account that approved the machine login it
+	// was exchanged from. Both are empty for a token recording none: a token naming no person,
+	// and one whose sign-in or machine login was made before the broker recorded accounts.
+	// Whoever mounts this check decides whether that account may still act for Person.
+	AccountIssuer  string
+	AccountSubject string
+	// CredentialCreatedAt is when the token's credential was made at the broker, from the broker
+	// database's clock (Introspection's CredentialCreatedAt): its sign-in on a machine, or the
+	// machine login it was exchanged from. The zero time for a token naming no person and for one
+	// minted before the broker recorded it. Whoever mounts this check holds a token recording no
+	// account to it.
+	CredentialCreatedAt time.Time
 }
 
 // Options is what a Verifier needs. BrokerURL, Account, Origin, Replay and Address are required.

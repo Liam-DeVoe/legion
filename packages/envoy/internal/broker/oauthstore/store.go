@@ -742,15 +742,17 @@ func LockCredential(ctx context.Context, credentialID string) error {
 }
 
 // EndCredential deactivates, in tx, every access and refresh token whose session names the
-// launcher credential, so revoking the credential also ends the machine login's tokens.
-func EndCredential(ctx context.Context, tx pgx.Tx, credentialID string) error {
+// launcher credential, so revoking the credential also ends the machine login's tokens. It
+// answers how many live access tokens it ended.
+func EndCredential(ctx context.Context, tx pgx.Tx, credentialID string) (int, error) {
 	if _, err := tx.Exec(ctx, `update oauth_refresh_tokens set active = false where credential_id = $1 and active`, credentialID); err != nil {
-		return fmt.Errorf("end the credential's refresh tokens: %w", err)
+		return 0, fmt.Errorf("end the credential's refresh tokens: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `update oauth_access_tokens set active = false where credential_id = $1 and active`, credentialID); err != nil {
-		return fmt.Errorf("end the credential's access tokens: %w", err)
+	tag, err := tx.Exec(ctx, `update oauth_access_tokens set active = false where credential_id = $1 and active`, credentialID)
+	if err != nil {
+		return 0, fmt.Errorf("end the credential's access tokens: %w", err)
 	}
-	return nil
+	return int(tag.RowsAffected()), nil
 }
 
 // DeleteCredentialTokens deletes, in tx, every access and refresh token whose session names the

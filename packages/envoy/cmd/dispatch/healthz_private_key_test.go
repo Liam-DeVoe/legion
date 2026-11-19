@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // TestHealthzNamesNoPrivateProjectToACallerWithNoCredential (R2, R6; c-private-unseen):
@@ -28,7 +28,7 @@ func TestHealthzNamesNoPrivateProjectToACallerWithNoCredential(t *testing.T) {
 		t.Fatalf("the first read of the private projects: %v", err)
 	}
 	response := httptest.NewRecorder()
-	dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, state).
+	routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, nil, "", nil, issuers{}, state)).
 		ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if body := response.Body.String(); strings.Contains(body, "SECRET") {
 		t.Fatalf("/healthz with no credential = %d %s: it names the private project SECRET", response.Code, body)

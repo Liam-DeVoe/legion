@@ -71,6 +71,29 @@ type Credential struct {
 	// agent_tokens.projects, a broker token's list. Empty is a credential that names none, which
 	// sees only the public projects its person sees (internal/dispatch/access, the rule).
 	Projects []string
+	// BrokerAdmittedSubject is, for such a token, the Google account (`sub`) the token's own
+	// credential records at the broker (the introspection's account_subject: the person token that
+	// made its sign-in, or the account that approved its machine login), under Dispatch's sign-in
+	// issuer, and "" for a token recording none or an account of another issuer
+	// (api.brokerTokenSubject). The token was admitted only while people recorded that account, or
+	// none, for its person (api.brokerPersonAdmitted). An approve by the token names it as the
+	// approving account (api.approverStanding), refused once people records another account; a
+	// token recording none names the account people records when its credential was made at least
+	// the margin after people recorded it (api.credentialSubjectSQL), and none otherwise, so the
+	// login the broker mints records none and any later revocation of the address ends it.
+	BrokerAdmittedSubject string
+	// BrokerCredentialCreatedAt is, for such a token, when its credential was made at the broker,
+	// from the broker database's clock (the introspection's credential_created_at: its sign-in on a
+	// machine, or the machine login it was exchanged from), and the zero time for one minted before
+	// the broker recorded it and for every other credential. A token recording no account is held
+	// to it against the moment people recorded its person's account (api.brokerAccountReplaced),
+	// at its admission, its mints and its approves.
+	BrokerCredentialCreatedAt time.Time
+	// BrokerForeignAccount is, for such a token, whether its credential records an account of
+	// another issuer than Dispatch's sign-in issuer (api.brokerForeignAccount), which Dispatch
+	// cannot compare with the account it records: refused at its admission, its mints and its
+	// approves once people records an account for its person, whenever it was made.
+	BrokerForeignAccount bool
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
@@ -214,7 +237,9 @@ func sameActorName(left, right *string) bool {
 
 // CanonicalLogin is the stored form of a person's email: trimmed, with its ASCII letters lowered
 // (fold.ASCII) and nothing else folded, the form the identity implementations name a person by and
-// the people table holds.
+// the people table holds. canonical_login (migration 20261117000831) is this form in SQL, for a
+// statement that compares a stored login with people.email; store.TestCanonicalLoginIsModelCanonicalLogin
+// holds the two to one another, so a change here is a change there.
 func CanonicalLogin(login string) string {
 	return fold.ASCII(strings.TrimSpace(login))
 }
@@ -394,13 +419,22 @@ type AccessAnswer struct {
 	Repositories []string `json:"repositories"`
 	// SlackChannels is the project's own list, as ProjectAccess carries it: [] for none.
 	SlackChannels []string `json:"slack_channels"`
+	// Holder is present for a question naming a person that describes the credential being checked
+	// (?account_issuer=&account_subject=, or ?account=none, each with ?credential_created_at=):
+	// whether that credential holds the person's address. False when Dispatch records another
+	// Google account for the person, when the credential records an account of another issuer, or
+	// when it records none and was made before Dispatch recorded the person's account, within
+	// brokerCredentialMargin after, or at a time not given (accountHolder), and Visible is then
+	// false too. A question naming a person alone carries none, as before.
+	Holder *bool `json:"holder,omitempty"`
 }
 
 // PersonAnswer is one person's member kind as the membership answer spells it (GET
-// /api/v1/access/person?person=).
+// /api/v1/access/person?person=), with Holder as AccessAnswer carries it.
 type PersonAnswer struct {
 	Person     string `json:"person"`
 	MemberKind string `json:"member_kind"`
+	Holder     *bool  `json:"holder,omitempty"`
 }
 
 // The member kinds the membership answer spells: MemberKind's two, and MemberAnswerNone for a
