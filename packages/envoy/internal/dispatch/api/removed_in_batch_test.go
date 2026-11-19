@@ -37,12 +37,12 @@ func listIDOf(t *testing.T, handler http.Handler, artifactID string) string {
 	return ""
 }
 
-// An operation whose target an earlier operation of the same edit removed is refused 400
-// TARGET_REMOVED_IN_BATCH, naming the operation, what it named and the operation that removed
-// it, and the document keeps its text and its versions: the replace ahead of both is not written
-// either. Each operation reads the document as the operations before it left it, and the block
-// the insert names is gone by then (dispatch://INFRA-4517). Nothing settles the spec while the
-// row runs, so its versions are the ones the row read.
+// An operation whose target an earlier operation of the same edit removed is refused, naming the
+// operation, and the document keeps its text and its versions: the replace ahead of both is not
+// written either. Each operation reads the document as the operations before it left it, and the
+// block the insert's anchor names is gone by then, so the anchor names a block the document does
+// not carry, 404 TARGET_NOT_FOUND (dispatch://INFRA-4517). Nothing settles the spec while the row
+// runs, so its versions are the ones the row read.
 func TestAnOperationWhoseBlockAnEarlierOperationRemovedIsRefused(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "BATCH", "Removed in the batch", removedInBatchSpec)
@@ -53,11 +53,11 @@ func TestAnOperationWhoseBlockAnEarlierOperationRemovedIsRefused(t *testing.T) {
 		{"op": "delete", "block": list},
 		{"op": "insert", "after": "block:" + list, "markdown": "- new"},
 	})
-	if status != http.StatusBadRequest || code != "TARGET_REMOVED_IN_BATCH" {
-		t.Fatalf("insert after a block the batch deleted: status=%d code=%q error=%q, want 400 TARGET_REMOVED_IN_BATCH", status, code, refusal)
+	if status != http.StatusNotFound || code != "TARGET_NOT_FOUND" {
+		t.Fatalf("insert after a block the batch deleted: status=%d code=%q error=%q, want 404 TARGET_NOT_FOUND", status, code, refusal)
 	}
-	if want := `operation 2: after "block:` + list + `" names a block that operation 1, delete {block:"` + list + `"}, removed earlier in this edit`; !strings.Contains(refusal, want) {
-		t.Fatalf("refusal = %q, want it to say %q", refusal, want)
+	if want := `operation 2: block "` + list + `" is not in the document. Anchor by quote instead: write the text of that block in after, in place of "block:` + list + `".`; refusal != want {
+		t.Fatalf("refusal = %q, want %q", refusal, want)
 	}
 	if after := documentMarkdown(t, handler, issue.PrimaryArtifactID); after != before {
 		t.Fatalf("document after the refused batch = %q, want %q unchanged", after, before)

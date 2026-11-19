@@ -4926,7 +4926,8 @@ Each item below names an operation and its required fields, then its behavior.
 
 The operations of one request apply in order, each reading the document as the operations before it left it, and none removes or changes a block it does not name.
 A delete of a block removes what that block held when the request began: list content an earlier `insert` joined to a list it was anchored on, or a paragraph it wrote into a typed block, stays where the deleted block stood, a list keeping it as a list of its own, where the delete took it with the block.
-An operation whose target an earlier operation of the request removed is `400 TARGET_REMOVED_IN_BATCH`, and nothing in the request is written.
+An operation whose block an earlier `delete` by `block` removed, that block or one inside it, is `400 INVALID_OP` naming that delete, and one whose block, text or heading is gone otherwise is `404 TARGET_NOT_FOUND`, as a target the document never held is;
+either way, nothing in the request is written.
 
 Table-row fragments contain body rows only: omit the table header and delimiter row.
 Short rows are padded to the table width while all operations in the edit request add at most 10,000 cells;
@@ -5030,10 +5031,12 @@ Each item below names a status and code, then its meaning.
 - `409 TARGET_AMBIGUOUS`
 
   A quote matches more than once without an `occurrence`; the response includes candidate ranges and context.
+  A document edit's quote - a `replace`'s or a `delete`'s `find`, an `insert`'s or a `move`'s anchor - counts only its matches inside one block, here and for its `occurrence`: a match that runs across two or more blocks is none an edit can take, so a quote with one match inside a block applies to it whatever such matches it also has, and the candidates and the count the message names are the matches inside blocks alone.
+  Before, a quote matched once inside a paragraph and once across the join of two list items was refused with this code, `matches 2 places`.
 
 - `400 TARGET_SPANS_BLOCKS`
 
-  A document edit quote crosses textblock boundaries.
+  A document edit quote crosses textblock boundaries: every match it has runs across two or more blocks.
 
 - `400 FIND_CROSSES_SPAN`
 
@@ -5052,12 +5055,6 @@ Each item below names a status and code, then its meaning.
   An `insert` writes markdown the block it lands in cannot hold where the anchor puts it: a `requirement`, a `check` or a `plan_task` holds paragraphs alone, an `ask` the paragraphs of its question and then one bullet list of options, and a list item opens with its text, so no other block stands before it; nothing in the batch is written.
   Such an insert was written after the typed block, at the document's level, so a requirement's words stood outside every requirement and no check's `serves` reached them, or before the whole list.
   The message names the operation, the anchor, the block it lands in and its id, its rule and what breaks it, and the anchor on that block itself that writes the markdown outside it instead: `operation 0: insert after "block:<id>" lands inside the requirement block "r1", whose content rule, paragraph+, cannot hold a heading there; …`.
-
-- `400 TARGET_REMOVED_IN_BATCH`
-
-  An operation names a block (`block`, or a `block:<id>` anchor), quotes text (`find`, or a quote anchor) or names a heading (`heading:<title>`) that an earlier operation of the same request removed, since each operation reads the document as the operations before it left it; nothing in the batch is written.
-  Such an operation was `404 TARGET_NOT_FOUND`, or `400 INVALID_OP` for a block a `delete {block:…}` removed, and neither named the operation that removed its target.
-  The message names the operation, its field and what that holds, and the operation that removed it: `operation 2: after "block:<id>" names a block that operation 1, delete {block:"<id>"}, removed earlier in this edit; …`.
 
 - `400 TABLE_WIDTH`
 

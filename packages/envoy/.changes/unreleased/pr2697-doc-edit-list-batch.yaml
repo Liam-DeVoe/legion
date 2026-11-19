@@ -16,10 +16,8 @@ body: |-
   it was anchored on stays where the list stood, a list of its own, and a paragraph an `insert`
   wrote into a typed block stays where that block stood. An insert of a list after a list's own
   block, then a delete of that block, lost both lists: the inserted items had joined the list, and
-  the delete took them with it. An operation whose block, text or heading an earlier operation of
-  the same edit removed is refused with `400 TARGET_REMOVED_IN_BATCH`, naming the operation, what
-  it named and the operation that removed it, and nothing in the edit is written; it was
-  `404 TARGET_NOT_FOUND`, or `400 INVALID_OP` for a block a `delete` by `block` removed.
+  the delete took them with it. A later operation of the same edit may still name a block such a
+  delete kept.
 time: 2026-11-18T19:45:00Z
 custom:
     Issue: pr2697

@@ -176,6 +176,13 @@ type QuoteFinder struct {
 	prepared bool
 	err      error
 	text     flattenedText
+	// inOneTextblock says the finder resolves a document edit's quotes (ValidDocument.EditQuoteFinder),
+	// where only a match inside one textblock is a match (cascade), and textblocks is the content
+	// range of each textblock of the document, in document order, which such a finder reads each
+	// match against, built at its first use (insideOneTextblock).
+	inOneTextblock bool
+	textblocks     []Range
+	textblocksDone bool
 }
 
 // NewQuoteFinder returns a finder over doc. It reads nothing of doc until its first Find.
@@ -188,6 +195,17 @@ func NewQuoteFinder(doc *Node) *QuoteFinder {
 // answers FindQuote's error for a nil document.
 func (d ValidDocument) QuoteFinder() *QuoteFinder {
 	return &QuoteFinder{doc: d.doc, valid: true}
+}
+
+// EditQuoteFinder is QuoteFinder for a document edit's quotes - a replace's or a delete's find,
+// an insert's or a move's anchor - which no edit can take across two textblocks: a match that
+// spans two or more counts toward neither the quote's matches nor its ambiguity (cascade), so a
+// quote with one match inside one textblock resolves to it whatever spans it also has, and one
+// with two or more there is ErrTargetAmbiguous naming those alone. A quote whose only matches span
+// textblocks resolves to the first of them, which the edit refuses as spanning blocks. A comment's
+// or an ask's anchor keeps QuoteFinder's count, spans included (dispatch://INFRA-4345, R1).
+func (d ValidDocument) EditQuoteFinder() *QuoteFinder {
+	return &QuoteFinder{doc: d.doc, valid: true, inOneTextblock: true}
 }
 
 // Find is FindQuote(doc, quote, occurrence, near): the same range or the same error.
@@ -219,12 +237,7 @@ func (f *QuoteFinder) FindWritten(quote string, occurrence *int) (Range, error) 
 	if err := f.prepare(); err != nil {
 		return Range{}, err
 	}
-	var matches []quoteMatch
-	for _, matcher := range writtenCascade {
-		if matches = matcher(f.text, quote); len(matches) > 0 {
-			break
-		}
-	}
+	matches := f.cascade(writtenCascade, quote)
 	match, err := f.choose(quote, matches, occurrence, nil)
 	if err != nil {
 		return Range{}, err
@@ -259,6 +272,13 @@ func (f *QuoteFinder) choose(quote string, matches []quoteMatch, occurrence, nea
 	doc, text := f.doc, f.text
 	if len(matches) == 0 {
 		return quoteMatch{}, quoteNotFound(doc, quote)
+	}
+	// An edit's finder answers matches inside one textblock alone, or, where the quote has none
+	// there, the spans of its first matcher that had any (cascade). Those resolve to the first,
+	// which the edit refuses as spanning blocks, and count toward neither an occurrence nor an
+	// ambiguity.
+	if f.inOneTextblock && !f.insideOneTextblock(matches[0].Range) {
+		return matches[0], nil
 	}
 	if occurrence != nil {
 		if *occurrence < 0 || *occurrence >= len(matches) {
@@ -333,7 +353,71 @@ func (f *QuoteFinder) matches(quote string) ([]quoteMatch, error) {
 	if marker := atxHeadingMarker.FindString(quote); marker != "" && marker != quote {
 		return headingQuoteMatches(f.doc, f.text, quote[len(marker):]), nil
 	}
-	return quoteMatches(f.text, quote), nil
+	return f.cascade(quoteCascade[:], quote), nil
+}
+
+// cascade is the matches of quote's first matcher of matchers that has any, as quoteMatches takes
+// them. An edit's finder (EditQuoteFinder) counts only a match inside one textblock: a matcher
+// whose every match spans two or more gives way to the next, and where no matcher has a match
+// inside one, the matches are the spans of the first that had any, which choose resolves to the
+// first of. So what an edit's finder answers is matches all inside one textblock, or all spans. A
+// heading quote's matches and a list item's selection lie inside one textblock by their own rule
+// (headingQuoteMatches, listItemQuoteMatches), so they need no reading here.
+func (f *QuoteFinder) cascade(matchers []func(flattenedText, string) []quoteMatch, quote string) []quoteMatch {
+	var spans []quoteMatch
+	for _, matcher := range matchers {
+		matches := matcher(f.text, quote)
+		if len(matches) == 0 {
+			continue
+		}
+		if !f.inOneTextblock {
+			return matches
+		}
+		if inside := f.withinTextblocks(matches); len(inside) > 0 {
+			return inside
+		}
+		if spans == nil {
+			spans = matches
+		}
+	}
+	return spans
+}
+
+// withinTextblocks is matches without those that span two or more textblocks: matches itself
+// where none does, so the common quote allocates nothing here.
+func (f *QuoteFinder) withinTextblocks(matches []quoteMatch) []quoteMatch {
+	for index, match := range matches {
+		if f.insideOneTextblock(match.Range) {
+			continue
+		}
+		inside := slices.Clone(matches[:index])
+		for _, rest := range matches[index+1:] {
+			if f.insideOneTextblock(rest.Range) {
+				inside = append(inside, rest)
+			}
+		}
+		return inside
+	}
+	return matches
+}
+
+// insideOneTextblock reports whether r lies wholly inside one textblock, TargetSpansBlocks' answer
+// negated, read off the textblocks' content ranges rather than off a walk of the document for each
+// match: the walk that collects them runs once, at the finder's first such question.
+func (f *QuoteFinder) insideOneTextblock(r Range) bool {
+	if !f.textblocksDone {
+		f.textblocksDone = true
+		walk(f.doc, func(node *Node, _ []int, pos, end int) bool {
+			if isTextblock(node.Type) {
+				f.textblocks = append(f.textblocks, Range{From: pos + 1, To: end - 1})
+			}
+			return true
+		})
+	}
+	// The textblocks' contents are disjoint and in document order, since no textblock holds
+	// another, so the only one that can hold r is the last to start at or before r.From.
+	at := sort.Search(len(f.textblocks), func(index int) bool { return f.textblocks[index].From > r.From }) - 1
+	return at >= 0 && r.To <= f.textblocks[at].To
 }
 
 // prepare validates the finder's document and flattens its text at the first call, and answers

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -373,52 +374,6 @@ func insertDoesNotFit(boundary pmdoc.Boundary, fragment *pmdoc.Node, field, anch
 	}
 }
 
-// ErrTargetRemovedInBatch names an operation whose target an earlier operation of the same batch
-// removed: the block its block field or a `block:<id>` anchor names, the heading a `heading:`
-// anchor names, or the text its find or a quote anchor quotes. Each operation reads the document
-// as the operations before it left it (applyBatch), and the target is gone from it by then. The
-// refusal names the operation that removed it, where the miss read as a block or text the
-// document never held, and only a block a `delete {block:…}` removed named that delete
-// (dispatch://INFRA-4517).
-type ErrTargetRemovedInBatch struct {
-	opIndex
-	// Field is the operation field the target was written in - "block", "find", "after" or
-	// "before" - and Target what that field holds.
-	Field, Target string
-	// By is the index of the operation that removed the target, and Remover that operation.
-	By      int
-	Remover model.EditOp
-}
-
-func (e *ErrTargetRemovedInBatch) Error() string {
-	named := "text"
-	switch anchor := e.Field == "after" || e.Field == "before"; {
-	case e.Field == "block" || anchor && strings.HasPrefix(e.Target, "block:"):
-		named = "a block"
-	case anchor && strings.HasPrefix(e.Target, "heading:"):
-		named = "a heading"
-	}
-	return fmt.Sprintf(
-		"%s%s %q names %s that operation %d, %s, removed earlier in this edit; each operation reads the document as the operations before it left it, so drop this operation, or order it before operation %d",
-		e.prefix(), e.Field, e.Target, named, e.By, operationSummary(e.Remover), e.By,
-	)
-}
-
-// operationSummary is op as a refusal names it: its kind, and the field naming its target.
-func operationSummary(op model.EditOp) string {
-	switch {
-	case op.Block != "":
-		return fmt.Sprintf("%s {block:%q}", op.Op, op.Block)
-	case op.Find != "":
-		return fmt.Sprintf("%s {find:%q}", op.Op, op.Find)
-	case op.After != "":
-		return fmt.Sprintf("%s {after:%q}", op.Op, op.After)
-	case op.Before != "":
-		return fmt.Sprintf("%s {before:%q}", op.Op, op.Before)
-	}
-	return op.Op
-}
-
 // stampOperation gives index to an error that renders its own operation, and falls back to
 // wrapping everything else with the same prefix.
 func stampOperation(index int, err error) error {
@@ -441,7 +396,6 @@ func isEditRefusal(err error) bool {
 	var ciCheck *ErrInvalidCICheck
 	var crossed *ErrFindCrossesSpan
 	var doesNotFit *ErrInsertDoesNotFit
-	var removed *ErrTargetRemovedInBatch
 	return errors.Is(err, pmdoc.ErrTargetNotFound) ||
 		errors.Is(err, pmdoc.ErrTargetSpansBlocks) ||
 		errors.Is(err, pmdoc.ErrTableWidth) ||
@@ -450,8 +404,7 @@ func isEditRefusal(err error) bool {
 		errors.As(err, &ambiguous) ||
 		errors.As(err, &ciCheck) ||
 		errors.As(err, &crossed) ||
-		errors.As(err, &doesNotFit) ||
-		errors.As(err, &removed)
+		errors.As(err, &doesNotFit)
 }
 
 // ErrInvalidPrecondition identifies a malformed optimistic-concurrency guard.
@@ -825,7 +778,21 @@ func requireBlock(tree *batchTree, op model.EditOp, field, blockID string) error
 	return nil
 }
 
+type batchRemoval struct {
+	operation int
+	parent    string
+	cascaded  bool
+}
+
 type operationValidator func(*batchTree, model.EditOp) error
+
+func removedBlockError(blockID string, removal batchRemoval) error {
+	reason := fmt.Sprintf(`block %q was removed by operation %d with delete {block:%q}`, blockID, removal.operation, removal.parent)
+	if removal.cascaded {
+		reason = fmt.Sprintf(`block %q was removed by operation %d as a cascade of delete {block:%q}`, blockID, removal.operation, removal.parent)
+	}
+	return &ErrInvalidOp{Field: "block", Reason: reason + "; remove it from the atomic batch"}
+}
 
 // editBatch is what a resolved batch of operations produced: the tree to write, the token of the
 // document before the batch, every operation that left the tree as it was, and what each
@@ -1247,14 +1214,19 @@ func (t *batchTree) validated(operation string) (pmdoc.ValidDocument, error) {
 }
 
 // finder is the quote finder over the tree, made on first use: a batch resolving several quotes
-// against one tree flattens that tree's text once.
+// against one tree flattens that tree's text once. It is an edit's finder
+// (pmdoc.ValidDocument.EditQuoteFinder): a match that spans two or more textblocks is none an
+// edit can take, so it counts toward neither a quote's matches nor its ambiguity, and a quote with
+// one match inside one textblock resolves to it whatever spans it also has. A quote matched once
+// inside a paragraph and once across the join of two list items was refused TARGET_AMBIGUOUS,
+// "matches 2 places" (dispatch://INFRA-4345, R1).
 func (t *batchTree) finder() (*pmdoc.QuoteFinder, error) {
 	if t.quotes == nil {
 		valid, err := t.validated("FindQuote")
 		if err != nil {
 			return nil, err
 		}
-		t.quotes = valid.QuoteFinder()
+		t.quotes = valid.EditQuoteFinder()
 	}
 	return t.quotes, nil
 }
@@ -1273,10 +1245,12 @@ func (t *batchTree) finder() (*pmdoc.QuoteFinder, error) {
 //
 // Each operation reads the document as the operations before it left it, and none removes or
 // changes a block it does not name: a delete of a block removes what that block held in start's
-// tree, so the blocks an earlier operation wrote into it stay (batchTree.heldAtStart), and an
-// operation whose target an earlier one removed is refused naming that operation (removedEarlier).
-// An insert of a list after a list's own block joined that list, and a delete of the list after
-// it took the inserted items with it (dispatch://INFRA-4517).
+// tree, so the blocks an earlier operation wrote into it stay (batchTree.heldAtStart). An insert of
+// a list after a list's own block joined that list, and a delete of the list after it took the
+// inserted items with it (dispatch://INFRA-4517). An operation whose block an earlier `delete
+// {block:…}` removed, that block or one inside it, is refused naming that delete
+// (removedBlockError); one whose block, quote or heading is gone otherwise is refused as a target
+// the document does not hold.
 func applyBatch(start *batchTree, ops []model.EditOp, validate operationValidator, before string) (editBatch, error) {
 	tree := start
 	beforeTree := start.node
@@ -1290,6 +1264,7 @@ func applyBatch(start *batchTree, ops []model.EditOp, validate operationValidato
 			return editBatch{}, err
 		}
 	}
+	removed := make(map[string]batchRemoval)
 	var unchanged []int
 	written := make([]operationWrite, len(ops))
 	// Which blocks each operation wrote, told apart only when there is more than one operation to
@@ -1303,20 +1278,54 @@ func applyBatch(start *batchTree, ops []model.EditOp, validate operationValidato
 		blockText = pmdoc.BlockText(tree.node)
 	}
 	for index, op := range ops {
+		if removal, alreadyRemoved := removed[op.Block]; op.Block != "" && alreadyRemoved {
+			return editBatch{}, stampOperation(index, removedBlockError(op.Block, removal))
+		}
 		if validate != nil {
 			if err := validate(tree, op); err != nil {
-				return editBatch{}, stampOperation(index, removedEarlier(start, tree, ops, index, err))
+				return editBatch{}, stampOperation(index, err)
+			}
+		}
+		var removedIDs []string
+		if op.Op == "delete" && op.Block != "" && op.Find == "" {
+			if _, alreadyRemoved := removed[op.Block]; !alreadyRemoved {
+				valid, err := tree.validated("BlockDescendantIDs")
+				if err != nil {
+					return editBatch{}, stampOperation(index, err)
+				}
+				if removedIDs, err = valid.BlockDescendantIDs(op.Block); err != nil {
+					return editBatch{}, stampOperation(index, blockNotFound(tree, op, "block", op.Block, err))
+				}
+				// The blocks an earlier operation wrote into the deleted block stay where it stood
+				// (deleteHeldBlock), so the operations after it may still name them.
+				held, err := tree.heldAtStart(op.Block)
+				if err != nil {
+					return editBatch{}, stampOperation(index, err)
+				}
+				if held != nil {
+					removedIDs = slices.DeleteFunc(removedIDs, func(id string) bool {
+						_, own := held[id]
+						return !own
+					})
+				}
 			}
 		}
 		next, err := applyOperation(tree, op, budget)
 		if err != nil {
-			return editBatch{}, stampOperation(index, removedEarlier(start, tree, ops, index, err))
+			return editBatch{}, stampOperation(index, err)
 		}
 		if next.Equal(tree.node) {
 			unchanged = append(unchanged, index)
 		}
 		if tellOperationsApart {
 			written[index].ids, blockText = pmdoc.BlocksGainingText(blockText, next)
+		}
+		for _, blockID := range removedIDs {
+			removed[blockID] = batchRemoval{
+				operation: index,
+				parent:    op.Block,
+				cascaded:  blockID != op.Block,
+			}
 		}
 		tree = tree.next(next)
 	}
@@ -1328,113 +1337,6 @@ func applyBatch(start *batchTree, ops []model.EditOp, validate operationValidato
 		operations: len(ops),
 		written:    written,
 	}, nil
-}
-
-// removedEarlier is err, ops[index]'s refusal over tree, or ErrTargetRemovedInBatch where err is a
-// miss of a target the operation names that an earlier operation of the batch removed. A miss of a
-// target the batch never held, and an occurrence past a quote's matches, stay err. Only a refused
-// operation pays for the question: the batch is replayed from start, and the operation that
-// removed the target is the last one before index whose input held it and whose output did not.
-func removedEarlier(start, tree *batchTree, ops []model.EditOp, index int, err error) error {
-	var overshot *ErrQuoteNotFound
-	if index == 0 || !errors.Is(err, pmdoc.ErrTargetNotFound) || errors.As(err, &overshot) && overshot.Matches > 0 {
-		return err
-	}
-	var missing []batchTarget
-	for _, target := range operationTargets(ops[index]) {
-		if !target.heldBy(tree) {
-			missing = append(missing, target)
-		}
-	}
-	if len(missing) == 0 {
-		return err
-	}
-	held := make([]bool, len(missing))
-	removedBy := make([]int, len(missing))
-	for at, target := range missing {
-		held[at], removedBy[at] = target.heldBy(start), -1
-	}
-	replayed, budget := start, pmdoc.NewWriteBudget()
-	for earlier, op := range ops[:index] {
-		next, replayErr := applyOperation(replayed, op, budget)
-		if replayErr != nil {
-			return err
-		}
-		replayed = replayed.next(next)
-		for at, target := range missing {
-			holds := target.heldBy(replayed)
-			if held[at] && !holds {
-				removedBy[at] = earlier
-			}
-			held[at] = holds
-		}
-	}
-	for at, target := range missing {
-		if by := removedBy[at]; by >= 0 {
-			return &ErrTargetRemovedInBatch{Field: target.field, Target: target.value, By: by, Remover: ops[by]}
-		}
-	}
-	return err
-}
-
-// batchTarget is one target an operation names, as it wrote it in field: a block id (block, or a
-// `block:<id>` anchor), a heading (a `heading:<title>` anchor), or a quote (find, or any other
-// anchor). An anchor on the document's edge names none.
-type batchTarget struct{ field, value string }
-
-// operationTargets are the targets op names, in the order of its fields.
-func operationTargets(op model.EditOp) []batchTarget {
-	targets := make([]batchTarget, 0, 2)
-	for _, target := range [...]batchTarget{{"block", op.Block}, {"find", op.Find}, {"after", op.After}, {"before", op.Before}} {
-		edge := target.isAnchor() && (target.value == "start" || target.value == "end")
-		if target.value != "" && !edge {
-			targets = append(targets, target)
-		}
-	}
-	return targets
-}
-
-func (b batchTarget) isAnchor() bool { return b.field == "after" || b.field == "before" }
-
-// heldBy reports whether tree holds the target: a block carrying its id, a heading of its title,
-// text its quote matches, once or more. A tree that cannot be read holds it, since that refusal is
-// the operation's own.
-func (b batchTarget) heldBy(tree *batchTree) bool {
-	valid, err := tree.validated("BlockRange")
-	if err != nil {
-		return true
-	}
-	blockID, byID := strings.CutPrefix(b.value, "block:")
-	title, byTitle := strings.CutPrefix(b.value, "heading:")
-	switch {
-	case b.field == "block":
-		_, err = valid.BlockRange(b.value)
-		return err == nil
-	case b.isAnchor() && byID:
-		_, err = valid.BlockRange(blockID)
-		return err == nil
-	case b.isAnchor() && byTitle:
-		_, err = valid.FindHeading(title, nil)
-		return !errors.Is(err, pmdoc.ErrTargetNotFound)
-	}
-	return quoteHeld(tree, b.value)
-}
-
-// quoteHeld reports whether tree holds text quote matches, as resolveEditQuote matches it: as
-// text, or as the list items its marker selects.
-func quoteHeld(tree *batchTree, quote string) bool {
-	finder, err := tree.finder()
-	if err != nil {
-		return true
-	}
-	if _, err := finder.NearestFirst(quote, 0); !errors.Is(err, pmdoc.ErrTargetNotFound) {
-		return true
-	}
-	if pmdoc.ParseListItemQuote(quote).Text == "" {
-		return false
-	}
-	_, _, err = finder.FindListItem(quote, nil)
-	return !errors.Is(err, pmdoc.ErrTargetNotFound)
 }
 
 func hasTableAnchorMutation(ops []model.EditOp) bool {

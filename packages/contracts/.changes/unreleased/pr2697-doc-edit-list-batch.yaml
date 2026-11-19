@@ -4,8 +4,10 @@ body: |-
   removes that whole item, the items nested in it included, and that the ops of one edit apply in
   order, each reading the document as the ops before it left it, none removing or changing a
   block it does not name: a delete of a block removes what that block held when the edit began, so
-  a list an earlier insert joined to it stays where it stood, and an op naming a block, text or
-  heading an earlier op of the same edit removed is `400 TARGET_REMOVED_IN_BATCH`.
+  a list an earlier insert joined to it stays where it stood. It says an op naming a block an
+  earlier `delete` by `block` removed, that block or one inside it, is `INVALID_OP` naming that
+  delete, and one naming any other block, text or heading an earlier op removed is
+  `TARGET_NOT_FOUND`.
   `packages/envoy/internal/contracts/dispatch_tools_generated.go` carries the same text.
 time: 2026-11-18T19:45:00Z
 custom:

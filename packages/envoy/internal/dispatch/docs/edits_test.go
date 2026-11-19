@@ -809,10 +809,10 @@ func TestApplyOperationsExplainsBlockCascadeWithinBatch(t *testing.T) {
 		{Op: "delete", Block: parentID},
 		{Op: "delete", Block: childID},
 	})
-	var removedEarlier *ErrTargetRemovedInBatch
-	if !errors.As(err, &removedEarlier) || removedEarlier.Field != "block" || removedEarlier.Target != childID || removedEarlier.By != 0 || removedEarlier.Remover.Block != parentID ||
-		!strings.Contains(err.Error(), `operation 1: block "`+childID+`" names a block that operation 0, delete {block:"`+parentID+`"}, removed earlier in this edit`) {
-		t.Fatalf("cascade batch error = %v, want the child's delete refused naming the parent's", err)
+	var invalid *ErrInvalidOp
+	if !errors.As(err, &invalid) || invalid.Field != "block" ||
+		!strings.Contains(invalid.Reason, `block "`+childID+`" was removed by operation 0 as a cascade of delete {block:"`+parentID+`"}`) {
+		t.Fatalf("cascade batch error = %v", err)
 	}
 }
 
@@ -4016,11 +4016,13 @@ func newEntries(count int) string {
 // 336 of dispatch://INFRA/artifact/superfan-fans-log-md inserted a 16-item list after a list's own
 // block and then deleted that block, and lost both lists: the insert's items had become the list's
 // last items, and the delete took them with it (dispatch://INFRA-4517). A paragraph written into a
-// requirement stays where the requirement stood when a later operation deletes the requirement.
+// requirement stays where the requirement stood when a later operation deletes the requirement,
+// and a block such a delete keeps is no block it removed, so an operation after it may name it.
 func TestAnInsertBesideABlockALaterOperationDeletesKeepsItsBlocks(t *testing.T) {
 	inserted := newEntries(16)
 	const lists = "Intro.\n\n- old one\n- old two\n\nAfter.\n"
 	const requirement = ":::requirement{#r1}\nThe read succeeds.\n:::\n\nAfter.\n"
+	const callout = ":::callout{#c1 kind=\"note\" title=\"T\"}\nNote body.\n:::\n\nAfter.\n"
 	for _, test := range []struct {
 		name, markdown string
 		// ops builds the batch from the id of the document's first block.
@@ -4062,6 +4064,18 @@ func TestAnInsertBesideABlockALaterOperationDeletesKeepsItsBlocks(t *testing.T) 
 			},
 			want: "It answers within a second.\n\nAfter.\n",
 		},
+		{
+			name:     "a requirement written into a callout, moved once the callout is deleted",
+			markdown: callout,
+			ops: func(first string) []model.EditOp {
+				return []model.EditOp{
+					{Op: "insert", After: "Note body.", Markdown: ":::requirement{#r9}\nThe read succeeds.\n:::"},
+					{Op: "delete", Block: first},
+					{Op: "move", Block: "r9", After: "After."},
+				}
+			},
+			want: "After.\n\n:::requirement{#r9}\nThe read succeeds.\n:::\n",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			tree, err := parseInput(test.markdown)
@@ -4090,9 +4104,10 @@ func TestAnInsertBesideABlockALaterOperationDeletesKeepsItsBlocks(t *testing.T) 
 // Each operation of an edit reads the document as the operations before it left it, so one whose
 // target an earlier operation of the same edit removed - the block its id names, the block its
 // anchor names, the text its find or its anchor quotes, the heading its anchor names - is refused
-// naming itself, what it named and the operation that removed it, and nothing in the batch is
-// written. A block id that names nothing was refused as a block the document does not carry, a
-// quote as text it does not hold, and only a block a `delete {block:…}` removed named that delete.
+// naming itself, and nothing in the batch is written: a block an earlier `delete {block:…}`
+// removed, that block or one inside it, is 400 INVALID_OP naming that delete (removedBlockError),
+// and any other target gone is 404 TARGET_NOT_FOUND, the refusal of a target the document never
+// held.
 func TestAnOperationWhoseTargetAnEarlierOperationRemovedIsRefused(t *testing.T) {
 	tree, err := parseInput("# Plan\n\nIntro.\n\nBody.\n\n- Parent\n  - Child\n\n| Key | Value |\n| --- | --- |\n| a | b |\n| c | d |\n\nAfter.\n")
 	if err != nil {
@@ -4105,61 +4120,73 @@ func TestAnOperationWhoseTargetAnEarlierOperationRemovedIsRefused(t *testing.T) 
 	if tree.Children[3].Type != "bullet_list" || tree.Children[4].Type != "table" || child == "" {
 		t.Fatalf("the fixture parsed as %s, %s, child %q", tree.Children[3].Type, tree.Children[4].Type, child)
 	}
+	const quoteRule = `quotes match the block text as rendered (inline markdown is tolerated; use "heading:<title>", "block:<id>", "start", or "end" as insert and move anchors)`
 	for name, test := range map[string]struct {
-		ops   []model.EditOp
-		wants []string
+		ops []model.EditOp
+		// code is the code the edit route answers the refusal with (api.writeHandlerError), and
+		// want the refusal's whole text.
+		code, want string
 	}{
 		"an insert after a block an earlier delete removed": {
-			ops:   []model.EditOp{{Op: "delete", Block: list}, {Op: "insert", After: "block:" + list, Markdown: "New."}},
-			wants: []string{`operation 1: after "block:` + list + `" names a block that operation 0, delete {block:"` + list + `"}, removed earlier in this edit`},
+			ops:  []model.EditOp{{Op: "delete", Block: list}, {Op: "insert", After: "block:" + list, Markdown: "New."}},
+			code: "TARGET_NOT_FOUND",
+			want: `operation 1: block "` + list + `" is not in the document. Anchor by quote instead: write the text of that block in after, in place of "block:` + list + `".`,
 		},
 		"a delete of a block an earlier delete removed with the block holding it": {
-			ops:   []model.EditOp{{Op: "delete", Block: parent}, {Op: "delete", Block: child}},
-			wants: []string{`operation 1: block "` + child + `" names a block that operation 0, delete {block:"` + parent + `"}, removed earlier in this edit`},
+			ops:  []model.EditOp{{Op: "delete", Block: parent}, {Op: "delete", Block: child}},
+			code: "INVALID_OP",
+			want: `operation 1: invalid document operation field "block": block "` + child + `" was removed by operation 0 as a cascade of delete {block:"` + parent + `"}; remove it from the atomic batch`,
 		},
 		"a move of a block an earlier delete removed": {
-			ops:   []model.EditOp{{Op: "delete", Block: list}, {Op: "move", Block: child, After: "Intro."}},
-			wants: []string{`operation 1: block "` + child + `" names a block that operation 0, delete {block:"` + list + `"}, removed earlier in this edit`},
+			ops:  []model.EditOp{{Op: "delete", Block: list}, {Op: "move", Block: child, After: "Intro."}},
+			code: "INVALID_OP",
+			want: `operation 1: invalid document operation field "block": block "` + child + `" was removed by operation 0 as a cascade of delete {block:"` + list + `"}; remove it from the atomic batch`,
 		},
 		"a row delete in a table an earlier delete removed": {
-			ops:   []model.EditOp{{Op: "delete", Block: table}, {Op: "delete_row", Block: table, Index: json.RawMessage("1")}},
-			wants: []string{`operation 1: block "` + table + `" names a block that operation 0, delete {block:"` + table + `"}, removed earlier in this edit`},
+			ops:  []model.EditOp{{Op: "delete", Block: table}, {Op: "delete_row", Block: table, Index: json.RawMessage("1")}},
+			code: "INVALID_OP",
+			want: `operation 1: invalid document operation field "block": block "` + table + `" was removed by operation 0 with delete {block:"` + table + `"}; remove it from the atomic batch`,
 		},
 		"a find whose text an earlier replace took away": {
-			ops:   []model.EditOp{{Op: "replace", Find: "Body.", With: "Text."}, {Op: "replace", Find: "Body.", With: "Words."}},
-			wants: []string{`operation 1: find "Body." names text that operation 0, replace {find:"Body."}, removed earlier in this edit`},
+			ops:  []model.EditOp{{Op: "replace", Find: "Body.", With: "Text."}, {Op: "replace", Find: "Body.", With: "Words."}},
+			code: "TARGET_NOT_FOUND",
+			want: `operation 1: quote "Body." not found; ` + quoteRule + `; nearest blocks: "Plan" | "Intro." | "Text."`,
 		},
 		"an insert before text an earlier delete removed": {
-			ops:   []model.EditOp{{Op: "replace", Find: "After.", With: "Then."}, {Op: "delete", Find: "Intro."}, {Op: "insert", Before: "Intro.", Markdown: "New."}},
-			wants: []string{`operation 2: before "Intro." names text that operation 1, delete {find:"Intro."}, removed earlier in this edit`},
+			ops:  []model.EditOp{{Op: "replace", Find: "After.", With: "Then."}, {Op: "delete", Find: "Intro."}, {Op: "insert", Before: "Intro.", Markdown: "New."}},
+			code: "TARGET_NOT_FOUND",
+			want: `operation 2: quote "Intro." not found; ` + quoteRule + `; nearest blocks: "Plan" | "Body." | "Parent"`,
 		},
 		"an insert after a heading an earlier delete removed": {
-			ops:   []model.EditOp{{Op: "delete", Find: "# Plan"}, {Op: "insert", After: "heading:Plan", Markdown: "New."}},
-			wants: []string{`operation 1: after "heading:Plan" names a heading that operation 0, delete {find:"# Plan"}, removed earlier in this edit`},
+			ops:  []model.EditOp{{Op: "delete", Find: "# Plan"}, {Op: "insert", After: "heading:Plan", Markdown: "New."}},
+			code: "TARGET_NOT_FOUND",
+			want: `operation 1: heading anchor "Plan" not found; the document has no headings`,
 		},
+		// Before dispatch://INFRA-4517 the first delete took only the item's text, and the second
+		// found its item; the first now takes the whole item, so the second quotes text no block holds.
 		"an item an earlier delete removed with the item holding it": {
-			ops:   []model.EditOp{{Op: "delete", Find: "- Parent"}, {Op: "delete", Find: "- Child"}},
-			wants: []string{`operation 1: find "- Child" names text that operation 0, delete {find:"- Parent"}, removed earlier in this edit`},
+			ops:  []model.EditOp{{Op: "delete", Find: "- Parent"}, {Op: "delete", Find: "- Child"}},
+			code: "TARGET_NOT_FOUND",
+			want: `operation 1: quote "- Child" not found; a leading list marker is no text the item holds: it selects an item of a bullet list, its number not matched, whose text starts with the rest; quote the item's text without the marker ("Child") to match it anywhere; nearest blocks: "Plan" | "Intro." | "Body."`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := applyOperations(tree, test.ops)
-			var removed *ErrTargetRemovedInBatch
-			if !errors.As(err, &removed) || !isEditRefusal(err) {
-				t.Fatalf("the batch = %v, want it refused with an ErrTargetRemovedInBatch", err)
+			batch, err := applyOperations(tree, test.ops)
+			var invalid *ErrInvalidOp
+			code := ""
+			switch {
+			case errors.As(err, &invalid):
+				code = "INVALID_OP"
+			case errors.Is(err, pmdoc.ErrTargetNotFound):
+				code = "TARGET_NOT_FOUND"
 			}
-			for _, want := range append(test.wants, "each operation reads the document as the operations before it left it") {
-				if !strings.Contains(err.Error(), want) {
-					t.Fatalf("refusal = %q, want it to say %q", err, want)
-				}
+			if code != test.code || !isEditRefusal(err) || batch.tree != nil {
+				t.Fatalf("the batch = %v (code %q), tree %v; want it refused %s", err, code, batch.tree, test.code)
+			}
+			if err.Error() != test.want {
+				t.Fatalf("refusal = %q, want %q", err, test.want)
 			}
 		})
-	}
-	// A quote no operation of the batch removed is refused as text the document does not hold.
-	_, err = applyOperations(tree, []model.EditOp{{Op: "delete", Find: "Intro."}, {Op: "replace", Find: "Missing.", With: "x"}})
-	var missing *ErrQuoteNotFound
-	if !errors.As(err, &missing) || strings.Contains(err.Error(), "removed earlier") {
-		t.Fatalf("a quote the document never held = %v, want it refused as not found", err)
 	}
 }
 

@@ -226,11 +226,6 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, "INSERT_DOES_NOT_FIT", http.StatusBadRequest, doesNotFit.Error())
 		return
 	}
-	var removed *docs.ErrTargetRemovedInBatch
-	if errors.As(err, &removed) {
-		writeError(w, "TARGET_REMOVED_IN_BATCH", http.StatusBadRequest, removed.Error())
-		return
-	}
 	if errors.Is(err, pmdoc.ErrTableWidth) {
 		writeError(w, "TABLE_WIDTH", http.StatusBadRequest, err.Error())
 		return
