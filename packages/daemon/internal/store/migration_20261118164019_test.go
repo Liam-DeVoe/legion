@@ -16,9 +16,12 @@ const stateEventsVersion = 20261118164019
 // StateBoot). The outbox refuses a kind its constraint does not name, so before this migration
 // the row could not be queued, and the write that queues it would fail with it: the negative
 // control is that refusal, read before the migration, on a database that already carries the
-// role-holders kind list (20261116165926), which this version stands above. After it the row is
+// step record's kind list (20261117000528), which this version stands above. After it the row is
 // queued, and so is every kind the constraint already named, since the migration rewrites the
-// list whole and a kind left out would stop its own effect. A kind that is none is still refused.
+// list whole and a kind left out would stop its own effect: a step record queued before the
+// migration, which the constraint's validation of the rows it finds would refuse were step_record
+// left out, is kept through it, and a step record is queued after it. A kind that is none is
+// still refused.
 //
 // The rest of the migration is the sequence the rows take at their commit: the three state columns,
 // null on a row of any other kind and on every row the migration found, written on a state row
@@ -38,6 +41,9 @@ func TestTheOutboxTakesTheStateKindsAndTheirSequenceWith20261118164019(t *testin
 	if err := queue("notice", "LEGION-208"); err != nil {
 		t.Fatalf("queue a notice before the migration: %v", err)
 	}
+	if err := queue("step_record", "LEGION-208"); err != nil {
+		t.Fatalf("queue a step record before the migration: %v", err)
+	}
 	err := queue("state_change", "LEGION")
 	if err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
 		t.Fatalf("queueing a state_change row before the migration = %v, want the kind constraint to refuse it: it is a row the migration exists for", err)
@@ -46,17 +52,24 @@ func TestTheOutboxTakesTheStateKindsAndTheirSequenceWith20261118164019(t *testin
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the state events: %v", err)
 	}
+	var pendingSteps int
+	if err := store.Pool().QueryRow(ctx, `select count(*) from outbox where kind = 'step_record'`).Scan(&pendingSteps); err != nil {
+		t.Fatalf("count the step records the migration left: %v", err)
+	}
+	if pendingSteps != 1 {
+		t.Fatalf("step records after the migration = %d, want the one queued before it kept", pendingSteps)
+	}
 
 	kinds := []string{
 		"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
 		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
 		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
 		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
-		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "state_change",
-		"state_admission", "state_boot",
+		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record",
+		"state_change", "state_admission", "state_boot",
 	}
-	if len(kinds) != 28 {
-		t.Fatalf("the list names %d kinds, want the 28 the daemon writes", len(kinds))
+	if len(kinds) != 29 {
+		t.Fatalf("the list names %d kinds, want the 29 the daemon writes", len(kinds))
 	}
 	// A state row carries the bare project key as its issue; every other kind an issue key.
 	for _, kind := range kinds {
@@ -68,7 +81,7 @@ func TestTheOutboxTakesTheStateKindsAndTheirSequenceWith20261118164019(t *testin
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)
 		}
 	}
-	t.Logf("after the migration the outbox takes all 28 kinds, the three state kinds among them")
+	t.Logf("after the migration the outbox takes all 29 kinds, the three state kinds among them")
 	if err := queue("quiesce", "LEGION-208"); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
 		t.Fatalf("queueing a row of a kind that is none = %v, want the constraint to refuse it", err)
 	}
