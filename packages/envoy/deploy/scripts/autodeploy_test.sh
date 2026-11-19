@@ -1156,14 +1156,19 @@ fi
 
 # The continuous loop survives a failed pass, whatever failed: the pass logs its named line and
 # ends, the loop says so and runs the next pass after POLL, and that pass deploys once the registry
-# answers. Here the first read is refused, or the first pull fails, and the next pass deploys
-# new-image. The loop is still running at its third wait, where the case stops it. A single run of
-# the same failed pass exits 1 (the refused read and the failed pull above).
-for failure in refused-read AUTODEPLOY_TEST_PULL_FAIL_ONCE; do
+# answers. Here the first read is refused, or the first pull fails, or the first pass meets an
+# arithmetic error (a clock that answers `300s`), and the next pass deploys new-image. That last one
+# is why each pass runs as a process of its own: in the loop's own shell the error would abort the
+# whole loop, and the deployer would exit. The loop is still running at its third wait, where the
+# case stops it. A single run of the same failed pass exits 1 (the refused read, the failed pull and
+# the once-ends case below).
+for failure in refused-read AUTODEPLOY_TEST_PULL_FAIL_ONCE garbled-clock; do
   fresh_env
   once=AUTODEPLOY_TEST_NONE
   if [[ "$failure" == refused-read ]]; then
     printf 'new-image refused-once\n' >"$manifests"
+  elif [[ "$failure" == garbled-clock ]]; then
+    printf 'garbled-once\n' >"$clock"
   else
     once=$failure
   fi
