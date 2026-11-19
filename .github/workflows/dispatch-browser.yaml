@@ -3,7 +3,7 @@ name: Dispatch browser suite
 # Every browser job of the Dispatch suite, in one place. ci.yaml's dispatch-browser job calls it
 # with the pull-request lane on a pull request that carries no `full-ci` label and the full lane
 # on everything else, and the nightly workflow calls it with the full lane. The rows are spread
-# over four shard machines, the three `-alone` projects get a machine each, the two-process job,
+# over five shard machines, the three `-alone` projects get a machine each, the two-process job,
 # the fake-embedder job and the containerised visual review take one each, and one merge job
 # joins what the shard and alone legs wrote into a single report and publishes the run's flake
 # rate.
@@ -179,7 +179,7 @@ jobs:
   shard:
     needs: binaries
     runs-on: ubuntu-24.04
-    # One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/4` over four
+    # One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/5` over four
     # Playwright workers, and the run's `globalSetup` starts one stack per worker, each with a
     # Postgres, a harness and a file-store bucket of its own (packages/dispatch/e2e/
     # harness-pool.ts), so this job has no `postgres:` service and no job-level DATABASE_URL:
@@ -237,7 +237,7 @@ jobs:
     #
     # The browser step's budget below is measured, on the two runs of the head that sharded this
     # suite: 42334424798, the pull-request lane, and 42316487530, the full lane. Four legs each,
-    # in shard order, in seconds:
+    # the split those runs had (this job runs five now), in shard order, in seconds:
     #
     #   step                                     pull-request lane        full lane
     #   Browser-test dispatch dashboard         413, 293, 307, 292  419, 297, 334, 295
@@ -347,11 +347,12 @@ jobs:
     timeout-minutes: 22
     strategy:
       fail-fast: false
-      # Four legs. The count is written here and in the `--shard` denominator of the browser step
-      # below, and nowhere else, so the two move together: a denominator larger than the leg list
-      # would leave the rows of the missing legs unrun with nothing red.
+      # Five legs. The count is written here, in the `--shard` denominator of the browser step
+      # below and in that step's name, which .github/scripts/ci_job_reads.py's BROWSER_SHARD_SPECS
+      # spells again. The first two must move together: a denominator above the leg count would
+      # leave the rows of the missing legs unrun with nothing red.
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -512,7 +513,7 @@ jobs:
           done
           [ "$(curl -sf "$store/readiness")" = ready ] || { echo "::error::the file store did not serve back what it stored"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
           curl -sf -X DELETE -o /dev/null "$store/readiness"
-      - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)
+      - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 5)
         # `bun run e2e` builds the SPA itself, which would rebuild it a second time in this job.
         # Calling Playwright directly reuses the "Build dispatch dashboard" step's dist above and
         # drops this job to one Vite build. Safe because that build and this one are now the same
@@ -628,7 +629,7 @@ jobs:
           esac
           # Why the projects are named at all: a shard splits the rows of every project the run
           # selects, so a project this leg does not name is a project it would spread over these
-          # four machines. `visual` and `visual-phone` are in the default selection, and their
+          # five machines. `visual` and `visual-phone` are in the default selection, and their
           # image comparisons belong to the `visual` job, which runs them one row at a time, so
           # naming the projects above is what keeps them off these machines. The three `-alone`
           # projects stay out because this list does not name them, and for no other reason:
@@ -661,7 +662,7 @@ jobs:
           # is its own subshell, so a variable set in the left-hand one does not survive it; the
           # `||` is what keeps `sh -e` from ending the subshell before the status is written.
           rm -f "$RUNNER_TEMP/suite-status"
-          { bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=${{ matrix.shard }}/4 --workers 4 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
+          { bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=${{ matrix.shard }}/5 --workers 4 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
               echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
           status=0
           [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")
@@ -1534,7 +1535,7 @@ jobs:
   # What the legs together ran. It joins every shard's and every alone leg's blob report into one
   # report, publishes three readings of it - the rows, the flake rate and the legs that did not
   # succeed - and is the one job of this workflow that reports ci-ok, so a run gets one verdict
-  # and not seven.
+  # and not eight.
   #
   # This job must never be skipped: .github/scripts/ci-ok.sh fails a selected job whose result is
   # `skipped`, and a shard leg that failed would otherwise skip it and take ci-ok with it. It
