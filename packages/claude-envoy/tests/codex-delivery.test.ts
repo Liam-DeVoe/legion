@@ -149,6 +149,11 @@ describe("createCodexDelivery", () => {
     const busy = harness(inbox(), true)
     busy.delivery.turnStarted()
     const written = busy.delivery.deliver({ content: "y" })
+    // The 10 ms timer's sweep can reject the write before `turnEnded` returns, and Bun fails a
+    // test on a rejection that has no handler yet. The handler goes on now, and the expectation
+    // below still sees the rejection: `expect(...).rejects` cannot go here, since it blocks until
+    // the promise settles, and nothing settles this one before the turn ends.
+    written.catch(() => undefined)
     await Bun.sleep(20)
     await busy.delivery.turnEnded()
     await expect(written).rejects.toThrow("codex queue exited 1")
