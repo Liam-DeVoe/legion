@@ -944,6 +944,13 @@
             "interval_milliseconds": 250
           }
         },
+        "volume_trim": {
+          "enabled": true,
+          "high_percent": 90,
+          "low_percent": 60,
+          "min_age_minutes": 120,
+          "interval_seconds": 30
+        },
         "sandbox": {
           "type": "gvisor",
           "canary_issues": []
