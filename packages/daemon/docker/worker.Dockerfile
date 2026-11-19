@@ -35,7 +35,7 @@
 # git at /usr/bin/git (>= 2.42, from the debian:trixie-slim runtime base — jj's
 # git backend requires it); gh; trixie's socat, which carries a connection over `kubectl exec` to a
 # loopback port inside the pod, trixie's unzip, which model-gateway/apply_test.sh of
-# theorem-labs/agent-infra calls, trixie's busybox, which that repository's broker tests run their
+# example-org/deployment calls, trixie's busybox, which that repository's broker tests run their
 # scripts under, trixie's tmux, which the skill-scenario rig's panes and the tmux runtime's tests
 # need, and WebKit's host libraries, the Debian 13 list Playwright names for its WebKit, so a role
 # runs the Dispatch browser suite's WebKit projects (the runtime-base stage says why for each);
@@ -45,7 +45,7 @@
 # compiler and headers Go's cgo and race detector need (cgo stays off by default), gopls,
 # typescript-language-server with TypeScript's tsc and tsserver, pyright with its pyright-langserver,
 # and trixie's python3 with PyYAML (python3-yaml), curl, wget, jq, openssh-client (ssh-keygen),
-# util-linux (flock), postgresql-client (psql), redis-tools (redis-cli), sqlite3,
+# util-linux (flock), postgresql-client-18 (psql), redis-tools (redis-cli), sqlite3,
 # netcat-openbsd (nc), bind9-dnsutils (dig) and chromium (the browser Oh My Pi finds on PATH);
 # the PostgreSQL 18 server with pgvector and /usr/local/bin/legion-testpg, the pod's own test
 # database on a pod-lifetime emptyDir (the runtime-base stage says why);
@@ -107,7 +107,7 @@ ARG GH_TOOL=gh@2.98.0
 # under the issue's scratch before any role's agent starts (packages/daemon/internal/leakguard's
 # Source and InstallServed). R5 of dispatch://INFRA-1527 requires the newest
 # `leak-check-v<n>` tag at the time the pin is written, never a number a spec fixed: this is the
-# newest, read with `gh api repos/theorem-labs/agent-infra/git/refs/tags` at 2026-11-18T17:12:09Z,
+# newest, read with `gh api repos/example-org/deployment/git/refs/tags` at 2026-11-18T17:12:09Z,
 # and a bump reads that list again. The runtime stage exports it as LEGION_LEAK_CHECK_TAG, which
 # is where the launcher and each role's shim read it. Go holds the same tag once more:
 # ghReadsProvenCheck in packages/daemon/cmd/legion/gh_reads.go, the check `legion gh`'s list of
@@ -152,12 +152,12 @@ ARG AWS_CLI_SHA256=10ab32a95b27138d7cc1c1ac4ebb4d3acab60cd0a0df2fc37c4e2c440ed40
 # bump repeats both checks.
 ARG KUBECTL_VERSION=1.35.9
 ARG KUBECTL_SHA256=3cfeaf80be482b435b0aa214aff6e0b2c312ee23c0ff20810c75517b6004c6eb
-# mikefarah's yq, the YAML processor: model-gateway/apply_test.sh of theorem-labs/agent-infra, and
+# mikefarah's yq, the YAML processor: model-gateway/apply_test.sh of example-org/deployment, and
 # the `apply` program it tests, call the bare name `yq` on PATH. A package runner does reach yq —
 # `go run github.com/mikefarah/yq/v4@v4.54.1` works with this image's Go — but it could supply that
 # bare name only through a file called `yq` on the role's own PATH, which
 # skills/legion-worker/references/tools.md forbids, and `go run` costs seconds per call: one passing
-# run of that test calls yq 228 times (counted 2026-11-06 at agent-infra main ec59a17a; the count
+# run of that test calls yq 228 times (counted 2026-11-06 at deployment main ec59a17a; the count
 # moves with that repository). Debian's `yq` is a different program — kislyuk's Python
 # wrapper over jq, 3.4.3 in trixie, whose command language is another one — so this is a pinned
 # fetch, and an apt package must never take its place. The pin is the SHA-256 of yq_linux_amd64 as
@@ -699,7 +699,7 @@ COPY --chmod=0755 packages/daemon/docker/azure-cli/az /opt/azure-cli/bin/az
 FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 AS runtime-base
 # git: jj's git backend and the workers' own git use. ca-certificates: GitHub, Dispatch, model APIs.
 # chromium, python3, curl, wget, jq, openssh-client (for ssh-keygen), util-linux (for flock),
-# postgresql-client (for psql), redis-tools (for redis-cli), sqlite3, netcat-openbsd (for nc) and
+# postgresql-client-18 (for psql), redis-tools (for redis-cli), sqlite3, netcat-openbsd (for nc) and
 # bind9-dnsutils (for dig): what the capability check's browser, eval-python and toolchain rows look for
 # (packages/daemon/internal/capabilities/image.go) — the last five join flock in the toolchain row —
 # trixie's since the suite is the apt pin (the note above the ARGs); chromium brings its library
@@ -743,7 +743,7 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # for every browser (xvfb and fonts) is left out: it holds no library WebKit links or loads, and
 # Playwright's launch validation does not read it. The webkit-check stage fails the build when a
 # Playwright bump needs a library this list lacks.
-# postgresql-client (psql): `bun run e2e`, the Dispatch browser suite this deployment's
+# postgresql-client-18 (psql): `bun run e2e`, the Dispatch browser suite this deployment's
 # instructions require before a reader-facing Dispatch change merges, reaches psql through
 # packages/dispatch/e2e/psql.ts, which seed.ts calls for every spec's database reset; and the local
 # stack `bun run dispatch:local` (packages/dispatch/e2e/local-instance.ts) refuses to start without
@@ -762,7 +762,9 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # note above says what is pinned there and why a version pin is not. The source list and the key go
 # in the same RUN, since this stage's single apt RUN is the only one the image allows (the paragraph
 # at the top of the stage says why): it installs ca-certificates and curl first, writes the key and
-# the list, updates again and then installs the whole set. postgresql-client follows the server to 18.
+# the list, updates again and then installs the whole set. The client is postgresql-client-18, named
+# by its major: the unversioned postgresql-client follows apt.postgresql.org's newest major, which
+# became 19 on 2026-11-19, and pulled postgresql-client-19 beside the server's 18.
 # The extension goes into template1 at start, so every database a test makes from it carries pgvector
 # and the Dispatch suite needs no step of its own. The RUN below deletes the cluster
 # `pg_createcluster` makes from the package's postinst (/var/lib/postgresql, /etc/postgresql): no pod
@@ -784,10 +786,10 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # virtual `dnsutils`, which trixie has no candidate for: apt resolves it to this single provider
 # today, and a second provider the day one appears would fail the build on a name that was never
 # the package.
-# unzip: model-gateway/apply_test.sh of theorem-labs/agent-infra calls `unzip`, and no package
+# unzip: model-gateway/apply_test.sh of example-org/deployment calls `unzip`, and no package
 # runner in the image reaches it. A role cannot install it in the pod either: its /usr/local/bin and
 # /opt are read-only, and apt-get cannot take dpkg's lock.
-# busybox: theorem-labs/agent-infra's broker/ tests run scripts under `busybox sh`, and without it
+# busybox: example-org/deployment's broker/ tests run scripts under `busybox sh`, and without it
 # the suite fails with "busybox is not on PATH". trixie's package (busybox 1:1.37.0-6+b9, read
 # 2026-11-18; the toolchain step prints its version) installs /usr/bin/busybox alone, with no applet
 # links, so `wget` and `sh` stay GNU wget and dash. Its `wget` and `ssl_client` applets do no
@@ -865,7 +867,7 @@ RUN install -d -m 0755 /etc/apt/keyrings \
       libopenjp2-7 libopus0 libpango-1.0-0 libpng16-16t64 libproxy1v5 libsecret-1-0 libsoup-3.0-0 \
       libwayland-client0 libwayland-egl1 libwayland-server0 libwebp7 libwebpdemux2 libwoff1 libx11-6 \
       libxcomposite1 libxdamage1 libxkbcommon0 libxml2 libxslt1.1 netcat-openbsd openssh-client \
-      postgresql-18 postgresql-18-pgvector postgresql-client python3 python3-yaml redis-tools socat sqlite3 \
+      postgresql-18 postgresql-18-pgvector postgresql-client-18 python3 python3-yaml redis-tools socat sqlite3 \
       tmux unzip util-linux wget \
     && rm -rf /var/lib/apt/lists/* /var/lib/postgresql /etc/postgresql \
       /etc/ssl/private/ssl-cert-snakeoil.key /etc/ssl/certs/ssl-cert-snakeoil.pem \

@@ -52,11 +52,20 @@ import {
   DISPATCH_ITEM_BLOCKS,
   HANDOFF_PHASE_PATTERN,
   HANDOFF_PHASE_RULE_WORDS,
+  PLAN_INPUT_CODE,
+  PLAN_OTHER_ISSUE_CODE,
   PROJECT_KEY_PATTERN,
   PROJECT_KEY_RULE,
   SEARCH_KIND_DEPTH,
   SEARCH_QUERY_HINT,
   SEARCH_QUERY_MAX,
+  STEP_AGENT_TEXT_PATTERN,
+  STEP_AGENT_TEXT_RULE_WORDS,
+  STEP_INPUT_CODE,
+  STEP_KINDS,
+  STEP_OTHER_ISSUE_CODE,
+  STEP_RESULTS,
+  STEP_WRITER_CODE,
 } from "../src/dispatch-tools";
 import { MINTED_DEDUPE_KEY_PATTERN } from "../src/envelope";
 import {
@@ -88,7 +97,12 @@ import {
   GOING_SEARCH_TOOL,
   GOING_WORDS_MAX,
 } from "../src/going";
-import { controllerToken } from "../src/legion-roles";
+import {
+  controllerToken,
+  LEGION_PLAN_RATING_LEAST,
+  LEGION_PLAN_RATING_MOST,
+  LEGION_PLAN_REASON_MAX,
+} from "../src/legion-roles";
 import {
   agentSubject,
   DISPATCH_ISSUE_TOPIC_PREFIX,
@@ -506,6 +520,17 @@ const DispatchEventBodyMax = ${DISPATCH_EVENT_BODY_MAX}
 // refusal cannot drift apart.
 const DispatchHandoffBodyMax = ${DISPATCH_HANDOFF_BODY_MAX}
 
+// PlanRatingLeast and PlanRatingMost are the scale of a retro's rating of the plan its issue ran,
+// from the plan cost the work to the plan fit the work, and PlanReasonMax the most characters,
+// counted as Unicode code points, the rating's reason holds. Generated from
+// LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST and LEGION_PLAN_REASON_MAX in
+// packages/contracts, so Dispatch's record of the retro and the Legion daemon's completion route,
+// which both hold a rating to CheckPlanRating (the daemon through github.com/sjawhar/envoy/steprecord),
+// and the plugins' tools hold one scale.
+const PlanRatingLeast = ${LEGION_PLAN_RATING_LEAST}
+const PlanRatingMost = ${LEGION_PLAN_RATING_MOST}
+const PlanReasonMax = ${LEGION_PLAN_REASON_MAX}
+
 // HandoffPhaseRule says the handoff-phase pattern's rule in words; every refusal of a phase that is
 // not a handoff phase gives it. Generated from HANDOFF_PHASE_RULE_WORDS in packages/contracts so
 // the server and the tool word it once.
@@ -516,6 +541,43 @@ const HandoffPhaseRule = ${JSON.stringify(HANDOFF_PHASE_RULE_WORDS)}
 // packages/contracts, which the dispatch command checks a phase against, so the two accept the
 // same phases.
 const HandoffPhasePattern = ${JSON.stringify(HANDOFF_PHASE_PATTERN.source)}
+
+// The kinds of a run a step record names: a step a plan names, at its place from 1, and the retro
+// and the merge, which no plan names, at the place 0. The results of a run that ended. The codes of
+// the step write's refusals that no retry changes. Generated from STEP_KINDS, STEP_RESULTS and the
+// STEP_*_CODE constants in packages/contracts: Dispatch's store and route use them, and the Legion
+// daemon reads them through github.com/sjawhar/envoy/steprecord, so no word is written twice.
+const (
+	StepKindStep       = ${JSON.stringify(STEP_KINDS[0])}
+	StepKindRetro      = ${JSON.stringify(STEP_KINDS[1])}
+	StepKindMerge      = ${JSON.stringify(STEP_KINDS[2])}
+	StepResultPassed   = ${JSON.stringify(STEP_RESULTS[0])}
+	StepResultFailed   = ${JSON.stringify(STEP_RESULTS[1])}
+	StepResultStopped  = ${JSON.stringify(STEP_RESULTS[2])}
+	StepInputCode      = ${JSON.stringify(STEP_INPUT_CODE)}
+	StepWriterCode     = ${JSON.stringify(STEP_WRITER_CODE)}
+	StepOtherIssueCode = ${JSON.stringify(STEP_OTHER_ISSUE_CODE)}
+)
+
+// The codes of the plan write's refusals that no retry changes: a value outside its form, and an id
+// whose plan is the plan of another issue (a writer that is not the daemon's session is refused
+// StepWriterCode). Generated from PLAN_INPUT_CODE and PLAN_OTHER_ISSUE_CODE in packages/contracts:
+// Dispatch's plan route answers them, and the Legion daemon reads them through
+// github.com/sjawhar/envoy/steprecord.
+const (
+	PlanInputCode      = ${JSON.stringify(PLAN_INPUT_CODE)}
+	PlanOtherIssueCode = ${JSON.stringify(PLAN_OTHER_ISSUE_CODE)}
+)
+
+// StepAgentTextPattern is the form of the agent, the session and the model a step record names:
+// printable ASCII with no space, from 1 to 128 characters. Generated from STEP_AGENT_TEXT_PATTERN in
+// packages/contracts: Dispatch's step write refuses text outside it, and the Legion daemon, through
+// github.com/sjawhar/envoy/steprecord, leaves such text out of the records it writes.
+const StepAgentTextPattern = ${JSON.stringify(STEP_AGENT_TEXT_PATTERN.source)}
+
+// StepAgentTextRule says StepAgentTextPattern's rule in words, which Dispatch's refusal gives.
+// Generated from STEP_AGENT_TEXT_RULE_WORDS in packages/contracts.
+const StepAgentTextRule = ${JSON.stringify(STEP_AGENT_TEXT_RULE_WORDS)}
 
 // ProjectNameMax is the longest project name, in UTF-16 units, that POST /api/v1/projects
 // accepts. Generated from PROJECT_NAME_MAX in packages/contracts so the server's refusal, the
@@ -987,7 +1049,10 @@ function renderContracts(envelope: Schema) {
   const aliases = ["Envelope", ...envelopeObjects(envelope).map((key) => `Envelope${name(key)}`)]
     .map((type) => `type ${type} = listenerwire.${type}`)
     .join("\n");
-  return `package contracts
+  return `// Code generated by packages/contracts/scripts/gen-go.ts from
+// packages/contracts/schemas/envelope.schema.json. DO NOT EDIT.
+
+package contracts
 
 import (
 	"crypto/sha256"

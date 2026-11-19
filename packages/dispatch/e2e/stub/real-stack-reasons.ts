@@ -176,6 +176,8 @@ export const realStackReasons: Record<string, string> = {
     "the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold",
   "issues-table.e2e.ts":
     "every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload",
+  "issue-page-d.e2e.ts":
+    "each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue",
   "issue.e2e.ts":
     "asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read",
   "judged-grant.e2e.ts":
@@ -263,6 +265,8 @@ export const realStackReasons: Record<string, string> = {
   "smoke.e2e.ts":
     "the reader nobody signed in, where the stubbed layer's page is always signed in because its recording answers /auth/whoami",
   "spec-suggestion-decoration.e2e.ts": "reads the decoration's DOM inside the live editor",
+  "steps.e2e.ts":
+    "the attempt is the server's count of the daemon's writes, and a start written twice keeps the server's first",
   "stored-text-reading.e2e.ts":
     "each row reads a body the live server stored and drew as its own tree, and the server's reading is what the row compares against the browser's: a recording would answer a tree recorded elsewhere rather than the one this server sends for those bytes",
   "task-items.e2e.ts": "asserts inside the live document editor",

@@ -49,9 +49,13 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // naming an owner the bundle holds no directory for — an owner the role's App is not installed
 // on — and one naming a repository a pair moved to an owner the bundle holds no directory for are
 // refused, exit 2, naming why, and the real gh never runs: no token is ever sent for a repository
-// it cannot reach. Under a GH_TOKEN or GITHUB_TOKEN, which gh sends in place of any directory's
-// token, every command is refused the same way but these: the guard's own visibility reads, which
-// run with that token (ghVisibilityRead), the shared check's visibility read
+// it cannot reach, but by one exception, R4 of dispatch://INFRA-3399 (ghTargetOf): a call that
+// writes nothing, names only owners the bundle holds no directory for and names no repository a
+// configured rename moves, in a working directory whose remotes name no github.com repository for
+// it, keeps GH_CONFIG_DIR, as a command naming no owner does. Under a GH_TOKEN or GITHUB_TOKEN,
+// which gh sends in place of any directory's token,
+// every command is refused the same way but these: the guard's own visibility reads, which run
+// with that token (ghVisibilityRead), the shared check's visibility read
 // (sharedCheckVisibilityRead), the exact `gh api rate_limit` (ghRateLimitRead) and `gh auth
 // git-credential`.
 //
@@ -208,6 +212,11 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		// no directory for the read's repository at all, and this routing would then refuse a
 		// read the caller's token can make, which is the second reason #4219 gives for running
 		// these reads under it (ghVisibilityRead).
+		//
+		// With no caller token, a read of a repository whose owner the bundle holds no directory
+		// for is refused below with leakguard.OwnerNotServedError's line (ownerGHConfigDir), and
+		// no gh runs. The guard reads exactly that refusal, and then reads the repository's
+		// visibility with no credential (leakguard.Guard.Visibility).
 		if ghCallerToken(env) == "" {
 			target.owner, target.repo = strings.ToLower(visibilityRead.Owner()), visibilityRead.Name()
 			target.dir, err = ghConfigDirFor(env["LEGION_GH_OWNERS_DIR"], target.owner, target.repo)
@@ -480,7 +489,9 @@ func trimGhCallLog(path string) {
 //     as a git push whose credential helper answers with GH_TOKEN. That token writes the
 //     repository the guard reads, so it can read that repository too.
 //   - The bundle may hold no directory for the repository's owner. A read with the bundle's
-//     directory would then be refused, and so would the push, for a repository the token writes.
+//     directory would then be refused, and the guard could read the visibility only with no
+//     credential, which answers for a public repository alone (leakguard.OwnerNotServedError):
+//     a push to a private repository the token writes would be refused.
 //   - gh sends the caller's token first, so a read with the bundle's directory would also have to
 //     remove that token from gh's environment.
 //
@@ -819,18 +830,28 @@ func ghCallerToken(env map[string]string) string {
 // a repository, an owner, a team or an issue by URL (ghOptionKinds). So does the command's own
 // repository when gh resolves it, because no argument names it and the leaf reads one, or
 // whatever names it for a leaf that reads every remote (fromOwnRepository): GH_REPO for a leaf
-// that reads it, gh api's :owner and {repo} placeholders among them, and otherwise every
-// github.com repository the working directory's git remotes name (remotes), read as gh reads
-// them; a command naming no owner at all counts those too. Every repository they name, and every
-// owner one names alone — `orgs/<owner>/`, an owner:/org:/user: qualifier, an `<owner>` argument,
-// a team, a project, an owner option, since such a command reaches whatever else of that owner's
-// gh resolves — is routed through dirFor, the bundle's own pick (ghConfigDirFor), and they must
-// all route to one directory; two are an error (selectors.dir). The target's repository is the
-// one repository they all name, which is none where a selector names an owner alone. A GraphQL
-// query naming its repository otherwise, by a node id or in the query text, names none gh could
-// resolve. GH_HOST naming another host than github.com, where gh would send no token of the
-// bundle's, and a GH_TOKEN or GITHUB_TOKEN, which gh sends in place of any directory's token, are
-// errors.
+// that reads it, gh api's :owner and {repo} placeholders among them, and otherwise the working
+// directory's git remotes (remotes), read as gh reads them: origin's fetch URL alone where the
+// leaf honours gh's default marker (honoursDefaultMarker) and `remote.origin.gh-resolved base`
+// makes origin's repository gh's own, and every github.com repository they name otherwise
+// (fromWorkingDirectory); a command naming no owner at all counts those too. Every repository
+// they name, and every owner one names alone — `orgs/<owner>/`, an owner:/org:/user: qualifier,
+// an `<owner>` argument, a team, a project, an owner option, since such a command reaches
+// whatever else of that owner's gh resolves — is routed through dirFor, the bundle's own pick
+// (ghConfigDirFor), and they must all route to one directory; two are an error (selectors.dir).
+// A call that writes nothing (ghWritesNothing, or a GraphQL query ghGraphQLQueryRead admits),
+// whose every item is an owner the bundle holds no directory for, which names no repository a
+// configured rename moves (dirFor answers one with the pair's own refusal, or routes it to the
+// `to` owner's directory) and whose working directory's remotes named no github.com repository
+// for it, runs with GH_CONFIG_DIR's directory, the one a command naming no owner runs with,
+// rather than being refused (R4 of dispatch://INFRA-3399);
+// every other call is routed and refused by the rule above. The target's writesNothing stays
+// ghWritesNothing's alone, which the guard's reading of the call rests on. The target's
+// repository is the one repository they all name, which is none where a selector names an owner
+// alone. A GraphQL query naming its repository otherwise, by a node id or in the query text,
+// names none gh could resolve. GH_HOST naming another host than github.com, where gh
+// would send no token of the bundle's, and a GH_TOKEN or GITHUB_TOKEN, which gh sends in place of
+// any directory's token, are errors.
 func ghTargetOf(argv []string, env map[string]string, help func(path []string) (string, error), remotes func() ([]ghRemote, error), dirFor func(owner, name string) (string, error)) (ghTarget, error) {
 	if host := env["GH_HOST"]; host != "" && !strings.EqualFold(host, "github.com") {
 		return ghTarget{}, fmt.Errorf("GH_HOST is %q, another host than github.com, so it sends no token; unset GH_HOST", host)
@@ -900,7 +921,11 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 	files := ghSentFiles(parsed)
 	command := strings.Join(cmd.path, " ")
 	writesNothing := ghWritesNothing(argv, cmd.path)
-	dir, err := sel.dir(dirFor)
+	fallback := ""
+	if writesNothing || ghGraphQLQueryRead(argv) {
+		fallback = env["GH_CONFIG_DIR"]
+	}
+	dir, err := sel.dir(dirFor, fallback)
 	if err != nil {
 		return ghTarget{}, err
 	}
@@ -918,10 +943,12 @@ func cannotPlace(arg, why string, api bool) error {
 }
 
 // ghArgs is a leaf's arguments as pflag reads them: its positional arguments in order, every
-// value given each option, by long name, and whether gh only prints the leaf's help.
+// value given each option, by long name, the last value given each boolean option but --help, by
+// long name, and whether gh only prints the leaf's help.
 type ghArgs struct {
 	positionals []string
 	values      map[string][]string
+	booleans    map[string]bool
 	help        bool
 }
 
@@ -936,7 +963,7 @@ type ghArgs struct {
 // (ghCloneGitFlags).
 func (c *ghCommand) parse(args []string) (ghArgs, error) {
 	api, leaf := c.isAPI(), c.quoted()
-	parsed := ghArgs{values: map[string][]string{}}
+	parsed := ghArgs{values: map[string][]string{}, booleans: map[string]bool{}}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
@@ -1095,8 +1122,10 @@ func ghCloneGitFlagList() string {
 	return strings.Join(slices.Sorted(maps.Keys(ghCloneGitFlagTakes)), ", ")
 }
 
-// set records value given the option name: --help's as a boolean, any other's taking a value in
-// the order given. An option of ghRefusedOptions is refused, naming the argument it came in.
+// set records value given the option name: --help's as a boolean; another boolean's as pflag
+// reads it (strconv.ParseBool), the last given deciding, and false for a value that is no boolean,
+// which gh refuses itself; any other's taking a value in the order given. An option of
+// ghRefusedOptions is refused first, naming the argument it came in.
 func (p *ghArgs) set(name string, flag ghFlag, value, arg string, api bool) error {
 	if why, refused := ghRefusedOptions[name]; refused {
 		return fmt.Errorf("%q %s, so it sends nothing", arg, why)
@@ -1110,6 +1139,8 @@ func (p *ghArgs) set(name string, flag ghFlag, value, arg string, api bool) erro
 		p.help = help
 	case flag.value:
 		p.values[name] = append(p.values[name], value)
+	default:
+		p.booleans[name], _ = strconv.ParseBool(value)
 	}
 	return nil
 }

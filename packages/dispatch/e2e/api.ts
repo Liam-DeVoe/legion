@@ -1058,6 +1058,23 @@ export function createHandoff(
   );
 }
 
+/** The Legion daemon of `issue`'s project writes one run of a step, as its outbox does: under the
+ *  agent bearer, naming the session `legion-daemon:<PROJECT>`, the one writer the route admits
+ *  for that project's issues. A field the record already holds is kept, so a start and an end
+ *  may arrive in either order. */
+export function putStep(
+  issue: string,
+  id: string,
+  input: Body<"/api/v1/issues/{key}/steps/{id}", "put">
+) {
+  const project = issue.slice(0, issue.indexOf("-"));
+  return put(
+    "/api/v1/issues/{key}/steps/{id}",
+    { body: input, params: { id, key: issue } },
+    { actor: { id: `legion-daemon:${project}`, kind: "session" }, as: "agent" }
+  );
+}
+
 /** The signed-in human's own per-agent conversation state, as another of their devices sets it. */
 export function putAgentState(
   sessionID: string,
@@ -1074,6 +1091,12 @@ export function putAgentState(
 /** The signed-in human's own conversation state with every session, unread counts included. */
 export function getAgentStates(options: ApiOptions = {}) {
   return get("/api/v1/me/agents/state", {}, options);
+}
+
+/** `PUT /api/v1/me/documents/{id}/read`: records `version` as the caller's last read version of the
+ *  document, the write the Spec tab makes when it shows that version (`useSpecMarks`). */
+export function putDocumentRead(id: string, version: number, options: ApiOptions = {}) {
+  return put("/api/v1/me/documents/{id}/read", { body: { version }, params: { id } }, options);
 }
 
 export function putIssueState(
