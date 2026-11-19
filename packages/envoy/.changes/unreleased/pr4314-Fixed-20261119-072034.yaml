@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+  A Postgres connection string that holds `://` but that pgx would read as keyword=value text (a
+  scheme not in lower case, such as `POSTGRES://`, or white space around the URL) is refused by its
+  length at every boot and opener (`pgsetting`), with words that say to write the scheme in lower
+  case with no space around the value: pgx would send the URL up to its first `=`, the password
+  among it, to the server as the name of a setting.
+
+  `DISPATCH_IAP_AUDIENCE` takes only letters, digits, `.`, `_`, `-` and `/` after
+  `/projects/<project number>/`, so a URL with a user part written there is refused by its length
+  and never reaches the boot line that logs the audience.
+
+  loadgen refuses by its length an endpoint (`-url`, `-listener`, `-nats`, `-nats-mon`, `-pprof`,
+  or a `-loop-listeners` endpoint) whose user part net/url reads apart, such as a token with a raw
+  `/` written as the whole user part, and records such a value redacted; `cloudsql-cpu` refuses an
+  `-api` or `-token-url` that holds a user part.
+time: 2026-11-19T07:20:34Z
+custom:
+    Issue: pr4314

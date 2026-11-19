@@ -124,6 +124,21 @@ func TestAForeignRunsMetaHoldsNoTokenOrPassword(t *testing.T) {
 			want: []string{"-allow-foreign=true", "-listener-token-file=" + listenerFile, "-nats=nats://127.0.0.1:3", "-token-file=" + agentFile},
 		},
 		{
+			// A token with a raw / as the whole user part, which net/url reads with its first
+			// half as the host and the rest as the path: each endpoint is recorded redacted whole.
+			args: []string{
+				"-allow-foreign", "-token-file", agentFile, "-listener-token-file", listenerFile,
+				"-url", "http://MadeUpTok8r3/not-a-secret-8r3@127.0.0.1:1", "-listener", "http://MadeUpTok8r3/not-a-secret-8r3@127.0.0.1:2",
+				"-nats", "nats://MadeUpTok8r3/not-a-secret-8r3@127.0.0.1:3", "-nats-mon", "http://MadeUpTok8r3/not-a-secret-8r3@127.0.0.1:4",
+				"-pprof", "http://MadeUpTok8r3/not-a-secret-8r3@127.0.0.1:5",
+			},
+			want: []string{
+				"-allow-foreign=true", "-listener=" + redacted, "-listener-token-file=" + listenerFile, "-nats=" + redacted,
+				"-nats-mon=" + redacted, "-pprof=" + redacted, "-token-file=" + agentFile, "-url=" + redacted,
+			},
+			secrets: []string{"MadeUpTok8r3", "not-a-secret-8r3"},
+		},
+		{
 			// A -nats server list and a -pg host list, credentials in more than the first element.
 			args: []string{
 				"-allow-foreign", "-token-file", agentFile, "-listener-token-file", listenerFile,
