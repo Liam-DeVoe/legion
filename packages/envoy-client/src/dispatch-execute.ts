@@ -29,7 +29,7 @@ export type {
   DocumentTargetContext,
 } from "./dispatch-commands/document-targets";
 export { readDocumentBlocks, resolveIssueDocumentId } from "./dispatch-commands/document-targets";
-export { dispatchRefFromUrl } from "./dispatch-commands/refs";
+export { dispatchRefFromUrl, linkBaseOf } from "./dispatch-commands/links";
 export { formatOpenAsksSummary, positionText } from "./dispatch-commands/render-item";
 export { goBlankPattern } from "./dispatch-commands/stored-text";
 export { checkDispatchCall, dispatchServerUrls };
