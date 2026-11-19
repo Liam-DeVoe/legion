@@ -280,23 +280,21 @@ func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
 		t.Errorf("the answered ask's entry answers the shaped links %s, want one, to %s, from its block a1, with the tuple's event",
 			entryJSON(t, ask.Shaped), spec.address("r1"))
 	}
+	// The options are compared with the ones the fixture wrote into a1's block, never with the
+	// asks row's column, which is where the read itself takes them from.
+	wantOptions := []model.AskOption{{Label: "REST", Description: "Plain HTTP"}, {Label: "gRPC", Description: "Streaming"}}
 	var question string
-	var options []byte
-	if err := database.Pool.QueryRow(ctx, `select question, options from asks where id = $1::uuid`, answered).Scan(&question, &options); err != nil {
+	if err := database.Pool.QueryRow(ctx, `select question from asks where id = $1::uuid`, answered).Scan(&question); err != nil {
 		t.Fatalf("read the answered ask's row: %v", err)
-	}
-	var rowOptions []model.AskOption
-	if err := json.Unmarshal(options, &rowOptions); err != nil {
-		t.Fatalf("read the answered ask's options: %v", err)
 	}
 	storedAnswer, stated, err := graphstore.CurrentValue(ctx, database.Pool, graphstore.KindAsk, answered, graphstore.TupleAnswer)
 	if err != nil || !stated {
 		t.Fatalf("read the answered ask's answer off its node: stated %t, %v", stated, err)
 	}
-	if ask.Question == nil || *ask.Question != question || question != "Which transport?" || !reflect.DeepEqual(ask.Options, rowOptions) ||
+	if ask.Question == nil || *ask.Question != question || question != "Which transport?" || !reflect.DeepEqual(ask.Options, wantOptions) ||
 		ask.Answer == nil || *ask.Answer != storedAnswer || storedAnswer != viewAnswer {
-		t.Errorf("the answered ask's entry = %s, want the question %q, the options %+v and the answer %q as the store holds them",
-			entryJSON(t, ask), question, rowOptions, storedAnswer)
+		t.Errorf("the answered ask's entry = %s, want the question %q as the store holds it, the options %+v the fixture wrote and the answer %q",
+			entryJSON(t, ask), question, wantOptions, storedAnswer)
 	}
 	if held := strings.Count(entryJSON(t, entries), viewAnswer); held != 1 {
 		t.Errorf("the read holds the answer %q %d times, want once, in the answered ask's answer:\n%s", viewAnswer, held, entryJSON(t, entries))

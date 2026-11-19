@@ -22,7 +22,12 @@
 #                                      packages/envoy/cmd/listener/api.go
 #     hit <path>:<n>: <line>           a production line that still spells one, which fails
 # The step's Go code calls decisions_documents() and spells no slug, so no line under the id
-# `decisions-step` is admitted.
+# `decisions-step` is admitted. Before it reads the checkout, the sweep reads a planted instance
+# through the same search and the same classification: a scratch git repository under the run's
+# own directory holding a copy of the first inventoried file the sweep counts as production, with
+# one line spelling decisions.md added. It prints each hit there as `planted hit <path>:<n>: <line>`
+# and fails unless the added line is one of them, so a zero over the checkout is never the reading
+# of a search that cannot find a production line.
 #
 # The third sweep is R11's: `git grep -n` for the word decisions in double quotes over
 # packages/contracts/src, packages/dispatch/web/src and packages/dispatch/e2e. It admits only the
@@ -31,11 +36,15 @@
 # gated-steps write still admits it; and test material that must still exercise the old step (a
 # unit test, and the base release's gated steps seed-decisions.sh publishes). It prints each
 # admitted line with what it serves, and fails on any other: gated-steps.ts, or a step list of
-# gated-step-approvals.e2e.ts, among them. It then reads the daemon's contract, which narrows now:
-# legionDesignStep in packages/contracts/src/legion-api.ts (through the two schemas that export
-# it, LegionGateRegisterRequest's step and LegionControllerSecretResponse's designGateSteps, which
-# bun parses) and the `register_gate` step in packages/pi-legion/src/tools.ts must refuse
-# `decisions`; a planted `spec` is taken by both schemas, so a refusal of everything fails too.
+# gated-step-approvals.e2e.ts, among them. Before it reads the checkout it reads a planted
+# instance through the same search and the same admission, as the first sweep does: a scratch git
+# repository under the run's own directory holding a copy of gated-steps.ts with one line sending
+# the step, printed as `planted hit …`, which must be reported as a hit. It then reads the daemon's
+# contract, which narrows now: legionDesignStep in packages/contracts/src/legion-api.ts (through
+# the two schemas that export it, LegionGateRegisterRequest's step and
+# LegionControllerSecretResponse's designGateSteps, which bun parses) and the `register_gate` step
+# in packages/pi-legion/src/tools.ts must refuse `decisions`; a planted `spec` is taken by both
+# schemas, so a refusal of everything fails too.
 #
 # The second sweep is about meaning. decisions-inventory.txt holds one line for each skill and
 # prompt file: its path, a tab, and whether it tells an agent to move a person's decision out of a
@@ -109,13 +118,17 @@ trap 'exit 143' TERM
 readonly dq='"'
 readonly quoted_word="${dq}decisions${dq}"
 
-# sweep_grep PATTERN PATHSPEC…: `git grep -n -I -E` over the checkout's tracked and untracked files,
+# The tree the sweeps read: the checkout, but while the first or the third sweep reads its planted
+# instance, the scratch tree that holds it.
+sweep_root="$root"
+
+# sweep_grep PATTERN PATHSPEC…: `git grep -n -I -E` over sweep_root's tracked and untracked files,
 # ignored ones left out, each hit `path:line:text` in $work/hits. No hit is no error.
 sweep_grep() {
   local pattern="$1"
   shift
   local code=0
-  git -C "$root" grep --untracked -n -I -E -e "$pattern" -- "$@" >"$work/hits" 2>"$work/grep" || code=$?
+  git -C "$sweep_root" grep --untracked -n -I -E -e "$pattern" -- "$@" >"$work/hits" 2>"$work/grep" || code=$?
   [[ "$code" -le 1 ]] || fail sweep "git grep $pattern" "exited $code: $(<"$work/grep")"
 }
 
@@ -157,7 +170,7 @@ header_comment() {
     number=$((number + 1))
     [[ "$text" == --* ]] || return 1
     [[ "$number" -lt "$2" ]] || return 0
-  done <"$root/$1"
+  done <"$sweep_root/$1"
   return 1
 }
 
@@ -166,60 +179,101 @@ header_comment() {
 kept_comment_id() {
   local from=$(($2 - 1))
   [[ "$from" -ge 1 ]] || from=1
-  sed -n "${from},${2}p" "$root/$1" |
+  sed -n "${from},${2}p" "$sweep_root/$1" |
     sed -nE 's/.*kept for one release: ([a-z0-9-]+).*/\1/p' | tail -n 1
 }
 
-sweep_grep "$literal" .
-declare -A kept_paths=()
-hits=()
-admitted=0
-literal_seen=0
-while IFS= read -r hit; do
-  path="${hit%%:*}"
-  rest="${hit#*:}"
-  number="${rest%%:*}"
-  text="${rest#*:}"
-  stripped="${text//parked-decisions.md/}"
-  stripped="${stripped//past-decisions.md/}"
-  [[ "$stripped" =~ $literal ]] || continue
-  literal_seen=$((literal_seen + 1))
-  class="$(kept_class "$path")"
-  if [[ -z "$class" && "$path" == "$applied_migration" ]] && header_comment "$path" "$number"; then
-    class=applied-migration-header
-  fi
-  if [[ -n "$class" ]]; then
-    kept_paths["$path"]="$class"
-    continue
-  fi
-  if [[ "$path" == packages/envoy/internal/dispatch/refs/graph.go &&
-    "$text" =~ RetiredDecisionsSlug\ =\ \"decisions-md\" ]]; then
-    printf 'admitted %s:%s serves the reading of a retired document'"'"'s slug (refs.RetiredDecisionsSlug)\n' "$path" "$number"
-    admitted=$((admitted + 1))
-    continue
-  fi
-  if [[ "$path" == packages/envoy/cmd/listener/api.go &&
-    "$text" == *"dispatch://INFRA-1368/artifact/decisions-md"* ]]; then
-    printf 'admitted %s:%s serves the citation dispatch://INFRA-1368/artifact/decisions-md, a valid citation of a retired document\n' "$path" "$number"
-    admitted=$((admitted + 1))
-    continue
-  fi
-  id="$(kept_comment_id "$path" "$number")"
-  if [[ -n "$id" && "$id" != decisions-step && -n "${kept_items[$id]:-}" ]]; then
-    printf 'admitted %s:%s serves %s: %s\n' "$path" "$number" "$id" "${kept_items[$id]}"
-    admitted=$((admitted + 1))
-    continue
-  fi
-  hits+=("$path:$number: $text")
-done <"$work/hits"
+# literal_sweep: the first sweep over sweep_root, its kept paths in kept_paths (path to class), the
+# production lines that spell one of the strings in hits, and how many lines it found and admitted
+# in literal_seen and admitted. It prints each admitted line.
+literal_sweep() {
+  local hit path rest number text stripped class id
+  declare -gA kept_paths=()
+  hits=()
+  admitted=0
+  literal_seen=0
+  sweep_grep "$literal" .
+  while IFS= read -r hit; do
+    path="${hit%%:*}"
+    rest="${hit#*:}"
+    number="${rest%%:*}"
+    text="${rest#*:}"
+    stripped="${text//parked-decisions.md/}"
+    stripped="${stripped//past-decisions.md/}"
+    [[ "$stripped" =~ $literal ]] || continue
+    literal_seen=$((literal_seen + 1))
+    class="$(kept_class "$path")"
+    if [[ -z "$class" && "$path" == "$applied_migration" ]] && header_comment "$path" "$number"; then
+      class=applied-migration-header
+    fi
+    if [[ -n "$class" ]]; then
+      kept_paths["$path"]="$class"
+      continue
+    fi
+    if [[ "$path" == packages/envoy/internal/dispatch/refs/graph.go &&
+      "$text" =~ RetiredDecisionsSlug\ =\ \"decisions-md\" ]]; then
+      printf 'admitted %s:%s serves the reading of a retired document'"'"'s slug (refs.RetiredDecisionsSlug)\n' "$path" "$number"
+      admitted=$((admitted + 1))
+      continue
+    fi
+    if [[ "$path" == packages/envoy/cmd/listener/api.go &&
+      "$text" == *"dispatch://INFRA-1368/artifact/decisions-md"* ]]; then
+      printf 'admitted %s:%s serves the citation dispatch://INFRA-1368/artifact/decisions-md, a valid citation of a retired document\n' "$path" "$number"
+      admitted=$((admitted + 1))
+      continue
+    fi
+    id="$(kept_comment_id "$path" "$number")"
+    if [[ -n "$id" && "$id" != decisions-step && -n "${kept_items[$id]:-}" ]]; then
+      printf 'admitted %s:%s serves %s: %s\n' "$path" "$number" "$id" "${kept_items[$id]}"
+      admitted=$((admitted + 1))
+      continue
+    fi
+    hits+=("$path:$number: $text")
+  done <"$work/hits"
+}
+
+# The planted instance, read first and by the same sweep: a scratch tree of its own (a git
+# repository the run makes under $work) holding a copy of the first file of the inventory that
+# the sweep counts as production, with one line added that spells the decisions document. The
+# sweep must report that line as a hit before its zero over the checkout is read; a sweep that
+# misses it, by a wrong pattern, a wrong tree or a classification that keeps or admits a
+# production line, would read zero over any checkout.
+planted_path=""
+while IFS=$'\t' read -r path _; do
+  [[ -n "$path" && "$path" != \#* && -f "$root/$path" && -z "$(kept_class "$path")" ]] || continue
+  planted_path="$path"
+  break
+done <"$inventory"
+[[ -n "$planted_path" ]] || fail literal "find an inventoried production file to plant the spelling in" "$inventory names none that the checkout holds"
+mkdir -p "$work/planted/$(dirname -- "$planted_path")"
+cp -- "$root/$planted_path" "$work/planted/$planted_path"
+printf '\nThe planted line moves the answered asks into %s.\n' "decisions.md" >>"$work/planted/$planted_path"
+planted_line="$(wc -l <"$work/planted/$planted_path")"
+git -C "$work/planted" init -q ||
+  fail literal "make the planted instance's scratch repository" "git init failed in $work/planted"
+sweep_root="$work/planted"
+literal_sweep
+sweep_root="$root"
+planted_found=0
+for hit in "${hits[@]}"; do
+  printf 'planted hit %s\n' "$hit"
+  [[ "$hit" != "$planted_path:$planted_line: "* ]] || planted_found=1
+done
+[[ "$planted_found" == 1 ]] ||
+  fail literal "the sweep reports the planted line $planted_path:$planted_line as a hit" \
+    "it reported ${#hits[@]} hits there, ${#kept_paths[@]} kept paths and $admitted admitted lines: the search is broken"
+pass literal "the sweep reports the planted line $planted_path:$planted_line, a copy of an inventoried file under $work/planted, as a hit"
+
+# The real search, over the checkout.
+literal_sweep
 for path in "${!kept_paths[@]}"; do
   printf 'kept %s %s\n' "${kept_paths[$path]}" "$path"
 done | sort
 for hit in "${hits[@]}"; do
   printf 'hit %s\n' "$hit"
 done
-# The search's own control: the kept test material spells the strings, so a sweep that found
-# nothing searched nothing.
+# The search's own control over the checkout: the kept test material spells the strings, so a sweep
+# that found nothing searched nothing.
 [[ "${#kept_paths[@]}" -gt 0 ]] ||
   fail literal "the sweep reads the checkout" "it found no hit at all, not even in the kept test material: the search is broken"
 pass literal "the sweep found $literal_seen lines in the checkout, ${#kept_paths[@]} kept paths and $admitted admitted lines among them"
@@ -260,22 +314,57 @@ step_admission() {
   esac
 }
 
-sweep_grep "$quoted_word" packages/contracts/src packages/dispatch/web/src packages/dispatch/e2e
-step_hits=()
-step_admitted=0
-while IFS= read -r hit; do
-  path="${hit%%:*}"
-  rest="${hit#*:}"
-  number="${rest%%:*}"
-  text="${rest#*:}"
-  serves="$(step_admission "$path" "$text")"
-  if [[ -n "$serves" ]]; then
-    printf 'admitted %s:%s serves %s\n' "$path" "$number" "$serves"
-    step_admitted=$((step_admitted + 1))
-    continue
-  fi
-  step_hits+=("$path:$number: $text")
-done <"$work/hits"
+# step_sweep: the third sweep over sweep_root, each line R11 keeps printed as admitted and counted
+# in step_admitted, every other line that spells the word in step_hits.
+step_sweep() {
+  local hit path rest number text serves
+  step_hits=()
+  step_admitted=0
+  sweep_grep "$quoted_word" packages/contracts/src packages/dispatch/web/src packages/dispatch/e2e
+  while IFS= read -r hit; do
+    path="${hit%%:*}"
+    rest="${hit#*:}"
+    number="${rest%%:*}"
+    text="${rest#*:}"
+    serves="$(step_admission "$path" "$text")"
+    if [[ -n "$serves" ]]; then
+      printf 'admitted %s:%s serves %s\n' "$path" "$number" "$serves"
+      step_admitted=$((step_admitted + 1))
+      continue
+    fi
+    step_hits+=("$path:$number: $text")
+  done <"$work/hits"
+}
+
+# The planted instance, read first and by the same sweep: a scratch git repository of its own under
+# $work holding a copy of gated-steps.ts, a caller R11 names, with one line added that sends the
+# step. The line is spelled here apart from quoted_word, so a misspelt pattern does not plant its
+# own misspelling. The sweep must report that line as a hit before its zero over the checkout is
+# read.
+readonly planted_step_path=packages/dispatch/web/src/features/issue/gated-steps.ts
+[[ -f "$root/$planted_step_path" ]] ||
+  fail step "read $planted_step_path to plant the step in" "the checkout holds no such file"
+mkdir -p "$work/planted-step/$(dirname -- "$planted_step_path")"
+cp -- "$root/$planted_step_path" "$work/planted-step/$planted_step_path"
+printf '\nexport const plantedStep = %sdecisions%s;\n' "$dq" "$dq" >>"$work/planted-step/$planted_step_path"
+planted_step_line="$(wc -l <"$work/planted-step/$planted_step_path")"
+git -C "$work/planted-step" init -q ||
+  fail step "make the planted instance's scratch repository" "git init failed in $work/planted-step"
+sweep_root="$work/planted-step"
+step_sweep
+sweep_root="$root"
+planted_found=0
+for hit in "${step_hits[@]}"; do
+  printf 'planted hit %s\n' "$hit"
+  [[ "$hit" != "$planted_step_path:$planted_step_line: "* ]] || planted_found=1
+done
+[[ "$planted_found" == 1 ]] ||
+  fail step "the sweep reports the planted line $planted_step_path:$planted_step_line as a hit" \
+    "it reported ${#step_hits[@]} hits there and $step_admitted admitted lines: the search is broken"
+pass step "the sweep reports the planted line $planted_step_path:$planted_step_line, a copy under $work/planted-step, as a hit"
+
+# The real search, over the checkout.
+step_sweep
 for hit in "${step_hits[@]}"; do
   printf 'hit %s\n' "$hit"
 done

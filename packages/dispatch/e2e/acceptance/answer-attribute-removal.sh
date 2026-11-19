@@ -10,9 +10,13 @@
 # default $TMPDIR/base-dispatch, the stamped build of BASELINE_SHA the Verification preamble
 # makes; the harness boots it with the dev sign-in on (DISPATCH_DEV_SIGNIN=1, which lib-baseline.sh
 # sets for every server it boots) and with the pinned agent bearer e2e-token as
-# DISPATCH_AGENT_TOKEN, which it takes from DISPATCH_TOKEN. It then stops that server and runs the
-# three statements of the spec's section "What this child measures before it writes a migration",
-# verbatim, over the database, each in a read-only transaction, and prints
+# DISPATCH_AGENT_TOKEN, which it takes from DISPATCH_TOKEN. Beside the seed's corpus, where each
+# document holds one review, it has the person review two documents again through that server:
+# spec B approved a second time at its newest version, and spec C approved and then sent back for
+# changes, so its newest review is no approval. Neither moves the count the corpus holds. It then
+# stops that server and runs the three statements of the spec's section "What this child measures
+# before it writes a migration", verbatim, over the database, each in a read-only transaction, and
+# prints
 #     documents_holding_an_ask=<n> at=<UTC>
 #     standing_approvals_over_those_documents=<n> at=<UTC>
 #     colliding_block_ids=<n> at=<UTC>
@@ -20,7 +24,10 @@
 # the last once for each row the third statement reads; each time is `date -u +%FT%TZ` taken as
 # its statement answered. It fails when either of the first two counts differs from the count
 # the corpus holds (seed-decisions.sh's corpus_* lines), printing both. The third count may be
-# anything, zero included; the corpus's own is printed beside it.
+# anything, zero included; the corpus's own is printed beside it. It also reads the approval
+# reviews over those documents at each one's newest version, and the documents holding one, and
+# fails unless each reads apart from the standing approvals: a statement that counted reviews
+# rather than documents, or any approval rather than the newest review, reads another count here.
 #
 # BASELINE_SHA, the commit of the release this branch lands after, is required and has no
 # default: only the caller knows which release that is. Once the base server has booted, and
@@ -150,6 +157,11 @@ readonly base_commit
     "it serves '$base_commit', and BASELINE_SHA $BASELINE_SHA is $base_sha"
 pass base "the base release serves $base_commit, the commit BASELINE_SHA names"
 seed_decisions
+# A second review on two documents, so the standing approvals read apart from the approval reviews
+# and from the documents holding one; the corpus count seed_decisions printed stands.
+seed_review review_spec_b_again "${seed_ids[spec_b]}" approved
+seed_review review_spec_c_approved "${seed_ids[spec_c]}" approved
+seed_review review_spec_c_again "${seed_ids[spec_c]}" changes_requested "Name the fourth issue before asking again."
 # Nothing writes while the statements read.
 baseline_stop_server
 
@@ -232,6 +244,31 @@ done
 printf 'corpus colliding_block_ids=%s\n' "${seed_ids[corpus_colliding_block_ids]:-}"
 against_corpus documents_holding_an_ask "$documents"
 against_corpus standing_approvals_over_those_documents "$approvals"
+
+# The corpus tells the standing approvals apart from the approval reviews at a document's newest
+# version and from the documents holding one: spec B holds two approvals, and spec C an approval
+# its newest review, a request for changes, overrides.
+read -r -d '' approval_reviews_sql <<'SQL' || true
+select count(*), count(distinct r.artifact_id)
+from artifact_reviews r
+where r.state = 'approved'
+  and r.version = (select max(number) from artifact_versions v where v.artifact_id = r.artifact_id)
+  and r.artifact_id in (
+    select distinct block_artifact_id
+    from asks
+    where block_id is not null
+      and block_artifact_id is not null
+      and state in ('open', 'answered', 'resolved'))
+SQL
+measure "$approval_reviews_sql" || fail corpus "read the approval reviews over the documents holding an ask" "psql: $(<"$work/psql")"
+IFS='|' read -r approval_reviews approved_documents <"$work/rows"
+printf 'corpus approval_reviews_at_the_newest_version=%s documents_holding_one=%s standing_approvals=%s\n' \
+  "$approval_reviews" "$approved_documents" "$approvals"
+[[ "$approval_reviews" =~ ^[0-9]+$ && "$approved_documents" =~ ^[0-9]+$ &&
+  "$approval_reviews" != "$approvals" && "$approved_documents" != "$approvals" ]] ||
+  fail corpus "the standing approvals read apart from the approval reviews and from the documents holding one" \
+    "approval reviews $approval_reviews, documents holding one $approved_documents, standing approvals $approvals"
+pass corpus "the standing approvals ($approvals) read apart from the approval reviews ($approval_reviews) and the documents holding one ($approved_documents)"
 
 # The tables this child's migrations touch, as the Go test names them, and the limit each is held
 # to. `go -C` runs it from packages/envoy, as `(cd ../envoy && go test …)` from packages/dispatch.

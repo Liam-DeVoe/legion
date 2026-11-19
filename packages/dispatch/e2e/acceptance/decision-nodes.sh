@@ -45,18 +45,21 @@
 # documents, to read zero; and it reports the two halves of every projection, the base release's
 # (project SEED) and this head's (project NODES), each above zero.
 #
-# It reads each rule of R9 on the section that carries it, the approved specs still approved at
-# their newest version, whose only change over the restore's version is the decision blocks, the
-# readings inside answered asks and the shaped pointers; it pairs each captured section with the
-# ask node the capture names for it or with the decision node that keeps its heading block id, and
-# prints missing, extra and unpaired with every reference, and the issues holding a section no rule
-# dropped and no spec holds; and it sets the old `decisions` member beside `entries` for each
-# decision and finds the same decisions, stale, changed_version and changed_at in both. It reads
-# each of R9's four further kinds on its section: the ask block a section held, which no row
-# names, moved into the spec and the rest a decision; and the sections citing two answered asks,
-# an issue-level answered ask, and one answered ask with a body no reading holds, each a decision
-# that keeps its heading id, takes its links as shaped and no from_ask, cites its asks and waits
-# for a person's review with uncertainty high; and the decisions.md retired.
+# It reads each rule of R9 on the section that carries it, and fails where the capture holds no
+# section with an `Unsure:` paragraph, none under `## Replaced` or none with a standing Keep, each of
+# which the fixture seeds; a reading's part_of is read from the store against the ask the capture
+# names. It reads the approved specs still approved at their newest version, whose only change over
+# the restore's version is the decision blocks, the readings inside answered asks and the shaped
+# pointers; it pairs each captured section with the ask node the capture names for it or with the
+# decision node that keeps its heading block id, and prints missing, extra and unpaired with every
+# reference, and the issues holding a section no rule dropped and no spec holds; and it sets the
+# old `decisions` member beside `entries` for each decision and finds the same decisions, stale,
+# changed_version and changed_at in both. It reads each of R9's four further kinds on its section:
+# the ask block a section held, which no row names, moved into the spec and the rest a decision;
+# and the sections citing two answered asks, an issue-level answered ask, and one answered ask with
+# a body no reading holds, each a decision that keeps its heading id, takes its links as shaped and
+# no from_ask, cites its asks and waits for a person's review with uncertainty high; and the
+# decisions.md retired.
 #
 # Last it stops this head, boots the base alone and has it write a decisions.md on issue C, boots
 # this head without the hold setting and the base beside it, both stamped, has the base answer an
@@ -562,6 +565,11 @@ section_text() {
 # normal TEXT: TEXT with its whitespace collapsed and its case folded.
 normal() { tr -s '[:space:]' ' ' <<<"${1,,}" | sed -E 's/^ //; s/ $//'; }
 
+# How many sections each conditional rule below read. The fixture seeds a section of each, so a
+# rule that read none fails after the loop rather than passing over nothing.
+unsure_read=0
+replaced_read=0
+kept_read=0
 while IFS=$'\t' read -r issue heading ask author; do
   # A section of R9's four further kinds is read by the checks of `kinds` below.
   [[ -z "${further_kinds[$heading]:-}" ]] || continue
@@ -601,8 +609,13 @@ while IFS=$'\t' read -r issue heading ask author; do
         fail rules "the reading under ask $ask holds the section's words" "reading: $reading_text; section: $body_words"
       expect rules "the reading of section $heading is authored by the author of its newest version, $author" \
         "\"$author\"" '.readings[0].authored_by | "\(.kind):\(.id)"'
-      expect rules "the reading of section $heading hangs under the ask's node" "\"ask:$ask\"" \
-        '.node | "\(.kind):\(.id)"'
+      # The entry is picked by the ask's node, so its own node says nothing: the store's part_of
+      # tuple out of the reading is read against the ask the capture names for this section.
+      reading_node="$(jq -r '.readings[0].node | "\(.kind)|\(.id)"' "$work/entry")"
+      current_of "${reading_node%%|*}" "${reading_node#*|}" part_of
+      [[ "$(<"$work/rows")" == "ask:$ask" ]] ||
+        fail rules "the reading of section $heading hangs under ask:$ask, the ask the capture names, by its part_of tuple" \
+          "the reading ${reading_node#*|} states the part_of $(tr '\n' ' ' <"$work/rows")"
       pass rules "the section $heading gives ask $ask its links as shaped, and its body becomes a reading under it, by $author"
     fi
     continue
@@ -614,16 +627,19 @@ while IFS=$'\t' read -r issue heading ask author; do
   [[ -s "$work/entry" ]] || fail rules "the section $heading becomes a decision node of the spec under its heading id" "no entry for $decision"
   expect rules "the section $heading is an agent's decision" '"agent"' '.kind'
   if grep -q '^Unsure:' <<<"$text"; then
+    unsure_read=$((unsure_read + 1))
     reason="$(sed -nE 's/^Unsure: *//p' <<<"$text" | head -n 1)"
     expect rules "the section $heading with an Unsure: paragraph reads uncertainty high" '"high"' '.uncertainty'
     expect rules "the section $heading reads the rest of the paragraph as uncertainty_reason" "$(jq -cn --arg r "$reason" '$r')" '.uncertainty_reason'
   fi
   if [[ "$(jq -r --arg h "$heading" '.decisions[] | select(.block_id == $h) | .replaced' "$work/capture/decisions.$issue.json")" == true ]]; then
+    replaced_read=$((replaced_read + 1))
     expect rules "the section $heading under ## Replaced becomes a decision with replaced=\"true\"" true '.replaced'
     value_of block "$decision" replaced
     [[ "$answer" == true ]] || fail rules "the decision of section $heading holds the value replaced true" "it holds '$answer'"
   fi
   if [[ "$(jq -r --arg h "$heading" '.decisions[] | select(.block_id == $h) | .kept != null' "$work/capture/decisions.$issue.json")" == true ]]; then
+    kept_read=$((kept_read + 1))
     current_of block "$decision" kept_by
     [[ "$(<"$work/rows")" == "person:$seed_person" ]] ||
       fail rules "the section $heading with a standing Keep reads a kept_by tuple to $seed_person" "$(<"$work/rows")"
@@ -633,6 +649,14 @@ while IFS=$'\t' read -r issue heading ask author; do
   fi
   pass rules "the section $heading, which cites no ask, is the decision $decision, as R9 names"
 done <"$work/capture/sections"
+printf 'sections read by the conditional rules: Unsure=%s Replaced=%s kept=%s\n' "$unsure_read" "$replaced_read" "$kept_read"
+[[ "$unsure_read" -gt 0 ]] ||
+  fail rules "the capture holds a section with an Unsure: paragraph, which the fixture seeds" "the uncertainty rule read none"
+[[ "$replaced_read" -gt 0 ]] ||
+  fail rules "the capture holds a section under ## Replaced, which the fixture seeds" "the replaced rule read none"
+[[ "$kept_read" -gt 0 ]] ||
+  fail rules "the capture holds a section with a standing Keep, which the fixture seeds" "the Keep rule read none"
+pass rules "the conditional rules each read a section: $unsure_read with Unsure:, $replaced_read under ## Replaced, $kept_read kept"
 
 # ---------------------------------------------------------------------------------------------
 # R9's four further kinds, each on the section that carries it.

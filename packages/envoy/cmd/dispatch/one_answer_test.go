@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -244,6 +245,34 @@ func approvalOf(t *testing.T, p *dispatchProcess, artifactID string) documentApp
 	return artifact.Approval
 }
 
+// approvalState is what an approval reads as, the state at the version it names against the
+// document's latest version, for two reads to be compared and a failure to print.
+func approvalState(a documentApproval) string {
+	version := "none"
+	if a.Version != nil {
+		version = strconv.Itoa(*a.Version)
+	}
+	return fmt.Sprintf("%s at version %s of %d", a.State, version, a.LatestVersion)
+}
+
+// standingReview is the newest review GET /api/v1/artifacts/{id}/reviews lists: which review it
+// is, its state and the version it names.
+type standingReview struct {
+	ID      string `json:"id"`
+	State   string `json:"state"`
+	Version int    `json:"version"`
+}
+
+func standingReviewOf(t *testing.T, p *dispatchProcess, artifactID string) standingReview {
+	t.Helper()
+	var reviews []standingReview
+	readJSON(t, p, "/api/v1/artifacts/"+artifactID+"/reviews", &reviews)
+	if len(reviews) == 0 {
+		t.Fatalf("document %s lists no review", artifactID)
+	}
+	return reviews[0]
+}
+
 // answerAsk answers the ask as the test's person through the answer route and answers the body.
 func answerAsk(t *testing.T, p *dispatchProcess, askID, selected, text string) []byte {
 	t.Helper()
@@ -308,10 +337,11 @@ const oneAnswerSpec = "# One answer\n\nThe service ships behind a flag.\n\n" +
 // through the answer route, and the answer is on the ask's node, each fact under the ask.answered
 // that caused it, and on the asks row; the document's stored bytes and its newest version do not
 // move; the block holds no answer, no answerer, no time and no selection, in its stored bytes and
-// in the live tree; and an approval recorded before the answer still stands after it: the answer's
-// reply carries no superseded_approval in its advice, the member a document write reports the
-// approval it superseded through, and GET /api/v1/artifacts/{id} reads the approval at the
-// document's latest version, which did not move.
+// in the live tree; and an approval recorded before the answer still stands after it: GET
+// /api/v1/artifacts/{id} reads the same approval at the same version, the document's latest, and
+// the newest review is the same review of the same version. The answer route's reply is the ask
+// alone and carries no write advice, so the approval is read itself rather than through a member
+// the route never sets.
 func requireAnswerHeldOnce(t *testing.T, ctx context.Context, p *dispatchProcess, database *pgx.Conn, artifactID, askID, blockID, what string) {
 	t.Helper()
 	settledDocument(t, ctx, p, database, artifactID)
@@ -319,21 +349,14 @@ func requireAnswerHeldOnce(t *testing.T, ctx context.Context, p *dispatchProcess
 	if approval := approvalOf(t, p, artifactID); !approval.approvedLatest() {
 		p.call(t, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/reviews", `{"state":"approved"}`, http.StatusCreated)
 	}
-	if approval := approvalOf(t, p, artifactID); !approval.approvedLatest() {
-		t.Fatalf("%s: the document reads %+v before the answer, want it approved at its latest version", what, approval)
+	approvedBefore := approvalOf(t, p, artifactID)
+	if !approvedBefore.approvedLatest() {
+		t.Fatalf("%s: the document reads %s before the answer, want it approved at its latest version", what, approvalState(approvedBefore))
 	}
+	reviewBefore := standingReviewOf(t, p, artifactID)
 
 	const text = "Ship it once the flag is on."
-	answered := answerAsk(t, p, askID, "Ship", text)
-	var reply struct {
-		Advice map[string]json.RawMessage `json:"advice"`
-	}
-	if err := json.Unmarshal(answered, &reply); err != nil {
-		t.Fatalf("%s: decode the answer's reply: %v: %s", what, err, answered)
-	}
-	if superseded, reported := reply.Advice["superseded_approval"]; reported {
-		t.Errorf("%s: the answer reports the superseded approval %s, want none: %s", what, superseded, answered)
-	}
+	answerAsk(t, p, askID, "Ship", text)
 	event := answeredEvent(t, ctx, database, askID)
 	var state string
 	var row []byte
@@ -385,9 +408,13 @@ func requireAnswerHeldOnce(t *testing.T, ctx context.Context, p *dispatchProcess
 			t.Errorf("%s: the live tree's block holds %s=%v, want no answer, answerer, time or selection", what, name, value)
 		}
 	}
-	if approval := approvalOf(t, p, artifactID); !approval.approvedLatest() || afterNumber != approval.LatestVersion {
-		t.Errorf("%s: after the answer the document reads %+v, want the approval recorded before it standing at version %d", what, approval, afterNumber)
+	approvedAfter, reviewAfter := approvalOf(t, p, artifactID), standingReviewOf(t, p, artifactID)
+	if !approvedAfter.approvedLatest() || approvalState(approvedAfter) != approvalState(approvedBefore) || afterNumber != approvedAfter.LatestVersion ||
+		reviewAfter != reviewBefore {
+		t.Errorf("%s: the approval moved across the answer: the document read %s before it and %s after, and its newest review %+v before and %+v after; want both unchanged, approved at version %d",
+			what, approvalState(approvedBefore), approvalState(approvedAfter), reviewBefore, reviewAfter, beforeNumber)
 	}
+	t.Logf("%s: the document reads %s before and after the answer, its newest review %+v", what, approvalState(approvedAfter), reviewAfter)
 }
 
 // A person's answer is held once, on the ask's node (dispatch://INFRA-1150 R3, c-one-answer). Over
