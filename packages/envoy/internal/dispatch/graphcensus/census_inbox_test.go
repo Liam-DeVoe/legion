@@ -329,26 +329,42 @@ func TestTheVersionCountsTheDeliveriesARepliesCaused(t *testing.T) {
 // The relations of a person into a thread that no user_threads row projects by design are each a
 // figure of their own and no difference: participation in a thread whose root names no project
 // (a direct message), participation in an ask that reached the person as who it waits on, and
-// relations into a thread whose row a removal of its document deleted; and a session's
-// participation, which no row of people holds. A participation that none of those explains, and a
-// mark no row holds with no removal after it, is a tuple no row projects, and so is the
-// participation of a mention before T13 states one: none here.
+// the participation alone that a person's own move of an ask onto themselves states, under an
+// event of that ask they made (inboxwrite.OwnMove); relations into a thread whose row a removal
+// of its document deleted; and a session's participation, which no row of people holds. A
+// participation that none of those explains - among them one in an ask with no delivery beside
+// it under a move somebody else made - and a mark no row holds with no removal after it, is a
+// tuple no row projects, and so is the participation of a mention before T13 states one: none
+// here.
 func TestTheThreadCensusCountsEachNarrowingAsAFigure(t *testing.T) {
 	f := newInboxCensus(t)
 	direct, addressed, removed, stray := newUUID(t, f), newUUID(t, f), newUUID(t, f), newUUID(t, f)
+	selfMoved, movedByAnother := newUUID(t, f), newUUID(t, f)
 	f.state(t, []graphstore.Node{
 		f.node(graphstore.KindMessage, direct, ""), f.node(graphstore.KindAsk, addressed, "CENS"),
 		f.node(graphstore.KindComment, removed, "CENS"), f.node(graphstore.KindComment, stray, "CENS"),
+		f.node(graphstore.KindAsk, selfMoved, "CENS"), f.node(graphstore.KindAsk, movedByAnother, "CENS"),
 		graphstore.SessionNode("census-session", alice, f.clock, graphstore.NoEvent),
 	}, []graphstore.Tuple{
 		tuple(graphstore.KindComment, removed, graphstore.TupleOwnedBy, "artifact", "CENS/notes.md", f.at(), graphstore.NoEvent),
 		tuple(graphstore.KindSession, "census-session", graphstore.TupleParticipatesIn, graphstore.KindComment, removed, f.at(), graphstore.NoEvent),
 	})
+	// bob asked both asks; frank then hands the first to himself, and alice hands the second to
+	// grace, each move stating the participation alone.
+	for _, ask := range []string{selfMoved, movedByAnother} {
+		f.exec(t, `insert into asks (id, issue_key, author, question, state) values ($1::uuid, 'CENS-1', $2, 'Ship?', 'open')`,
+			ask, actorJSON(t, bob))
+	}
+	frank := model.Actor{Kind: "user", ID: "frank"}
+	handedToHimself := f.event(t, "ask.asked_of", frank, map[string]any{"id": selfMoved})
+	ownMove := tuple(graphstore.KindPerson, "frank", graphstore.TupleParticipatesIn, graphstore.KindAsk, selfMoved, f.at(), handedToHimself)
+	ownMove.Who = frank
 	opened := f.event(t, "ask.opened", alice, map[string]any{"id": addressed})
 	f.state(t, nil, []graphstore.Tuple{
 		tuple(graphstore.KindPerson, "bob", graphstore.TupleParticipatesIn, graphstore.KindMessage, direct, f.at(), graphstore.NoEvent),
 		tuple(graphstore.KindAsk, addressed, graphstore.TupleDeliveredTo, graphstore.KindPerson, "carol", f.at(), opened),
 		tuple(graphstore.KindPerson, "carol", graphstore.TupleParticipatesIn, graphstore.KindAsk, addressed, f.clock, opened),
+		ownMove,
 		tuple(graphstore.KindPerson, "dave", graphstore.TupleParticipatesIn, graphstore.KindComment, removed, f.at(), graphstore.NoEvent),
 		tuple(graphstore.KindPerson, "dave", graphstore.TupleReadThrough, graphstore.KindComment, removed, f.at(), graphstore.NoEvent),
 	})
@@ -361,22 +377,29 @@ func TestTheThreadCensusCountsEachNarrowingAsAFigure(t *testing.T) {
 			kind.Rows, kind.Nodes, kind.RowDifferences, kind.NodeDifferences, kind.ReportedRows, kind.ReportedNodes)
 	}
 	for name, want := range map[string]int64{
-		"no_project": 1, "addressed_alone": 1, "mentioned_alone": 0, "row_removed": 2, "session_authors": 1,
+		"no_project": 1, "addressed_alone": 2, "mentioned_alone": 0, "row_removed": 2, "session_authors": 1,
 	} {
 		if got := narrowed(t, kind, name); got != want {
 			t.Errorf("user_threads reads %d of the narrowing %s, want %d", got, name, want)
 		}
 	}
 
+	handedToGrace := f.event(t, "ask.asked_of", alice, map[string]any{"id": movedByAnother})
 	f.state(t, nil, []graphstore.Tuple{
 		tuple(graphstore.KindPerson, "erin", graphstore.TupleParticipatesIn, graphstore.KindComment, stray, f.at(), graphstore.NoEvent),
 		tuple(graphstore.KindPerson, "erin", graphstore.TupleReadThrough, graphstore.KindComment, stray, f.at(), graphstore.NoEvent),
+		tuple(graphstore.KindPerson, "grace", graphstore.TupleParticipatesIn, graphstore.KindAsk, movedByAnother, f.at(), handedToGrace),
 	})
-	report, printed := f.census(t, "with a participation and a mark nothing explains")
+	report, printed := f.census(t, "with participations and a mark nothing explains")
 	kind = censusKind(t, report, "user_threads")
-	if kind.NodeDifferences != 2 || !strings.Contains(printed, "user_threads difference at person:erin participates_in -> comment:"+stray) ||
-		!strings.Contains(printed, "user_threads difference at person:erin read_through -> comment:"+stray) {
-		t.Errorf("user_threads reads %d tuple differences, want erin's participation and mark each named as a tuple no row projects", kind.NodeDifferences)
+	if kind.NodeDifferences != 3 || !strings.Contains(printed, "user_threads difference at person:erin participates_in -> comment:"+stray) ||
+		!strings.Contains(printed, "user_threads difference at person:erin read_through -> comment:"+stray) ||
+		!strings.Contains(printed, "user_threads difference at person:grace participates_in -> ask:"+movedByAnother) {
+		t.Errorf("user_threads reads %d tuple differences, want erin's participation and mark, and grace's participation in the ask alice handed her with no delivery, each named as a tuple no row projects",
+			kind.NodeDifferences)
+	}
+	if got := narrowed(t, kind, "addressed_alone"); got != 2 {
+		t.Errorf("user_threads reads %d of the narrowing addressed_alone with grace's participation, want the 2 before it", got)
 	}
 }
 

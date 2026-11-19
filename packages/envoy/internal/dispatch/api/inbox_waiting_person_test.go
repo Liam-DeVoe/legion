@@ -312,6 +312,129 @@ func TestTheAssigneeArmFollowsWhoAnAskWaitsOn(t *testing.T) {
 	})
 }
 
+// TestAPersonsOwnMoveOfAnAskDeliversThemNothing holds the assignee arm's moves to R3's rule that a
+// person never sees their own event (outbox's recipientFilter.keep): a person who moves an ask
+// onto themselves - by a hand-on, a change of its issue's assignee, a move of its project's
+// default, or a reopen that restores it while it waits on them - takes part in its thread and
+// draws no delivered_to, while another person's move onto them draws both. That participation is
+// the arm's and no write of theirs in the thread (inboxwrite.OwnMove): a move away retracts it,
+// beside the retraction of a delivered_to that never stood, which records where the arm left
+// them, unless a comment of theirs in the thread holds them there; and a move back by somebody
+// else then delivers the ask to them.
+func TestAPersonsOwnMoveOfAnAskDeliversThemNothing(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedPeople(t, database, "carol", "dana")
+
+	// requireMoved fails unless the person tuples event wrote of ask are want, each written as
+	// tuplesUnder writes one, with ASK for the ask's own node.
+	requireMoved := func(t *testing.T, what string, event int64, ask string, want ...string) {
+		t.Helper()
+		for index := range want {
+			want[index] = strings.ReplaceAll(want[index], "ASK", "ask:"+ask)
+		}
+		slices.Sort(want)
+		if got := tuplesUnder(t, database, event, ask); !slices.Equal(got, want) {
+			t.Errorf("%s wrote, of ask %s,\n  %s\nwant\n  %s", what, ask, strings.Join(got, "\n  "), strings.Join(want, "\n  "))
+		}
+	}
+	// assigned is an issue of project key held by bob, with an open ask a session asked on it,
+	// which waits on bob and reached him.
+	assigned := func(t *testing.T, key string) (ask, issue string) {
+		t.Helper()
+		created := createInteractionIssue(t, handler, key, "Who has it?", "A spec")
+		assignIssue(t, handler, created.Key, "bob")
+		return createIssueAsk(t, handler, created.Key, "Who takes it?"), created.Key
+	}
+	writes := []struct {
+		name, key string
+		// open makes project key with one open ask a session asked, which waits on first and
+		// reached them, and answers that ask and the issue it is on.
+		open  func(t *testing.T, key string) (ask, issue string)
+		first string
+		// move moves the ask onto onto as by, and answers the event the move is recorded under.
+		move func(t *testing.T, key, ask, issue, onto, by string) int64
+	}{{
+		name: "a hand-on", key: "OWNH", open: assigned, first: "bob",
+		move: func(t *testing.T, _, ask, _, onto, by string) int64 {
+			t.Helper()
+			handAskOn(t, handler, ask, onto, by)
+			return writeEventOf(t, database, "ask.asked_of", ask)
+		},
+	}, {
+		name: "a change of the issue's assignee", key: "OWNA", open: assigned, first: "bob",
+		move: func(t *testing.T, _, _, issue, onto, by string) int64 {
+			t.Helper()
+			if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue,
+				map[string]any{"assignee": onto}, by); response.Code != http.StatusOK {
+				t.Fatalf("assign %s to %s as %s: status=%d body=%s", issue, onto, by, response.Code, response.Body.String())
+			}
+			return latestEventOf(t, database, "issue.updated")
+		},
+	}, {
+		name: "a move of the project's default assignee", key: "OWND",
+		open: func(t *testing.T, key string) (string, string) {
+			t.Helper()
+			project := defaultFallThroughProject(t, handler, key, 1, 0)
+			return project.asks[0], project.issue
+		},
+		first: "alice",
+		move: func(t *testing.T, key, _, _, onto, by string) int64 {
+			t.Helper()
+			if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/"+key+"/default-assignee",
+				map[string]any{"assignee": onto}, by); response.Code != http.StatusOK {
+				t.Fatalf("move %s's default to %s as %s: status=%d body=%s", key, onto, by, response.Code, response.Body.String())
+			}
+			return latestEventOf(t, database, "settings.project_default_assignee.updated")
+		},
+	}}
+	for _, write := range writes {
+		first := "person:" + write.first
+		t.Run(write.name+": a move onto oneself takes part and delivers nothing, and a move away retracts it", func(t *testing.T) {
+			key := write.key + "S"
+			ask, issue := write.open(t, key)
+			requireMoved(t, "carol's move onto herself", write.move(t, key, ask, issue, "carol", "carol"), ask,
+				"ASK > "+first+" retracted", first+" > ASK retracted", "person:carol > ASK")
+			requireMoved(t, "alice's move of it on to dana", write.move(t, key, ask, issue, "dana", "alice"), ask,
+				"ASK > person:carol retracted", "ASK > person:dana", "person:carol > ASK retracted", "person:dana > ASK")
+		})
+		t.Run(write.name+": another person's move onto them delivers it", func(t *testing.T) {
+			key := write.key + "O"
+			ask, issue := write.open(t, key)
+			requireMoved(t, "dana's move of it on to carol", write.move(t, key, ask, issue, "carol", "dana"), ask,
+				"ASK > "+first+" retracted", "ASK > person:carol", first+" > ASK retracted", "person:carol > ASK")
+		})
+		t.Run(write.name+": a comment of their own holds them past the move away, and a move back by another delivers it", func(t *testing.T) {
+			key := write.key + "C"
+			ask, issue := write.open(t, key)
+			requireMoved(t, "carol's move onto herself", write.move(t, key, ask, issue, "carol", "carol"), ask,
+				"ASK > "+first+" retracted", first+" > ASK retracted", "person:carol > ASK")
+			createThreadComment(t, handler, issue, map[string]any{"body": "I have it.", "ask_id": ask}, "carol")
+			requireMoved(t, "alice's move of it on to dana", write.move(t, key, ask, issue, "dana", "alice"), ask,
+				"ASK > person:carol retracted", "ASK > person:dana", "person:dana > ASK")
+			requireMoved(t, "dana's move of it back to carol", write.move(t, key, ask, issue, "carol", "dana"), ask,
+				"ASK > person:carol", "ASK > person:dana retracted", "person:carol > ASK", "person:dana > ASK retracted")
+		})
+	}
+
+	t.Run("a reopen by the person the restored ask waits on takes part and delivers nothing", func(t *testing.T) {
+		ask, issue := assigned(t, "OWNR")
+		if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{
+			"status": "done", "assignee": "carol",
+		}, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("close %s and hand it to carol: status=%d body=%s", issue, response.Code, response.Body.String())
+		}
+		if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue,
+			map[string]string{"status": "todo"}, "carol"); response.Code != http.StatusOK {
+			t.Fatalf("reopen %s as carol: status=%d body=%s", issue, response.Code, response.Body.String())
+		}
+		requireMoved(t, "carol's reopen", writeEventOf(t, database, "ask.opened", ask), ask,
+			"ASK > person:bob retracted", "person:bob > ASK retracted", "person:carol > ASK")
+		assignIssue(t, handler, issue, "dana")
+		requireMoved(t, "alice's change of the assignee to dana", latestEventOf(t, database, "issue.updated"), ask,
+			"ASK > person:carol retracted", "ASK > person:dana", "person:carol > ASK retracted", "person:dana > ASK")
+	})
+}
+
 // refuseTuplesFrom makes every append of a tuple of kind from node fromKind/fromID fail, for the
 // rest of t: a trigger on graph_tuples the test installs and its cleanup drops, which raises on
 // the first such row of a statement, so the write that appends it fails at that statement and

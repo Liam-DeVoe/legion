@@ -6,6 +6,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -574,7 +575,10 @@ func userThreadsHeld(extra string) string {
 //     conversation, a direct message - which keeps no row (inboxwrite.Write.Project).
 //   - addressed_alone: participation in an ask that reached them, the assignee arm of an ask's
 //     create or of a move of who it waits on (inboxwrite's waitingOnTuples), and their decline of
-//     it, none of which keeps a row.
+//     it, none of which keeps a row; and the participation the arm states with no delivery for
+//     a person who moved the ask onto themselves, under that move's event, whose actor is them
+//     (inboxwrite.OwnMove). A participation with no delivery under anybody else's event is a
+//     difference.
 //   - mentioned_alone: participation stated under the event of a mentions tuple into them, which
 //     keeps no row; T13's writer states it, and before it this reads zero.
 //   - row_removed: a relation into a thread whose row the removal of the thread's document deleted,
@@ -589,11 +593,13 @@ var userThreadsNarrowings = []struct{ name, note, test string }{{
 		select 1 from graph_nodes root where root.kind = held.to_kind and root.id = held.to_id and root.project_key is not null)`,
 }, {
 	name: "addressed_alone",
-	note: "participation in an ask that reached the person, as its create or a move of who it waits on addressed it, which keeps no row",
-	test: `held.kind = '` + graphstore.TupleParticipatesIn + `' and held.to_kind = '` + graphstore.KindAsk + `' and exists (
+	note: "participation in an ask that reached the person, as its create or a move of who it waits on addressed it, or" +
+		" that the person's own move of the ask onto themselves stated, which keeps no row",
+	test: `held.kind = '` + graphstore.TupleParticipatesIn + `' and held.to_kind = '` + graphstore.KindAsk + `' and (exists (
 		select 1 from graph_tuples d
 		where d.from_kind = '` + graphstore.KindAsk + `' and d.from_id = held.to_id and d.kind = '` + graphstore.TupleDeliveredTo + `'
-		  and d.to_kind = '` + graphstore.KindPerson + `' and d.to_id = n.id)`,
+		  and d.to_kind = '` + graphstore.KindPerson + `' and d.to_id = n.id)
+		or ` + inboxwrite.OwnMove(`n.id`, `held.to_id`, `held.source_event`) + `)`,
 }, {
 	name: "mentioned_alone",
 	note: "participation stated under the event of a mention of the person, which keeps no row",

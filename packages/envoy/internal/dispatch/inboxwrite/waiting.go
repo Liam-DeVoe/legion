@@ -25,6 +25,12 @@ import (
 // version (P13): the old triggers moved no row for either, and the census counts only the
 // deliveries a reply caused.
 //
+// A person never sees their own event (outbox's recipientFilter.keep), so a write that moves an
+// ask onto the person who made it - who hands it to themselves, takes its issue, or makes
+// themselves the default it falls through to - appends their participates_in and no delivered_to
+// (waitingOnTuples). That participation is still the arm's, and no write of theirs in the thread:
+// the next move away retracts it as it retracts anybody's (OwnMove, MoveWaiting).
+//
 // The list follows the assignment only if no two of those writes interleave, so each serialises
 // against the others on the rows the rule reads, in the lock order written on api/inbox_read.go's
 // markInboxReadThreads. An issue's assignee and an ask's asked_of are written under the issue's or
@@ -35,33 +41,92 @@ import (
 // two moves of one ask, and a move and an answer, take turns there, and the move reads who the
 // ask waits on, and who its delivery stands to, only once it holds them.
 
-// waitingOnTuples is what an ask reaching the person it waits on appends: participates_in from
-// waiting to askID and delivered_to from askID to waiting, made by who at at, under event. The
+// waitingOnTuples is what an ask reaching the person it waits on appends, made by who at at,
+// under event: participates_in from waiting to askID and delivered_to from askID to waiting. The
 // asker - asker is their canonical login, "" for an ask a session or nobody asked - is reached by
 // neither: their own ask draws no delivery to them, and they take part in it already as its asker
-// (Record's step 1).
+// (Record's step 1). The person who made the write, whom who names (personOf), draws no
+// delivery either, since a person never sees their own event, and takes part, since the ask now
+// waits on them (OwnMove). A create's writer is its asker, so only a move meets that second rule.
 func waitingOnTuples(askID, waiting, asker string, at time.Time, who model.Actor, event int64) []graphstore.Tuple {
 	waiting = model.CanonicalLogin(waiting)
 	if waiting == "" || waiting == asker {
 		return nil
 	}
-	return []graphstore.Tuple{{
+	tuples := make([]graphstore.Tuple, 0, 2)
+	tuples = append(tuples, graphstore.Tuple{
 		FromKind: graphstore.KindPerson, FromID: waiting, Kind: graphstore.TupleParticipatesIn,
 		ToKind: graphstore.KindAsk, ToID: askID,
 		At: at, Who: who, SourceEvent: event, Asserted: true,
-	}, {
+	})
+	if waiting == personOf(who) {
+		return tuples
+	}
+	return append(tuples, graphstore.Tuple{
 		FromKind: graphstore.KindAsk, FromID: askID, Kind: graphstore.TupleDeliveredTo,
 		ToKind: graphstore.KindPerson, ToID: waiting,
 		At: at, Who: who, SourceEvent: event, Asserted: true,
-	}}
+	})
 }
 
-// askerOf is the canonical login of the person author names, and "" for a session or nobody.
-func askerOf(author model.Actor) string {
-	if kind, id, named := graphstore.AuthorOf(author); named && kind == graphstore.KindPerson {
+// personOf is the canonical login of the person actor names, and "" for a session or nobody: the
+// asker of an ask, read off its author, and the writer of a write, read off its event's actor.
+func personOf(actor model.Actor) string {
+	if kind, id, named := graphstore.AuthorOf(actor); named && kind == graphstore.KindPerson {
 		return id
 	}
 	return ""
+}
+
+// actorPerson is personOf in SQL, over an actor stored as jsonb at column: the canonical login of
+// the person it names, through user_threads_login (model.CanonicalLogin in SQL), and null for a
+// session or nobody.
+func actorPerson(column string) string {
+	return `(case
+				when ` + column + `->>'kind' = 'user' and coalesce(` + column + `->>'id', '') <> ''
+					then user_threads_login(` + column + `->>'id')
+				when ` + column + `->>'kind' = 'session' and coalesce(` + column + `->>'id', '') <> '' then null
+				when coalesce(` + column + `->>'owner', '') <> '' then user_threads_login(` + column + `->>'owner')
+			end)`
+}
+
+// OwnMove is true where person's participates_in in ask, stated under event, is the one
+// waitingOnTuples states for a move person made of the ask onto themselves, beside no
+// delivered_to: event is a write of that ask that decides who it waits on - its restore
+// (ask.opened naming it; its create is that type too, and is made by its asker), a hand-on of it
+// (ask.asked_of naming it), a change of its issue's assignee (issue.updated on that issue) or a
+// move of its project's default assignee (settings.project_default_assignee.updated on that
+// project) - made by person, who did not ask the ask, and the ask delivered person nothing under
+// it. Such a participation is the assignee arm's and no write of person's in the thread:
+// MoveWaiting moves it as it moves the participation a delivery stands beside, and the census
+// counts it among the participations that arm explains.
+//
+// Each argument is SQL text of the statement it is spliced into, and names none of the aliases
+// the test reads under (own_event, own_ask, own_issue, own_document, own_delivery): person is a
+// canonical login, ask an ask's id as text and event an event's id.
+func OwnMove(person, ask, event string) string {
+	return `(exists (
+				select 1
+				from events own_event
+				join asks own_ask on own_ask.id = (case when pg_input_is_valid(` + ask + `, 'uuid') then ` + ask + ` end)::uuid
+				left join issues own_issue on own_issue.key = own_ask.issue_key
+				left join artifacts own_document on own_document.id = own_ask.artifact_id
+				where own_event.id = ` + event + `
+				  and case own_event.type
+				      when 'ask.opened' then own_event.payload->>'id' = own_ask.id::text
+				      when 'ask.asked_of' then own_event.payload->>'id' = own_ask.id::text
+				      when 'issue.updated' then own_event.issue_key = own_ask.issue_key
+				      when 'settings.project_default_assignee.updated'
+				          then own_event.project_key = coalesce(own_issue.project_key, own_document.project_key)
+				      else false end
+				  and ` + actorPerson(`own_event.actor`) + ` = ` + person + `
+				  and ` + actorPerson(`own_ask.author`) + ` is distinct from ` + person + `)
+			and not exists (
+				select 1 from graph_tuples own_delivery
+				where own_delivery.from_kind = '` + graphstore.KindAsk + `' and own_delivery.from_id = ` + ask + `
+				  and own_delivery.kind = '` + graphstore.TupleDeliveredTo + `'
+				  and own_delivery.to_kind = '` + graphstore.KindPerson + `' and own_delivery.to_id = ` + person + `
+				  and own_delivery.source_event = ` + event + ` and own_delivery.asserted))`
 }
 
 // HoldDefault takes the row of the project an ask on the owner issueKey or artifactID falls
@@ -224,12 +289,19 @@ func moveLock(candidates string) string {
 
 // moveRead is MoveWaiting's second statement, run once the asks are held: of each held ask still
 // open on an open issue or on a project document, who it waits on now, who asked it, and each
-// person its delivery stands to - a delivered_to from the ask whose newest tuple asserts it and
-// was appended beside that person's participates_in under one event, as only this arm appends the
-// two, and that no mention of them in the ask holds - with whether their participates_in stands
-// and whether anything else holds them in the thread: a participates_in of theirs appended under
-// an event that delivered them nothing from the ask, which is a write, an answer or a decline of
-// theirs, or a mention of them in the thread (Record).
+// person the arm stands to, with whether their participates_in stands and whether anything else
+// holds them in the thread.
+//
+// The arm stands to a person whose newest arm tuple asserts it and whom no mention in the ask
+// holds. A person's arm tuples are the delivered_to tuples from the ask to them and the
+// participates_in tuples that their own moves of the ask onto themselves stated (OwnMove). A
+// delivered_to asserts the arm where it was appended beside that person's participates_in under
+// one event, as only this arm appends the two; a participation an own move stated asserts it by
+// itself; and the retraction of a delivered_to ends it - for a person whom their own move reached,
+// the retraction of a delivery that never stood, which MoveWaiting appends as the record that the
+// arm left them. What else holds a person in the thread is a participates_in of theirs appended
+// under an event that delivered them nothing from the ask and was no own move of theirs - a
+// write, an answer or a decline of theirs - or a mention of them in the thread (Record).
 var moveRead = `
 		with held as (
 			select a.id::text as ask, ` + asks.AskedOfPersonExpression + ` as waiting, a.author
@@ -240,58 +312,72 @@ var moveRead = `
 		select h.ask, h.waiting, h.author, reached.person, reached.takes_part, reached.held
 		from held h
 		left join lateral (
-			select d.person,
-			       ` + standing(graphstore.KindPerson, `d.person`, graphstore.TupleParticipatesIn, graphstore.KindAsk, `h.ask`) + ` as takes_part,
+			select arm.person,
+			       ` + standing(graphstore.KindPerson, `arm.person`, graphstore.TupleParticipatesIn, graphstore.KindAsk, `h.ask`) + ` as takes_part,
 			       exists (
 			           select 1 from graph_tuples p
-			           where p.from_kind = '` + graphstore.KindPerson + `' and p.from_id = d.person
+			           where p.from_kind = '` + graphstore.KindPerson + `' and p.from_id = arm.person
 			             and p.kind = '` + graphstore.TupleParticipatesIn + `'
 			             and p.to_kind = '` + graphstore.KindAsk + `' and p.to_id = h.ask and p.asserted
 			             and not exists (
 			                 select 1 from graph_tuples o
 			                 where o.from_kind = '` + graphstore.KindAsk + `' and o.from_id = h.ask
 			                   and o.kind = '` + graphstore.TupleDeliveredTo + `'
-			                   and o.to_kind = '` + graphstore.KindPerson + `' and o.to_id = d.person
+			                   and o.to_kind = '` + graphstore.KindPerson + `' and o.to_id = arm.person
 			                   and o.source_event = p.source_event and o.asserted)
+			             and not ` + OwnMove(`arm.person`, `h.ask`, `p.source_event`) + `
 			       ) as held
-			from (` + graphstore.CurrentTupleRead(`t.to_id`, `t.to_id as person, t.asserted, t.source_event`,
-	`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = h.ask and t.kind = '`+graphstore.TupleDeliveredTo+`'
-				and t.to_kind = '`+graphstore.KindPerson+`'`) + `) d
-			where d.asserted
-			  and exists (
+			from (
+				select distinct on (arm_tuple.person) arm_tuple.person, arm_tuple.kind, arm_tuple.asserted, arm_tuple.source_event
+				from (
+					select d.to_id as person, d.kind, d.asserted, d.source_event, d.seq
+					from graph_tuples d
+					where d.from_kind = '` + graphstore.KindAsk + `' and d.from_id = h.ask
+					  and d.kind = '` + graphstore.TupleDeliveredTo + `' and d.to_kind = '` + graphstore.KindPerson + `'
+					union all
+					select own.from_id, own.kind, own.asserted, own.source_event, own.seq
+					from graph_tuples own
+					where own.from_kind = '` + graphstore.KindPerson + `' and own.kind = '` + graphstore.TupleParticipatesIn + `'
+					  and own.to_kind = '` + graphstore.KindAsk + `' and own.to_id = h.ask and own.asserted
+					  and ` + OwnMove(`own.from_id`, `h.ask`, `own.source_event`) + `
+				) arm_tuple
+				order by arm_tuple.person, arm_tuple.seq desc
+			) arm
+			where arm.asserted
+			  and (arm.kind = '` + graphstore.TupleParticipatesIn + `' or exists (
 			      select 1 from graph_tuples p
-			      where p.from_kind = '` + graphstore.KindPerson + `' and p.from_id = d.person
+			      where p.from_kind = '` + graphstore.KindPerson + `' and p.from_id = arm.person
 			        and p.kind = '` + graphstore.TupleParticipatesIn + `'
 			        and p.to_kind = '` + graphstore.KindAsk + `' and p.to_id = h.ask
-			        and p.source_event = d.source_event and p.asserted)
-			  and not ` + standing(graphstore.KindAsk, `h.ask`, graphstore.TupleMentions, graphstore.KindPerson, `d.person`) + `
+			        and p.source_event = arm.source_event and p.asserted))
+			  and not ` + standing(graphstore.KindAsk, `h.ask`, graphstore.TupleMentions, graphstore.KindPerson, `arm.person`) + `
 		) reached on true
 		order by h.ask, reached.person`
 
-// reach is one person an ask's delivery stands to, as moveRead reads them.
+// reach is one person the arm of an ask stands to, as moveRead reads them.
 type reach struct {
 	person          string
 	takesPart, held bool
 }
 
 // MoveWaiting is the move of R2 for the write move names, in that write's transaction after its
-// event: each ask it moves now reaches the person it waits on, and stops reaching whoever its
-// delivery stood to before. Every tuple carries the event the move of its ask is recorded under,
-// dated at that event's moment and made by its actor.
+// event: each ask it moves now reaches the person it waits on, and stops reaching whoever the arm
+// stood to before. Every tuple carries the event the move of its ask is recorded under, dated at
+// that event's moment and made by its actor.
 //
 // It takes three steps. It locks the asks the write may move, `for no key update` in ascending
 // id (moveLock), so a second move of one of them, and an answer, waits for this write to commit,
 // and this write waits for theirs. Once it holds them it reads, in a statement of its own and so
-// as every write it waited for left them (moveRead), who each ask waits on now and who its
-// delivery stands to: the old person is read from the store, not from what the write changed, so
-// a move another write committed in between is found where it left the delivery. An ask on a
-// closed issue is not read: a closed issue retracts nothing, and the record stays what the write
-// stored until the issue's reopen restores the ask (Restored). Then one graphstore.ToPerson call
-// appends, for each ask whose delivery does not already stand to the person it waits on, that
-// person's participates_in and delivered_to (waitingOnTuples), and for each other person its
-// delivery stands to the retraction of that delivered_to, and of their participates_in where it
-// stands and nothing else holds them in the thread and they did not ask the ask. That is at most
-// four tuple rows an ask, and four statements however many asks it moves.
+// as every write it waited for left them (moveRead), who each ask waits on now and whom the arm
+// stands to: the old person is read from the store, not from what the write changed, so a move
+// another write committed in between is found where it left the arm. An ask on a closed issue is
+// not read: a closed issue retracts nothing, and the record stays what the write stored until the
+// issue's reopen restores the ask (Restored). Then one graphstore.ToPerson call appends, for each
+// ask whose arm does not already stand to the person it waits on, that person's participates_in
+// and, unless they made this write, their delivered_to (waitingOnTuples); and for each other
+// person the arm stands to the retraction of their delivered_to, and of their participates_in
+// where it stands and nothing else holds them in the thread and they did not ask the ask. That is
+// at most four tuple rows an ask, and four statements however many asks it moves.
 func MoveWaiting(ctx context.Context, tx pgx.Tx, move Move) error {
 	rows, err := tx.Query(ctx, moveLock(move.candidates), move.args...)
 	if err != nil {
@@ -327,7 +413,7 @@ func MoveWaiting(ctx context.Context, tx pgx.Tx, move Move) error {
 			if err := json.Unmarshal(author, &actor); err != nil {
 				return fmt.Errorf("decode the author of ask %s: %w", ask, err)
 			}
-			next := heldAsk{id: ask, asker: askerOf(actor)}
+			next := heldAsk{id: ask, asker: personOf(actor)}
 			if waiting != nil {
 				next.waiting = model.CanonicalLogin(*waiting)
 			}
@@ -354,6 +440,8 @@ func MoveWaiting(ctx context.Context, tx pgx.Tx, move Move) error {
 				stands = true
 				continue
 			}
+			// For a person whom their own move reached, this ends a delivery that never stood:
+			// it is the record that the arm left them, which the next move reads (moveRead).
 			ended(graphstore.Tuple{
 				FromKind: graphstore.KindAsk, FromID: ask.id, Kind: graphstore.TupleDeliveredTo,
 				ToKind: graphstore.KindPerson, ToID: reached.person,

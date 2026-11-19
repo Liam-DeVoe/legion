@@ -165,7 +165,7 @@ func owedBy(ctx context.Context, tx pgx.Tx, ask *Ask) (owed, error) {
 			takesPart(kind, id, ask.createdAt, ask.author, ask.opened)
 		}
 		if ask.state == asks.StateOpen {
-			for _, tuple := range waitingOnTuples(ask.id, ask.waitingOn, askerOf(ask.author), ask.createdAt, ask.author, ask.opened) {
+			for _, tuple := range waitingOnTuples(ask.id, ask.waitingOn, personOf(ask.author), ask.createdAt, ask.author, ask.opened) {
 				if tuple.Kind == graphstore.TupleDeliveredTo {
 					tuples.deliveries = append(tuples.deliveries, tuple)
 				} else {
