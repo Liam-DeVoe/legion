@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -34,11 +35,14 @@ func TestMain(m *testing.M) {
 // help it answers --help from. Visibility is what it answers the leak guard's own read of a
 // repository's visibility with, "public" where a behaviour names none.
 type behaviour struct {
-	Stdout     string
-	Stderr     string
-	Responses  map[string]string
-	Sleep      time.Duration
-	Exit       int
+	Stdout    string
+	Stderr    string
+	Responses map[string]string
+	Sleep     time.Duration
+	Exit      int
+	// Killed has the stand-in end itself with SIGKILL once it has printed, as a kill from outside
+	// the tool would end gh.
+	Killed     bool
 	HelpDir    string
 	Visibility string
 }
@@ -110,6 +114,9 @@ func standIn() int {
 	}
 	os.Stdout.WriteString(out)
 	os.Stderr.WriteString(b.Stderr)
+	if b.Killed {
+		_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
+	}
 	return b.Exit
 }
 

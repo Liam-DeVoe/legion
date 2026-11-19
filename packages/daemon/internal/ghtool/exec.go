@@ -201,6 +201,9 @@ func (a *Answer) help(ctx context.Context, env []string) func(path []string) (st
 // runGH runs gh with argv under the call's environment, configDir its GH_CONFIG_DIR, in the
 // answer's empty working directory with no stdin, its stdout and stderr interleaved and cut at
 // bounds.GHOutputChars, and stopped, its whole process group, at ctx's end (the gh_seconds bound).
+// A gh a signal ended ran and answered no status (procgroup.Ended): what it printed stands, with
+// the bound's note where ctx's end stopped it and the signal's words where something else did,
+// and its exit is -1.
 func (a *Answer) runGH(ctx context.Context, argv []string, configDir string, bounds config.AnswerBounds) Result {
 	cmd := exec.CommandContext(ctx, a.host.GH, argv...)
 	cmd.Env, cmd.Dir = a.env(configDir), a.cwd
@@ -208,12 +211,16 @@ func (a *Answer) runGH(ctx context.Context, argv []string, configDir string, bou
 	out := &cappedOutput{limit: bounds.GHOutputChars}
 	cmd.Stdout, cmd.Stderr = out, out
 	err := cmd.Run()
-	if err := procgroup.Err(err); err != nil {
+	end := procgroup.Ended(err)
+	if err := procgroup.Err(err); err != nil && end.Signal == "" {
 		return Result{Output: fmt.Sprintf("gh could not run: %v", err), Exit: -1}
 	}
 	output := out.String()
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		output += fmt.Sprintf("\n[stopped: gh ran past its %s bound (answers.bounds.gh_seconds)]", bounds.GHCall)
+	case end.Signal != "":
+		output += fmt.Sprintf("\n[gh was ended by %s]", end.Signal)
 	}
 	return Result{Output: output, Exit: cmd.ProcessState.ExitCode(), Ran: true}
 }

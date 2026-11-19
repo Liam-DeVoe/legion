@@ -1445,7 +1445,8 @@ func TestEveryAllowedCommandsOptionsAreGhsOwn(t *testing.T) {
 
 // gh's stdout and stderr reach the model interleaved and cut at gh_output_chars characters, a
 // multi-byte character counting once, with a note of how many were cut; a gh running past
-// gh_seconds is stopped, whatever it printed so far kept with a note.
+// gh_seconds is stopped, whatever it printed so far kept with a note; and a gh something else
+// killed keeps what it printed, with the signal named.
 func TestOutputIsCutAndASlowGhIsStopped(t *testing.T) {
 	f := newFixture(t, implementer, behaviour{Stdout: strings.Repeat("é", 30), Stderr: "warning", Exit: 1})
 	got := Run(context.Background(), Call{Answer: f.answer, Seq: 1, Args: args("api", "user"), Bounds: config.AnswerBounds{GHCall: 20 * time.Second, GHOutputChars: 10, GHCalls: 5}})
@@ -1468,6 +1469,17 @@ func TestOutputIsCutAndASlowGhIsStopped(t *testing.T) {
 	}
 	if row, _ := f.calls.row(question, 3); row.Result == nil || row.Exit == nil {
 		t.Errorf("the stopped call is recorded as %+v; want it finished", row)
+	}
+
+	// A gh a signal ended from outside the tool ran: what it printed stands, with the signal's
+	// words, and its exit is -1, since a signal leaves no status (procgroup.Ended).
+	setBehaviour(t, f.stand, behaviour{Stdout: "partial", Killed: true})
+	got = Run(context.Background(), Call{Answer: f.answer, Seq: 4, Args: args("api", "user"), Bounds: bounds})
+	if want := "partial\n[gh was ended by signal: killed]"; !got.Ran || got.Exit != -1 || got.Output != want {
+		t.Errorf("a gh a signal ended = %+v; want it run, exit -1 and %q", got, want)
+	}
+	if row, _ := f.calls.row(question, 4); row.Result == nil || row.Exit == nil {
+		t.Errorf("the killed call is recorded as %+v; want it finished", row)
 	}
 }
 

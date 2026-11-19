@@ -104,6 +104,9 @@ func runGH(ctx context.Context, req Request, call agentloop.ToolCall) (string, b
 	switch {
 	case !result.Ran:
 		return result.Output, true
+	case result.Exit < 0:
+		// A signal ended gh, which answered no status: its output already says so (ghtool's runGH).
+		return result.Output, true
 	case result.Exit != 0:
 		return fmt.Sprintf("%s\n[gh exited %d]", result.Output, result.Exit), true
 	default:
