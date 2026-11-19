@@ -58,7 +58,8 @@ type StepWait string
 const (
 	// StepWaitNone is a step that waits for nothing.
 	StepWaitNone StepWait = ""
-	// StepWaitJoin is a step that waits for the end of its task's join (intake.TaskJoined).
+	// StepWaitJoin is a step that waits for the end of its task's join: the task_branch row
+	// (TaskBranch) that makes the task's branch on GitHub at the joined work of its needs.
 	StepWaitJoin StepWait = "join"
 	// StepWaitAgent is a step that waits for its agent, which runs a step of another task.
 	StepWaitAgent StepWait = "agent"
