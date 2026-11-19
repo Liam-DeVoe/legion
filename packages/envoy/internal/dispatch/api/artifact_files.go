@@ -42,7 +42,7 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, kind, s
 	if kind == "doc" || s.deps.Files == nil {
 		return true
 	}
-	if err := s.refuseUploadBeforeItsObject(r.Context(), target, input.name, kind, input.createOnly); err != nil {
+	if err := s.refuseUploadBeforeItsObject(r.Context(), target, input, kind); err != nil {
 		s.writeHandlerError(w, err)
 		return false
 	}
@@ -55,27 +55,22 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, kind, s
 }
 
 // refuseUploadBeforeItsObject answers, from the pool and locking nothing, the refusal
-// storeArtifact's transaction would make of a file or image upload to target under name: a
-// project that does not exist, an artifact the name or slug finds where the upload asks to create
-// only (createOnly) or whose kind is not kind, or a new artifact whose name or reference key is
-// past its bound. It reads as that transaction reads, so the two refuse alike whenever nothing
-// writes the owner's artifacts between them.
-func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifactTarget, name, kind string, createOnly bool) error {
+// storeArtifact's transaction would make of a file or image upload to target: a project that does
+// not exist, an artifact the upload's name or slug finds that the upload may not write the next
+// version of (refuseUploadToAHeldArtifact, the rule the transaction reads too), or a new artifact
+// whose name or reference key is past its bound. It reads as that transaction reads, so the two
+// refuse alike whenever nothing writes the owner's artifacts between them.
+func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifactTarget, input artifactUploadInput, kind string) error {
 	pool := s.deps.Store.Pool
 	if target.IssueKey == nil && target.Session == "" {
 		if _, err := s.loadProject(ctx, pool, target.Project); err != nil {
 			return err
 		}
 	}
+	name := input.name
 	artifact, err := lookupArtifactByNameOrSlug(ctx, pool, target, name)
 	if err == nil {
-		if createOnly {
-			return artifactNameTakenRefusal(name, artifact)
-		}
-		if artifact.Kind != kind {
-			return artifactKindMismatch(name, artifact, kind)
-		}
-		return nil
+		return refuseUploadToAHeldArtifact(input, artifact, kind)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return err

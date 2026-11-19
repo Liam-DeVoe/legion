@@ -83,10 +83,11 @@ type artifactUploadInput struct {
 	// upload always carries its bytes, so it never sets this.
 	blank bool
 	// createOnly reports an upload that asks for a new artifact and nothing else
-	// (jsonArtifactUpload.CreateOnly, or the multipart field of that name): storeArtifact refuses
-	// it where the name already names an artifact of the owner, and refuseUploadBeforeItsObject
-	// refuses a file's before its object is stored where the name is held by then; a name taken
-	// after that check leaves the object, as putUploadedFile says of every refusal there.
+	// (jsonArtifactUpload.CreateOnly, or the multipart field of that name): where the name
+	// already names an artifact of the owner, refuseUploadToAHeldArtifact refuses it, both in
+	// storeArtifact's transaction and, for a file, in refuseUploadBeforeItsObject before its
+	// object is stored; a name taken after that check leaves the object, as putUploadedFile says
+	// of every refusal there.
 	createOnly bool
 }
 
@@ -624,14 +625,8 @@ func (s *server) storeArtifact(
 	} else if err != nil {
 		s.writeHandlerError(w, err)
 		return
-	} else if input.createOnly {
-		s.writeHandlerError(w, artifactNameTakenRefusal(input.name, artifact))
-		return
-	} else if artifact.Kind != kind {
-		s.writeHandlerError(w, artifactKindMismatch(input.name, artifact, kind))
-		return
-	} else if input.blank {
-		s.writeHandlerError(w, blankWriteToADocumentThatExists(input.name, artifact))
+	} else if refusal := refuseUploadToAHeldArtifact(input, artifact, kind); refusal != nil {
+		s.writeHandlerError(w, refusal)
 		return
 	}
 	// A document the release before this one created during the rolling deploy carries no role:
@@ -2197,6 +2192,25 @@ var verificationRolePredicate = documentRolePredicate("", model.ArtifactRoleVeri
 var aliasedVerificationRole = documentRolePredicate("a", model.ArtifactRoleVerification)
 var aliasedPlanRole = documentRolePredicate("a", model.ArtifactRolePlan)
 var aliasedDecisionsRole = documentRolePredicate("a", model.ArtifactRoleDecisions)
+
+// refuseUploadToAHeldArtifact is the rule for an upload of kind under input.name that finds
+// artifact, the owner's artifact of that name or slug: a create-only upload is refused
+// (artifactNameTakenRefusal), then one of another kind (artifactKindMismatch), then a write with
+// no content (blankWriteToADocumentThatExists); nil lets it write artifact's next version. Both
+// reads of that artifact decide by it, the one storeArtifact's transaction makes under the owner's
+// lock and the one refuseUploadBeforeItsObject makes before a file's object is stored, so the two
+// refuse alike.
+func refuseUploadToAHeldArtifact(input artifactUploadInput, artifact model.Artifact, kind string) error {
+	switch {
+	case input.createOnly:
+		return artifactNameTakenRefusal(input.name, artifact)
+	case artifact.Kind != kind:
+		return artifactKindMismatch(input.name, artifact, kind)
+	case input.blank:
+		return blankWriteToADocumentThatExists(input.name, artifact)
+	}
+	return nil
+}
 
 // artifactKindMismatch is the 400 refusing an upload under name, of kind, as the next version of
 // artifact, the one the name or slug finds, whose kind is another.

@@ -289,40 +289,55 @@ func TestUploadArtifactJSONCreateOnlyWritesNoVersionIntoADocumentTheOwnerHolds(t
 	}
 }
 
-// A multipart upload carries create_only as a field, true or false. A file under a name the owner
-// already holds is refused with 409 ARTIFACT_NAME_TAKEN, which names it as a file, before its
-// bytes reach the file store, so the refusal leaves no object behind and the file keeps its one
-// version; a markdown file under a new name is made, and the same create again is refused. Any
-// other spelling of the field is 400 ARTIFACT_INPUT, and the upload without it still writes the
-// held file's next version.
+// A multipart upload carries create_only as a field, true or false. A file or an image under a
+// name the owner already holds - an issue, or an agent's conversation - is refused with 409
+// ARTIFACT_NAME_TAKEN, which names it as a file or as an image, before its bytes reach the file
+// store, so the refusal leaves no object behind and the held artifact keeps its one version; a
+// markdown file under a new name is made, and the same create again is refused. Any other
+// spelling of the field is 400 ARTIFACT_INPUT, and the upload without it still writes the held
+// file's next version.
 func TestUploadArtifactMultipartCreateOnlyStoresNothingUnderAHeldName(t *testing.T) {
 	memory := filestest.NewMemory()
 	handler, _, _ := newTestServer(t, testServerOptions{files: memory})
 	issue := fileIssue(t, handler)
 	path := "/api/v1/issues/" + issue + "/artifacts"
+	agent := "/api/v1/agents/" + agentSession + "/artifacts"
 	type uploaded struct {
 		Artifact model.Artifact `json:"artifact"`
 		Version  model.Version  `json:"version"`
 	}
-	first := multipartRequest(t, handler, path, map[string]string{"name": "rows.csv"}, "rows.csv", "text/csv", []byte("a,b\n"), "alice")
-	if first.Code != http.StatusCreated {
-		t.Fatalf("upload rows.csv: status=%d body=%s", first.Code, first.Body.String())
-	}
-	rows := decodeBody[uploaded](t, first).Artifact
-	refused := multipartRequest(t, handler, path, map[string]string{"name": "rows.csv", "create_only": "true"}, "rows.csv", "text/csv", []byte("c,d\n"), "alice")
-	want := fmt.Sprintf("%q names artifact %s (%s) of this owner; a file's name is its own here: give it another name", "rows.csv", rows.Slug, rows.Name)
-	if body := decodeBody[struct {
-		Code  string `json:"code"`
-		Error string `json:"error"`
-	}](t, refused); refused.Code != http.StatusConflict || body.Code != "ARTIFACT_NAME_TAKEN" || body.Error != want {
-		t.Fatalf("create_only upload under rows.csv: status=%d body=%s, want 409 ARTIFACT_NAME_TAKEN %q", refused.Code, refused.Body.String(), want)
-	}
-	if stored := memory.MIME(files.SHA256([]byte("c,d\n"))); stored != "" {
-		t.Fatalf("the refused upload's bytes are in the file store as %q, want no object", stored)
-	}
-	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+rows.ID, nil, "alice")
-	if held := decodeBody[model.Artifact](t, read); read.Code != http.StatusOK || len(held.Versions) != 1 {
-		t.Fatalf("rows.csv after the refused create: status=%d body=%s, want its one version", read.Code, read.Body.String())
+	for _, tc := range []struct {
+		owner, path, name, contentType, noun string
+		held, refused                        []byte
+	}{
+		{owner: "issue", path: path, name: "rows.csv", contentType: "text/csv", noun: "a file", held: []byte("a,b\n"), refused: []byte("c,d\n")},
+		{owner: "issue", path: path, name: "shot.png", contentType: "image/png", noun: "an image", held: pngBytes("issue shot"), refused: pngBytes("issue shot again")},
+		{owner: "agent", path: agent, name: "rows.csv", contentType: "text/csv", noun: "a file", held: []byte("g,h\n"), refused: []byte("i,j\n")},
+		{owner: "agent", path: agent, name: "shot.png", contentType: "image/png", noun: "an image", held: pngBytes("agent shot"), refused: pngBytes("agent shot again")},
+	} {
+		first := multipartRequest(t, handler, tc.path, map[string]string{"name": tc.name}, tc.name, tc.contentType, tc.held, "alice")
+		if first.Code != http.StatusCreated {
+			t.Fatalf("upload the %s's %s: status=%d body=%s", tc.owner, tc.name, first.Code, first.Body.String())
+		}
+		held := decodeBody[uploaded](t, first).Artifact
+		refused := multipartRequest(t, handler, tc.path, map[string]string{"name": tc.name, "create_only": "true"}, tc.name, tc.contentType, tc.refused, "alice")
+		want := fmt.Sprintf("%q names artifact %s (%s) of this owner; %s's name is its own here: give it another name", tc.name, held.Slug, held.Name, tc.noun)
+		if body := decodeBody[struct {
+			Code  string `json:"code"`
+			Error string `json:"error"`
+		}](t, refused); refused.Code != http.StatusConflict || body.Code != "ARTIFACT_NAME_TAKEN" || body.Error != want {
+			t.Fatalf("create_only upload under the %s's %s: status=%d body=%s, want 409 ARTIFACT_NAME_TAKEN %q", tc.owner, tc.name, refused.Code, refused.Body.String(), want)
+		}
+		if stored := memory.MIME(files.SHA256(tc.refused)); stored != "" {
+			t.Fatalf("the refused upload of the %s's %s left its bytes in the file store as %q, want no object", tc.owner, tc.name, stored)
+		}
+		read := "/api/v1/artifacts/" + held.ID
+		if tc.owner == "agent" {
+			read = tc.path + "/" + held.Slug
+		}
+		if after := decodeBody[model.Artifact](t, dispatchRequest(t, handler, http.MethodGet, read, nil, "alice")); after.ID != held.ID || len(after.Versions) != 1 {
+			t.Fatalf("the %s's %s after the refused create = %+v, want %s with its one version", tc.owner, tc.name, after, held.ID)
+		}
 	}
 	if odd := multipartRequest(t, handler, path, map[string]string{"name": "other.csv", "create_only": "yes"}, "other.csv", "text/csv", []byte("e,f\n"), "alice"); odd.Code != http.StatusBadRequest || !strings.Contains(odd.Body.String(), `"code":"ARTIFACT_INPUT"`) {
 		t.Fatalf("create_only spelled yes: status=%d body=%s, want 400 ARTIFACT_INPUT", odd.Code, odd.Body.String())
@@ -434,16 +449,18 @@ func TestUploadArtifactCreateOnlyFileWhoseNameIsTakenWhileItsBytesAreStoredLeave
 
 // Two create_only uploads of one new name, started together, both find the name free before either
 // writes, so only the check storeArtifact makes under the owner's lock, in the upload's own
-// transaction, keeps the second from writing a version into the first one's document. The test
-// holds that lock until both uploads wait on it, then lets them through: one makes the document,
-// the other is 409 ARTIFACT_NAME_TAKEN, and the document holds one version, for an issue's upload
-// and for a project's. The server's document settling waits an hour, so no settling of the
-// issue's spec waits on the held lock beside the two uploads.
+// transaction, keeps the second from writing a version into the first one's artifact. The test
+// holds that lock until both uploads wait on it, then lets them through: one makes the artifact,
+// the other is 409 ARTIFACT_NAME_TAKEN, and the artifact holds one version, for an issue's upload,
+// for a project's and for an agent's conversation's, whose artifacts are files and pictures, so
+// its two uploads are pictures. The server's document settling waits an hour, so no settling of
+// the issue's spec waits on the held lock beside the two uploads.
 func TestUploadArtifactCreateOnlyUploadsStartedTogetherMakeOneVersion(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createArtifactIssue(t, handler)
 	for _, owner := range []struct {
 		name, path, document string
+		picture              bool
 		hold                 func(t *testing.T) (release func())
 	}{
 		{name: "issue", path: "/api/v1/issues/" + issue.Key + "/artifacts", document: "race-list", hold: func(t *testing.T) func() {
@@ -454,27 +471,36 @@ func TestUploadArtifactCreateOnlyUploadsStartedTogetherMakeOneVersion(t *testing
 				return lockProjectArtifacts(context.Background(), tx, "TEST")
 			})
 		}},
+		{name: "agent", path: "/api/v1/agents/" + agentSession + "/artifacts", document: "race-shot.png", picture: true, hold: func(t *testing.T) func() {
+			return holdWith(t, database, "agent "+agentSession+"'s artifacts lock", func(tx pgx.Tx) error {
+				return lockAgentArtifacts(context.Background(), tx, agentSession)
+			})
+		}},
 	} {
 		t.Run(owner.name, func(t *testing.T) {
 			release := owner.hold(t)
 			answered := make(chan *httptest.ResponseRecorder, 2)
 			for _, content := range []string{"# First\n", "# Second\n"} {
 				go func() {
+					if owner.picture {
+						answered <- multipartRequest(t, handler, owner.path, map[string]string{"name": owner.document, "create_only": "true"}, owner.document, "image/png", pngBytes(content), "alice")
+						return
+					}
 					answered <- dispatchRequest(t, handler, http.MethodPost, owner.path, map[string]any{"name": owner.document, "content": content, "create_only": true}, "alice")
 				}()
 			}
 			awaitLockWaiters(t, database, 2)
 			release()
 			created, refused := 0, 0
-			var id string
+			var made model.Artifact
 			for range 2 {
 				answer := awaitAnswer(t, answered, "a create_only upload of "+owner.document)
 				switch answer.Code {
 				case http.StatusCreated:
 					created++
-					id = decodeBody[struct {
+					made = decodeBody[struct {
 						Artifact model.Artifact `json:"artifact"`
-					}](t, answer).Artifact.ID
+					}](t, answer).Artifact
 				case http.StatusConflict:
 					if decodeBody[struct {
 						Code string `json:"code"`
@@ -488,7 +514,11 @@ func TestUploadArtifactCreateOnlyUploadsStartedTogetherMakeOneVersion(t *testing
 			if created != 1 || refused != 1 {
 				t.Fatalf("two create_only uploads of %s started together: %d created and %d refused ARTIFACT_NAME_TAKEN, want 1 and 1", owner.document, created, refused)
 			}
-			read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+id, nil, "alice")
+			address := "/api/v1/artifacts/" + made.ID
+			if owner.picture {
+				address = owner.path + "/" + made.Slug
+			}
+			read := dispatchRequest(t, handler, http.MethodGet, address, nil, "alice")
 			if held := decodeBody[model.Artifact](t, read); read.Code != http.StatusOK || len(held.Versions) != 1 {
 				t.Fatalf("%s after the two uploads: status=%d body=%s, want one version", owner.document, read.Code, read.Body.String())
 			}
