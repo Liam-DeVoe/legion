@@ -194,36 +194,48 @@ func TestTheStateAtAHeadComesOnlyFromItsCommit(t *testing.T) {
 }
 
 // TestAPassStandsForTheCheckOnlyWhenEachOpenHeadReadsYes: R7. Three open heads and one merged
-// head. A pass at the merged head alone stands for nothing, passes at two open heads leave the
-// third at no, and a pass at the third makes the check's answer yes.
+// head. Passes at two open heads leave the third at no, a pass at the third makes the check's
+// answer yes, and a pass at the merged head alone stands for nothing. Each case has a rig of its
+// own, so a fault in one case reads as that case's failure, and the passes at the open heads are
+// read with no pass at the merged head beside them.
 func TestAPassStandsForTheCheckOnlyWhenEachOpenHeadReadsYes(t *testing.T) {
-	rig := newCIJobRig(t)
 	open := []string{eachHeadH1, eachHeadH2, eachHeadH3}
-	for index, head := range open {
-		writeHead(t, rig.database, ciJobRepository, 70+index, head, "open", rig.issue)
+	newRig := func(t *testing.T) *ciJobRig {
+		t.Helper()
+		rig := newCIJobRig(t)
+		for index, head := range open {
+			writeHead(t, rig.database, ciJobRepository, 70+index, head, "open", rig.issue)
+		}
+		writeHead(t, rig.database, ciJobRepository, 69, eachHeadMerged, "merged", rig.issue)
+		return rig
 	}
-	writeHead(t, rig.database, ciJobRepository, 69, eachHeadMerged, "merged", rig.issue)
 
-	eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadMerged)
-	if check := eachHeadRead(t, rig.handler, rig.issue, "k1", ""); check.PassStands.Answer != "no" {
-		t.Fatalf("a pass at the merged head alone answers %+v, want no", check.PassStands)
-	}
+	t.Run("a pass at each open head in turn", func(t *testing.T) {
+		rig := newRig(t)
+		for index, head := range open {
+			eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", head)
+			check := eachHeadRead(t, rig.handler, rig.issue, "k1", "")
+			want := "no"
+			if index == len(open)-1 {
+				want = "yes"
+			}
+			if check.PassStands.Answer != want {
+				t.Fatalf("with passes at %d of %d open heads, k1 answers %+v, want %s", index+1, len(open), check.PassStands, want)
+			}
+			if got := len(check.PassStands.Subjects); got != len(open) {
+				t.Fatalf("k1 has %d subjects, want one for each of the %d open heads and none for the merged one: %+v",
+					got, len(open), check.PassStands)
+			}
+		}
+	})
 
-	for index, head := range open {
-		eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", head)
-		check := eachHeadRead(t, rig.handler, rig.issue, "k1", "")
-		want := "no"
-		if index == len(open)-1 {
-			want = "yes"
+	t.Run("a pass at the merged head alone", func(t *testing.T) {
+		rig := newRig(t)
+		eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadMerged)
+		if check := eachHeadRead(t, rig.handler, rig.issue, "k1", ""); check.PassStands.Answer != "no" {
+			t.Fatalf("a pass at the merged head alone answers %+v, want no", check.PassStands)
 		}
-		if check.PassStands.Answer != want {
-			t.Fatalf("with passes at %d of %d open heads, k1 answers %+v, want %s", index+1, len(open), check.PassStands, want)
-		}
-		if got := len(check.PassStands.Subjects); got != len(open) {
-			t.Fatalf("k1 has %d subjects, want one for each of the %d open heads and none for the merged one: %+v",
-				got, len(open), check.PassStands)
-		}
-	}
+	})
 }
 
 // TestTheRolesOfAHeadAreThePassesAtThatHead: R6. The implementer's pass is at H1 and the tester's
