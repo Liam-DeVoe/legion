@@ -1869,8 +1869,10 @@ grading model, as `score` takes it, except that a candidate may grade here: no c
 planted output. The report then says the grader is a candidate, and `grader-test.json` records
 the grader and `grader_is_candidate`. `--uncached-input-per-minute` paces the test's calls as it
 paces `score`'s (see "Pacing"). `--added-grader` sets the added grader, as `score` takes it (see
-"The added grader"); the report names the variant, `old` included, `grader-test.json` records it
-as `added_grader`, and the cost holds the check's calls.
+"The added grader"); `grader-test.json` records it as `added_grader`, and the cost holds the
+check's calls. The report's first line under its title names the grader's inputs as the run
+resolved them (`--grader-inputs`), the added grader, `old` included, and the SHA-256 of the
+grader's prompts, so two reports of other settings never read alike.
 
 ### compare and repeatability
 

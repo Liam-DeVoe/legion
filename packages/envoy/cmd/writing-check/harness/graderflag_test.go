@@ -178,8 +178,8 @@ func TestGraderTestAdmitsACandidateAsItsGrader(t *testing.T) {
 			t.Fatalf("grader-test --grader %q = %d:\n%s", c.grader, code, stderr)
 		}
 		said := strings.Contains(stdout, c.want+" is a candidate of candidates.yaml.")
-		if !strings.HasPrefix(stdout, "# Grader test: "+c.want+"\n") || said != c.candidate || !strings.Contains(stdout, "\nThe added grader is old (--added-grader).\n") {
-			t.Errorf("grader-test --grader %q reports:\n%s\nwant the grader %s, said to be a candidate: %t, and the added grader old", c.grader, stdout, c.want, c.candidate)
+		if !strings.HasPrefix(stdout, "# Grader test: "+c.want+"\n") || said != c.candidate || !strings.Contains(stdout, "\nThe grader's inputs are trimmed,lost=full,added=full,undefined=full,define=full (--grader-inputs). The added grader is old (--added-grader). The grader's prompts have SHA-256 "+PromptsDigest()+".\n") {
+			t.Errorf("grader-test --grader %q reports:\n%s\nwant the grader %s, said to be a candidate: %t, and the default inputs as resolved, added grader old and the prompts' digest named", c.grader, stdout, c.want, c.candidate)
 		}
 		data, err := os.ReadFile(filepath.Join(out, "grader-test.json"))
 		if err != nil {
