@@ -1,4 +1,4 @@
--- 20261118164019_state_events.up.sql — the daemon's state events: the three outbox kinds that
+-- 20261119184200_state_events.up.sql — the daemon's state events: the three outbox kinds that
 -- carry them (state_change, state_admission, state_boot), the counter that gives each row its
 -- sequence and its time when its transaction commits, and the admission block the daemon last
 -- wrote (dispatch://INFRA-3931).
@@ -12,13 +12,20 @@
 -- key in outbox.issue, as gated_steps_publish does, so a project has one state lane, and that
 -- lane publishes its rows strictly in sequence order (internal/record's outboxInOrder).
 --
--- The check is one list, so the migration that sets it names every kind, as 20261117023932 did:
--- that migration's twenty-seven kinds, which are the kinds the daemon writes, step_record and
--- plan_record among them, and these three, thirty in all. Its version stands above 20261117023932
--- on purpose: Migrate applies every unrecorded migration in version order, so the list with the
--- higher version is the last word on any database, and a list that left out step_record or
--- plan_record would refuse every write of a step's record or of a run's plan and fail the upgrade
--- of a database that holds one pending.
+-- The check is one list, so the migration that sets it names every kind. This one follows the list
+-- of 20261119003157: that migration's twenty-nine kinds, conflict_confirm, merge_forward,
+-- step_record and plan_record among them, and these three, thirty-two in all. Its version stands
+-- above 20261119003157 on purpose: Migrate applies every unrecorded migration in version order, so
+-- the list with the higher version is the last word on any database. A version below
+-- 20261119003157 would let that migration run after this one on a fresh database and write its
+-- list without the three state kinds, and the check would then refuse every state row. A list that
+-- left out one of 20261119003157's kinds would refuse every row of that kind the daemon queues, and
+-- fail the upgrade of a database that holds one pending.
+--
+-- phase_ended stays in the list for the reason 20261119003157 keeps it. The daemon no longer
+-- queues a row of it, but the release before 20261119003157 does. After a rollback that release
+-- runs on the check this file writes, since it has no migration of its own left to apply, and a
+-- list without phase_ended would refuse the first such row it queues (SQLSTATE 23514).
 alter table outbox drop constraint if exists outbox_kind_check;
 alter table outbox add constraint outbox_kind_check check (kind in (
   'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
@@ -26,7 +33,7 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
-  'state_change', 'state_admission', 'state_boot'));
+  'conflict_confirm', 'merge_forward', 'state_change', 'state_admission', 'state_boot'));
 
 -- One counter row per project. last_seq is the sequence of the newest state row the project's
 -- daemon committed, last_at that row's time, and last_tx the transaction that committed it. The

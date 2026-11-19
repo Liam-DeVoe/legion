@@ -19,7 +19,7 @@ import (
 // (PublishState), the claim write that moves the state the route serves queues one state_change
 // row in that write's own transaction, so the change and its event commit together or not at all,
 // and the row takes its sequence and its time when the transaction commits (the commit trigger of
-// migration 20261118164019_state_events). This package computes the change, in the shape package
+// migration 20261119184200_state_events). This package computes the change, in the shape package
 // stateevent holds for every state event, and hands it to the queue PublishState was given: the
 // record store's own (record.Postgres.EnqueueStateChange), which checks it and inserts it as it
 // checks and inserts the rows of the issue and slot writes. This package cannot import record,

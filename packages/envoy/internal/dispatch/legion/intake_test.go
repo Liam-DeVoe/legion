@@ -189,7 +189,7 @@ const (
 
 // stateSchema is the schema version of every state daemonState builds (daemon.schemaVersion), and
 // of a boot event whose store has not moved its schema since.
-const stateSchema = 20261118164019
+const stateSchema = 20261119184200
 
 // publish publishes events as one message of project's state lane, at the wall clock's moment,
 // under the rig's run, and answers that moment.
