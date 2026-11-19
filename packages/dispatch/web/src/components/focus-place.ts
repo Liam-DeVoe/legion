@@ -6,17 +6,19 @@ import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { CONTROL } from "./control-names";
 import { ROW_SELECTOR } from "./row-marker";
 
+/** The form controls: the focus reaches one only while it is not `disabled` (`FOCUSABLE`), and a
+ *  row holds one as a control either way (`ROW_CONTROL`). */
+const FORM_FIELDS = ["button", "textarea", "input", "select"];
+
+/** An element given a Tab stop of its own: any `tabindex` but -1. */
+const TAB_STOP = '[tabindex]:not([tabindex="-1"])';
+
 /** What the keyboard focus can reach: a link, a form control that is not `disabled`, or anything
  *  given a Tab stop of its own. A control refused with `aria-disabled` is one, since it keeps its
  *  Tab stop. */
-const FOCUSABLE = [
-  "a[href]",
-  "button:not(:disabled)",
-  "textarea:not(:disabled)",
-  "input:not(:disabled)",
-  "select:not(:disabled)",
-  '[tabindex]:not([tabindex="-1"])',
-].join(", ");
+const FOCUSABLE = ["a[href]", ...FORM_FIELDS.map((tag) => `${tag}:not(:disabled)`), TAB_STOP].join(
+  ", "
+);
 
 /** The controls the focus can reach inside `container`, in order. One under a `hidden` ancestor -
  *  a composer kept mounted, out of sight, for a send it has out - takes no focus, so it is never
@@ -147,10 +149,8 @@ export function useFocusPlace(
 const DIALOG = `[role="dialog"], [${PANEL_ATTRIBUTE}]`;
 
 /** Whether `element` is a row of a table or list or inside one: whether it or an element around
- *  it is an item of a list or a table by HTML or ARIA (an `<li>`, a `<tr>`, a `row`, a
- *  `listitem`, a `feed`'s `article`) or carries the shared row marker - `row-marker.ts`'s one
- *  rule, `ROW_SELECTOR`. A loss the reader did not cause lands in no row, and in no control
- *  inside one. */
+ *  it is a row by `row-marker.ts`'s one rule, `ROW_SELECTOR`. A loss the reader did not cause
+ *  lands in no row, and in no control inside one. */
 export function inRow(element: Element): boolean {
   return element.closest(ROW_SELECTOR) !== null;
 }
@@ -624,18 +624,16 @@ function spotsOf(element: Element, region: Element): Spot[] {
   return spots;
 }
 
+/** Whether `spot`'s node has left the page while the parent it stood in is still in `region`. */
+function goneFrom(spot: Spot, region: Element): boolean {
+  return !spot.node.isConnected && spot.parent.isConnected && region.contains(spot.parent);
+}
+
 /** What a row holds as its controls, by markup alone: what the focus can reach (`FOCUSABLE`), and
  *  a button or form field disabled now as well, since a press can disable its own control before
  *  its row goes - the loss is noted at the disable's `focusout` then - and that control keeps its
  *  place in the row. */
-const ROW_CONTROL = [
-  "a[href]",
-  "button",
-  "textarea",
-  "input",
-  "select",
-  '[tabindex]:not([tabindex="-1"])',
-].join(", ");
+const ROW_CONTROL = ["a[href]", ...FORM_FIELDS, TAB_STOP].join(", ");
 
 /** The controls `row` holds, in order, by markup alone (`ROW_CONTROL`): the row itself first
  *  where it is one, then each inside it. Counted by markup and not by what the page draws, so a
@@ -834,9 +832,7 @@ function formIn(elements: readonly Element[]): Element | null {
  *  into the place of a row taken away stood in the page before the loss, so it is nothing new
  *  there, and `controlsOfRowMovedUp` answers for it instead. */
 function controlsInPlace(loss: Loss, drawn: readonly HTMLElement[]): HTMLElement[] {
-  const spot = loss.spots.find(
-    ({ node, parent }) => !node.isConnected && parent.isConnected && loss.region.contains(parent)
-  );
+  const spot = loss.spots.find((each) => goneFrom(each, loss.region));
   if (spot === undefined) return [];
   const standing = standingAt(spot, loss.arrived);
   if (standing.length === 0) return [];
@@ -872,8 +868,7 @@ function controlsOfRowMovedUp(loss: Loss, drawn: readonly HTMLElement[]): HTMLEl
   const { element, region, rowPlace } = loss;
   if (rowPlace === null) return [];
   const spot = loss.spots.find(({ node }) => node === rowPlace.row);
-  if (spot === undefined || spot.node.isConnected) return [];
-  if (!spot.parent.isConnected || !region.contains(spot.parent)) return [];
+  if (spot === undefined || !goneFrom(spot, region)) return [];
   const moved = elementFrom(spot.next);
   if (moved === null || moved.parentNode !== spot.parent || !moved.matches(ROW_SELECTOR)) {
     return [];
@@ -928,10 +923,9 @@ function landBox(box: HTMLElement): boolean {
  *  text and with no scroll. A candidate that takes typed text (`takesText`) - a text box, a
  *  `<textarea>`, a content-editable element - is passed over, since the reader never chose it and
  *  their next key would be typed there; a candidate in no row takes the focus where it is, since
- *  the loss itself was in sight; a candidate in a row (`ROW_SELECTOR`, the rule `inRow` reads: an
- *  `<li>`, a `<tr>` or another item of a list or table, or an element carrying the row marker)
- *  sends the focus to the box that row is drawn in instead (`boxAround`), never into the row and
- *  only while the reader can see the box. Answers whether the focus landed. */
+ *  the loss itself was in sight; a candidate in a row (`ROW_SELECTOR` in `row-marker.ts`, the rule
+ *  `inRow` reads) sends the focus to the box that row is drawn in instead (`boxAround`), never
+ *  into the row and only while the reader can see the box. Answers whether the focus landed. */
 function landQuietly(candidate: HTMLElement, region: Element): boolean {
   if (!candidate.isConnected || !rendered(candidate) || takesText(candidate)) return false;
   const row = candidate.closest(ROW_SELECTOR);

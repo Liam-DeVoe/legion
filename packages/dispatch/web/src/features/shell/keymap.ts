@@ -264,8 +264,8 @@ export function takesText(element: Element): boolean {
  *  `<textarea>`, or a content-editable element. Every other control fires its `change` at the
  *  pick - a `<select>`, a checkbox, a radio, a file, range or color input, a date or time box -
  *  so the page's focus rescue reads that `change` as a press of the reader's (`focus-place.ts`'s
- *  `isPress`). An `<input>` of a type in neither list, a button or hidden, fires no `change`; it
- *  is answered false, so a `change` on one would read as a pick. */
+ *  `isPress`). An `<input>` of the button family or of type hidden fires no `change`; it is
+ *  answered false, so a `change` on one would read as a pick. */
 export function commitsOnBlur(element: Element): boolean {
   if (element instanceof HTMLInputElement) {
     return COMMIT_ON_BLUR_TYPES[element.type] === true;
