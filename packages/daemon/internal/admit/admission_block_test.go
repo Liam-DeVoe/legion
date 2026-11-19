@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -209,5 +210,63 @@ func TestAnAdmissionPassQueuesTheBlockOnlyWhenItChanges(t *testing.T) {
 		if events := admissionEvents(t, pool); len(events) != 1 {
 			t.Fatalf("three passes that moved nothing left %d admission events, want the first one alone", len(events))
 		}
+	})
+}
+
+// A pass's block is judged once, after the pass's last write, and that one judgement is both the
+// block the pass publishes and the block the state route serves of the same store after the pass.
+// A pass that promotes writes a slot after the judgement it promoted from, and a pass that releases
+// a slot writes before its line's last judgement: in both the published block is the served one,
+// field for field, so it never lags the pass's own writes. Each pass here is a tick, which reads
+// the same final judgement for the controller's lists.
+func TestTheBlockAPassPublishesIsTheBlockTheStateServesAfterIt(t *testing.T) {
+	const run, first, blocker = "LEGION-100", "LEGION-101", "LEGION-199"
+	// published applies the tick, and holds its one new event's block to the served block and
+	// its active list to active.
+	published := func(t *testing.T, pool *pgxpool.Pool, admission *Admission, active []string) {
+		t.Helper()
+		before := len(admissionEvents(t, pool))
+		tick(t, pool, admission, "tick")
+		events := admissionEvents(t, pool)
+		if len(events) != before+1 {
+			t.Fatalf("the pass wrote %d admission events, want one", len(events)-before)
+		}
+		got := events[len(events)-1].Admission
+		if want := servedBlock(t, pool, admission); !reflect.DeepEqual(decodedBlock(t, got), want) {
+			t.Fatalf("the pass published the block %s, want the block the state serves after it, %v", got, want)
+		}
+		var block record.AdmissionBlock
+		if err := json.Unmarshal(got, &block); err != nil {
+			t.Fatalf("decode the block: %v", err)
+		}
+		if !reflect.DeepEqual(block.Active, active) {
+			t.Fatalf("the published block's active = %v, want %v", block.Active, active)
+		}
+	}
+
+	t.Run("a pass that promotes", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := publishingAdmission(t, 1)
+		seedWaiting(t, pool, first, "A")
+		seedMirror(t, pool, first, "todo")
+		applySweep(t, pool, admission, "sweep")
+		published(t, pool, admission, []string{first})
+		assertSlots(t, pool, []record.Slot{{Issue: first, Index: 0, AdmittedAt: fixedNow}})
+	})
+
+	t.Run("a pass that releases a slot", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := publishingAdmission(t, 1)
+		// A root at work in implementing, whose Dispatch blocker is not done: the pass gives its
+		// slot back for the wait (releaseSlotsForWaits).
+		seedSlottedInPhase(t, pool, testProject, run, "0", phase.Implementing, nil)
+		seedMirror(t, pool, run, "in_progress", blocker)
+		seedMirror(t, pool, blocker, "in_progress")
+		applySweep(t, pool, admission, "sweep")
+		if events := admissionEvents(t, pool); len(events) != 1 {
+			t.Fatalf("the sweep wrote %d admission events, want the first block", len(events))
+		}
+		published(t, pool, admission, []string{})
+		assertSlots(t, pool, nil)
 	})
 }

@@ -2033,6 +2033,10 @@ type Store interface {
 	// writer reads before it judges an event of its own, the admission pass before its block
 	// (QueueAdmissionBlock).
 	StatePublished() bool
+	// JudgedWrites is how many rows tx has written so far to the tables an admission judgement
+	// reads, or -1 when Postgres keeps no such counts (Postgres.JudgedWrites): two equal answers
+	// in one transaction say no such row was written between them.
+	JudgedWrites(ctx context.Context, tx pgx.Tx) (int64, error)
 	// QueueAdmissionBlock writes block as project's admission block where it differs from the
 	// one stored, and when that write changed it queues its state event (StateAdmission, carrying
 	// the run the state events were turned on with); a block equal to the stored one writes and

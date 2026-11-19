@@ -69,6 +69,21 @@ func JudgeAdmissionFrom(ctx context.Context, tx pgx.Tx, store record.Store, proj
 	if err != nil {
 		return AdmissionJudgement{}, fmt.Errorf("judge the admission of %s: %w", project, err)
 	}
+	return AdmissionOf(issues, slots, rows, facts, line, dropped, cap), nil
+}
+
+// AdmissionOf is the admission judgement of one judgement of the line (JudgeLine), which reads
+// nothing more: issues are the project's live records and slots the project's own among them
+// (record.OwnSlots), both as the line was judged from them, and rows, facts, line and dropped are
+// what JudgeLine answered over them. Under cap: `active`, the issues holding those slots in slot
+// order; `waiting`, the line in its order; `trees`, the live roots by key (record.LiveRoots);
+// `blocked`, what waits on another issue (Blocked); and `held`, what the daemon holds in the
+// workflow and runs nothing of (record.HeldList). The admission pass assembles its block with it
+// from the last judgement it made itself (admit's finalJudgement), so the block costs no judgement
+// of its own where that judgement still stands.
+func AdmissionOf(issues []record.Issue, slots []record.Slot, rows map[string]Row, facts record.LineFacts,
+	line []record.LineEntry, dropped []record.HeldIssue, cap int,
+) AdmissionJudgement {
 	active := make([]string, len(slots))
 	for i, slot := range slots {
 		active[i] = slot.Issue
@@ -91,5 +106,5 @@ func JudgeAdmissionFrom(ctx context.Context, tx pgx.Tx, store record.Store, proj
 		Rows:  rows,
 		Facts: facts,
 		Live:  live,
-	}, nil
+	}
 }

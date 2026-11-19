@@ -73,6 +73,30 @@ func (s *Postgres) PublishState(run string, queued func(ctx context.Context)) {
 // reads it first, so that with the events off it judges nothing.
 func (s *Postgres) StatePublished() bool { return s.state.Load() != nil }
 
+// judgedTables is every table an admission judgement reads (blockers.JudgeLine over
+// ReadLineFacts): the issue records, the slots, the tree lifecycles, the design gates, the outbox
+// rows of the starts owed (OwedStarts) and the Dispatch mirror with its claims (DispatchIssuesOf,
+// DispatchChildren).
+var judgedTables = []string{"issues", "slots", "tree_lifecycles", "design_gates", "outbox", "dispatch_issues", "dispatch_claims"}
+
+// JudgedWrites is how many rows tx has inserted, updated or deleted so far in the tables an
+// admission judgement reads (judgedTables), as Postgres counts the current transaction's own
+// writes (pg_stat_get_xact_tuples_inserted and its two siblings, which include the writes of the
+// open subtransactions). Two answers in one transaction that are equal say that no row any
+// judgement reads was written between them, whichever code wrote it, so a judgement made over
+// reads taken at the first stands at the second (admit's finalJudgement). It answers -1 when
+// Postgres keeps no such counts (track_counts off), which no caller may take as equal to anything.
+func (s *Postgres) JudgedWrites(ctx context.Context, tx pgx.Tx) (int64, error) {
+	var writes int64
+	if err := tx.QueryRow(ctx, `select case when current_setting('track_counts')::boolean
+			then coalesce(sum(pg_stat_get_xact_tuples_inserted(t) + pg_stat_get_xact_tuples_updated(t) + pg_stat_get_xact_tuples_deleted(t)), 0)::bigint
+			else -1::bigint end
+		from unnest($1::regclass[]) as t`, judgedTables).Scan(&writes); err != nil {
+		return 0, fmt.Errorf("count the rows this transaction wrote to what an admission judgement reads: %w", err)
+	}
+	return writes, nil
+}
+
 func (s *Postgres) MarkProcessed(ctx context.Context, tx pgx.Tx, source, eventID string) (bool, error) {
 	tag, err := tx.Exec(ctx, `insert into processed_events (source, event_id) values ($1, $2)
 		on conflict (source, event_id) do nothing`, source, eventID)
