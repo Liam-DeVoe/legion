@@ -1,4 +1,6 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
@@ -277,5 +279,100 @@ test("useOutOfTabOrder takes an element that scrolls out of the tab order, a lat
     expect(view.container.querySelector("[data-visible]")?.hasAttribute("tabindex")).toBe(false);
   } finally {
     view.unmount();
+  }
+});
+
+/** The rules of `styles.css` that give a block in a node's words a scroll of its own (decision
+ *  282), as one style sheet: no DOM of a unit test loads the page's styles, and the overflow
+ *  `useOutOfTabOrder` reads is the one these rules compute. */
+function wordsScrollSheet(): HTMLStyleElement {
+  const css = readFileSync(join(import.meta.dir, "..", "..", "styles.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    ""
+  );
+  const rules = [...css.matchAll(/([^{};]+)\{([^{}]*)\}/g)].flatMap(
+    ([rule, selectors = "", body = ""]) =>
+      selectors.includes("[data-node-words]") && /overflow-x:\s*auto/.test(body)
+        ? [rule.trim()]
+        : []
+  );
+  expect(rules.length, "no rule of styles.css scrolls a block in a node's words").toBeGreaterThan(
+    0
+  );
+  const sheet = document.createElement("style");
+  sheet.textContent = rules.join("\n");
+  return sheet;
+}
+
+/** A comment that holds a code block and a table, each wider than a row's words. */
+const WIDE_BLOCKS = [
+  "Run it so:",
+  "",
+  "```sh",
+  `bun run e2e ${Array.from({ length: 40 }, (_unused, at) => `--flag${at + 1}`).join(" ")}`,
+  "```",
+  "",
+  `| ${Array.from({ length: 16 }, (_unused, at) => `column${at + 1}`).join(" | ")} |`,
+  `| ${Array.from({ length: 16 }, () => "---").join(" | ")} |`,
+  `| ${Array.from({ length: 16 }, (_unused, at) => `value${at + 1}`).join(" | ")} |`,
+].join("\n");
+
+/** Draws `WIDE_BLOCKS` as a row draws a node's words, under the rules that make its code block
+ *  and its table scroll, and answers the two once both are drawn. */
+async function drawWideBlocks(tabStops: boolean) {
+  const sheet = wordsScrollSheet();
+  document.head.append(sheet);
+  const view = draw(
+    <ReferenceNamesProvider>
+      <div data-node-words="">
+        <RowText markdown={WIDE_BLOCKS} tabStops={tabStops} tree={displayTree(WIDE_BLOCKS)} />
+      </div>
+    </ReferenceNamesProvider>
+  );
+  const close = () => {
+    view.unmount();
+    sheet.remove();
+  };
+  try {
+    const blocks = await waitFor(() => {
+      const pre = view.container.querySelector<HTMLElement>("[data-node-words] pre");
+      const table = view.container.querySelector<HTMLElement>("[data-node-words] table");
+      if (pre === null || table === null) throw new Error("the words draw no code block or table");
+      return { pre, table };
+    });
+    // The rules apply, so each block scrolls as the browser draws it.
+    expect([blocks.pre, blocks.table].map((block) => getComputedStyle(block).overflowX)).toEqual([
+      "auto",
+      "auto",
+    ]);
+    return { ...blocks, close };
+  } catch (error) {
+    close();
+    throw error;
+  }
+}
+
+// The outline is one tab stop (R9), and in Chromium a block that scrolls and holds no control in
+// the tab order is a tab stop of its own: a node's words drawn out of the tab order take their
+// wide code block and table out of it, as styles.css makes each scroll.
+test("RowText out of the tab order takes its wide code block and table out of it", async () => {
+  const { close, pre, table } = await drawWideBlocks(false);
+  try {
+    await waitFor(() => {
+      expect([pre, table].map(outOfTabOrder)).toEqual([true, true]);
+    });
+  } finally {
+    close();
+  }
+});
+
+// A view with tab stops has no tree's keys, so a wide block keeps the tab stop Chromium gives it:
+// it is how a keyboard reaches its scroll.
+test("RowText with tabStops leaves its wide code block and table in the tab order, for the keyboard's scroll", async () => {
+  const { close, pre, table } = await drawWideBlocks(true);
+  try {
+    expect([pre, table].map((block) => block.hasAttribute("tabindex"))).toEqual([false, false]);
+  } finally {
+    close();
   }
 });
