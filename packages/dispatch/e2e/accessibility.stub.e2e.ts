@@ -7,19 +7,20 @@
  *  a `/ws/live` frame the contract fixtures do not carry is read on the real stack by
  *  `e2e/accessibility.e2e.ts`, and its entry's `realStackScan` says which part.
  *
- *  Each row pins the page's clock to the moment the corpus was written, as the visual layer pins
- *  it (`e2e/visual.e2e.ts`). The Agents and Machines pages read each session's `last_seen`
- *  against that clock, and a recording freezes `last_seen`, so an unpinned replay would draw
- *  every seeded session as one gone quiet and scan a page the recording never saw. */
+ *  Each row pins the page's clock to `seededAt`, the moment the corpus's seeding finished, where
+ *  the visual layer pins it a minute after that moment (`e2e/visual.e2e.ts`). The Agents and
+ *  Machines pages read each session's `last_seen` against that clock, and a recording freezes
+ *  `last_seen`, so an unpinned replay would draw every seeded session as one gone quiet and scan
+ *  a page the recording never saw. */
 import { expectNoStaleExclusion, scanRoute } from "./accessibility-scan";
 import { expectTimeout } from "./expect-timeout";
-import { stubScannedRoutes } from "./review-routes";
+import { stubScannedRoutes, type VisualSeed } from "./review-routes";
 import { seedReviewRoutes } from "./review-seed";
 import { stubbed } from "./stub/stub-test";
 
 /** The review corpus, and the moment its seeding finished, which each row's page clock is
  *  pinned to. The seed's waits give up at the bound the rows' own assertions use. */
-const test = stubbed(async () => {
+const test = stubbed(async (): Promise<VisualSeed> => {
   const seed = await seedReviewRoutes({ boundMs: expectTimeout });
   return { ...seed, seededAt: new Date().toISOString() };
 });

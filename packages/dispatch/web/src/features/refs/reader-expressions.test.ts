@@ -1,9 +1,14 @@
 import { expect, test } from "bun:test";
-import { controlCharacterPattern } from "@legion/contracts";
+import { controlCharacterPattern, PROJECT_KEY_PATTERN } from "@legion/contracts";
 import { checkSync } from "recheck/lib/browser";
 
 import { referencePattern } from "./reference-spans";
-import { dispatchReferencePattern, issueKeyOnlyPattern, projectKeyOnlyPattern } from "./routes";
+import {
+  dispatchReferencePattern,
+  issueArtifactReferencePattern,
+  issueKeyOnlyPattern,
+  issuePathPattern,
+} from "./routes";
 import { githubIssuePath, trailingRun, whitespaceOnly } from "./Unfurl";
 
 /**
@@ -21,15 +26,17 @@ function verdict(expression: RegExp) {
 
 // Every expression the one-pass rows' bodies reach (`composer-references.test.ts`,
 // `Unfurl.test.tsx`, `text-references.test.ts`): the reference grammar runs over a whole body, a
-// reference read from it is parsed with the next four, and a GitHub URL's path is read with the
-// sixth. The last two are what the unfurl cards read a body with between its references and
-// after each one.
+// `dispatch://` reference read from it is parsed with the next five, a dashboard address with the
+// seventh, and a GitHub URL's path is read with the eighth. The last two are what the unfurl cards
+// read a body with between its references and after each one.
 test.each([
   ["the reference grammar", referencePattern],
   ["a control character", controlCharacterPattern],
   ["a `dispatch://` reference", dispatchReferencePattern],
   ["an issue key", issueKeyOnlyPattern],
-  ["a project key", projectKeyOnlyPattern],
+  ["a project key", PROJECT_KEY_PATTERN],
+  ["an issue reference's document target", issueArtifactReferencePattern],
+  ["a dashboard issue address", issuePathPattern],
   ["a GitHub issue's path", githubIssuePath],
   ["the whitespace between references", whitespaceOnly],
   ["the run after a reference", trailingRun],

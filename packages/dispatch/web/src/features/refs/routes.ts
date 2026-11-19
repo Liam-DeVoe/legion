@@ -4,6 +4,7 @@ import {
   hasControlCharacter,
   isSessionId,
   itemFromSearch,
+  PROJECT_KEY_PATTERN,
   SESSION_ID_PATTERN,
   shortSessionId,
 } from "@legion/contracts";
@@ -188,13 +189,12 @@ function isPlainIssueRoute(route: DispatchRoute | AgentArtifactRoute): route is 
 const projectKeyPattern = "[A-Z][A-Z0-9]{1,9}";
 const issueKeyPattern = `${projectKeyPattern}-[1-9]\\d*`;
 export const issueKeyOnlyPattern = new RegExp(`^${issueKeyPattern}$`);
-export const projectKeyOnlyPattern = new RegExp(`^${projectKeyPattern}$`);
-const issuePathPattern = new RegExp(`^/issues/(${issueKeyPattern})(?:/(.*))?$`);
+export const issuePathPattern = new RegExp(`^/issues/(${issueKeyPattern})(?:/(.*))?$`);
 const projectPathPattern = new RegExp(`^/projects/(${projectKeyPattern})(?:/(.*))?$`);
 /** The slug Dispatch gives a document, the one a reference can name. */
 const artifactSlugPattern = "[a-z0-9]+(?:-[a-z0-9]+)*";
 const artifactSlugOnlyPattern = new RegExp(`^${artifactSlugPattern}$`);
-const issueArtifactReferencePattern = new RegExp(
+export const issueArtifactReferencePattern = new RegExp(
   `^artifact/(${artifactSlugPattern})(?:@v([1-9]\\d*))?$`
 );
 const projectArtifactReferencePattern = new RegExp(
@@ -409,7 +409,7 @@ export function parseNodeReference(value: string): DispatchReferenceRoute | unde
       ? undefined
       : agentArtifactRoute(artifact[1] ?? "", artifact[2] ?? "", artifact[3]);
   }
-  if (!projectKeyOnlyPattern.test(key) || target === undefined) {
+  if (!PROJECT_KEY_PATTERN.test(key) || target === undefined) {
     return undefined;
   }
   const document = target.match(projectArtifactReferencePattern);

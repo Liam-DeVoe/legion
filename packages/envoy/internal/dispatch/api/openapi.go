@@ -274,7 +274,7 @@ func openAPIRequestBodyTypes() (map[reflect.Type]bool, []reflect.Type) {
 		}
 		reach(shape.Response, response, nil)
 		reach(shape.Advice, response, nil)
-		for _, answer := range slices.Concat(shape.Also, shape.Refusals, idRoutes[name].refusals()) {
+		for _, answer := range slices.Concat(shape.Also, routeRefusals(name, shape)) {
 			reach(answer.Body, response, nil)
 		}
 	}
@@ -893,7 +893,7 @@ func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31
 			return nil, err
 		}
 	}
-	for _, refusal := range slices.Concat(shape.Refusals, idRoutes[route.Method+" "+route.Pattern].refusals()) {
+	for _, refusal := range routeRefusals(route.Method+" "+route.Pattern, shape) {
 		if err := add(refusal.Status, refusal.Body); err != nil {
 			return nil, err
 		}

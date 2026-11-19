@@ -83,9 +83,9 @@
  *  not begin with a dash, which is why `--shuffle e2e/claim-unresponsive.e2e.ts` shuffles by
  *  that path and filters no file. That is the half `clockFileOnCommandLine` rests on, and the
  *  two rows named above are its evidence. A VARIADIC option (`--project <project-name...>`)
- *  behaves as a
- *  required one for its first value and stops at the next dash token, so `--project --ui` reads
- *  `--ui` as a project name and `--project chromium --ui` leaves `--ui` a flag.
+ *  behaves as a required one for its first value and stops at the next dash token, so
+ *  `--project --ui` reads `--ui` as a project name and `--project chromium --ui` leaves `--ui` a
+ *  flag.
  */
 
 /** The class an option's value belongs to, as `bunx playwright test --help` writes it: a required

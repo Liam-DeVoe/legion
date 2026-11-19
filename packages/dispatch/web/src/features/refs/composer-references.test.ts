@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { DISPATCH_TEXT_REFERENCES } from "@legion/contracts";
 
-import { ONE_PASS_SLACK, stepsAtNAndFourN } from "../../__tests__/one-pass";
+import { expectOnePass, ONE_PASS_SLACK, stepsAtNAndFourN } from "../../__tests__/one-pass";
 import { readerStep } from "./reader-steps";
 import { composerReferences } from "./routes";
 
@@ -54,10 +54,8 @@ test.each([
     [],
   ],
 ] as const)("a reference trailed by %s is read in one pass", (_name, body, run, refs) => {
-  const { atN, atFourN } = stepsAtNAndFourN((n) => composerReferences(body(n), origin), run / 4);
-  expect(atFourN).toBeGreaterThan(atN);
-  expect(atFourN).toBeLessThanOrEqual(4 * atN + ONE_PASS_SLACK);
-  expect(composerReferences(body(run), origin).map((item) => item.reference)).toEqual([...refs]);
+  const references = expectOnePass((n) => composerReferences(body(n), origin), run / 4);
+  expect(references.map((item) => item.reference)).toEqual([...refs]);
 });
 
 /** The trim those rows guard against: for every end it tries, it counts the parentheses before

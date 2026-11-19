@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { DISPATCH_TEXT_REFERENCES, isIdPrefix } from "@legion/contracts";
 
-import { ONE_PASS_SLACK, stepsAtNAndFourN } from "../../__tests__/one-pass";
+import { expectOnePass } from "../../__tests__/one-pass";
 import { readTextReferences } from "./text-references";
 
 const origin = "https://dispatch.test";
@@ -82,13 +82,7 @@ test.each([
   ["hyphens", (run: number) => `${origin}/issues/CORE-1?x=y${"-".repeat(run)}`, true],
 ] as const)("an address whose query holds a run of %s is read in one pass", (_name, body, trails) => {
   const run = 1 << 15;
-  const { atN, atFourN } = stepsAtNAndFourN(
-    (n) => readTextReferences(body(n), { origin }),
-    run / 4
-  );
-  expect(atFourN).toBeGreaterThan(atN);
-  expect(atFourN).toBeLessThanOrEqual(4 * atN + ONE_PASS_SLACK);
-  const { references } = readTextReferences(body(run), { origin });
+  const { references } = expectOnePass((n) => readTextReferences(body(n), { origin }), run / 4);
   expect(references.map(({ named, reference }) => ({ named, reference }))).toEqual([
     { named: trails ? body(0).length : undefined, reference: "dispatch://CORE-1" },
   ]);

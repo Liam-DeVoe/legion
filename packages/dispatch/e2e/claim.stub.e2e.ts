@@ -28,7 +28,8 @@ const test = stubbed(async () => {
 
 // A session title is free text of any length, and the claim chip renders it on the issue
 // header, so a long holder name must not widen the page. The long-payload shape is
-// labels.e2e.ts's; the width assertion is the one above.
+// labels.e2e.ts's; the width assertion is this row's own, below: the page's `scrollWidth` held
+// to its `clientWidth` at each of the two widths.
 test("a long holder name never widens the issue page @pr", async ({ page, scene }, testInfo) => {
   await page.clock.install({ time: new Date(scene.claimedAt) });
   for (const { width, height } of [

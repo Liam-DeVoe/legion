@@ -287,6 +287,13 @@ func (route idRoute) refusals() []routeAnswer {
 	return []routeAnswer{{Status: http.StatusConflict, Body: idAmbiguousError{}}}
 }
 
+// routeRefusals are the answers richer than errorBody of the route keyed key ("<method>
+// <pattern>") whose shape is shape: its own (routeShape.Refusals), then the prefix layer's in
+// front of its handler (idRoute.refusals). The OpenAPI document reads both from here.
+func routeRefusals(key string, shape routeShape) []routeAnswer {
+	return slices.Concat(shape.Refusals, idRoutes[key].refusals())
+}
+
 // idRoutes is, by "<method> <pattern>", what the {id} and {block_id} of every route that
 // carries one name: the kind whose prefix is resolved into it and the 404 that route answers
 // for an id of that kind it does not hold, or the reason it resolves none. It stands beside the

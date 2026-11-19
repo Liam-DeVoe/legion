@@ -194,11 +194,8 @@ test("reads the ID_AMBIGUOUS body and the common refusal as refusals of the docu
     error: "not found",
   } satisfies ErrorBody satisfies DispatchRefusal;
 
-  const read: DispatchServiceErrorShape = ambiguous;
-  expect(read.code).toBe(ID_AMBIGUOUS);
-  expect(read.candidates).toEqual([comment, message]);
-  const plain: DispatchServiceErrorShape = common;
-  expect(plain.candidates).toBeUndefined();
+  // The row is held by the typecheck: a client reads each refusal through this shape.
+  [ambiguous, common] satisfies DispatchServiceErrorShape[];
 });
 
 test("models Agent activity and open-ask aggregates", () => {

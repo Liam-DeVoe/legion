@@ -1,3 +1,5 @@
+import { expect } from "bun:test";
+
 import { countReaderSteps } from "../features/refs/reader-steps";
 
 /**
@@ -10,13 +12,24 @@ import { countReaderSteps } from "../features/refs/reader-steps";
 export const ONE_PASS_SLACK = 16;
 
 /** The steps of this folder's text readers (`features/refs/reader-steps.ts`) that `read` takes
- *  on a text of `n` and on one of four times `n`. */
-export function stepsAtNAndFourN(
-  read: (n: number) => void,
+ *  on a text of `n` and on one of four times `n`, and what `read` answered on the longer one. */
+export function stepsAtNAndFourN<Answer>(
+  read: (n: number) => Answer,
   n: number
-): { atN: number; atFourN: number } {
-  return {
-    atFourN: countReaderSteps(() => read(4 * n)),
-    atN: countReaderSteps(() => read(n)),
-  };
+): { atN: number; atFourN: number; answerAtFourN: Answer } {
+  let answerAtFourN!: Answer;
+  const atFourN = countReaderSteps(() => {
+    answerAtFourN = read(4 * n);
+  });
+  return { answerAtFourN, atFourN, atN: countReaderSteps(() => read(n)) };
+}
+
+/** Asserts that `read` reads its text in one pass: more steps on a text of `4n` than on one of
+ *  `n`, and no more than four times as many and `ONE_PASS_SLACK`. Answers what `read` answered
+ *  on the text of `4n`, so a row asserts on the counted read rather than reading it again. */
+export function expectOnePass<Answer>(read: (n: number) => Answer, n: number): Answer {
+  const { answerAtFourN, atN, atFourN } = stepsAtNAndFourN(read, n);
+  expect(atFourN).toBeGreaterThan(atN);
+  expect(atFourN).toBeLessThanOrEqual(4 * atN + ONE_PASS_SLACK);
+  return answerAtFourN;
 }

@@ -64,12 +64,13 @@ generated.
   `client.ts` are `@legion/contracts`', and the `paths.ts` names it imports are that file's; `Query`,
   `QueryKey`, `QueryFunction`, `QueryFunctionContext`, `QueryObserverOptions`,
   `DefaultedQueryObserverOptions`, `DefaultError`, `RefetchOptions` and `RefetchQueryFilters` in
-  `query-client.ts` and `queries.ts` are TanStack Query's. Not a response shape: each is read
-  here under its own package's name, where it is declared.
-- **A test file's own type is not a wire shape either**: `query-refresh.test.ts`'s `ServedQuery`,
-  `live-socket.test.ts`'s `FakeLiveSocket` and `FakeLiveSockets`, and `argument-refusal.test.ts`'s
-  `Refusal`. Not a response shape: each is the stand-in or the table a test drives its subject
-  with.
+  `query-client.ts` and `queries.ts` are TanStack Query's; and `FakeLiveSocket` and
+  `FakeLiveSockets` in `live-socket.test.ts` are `web/src/__tests__/live-socket-harness.ts`'s,
+  the stand-in socket that test drives its subject with and the set of them a test installs. Not a
+  response shape: each is read here under the name of the package or module that declares it.
+- **A test file's own type is not a wire shape either**: `query-refresh.test.ts`'s `ServedQuery`
+  and `argument-refusal.test.ts`'s `Refusal`. Not a response shape: each is the stand-in or the
+  table a test drives its subject with.
 
 ## `e2e`
 

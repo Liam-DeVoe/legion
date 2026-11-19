@@ -6,7 +6,7 @@ import type { Window as HappyDOMWindow } from "happy-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { displayTree } from "../../__tests__/display-trees";
-import { ONE_PASS_SLACK, stepsAtNAndFourN } from "../../__tests__/one-pass";
+import { expectOnePass, ONE_PASS_SLACK, stepsAtNAndFourN } from "../../__tests__/one-pass";
 import { ApiError, api } from "../../api/client";
 import type {
   AskRead,
@@ -510,11 +510,9 @@ test(`Unfurl reads ${DISPATCH_BLOCK_UNITS}-character bodies of repeated schemes 
         // either; what this holds is that reading it costs one pass.
         (references: string) => references,
       ]) {
-        const { atN, atFourN } = stepsAtNAndFourN((n) => {
+        expectOnePass((n) => {
           views.push(renderUnfurl(body(scheme.repeat(n))));
         }, quarter);
-        expect(atFourN).toBeGreaterThan(atN);
-        expect(atFourN).toBeLessThanOrEqual(4 * atN + ONE_PASS_SLACK);
       }
     }
     for (const view of views) {
@@ -581,11 +579,9 @@ test("Unfurl reads a GitHub link trailed by a long closing run in one pass", () 
   const githubRest = spyOn(api, "githubRest");
   const views: RenderResult[] = [];
   try {
-    const { atN, atFourN } = stepsAtNAndFourN((n) => {
+    expectOnePass((n) => {
       views.push(renderUnfurl(`https://github.com/owner/repository/pull/3${")".repeat(n)}x`));
     }, 1 << 14);
-    expect(atFourN).toBeGreaterThan(atN);
-    expect(atFourN).toBeLessThanOrEqual(4 * atN + ONE_PASS_SLACK);
     for (const view of views) {
       expect(view.container.querySelector("section")).toBeNull();
     }

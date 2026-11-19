@@ -213,25 +213,25 @@ test("a writer inside the docs layer when its room fails is told, and the room r
   }
 
   // The recovery half: the room reloads from its durable copy, so a later write lands and the
-  // browser's edit is in the document the server serves. The write is made again each second
-  // until one lands, for the 20 s of twenty retries this probe has always given the reload, and
-  // the poll returns the status of every write, so a reload that never ends reports all of them.
-  const writes: Attempt[] = [];
-  await expect
-    .poll(
-      async () => {
-        const retry = writes.length === 0 ? "" : ` ${writes.length - 1}`;
-        writes.push(await anchoredComment(issue.key, `after the recovery${retry}`, "migration"));
-        return writes.map((write) => write.status);
-      },
-      { intervals: [1_000], timeout: 20_000 }
-    )
-    .toContain(201);
-  const recovered = writes[writes.length - 1];
+  // browser's edit is in the document the server serves. The write is made once and then again a
+  // second after each one that did not land, twenty times at most, which is what this probe has
+  // always given the reload; every status is kept, so a reload that never ends reports them all.
+  let recovered = await anchoredComment(issue.key, "after the recovery", "migration");
+  const statuses = [recovered.status];
+  // A loop and not `expect.poll`, whose timeout would count each write's own time in the bound.
+  for (let attempt = 0; attempt < 20 && recovered.status !== 201; attempt += 1) {
+    // A second between writes, the pace this probe has always retried at: the reload has no
+    // signal of its own to wait on, and only a write that lands says it has finished.
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 1_000);
+    await promise;
+    recovered = await anchoredComment(issue.key, `after the recovery ${attempt}`, "migration");
+    statuses.push(recovered.status);
+  }
   console.log(
     `FAILED-ROOM recovered status=${recovered.status} code=${recovered.code} in ${recovered.seconds}s`
   );
-  expect(recovered.status).toBe(201);
+  expect(statuses).toContain(201);
 
   const text = await getArtifactText(issue.primary_artifact_id);
   console.log(`FAILED-ROOM document text=${JSON.stringify(text.markdown)}`);

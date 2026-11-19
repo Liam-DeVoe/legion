@@ -32,10 +32,11 @@
  *
  *  - The clock. `/` and `/agents` draw relative times ("2 minutes ago") that move with the gap
  *    between the seed and the shot, and `<EarlierApproval>` draws the seeded day's own date.
- *    Nothing else in this suite freezes a clock for a whole page; `page.clock.install()` is used
- *    by rows that drive time themselves. Here each row installs it a minute after the moment
- *    `e2e/visual-seed.ts` wrote the corpus (`seededAt`), so every relative label reads the same
- *    gap on every run - a fixed literal would drift against a corpus written at wall-clock time.
+ *    Besides this file, only `e2e/accessibility.stub.e2e.ts` and `e2e/claim.stub.e2e.ts` pin a
+ *    clock for a whole page; elsewhere `page.clock.install()` is used by rows that drive time
+ *    themselves. Here each row installs it a minute after the moment `e2e/visual-seed.ts` wrote
+ *    the corpus (`seededAt`), so every relative label reads the same gap on every run - a fixed
+ *    literal would drift against a corpus written at wall-clock time.
  *    The `<time>` elements (`web/src/features/refs/Timestamp.tsx`, `web/src/features/inbox/
  *    Inbox.tsx`, `web/src/features/inbox/EarlierApproval.tsx`) are masked as well. The cost is
  *    that the text of a timestamp is in no baseline; its place, its size and the layout around
