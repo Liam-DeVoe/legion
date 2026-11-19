@@ -647,16 +647,24 @@ ack_pending() {
   state=$(consumer "$1") && [ -n "$state" ] || return 1
   jq -e '.num_ack_pending > 0' <<<"$state" >/dev/null
 }
+# The marker of the first Claude Code message its host showed and never had acked, under the
+# withhold-ack control; empty before one is (message_each sets it).
+withheld_marker=""
 # decided SESSION FLOOR LABEL MARKER: what the receive of MARKER comes to is settled: the session's
 # consumer acked a sequence past FLOOR (acked_past), or the control withholds that ack. Under
 # seedless no session is named a credential, so none is admitted and nothing reaches it; under
 # withhold-ack the Claude Code stand-in never answers its inbox, so a message its host shows is
-# never acked, and one sent while an earlier one waits on its ack is held behind it.
+# never acked, and one sent while an earlier one waits on its answer is held behind it. Until the
+# host shows one, a receive is settled only by the host showing it: the consumer's ack pending
+# comes before the host's inbox holds the message, and a check read then would say it did not
+# arrive rather than that it was not acked.
 decided() {
   acked_past "$1" "$2" >/dev/null && return 0
   case $control in
     seedless) return 0 ;;
-    withhold-ack) [ "$3" = claude ] && { received "$3" "$4" || ack_pending "$1"; } ;;
+    withhold-ack)
+      [ "$3" = claude ] && { received "$3" "$4" || { [ -n "$withheld_marker" ] && ack_pending "$1"; }; }
+      ;;
     *) return 1 ;;
   esac
 }
@@ -694,6 +702,7 @@ message_each() {
         pass "$step ($label): s-$session acked stream sequence $sequence, admitted as session/$session"
       fi
     elif received "$label" "$marker"; then
+      [ -n "$withheld_marker" ] || withheld_marker=$marker
       failed "$step ($label)" "not acked: the host shows the message, but s-$session acked nothing past stream sequence $floor${wait_gave_up:+ ($wait_gave_up)}"
     elif admitted_as "$session"; then
       failed "$step ($label)" "admitted as session/$session, but the message (send answered $code) did not arrive${wait_gave_up:+ ($wait_gave_up)}"

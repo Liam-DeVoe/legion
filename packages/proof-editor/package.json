@@ -40,7 +40,7 @@
   "main": "src/lib.ts",
   "types": "src/lib.ts",
   "//": [
-    "test: --timeout 47000 is at least twice the slowest row or hook under 8 busy loops on 2 CPUs at e976062e with the work-count rows of tests/parse-work.ts (two runs in a builds Job, d2-pe8): upstream/ is what the pinned sources emit, 23,288.77 ms (16,987.78 ms in the other run; 15,902.19 ms at 61b66deb). The slowest of those rows read 13,815.86 ms, the default mode's 49 items nested by indentation then blank lines."
+    "test: --timeout 47000 is at least twice the slowest row or hook under 8 busy loops on 2 CPUs at e976062e with the work-count rows of tests/parse-work.ts (two runs in a builds Job, d2-pe8): upstream/ is what the pinned sources emit, 23,288.77 ms (16,987.78 ms in the other run; 15,902.19 ms at 61b66deb). The slowest of those rows read 13,815.86 ms, the default mode's 49 items nested by indentation then blank lines. Read again with every stage of the parse counted (the Proxy-counted stages and Milkdown's runner calls) and the timing lane deleted, in builds Job d-r3-pe-8 at main 73e417f113 with #4437's round-3 tree (two runs, 2026-11-19): the slowest row 11,801.50 ms (10,992.35 ms in the other run), the default mode's 49 items nested by indentation then blank lines; upstream/ 9,802.33 ms."
   ],
   "scripts": {
     "typecheck": "bunx tsc --noEmit -p tsconfig.check.json",

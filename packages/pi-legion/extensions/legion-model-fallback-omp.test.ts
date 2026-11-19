@@ -544,10 +544,12 @@ test.skipIf(skip)(
 
     // The daemon relaunches the worker: a fresh process whose only memory of the fallback is the
     // transcript it resumes. Its turn asks the gateway every two seconds until the session is
-    // back, however long the relaunch took.
+    // back, however long the relaunch took. A relaunch that ends past the due time may be back on
+    // its very first request, so the resumed life serves at least one; how many more it serves is
+    // how long the boot took, which the checks below do not read.
     await pane.resume([], "Carry on after the relaunch.");
 
-    expect(pane.served.length - firstLife).toBeGreaterThan(1);
+    expect(pane.served.length - firstLife).toBeGreaterThan(0);
     const records = await pane.records();
     // The arming was restored, not started again: the resumed life armed nothing of its own, so
     // the one arming on record is the first life's, and the next record is its return. A life

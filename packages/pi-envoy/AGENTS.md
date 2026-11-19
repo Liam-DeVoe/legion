@@ -432,13 +432,6 @@ answers 5 two seconds later with the turn over,
 and a ring drawn from that would show a full session as empty.
 The held reading and the frame it is owed go when the session id changes and at shutdown.
 A getter that throws is logged and leaves the reading already kept standing.
-Each frame carries `interval`, the number of the interval it went out in, the session's own record
-of when it published: a frame that goes out at once is numbered on from the interval the last
-publish opened by every whole interval since, so an interval that sent nothing is a number no frame
-carries, and the held reading is the next interval's, numbered from the moment its timer was armed
-for rather than the moment the timer ran.
-No viewer reads it; `session-surface-omp.test.ts` checks a turn's frames by it, with no clock of
-its own.
 The publisher (`setContext`) keeps the frame and publishes it only when it differs from the
 reading last kept and a viewer is attached, and a change of session id resets it with the
 settings.

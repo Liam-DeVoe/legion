@@ -29,6 +29,7 @@ import { settled, until } from "@legion/test-fixtures/wait"
 import type { Subprocess } from "bun"
 import { type ModCallArguments, modSocketPath } from "../hooks/mod-protocol"
 import { CHANNEL_RECORD_FILE, type ChannelRecordLine } from "../src/channel-record"
+import { SHUTDOWN_BOUNDS } from "../src/way-out"
 import { startFakeMod } from "./fake-mod"
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
@@ -79,6 +80,8 @@ interface ChannelServer {
   /** The server's NATS connection as its record gives it: the settings it dialled with and each
    *  status event since; undefined before it dialled. */
   natsDial(): NatsDial | undefined
+  /** What the server wrote to stderr so far. */
+  stderr(): string
   /** Resolves once `condition` holds; throws when the server exits first, or at the row's
    *  deadline, naming `what` and what the server wrote to stderr. */
   waitFor(condition: () => boolean | Promise<boolean>, what: string): Promise<void>
@@ -219,6 +222,7 @@ async function startChannelServer(
         return []
       })
     },
+    stderr: () => stderr,
     natsDial() {
       const lines = record()
       const dial = lines.find((line) => "dial" in line)
@@ -322,7 +326,7 @@ describe.skipIf(!envoyStackEnabled)(
       if (stack === undefined) throw new Error("the Envoy stack did not start")
       const { envoyUrl } = stack
       await withChannelServer(stack, "ses_stall_exit", async (channelServer) => {
-        const { server, proxy, sessionID, waitFor, record, natsDial } = channelServer
+        const { server, proxy, sessionID, waitFor, record, natsDial, stderr } = channelServer
         await waitFor(
           async () =>
             (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok &&
@@ -351,14 +355,17 @@ describe.skipIf(!envoyStackEnabled)(
         // The hung redial must not hold the process: it exits on SIGTERM, which the shared wait
         // reads through its exit, failing at the row's deadline while the server still runs. How
         // long the way out may take is what the server chose for it, read from its own record
-        // (R4: the bounds it armed and the order it took its steps, not a clock): every wait of
-        // the way armed a bound, in the order the shutdown takes them, and those bounds, with any
-        // other timer its own code ran on the way, stay under the exit bound it holds the whole
-        // way to, which is no more than the 15 s this row holds its exit to. That the way ended
-        // on its own, not on that bound, is the record's `completed` before the process's exit;
-        // a wait no bound names - a sleep, a handle left open - ends it on the exit bound instead.
-        // That it ran the shutdown to its end is its exit, 0 and not the signal's, and the
-        // deregistration the shutdown sends reaching the listener.
+        // (R4: the bounds it armed and the order it took its steps, not a clock): every step of
+        // the way is recorded, in the order the shutdown takes them; only a step of the server's
+        // own bounds (`SHUTDOWN_BOUNDS`) armed one, so each other step waited for its fact - a
+        // last write still running, the DELETE, a close - however long it took; and those bounds,
+        // with any other timer its own code ran on the way, stay under the exit bound it holds the
+        // whole way to, which is no more than the 15 s this row holds its exit to. That the way
+        // ended on its own, not on that bound, is the record's `completed` before the process's
+        // exit; a step that never ends - a write, a sleep, a handle left open - ends it on the
+        // exit bound instead, which exits 1 naming the steps it dropped. That it ran the shutdown
+        // to its end is its exit, 0 and not the signal's, and the deregistration the shutdown
+        // sends reaching the listener.
         const beforeStop = record().length
         // Read for `SHUTDOWN_EXIT_MS`'s sizing beside it, never asserted: the way out's time.
         const stoppedAt = Date.now()
@@ -367,7 +374,10 @@ describe.skipIf(!envoyStackEnabled)(
         console.log(
           `claude-envoy stall exit: the way out took ${Date.now() - stoppedAt} ms from SIGTERM to the process's exit`,
         )
-        expect({ exitCode, signal: server.signalCode }).toEqual({ exitCode: 0, signal: null })
+        expect(
+          { exitCode, signal: server.signalCode },
+          `the channel server's exit on SIGTERM; its stderr: ${stderr()}`,
+        ).toEqual({ exitCode: 0, signal: null })
         expect((await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok).toBe(false)
         const steps = record()
         const wayOut = steps.slice(beforeStop)
@@ -392,14 +402,21 @@ describe.skipIf(!envoyStackEnabled)(
           "server",
         ])
         expect([-1, 1]).toContain(names.indexOf("close"))
+        // A bound is armed only by a step the server bounds itself; every other step ended on
+        // what it waited for.
+        const ownBounds: readonly string[] = Object.keys(SHUTDOWN_BOUNDS)
+        expect(
+          waits.filter((wait) => wait.armedMs !== undefined || wait.endedBy !== "fact"),
+          `the steps that armed a bound or ended on one, of ${JSON.stringify(waits)}`,
+        ).toEqual(waits.filter((wait) => ownBounds.includes(wait.wait)))
         const completed = steps.findIndex(
           (line) => "shutdown" in line && line.shutdown === "completed",
         )
         const otherTimers = timersBetween(steps, beforeStop - 1, completed).filter(
-          (timer) => !timer.from.includes("/settled-or-given-up.ts:"),
+          (timer) => !timer.from.includes("/way-out.ts:"),
         )
         const armedMs =
-          waits.reduce((armed, wait) => armed + wait.armedMs, 0) +
+          waits.reduce((armed, wait) => armed + (wait.armedMs ?? 0), 0) +
           otherTimers.reduce((armed, timer) => armed + timer.delayMs, 0)
         expect(
           armedMs,

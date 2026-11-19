@@ -11,14 +11,16 @@
  * 1. What each shape parses to, and what it costs. Every shape, at the longest body a caller may
  *    write, parses in the read-only engine and in the default mode to the text and the nesting
  *    its row names, in a number of steps in proportion to its length: the steps the parse counts
- *    itself (tests/parse-work.ts) - micromark's tokenizer, which every construct runs through, and
- *    the three scans that read events, the two the dependency patches make linear and the bound's
- *    own - at most `tokenizerStepsPerCharacter` and `scanStepsPerCharacter` a character of the
- *    body, each count moved at least as far as the body says it must, and each grown no faster
- *    than the shape's growing dimension from an eighth of it to the full size. The one shape the
- *    default mode refuses is counted the same way and then asked for its refusal at both sizes.
- *    Which dependency patch holds which shape, and what each shape reads with that patch's scan
- *    put back, is in packages/proof-editor/AGENTS.md.
+ *    itself and the steps each stage no patch reaches takes through a counting Proxy
+ *    (tests/parse-work.ts) - micromark's tokenizer, which every construct runs through, and the
+ *    scans that read events at most `tokenizerStepsPerCharacter` and `scanStepsPerCharacter` a
+ *    character of the body, each count moved at least as far as the body says it must, and each
+ *    count, the resolvers', subtokenize's, the extensions', the compile's, each transform's and
+ *    Milkdown's runner calls among them, grown no faster than the shape's growing dimension from
+ *    an eighth of it to the full size. The one shape the default mode refuses is counted the same
+ *    way and then asked for its refusal at both sizes. Which dependency patch holds which shape,
+ *    and what each shape reads with that patch's scan put back, is in
+ *    packages/proof-editor/AGENTS.md.
  * 2. The nesting bound, at the boundaries the document service draws them at
  *    (`maxNesting`, packages/envoy/internal/dispatch/pmdoc/nesting.go: a quote, a list, a list
  *    item, a typed block and a footnote definition each count one). A list opener opens a list and
@@ -37,12 +39,11 @@ import { unified } from "unified";
 import { createHeadlessProof, type HeadlessProofEditor } from "../src/lib-headless.js";
 import { serverBlockSchema } from "./block-schema-fixture";
 import {
-  parsedWithinCostBounds,
-  refusalWithinCostBounds,
-  TIMING_ENV,
-  timingLane,
-} from "./cpu-time";
-import { parsedWithinWorkBounds, refusalWithinWorkBounds, type WorkShape } from "./parse-work";
+  countParseStages,
+  parsedWithinWorkBounds,
+  refusalWithinWorkBounds,
+  type WorkShape,
+} from "./parse-work";
 
 /** The longest comment, message or broadcast body a caller may write, in characters. */
 const bodyCap = 32_000;
@@ -196,18 +197,26 @@ const shapes: HeavyShape[] = [
 /**
  * The two engines, each built once: building one costs about as much as a small parse, and a parse
  * that throws drops only the parser state it opened (`parseMarkdown`, src/lib-headless.ts), so the
- * tests below share them.
+ * tests below share them. Each hands its parsers to tests/parse-work.ts, whose rows count each
+ * stage of a parse they read.
  */
 let readOnly: Promise<HeadlessProofEditor> | undefined;
 let editor: Promise<HeadlessProofEditor> | undefined;
 
 function readOnlyProof(): Promise<HeadlessProofEditor> {
-  readOnly ??= createHeadlessProof({ blockSchema: serverBlockSchema, readOnly: true });
+  readOnly ??= createHeadlessProof({
+    blockSchema: serverBlockSchema,
+    readOnly: true,
+    observeParser: countParseStages,
+  });
   return readOnly;
 }
 
 function defaultProof(): Promise<HeadlessProofEditor> {
-  editor ??= createHeadlessProof({ blockSchema: serverBlockSchema });
+  editor ??= createHeadlessProof({
+    blockSchema: serverBlockSchema,
+    observeParser: countParseStages,
+  });
   return editor;
 }
 
@@ -253,54 +262,6 @@ for (const shape of shapes) {
         refused
       );
     });
-  }
-}
-
-// The timing lane (tests/cpu-time.ts): each shape's whole parse in CPU time, held to the budget
-// and to a linear growth as the base's rows held it, which reaches the walks no count does. They
-// run where PROOF_EDITOR_BENCH_TIMING is set, on a quiet machine, and never as a CI verdict.
-for (const shape of shapes) {
-  const refused = shape.refusedInDefaultMode;
-
-  test.skipIf(!timingLane)(
-    `${TIMING_ENV}: the read-only engine parses ${shape.name} in CPU time proportional to its length`,
-    async () => {
-      const proof = await readOnlyProof();
-      const doc = parsedWithinCostBounds(
-        `the read-only engine's parse of ${shape.name}`,
-        shape,
-        (body) => proof.parseMarkdown(body)
-      );
-      shape.expectDoc(doc);
-    }
-  );
-
-  if (refused === undefined) {
-    test.skipIf(!timingLane)(
-      `${TIMING_ENV}: the default mode parses ${shape.name} in CPU time proportional to its length`,
-      async () => {
-        const proof = await defaultProof();
-        const doc = parsedWithinCostBounds(
-          `the default mode's parse of ${shape.name}`,
-          shape,
-          (body) => proof.parseMarkdown(body)
-        );
-        shape.expectDoc(doc);
-      }
-    );
-  } else {
-    test.skipIf(!timingLane)(
-      `${TIMING_ENV}: the default mode refuses ${shape.name} in CPU time proportional to its length`,
-      async () => {
-        const proof = await defaultProof();
-        refusalWithinCostBounds(
-          `the default mode's refusal of ${shape.name}`,
-          shape,
-          (body) => proof.parseMarkdown(body),
-          refused
-        );
-      }
-    );
   }
 }
 

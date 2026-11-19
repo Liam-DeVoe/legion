@@ -70,10 +70,10 @@ let directiveScanned = 0;
 
 /**
  * How many events this module's scans have read, over every parse since it loaded. The micromark
- * tokenizer's own count (`tokenizerSteps` of `micromark`, patches/micromark@4.0.2.patch) holds the
- * construct's states; these walks read events rather than codes, so tests/parse-work.ts reads this
- * count beside that one, and a walk put back to reading every event again for each container
- * grows it with the square of the body.
+ * tokenizer's own count (the `tokenizer` count of `workCounts()`, patches/micromark@4.0.2.patch)
+ * holds the construct's states; these walks read events rather than codes, so tests/parse-work.ts
+ * reads this count beside that one, and a walk put back to reading every event again for each
+ * container grows it with the square of the body.
  */
 export function directiveScanSteps(): number {
   return directiveScanned;

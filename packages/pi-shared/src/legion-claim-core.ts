@@ -1,6 +1,6 @@
-import { appendFileSync } from "node:fs";
 import type { LegionRegistration } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
+import { jsonLineRecord } from "@legion/envoy-client/json-line-record";
 import {
   callReadyWithRetry,
   LegionDaemonApiError,
@@ -87,15 +87,7 @@ export const CLAIM_RECORD_FILE = "LEGION_CLAIM_RECORD_FILE";
 export function claimStepRecord(
   env: Record<string, string | undefined>
 ): ((step: ClaimStep) => void) | undefined {
-  const file = env[CLAIM_RECORD_FILE];
-  if (file === undefined || file === "") return undefined;
-  return (step) => {
-    try {
-      appendFileSync(file, `${JSON.stringify(step)}\n`);
-    } catch {
-      // The tests' seam only.
-    }
-  };
+  return jsonLineRecord<ClaimStep>(env, CLAIM_RECORD_FILE);
 }
 
 /** What the boot answers: the claim step it left to run after it, for a caller that waits on it

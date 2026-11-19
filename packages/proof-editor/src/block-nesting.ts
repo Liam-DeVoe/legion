@@ -158,9 +158,10 @@ let nestingScanned = 0;
 /**
  * How many events `openedOnLine` has read, over every parse since this module loaded. The walk
  * stops at the line before, so the count grows with the containers a body opens rather than with
- * the square of its events. The micromark tokenizer's own count (`tokenizerSteps` of `micromark`,
- * patches/micromark@4.0.2.patch) holds every state the rewritten constructs run; this walk is the
- * one loop of this module outside those states, so tests/parse-work.ts reads it beside that count.
+ * the square of its events. The micromark tokenizer's own count (the `tokenizer` count of
+ * `workCounts()`, patches/micromark@4.0.2.patch) holds every state the rewritten constructs run;
+ * this walk is the one loop of this module outside those states, so tests/parse-work.ts reads it
+ * beside that count.
  */
 export function nestingScanSteps(): number {
   return nestingScanned;

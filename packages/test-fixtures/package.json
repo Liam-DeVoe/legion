@@ -67,7 +67,7 @@
     }
   },
   "//": [
-    "test: --timeout 10000 is at least twice the slowest row or hook under 8 busy loops on 2 CPUs at 61b66deb (two runs in a builds Job): ownDatabase on the server LEGION_TEST_PG_DSN names > makes a database of its own, which its URL opens and its drop removes, 3,176.79 ms."
+    "test: --timeout 10000 is at least twice the slowest row or hook under 8 busy loops on 2 CPUs at 61b66deb (two runs in a builds Job): ownDatabase on the server LEGION_TEST_PG_DSN names > makes a database of its own, which its URL opens and its drop removes, 3,176.79 ms. Read again with src/fake-clock.test.ts's child-process row in the suite (it runs a whole `bun test` of its own), in builds Job d-r3-tf-8b at main 73e417f113 with #4437's round-3 tree (two runs, 2026-11-19): the slowest row 2,599.09 ms (2,519.10 ms in the other run), a wait ends at the deadline of a file's afterEach that follows a row; the child-process row 1,497.44 ms; ownDatabase 1,693.32 ms."
   ],
   "scripts": {
     "typecheck": "bunx tsc --noEmit",

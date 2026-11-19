@@ -638,9 +638,11 @@ test.skipIf(skip)(
     ).toEqual([]);
     // And within the 30 s, by what the plugins chose rather than a clock (R4): each timer their
     // own code armed after the frame was sent and ran before the turn that read it was seen here,
-    // with the delay it chose - a card put off, a wake held, a retry spaced - stays under the
-    // bound together. A plugin that holds the card for a timer of its own shows here with that
-    // timer's delay, however the pane's load stretched the time either side of it.
+    // with the delay it chose - a card put off, a wake held, a retry spaced, a deadline - stays
+    // under the bound together. A plugin that holds the card for a timer of its own shows here
+    // with that timer's delay, however the pane's load stretched the time either side of it: one
+    // it armed through the host (`activeSessionContext.setTimeout`, whose frames are the host's
+    // compiled bundle) included, and the read refuses a timer whose arming named no file at all.
     const waits = timersBetween(recordAtRead, beforePublish - 1, recordAtRead.length);
     expect(
       waits.reduce((sum, wait) => sum + wait.delayMs, 0),

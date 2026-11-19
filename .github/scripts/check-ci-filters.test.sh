@@ -2662,7 +2662,7 @@ READS = (
     ("contracts", "packages/daemon/internal/intake/testdata/dispatch/server-started.json",
      "packages/contracts/src/dispatch-api.test.ts:293-300"),
     ("dispatch_ui", "packages/envoy/internal/dispatch/pmdoc/schema/block-node-types.json",
-     "packages/proof-editor/tests/ask-concurrent-edit.test.ts:269-275"),
+     "packages/proof-editor/tests/ask-concurrent-edit.test.ts:276-281"),
     ("claude_envoy", "packages/envoy-client/test/stall-proxy.ts",
      "packages/claude-envoy/tests/envoy-channel-stall.test.ts:9-11"),
     ("pi_legion", "packages/dispatch/e2e/harness-processes.ts", "packages/pi-legion's tsc program"),

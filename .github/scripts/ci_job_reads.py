@@ -417,8 +417,8 @@ CLAUDE_ENVOY_BUILD = reads(
                                      f"packages/claude-envoy; {at('test', VERIFY_BUILD_STEP)} and {at('test', BUILD_INPUTS_STEP)} "
                                      "run scripts/verify-build.sh and tests/build-inputs.test.ts of it"),
         (CONTRACTS_SRC, "packages/claude-envoy/tsconfig.json paths @legion/contracts; bundles import it"),
-        ("packages/envoy-client/bin/dispatch.ts", "packages/claude-envoy/scripts/build.ts:310 bundles BUNDLE_ENTRYPOINTS' dispatch (:43), which verify-build runs and tests/dist-fresh.test.ts:304 holds to this path"),
-        ("packages/pi-shared/src/**", "packages/claude-envoy/src/envoy-channel-server.ts:85-86, legion-claim.ts:8-11, legion-tool.ts:3-12 import @legion/pi-shared/*"),
+        ("packages/envoy-client/bin/dispatch.ts", "packages/claude-envoy/scripts/build.ts:310 bundles BUNDLE_ENTRYPOINTS' dispatch (:43), which verify-build runs and tests/dist-fresh.test.ts:309 holds to this path"),
+        ("packages/pi-shared/src/**", "packages/claude-envoy/src/envoy-channel-server.ts:90-91, legion-claim.ts:8-11, legion-tool.ts:3-12 import @legion/pi-shared/*"),
         ("scripts/third-party-notices.ts", "packages/claude-envoy/scripts/build.ts:24"),
         ("scripts/pi-plugin-prepack.sh", "packages/claude-envoy/scripts/build.ts:198-202 --stage-skills @sjawhar/pi-legion"),
         ("packages/pi-legion/agents/**", "packages/claude-envoy/scripts/build.ts:231-232"),
@@ -427,18 +427,18 @@ CLAUDE_ENVOY_BUILD = reads(
         (".github/scripts/check-private-names.sh", "packages/claude-envoy/scripts/verify-build.sh checks the build with it"),
         (".github/scripts/release-push.sh", "packages/claude-envoy/scripts/verify-build.sh runs its check-built; the claude-envoy job runs its extract-built"),
         (".github/workflows/release.yaml", "packages/claude-envoy/tests/build-inputs.test.ts:154 holds its $CLAUDE_ENVOY_VERSION_ARGS equal to scripts/build-inputs.txt"),
-) + envoy_client_dep("packages/claude-envoy/src/envoy-channel-server.ts:10-84, hooks/session-hook.ts:91-109 import @legion/envoy-client/*")
+) + envoy_client_dep("packages/claude-envoy/src/envoy-channel-server.ts:10-89, hooks/session-hook.ts:91-109 import @legion/envoy-client/*")
 
 # The build above, and what only the claude-envoy job reads: the Claude Code its live answer test
 # runs, and the fixtures and modules of its other tests. The test job runs none of them.
 CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
         (".github/actions/install-claude-code/**", at("claude-envoy", "./.github/actions/install-claude-code")),
         (".claude-code-pin", ".github/actions/install-claude-code/action.yml:16 pin=$(<.claude-code-pin), the release "
-                             "packages/claude-envoy/tests/answers-claude.test.ts:312,338 runs"),
-        ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts:5-12 imports three of its modules, and tsc puts four files of that directory in the claude-envoy program"),
-        (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:43-44, legion-pane-mcp.test.ts:19-20, legion-tool.test.ts:13"),
-        (".agents/plugins/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
-        (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:10"),
+                             "packages/claude-envoy/tests/answers-claude.test.ts:313,342 runs"),
+        ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts:5-19 imports three of its modules, and tsc puts four files of that directory in the claude-envoy program"),
+        (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:52-53, legion-pane-mcp.test.ts:20-21, legion-tool.test.ts:13"),
+        (".agents/plugins/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:14"),
+        (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:15"),
 )
 
 
@@ -2491,7 +2491,7 @@ GATES = [
         # scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:17-22, envoy-bridge.ts:11
         # and scripts/dispatch/ask-census.ts:10-18 import @legion/envoy-client/*, and the
         # scripts/dispatch typecheck holds seven broker-client sources in its own program.
-        ("packages/envoy-client/test/fake-dispatch.ts", "scripts/e2e/lib/agent-replay.test.ts:4-7 imports it by path"),
+        ("packages/envoy-client/test/fake-dispatch.ts", "scripts/e2e/lib/agent-replay.test.ts:5-8 imports it by path"),
         ("scripts/dispatch/**", f"{at('test', 'Lint the Dispatch census script')}, typecheck and test; "
                                 "scripts/priorities-seed.test.ts:3 imports __tests__/held-deadlines.ts"),
         ("scripts/github-apps/**", f"{at('test', 'Lint the GitHub App registration script')} and typecheck"),
@@ -2501,7 +2501,7 @@ GATES = [
         ("skills/approval-review/references/never-decide.md",
          f"{at('test', 'Test the approval-eval statistics')}: scripts/approval-eval/never-decide.ts:184 reads "
          "it, through refusals.ts:725, which __tests__/refusals.test.ts:165-177 runs"),
-        (f"{FIX}/daemon-api/**", "scripts/e2e/lib/stage4b-boot-capabilities.test.ts:17"),
+        (f"{FIX}/daemon-api/**", "scripts/e2e/lib/stage4b-boot-capabilities.test.ts:18"),
         (f"{DAEMON}/internal/daemon/controller.go", "scripts/e2e/lib/controller-liveness-verdict.test.ts:344-345 reads it as text"),
         (f"{DAEMON}/internal/controller/liveness.go", "scripts/e2e/lib/controller-liveness-verdict.test.ts:347"),
         (f"{DAEMON}/internal/supervise/machine.go", "scripts/e2e/lib/controller-liveness-verdict.test.ts:350"),
@@ -2611,9 +2611,9 @@ GATES = [
         (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "packages/contracts/src/dispatch-api.test.ts:370 (the new URL at :366-369)"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/block-pointer-values.json", "packages/contracts/src/dispatch-block-ref.test.ts:129-133 reads pmdoc's own JSON copy of the block pointer table by relative path"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/typed-block-id-spellings.json", "packages/contracts/src/dispatch-block-ref.test.ts:146-150 reads pmdoc's own JSON copy of the typed block id spellings by relative path"),
-        (f"{ENVOY}/internal/contracts/generated.go", "packages/contracts/scripts/gen-go.test.ts:63 reads it for the envelope aliases, :81 reads every file of generated (:20-26, this one :7), and gen-go.ts's outputs list holds it (--check compares the committed file)"),
-        (f"{ENVOY}/listenerwire/envelope_generated.go", "packages/contracts/scripts/gen-go.test.ts:53 reads it for the envelope, :81 reads every file of generated (:20-26, this one :8), and gen-go.ts's outputs list holds it (the envelope's Go mirror, generated from schemas/envelope.schema.json)"),
-        (f"{ENVOY}/internal/dispatch/pmdoc/schema_generated.go", "packages/contracts/scripts/gen-go.test.ts:81 reads every file of generated (:20-26, this one :13-16) and gen-go.ts's outputs list (the block schema's shape, generated from schemas/block-schema.schema.json)"),
+        (f"{ENVOY}/internal/contracts/generated.go", "packages/contracts/scripts/gen-go.test.ts:62 reads it for the envelope aliases, :80 reads every file of generated (:20-26, this one :7), and gen-go.ts's outputs list holds it (--check compares the committed file)"),
+        (f"{ENVOY}/listenerwire/envelope_generated.go", "packages/contracts/scripts/gen-go.test.ts:52 reads it for the envelope, :80 reads every file of generated (:20-26, this one :8), and gen-go.ts's outputs list holds it (the envelope's Go mirror, generated from schemas/envelope.schema.json)"),
+        (f"{ENVOY}/internal/dispatch/pmdoc/schema_generated.go", "packages/contracts/scripts/gen-go.test.ts:80 reads every file of generated (:20-26, this one :13-16) and gen-go.ts's outputs list (the block schema's shape, generated from schemas/block-schema.schema.json)"),
         (TEST_FIXTURES_SRC, "packages/contracts/src/*.test.ts import @legion/test-fixtures"),
     ) + bun_job("contracts")),
 
@@ -2647,20 +2647,20 @@ GATES = [
         ("packages/envoy-client/**", f"{at('envoy-client', 'Typecheck Envoy client')}, test and build in packages/envoy-client"),
         ("packages/broker-client/**", f"{at('envoy-client', 'Typecheck Envoy client')} and its tests compile it; packages/envoy-client/src/broker-credential.ts:21-28,30-34 imports @legion/broker-client/environment and @legion/broker-client/token-client"),
         (CONTRACTS_SRC, f"{at('envoy-client', 'Build contracts for Envoy client')}; tsconfig paths @legion/contracts -> ../contracts/src/index.ts"),
-        (f"{FIX}/dispatch-targeted-delivery.json", "packages/envoy-client/src/__tests__/delivery.test.ts:17, dispatch-text.test.ts:128"),
-        (f"{FIX}/envoy-session-no-interests.json", "packages/envoy-client/src/__tests__/transport.test.ts:3"),
+        (f"{FIX}/dispatch-targeted-delivery.json", "packages/envoy-client/src/__tests__/delivery.test.ts:17, dispatch-text.test.ts:127"),
+        (f"{FIX}/envoy-session-no-interests.json", "packages/envoy-client/src/__tests__/transport.test.ts:9"),
         (f"{FIX}/ask-reply-recipients.json", "packages/envoy-client/src/__tests__/ask-reply-recipients.test.ts:61 renders the copies packages/envoy's TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers writes"),
         (f"{FIX}/dispatch-public-url.json", "packages/envoy-client/src/__tests__/dispatch-config.test.ts:5"),
         (f"{FIX}/go-unicode-isspace.json", "packages/envoy-client/src/__tests__/dispatch-execute.test.ts:27"),
         (f"{ENVOY}/internal/dispatch/api/testdata/**", "packages/envoy-client/src/__tests__/askgate-new-asks.test.ts:23-30 reads the Dispatch server's table of decision-block inserts, which packages/envoy/internal/dispatch/api's TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded reads too"),
         ("skills/**", "packages/envoy-client/src/__tests__/dispatch-advice.test.ts:2101 reads skills/<skill>/SKILL.md for every skill a notice cites"),
         ("packages/*/AGENTS.md", "packages/envoy-client/src/__tests__/dispatch-asked-of.test.ts:377-381 reads every package's AGENTS.md, and its ALLOWED names lines of four of them, so rewording one of those lines fails that test"),
-        ("packages/envoy/internal/dispatch/**", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:506-514,668-686,746-754 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
-        ("packages/dispatch/web/src/**", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:506-514,668-686,746-754 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
-        ("packages/dispatch/e2e/**", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:506-514,668-686,746-754 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
-        ("docs/site/src/**", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:506-514,668-686,746-754 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
-        ("**/AGENTS.md", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:506-514,668-686,746-754 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
-        (f"{ENVOY}/cmd/dispatch/README.md", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:782 names it and :789 reads it ('states the rule'): the CLI guide's sentence on an assignee move names the project's default assignee"),
+        ("packages/envoy/internal/dispatch/**", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:510-518,672-690,750-758 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
+        ("packages/dispatch/web/src/**", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:510-518,672-690,750-758 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
+        ("packages/dispatch/e2e/**", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:510-518,672-690,750-758 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
+        ("docs/site/src/**", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:510-518,672-690,750-758 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
+        ("**/AGENTS.md", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:510-518,672-690,750-758 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
+        (f"{ENVOY}/cmd/dispatch/README.md", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:786 names it and :793 reads it ('states the rule'): the CLI guide's sentence on an assignee move names the project's default assignee"),
         (TEST_FIXTURES_SRC, "packages/envoy-client/src/__tests__ import @legion/test-fixtures"),
         (f"{ENVOY}/internal/bus/testdata/private-stream-subjects.json", "packages/envoy-client/src/__tests__/stream-topics.test.ts:131 reads the listener's own cases by relative path (SHARED_CASES :118-121), which packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads too"),
     ) + bun_job("envoy-client")),
@@ -2673,7 +2673,7 @@ GATES = [
         (TEST_FIXTURES_SRC, "packages/pi-shared's src and test suites import @legion/test-fixtures"),
         (f"{FIX}/daemon-api/**", "packages/pi-shared/src/daemon-client.test.ts:19, legion-claim-core.test.ts:12, legion-phase-ops.test.ts:22"),
         ("skills/**", "packages/pi-shared/test/skills-partition.test.ts:22,33-36,53-54 reads every skills/ directory and stages both partitions"),
-        ("scripts/pi-plugin-prepack.sh", "packages/pi-shared/test/skills-guard.ts:17,34 runs scripts/pi-plugin-prepack.sh --stage-skills"),
+        ("scripts/pi-plugin-prepack.sh", "packages/pi-shared/test/skills-guard.ts:18,35 runs scripts/pi-plugin-prepack.sh --stage-skills"),
         (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-shared/test/skills-partition.test.ts:70-76 reads every .md under packages/daemon/internal/prompts"),
         (".github/workflows/release.yaml", "packages/pi-shared/test/skills-partition.test.ts:95"),
         (f"{DAEMON}/internal/workspace/stale-git-lock-note.txt",
@@ -2689,14 +2689,14 @@ GATES = [
         (TEST_FIXTURES_SRC, "packages/pi-envoy's extensions and src tests import @legion/test-fixtures"),
         # envoy-client's sources, and broker-client's with them, are the shared read below.
         ("packages/envoy-client/test/**", "packages/pi-envoy/extensions/envoy.test.ts:57-65 imports four of its modules, and extensions/askgate/decision-record.test.ts:9 its fake-dispatch"),
-        ("packages/envoy-client/bin/dispatch.ts", "packages/pi-envoy/package.json:26 build and scripts/pi-plugin-prepack.sh:96 run build-dispatch-cli.sh, entry bin/dispatch.ts"),
-        ("packages/envoy-client/scripts/build-dispatch-cli.sh", "packages/pi-envoy/package.json:26; scripts/pi-plugin-prepack.sh:96"),
+        ("packages/envoy-client/bin/dispatch.ts", "packages/pi-envoy/package.json:31 build and scripts/pi-plugin-prepack.sh:96 run build-dispatch-cli.sh, entry bin/dispatch.ts"),
+        ("packages/envoy-client/scripts/build-dispatch-cli.sh", "packages/pi-envoy/package.json:31; scripts/pi-plugin-prepack.sh:96"),
         (CONTRACTS_SRC, f"{at('pi-envoy', 'Build contracts for pi-envoy')}; tsconfig paths @legion/contracts"),
-        (f"{FIX}/dispatch-targeted-delivery.json", "packages/pi-envoy/extensions/envoy.test.ts:300"),
+        (f"{FIX}/dispatch-targeted-delivery.json", "packages/pi-envoy/extensions/envoy.test.ts:385"),
         ("skills/**", "packages/pi-envoy/src/skills-guard.test.ts:43 stages them (the roots at :29-32); scripts/pi-plugin-prepack.sh:103 stages skills; extensions/envoy.ts's resolveSkillsDirectory"),
-        ("scripts/pi-plugin-prepack.sh", f"packages/pi-envoy/package.json:27 prepack ({at('pi-envoy', 'Pack pi-envoy')}); packages/pi-envoy/scripts/prepack.test.ts:85"),
+        ("scripts/pi-plugin-prepack.sh", f"packages/pi-envoy/package.json:32 prepack ({at('pi-envoy', 'Pack pi-envoy')}); packages/pi-envoy/scripts/prepack.test.ts:86"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100 write dist/THIRD_PARTY_NOTICES with it"),
-        ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:120-123"),
+        ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:121-124"),
         (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:208-212 reads every .md of skillAndPromptRoots (:30-33)"),
     ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:19-131 imports")
       + install_jj("pi-envoy") + install_omp("pi-envoy") + bun_job("pi-envoy")),
@@ -2708,12 +2708,12 @@ GATES = [
                    overlay={f"{DAEMON}/cmd/daemon-pane/main.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane.go"}),
     ], reads=reads(
         ("packages/pi-legion/**", f"{at('pi-legion', 'Typecheck pi-legion')}, test and pack in packages/pi-legion"),
-        ("packages/pi-envoy/**", "packages/pi-legion/extensions/legion.test.ts:70,311 and legion-role-claim.test.ts:13,99 import ../../pi-envoy/extensions/envoy; packages/pi-shared/test/omp-harness.ts:1035"),
+        ("packages/pi-envoy/**", "packages/pi-legion/extensions/legion.test.ts:73,315 and legion-role-claim.test.ts:18,108 import ../../pi-envoy/extensions/envoy; packages/pi-shared/test/omp-harness.ts:1135"),
         ("packages/claude-envoy/**", "packages/pi-legion/src/skills-guard.test.ts:313 spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER :24) and asserts an exact file list over the tree it writes, so that script and everything it reads - its BUNDLE_ENTRYPOINTS at scripts/build.ts:39-44 among them - are read by this job through a spawn, which carries no import and which no derivation sees"),
         ("packages/envoy-client/bin/dispatch.ts", "the fourth entry of that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:43), outside the package it builds"),
         ("packages/pi-shared/src/**", "packages/pi-legion/tsconfig.json paths @legion/pi-shared/* and include ../pi-shared/src/omp-host.d.ts"),
-        ("packages/pi-shared/test/**", "packages/pi-legion/extensions/legion-phase-stall-omp.test.ts:14, legion-role-tools-omp.test.ts:13, src/skills-guard.test.ts:15, scripts/prepack.test.ts:4"),
-        ("packages/envoy-client/test/subscribe-answer.ts", "packages/pi-legion/extensions/legion-role-claim.test.ts:46 "
+        ("packages/pi-shared/test/**", "packages/pi-legion/extensions/legion-phase-stall-omp.test.ts:17, legion-role-tools-omp.test.ts:13, src/skills-guard.test.ts:15, scripts/prepack.test.ts:4"),
+        ("packages/envoy-client/test/subscribe-answer.ts", "packages/pi-legion/extensions/legion-role-claim.test.ts:51 "
                                                            "imports @legion/envoy-client/test/subscribe-answer, and "
                                                            "packages/pi-shared/test/omp-harness.ts:17, which this "
                                                            "package's omp tests drive, imports it too"),
@@ -2724,14 +2724,14 @@ GATES = [
         # envoy-client's sources, and broker-client's with them, are the shared read below.
         (CONTRACTS_SRC, f"{at('pi-legion', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
         (TEST_FIXTURES_SRC, "packages/pi-legion's extensions and src tests import @legion/test-fixtures"),
-        (f"{FIX}/daemon-api/**", "packages/pi-legion/extensions/legion.test.ts:1421,4009, legion-role-claim.test.ts:21, src/daemon-api-version.test.ts:14"),
-        (f"{FIX}/capability-redaction.json", "packages/pi-legion/src/capability-report.test.ts:848"),
-        (f"{FIX}/capability-redaction-plugin-report.json", "packages/pi-legion/src/capability-report.test.ts:968 (PLUGIN_REPORT :854)"),
+        (f"{FIX}/daemon-api/**", "packages/pi-legion/extensions/legion.test.ts:1450,4138, legion-role-claim.test.ts:25, src/daemon-api-version.test.ts:14"),
+        (f"{FIX}/capability-redaction.json", "packages/pi-legion/src/capability-report.test.ts:904"),
+        (f"{FIX}/capability-redaction-plugin-report.json", "packages/pi-legion/src/capability-report.test.ts:1031 (PLUGIN_REPORT :910)"),
         ("packages/dispatch/e2e/**", "packages/pi-legion/scripts/skill-scenarios/seed.ts:111 imports packages/dispatch/e2e/api.ts (typecheck includes scripts/skill-scenarios/*.ts), and that program holds six of that directory's modules: api.ts, harness-ports.ts, harness-broker.ts, harness-processes.ts, harness-real-broker.ts and harness-signin.ts"),
         ("packages/dispatch/web/src/api/types.ts", "packages/dispatch/e2e/api.ts:20"),
         ("packages/dispatch/web/src/api/paths.ts", "packages/dispatch/e2e/api.ts:8-19 imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Answer from it, since that client is keyed on the generated document's path patterns"),
         ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:39 stages them and :199-203 reads the roots at :189-197; scripts/skill-scenarios/rig.test.ts:999,1236-1238; prepack stages skills"),
-        ("scripts/pi-plugin-prepack.sh", f"packages/pi-legion/package.json prepack ({at('pi-legion', 'Pack pi-legion')}); packages/pi-shared/test/skills-guard.ts:17,34"),
+        ("scripts/pi-plugin-prepack.sh", f"packages/pi-legion/package.json prepack ({at('pi-legion', 'Pack pi-legion')}); packages/pi-shared/test/skills-guard.ts:18,35"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100"),
         (f"{DAEMON}/internal/**", "packages/pi-legion/src/skills-guard.test.ts:199-203 sweeps every .md/.go/.ts/.yaml/.yml/.example/.sh under packages/daemon/internal, a root of the list at :192"),
         ("docs/kubernetes.md", "packages/pi-legion/src/skills-guard.test.ts:199-203, a root of the list at :191"),
@@ -2758,10 +2758,10 @@ GATES = [
         # direction passes over that block's patterns.
         (f"{FIX}/live/**", "packages/dispatch/web/src/features/delivery/lib/applyDelta.test.ts:2-4, e2e/__tests__/delivery-live-probe.test.ts:12-16"),
         (f"{FIX}/decision-blocks/**", "packages/dispatch/web/src/features/doc/decision-blocks.test.ts:9-10, features/inbox/AskCard.test.tsx:451-452"),
-        (f"{ENVOY}/internal/dispatch/pmdoc/schema/**", "packages/dispatch/web/src/features/doc/schema.ts:1, features/refs/markdown-engine.test.ts:4 and features/doc/ProofDocument.admission.test.tsx:5 import blocks.json, and packages/proof-editor/tests/manifest-schema.test.ts:14, block-schema-fixture.ts:8 and nested-directive.test.ts:30 read it; packages/proof-editor/tests/ask-concurrent-edit.test.ts:278 reads block-node-types.json of the same directory"),
+        (f"{ENVOY}/internal/dispatch/pmdoc/schema/**", "packages/dispatch/web/src/features/doc/schema.ts:1, features/refs/markdown-engine.test.ts:4 and features/doc/ProofDocument.admission.test.tsx:5 import blocks.json, and packages/proof-editor/tests/manifest-schema.test.ts:14, block-schema-fixture.ts:8 and nested-directive.test.ts:29 read it; packages/proof-editor/tests/ask-concurrent-edit.test.ts:278 reads block-node-types.json of the same directory"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, by the three suites this job runs over the one table: features/refs/fixture-table-readings.test.ts, markdown-engine.test.ts and markdown-surfaces.test.tsx"),
         (f"{ENVOY}/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json", "packages/dispatch/e2e/__tests__/heavy-bodies-digests.test.ts:44-50, which this job runs: the digest table holding e2e/heavy-bodies.ts's bodies to the Go shapes that spell the same bytes"),
-        (f"{ENVOY}/scripts/fixtures/shell-quote.json", "packages/dispatch/e2e/__tests__/local-instance-support.test.ts:427-430, the new URL at :429"),
+        (f"{ENVOY}/scripts/fixtures/shell-quote.json", "packages/dispatch/e2e/__tests__/local-instance-support.test.ts:428-430, the new URL at :429"),
         ("packages/contracts/schemas/dispatch-openapi.json",
          "packages/dispatch/e2e/__tests__/stub-recordings.test.ts:50-53, the new URL at :51: the generated API "
          "document every committed recording's body is held to, which this job's test step runs"),

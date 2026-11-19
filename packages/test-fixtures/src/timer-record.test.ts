@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "./temporary-directories";
-import { recordTimers, type TimerStep, timersBetween } from "./timer-record";
+import { placeArming, recordTimers, type TimerStep, timersBetween } from "./timer-record";
 import { settled, until } from "./wait";
 
 const root = temporaryDirectory("timer-record");
@@ -84,6 +84,79 @@ test("reads between two steps of a record it shares: only timers armed after the
     { fired: 3 },
   ];
   expect(timersBetween(steps, 1, 6)).toEqual([{ delayMs: 40_000, from: "b.ts:2" }]);
+});
+
+test("reads a checkout under a directory named test as the program's, by its path below the root", async () => {
+  const steps: TimerStep[] = [];
+  const checkout = join(root, "test", "checkout");
+  uninstall = recordTimers([checkout], (step) => steps.push(step));
+  const file = join(checkout, "src", "waits.ts");
+  await Bun.write(
+    file,
+    "export function later(): void { clearTimeout(setTimeout(() => {}, 11)); }\n"
+  );
+  const program = (await import(file)) as { later: () => void };
+  program.later();
+  expect(steps).toEqual([{ timer: 1, delayMs: 11, from: `${file}:1` }]);
+});
+
+test("reads a timer a compiled host armed for the plugin that called it as the plugin's, and the host's own as none", () => {
+  const prefixes = ["/work/plugins/"];
+  const throughHost = [
+    "Error",
+    "    at setTimeout (/$bunfs/root/omp:4021:17)",
+    "    at <anonymous> (/$bunfs/root/omp:9120:5)",
+    "    at deliver (/work/plugins/envoy.ts:1386:7)",
+  ].join("\n");
+  expect(placeArming(throughHost, prefixes)).toEqual({ from: "/work/plugins/envoy.ts:1386" });
+  const hostsOwn = ["Error", "    at render (/$bunfs/root/omp:51:3)", "    at native"].join("\n");
+  expect(placeArming(hostsOwn, prefixes)).toBe("foreign");
+  const library = ["Error", "    at ping (/work/node_modules/nats/lib/protocol.js:88:5)"].join(
+    "\n"
+  );
+  expect(placeArming(library, prefixes)).toBe("foreign");
+});
+
+test("records an arming whose stack names no file as unplaced, and refuses a window that ran one", () => {
+  expect(placeArming(["Error", "    at native", "    at <anonymous>"].join("\n"), ["/x/"])).toBe(
+    "unplaced"
+  );
+  const steps: unknown[] = [
+    { reconnected: true },
+    { unplaced: 1, delayMs: 40_000 },
+    { timer: 2, delayMs: 100, from: "b.ts:2" },
+    { fired: 2 },
+    { shown: "the message" },
+    { fired: 1 },
+  ];
+  // Still pending when the message was shown: it delayed nothing on the way.
+  expect(timersBetween(steps, 0, 4)).toEqual([{ delayMs: 100, from: "b.ts:2" }]);
+  expect(() => timersBetween(steps, 0, 6)).toThrow(/could not place 1 timer/);
+});
+
+test("records a deadline armed with AbortSignal.timeout, fired as its signal aborts", async () => {
+  const steps: TimerStep[] = [];
+  uninstall = recordTimers([root], (step) => steps.push(step));
+  // The signal is read before it is returned: a call in tail position of a strict-mode function
+  // (`return AbortSignal.timeout(4)`, or a `const` the transpiler folds into one) leaves that
+  // function's frame off the stack (JavaScriptCore's proper tail calls), and the arming would read
+  // as the caller's, this test's.
+  const program = await programModule(
+    "deadline.ts",
+    [
+      "export function deadline(): AbortSignal {",
+      "  const signal = AbortSignal.timeout(4);",
+      '  if (signal.aborted) throw new Error("aborted at once");',
+      "  return signal;",
+      "}",
+    ].join("\n")
+  );
+  const signal = (program["deadline"] as () => AbortSignal)();
+  await until("the deadline's abort", () => signal.aborted);
+  expect(steps).toEqual([
+    { timer: 1, delayMs: 4, from: `${join(root, "deadline.ts")}:2` },
+    { fired: 1 },
+  ]);
 });
 
 test("the preload appends each step to the file it is given, in a process of its own", async () => {

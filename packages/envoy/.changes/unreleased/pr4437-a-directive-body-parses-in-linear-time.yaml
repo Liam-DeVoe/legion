@@ -10,4 +10,4 @@ body: |-
   which puts in a token for the spaces that end a line, so a paragraph of 9,000 lines ending in a
   hard break or a line suffix took it 162,085,497 steps where one an eighth as long took 2,537,427.
   Each now builds the events in one pass, through the patch the package already carries on
-  micromark 4.0.2, a change written so it can go to micromark upstream.
+  micromark 4.0.2.

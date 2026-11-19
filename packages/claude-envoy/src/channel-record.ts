@@ -1,4 +1,4 @@
-import { appendFileSync } from "node:fs"
+import { jsonLineRecord } from "@legion/envoy-client/json-line-record"
 
 /**
  * Tests only: the file the channel server appends one JSON line to for each step below, so a test
@@ -7,12 +7,32 @@ import { appendFileSync } from "node:fs"
  * with (`dial`), each status event nats.js reported on that connection (`status`), each
  * registration the listener answered on consumer delivery with the epoch it named (`registered`),
  * each Envoy event the session was shown (`shown`), and, on the way out, its start with the bound
- * it holds the whole way to (`shutdown`), each bounded wait of the way with the delay it armed and
- * which side ended it (`wait`), and how the way ended (`shutdown`). The lines are in the order the
- * server took the steps, which is what a test reads of when each happened. Unset, as Claude Code
- * runs the server, nothing is written.
+ * it holds the whole way to (`shutdown`), each step of the way with what ended it and, where the
+ * step has a bound of its own, the delay it armed (`wait`), and how the way ended (`shutdown`).
+ * The lines are in the order the server took the steps, which is what a test reads of when each
+ * happened. Unset, as Claude Code runs the server, nothing is written.
  */
 export const CHANNEL_RECORD_FILE = "ENVOY_CHANNEL_RECORD_FILE"
+
+/**
+ * One step of the way out, in the order the shutdown takes them (`./way-out`): `drain`, the NATS
+ * drain; `close`, the drained connection's close; `settle`, the registration writes still in
+ * flight, against the shutdown's settle budget; `deregister`, the DELETE of the session's record;
+ * `state` and `turns`, the last writes of the state and turn records; `mod`, the mod link's close;
+ * `start-drain` and `start-close`, the drain and close of a connection whose start failed before
+ * a session came up; `server`, the MCP server's close.
+ */
+export type ShutdownWait =
+  | "drain"
+  | "close"
+  | "settle"
+  | "deregister"
+  | "state"
+  | "turns"
+  | "mod"
+  | "start-drain"
+  | "start-close"
+  | "server"
 
 /** One line of the record. */
 export type ChannelRecordLine =
@@ -37,23 +57,12 @@ export type ChannelRecordLine =
       readonly shown: string
     }
   | {
-      /** One bounded wait of the way out, in the order the shutdown takes them: `drain`, the NATS
-       *  drain; `close`, the drained connection's close; `settle`, the registration writes still
-       *  in flight, against the shutdown's settle budget; `deregister`, the DELETE of the
-       *  session's record, against the whole of one listener call; `state` and `turns`, the last
-       *  writes of the state and turn records; `mod`, the mod link's close; `server`, the MCP
-       *  server's. */
-      readonly wait:
-        | "drain"
-        | "close"
-        | "settle"
-        | "deregister"
-        | "state"
-        | "turns"
-        | "mod"
-        | "server"
-      readonly armedMs: number
-      /** `fact`: what the wait was for came first; `bound`: the armed delay did. */
+      /** One step of the way out (`ShutdownWait`). */
+      readonly wait: ShutdownWait
+      /** The delay the step's own bound was armed with; absent for a step that waits for its
+       *  fact alone. */
+      readonly armedMs?: number
+      /** `fact`: what the step waited for came first; `bound`: its own bound did. */
       readonly endedBy: "fact" | "bound"
     }
   | {
@@ -63,10 +72,15 @@ export type ChannelRecordLine =
       readonly exitBoundMs: number
     }
   | {
-      /** `completed`: every wait of the way out ended and nothing is left for the server to do;
-       *  `bound`: the exit bound came first, and the process exits on it; `exited`: the
-       *  process's `exit` event, the last thing it runs. */
-      readonly shutdown: "completed" | "bound" | "exited"
+      /** `completed`: every step of the way out ended and nothing is left for the server to do;
+       *  `exited`: the process's `exit` event, the last thing it runs. */
+      readonly shutdown: "completed" | "exited"
+    }
+  | {
+      /** The exit bound came before the way out ended, and the process exits 1 on it, dropping
+       *  `dropped`: the steps still running, in the order they started. */
+      readonly shutdown: "bound"
+      readonly dropped: readonly ShutdownWait[]
     }
 
 /** Appends `line` to the record; never throws. */
@@ -74,13 +88,5 @@ export type ChannelRecord = (line: ChannelRecordLine) => void
 
 /** The record `env` names, or undefined where it names none. */
 export function channelRecord(env: Record<string, string | undefined>): ChannelRecord | undefined {
-  const file = env[CHANNEL_RECORD_FILE]
-  if (file === undefined || file === "") return undefined
-  return (line) => {
-    try {
-      appendFileSync(file, `${JSON.stringify(line)}\n`)
-    } catch {
-      // The tests' seam only: a path it cannot write never changes what the server does.
-    }
-  }
+  return jsonLineRecord<ChannelRecordLine>(env, CHANNEL_RECORD_FILE)
 }

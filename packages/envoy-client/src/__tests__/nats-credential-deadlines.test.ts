@@ -14,6 +14,7 @@
 
 import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { turn, turnsUntil } from "@legion/test-fixtures/fake-clock";
+import { holdDeadlines } from "@legion/test-fixtures/held-deadlines";
 import { settled, until } from "@legion/test-fixtures/wait";
 import {
   type BrokerNatsCredential,
@@ -29,6 +30,40 @@ const { podEnvironment, servers, stubBroker } = natsBrokerStandIns("nats-credent
 afterEach(() => {
   jest.useRealTimers();
 });
+
+/**
+ * What `ready` answers, read through the deadline the code itself armed: every deadline of `ms`
+ * the code arms is held (`holdDeadlines`) until ready has armed one and has not answered while it
+ * is held, and, where `first` names a fact, until that fact holds too; then it ends, and ready's
+ * answer is returned. A ready that armed its deadline at another length - the trade's own, say -
+ * arms none the hold sees, and the wait for it fails at the row's deadline, naming it; one that
+ * answered with the deadline still held fails the check.
+ */
+async function answerAtHeldDeadline(
+  ms: number,
+  ready: () => Promise<void>,
+  first?: readonly [what: string, holds: () => boolean]
+): Promise<string> {
+  const deadline = holdDeadlines(ms);
+  try {
+    let answered = false;
+    const answer = ready()
+      .then(
+        () => "ready",
+        (error: unknown) => (error instanceof Error ? error.message : String(error))
+      )
+      .finally(() => {
+        answered = true;
+      });
+    await until(`ready's ${ms} ms deadline armed`, () => deadline.held.length > 0);
+    if (first !== undefined) await until(first[0], first[1]);
+    expect(answered, `ready answered with its ${ms} ms deadline still held`).toBe(false);
+    deadline.end();
+    return await settled(`ready's answer once its ${ms} ms deadline ended`, answer);
+  } finally {
+    deadline.restore();
+  }
+}
 
 describe("ready", () => {
   test("a broker that never answers the trade fails it, named, at the deadline", async () => {
@@ -47,15 +82,9 @@ describe("ready", () => {
       "NATS_AUTH",
       300
     );
-    // The deadline ends the wait: a ready that waited on the broker would not end, and the wait
-    // for its answer would fail at the row's deadline.
-    const outcome = await settled(
-      "ready's answer at its 0.3 s deadline",
-      credential.ready().then(
-        () => "ready",
-        (error: unknown) => (error instanceof Error ? error.message : String(error))
-      )
-    );
+    // The deadline ends the wait, and it is the one the setting gives: a ready that waited on the
+    // broker, or on a deadline of another length, would not end while the setting's is held.
+    const outcome = await answerAtHeldDeadline(300, () => credential.ready());
     expect(outcome).toBe(
       "NATS_AUTH is broker, but the secrets broker did not answer the trade for the session's token within 0.3 s"
     );
@@ -77,12 +106,9 @@ describe("ready", () => {
       "NATS_AUTH",
       10_000
     );
-    const outcome = await settled(
-      "ready's answer at its 0.4 s bound",
-      credential.ready({ waitForReady: true, boundMs: 400 }).then(
-        () => "ready",
-        (error: unknown) => (error instanceof Error ? error.message : String(error))
-      )
+    // The bound the start asked for, not the trade's 10 s, is the deadline the wait arms.
+    const outcome = await answerAtHeldDeadline(400, () =>
+      credential.ready({ waitForReady: true, boundMs: 400 })
     );
     expect(outcome).toBe(
       "NATS_AUTH is broker, but the secrets broker did not answer the trade for the session's token within 0.4 s"
@@ -101,13 +127,21 @@ describe("ready", () => {
       "NATS_AUTH",
       300
     );
-    const outcome = await settled(
-      "ready's answer at its 0.3 s deadline",
-      credential.ready().then(
-        () => "ready",
-        (error: unknown) => (error instanceof Error ? error.message : String(error))
-      )
-    );
+    // The deadline ends once the token client has had the broker's refusal, which it says on
+    // stderr: what ready answers then is that refusal's, read at the deadline the setting gives.
+    const warned: string[] = [];
+    const warn = spyOn(console, "warn").mockImplementation((line: unknown) => {
+      warned.push(String(line));
+    });
+    let outcome: string;
+    try {
+      outcome = await answerAtHeldDeadline(300, () => credential.ready(), [
+        "the token client's word that the trade waits on the registration",
+        () => warned.some((line) => line.includes("ses_pending")),
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
     expect(outcome).toBe(
       "NATS_AUTH is broker, and the session's token waits on its registration: the secrets broker has no registration for this pod's session ses_pending yet, and the trade is being retried in the background until it lands (pod_session_not_registered: No registration says this pod may write under the session name 'ses_pending'. A pod writes under a session name its deployment registered for it.)"
     );
