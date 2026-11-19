@@ -258,9 +258,10 @@ function EditedDocument({
  *  down to the node an address names, which the tree is then to put the focus on
  *  (`slots/body.tsx`); `editor` stands in for the editor of the document a row is editing in,
  *  which the page draws on that row's stage; `emptyLine` is what the tree says where the issue
- *  holds nothing, none where it is not given; `readsHeld` is whether the reads the tree is built
- *  from hold their answers, until `holdReads` draws the same tree with them held; `redraw` draws
- *  the same tree again, as a read answering does. */
+ *  holds nothing, none where it is not given; `isClosed` is whether the issue is closed;
+ *  `readsHeld` is whether the reads the tree is built from hold their answers, until `holdReads`
+ *  draws the same tree with them held; `redraw` draws the same tree again, as a read answering
+ *  does. */
 function renderTree(
   root: TreeNode,
   {
@@ -268,6 +269,7 @@ function renderTree(
     decisions,
     editor,
     emptyLine,
+    isClosed = false,
     readsHeld = true,
     reveal,
   }: {
@@ -275,6 +277,7 @@ function renderTree(
     decisions?: IssueDecisions;
     editor?: StandInEditor;
     emptyLine?: string;
+    isClosed?: boolean;
     readsHeld?: boolean;
     reveal?: readonly TreeNode[];
   } = {}
@@ -305,7 +308,7 @@ function renderTree(
                   filtering={false}
                   focusReveal={reveal !== undefined}
                   holdsEscape={false}
-                  isClosed={false}
+                  isClosed={isClosed}
                   onEditing={(artifactId, onEditor) => {
                     edited.push(artifactId);
                     editedDocument.set?.(artifactId, onEditor);
@@ -1275,6 +1278,75 @@ test("on a block of the focused row that keeps its tab stop, the keys the browse
   } finally {
     sheet.remove();
   }
+});
+
+// A row whose node Enter puts the caret in - a block of one of the issue's documents, a statement
+// and a check among them - carries `data-editable` (`useNodeEditing.ts`'s `nodeEditable`), which
+// draws the cue that it takes typing (`styles.css`). A comment, a result and a child issue are no
+// block of a document and take no caret, and a closed issue's documents are read-only, so none of
+// its rows carries the mark.
+test("a statement's and a check's rows carry data-editable, a comment's, a result's and a child's do not, and no row of a closed issue does", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const artifacts: Artifact[] = [
+    { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" },
+    {
+      ...decisionsDocument,
+      id: "artifact-verification",
+      name: "Verification",
+      slug: "verification",
+    },
+  ];
+  const root = node({
+    children: [
+      node({
+        children: [
+          node({
+            children: [node({ id: "result-1", text: "What the run saw.", type: "result" })],
+            id: "verification#b-c1",
+            state: "no-result",
+            text: "The check of the statement.",
+            type: "check",
+          }),
+        ],
+        id: "spec#b-r1",
+        statement: true,
+        text: "A statement of the spec.",
+        type: "requirement",
+      }),
+      node({ id: "comment-1", text: "The first words.", type: "comment" }),
+      node({ id: "CORE-2", text: "The first child", type: "child_issue" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const marked = async (isClosed: boolean): Promise<(string | undefined)[]> => {
+    const view = renderTree(root, { artifacts, isClosed });
+    try {
+      // The check's own branch arrives folded; the reader opens it to draw its result.
+      const [check] = rowsFor(view.container, "verification#b-c1");
+      if (check === undefined) throw new Error("the tree drew no row of the check");
+      await act(async () => check.focus());
+      await user.keyboard("{ArrowRight}");
+      await waitFor(() => expect(rowsFor(view.container, "result-1")).toHaveLength(1));
+      const rows = [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")];
+      expect(
+        rows.map((row) => row.dataset.nodeId),
+        "the tree did not draw every row"
+      ).toEqual(["spec#b-r1", "verification#b-c1", "result-1", "comment-1", "CORE-2"]);
+      return rows
+        .filter((row) => row.hasAttribute("data-editable"))
+        .map((row) => row.dataset.nodeId);
+    } finally {
+      view.unmount();
+    }
+  };
+
+  expect(await marked(false), "the rows marked as taking typing on an open issue").toEqual([
+    "spec#b-r1",
+    "verification#b-c1",
+  ]);
+  expect(await marked(true), "a row of the closed issue is marked as taking typing").toEqual([]);
 });
 
 test("Escape leaves the caret for the placement it was taken from, not the node's first row", async () => {
