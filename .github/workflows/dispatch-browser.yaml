@@ -291,7 +291,7 @@ jobs:
     # 128789111286), 344 bytes apart over 1.16 GB. They are not the same bytes: the manifests show
     # layers 1 to 7 identical and layers 8 to 10 each at another digest, so no rebuild reproduces
     # the image its recipe built before. Only layer 8's difference has a cause read here -- it is
-    # the apt RUN of .github/docker/browser.Dockerfile:78, whose installs are pinned to no version,
+    # the apt RUN of .github/docker/browser.Dockerfile:86, whose installs are pinned to no version,
     # so a rebuild takes what the mirror serves that minute; layer 9 copies a `weed` binary from a
     # stage pinned by digest and layer 10 installs nothing, and why either moved is unread, since
     # nothing here needs it. Nothing depends on a rebuild reproducing the previous image -- every
