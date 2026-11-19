@@ -1,4 +1,5 @@
-import type { Browser, BrowserContext, Page } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
+import type { Browser, BrowserContext, Locator, Page } from "@playwright/test";
 
 import {
   FOOT_HEIGHT_PROPERTY,
@@ -83,6 +84,7 @@ import {
   rowLayouts,
   rowOf,
   rowWords,
+  seedWideCode,
   tree,
   unfoldEveryBranch,
 } from "./issue-page-g";
@@ -3376,6 +3378,185 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
   } finally {
     await context.close();
   }
+});
+
+/**
+ * Where the keyboard focus is, read against node row `row`, in the words a failure reads: "its
+ * code block" or "its table" where it is on that block of the row's words - the `pre` or the
+ * `table` itself, or a box that holds it alone and scrolls it sideways - "the row" on the row
+ * itself, and otherwise what holds it and whether that is inside the row, elsewhere in the tree,
+ * or outside the tree.
+ */
+function focusAgainstRow(row: Locator): Promise<string> {
+  return row.evaluate((element) => {
+    const focused = document.activeElement;
+    if (focused === null || focused === document.body) return "outside the tree, on the page";
+    if (focused === element) return "the row";
+    const what = focused.localName;
+    if (element.contains(focused)) {
+      const code = focused.querySelector("pre") !== null;
+      const table = focused.querySelector("table") !== null;
+      const scrolls = focused.scrollWidth > focused.clientWidth;
+      if (what === "pre" || (code && !table && scrolls)) return "its code block";
+      if (what === "table" || (table && !code && scrolls)) return "its table";
+      return `a ${what} inside the row`;
+    }
+    if (element.closest('[role="tree"]')?.contains(focused) === true) {
+      return `a ${what} elsewhere in the tree`;
+    }
+    return `outside the tree, on a ${what}`;
+  });
+}
+
+// The outline is one tab stop, and a reader on the keyboard still scrolls a wide block of the
+// focused row's words sideways (WCAG 2.1.1, which axe's `scrollable-region-focusable` rule
+// reads): the code block and the table that scroll in the row that holds the focus are tab stops,
+// each named for what it holds, and every other row's are out of the tab order. With every row's
+// out, as the outline had them, no key reached a wide block, and no key scrolled it. At 1440 by
+// 900, a comment whose words hold a code block and a table, each wider than its box, and a comment
+// of words alone after it: Tab from the first stops on its code block, then on its table, then
+// leaves the tree; from the second, Tab leaves the tree at once, and so does Shift+Tab, which
+// passes the first comment's blocks above it; and with the first focused, axe finds no scroller
+// on the page that the keyboard cannot reach.
+// SLOW(>=2s): an issue of two comments seeded and loaded at the first one's address, its code
+// block and table waited for until they are laid out wider than their boxes, eight keys each
+// waited on until the focus lands, and the page read by axe once the first row has the focus.
+test("Tab from the focused row stops on its code block and its table, then leaves the tree, and a row with neither leaves at once", async ({
+  browser,
+}) => {
+  await phase(
+    browser,
+    async () => {
+      const seeded = await seedWideCode();
+      const plain = await createComment(seeded.key, {
+        body: "A comment of words alone, which hold no code block and no table.",
+      });
+      return { ...seeded, plain: plain.id };
+    },
+    async (page, seeded) => {
+      await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.comment}`);
+      await expectTreeDrawn(page);
+      await expect
+        .poll(() => focusedNodeId(page), {
+          message: "the comment's address did not put the focus on its row",
+        })
+        .toBe(seeded.comment);
+      const row = nodeRow(page, seeded.comment).first();
+      for (const [block, what] of [
+        ["pre", "code block"],
+        ["table", "table"],
+      ] as const) {
+        await expect
+          .poll(
+            () =>
+              rowWords(row)
+                .locator(block)
+                .evaluateAll((found) =>
+                  found.some((element) => element.scrollWidth > element.clientWidth)
+                ),
+            { message: `the focused comment's row never drew a ${what} wider than its own box` }
+          )
+          .toBe(true);
+      }
+
+      // Tab from the focused row stops on its code block, then on its table, each named for what
+      // it holds, and then leaves the tree.
+      const focused = page.locator(":focus");
+      await page.keyboard.press("Tab");
+      await expect
+        .poll(() => focusAgainstRow(row), {
+          message: "Tab from the focused comment's row did not stop on its code block",
+        })
+        .toBe("its code block");
+      await expect(
+        focused,
+        "the code block's tab stop is not named for what it holds"
+      ).toHaveAccessibleName("Code, scrolls sideways");
+      await page.keyboard.press("Tab");
+      await expect
+        .poll(() => focusAgainstRow(row), {
+          message: "Tab from the focused comment's code block did not stop on its table",
+        })
+        .toBe("its table");
+      await expect(
+        focused,
+        "the table's tab stop is not named for what it holds"
+      ).toHaveAccessibleName("Table, scrolls sideways");
+      await page.keyboard.press("Tab");
+      await expect
+        .poll(() => focusAgainstRow(row), {
+          message: "Tab from the focused comment's table did not leave the tree",
+        })
+        .toMatch(/^outside the tree/u);
+
+      // Back on the row, j moves to the comment of words alone. From it Tab leaves the tree at
+      // once, and Shift+Tab does too: the first comment's blocks above it are no tab stop while
+      // its row holds no focus.
+      await page.keyboard.press("Shift+Tab");
+      await expect
+        .poll(() => focusAgainstRow(row), {
+          message: "Shift+Tab from past the tree did not come back to the comment's row",
+        })
+        .toBe("the row");
+      await page.keyboard.press("j");
+      await expect
+        .poll(() => focusedNodeId(page), {
+          message: "j did not move from the comment's row to the comment of words alone",
+        })
+        .toBe(seeded.plain);
+      const plain = nodeRow(page, seeded.plain).first();
+      await expect(
+        rowWords(plain),
+        "the comment of words alone draws no words in its row"
+      ).toContainText("A comment of words alone");
+      await expect(
+        rowWords(plain).locator("pre, table"),
+        "the comment of words alone draws a code block or a table"
+      ).toHaveCount(0);
+      await page.keyboard.press("Tab");
+      await expect
+        .poll(() => focusAgainstRow(plain), {
+          message:
+            "Tab from a row whose words hold neither a code block nor a table did not leave the tree at once",
+        })
+        .toMatch(/^outside the tree/u);
+      await page.keyboard.press("Shift+Tab");
+      await expect
+        .poll(() => focusAgainstRow(plain), {
+          message: "Shift+Tab from past the tree did not come back to the comment of words alone",
+        })
+        .toBe("the row");
+      await page.keyboard.press("Shift+Tab");
+      await expect
+        .poll(() => focusAgainstRow(row), {
+          message:
+            "Shift+Tab from the comment of words alone did not leave the tree at once, past the blocks of the row above it, which holds no focus",
+        })
+        .toMatch(/^outside the tree/u);
+
+      // With the first comment's row focused, axe finds no scroller on the page that the
+      // keyboard cannot reach.
+      await focusRow(page, seeded.comment);
+      await expect
+        .poll(
+          async () =>
+            (
+              await new AxeBuilder({ page }).withRules(["scrollable-region-focusable"]).analyze()
+            ).violations.flatMap((violation) =>
+              violation.nodes.map((node) =>
+                node.target
+                  .map((part) => (Array.isArray(part) ? part.join(" ") : String(part)))
+                  .join(" ")
+              )
+            ),
+          {
+            message:
+              "axe finds scrollers the keyboard cannot reach on the page with the comment's row focused",
+          }
+        )
+        .toEqual([]);
+    }
+  );
 });
 
 // SLOW(>=2s): the whole issue seeded and loaded in a context of its own, for one read of its rows.
