@@ -63,7 +63,7 @@ export function fileLimit(limitMs: number): number {
  * Runs `run` on a clock of its own, started now at the limit the running file states
  * (fileLimit), and then puts back the clock it found. A file that states no limit gives it no
  * clock, and then only a part's own bound stops a process, or, for a part with none, the CI
- * step's own limit.
+ * job's own timeout.
  *
  * It is for a hook of temporary-directories.ts. Bun times each hook apart from its row, and the
  * fixture's afterEach can run after fileLimit's own has stopped the row's clock (Bun runs an

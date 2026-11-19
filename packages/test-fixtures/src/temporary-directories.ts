@@ -40,8 +40,8 @@ export type TemporaryDirectoryMaker = (suffix?: string) => string;
  * (`remove-trees.ts`) through spawnWithin, on a clock of its own at the limit the running file
  * states (`onHookClock` of `row-clock.ts`): a removal that ends passes however slow the disk, and
  * one that never ends is killed within the file's limit and fails its hook naming the directories
- * it was removing. A file that states no limit gives the removal no clock, and then the CI step's
- * own limit is its bound.
+ * it was removing. A file that states no limit gives the removal no clock: in CI a removal there
+ * that never ends is stopped by the job's own timeout, and its folder is not named.
  *
  * A limit of Bun's own would be the wrong bound. These hooks used to remove in this process, and
  * Bun judges a synchronous hook only after it returns, so a limit stopped no removal that never

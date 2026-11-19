@@ -90,7 +90,7 @@ itself, whose tests import its sources by relative path.
   removal and fail only a slow one that ended. A file that states its limit through `fileLimit`
   of `@legion/test-fixtures/row-clock` gives each removal that limit on a clock of the hook's own,
   so a removal that never ends fails its hook naming the directory; in a file that states none,
-  only the CI step's own limit stops it.
+  a removal that never ends is stopped by the CI job's own timeout, and its folder is not named.
 
 - Put a variable back with `restoreEnvironment` or `captureEnvironment`
   (`@legion/test-fixtures/environment`), which set and delete the names themselves. A name that held
