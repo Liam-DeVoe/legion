@@ -70,8 +70,9 @@ func editResults(t *testing.T, dir string, change func(results []map[string]any)
 // Each row: production-and-graph with its check of the graph written as the row's kind, its two
 // runs reported by the job production-checks and its failing run in the leg x, where that job's
 // runs at c1 are of the leg "": with test_commit c1 on that run, the command prints what it prints
-// with none. The control: the program check of production's failing run in the leg x at its
-// test_commit c1 is refused, since its test ran there.
+// with none. The controls: a program check's failing run in the leg x at its test_commit c1 is
+// refused, since its test ran there, for the program check of production as the scenario writes it
+// and for that check written as a program check of the graph.
 func TestTheLegRuleReadsNoCommitOfACheckThatReadsNoCommit(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
@@ -102,9 +103,10 @@ func TestTheLegRuleReadsNoCommitOfACheckThatReadsNoCommit(t *testing.T) {
 			expect(t, got[1], got[0])
 		})
 	}
-	t.Run("control: a program check of production in the leg x at its test_commit c1", func(t *testing.T) {
-		t.Parallel()
-		dir := copyScenario(t, "production-and-graph")
+	// refusedInLegX gives result 3 of the scenario at dir, the program check's failure at test_commit
+	// c1, the leg x, and expects the refusal of the leg rule.
+	refusedInLegX := func(t *testing.T, dir string) {
+		t.Helper()
 		editResults(t, dir, func(results []map[string]any) {
 			if r := results[2]; r["check"] != "a-production-restart-loses-no-message" || r["outcome"] != "fail" || r["test_commit"] != "c1" {
 				t.Fatalf("result 3 of production-and-graph is no failure of its program check at test_commit c1: %v", r)
@@ -113,6 +115,14 @@ func TestTheLegRuleReadsNoCommitOfACheckThatReadsNoCommit(t *testing.T) {
 		})
 		expect(t, runBinary(t, binary, "", "state", "--scenario", dir), result{code: 2, stderr: "spec-check: " + filepath.Join(dir, "results.json") +
 			`: result 3: it sets the leg "x", and job run 1 of its job "production-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix` + "\n"})
+	}
+	t.Run("control: a program check of production in the leg x at its test_commit c1", func(t *testing.T) {
+		t.Parallel()
+		refusedInLegX(t, copyScenario(t, "production-and-graph"))
+	})
+	t.Run("control: a program check of the graph in the leg x at its test_commit c1", func(t *testing.T) {
+		t.Parallel()
+		refusedInLegX(t, scenarioAs(t, "production-and-graph", "a-production-restart-loses-no-message", specgraph.ProcedureProgram, specgraph.SubjectGraph))
 	})
 }
 
