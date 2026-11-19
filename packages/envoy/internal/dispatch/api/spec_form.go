@@ -24,13 +24,14 @@ import (
 // an approval request (requestArtifactApproval), and an approval in a person's name
 // (approvalDocuments), which gives the documents that approval covers and judges each of them.
 // Every writer of an approval in a person's name asks approvalDocuments: her review on either
-// review route and her answer to an approval request (writeApprovalReviews), and the carry of an
+// review route and her answer to an approval request (queueApprovalReviews), and the carry of an
 // approval to a new version (carryBreaksForm, docs.FormGate), which carries nothing over a break.
 // Two calls read findings and refuse nothing: the read route (getArtifactSpecForm) and the
-// restore of a reopen and of the repair pass (restoreIssueAsksTx), which judges a request at the
+// restore of a reopen and of the repair pass (prepareRestoration), which judges a request at the
 // versions it names once the reopen ends and leaves a broken approval request resolved rather
-// than open it again. Every route that opens an approval request or answers one reaches one of
-// these calls; TestOnlyTheFormGateOpensOrAnswersAPersonsApproval holds the code to that census.
+// than open it again (docs.WriteRestoredAsks, which only it calls, writes the others open). Every
+// route that opens an approval request or answers one reaches one of these calls;
+// TestOnlyTheFormGateOpensOrAnswersAPersonsApproval holds the code to that census.
 //
 // One way past the gate stays open, and it is known: an approval given before the setting named
 // the root, or while the issue stood outside it, never passed the gate, and a reparent out of a
@@ -397,7 +398,7 @@ func (s *server) refuseSpecForm(ctx context.Context, tx pgx.Tx, documents []mode
 // the whole approval. A request for changes is never judged. This is the one answer to which
 // documents an approval covers, and the one judgment of them: the person's review on either
 // review route and her answer to an approval request write a review of each document it returns
-// (writeApprovalReviews), and the carry of an approval in her name asks it before it answers the
+// (queueApprovalReviews), and the carry of an approval in her name asks it before it answers the
 // request or writes its own review (carryBreaksForm).
 func (s *server) approvalDocuments(ctx context.Context, tx pgx.Tx, request *model.AskApproval, document model.AskApprovalDocument, state string) ([]model.AskApprovalDocument, error) {
 	documents := []model.AskApprovalDocument{document}

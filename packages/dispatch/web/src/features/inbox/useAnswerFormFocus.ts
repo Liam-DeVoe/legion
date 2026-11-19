@@ -5,10 +5,17 @@ import { focusIsFreeFor } from "../doc/form-refusals";
 
 /** Moves focus from inside the form to the nearest focusable ancestor (in the Inbox, the row, so
  *  j/k/Escape still start from the same place) instead of letting it fall to the document body. */
-function handOffFocus(form: HTMLElement): void {
+export function handOffFocus(form: HTMLElement): void {
   if (!form.contains(document.activeElement)) return;
   form.parentElement?.closest<HTMLElement>("[tabindex]")?.focus({ preventScroll: true });
 }
+
+/** The answer form as `AskCard` holds it: the form while it is in the page, and the callback ref
+ *  that the card puts on its `<form>`. */
+export type AnswerForm = [
+  formRef: { current: HTMLFormElement | null },
+  trackForm: (form: HTMLFormElement | null) => (() => void) | undefined,
+];
 
 /** The form's callback ref. When the form leaves while a control inside it has focus - the ask
  *  was answered or resolved elsewhere and the card swaps to its record - focus is handed off
@@ -18,10 +25,7 @@ function handOffFocus(form: HTMLElement): void {
  *  closed, so the field's `.form` is not a reliable way to reach it. The callback must be stable
  *  across renders: React re-runs a changed callback ref's cleanup on every commit, and that
  *  cleanup moves focus. */
-function useFormRef(): [
-  { current: HTMLFormElement | null },
-  (form: HTMLFormElement | null) => (() => void) | undefined,
-] {
+function useFormRef(): AnswerForm {
   const formRef = useRef<HTMLFormElement | null>(null);
   const track = useCallback((form: HTMLFormElement | null) => {
     formRef.current = form;
@@ -44,16 +48,16 @@ interface AnswerFormFocusOptions {
 }
 
 /**
- * Where the focus goes as the answer form of `AskCard` changes under it: the form's callback ref,
- * which the card puts on its `<form>`. The focus leaves a vanishing form for the nearest focusable
- * ancestor (`useFormRef`), leaves a control that disables itself under it the same way, and comes
- * back to the pressed control after a refusal of the form.
+ * Where the focus goes as the answer form of `AskCard` changes under it: the form, and the form's
+ * callback ref, which the card puts on its `<form>`. The focus leaves a vanishing form for the
+ * nearest focusable ancestor (`useFormRef`), leaves a control that disables itself under it the
+ * same way, and comes back to the pressed control after a refusal of the form.
  */
 export function useAnswerFormFocus({
   formRefusal,
   pending,
   takeFormRefusalFocus,
-}: AnswerFormFocusOptions): (form: HTMLFormElement | null) => (() => void) | undefined {
+}: AnswerFormFocusOptions): AnswerForm {
   // A control that disables itself under the reader's focus - Ask back while sending and once
   // its text is sent - would have the browser drop focus to the document body (in the Inbox, out
   // of the row, which then lets the row go) with nothing the card could act on afterwards; the
@@ -94,5 +98,5 @@ export function useAnswerFormFocus({
           );
     if (control?.matches(":disabled") === false) control.focus();
   }, [formRef, formRefusal, pending, takeFormRefusalFocus]);
-  return trackForm;
+  return [formRef, trackForm];
 }

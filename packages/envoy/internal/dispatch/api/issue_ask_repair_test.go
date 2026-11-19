@@ -46,14 +46,32 @@ func newRepairFixture(t *testing.T) repairFixture {
 // settle.
 func newRepairFixtureSettlingAfter(t *testing.T, settle time.Duration) repairFixture {
 	t.Helper()
-	return newRepairFixtureFrom(t, settle, "")
+	return newRepairFixtureWith(t, settle, nil, "")
 }
 
 // newRepairFixtureFrom is newRepairFixtureSettlingAfter on a server whose setting names specRoots
 // as the roots of The Spec (DISPATCH_SPEC_ROOTS), "" for none.
 func newRepairFixtureFrom(t *testing.T, settle time.Duration, specRoots string) repairFixture {
 	t.Helper()
+	return newRepairFixtureWith(t, settle, nil, specRoots)
+}
+
+// newRepairFixtureOn is newRepairFixtureSettlingAfter on a pool tracer traces (storetest.Traced),
+// so the repair's xid window can be measured on it (issue_ask_repair_xid_window_test.go); a nil
+// tracer leaves the pool untraced.
+func newRepairFixtureOn(t *testing.T, settle time.Duration, tracer pgx.QueryTracer) repairFixture {
+	t.Helper()
+	return newRepairFixtureWith(t, settle, tracer, "")
+}
+
+// newRepairFixtureWith is the fixture on a pool tracer traces (nil for none) and a server whose
+// setting names specRoots as the roots of The Spec ("" for none).
+func newRepairFixtureWith(t *testing.T, settle time.Duration, tracer pgx.QueryTracer, specRoots string) repairFixture {
+	t.Helper()
 	database := storetest.Open(t)
+	if tracer != nil {
+		database = &store.Store{Pool: storetest.Traced(t, database.Pool, tracer, nil)}
+	}
 	documents := docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: settle})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	// A close or reopen reaches the document rooms from its commit (migration 20261101181500's
