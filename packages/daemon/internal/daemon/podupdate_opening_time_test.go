@@ -14,6 +14,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -42,8 +43,20 @@ func (r *fleetRig) openSlowRound(slow string, others ...string) {
 // sweepHeldInAWrite is one sweep whose first write to the store for slow — the ask of slow's open
 // round (openSlowRound) — takes hold, as a write the store is slow to take does: the clock moves
 // by hold before the row is written. Every issue the walk reaches after slow is decided hold after
-// every issue before it.
+// every issue before it. A sweep that makes no such write fails the test.
 func (r *fleetRig) sweepHeldInAWrite(slow string, hold time.Duration) {
+	r.t.Helper()
+	began := r.clock.Now()
+	r.sweepHoldingAWrite(slow, hold)
+	if got := r.clock.Now().Sub(began); got != hold {
+		r.t.Fatalf("the sweep's write for %s held it for %s, want %s", slow, got, hold)
+	}
+}
+
+// sweepHoldingAWrite is sweepHeldInAWrite for a sweep that may make no write for slow, such as a
+// tick of a roll whose last opening was asked at a tick before it: its first write for slow, if
+// it makes one, takes hold.
+func (r *fleetRig) sweepHoldingAWrite(slow string, hold time.Duration) {
 	r.t.Helper()
 	enqueue := r.s.enqueue
 	defer func() { r.s.enqueue = enqueue }()
@@ -55,11 +68,7 @@ func (r *fleetRig) sweepHeldInAWrite(slow string, hold time.Duration) {
 		}
 		return enqueue(ctx, issue, payloads...)
 	}
-	began := r.clock.Now()
 	r.tick()
-	if got := r.clock.Now().Sub(began); got != hold {
-		r.t.Fatalf("the sweep's write for %s held it for %s, want %s", slow, got, hold)
-	}
 }
 
 // An opening is dated from the moment the sweep makes it, not from the top of the sweep. The walk
@@ -224,4 +233,116 @@ func TestPodUpdateRoundsPerMinuteHoldsAnOpeningTheWalkReachesFiftySecondsAfterTh
 		WaitingOnRoundsPerMinute: []string{next},
 	})
 	rig.awaitRounds("the sweep after the gap", slow, opened)
+}
+
+// R3: "The waiting issues open in the order of their keys as strings." The walk is in key order
+// and the gap is read as the walk reaches each waiting issue, so a walk that waits between two
+// waiting issues can reach the first within the gap and the second past it. Once the gap holds
+// the first, the sweep opens neither, and the first opens at the next sweep, before the second.
+// Here the first drifts after the roll has passed its key, and the wait between the two is the
+// write a roll makes at every tick: the ask of the round the tick before opened, here 15 seconds.
+func TestPodUpdateRoundsPerMinuteOpensNoLaterKeyOnceTheGapHoldsAnEarlierOne(t *testing.T) {
+	early, first, second, third, fourth := "ACME-1", "ACME-2", "ACME-3", "ACME-4", "ACME-5"
+	rig := newLimitRig(t, early, first, second, third, fourth)
+	rig.drifts(early)
+	rig.openSlowRound(first, second, third, fourth)
+	rig.clock.advance(time.Minute)
+	rig.s.cfg.PodUpdateRoundsPerMinute = new(1)
+	top := rig.clock.Now()
+
+	// Tick 1 writes first's ask, then opens second, 15 seconds after its top.
+	rig.sweepHeldInAWrite(first, 15*time.Second)
+	rig.wantPodUpdateRecord("tick 1", api.PodUpdateRounds{
+		Swept: true, RoundsPerMinute: new(1),
+		InRound:                  []string{first, second},
+		WaitingOnRoundsPerMinute: []string{third, fourth},
+	})
+	rig.awaitRounds("tick 1", first, second)
+	rig.drifts(early, limitDrift)
+
+	// Tick 2, a minute after tick 1: the walk reaches early 45 seconds after second's opening,
+	// writes second's ask, and reaches third 60 seconds after that opening. third waits behind
+	// early.
+	rig.clock.advance(top.Add(time.Minute).Sub(rig.clock.Now()))
+	rig.sweepHeldInAWrite(second, 15*time.Second)
+	rig.wantPodUpdateRecord("tick 2, whose walk waited between early and third", api.PodUpdateRounds{
+		Swept: true, RoundsPerMinute: new(1),
+		InRound:                  []string{first, second},
+		WaitingOnRoundsPerMinute: []string{early, third, fourth},
+	})
+
+	// Tick 3 opens early, before every key after it.
+	rig.clock.advance(top.Add(2 * time.Minute).Sub(rig.clock.Now()))
+	rig.tick()
+	rig.wantPodUpdateRecord("tick 3", api.PodUpdateRounds{
+		Swept: true, RoundsPerMinute: new(1),
+		InRound:                  []string{early, first, second},
+		WaitingOnRoundsPerMinute: []string{third, fourth},
+	})
+	rig.awaitRounds("tick 3", early, first, second)
+}
+
+// The roll of the cadence test above, with an issue whose key sorts before the roll drifting
+// after tick 1. Every tick's walk reaches that issue first, and with each walk's write taking 15
+// seconds the last opening is 45 seconds old when it does: were the issues after it opened past
+// the gap, it would wait out the whole roll. It opens at the tick after the one the gap held it
+// at, second of all the roll's openings, and the roll goes on in key order after it.
+func TestPodUpdateRoundsPerMinuteAnIssueThatDriftsBehindTheRollOpensBeforeTheKeysAfterIt(t *testing.T) {
+	keys := []string{"ACME-1", "ACME-2", "ACME-3", "ACME-4", "ACME-5", "ACME-6"}
+	early := keys[0]
+	rig := newLimitRig(t, keys...)
+	rig.drifts(early)
+	rig.openSlowRound(keys[1], keys[2:]...)
+	rig.clock.advance(time.Minute)
+	rig.s.cfg.PodUpdateRoundsPerMinute = new(1)
+
+	top := rig.clock.Now()
+	opened, last := []string{keys[1]}, keys[1]
+	var order []string
+	for tick := 1; tick <= 8 && len(opened) < len(keys); tick++ {
+		// The regular tick: the tops of the sweeps are a minute apart, and each walk's write of
+		// the ask of the round opened last takes 15 seconds.
+		rig.clock.advance(top.Add(time.Duration(tick-1) * time.Minute).Sub(rig.clock.Now()))
+		rig.sweepHoldingAWrite(last, 15*time.Second)
+		for _, issue := range rig.s.podUpdateRoundsView().InRound {
+			if !slices.Contains(opened, issue) {
+				opened, last = append(opened, issue), issue
+				order = append(order, issue)
+			}
+		}
+		rig.awaitRounds(fmt.Sprintf("tick %d", tick), slices.Clone(opened)...)
+		if tick == 1 {
+			rig.drifts(early, limitDrift)
+		}
+	}
+	if want := []string{keys[2], early, keys[3], keys[4], keys[5]}; !slices.Equal(order, want) {
+		t.Errorf("the roll opened %v in that order, want %v: %s, the first key of all, waiting from tick 2 on", order, want, early)
+	}
+}
+
+// The tick after a slow sweep (the design's case: the queued sweep opens, and the regular tick
+// comes less than a minute after it), here 49.5 seconds after the last opening, with a write of
+// one second in the walk between two waiting issues. The gap holds the first, and the second
+// waits behind it; the next sweep opens the first.
+func TestPodUpdateRoundsPerMinuteOpensNoLaterKeyAfterAOneSecondWriteInTheTickAfterASlowSweep(t *testing.T) {
+	early, slow, late := "ACME-1", "ACME-2", "ACME-3"
+	rig := newLimitRig(t, early, slow, late)
+	rig.openSlowRound(slow, early, late)
+	rig.clock.advance(49*time.Second + 500*time.Millisecond)
+	rig.s.cfg.PodUpdateRoundsPerMinute = new(1)
+
+	rig.sweepHeldInAWrite(slow, time.Second)
+	rig.wantPodUpdateRecord("the sweep whose walk waited a second between the two waiting issues", api.PodUpdateRounds{
+		Swept: true, RoundsPerMinute: new(1),
+		InRound:                  []string{slow},
+		WaitingOnRoundsPerMinute: []string{early, late},
+	})
+
+	rig.tick()
+	rig.wantPodUpdateRecord("the sweep after it, 50.5 seconds after the last opening", api.PodUpdateRounds{
+		Swept: true, RoundsPerMinute: new(1),
+		InRound:                  []string{early, slow},
+		WaitingOnRoundsPerMinute: []string{late},
+	})
+	rig.awaitRounds("the sweep after it", early, slow)
 }

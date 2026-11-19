@@ -27,8 +27,8 @@ import (
 // while two sweeps of one burst — a sweep that ran long, and the one the ticker fires straight
 // after it — do not open two minutes' worth of rounds between them. Both ends of the gap are
 // openings: it is read at the moment the walk reaches the issue it would open, against the
-// moment of the last opening (podUpdateSweep.holds), and never at the top of the sweep, which a
-// wait in the walk puts before the opening it measures.
+// moment of this daemon's last opening before the sweep (podUpdateSweep.holds), and never at the
+// top of the sweep, which a wait in the walk puts before the opening it measures.
 const podUpdateOpeningGap = 50 * time.Second
 
 // podUpdateLimit is the limit of the project that held an issue's opening back at a sweep, as
@@ -100,11 +100,19 @@ type podUpdateSweep struct {
 // whose walk waited 10 seconds before its opening would be measured that much short at the next
 // tick, a minute later, which would then open nothing although its opening came a minute after
 // the last one, and the openings would stop following the one-minute tick.
+//
+// The gap that holds an issue back spends what is left of the sweep's budget. The waiting issues
+// open in the order of their keys, and the walk is in that order, so once the gap holds one issue
+// no issue after it may open at this sweep: the walk can wait between the two, and reach the
+// later one after the gap has passed. The issue the gap held opens at a later sweep, before every
+// issue after it, and a sweep whose walk reaches its first waiting issue within the gap opens
+// nothing.
 func (sweep *podUpdateSweep) holds(issue string, now time.Time) bool {
 	switch {
 	case sweep.slots.exhausted():
 		sweep.waiting = append(sweep.waiting, podUpdateHeld{issue: issue, limit: limitPodUpdateOpenRounds})
 	case sweep.budget.exhausted(), sweep.budget.limited && sweep.withinGap(now):
+		sweep.budget.left = 0
 		sweep.waiting = append(sweep.waiting, podUpdateHeld{issue: issue, limit: limitPodUpdateRoundsPerMinute})
 	default:
 		return false
