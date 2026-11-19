@@ -7,11 +7,21 @@ body: |-
   change that commits always has its event, and a write that rolls back has none. The rows run on
   a new `state` lane, one lane for each project, which publishes them strictly in sequence order,
   and the rows of one committed transaction go out as one message. A transaction whose events pass
-  900 KB goes out as consecutive messages, split between events. A commit trigger gives each row
-  its sequence and its time when its transaction commits (migration
-  `20261118164019_state_events`), so the sequence follows commit order and has no gap. A daemon
-  with no workflow writes no state event. `GET /legion/v1/state` serves `daemon.stateSeq`, the
-  sequence of the newest state event its snapshot holds, at daemon API contract 166. A caller
-  below 166 gets the answer without it.
+  900 KB goes out as consecutive messages, split between events, and every one of them but the
+  last carries `more: true`, so a reader applies the transaction only once its last message has
+  arrived. A commit trigger gives each row its sequence and its time when its transaction commits
+  (migration `20261118164019_state_events`), so the sequence follows commit order and has no gap.
+  The same counter row makes one id for the store's count at the project's first state event, and
+  every message carries it as `stateId`. The boot event carries the daemon's settings and its
+  store's schema version (`schemaVersion`), read after the boot's migrations ran. The admission
+  block also changes when a lingering root's deadline passes, with no write: the daemon keeps one
+  timer for the earliest such deadline the block reads and runs an admission pass when it fires, so
+  that change is published at the deadline. A daemon with no workflow writes no state event.
+  `GET /legion/v1/state` serves `daemon.stateSeq`, the sequence of the newest state event its
+  snapshot holds, and `daemon.stateId`, the id of the store that count is kept in, at daemon API
+  contract 166. A caller below 166 gets the answer without them. The daemon now refuses a `project`
+  that is not a Dispatch project key (`^[A-Z][A-Z0-9]{1,9}$`, at most ten characters) when it loads
+  its settings, naming the key, before it opens or migrates its store or mints any credential; the
+  keys of `projects` take the same rule.
 custom:
   Issue: pr4432

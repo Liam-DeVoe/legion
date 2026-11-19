@@ -30,12 +30,18 @@ alter table outbox add constraint outbox_kind_check check (kind in (
 -- One counter row per project. last_seq is the sequence of the newest state row the project's
 -- daemon committed, last_at that row's time, and last_tx the transaction that committed it. The
 -- state route reads last_seq in the snapshot it serves, so a reader knows which events that
--- snapshot holds: every event at or below it, and none above it.
+-- snapshot holds: every event at or below it, and none above it. store_id is the id of this
+-- store's count: the commit trigger's first insert of the project's row makes it, and no statement
+-- writes it after. The state route serves it as daemon.stateId and every state message carries it,
+-- so a reader applies only messages counted in the store its starting point was read from: a store
+-- made afresh behind the same daemon makes a new id, and its sequences, which start again at 1, are
+-- never read as the next ones of the old count.
 create table state_publication (
   project text primary key,
   last_seq bigint not null default 0,
   last_at timestamptz,
-  last_tx bigint
+  last_tx bigint,
+  store_id uuid not null default gen_random_uuid()
 );
 
 -- The admission block the daemon last wrote for the project. The admission pass compares its new

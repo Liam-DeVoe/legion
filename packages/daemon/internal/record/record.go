@@ -1469,6 +1469,18 @@ type OutboxRow struct {
 	StateTx  int64
 }
 
+// StatePublication is a project's counter of its state events (state_publication, migration
+// 20261118164019_state_events): Seq, the sequence of the newest state row the project's daemon
+// committed, and StateID, the id of the store those events are counted in. The commit trigger
+// makes StateID once, at the project's first state row, and nothing changes it after, so a reader
+// that holds a starting point read under one id applies only messages carrying that id: a message
+// of another id is another store's count, whose sequences say nothing of this one's. Seq is 0 and
+// StateID empty while the project has no state row.
+type StatePublication struct {
+	Seq     int64
+	StateID string
+}
+
 // Handover is a root linger's pending move of one child to an independent tree. It persists from
 // the decision until the daemon-authored Dispatch event consumes or rejects it.
 type Handover struct {
@@ -2095,9 +2107,10 @@ type Store interface {
 	FinishStateRows(ctx context.Context, tx pgx.Tx, head OutboxRow, through int64) error
 	RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string) error
 	PendingStatusWrites(ctx context.Context, tx pgx.Tx, project string) ([]OutboxRow, error)
-	// StateSeq is the sequence of the newest state row project's daemon committed
-	// (state_publication.last_seq), 0 while the project has none.
-	StateSeq(ctx context.Context, tx pgx.Tx, project string) (int64, error)
+	// StatePublication is project's counter row (state_publication): the sequence of the newest
+	// state row project's daemon committed, 0 while the project has none, and the store id the
+	// row was made with, empty while there is none.
+	StatePublication(ctx context.Context, tx pgx.Tx, project string) (StatePublication, error)
 	Handover(ctx context.Context, tx pgx.Tx, issue string) (*Handover, error)
 	PutHandover(ctx context.Context, tx pgx.Tx, handover Handover) error
 	CancelTreeHandovers(ctx context.Context, tx pgx.Tx, tree string, generation uint64) error
@@ -2363,6 +2376,31 @@ func (i Issue) Lingers() bool { return i.LingerUntil != nil }
 // as torn down already.
 func Lingering(issue Issue, now time.Time) bool {
 	return issue.LingerUntil != nil && now.Before(*issue.LingerUntil)
+}
+
+// NextLingerEnd is the earliest linger deadline after now among issues and roots, the zero time
+// where none lies ahead: the next moment Lingering answers false for a record it answers true for
+// at now. An admission block is judged from a pass's live records and the tree roots that read
+// leaves out (LineFacts.Roots, where a lingering root stands, since its phase is done), and the
+// held list's tree_closed word reads such a root's linger against the pass's clock (HeldReasonOf),
+// so this is the next moment the block can change with no write: the daemon runs an admission pass
+// then (admit's queueAdmissionBlock tells it, internal/daemon's wakeAtLingerDeadlines). A record
+// whose linger is not a tree root's is read too, which can only add a wake whose pass finds nothing
+// changed.
+func NextLingerEnd(issues []Issue, roots map[string]Issue, now time.Time) time.Time {
+	var next time.Time
+	earlier := func(issue Issue) {
+		if Lingering(issue, now) && (next.IsZero() || issue.LingerUntil.Before(next)) {
+			next = *issue.LingerUntil
+		}
+	}
+	for _, issue := range issues {
+		earlier(issue)
+	}
+	for _, root := range roots {
+		earlier(root)
+	}
+	return next
 }
 
 // LingersAt says whether the root lingers after the close of its generation: it lingers, and

@@ -432,10 +432,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if !tc.held {
 				delete(want["admission"].(map[string]any), "held")
 			}
-			// A pod below stateSeqContract is served the daemon block without `stateSeq`, the one
-			// key that contract added (api's withoutStateSeq).
+			// A pod below stateSeqContract is served the daemon block without `stateSeq` and
+			// `stateId`, the two keys that contract added (api's withoutStateSeq).
 			if !tc.seq {
 				delete(want["daemon"].(map[string]any), "stateSeq")
+				delete(want["daemon"].(map[string]any), "stateId")
 			}
 			for _, issue := range want["issues"].(map[string]any) {
 				issue := issue.(map[string]any)

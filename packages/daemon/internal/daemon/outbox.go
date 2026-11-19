@@ -2118,16 +2118,23 @@ const stateAtLayout = "2006-01-02T15:04:05.000000Z07:00"
 // transaction in sequence order, or a run of them where the transaction's events are too large for
 // one message (stateMessageBound). Project is the Dispatch project key and Run the id of the daemon
 // run that wrote the rows, each lifted off the rows' payloads, which every row of one transaction
-// carries alike; FirstSeq and Seq are the first and the last event's sequence, which the events run
-// between with no gap; At is when the transaction committed (OutboxRow.StateAt), which every row of
-// it shares (stateAtLayout). Each event is a stateEvent, encoded once: the encoding the message's
-// size is counted on is the one published.
+// carries alike; StateID is the id of the store the rows' sequences are counted in
+// (record.StatePublication.StateID), read with the rows, which the state route serves as
+// `daemon.stateId`, so a reader applies only the messages of the store its starting point was read
+// from; FirstSeq and Seq are the first and the last event's sequence, which the events run between
+// with no gap; At is when the transaction committed (OutboxRow.StateAt), which every row of it
+// shares (stateAtLayout); More is true on every message of a split transaction but its last, and
+// absent from that last message and from every transaction that fits in one, so a reader applies a
+// transaction's events only once the message without it has arrived. Each event is a stateEvent,
+// encoded once: the encoding the message's size is counted on is the one published.
 type stateMessage struct {
 	Project  string            `json:"project"`
 	Run      string            `json:"run"`
+	StateID  string            `json:"stateId"`
 	FirstSeq int64             `json:"firstSeq"`
 	Seq      int64             `json:"seq"`
 	At       string            `json:"at"`
+	More     bool              `json:"more,omitempty"`
 	Events   []json.RawMessage `json:"events"`
 }
 
@@ -2135,16 +2142,16 @@ type stateMessage struct {
 // off, its sequence (OutboxRow.StateSeq) put on, and the kind the contract names it by. A change
 // (record.StateChange) names its issue and each field the write moved; an admission
 // (record.StateAdmission) carries the whole block the state route serves; a boot
-// (record.StateBoot) carries the settings the state route serves and whether that boot applied a
-// migration, written false as well as true.
+// (record.StateBoot) carries the settings the state route serves and the schema version the store
+// records after that boot's migrations, which the state route serves as `daemon.schemaVersion`.
 type stateEvent struct {
-	Seq       int64                     `json:"seq"`
-	Kind      string                    `json:"kind"`
-	Issue     string                    `json:"issue,omitempty"`
-	Changes   []record.StateFieldChange `json:"changes,omitempty"`
-	Admission json.RawMessage           `json:"admission,omitempty"`
-	Settings  json.RawMessage           `json:"settings,omitempty"`
-	Migrated  *bool                     `json:"migrated,omitempty"`
+	Seq           int64                     `json:"seq"`
+	Kind          string                    `json:"kind"`
+	Issue         string                    `json:"issue,omitempty"`
+	Changes       []record.StateFieldChange `json:"changes,omitempty"`
+	Admission     json.RawMessage           `json:"admission,omitempty"`
+	Settings      json.RawMessage           `json:"settings,omitempty"`
+	SchemaVersion *int64                    `json:"schemaVersion,omitempty"`
 }
 
 // stateEventOf is row's event, encoded, and the project and the run its payload names.
@@ -2159,8 +2166,8 @@ func stateEventOf(row record.OutboxRow, payload record.OutboxPayload) (json.RawM
 		event = stateEvent{Kind: "admission", Admission: value.Admission}
 		project, run = value.Project, value.Run
 	case record.StateBoot:
-		migrated := value.Migrated
-		event = stateEvent{Kind: "boot", Settings: value.Settings, Migrated: &migrated}
+		version := value.SchemaVersion
+		event = stateEvent{Kind: "boot", Settings: value.Settings, SchemaVersion: &version}
 		project, run = value.Project, value.Run
 	default:
 		return nil, "", "", fmt.Errorf("outbox row %d is a %T, which is no state event", row.ID, payload)
@@ -2189,9 +2196,13 @@ func stateCarried(encoded []byte) int {
 // its own, and ride beside it, so Dispatch takes a transaction's events together and collapses a
 // field one fact wrote twice (a pass's slot release and grant) to the value that committed. A
 // transaction whose events pass stateMessageBound is split between events: the message ends before
-// the event that would pass it, and the rows after it are the next message, whose first row the
-// lane claims once this message's rows are finished. The head's event goes out whatever its size,
-// so a row too large for any message is refused by the listener and dropped rather than held.
+// the event that would pass it, carrying `more`, and the rows after it are the next message, whose
+// first row the lane claims once this message's rows are finished; the message that takes the
+// transaction's last row carries no `more`, so a reader holds a split transaction's events until
+// that message arrives. The head's event goes out whatever its size, so a row too large for any
+// message is refused by the listener and dropped rather than held. The store id every message
+// carries (record.Store.StatePublication) is read in the transaction that reads the rows, from the
+// counter row the head's own commit stepped, so it is there for any row the lane can claim.
 //
 // The message's key is the head's own (record.OutboxKey), so a message published again after a
 // failed finish is one the stream already holds. Once the listener has taken it, head and the rows
@@ -2212,23 +2223,31 @@ func (r *outbox) stateEvents(ctx context.Context, head record.OutboxRow, payload
 		return errors.New("state event executor has no Envoy publisher")
 	}
 	var after []record.OutboxRow
+	var published record.StatePublication
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		var err error
-		after, err = r.records.StateRowsAfter(ctx, tx, head)
+		if after, err = r.records.StateRowsAfter(ctx, tx, head); err != nil {
+			return err
+		}
+		published, err = r.records.StatePublication(ctx, tx, head.Issue)
 		return err
 	}); err != nil {
 		return fmt.Errorf("read the state rows committed with outbox row %d: %w", head.ID, err)
+	}
+	if published.StateID == "" {
+		return fmt.Errorf("outbox row %d is a committed state row of %s, and the project's counter holds no store id", head.ID, head.Issue)
 	}
 	first, project, run, err := stateEventOf(head, payload)
 	if err != nil {
 		return err
 	}
-	message := stateMessage{Project: project, Run: run, FirstSeq: head.StateSeq, Seq: head.StateSeq,
+	message := stateMessage{Project: project, Run: run, StateID: published.StateID, FirstSeq: head.StateSeq, Seq: head.StateSeq,
 		At: head.StateAt.UTC().Format(stateAtLayout), Events: []json.RawMessage{first}}
 	// The message's own fields are counted with the group's last sequence, which no message of the
-	// group passes, so the count is never short of what the message takes.
+	// group passes, and with `more`, which a message of the group may carry, so the count is never
+	// short of what the message takes.
 	frame := message
-	frame.Events = nil
+	frame.Events, frame.More = nil, true
 	if len(after) > 0 {
 		frame.Seq = after[len(after)-1].StateSeq
 	}
@@ -2248,6 +2267,8 @@ func (r *outbox) stateEvents(ctx context.Context, head record.OutboxRow, payload
 		}
 		grown := size + 1 + stateCarried(event)
 		if grown > stateMessageBound {
+			// The rows from this one on are the transaction's next message.
+			message.More = true
 			break
 		}
 		message.Events, message.Seq, size = append(message.Events, event), row.StateSeq, grown

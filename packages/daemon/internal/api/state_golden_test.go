@@ -269,8 +269,10 @@ func populatedState(t *testing.T) State {
 			FirstBootAt:   time.Date(2026, 9, 18, 14, 3, 27, 0, time.UTC),
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
 			// The daemon's source sets the sequence on every body it answers; 43 is the newest
-			// state event this snapshot holds, which the fixture names so the key is on the wire.
+			// state event this snapshot holds, which the fixture names so the key is on the wire,
+			// and the store id beside it is the one every state message of that count carries.
 			StateSeq: new(int64(43)),
+			StateID:  "7c1e9a4d-3b52-4f08-a6d1-2e9b0c5f8a37",
 		},
 		Admission: Admission{
 			Cap:    5,

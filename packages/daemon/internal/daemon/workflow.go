@@ -145,6 +145,10 @@ type workflowRuntime struct {
 	// entrySweep is tickEntrySweep's period, zero being entrySweepInterval; a test shortens it
 	// so it waits out its own period rather than the daemon's minute.
 	entrySweep time.Duration
+	// lingerWake carries the deadline every admission pass reports, the next moment its block can
+	// change with no write, to the daemon's one timer for it (wakeAtLingerDeadlines); openWorkflow
+	// registers it with the admission pass.
+	lingerWake *lingerWake
 	// holdWarnAfter and holdWarnEvery bound the watchdog log a hold that never releases gets: zero
 	// means the production defaults. A test shortens both to bound how long the warning takes to
 	// observe.
@@ -510,6 +514,11 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
 	// config.Config.WorkerBackground).
 	w.admission.UseWorkerSilence(cfg.WorkerSilence, cfg.WorkerBackground)
+	// Every admission pass that judges the block reports the next linger deadline it reads, and
+	// the daemon's one timer for it runs a pass then (wakeAtLingerDeadlines, which run starts). A
+	// pass reports only with the state events on, which the boot turns on after this.
+	w.lingerWake = newLingerWake()
+	w.admission.UseLingerWake(w.lingerWake.arm)
 	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
 	// whether to start a child and admission whether to admit a root inside this same
 	// transaction, from the mirror's rows, so the row an event carries must already be written
@@ -1600,6 +1609,10 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 	})
 	group.Go(func() error {
 		w.tickEntrySweep(store.ForConcurrentWorker(running))
+		return nil
+	})
+	group.Go(func() error {
+		w.wakeAtLingerDeadlines(store.ForConcurrentWorker(running))
 		return nil
 	})
 	group.Go(func() error {

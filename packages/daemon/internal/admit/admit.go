@@ -10,6 +10,7 @@ import (
 	"maps"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -110,6 +111,26 @@ type Admission struct {
 	// as work.
 	workerSilence    time.Duration
 	workerBackground time.Duration
+
+	// lingerWake is told, once each pass's transaction commits, the earliest linger deadline after
+	// the pass's clock among the records its block was judged from (record.NextLingerEnd), the
+	// zero time where none lies ahead, under the pass's number from passes, so that a hook that ran
+	// late cannot put back an older pass's deadline over a newer one's (UseLingerWake). nil, which
+	// a test that registers none leaves, tells nothing.
+	lingerWake func(pass uint64, deadline time.Time)
+	passes     atomic.Uint64
+}
+
+// UseLingerWake registers wake, which the end of every admission pass that judges the block
+// (queueAdmissionBlock, with the state events on) tells the next moment that block can change with
+// no write: the earliest linger deadline after the pass's clock among the records the block reads,
+// or the zero time where none lies ahead. It is told once the pass's transaction has committed, with
+// the pass's number, counted up as the passes run, which passes take one at a time under the fact
+// lock. The daemon's one timer for it runs an admission pass at that deadline
+// (internal/daemon's wakeAtLingerDeadlines), so the block's change is published then. It is a
+// setter for the reason UseExperiments is.
+func (a *Admission) UseLingerWake(wake func(pass uint64, deadline time.Time)) {
+	a.lingerWake = wake
 }
 
 // ReportCapabilities registers open, whose answer every tick controller notice carries as its
@@ -175,9 +196,10 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 // still-unrecorded root or orphan. A release's adoption of children it cannot adopt
 // (adoptChildren) is the one fact admission refuses. A Dispatch issue fact's Reread is written
 // first (applyReread), before anything of the fact itself is recorded or promoted. The entry
-// sweep (intake.EntrySweep) is the one fact that promotes nothing: it converges the phase
-// entries and does no more (convergeEntries). Every fact, the sweep's included, ends with the
-// project's admission block written where the fact moved it (queueAdmissionBlock).
+// sweep (intake.EntrySweep) promotes nothing: it converges the phase entries and does no more
+// (convergeEntries). The linger deadline (intake.LingerDeadline) does nothing at all but end its
+// pass. Every fact, those two included, ends with the project's admission block written where the
+// fact moved it (queueAdmissionBlock).
 func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
 	released, refusal, err := a.applyFact(ctx, tx, fact)
 	if err != nil {
@@ -200,8 +222,14 @@ func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (int
 //
 // It runs whatever the fact, the entry sweep's included, which promotes nothing: a fact the pass
 // promotes nothing on can still move the block — a Dispatch rank or a blocker link the mirror
-// wrote, a phase the workflow wrote — and a block that moves with no write at all (a held word
-// read against the clock, record.HeldTreeClosed) moves at the sweep's next minute at the latest.
+// wrote, a phase the workflow wrote. A block also moves with no write at all, where the held list's
+// tree_closed word reads a root's linger against the pass's clock (record.HeldReasonOf), so every
+// pass that judges the block ends by telling the daemon's linger wake (UseLingerWake) the earliest
+// linger deadline after its clock among the records the block was judged from
+// (record.NextLingerEnd), once its transaction commits: the daemon runs a pass at that deadline
+// (intake.LingerDeadline), and the block's change is written, and its event queued, then. Each pass
+// tells it, not only one that wrote the block, because a fact can start a linger, or end one by a
+// re-admission, and leave the block as it was until the deadline itself.
 func (a *Admission) queueAdmissionBlock(ctx context.Context, tx pgx.Tx) error {
 	if !a.store.StatePublished() {
 		return nil
@@ -210,12 +238,25 @@ func (a *Admission) queueAdmissionBlock(ctx context.Context, tx pgx.Tx) error {
 	if err != nil {
 		return err
 	}
-	judged, err := blockers.JudgeAdmissionFrom(ctx, tx, a.store, a.project, issues, slots, facts, a.cap, a.now())
+	now := a.now()
+	judged, err := blockers.JudgeAdmissionFrom(ctx, tx, a.store, a.project, issues, slots, facts, a.cap, now)
 	if err != nil {
 		return err
 	}
-	_, err = a.store.QueueAdmissionBlock(ctx, tx, a.project, judged.Block)
-	return err
+	if _, err := a.store.QueueAdmissionBlock(ctx, tx, a.project, judged.Block); err != nil {
+		return err
+	}
+	if a.lingerWake != nil {
+		pass, deadline := a.passes.Add(1), record.NextLingerEnd(issues, facts.Roots, now)
+		arm := func() { a.lingerWake(pass, deadline) }
+		// A pass outside a commit scope has no commit to wait for: a test's, which tells at once.
+		if intake.CommitScoped(ctx) {
+			intake.OnCommit(ctx, arm)
+		} else {
+			arm()
+		}
+	}
+	return nil
 }
 
 // OpenFact and SettleFact are the engine's (intake.Settler): admission writes issues through it —
@@ -244,6 +285,13 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 		// that promotes runs on every fact and on the tick, and it releases no slot, so it
 		// reports none.
 		return nil, nil, a.convergeEntries(ctx, tx)
+	}
+	if _, ok := fact.(intake.LingerDeadline); ok {
+		// A linger deadline the block reads has run out: the pass's whole work is the block, which
+		// Apply writes after this, read against the clock that has passed the deadline. It promotes
+		// nothing, since the line's own placement reads no clock (blockers.JudgeLine), and releases
+		// no slot.
+		return nil, nil, nil
 	}
 	if _, ok := fact.(intake.ControllerTick); ok {
 		_, returned, err := a.promote(ctx, tx)

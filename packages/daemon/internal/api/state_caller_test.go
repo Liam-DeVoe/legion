@@ -262,20 +262,22 @@ func withoutEntryTimeKeys(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
-// withoutStateSeqKey is a state body whose daemon block carries no `stateSeq`, which is what a
-// caller below stateSeqContract is served of a state (api's withoutStateSeq). It serves the table
-// below as withoutQuietKeys does: a row's baseline is the full state with exactly the keys that
-// row's own contract holds back taken out of it.
+// withoutStateSeqKey is a state body whose daemon block carries no `stateSeq` and no `stateId`,
+// which is what a caller below stateSeqContract is served of a state (api's withoutStateSeq). It
+// serves the table below as withoutQuietKeys does: a row's baseline is the full state with exactly
+// the keys that row's own contract holds back taken out of it.
 func withoutStateSeqKey(t *testing.T, body []byte) []byte {
 	t.Helper()
 	var served map[string]any
 	if err := json.Unmarshal(body, &served); err != nil {
 		t.Fatalf("decode state %s: %v", body, err)
 	}
-	delete(served["daemon"].(map[string]any), "stateSeq")
+	daemon := served["daemon"].(map[string]any)
+	delete(daemon, "stateSeq")
+	delete(daemon, "stateId")
 	encoded, err := json.Marshal(served)
 	if err != nil {
-		t.Fatalf("encode the state %s without its state sequence: %v", body, err)
+		t.Fatalf("encode the state %s without its state sequence and store id: %v", body, err)
 	}
 	return encoded
 }
@@ -621,7 +623,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// with each issue's `assignments` gone, the experiment answers contract 141 added
 			// (withoutAssignments), with each issue's `entryQueuedAt`, `entryConfirmedAt` and
 			// `architectStalls` gone, the three keys entryTimesContract added (withoutEntryTimes),
-			// and with `daemon.stateSeq` gone, the key stateSeqContract added (withoutStateSeq).
+			// and with `daemon.stateSeq` and `daemon.stateId` gone, the keys stateSeqContract
+			// added (withoutStateSeq).
 			// Every row that reaches here is below all of them, so every one of them goes whatever
 			// the row is; contract 132's strip takes a word of the line's `kind` and no key, and
 			// this fixture stands no member of that kind.
@@ -637,6 +640,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			}
 			delete(want, "contract")
 			delete(want["daemon"].(map[string]any), "stateSeq")
+			delete(want["daemon"].(map[string]any), "stateId")
 			if !tc.rounds {
 				delete(want["admission"].(map[string]any), "trees")
 				want["strandedClaims"] = strandedWithoutRetired(t, want["strandedClaims"])

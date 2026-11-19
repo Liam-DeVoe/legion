@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 // stateEventsVersion is the version of the migration this file tests, so the test can migrate
@@ -125,6 +127,26 @@ func TestTheOutboxTakesTheStateKindsAndTheirSequenceWith20261118164019(t *testin
 	}
 	if lastSeq != 3 {
 		t.Fatalf("LEGION's counter stands at %d, want 3, the last state row's sequence", lastSeq)
+	}
+	// The counter row's store id (daemon.stateId) is made by the trigger's first insert of the row,
+	// and every step after it keeps it: one more state row moves the sequence and not the id.
+	storeID := func() string {
+		t.Helper()
+		var id string
+		if err := store.Pool().QueryRow(ctx, `select store_id::text from state_publication where project = 'LEGION'`).Scan(&id); err != nil {
+			t.Fatalf("read LEGION's store id: %v", err)
+		}
+		if _, err := uuid.Parse(id); err != nil {
+			t.Fatalf("LEGION's store id is %q, which is no UUID: %v", id, err)
+		}
+		return id
+	}
+	made := storeID()
+	if err := queue("state_change", "LEGION"); err != nil {
+		t.Fatalf("queue a fourth state row: %v", err)
+	}
+	if kept := storeID(); kept != made {
+		t.Fatalf("LEGION's store id moved from %s to %s at a step of its counter, want the id the first insert made kept", made, kept)
 	}
 
 	if _, err := store.Pool().Exec(ctx, `update outbox set state_seq = 1 where kind = 'state_boot'`); err == nil || !strings.Contains(err.Error(), "outbox_state_seq_unique") {

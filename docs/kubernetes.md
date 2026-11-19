@@ -2211,7 +2211,7 @@ A Dispatch of this release reads a daemon without the change once and records a 
 That daemon sends no event, so Dispatch reads it again only at a take-over of the durable or at a write of a Legion setting (`startReason` in `legion/intake.go`), and its board shows nothing between those reads.
 A write of that project's own setting reads it at once, and a take-over or a write of another project's setting reads it only a minute or more after the last read.
 Where a daemon was rolled back under a Dispatch of this release, `PUT` the project's Legion setting again with the same URL once the daemon runs this release again.
-The boot event of that roll forward follows the cursor and applied no migration, so nothing else has Dispatch read the state the earlier daemon wrote.
+The boot event of that roll forward follows the cursor and carries the same schema version the earlier daemon's state served, since the migration stayed applied, so nothing else has Dispatch read the state the earlier daemon wrote.
 
 **An edit of the daemon's database by SQL publishes no state event.**
 Only the daemon's own writes queue one.

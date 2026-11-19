@@ -92,7 +92,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 			{Field: StateFieldClaim, Role: claim.RoleImplementer, Old: json.RawMessage(`"launching"`), New: json.RawMessage(`"working"`)},
 		}},
 		StateAdmission{Project: "LEGION", Run: stateRun, Admission: json.RawMessage(`{}`)},
-		StateBoot{Project: "LEGION", Run: stateRun, Settings: json.RawMessage(`{}`), Migrated: true},
+		StateBoot{Project: "LEGION", Run: stateRun, Settings: json.RawMessage(`{}`), SchemaVersion: 20261118164019},
 	}
 	for _, payload := range payloads {
 		t.Run(string(payload.OutboxKind()), func(t *testing.T) {
@@ -380,6 +380,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a state admission whose block is null", payload: StateAdmission{Project: "LEGION", Run: "run", Admission: json.RawMessage(`null`)}, reason: "carries no admission block"},
 		{name: "a state boot of no run", payload: StateBoot{Project: "LEGION", Settings: json.RawMessage(`{}`)}, reason: "names no run"},
 		{name: "a state boot with no settings", payload: StateBoot{Project: "LEGION", Run: "run"}, reason: "carries no settings"},
+		{name: "a state boot with a negative schema version", payload: StateBoot{Project: "LEGION", Run: "run", Settings: json.RawMessage(`{}`), SchemaVersion: -1}, reason: "which no store records"},
 		{name: "unsupported payload", payload: unsupportedOutboxPayload{}, reason: "unknown outbox payload"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

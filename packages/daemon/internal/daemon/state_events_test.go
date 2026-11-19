@@ -229,9 +229,9 @@ func statesPublished(t *testing.T, publisher *outboxPublisher, from int) []publi
 
 // decodeState decodes one state message strictly, refusing any key the Go types do not name, and
 // holds it to the contract's rules (legionStateMessage, packages/contracts/src/legion-api.ts): a
-// project key (claim.IsProjectKey), a run that is a UUID, the commit time in UTC with its
-// microseconds, events that run from firstSeq to seq one sequence each, and each event of one of
-// the three kinds carrying its kind's fields and no other's. The summary is the one line the
+// project key (claim.IsProjectKey), a run and a store id that are UUIDs, the commit time in UTC
+// with its microseconds, events that run from firstSeq to seq one sequence each, and each event of
+// one of the three kinds carrying its kind's fields and no other's. The summary is the one line the
 // executor writes for it.
 func decodeState(t *testing.T, topic, summary, key string, encoded []byte) publishedState {
 	t.Helper()
@@ -252,6 +252,9 @@ func decodeState(t *testing.T, topic, summary, key string, encoded []byte) publi
 	if _, err := uuid.Parse(message.Run); err != nil {
 		t.Fatalf("the state message names the run %q, which is no UUID: %v", message.Run, err)
 	}
+	if _, err := uuid.Parse(message.StateID); err != nil {
+		t.Fatalf("the state message names the store id %q, which is no UUID: %v", message.StateID, err)
+	}
 	if at, err := time.Parse(time.RFC3339Nano, message.At); err != nil || at.UTC().Format(stateAtLayout) != message.At {
 		t.Fatalf("the state message's at is %q, want RFC 3339 in UTC with its microseconds (%v)", message.At, err)
 	}
@@ -271,11 +274,11 @@ func decodeState(t *testing.T, topic, summary, key string, encoded []byte) publi
 		var whole bool
 		switch event.Kind {
 		case "change":
-			whole = claim.IsIssueKey(event.Issue) && len(event.Changes) > 0 && event.Admission == nil && event.Settings == nil && event.Migrated == nil
+			whole = claim.IsIssueKey(event.Issue) && len(event.Changes) > 0 && event.Admission == nil && event.Settings == nil && event.SchemaVersion == nil
 		case "admission":
-			whole = isJSONObject(event.Admission) && event.Issue == "" && event.Changes == nil && event.Settings == nil && event.Migrated == nil
+			whole = isJSONObject(event.Admission) && event.Issue == "" && event.Changes == nil && event.Settings == nil && event.SchemaVersion == nil
 		case "boot":
-			whole = isJSONObject(event.Settings) && event.Migrated != nil && event.Issue == "" && event.Changes == nil && event.Admission == nil
+			whole = isJSONObject(event.Settings) && event.SchemaVersion != nil && *event.SchemaVersion >= 0 && event.Issue == "" && event.Changes == nil && event.Admission == nil
 		}
 		if !whole {
 			t.Fatalf("event %s is no change, admission or boot carrying its own fields and no other's", raw)
@@ -307,7 +310,8 @@ func stateIssue() record.Issue {
 // every later state row of the project until it goes. A publish the listener refuses the same way
 // however often it is sent, its own grant denying the subject or the message itself refused,
 // finishes its row with an ERROR line naming the sequence it drops, and the next row goes out one
-// above the gap, at which Dispatch reads the whole state.
+// above the gap, at which Dispatch reads the whole state. Every message carries the store's one id
+// (record.StatePublication.StateID), the id GET /legion/v1/state serves as `daemon.stateId`.
 func TestStateEventsArePublishedOnTheProjectsStateSubjectInSequence(t *testing.T) {
 	r := newStateRig(t)
 	topic := notify.StateTopic("legion")
@@ -441,6 +445,26 @@ func TestStateEventsArePublishedOnTheProjectsStateSubjectInSequence(t *testing.T
 	if failed := loggedLines(t, r.logged.String(), `"msg":"outbox row failed"`); len(failed) != 1 {
 		t.Fatalf("logged %d failed rows, want the refusals logged as refusals and not as failures", len(failed))
 	}
+
+	// Every message the lane published, the failed and the refused attempts among them, carries
+	// the one id of the store its sequences are counted in, and GET /legion/v1/state serves that
+	// same id beside the sequence, so a reader that took its starting point from the route applies
+	// these messages and no message of another store.
+	r.serveState(t, source{runtime: "tmux", admissionCap: 1, startedAt: time.Now()})
+	var served struct {
+		Daemon struct {
+			StateSeq *int64 `json:"stateSeq"`
+			StateID  string `json:"stateId"`
+		} `json:"daemon"`
+	}
+	if body := r.getState(t); json.Unmarshal(body, &served) != nil || served.Daemon.StateID == "" || served.Daemon.StateSeq == nil || *served.Daemon.StateSeq != 9 {
+		t.Fatalf("the state serves %s, want daemon.stateSeq 9 and the store's daemon.stateId", body)
+	}
+	for i, state := range statesPublished(t, r.publisher, 0) {
+		if state.message.StateID != served.Daemon.StateID {
+			t.Fatalf("publish %d carries stateId %q, want the store's one id %q, which the state serves", i, state.message.StateID, served.Daemon.StateID)
+		}
+	}
 }
 
 // The state events one transaction commits go out as one message, in the order the transaction
@@ -487,8 +511,8 @@ func TestTheStateEventsOfOneTransactionArePublishedAsOneMessage(t *testing.T) {
 		}
 		message := published[0]
 		if message.key != record.OutboxKey(ids[0]) || message.message.FirstSeq != rows[0].seq || message.message.Seq != rows[2].seq ||
-			message.message.At != rows[0].at.UTC().Format(stateAtLayout) {
-			t.Fatalf("the message = %+v, want %d-%d at %s under %q", message, rows[0].seq, rows[2].seq, rows[0].at.UTC().Format(stateAtLayout), record.OutboxKey(ids[0]))
+			message.message.At != rows[0].at.UTC().Format(stateAtLayout) || message.message.More {
+			t.Fatalf("the message = %+v, want %d-%d at %s under %q, with no more: the transaction fits in one", message, rows[0].seq, rows[2].seq, rows[0].at.UTC().Format(stateAtLayout), record.OutboxKey(ids[0]))
 		}
 		want := []stateEvent{
 			{Seq: rows[0].seq, Kind: "change", Issue: issue.Key, Changes: []record.StateFieldChange{
@@ -545,19 +569,31 @@ func TestTheStateEventsOfOneTransactionArePublishedAsOneMessage(t *testing.T) {
 					i, state.key, state.message.FirstSeq, state.message.Seq, state.message.At,
 					record.OutboxKey(first.id), first.seq, first.seq+1, rows[0].at.UTC().Format(stateAtLayout))
 			}
+			// Every message of the split transaction but its last says the transaction goes on in
+			// the next message, and the last says nothing: the key is absent from it, never false.
 			encoded, err := json.Marshal(r.publisher.publishes()[i].payload)
 			if err != nil {
 				t.Fatal(err)
 			}
+			var keys map[string]json.RawMessage
+			if err := json.Unmarshal(encoded, &keys); err != nil {
+				t.Fatal(err)
+			}
+			more, carried := keys["more"]
+			if last := i == len(published)-1; last && carried {
+				t.Fatalf("the transaction's last message carries more = %s, want the key absent", more)
+			} else if !last && (!carried || string(more) != "true") {
+				t.Fatalf("message %d of the split transaction carries more = %s (on the wire = %v), want true: the transaction goes on in the next message", i, more, carried)
+			}
 			if carried := stateCarried(encoded); carried > stateMessageBound {
 				t.Fatalf("message %d takes %d bytes as the envelope carries it, past the bound of %d", i, carried, stateMessageBound)
 			} else {
-				t.Logf("message %d carries events %d-%d in %d bytes as the envelope carries it", i, state.message.FirstSeq, state.message.Seq, carried)
+				t.Logf("message %d carries events %d-%d in %d bytes as the envelope carries it, more = %v", i, state.message.FirstSeq, state.message.Seq, carried, state.message.More)
 			}
 			events = append(events, state.message.Events...)
 		}
-		whole, err := json.Marshal(stateMessage{Project: "LEGION", Run: stateTestRun, FirstSeq: rows[0].seq, Seq: rows[3].seq,
-			At: rows[0].at.UTC().Format(stateAtLayout), Events: events})
+		whole, err := json.Marshal(stateMessage{Project: "LEGION", Run: stateTestRun, StateID: published[0].message.StateID,
+			FirstSeq: rows[0].seq, Seq: rows[3].seq, At: rows[0].at.UTC().Format(stateAtLayout), Events: events})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -576,7 +612,8 @@ func TestTheStateEventsOfOneTransactionArePublishedAsOneMessage(t *testing.T) {
 // GET /legion/v1/state served over the same database by the daemon's own state source.
 type admissionStateRig struct {
 	*stateRig
-	handlers []intake.Handler
+	admission *admit.Admission
+	handlers  []intake.Handler
 }
 
 func newAdmissionStateRig(t *testing.T) *admissionStateRig {
@@ -584,8 +621,8 @@ func newAdmissionStateRig(t *testing.T) *admissionStateRig {
 	r := &admissionStateRig{stateRig: newStateRig(t)}
 	log := quietLogger()
 	engine := workflow.New(r.records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, log)
-	admission := admit.New(r.records, engine, 1, "LEGION", log)
-	r.handlers = []intake.Handler{blockers.NewMirror(r.records, "LEGION"), engine, admission}
+	r.admission = admit.New(r.records, engine, 1, "LEGION", log)
+	r.handlers = []intake.Handler{blockers.NewMirror(r.records, "LEGION"), engine, r.admission}
 	r.serveState(t, source{runtime: "tmux", admissionCap: 1, startedAt: time.Now()})
 	return r
 }
@@ -821,10 +858,11 @@ func seedBootStore(t *testing.T, cfg config.Config, issue string, earlier bool, 
 
 // A booted daemon's first state event is its boot event (record.StateBoot), published on the
 // project's state topic through the Envoy listener: one message of its own, carrying the settings
-// GET /legion/v1/state serves, the run id the boot logged and the sequence its commit took, and
-// nothing of the state itself, its envelope as the listener stores it well under the 1 MiB a NATS
-// server takes whole. A state row an earlier run left unpublished holds a lower sequence, so the
-// lane publishes it first, and the boot event follows it one sequence above.
+// and the schema version GET /legion/v1/state serves, the run id the boot logged, the sequence its
+// commit took and the store id the state serves, and nothing of the state itself, its envelope as
+// the listener stores it well under the 1 MiB a NATS server takes whole. A state row an earlier run
+// left unpublished holds a lower sequence, so the lane publishes it first, and the boot event
+// follows it one sequence above.
 func TestABootedDaemonPublishesItsBootEventFirst(t *testing.T) {
 	const earlierRun = "1c9e4b7a-6d2f-4a83-9b05-e8f7d3c2a160"
 	for _, tc := range []struct {
@@ -884,17 +922,14 @@ func TestABootedDaemonPublishesItsBootEventFirst(t *testing.T) {
 				t.Fatalf("the boot's message carries %d-%d, first event %q, want the boot event alone at sequence %d, one above every row before this run",
 					boot.message.FirstSeq, boot.message.Seq, boot.events[0].Kind, earlierSeq+1)
 			}
-			if *boot.events[0].Migrated {
-				t.Fatal("the boot event says the boot applied a migration, want false: the store was migrated before it")
-			}
 			// Nothing of the state rides with it: the event carries its sequence, its kind, the
-			// settings and whether the boot migrated, and no other key.
+			// settings and the store's schema version, and no other key.
 			var keys map[string]json.RawMessage
 			if err := json.Unmarshal(boot.message.Events[0], &keys); err != nil {
 				t.Fatal(err)
 			}
-			if got := slices.Sorted(maps.Keys(keys)); !reflect.DeepEqual(got, []string{"kind", "migrated", "seq", "settings"}) {
-				t.Fatalf("the boot event carries the keys %v, want seq, kind, settings and migrated alone", got)
+			if got := slices.Sorted(maps.Keys(keys)); !reflect.DeepEqual(got, []string{"kind", "schemaVersion", "seq", "settings"}) {
+				t.Fatalf("the boot event carries the keys %v, want seq, kind, settings and schemaVersion alone", got)
 			}
 			status, body := d.request(http.MethodGet, "/legion/v1/state", nil, false)
 			if status != http.StatusOK {
@@ -903,7 +938,9 @@ func TestABootedDaemonPublishesItsBootEventFirst(t *testing.T) {
 			var state struct {
 				Settings json.RawMessage `json:"settings"`
 				Daemon   struct {
-					StateSeq *int64 `json:"stateSeq"`
+					SchemaVersion int64  `json:"schemaVersion"`
+					StateSeq      *int64 `json:"stateSeq"`
+					StateID       string `json:"stateId"`
 				} `json:"daemon"`
 			}
 			if err := json.Unmarshal(body, &state); err != nil {
@@ -912,8 +949,22 @@ func TestABootedDaemonPublishesItsBootEventFirst(t *testing.T) {
 			if got, want := decodedJSON(t, boot.events[0].Settings), decodedJSON(t, state.Settings); !reflect.DeepEqual(got, want) {
 				t.Fatalf("the boot event's settings = %s, want the settings the state serves, %s", boot.events[0].Settings, state.Settings)
 			}
+			// The schema version is the one the store records after the boot's migrations, which
+			// the state serves and the boot's line names.
+			if logged, _ := lines[0]["schemaVersion"].(float64); state.Daemon.SchemaVersion < 1 || *boot.events[0].SchemaVersion != state.Daemon.SchemaVersion ||
+				int64(logged) != state.Daemon.SchemaVersion {
+				t.Fatalf("the boot event carries schema version %d and the boot logged %v, want the state's daemon.schemaVersion %d",
+					*boot.events[0].SchemaVersion, lines[0]["schemaVersion"], state.Daemon.SchemaVersion)
+			}
 			if state.Daemon.StateSeq == nil || *state.Daemon.StateSeq < boot.message.Seq {
 				t.Fatalf("the state serves daemon.stateSeq %v, want at least the boot event's %d, which committed before the API served", state.Daemon.StateSeq, boot.message.Seq)
+			}
+			// Every message counted in this store carries its one id, the earlier run's left row
+			// among them, and the state serves the same id.
+			for _, published := range states {
+				if published.message.StateID != state.Daemon.StateID {
+					t.Fatalf("a message of the store carries stateId %q, want the daemon.stateId %q the state serves", published.message.StateID, state.Daemon.StateID)
+				}
 			}
 			envelope := storedEnvelope(t, accepted[messages-1])
 			if len(envelope) >= 1<<20 {

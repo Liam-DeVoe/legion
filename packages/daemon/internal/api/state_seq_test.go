@@ -8,8 +8,9 @@ import (
 )
 
 // The state the fixture builds (populatedState) is the body of a daemon whose snapshot holds the
-// project's state events up to 43 (DaemonInfo.StateSeq), so one state proves the key comes off
-// the wire below its contract and stays on it at that contract.
+// project's state events up to 43 (DaemonInfo.StateSeq), counted in the store whose id it names
+// (DaemonInfo.StateID), so one state proves the two keys come off the wire below their contract
+// and stay on it at that contract.
 
 // stateSeqServed is the `daemon.stateSeq` of a state body, and whether the key is on the wire at
 // all. The two are read apart because 0 is a sequence the route serves, a project with no state
@@ -17,13 +18,7 @@ import (
 // never read as the other.
 func stateSeqServed(t *testing.T, body []byte) (seq int64, carried bool) {
 	t.Helper()
-	var state struct {
-		Daemon map[string]json.RawMessage `json:"daemon"`
-	}
-	if err := json.Unmarshal(body, &state); err != nil {
-		t.Fatalf("decode state %s: %v", body, err)
-	}
-	raw, carried := state.Daemon["stateSeq"]
+	raw, carried := daemonKeyServed(t, body, "stateSeq")
 	if !carried {
 		return 0, false
 	}
@@ -33,18 +28,47 @@ func stateSeqServed(t *testing.T, body []byte) (seq int64, carried bool) {
 	return seq, true
 }
 
+// stateIDServed is the `daemon.stateId` of a state body, "" where the key is not on the wire.
+func stateIDServed(t *testing.T, body []byte) string {
+	t.Helper()
+	raw, carried := daemonKeyServed(t, body, "stateId")
+	if !carried {
+		return ""
+	}
+	var id string
+	if err := json.Unmarshal(raw, &id); err != nil {
+		t.Fatalf("decode daemon.stateId %s: %v", raw, err)
+	}
+	return id
+}
+
+// daemonKeyServed is the key of a state body's daemon block as it is on the wire, and whether it
+// is there at all.
+func daemonKeyServed(t *testing.T, body []byte, key string) (json.RawMessage, bool) {
+	t.Helper()
+	var state struct {
+		Daemon map[string]json.RawMessage `json:"daemon"`
+	}
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	raw, carried := state.Daemon[key]
+	return raw, carried
+}
+
 // The route authenticates nobody, so it knows a plugin by the pod the request came from: a pod
-// whose claims record a contract below stateSeqContract is served the daemon block with no
-// `stateSeq` at all, since a plugin built before sjawhar/legion#2788 reads the state with a
+// whose claims record a contract below stateSeqContract is served the daemon block with neither
+// `stateSeq` nor `stateId`, since a plugin built before sjawhar/legion#2788 reads the state with a
 // strict schema that refuses the whole body for a key it does not name. A pod at the contract, a
 // pod whose claims record no contract, and a caller the daemon cannot place in a pod — the
-// operator's `legion state`, and Dispatch, which reads the sequence to line the body up with the
-// state events — are served the key with the sequence the source answered.
+// operator's `legion state`, and Dispatch, which reads the sequence and the store id to line the
+// body up with the state events — are served both keys as the source answered them.
 func TestTheStateSeqIsStrippedBelowItsContract(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(stateSeqContract-1))
 	want, carried := stateSeqServed(t, full)
-	if !carried || want == 0 {
-		t.Fatalf("the fixture's state %s carries no stateSeq above 0; this test proves nothing", full)
+	wantID := stateIDServed(t, full)
+	if !carried || want == 0 || wantID == "" {
+		t.Fatalf("the fixture's state %s carries no stateSeq above 0 or no stateId; this test proves nothing", full)
 	}
 
 	for _, tc := range []struct {
@@ -63,14 +87,15 @@ func TestTheStateSeqIsStrippedBelowItsContract(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
 			seq, carried := stateSeqServed(t, body)
+			id := stateIDServed(t, body)
 			if !tc.carried {
-				if carried {
-					t.Errorf("the state %s carries daemon.stateSeq = %d; the reader before stateSeqContract refuses the key", body, seq)
+				if carried || id != "" {
+					t.Errorf("the state %s carries daemon.stateSeq = %d (on the wire = %v) or daemon.stateId = %q; the reader before stateSeqContract refuses both keys", body, seq, carried, id)
 				}
 				return
 			}
-			if !carried || seq != want {
-				t.Errorf("the state %s carries daemon.stateSeq %d (the key is on the wire = %v), want the source's %d", body, seq, carried, want)
+			if !carried || seq != want || id != wantID {
+				t.Errorf("the state %s carries daemon.stateSeq %d (the key is on the wire = %v) and daemon.stateId %q, want the source's %d and %q", body, seq, carried, id, want, wantID)
 			}
 		})
 	}

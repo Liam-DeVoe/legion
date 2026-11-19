@@ -4,10 +4,14 @@ body: |-
   `notifications.legion.<token>.state` (`LEGION_STATE_SUFFIX`, and `LegionStateSubject` in the
   `Subject` union). `bun run gen:go` writes it into Go as `LegionStateSubject` and
   `LegionStateSuffix`. `legionStateMessage` is one message of that lane: the state events of one
-  committed daemon transaction, with `project`, `run`, `firstSeq`, `seq`, `at` and `events`, each
-  event a `change`, an `admission` or a `boot`. The daemon block of the state answer reads
-  `stateSeq`, which is optional: the sequence of the newest state event that the answer's
-  snapshot holds (daemon API contract 166). `fixtures/daemon-api/state-events.json` is the
-  daemon's golden of the lane.
+  committed daemon transaction, with `project`, `run`, `stateId`, `firstSeq`, `seq`, `at`,
+  `events` and `more`, each event a `change`, an `admission` or a `boot`. `stateId` is the id the
+  daemon made once for its store, and a reader applies only a message whose `stateId` is the one
+  its starting point read. `more: true` is on every message of a transaction but its last, and a
+  reader applies a transaction only once its last message has arrived. A `boot` event carries the
+  store's `schemaVersion`. The daemon block of the state answer reads `stateSeq` and `stateId`,
+  both optional: the sequence of the newest state event that the answer's snapshot holds, and the
+  store's id (daemon API contract 166). `fixtures/daemon-api/state-events.json` is the daemon's
+  golden of the lane.
 custom:
   Issue: pr4432

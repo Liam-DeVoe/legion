@@ -54,11 +54,18 @@ type stateEventsStep struct {
 // one before it, and the seed one minute before the boot.
 var stateGoldenStart = time.Date(2026, 11, 18, 16, 0, 0, 0, time.UTC)
 
-// stateGoldenSchemaVersion is the schema version the fixture's states carry: the version of the
-// migration that gave the daemon its state events (20261118164019_state_events). A state serves the
-// newest migration's version, which every later migration moves, and no reader of the fixture reads
-// it, so the file carries this one rather than change with each migration.
+// stateGoldenSchemaVersion is the schema version the fixture's states and its boot event carry: the
+// version of the migration that gave the daemon its state events (20261118164019_state_events). A
+// state serves the newest migration's version, which every later migration moves, so the file
+// carries this one rather than change with each migration, in the boot event as in every state,
+// since a reader compares the boot's version with the one its starting point holds.
 const stateGoldenSchemaVersion = 20261118164019
+
+// stateGoldenStateID is the store id the fixture's messages and states carry. The commit trigger
+// makes a random one with the project's counter row (state_publication.store_id), so the file
+// carries this one in its place, as it carries the fixed run id, once record has held every
+// message and every state of the run to the one id the store made.
+const stateGoldenStateID = "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47"
 
 // stateGoldenSettingsFile is the legion.yaml of the fixture's daemon: a tmux daemon at every default
 // running the workflow of project LEGION, which is what a daemon that publishes state events is
@@ -226,6 +233,10 @@ func (r *stateGoldenRig) record(t *testing.T, name string) stateEventsStep {
 	if len(published) == 0 {
 		t.Fatalf("step %q published no state message", name)
 	}
+	var storeID string
+	if err := r.pool.QueryRow(context.Background(), `select store_id::text from state_publication where project = $1`, r.cfg.Project).Scan(&storeID); err != nil {
+		t.Fatalf("read the store id of %s: %v", r.cfg.Project, err)
+	}
 	step := stateEventsStep{Name: name, Messages: make([]listenerEnvelope, 0, len(published))}
 	var commits []string
 	for _, publish := range published {
@@ -236,12 +247,15 @@ func (r *stateGoldenRig) record(t *testing.T, name string) stateEventsStep {
 		if message.FirstSeq != r.seq+1 {
 			t.Fatalf("step %q published %d-%d after sequence %d: the sequence runs on with no gap", name, message.FirstSeq, message.Seq, r.seq)
 		}
+		if message.StateID != storeID {
+			t.Fatalf("step %q published %d-%d under stateId %q, want the store's one id %q", name, message.FirstSeq, message.Seq, message.StateID, storeID)
+		}
 		r.seq = message.Seq
 		if len(commits) == 0 || commits[len(commits)-1] != message.At {
 			commits = append(commits, message.At)
 		}
 		at := r.now.Add(time.Duration(len(commits)) * time.Millisecond)
-		message.At = at.Format(stateAtLayout)
+		message.At, message.StateID = at.Format(stateAtLayout), stateGoldenStateID
 		encoded, err := json.Marshal(message)
 		if err != nil {
 			t.Fatalf("encode the state message as the listener's publisher does: %v", err)
@@ -268,7 +282,10 @@ func (r *stateGoldenRig) record(t *testing.T, name string) stateEventsStep {
 	if state.Daemon.StateSeq == nil || *state.Daemon.StateSeq != r.seq {
 		t.Fatalf("after step %q the state serves daemon.stateSeq %v, want %d, the last sequence the step published", name, state.Daemon.StateSeq, r.seq)
 	}
-	state.Daemon.SchemaVersion = stateGoldenSchemaVersion
+	if state.Daemon.StateID != storeID {
+		t.Fatalf("after step %q the state serves daemon.stateId %q, want the store's id %q, which every message carries", name, state.Daemon.StateID, storeID)
+	}
+	state.Daemon.SchemaVersion, state.Daemon.StateID = stateGoldenSchemaVersion, stateGoldenStateID
 	// Left out: each contract bump would stale it, at a path check-daemon-api-contract.sh cannot name.
 	state.Contract = nil
 	for key, issue := range state.Issues {
@@ -336,7 +353,7 @@ func TestStateEventsGolden(t *testing.T) {
 		write func(t *testing.T)
 	}{
 		{"the daemon boots", func(t *testing.T) {
-			if err := r.workflow.queueStateBoot(ctx, stateTestRun, api.SettingsOf(r.cfg), false); err != nil {
+			if err := r.workflow.queueStateBoot(ctx, stateTestRun, api.SettingsOf(r.cfg), stateGoldenSchemaVersion); err != nil {
 				t.Fatalf("queue the boot event: %v", err)
 			}
 			if _, err := r.claims.RecordBoot(ctx, r.cfg.Project, r.now); err != nil {

@@ -412,15 +412,22 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// follows it with no gap. Both switches carry this run's id and wake the project's state
 		// lane once a write that queued a row commits (publishRecordStates, publishClaimStates).
 		// Only a daemon with a workflow runs the outbox that sends and deletes the rows, so a daemon
-		// with none writes no boot row and turns nothing on.
-		if err := workflow.queueStateBoot(boot, runID, api.SettingsOf(cfg), applied > 0); err != nil {
+		// with none writes no boot row and turns nothing on. The event carries the schema version
+		// the store records now that this boot's migrations ran, the one the state route serves.
+		schemaVersion, err := st.SchemaVersion(boot)
+		if err != nil {
+			workflow.stop()
+			st.Close()
+			return fmt.Errorf("read the schema version of the boot event: %w", err)
+		}
+		if err := workflow.queueStateBoot(boot, runID, api.SettingsOf(cfg), int64(schemaVersion)); err != nil {
 			workflow.stop()
 			st.Close()
 			return err
 		}
 		publishRecordStates(workflow, runID)
 		publishClaimStates(st, workflow, runID)
-		log.Info("legion daemon state events on", "project", cfg.Project, "run", runID, "migrated", applied > 0)
+		log.Info("legion daemon state events on", "project", cfg.Project, "run", runID, "schemaVersion", schemaVersion)
 		// From here on, a claim write that changes a role holder queues its issue's publication in
 		// its own transaction, and the store tells the issue once that commits, so its lane is woken
 		// at once rather than at its next sweep. Only a daemon with a workflow runs an outbox to send
@@ -686,19 +693,21 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 }
 
 // queueStateBoot queues the boot event of run (record.StateBoot) in a transaction of its own
-// (enqueueOutbox): the settings the state route serves (api.SettingsOf), and whether this boot
-// applied a migration, which can have rewritten what Dispatch observes outside every write that
-// queues a state event. The row carries the bare Dispatch project key in its issue column, as every
-// state row does, so it runs on the project's one state lane (record.LaneState), and it takes the
-// lane's next sequence when the transaction commits. run calls it before it turns the state events
-// on, so that sequence is below every one the run's other state rows take.
-func (w *workflowRuntime) queueStateBoot(ctx context.Context, run string, settings api.Settings, migrated bool) error {
+// (enqueueOutbox): the settings the state route serves (api.SettingsOf), and schemaVersion, the
+// highest migration version the store records once this boot's migrations ran, which the state
+// route serves as `daemon.schemaVersion`: a reader compares it with the version its starting point
+// holds, since a boot that moved the schema can have rewritten what Dispatch observes outside every
+// write that queues a state event. The row carries the bare Dispatch project key in its issue
+// column, as every state row does, so it runs on the project's one state lane (record.LaneState),
+// and it takes the lane's next sequence when the transaction commits. run calls it before it turns
+// the state events on, so that sequence is below every one the run's other state rows take.
+func (w *workflowRuntime) queueStateBoot(ctx context.Context, run string, settings api.Settings, schemaVersion int64) error {
 	encoded, err := json.Marshal(settings)
 	if err != nil {
 		return fmt.Errorf("encode the settings of the boot event of %s: %w", w.dispatchProject, err)
 	}
 	if err := w.enqueueOutbox(ctx, w.dispatchProject, record.StateBoot{
-		Project: w.dispatchProject, Run: run, Settings: encoded, Migrated: migrated,
+		Project: w.dispatchProject, Run: run, Settings: encoded, SchemaVersion: schemaVersion,
 	}); err != nil {
 		return fmt.Errorf("queue the boot event of %s: %w", w.dispatchProject, err)
 	}
@@ -2992,7 +3001,9 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	// snapshot as everything else the body holds, so every event at or below it is in the body
 	// and every event above it is not (api.DaemonInfo.StateSeq): a reader of the events starts
 	// after this body at the next one. A project with no state row reads 0, which is served too.
-	stateSeq, err := s.records.StateSeq(ctx, tx, s.project)
+	// The same read is the id of the store that count is kept in (api.DaemonInfo.StateID), which
+	// every state message carries, and none while the project has no state row.
+	published, err := s.records.StatePublication(ctx, tx, s.project)
 	if err != nil {
 		return api.State{}, nil, err
 	}
@@ -3059,7 +3070,8 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		Boots:         boots,
 		FirstBootAt:   firstBootAt,
 		StartedAt:     s.startedAt,
-		StateSeq:      &stateSeq,
+		StateSeq:      &published.Seq,
+		StateID:       published.StateID,
 	}
 	state.Settings = s.settings
 	controller, _, err := s.store.ControllerTx(ctx, tx, s.projectToken)

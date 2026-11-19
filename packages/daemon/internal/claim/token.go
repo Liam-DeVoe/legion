@@ -6,13 +6,16 @@ import (
 	"strings"
 )
 
+// ProjectKeyPattern is a Dispatch project key, the contract's PROJECT_KEY_PATTERN
+// (packages/contracts/src/dispatch-tools.ts): a capital letter, then one to nine capitals or
+// digits. IsProjectKey is the one test of it, and a refusal that names the rule quotes this.
+const ProjectKeyPattern = `^[A-Z][A-Z0-9]{1,9}$`
+
 var (
 	// issueKey is a Dispatch issue key, the one shape an issue has (legion-roles.ts:30).
 	issueKey = regexp.MustCompile(`^([A-Z][A-Z0-9]*)-([0-9]+)$`)
-	// projectKey is a Dispatch project key, the contract's PROJECT_KEY_PATTERN
-	// (packages/contracts/src/dispatch-tools.ts): a capital letter, then one to nine capitals or
-	// digits.
-	projectKey = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}$`)
+	// projectKey is ProjectKeyPattern compiled.
+	projectKey = regexp.MustCompile(ProjectKeyPattern)
 	// projectToken is a project as a token spells it (legion-roles.ts:28).
 	projectToken = regexp.MustCompile(`^[a-z0-9]+$`)
 	// notAlphanumeric is everything ProjectToken drops.

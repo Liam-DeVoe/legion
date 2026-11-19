@@ -2457,14 +2457,34 @@ test("the state names the last state event it holds, and the key may be absent",
   }
 });
 
+// `daemon.stateId` is the id of the store the state events are counted in, which every state
+// message carries. A daemon before the contract that added it, and a project with no state event
+// yet, write none, so the key may be absent; an id that is no UUID is refused.
+test("the state names the store its state events are counted in, and the key may be absent", () => {
+  const state = fixture("state.json") as { daemon: Record<string, unknown> };
+  const served = state.daemon.stateId;
+  expect(typeof served).toBe("string");
+  expect(LegionStateResponse.parse(state).daemon.stateId).toBe(served as string);
+  delete state.daemon.stateId;
+  expect(LegionStateResponse.parse(state).daemon.stateId).toBeUndefined();
+  state.daemon.stateId = "store-1";
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+});
+
 /** One message of the state lane: the events one transaction committed, at sequences 41 to 43 —
  * a change of an answered root's phase, tree, slot, wait and implementer claim, the admission
- * block, and a boot — with the block and the settings the state golden serves. */
+ * block, and a boot — with the block, the settings and the schema version the state golden serves,
+ * counted in the store whose id the golden serves. */
 function stateMessage() {
-  const state = fixture("state.json") as { admission: unknown; settings: unknown };
+  const state = fixture("state.json") as {
+    admission: unknown;
+    settings: unknown;
+    daemon: { schemaVersion: number; stateId: string };
+  };
   return {
     project: "INFRA",
     run: "0b9f6a52-4c1e-4f0e-9a51-7d3c2b1a0e9f",
+    stateId: state.daemon.stateId,
     firstSeq: 41,
     seq: 43,
     at: "2026-11-18T16:00:00.123456Z",
@@ -2486,7 +2506,12 @@ function stateMessage() {
         ],
       },
       { seq: 42, kind: "admission", admission: state.admission },
-      { seq: 43, kind: "boot", settings: state.settings, migrated: false },
+      {
+        seq: 43,
+        kind: "boot",
+        settings: state.settings,
+        schemaVersion: state.daemon.schemaVersion,
+      },
     ],
   };
 }
@@ -2553,4 +2578,26 @@ test("a state message's events run from firstSeq to seq, under a project key", (
       .success
   ).toBeFalse();
   expect(legionStateMessage.safeParse({ ...message, project: "infra" }).success).toBeFalse();
+});
+
+// A transaction split over messages says so on every message but its last: `more` is `true` or
+// absent, and a reader holds the transaction's events until the message without it arrives. A
+// `more` of `false` is no shape the daemon writes, and is refused.
+test("a state message says the transaction goes on only with more: true", () => {
+  const message = stateMessage();
+  const goesOn = { ...message, more: true };
+  expect(legionStateMessage.safeParse(goesOn).error?.issues ?? []).toEqual([]);
+  expect<unknown>(legionStateMessage.parse(goesOn)).toEqual(goesOn);
+  expect(legionStateMessage.safeParse({ ...message, more: false }).success).toBeFalse();
+});
+
+// Every message names the store its sequences are counted in, the id the state route serves as
+// `daemon.stateId`, so a reader applies only messages of its starting point's store: a message
+// without it, or with an id that is no UUID, is refused.
+test("a state message names its store's id", () => {
+  const { stateId: _stateId, ...withoutId } = stateMessage();
+  expect(legionStateMessage.safeParse(withoutId).success).toBeFalse();
+  expect(
+    legionStateMessage.safeParse({ ...stateMessage(), stateId: "store-1" }).success
+  ).toBeFalse();
 });

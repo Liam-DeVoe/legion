@@ -858,9 +858,13 @@ const legionIssue = z.object({
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, its boot history, and
  * `stateSeq`, the sequence of the last state event the body's snapshot holds
  * (`legionStateMessage`), 0 while the project has none: every event at or below it is in the body
- * and none above it is, so a reader of the state lane starts at `stateSeq + 1`. It is optional
- * because a daemon before the contract that added it writes none, and the route strips it from
- * the body it serves a caller below that contract. */
+ * and none above it is, so a reader of the state lane starts at `stateSeq + 1`. Beside it,
+ * `stateId` is the id of the store that count is kept in, made at the project's first state event
+ * and never changed, absent while the project has none: a reader that takes this body as its
+ * starting point applies only a state message whose `stateId` is this one, since a message of
+ * another id is counted in another store and its sequences say nothing of this body's. Both are
+ * optional because a daemon before the contract that added them writes neither, and the route
+ * strips both from the body it serves a caller below that contract. */
 const daemonInfo = z.object({
   project: nonEmptyString,
   schemaVersion: z.number().int().nonnegative(),
@@ -868,6 +872,7 @@ const daemonInfo = z.object({
   firstBootAt: timestamp,
   startedAt: timestamp,
   stateSeq: z.number().int().nonnegative().optional(),
+  stateId: z.uuid().optional(),
 });
 
 /** `api.ContractView` — the mark of the narrowing, beside the daemon's own block: `daemon` is the
@@ -1247,7 +1252,10 @@ const legionStateSeq = z.number().int().positive();
  * `change` names an issue and each field of it that one write moved; an `admission` is the whole
  * block the state route serves (`legionAdmission`) after a pass that changed it; a `boot` is the
  * first event of a daemon's run, the settings the state route serves (`legionSettings`) and
- * whether that boot applied a migration. */
+ * `schemaVersion`, the highest migration version the daemon's store records once that boot's
+ * migrations ran. A reader compares it with the version its starting point holds (the state
+ * route's `daemon.schemaVersion`): a boot that moved the schema can have rewritten what the
+ * reader observes outside every write that publishes an event. */
 const legionStateEvent = z.discriminatedUnion("kind", [
   z.object({
     seq: legionStateSeq,
@@ -1260,25 +1268,31 @@ const legionStateEvent = z.discriminatedUnion("kind", [
     seq: legionStateSeq,
     kind: z.literal("boot"),
     settings: legionSettings,
-    migrated: z.boolean(),
+    schemaVersion: z.number().int().nonnegative(),
   }),
 ]);
 
 /** One message of a Legion deployment's state lane (`legionStateSubject`): the state events of one
  * committed daemon transaction, in sequence order. `project` is the Dispatch project key the daemon
- * works for, `run` the id of the daemon run that wrote the events, `firstSeq` and `seq` the first
+ * works for, `run` the id of the daemon run that wrote the events, `stateId` the id of the store
+ * the events are counted in (the state route's `daemon.stateId`), `firstSeq` and `seq` the first
  * and the last event's sequence, and `at` when the transaction committed, which every event of it
- * shares. A transaction too large for one message is split between events into consecutive
- * messages. The events run from `firstSeq` to `seq` with no gap, so a reader that holds sequence
- * `n` applies the message whose `firstSeq` is `n + 1`, and knows from a later one that it missed
- * one. */
+ * shares. A reader applies only a message whose `stateId` is its starting point's: a message of
+ * another id is counted in another store. A transaction too large for one message is split between
+ * events into consecutive messages, and every one of them but the last carries `more: true`; the
+ * last, and every message of a transaction that fits in one, carries no `more`. A reader applies
+ * the events of a transaction only once the message without `more` has arrived. The events run
+ * from `firstSeq` to `seq` with no gap, so a reader that holds sequence `n` applies the message
+ * whose `firstSeq` is `n + 1`, and knows from a later one that it missed one. */
 export const legionStateMessage = z
   .object({
     project: z.string().regex(PROJECT_KEY_PATTERN),
     run: z.uuid(),
+    stateId: z.uuid(),
     firstSeq: legionStateSeq,
     seq: legionStateSeq,
     at: timestamp,
+    more: z.literal(true).optional(),
     events: z.array(legionStateEvent).min(1),
   })
   .refine(

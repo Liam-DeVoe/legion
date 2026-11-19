@@ -1191,13 +1191,16 @@ type StateAdmission struct {
 func (StateAdmission) OutboxKind() OutboxKind { return OutboxKindStateAdmission }
 
 // StateBoot is a daemon run's first state event: the settings the state route serves
-// (api.SettingsOf), as raw JSON for the reason StateAdmission's block is, and Migrated, whether that
-// boot applied a migration. Project and Run are a StateChange's.
+// (api.SettingsOf), as raw JSON for the reason StateAdmission's block is, and SchemaVersion, the
+// highest migration version the store records once that boot's migrations ran (store.SchemaVersion),
+// which the state route serves as `daemon.schemaVersion`. A reader compares it with the version its
+// starting point holds: a boot that moved the schema can have rewritten what Dispatch observes
+// outside every write that queues a state event. Project and Run are a StateChange's.
 type StateBoot struct {
-	Project  string          `json:"project"`
-	Run      string          `json:"run"`
-	Settings json.RawMessage `json:"settings"`
-	Migrated bool            `json:"migrated"`
+	Project       string          `json:"project"`
+	Run           string          `json:"run"`
+	Settings      json.RawMessage `json:"settings"`
+	SchemaVersion int64           `json:"schemaVersion"`
 }
 
 func (StateBoot) OutboxKind() OutboxKind { return OutboxKindStateBoot }
@@ -1968,6 +1971,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if !jsonObject(value.Settings) {
 			return fmt.Errorf("a state boot of %s carries no settings", value.Project)
+		}
+		if value.SchemaVersion < 0 {
+			return fmt.Errorf("a state boot of %s carries the schema version %d, which no store records", value.Project, value.SchemaVersion)
 		}
 	case CheckWakeDue:
 		if value.Look <= 0 {

@@ -123,23 +123,27 @@ func TestStateEventsTakeTheirSequenceInCommitOrder(t *testing.T) {
 		t.Helper()
 		must(t, tx.Commit(ctx))
 	}
-	stateSeq := func(project string) int64 {
+	published := func(project string) StatePublication {
 		t.Helper()
-		var seq int64
+		var read StatePublication
 		inTx(t, st, func(tx pgx.Tx) {
 			var err error
-			seq, err = records.StateSeq(ctx, tx, project)
+			read, err = records.StatePublication(ctx, tx, project)
 			must(t, err)
 		})
-		return seq
+		return read
+	}
+	stateSeq := func(project string) int64 {
+		t.Helper()
+		return published(project).Seq
 	}
 	committed := func() []OutboxRow {
 		t.Helper()
 		return stateRowsOf(t, st.Pool(), project)
 	}
 
-	if seq := stateSeq(project); seq != 0 {
-		t.Fatalf("StateSeq of a project with no state row = %d, want 0", seq)
+	if none := published(project); none != (StatePublication{}) {
+		t.Fatalf("StatePublication of a project with no state row = %+v, want sequence 0 and no store id", none)
 	}
 
 	// Two transactions that commit in the reverse of the order they queued their rows in.

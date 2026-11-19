@@ -3544,17 +3544,23 @@ func scanOutbox(row scanner, extra ...any) (OutboxRow, error) {
 	return out, nil
 }
 
-// StateSeq reads state_publication.last_seq of project, which the commit trigger of migration
-// 20261118164019_state_events steps once for each state row the project's daemon commits. Read in
-// the state route's snapshot, it names which events that snapshot holds: every one at or below it,
-// and none above it.
-func (s *Postgres) StateSeq(ctx context.Context, tx pgx.Tx, project string) (int64, error) {
-	var seq int64
-	if err := tx.QueryRow(ctx, `select coalesce((select last_seq from state_publication where project = $1), 0)`,
-		project).Scan(&seq); err != nil {
-		return 0, fmt.Errorf("read the state sequence of %s: %w", project, err)
+// StatePublication reads project's counter row (state_publication), which the commit trigger of
+// migration 20261118164019_state_events makes at the project's first state row and steps once for
+// each state row the project's daemon commits: its last_seq, which, read in the state route's
+// snapshot, names which events that snapshot holds (every one at or below it, and none above it),
+// and its store_id, the id the trigger's first insert made for this store's state events and
+// nothing changes after. A project with no state row reads sequence 0 and no id.
+func (s *Postgres) StatePublication(ctx context.Context, tx pgx.Tx, project string) (StatePublication, error) {
+	var published StatePublication
+	var id *string
+	if err := tx.QueryRow(ctx, `select coalesce(max(last_seq), 0), max(store_id::text) from state_publication where project = $1`,
+		project).Scan(&published.Seq, &id); err != nil {
+		return StatePublication{}, fmt.Errorf("read the state publication of %s: %w", project, err)
 	}
-	return seq, nil
+	if id != nil {
+		published.StateID = *id
+	}
+	return published, nil
 }
 
 // StateRowsAfter is every state row still in the outbox that committed in head's transaction

@@ -420,14 +420,21 @@ type DaemonInfo struct {
 	FirstBootAt   time.Time `json:"firstBootAt"`
 	StartedAt     time.Time `json:"startedAt"`
 	// StateSeq is the sequence of the newest state event the project's daemon committed
-	// (record.Store.StateSeq, state_publication.last_seq), read in the same repeatable-read
-	// snapshot as the rest of the body: every state event at or below it is in this body and
-	// every event above it is not, so a reader of the state events starts after this body at
-	// StateSeq + 1, with nothing lost and nothing applied twice. The route's source sets it on
-	// every body, 0 while the project has no state row; it is a pointer so that the one body
+	// (record.Store.StatePublication, state_publication.last_seq), read in the same
+	// repeatable-read snapshot as the rest of the body: every state event at or below it is in
+	// this body and every event above it is not, so a reader of the state events starts after this
+	// body at StateSeq + 1, with nothing lost and nothing applied twice. The route's source sets it
+	// on every body, 0 while the project has no state row; it is a pointer so that the one body
 	// without it is the one stateSeqContract's narrowing serves a caller below that contract
 	// (withoutStateSeq), not a 0 a reader would take for a sequence.
 	StateSeq *int64 `json:"stateSeq,omitempty"`
+	// StateID is the id of the store the state events are counted in (state_publication.store_id),
+	// read in the same read as StateSeq: the commit trigger makes it at the project's first state
+	// row and nothing changes it after, and every state message carries it, so a reader that took
+	// this body as its starting point applies only messages whose `stateId` is this one. It is
+	// empty, and left off the wire, while the project has no state row, and stateSeqContract's
+	// narrowing leaves it off with StateSeq.
+	StateID string `json:"stateId,omitempty"`
 }
 
 // ContractView is the mark of the narrowing: the contract this body was built at and the
