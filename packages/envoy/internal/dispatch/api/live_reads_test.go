@@ -21,12 +21,8 @@ const (
 	liveReadsAbsentSession = "0b8a3c1e-5f2d-4a7b-9c3e-1d2f3a4b5c63"
 )
 
-// liveReadsWait bounds a wait for a live view's first answer; liveReadsQuiet is how long a view
-// that answers as an absent session must then stay silent.
-const (
-	liveReadsWait  = 5 * time.Second
-	liveReadsQuiet = 300 * time.Millisecond
-)
+// liveReadsQuiet is how long a view that answers as an absent session must then stay silent.
+const liveReadsQuiet = 300 * time.Millisecond
 
 // TestEveryLiveViewKeepsTheRuleOfItsHTTPRead: every view kind /ws/live serves (deliveryLiveKinds
 // and the server's liveKinds) names the GET row whose rule it keeps (liveViewReads), and answers
@@ -100,11 +96,19 @@ func TestEveryLiveViewKeepsTheRuleOfItsHTTPRead(t *testing.T) {
 		return route
 	}
 	// first opens a socket as caller, subscribes the view, and answers the first frame it is sent.
+	// The events view's first frame, its events_start, stands behind the event horizon, which any
+	// transaction on the Postgres instance holds back, so its wait is the horizon's
+	// (eventFeedFrame); every other view answers from the server's own reads, under the hang guard
+	// of eventFeedWait.
 	first := func(caller privateCaller, kind, session string) (*socketClient, any) {
 		t.Helper()
 		client := seed.dialLive(t, url, seed.liveHeader(t, caller))
 		client.send(t, liveSubscribe("v", view(kind, session), ""))
-		return client, client.next(t, liveReadsWait, fmt.Sprintf("%s's %s view", caller, kind))
+		what := fmt.Sprintf("%s's %s view", caller, kind)
+		if kind == liveEventsView {
+			return client, eventFeedFrame(t, client, what)
+		}
+		return client, client.next(t, eventFeedWait, what)
 	}
 
 	for _, caller := range privateCallers {
