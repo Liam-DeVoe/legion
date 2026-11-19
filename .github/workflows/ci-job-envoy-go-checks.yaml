@@ -52,8 +52,28 @@ jobs:
     # 610 s (run 44175873364, job 134367428126), 10.17 minutes, plus the largest -timeout of its
     # go test calls, 1m, plus 6: 10.17 + 1 + 6 = 17.17, so 18. The listenerwire step, which main
     # added after that pair, is the exception its own comment names. Its other go commands are
-    # builds and two `go run`s, which run no test binary and carry no -timeout.
+    # builds and two `go run`s, which run no test binary and carry no -timeout. The step that tests
+    # the API's wall-clock measurements alone came after that pair as well, so no reading of the
+    # pair sizes it: its -timeout is main's 10m for each such call until the R6 commit after the
+    # next pair sets it, and this bound, from that pair.
     timeout-minutes: 18
+    # The Postgres the API's alone step runs against, as envoy-go-race-api's: the same image, the
+    # same settings on the server's own command line and the same health check. envoy-go's own
+    # service says what each setting buys and why this container can do without durability
+    # (dispatch://INFRA-1075).
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -120,6 +140,46 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # The settings the service's command: asks for, read back from the server itself; envoy-go's
+      # own read-back step says why a command is worth reading back.
+      - name: Read the disposable service's settings back
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # The Dispatch API's tests whose assertion is a wall-clock time measured in the test's own
+      # process: its xid window tests, which judge each gap of a transaction's xid window against
+      # storetest.XidMaxGap (5 ms). Main runs them in a step of their own with nothing else on the
+      # runner; run beside envoy-go's other calls, one of them failed in each run of the pair at
+      # c3e93e7e (runs 44476496859 and 44476544762). So they run alone, as this job's first test
+      # step, while its Postgres service is quiet, and plain, since the detector stretches the gaps
+      # past any bound. They are here rather than in envoy-go-race-api for this job's filter: the
+      # API's plain test binary compiles its `//go:build !race` guard files whatever -run selects,
+      # and what those read is every non-test file of packages/envoy, which this job's filter covers
+      # already and envoy-go-race-api's, the closure of the API's race build, does not. So no filter
+      # widens, and the tests are off envoy-go's critical path; they run on every push this job
+      # runs on, where envoy-go runs in the merge queue and with `full-ci`. The -run list is
+      # derived in .github/scripts/ci_job_reads.py (ALONE_PREFIX and ALONE_STEPS) from the race
+      # lane's packages and their source, so an xid window test added there that this step lacks
+      # fails the ci-filters job naming it. The database is on the step rather than in the job's
+      # env:, so it reaches this step alone. With the xid window tests in one call, the API took
+      # 134.082 s on a two-vCPU pod (INFRA-636). -timeout 10m is main's for each such call; the R6
+      # commit after the next pair sets it from that pair. The `go test -json` stream goes to a file
+      # the upload step below publishes and is replayed to the log, as the architecture-note step's
+      # is.
+      - name: Test the wall-clock measurements alone
+        env:
+          DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+        run: |
+          mkdir -p "$RUNNER_TEMP/go-test-json"
+          s=0
+          go test -json -count=1 -p 1 -timeout 10m -run '^(TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec)$' ./internal/dispatch/api > "$RUNNER_TEMP/go-test-json/alone-api.json" || s=$?
+          if [ "$s" -eq 0 ]; then
+            jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/alone-api.json"
+          else
+            jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/alone-api.json"
+          fi
+          exit $s
+        working-directory: packages/envoy
       - name: Check Go formatting
         run: |
           unformatted=$(gofmt -l .)

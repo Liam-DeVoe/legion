@@ -59,8 +59,11 @@ jobs:
     #   integration       integration         3.1 s  44195030350  134434361048    0.10     1m
     #
     # The natslive call's third command, internal/broker/natscallout's, and the callout check
-    # step came from main after that pair (#4139), so no reading of the pair sizes them: they
-    # keep main's own limits, the command's -timeout of 5 minutes and the step's own 6.
+    # step came from main after that pair (#4139), so no reading of the pair sizes them: the
+    # command takes the group's -timeout of 1 minute and the step keeps main's own 6, until the
+    # R6 commit after the next pair sets both from that pair. The steps that test the wall-clock
+    # measurements alone, in envoy-go-race and envoy-go-checks, came after the pair too: each
+    # one's -timeout is main's 10m for each such call until that commit sets it.
     #
     # Three calls run tests that read a margin off the test binary's own deadline, and each must
     # leave at least that margin above its slowest package's time, or those tests refuse the run
@@ -286,7 +289,7 @@ jobs:
           go-version-file: packages/envoy/go.mod
           cache: false
       # go-envoy-test: this job builds and runs the plain test binaries of the envoy module's
-      # packages - the race lane's left to that lane but the four its race-impossible call runs -
+      # packages - the race lane's left to that lane but the two its race-impossible call runs -
       # a set no other job builds, so it keeps a family of its own. The entry holds no
       # module zip: .github/workflows/ci-caches.yaml leaves them out when it fills the family,
       # since go reads an extracted module from its own tree and the zip only to extract it, and
@@ -365,13 +368,15 @@ jobs:
       # and their order among themselves decides nothing: in run 2 the last of them ended at
       # 07:50:49 while the package list ran until 07:58:31.
       # The race-impossible call runs here since the measurement dispatch://INFRA-985 asked for
-      # was made; the comment on that call says what was measured and what it came back with.
+      # was made; the comment on that call says what was measured and what it came back with,
+      # and why the tests of it whose assertion is a wall-clock time run alone, in envoy-go-race
+      # and envoy-go-checks, rather than here.
       # The shutdown feed test, internal/pgmigrate and internal/dispatch/events are each out of
       # the package list on a Postgres service of its own, for the reasons their own calls and
       # services give.
       #
       # Each call but the vet writes a `go test -json` stream to a file of its own under
-      # $RUNNER_TEMP/go-test-json - the natslive call's two go test commands write one between
+      # $RUNNER_TEMP/go-test-json - the natslive call's three go test commands write one between
       # them - which the upload step below publishes as one artifact per run attempt.
       # .github/scripts/go-test-times.py ranks the tests and packages of such a stream, and
       # compares two of them, which is how this job's time is measured (dispatch://INFRA-1075).
@@ -387,10 +392,10 @@ jobs:
       #
       # The API package used to run first and on its own in this job, because the per-test
       # database clone and drop of every other package queued on the service's one checkpointer
-      # beside it; it runs in envoy-go-race-api now, and the plain run this job keeps of it is
-      # the race-impossible call below. The server above writes nothing durable either way, so a
-      # clone's two forced checkpoints and its drop's one cost little and that queue sets no
-      # step's time here any more.
+      # beside it; it runs in envoy-go-race-api now, and its xid window tests, the plain run the
+      # race build cannot make of it, run alone in envoy-go-checks. The server above writes
+      # nothing durable either way, so a clone's two forced checkpoints and its drop's one cost
+      # little and that queue sets no step's time here any more.
       # -p 8 rather than go test's default of GOMAXPROCS, and -parallel 12 rather than its default
       # of GOMAXPROCS as well, because these tests wait far more than they compute: a profile of
       # the API package spends 2.19 per cent of its wall time on this process's CPU, and the
@@ -492,23 +497,25 @@ jobs:
           printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' -timeout 26m > "$RUNNER_TEMP/go-test-json/unit.json" &
           unit=$!
           # The tests the race detector makes impossible, which the race job of each of these
-          # packages therefore cannot make, so envoy-go keeps a plain run of exactly them:
+          # packages therefore cannot make, so envoy-go keeps a plain run of them:
           # internal/bus counts HoldsSeed's allocations, which the race runtime's own
-          # allocations would be counted into; the API's and delivery's xid window tests judge
-          # a window's gaps, which the detector stretches past any bound, so a race run checks
-          # only their shape, which this run checks as well (storetest.XidJudgesGaps,
-          # INFRA-636); and the documents package measures the heap a room keeps, which the
-          # detector's shadow memory and instrumentation move. Those are
+          # allocations would be counted into, and the documents package measures the heap a
+          # room keeps, which the detector's shadow memory and instrumentation move. Those are
           # out of the race build altogether (//go:build !race), and the two render-reuse storms
           # run fewer seeds and fewer edits under it (raceEnabled), so this is their full-size
-          # run. So is the NATS auth service's restart storm's: five hundred connections, two
-          # hundred under the detector (raceEnabled), whose instrumentation makes each in-process
-          # connect several times the cost (natscallout's race_disabled_test.go says why). The
-          # API's seven source guards, and one_expression_guard_test.go beside them,
+          # run. The API's seven source guards, and one_expression_guard_test.go beside them,
           # carry that tag too and are deliberately not here: they read the module's source,
           # the text-check job runs their fifteen tests by name, and ci_job_reads.py's
           # TEXT_CHECK_TESTS leaves exactly those out of this call rather than have each of
-          # them run twice.
+          # them run twice. Nor are the tests whose assertion is a wall-clock time measured in
+          # their own process: the API's and delivery's xid window tests, which judge a
+          # window's gaps against storetest.XidMaxGap, and the NATS auth service's restart
+          # storm, which judges its slowest decision against decideBudget. Beside this step's
+          # other calls the load moved those times, and each run of the pair at c3e93e7e failed
+          # an xid window test here (runs 44476496859 and 44476544762). So they run as main
+          # runs them, alone on a runner: delivery's and the storm in envoy-go-race and the
+          # API's in envoy-go-checks, each job's first test step (ci_job_reads.py's
+          # ALONE_PREFIX, ALONE_TESTS and ALONE_STEPS).
           # It was a step of its own before this one until dispatch://INFRA-985's condition for
           # running it here was measured: the three documents memory bounds read this process's
           # own heap after two forced collections, and the question was whether a slow mark
@@ -521,14 +528,13 @@ jobs:
           # and delivery-hub tests wait for the event log's safe horizon and run in
           # envoy-go-race-api now. The one -run list is derived in
           # .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
-          # //go:build !race and raceEnabled, so a test added to either and missing here fails
-          # the ci-filters job naming this step. The restart storm took 17 s on a dev box.
+          # //go:build !race and raceEnabled, less the tests that run alone, so a test added to
+          # either and missing here fails the ci-filters job naming this step.
           # -timeout 14m, by R6 from the pair at 4f1f4436
           # (the table on this job): this call's slowest package on the slower run is
           # internal/dispatch/docs, 413.9 s (run 44195030350, job 134434361048), and
           # 413.9 / 30 = 13.80, so 14m. The limit leaves 426.1 s above that time, over the 30 s
-          # of the documents package's roomWaitMargin. With the xid window tests in, one run on a
-          # two-vCPU pod took the API 134.082 s and delivery 4.106 s (INFRA-636).
+          # of the documents package's roomWaitMargin.
           #
           # One go test over its packages rather than one per package: go builds the test
           # binaries together and runs each package's tests as soon as its own binary is
@@ -538,7 +544,7 @@ jobs:
           # nothing running beside it (run 42307926510, dispatch://INFRA-1075). The bus and
           # documents packages each measure their own process's heap or allocations, so running
           # them at the same time changes no number either of them asserts on.
-          go test -json -count=1 -timeout 14m -run '^(TestACalloutStormAfterAServerRestartAdmitsEveryConnection|TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound|TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowAttributionMoveRecorded|TestXidWindowDeliveries|TestXidWindowDeployedEventRecorded|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec)$' ./internal/dispatch/delivery ./internal/bus ./internal/broker/natscallout ./internal/dispatch/api ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
+          go test -json -count=1 -timeout 14m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
           impossible=$!
           # internal/pgmigrate, on a Postgres service of its own: its redaction oracle holds
           # scanl.go's transcription of PostgreSQL's scan.l to a real PostgreSQL, which is
@@ -629,13 +635,15 @@ jobs:
           # 4f1f4436 (the table on this job): on the slower run of each, internal/testnats took
           # 4.6 s (run 44175873364, job 134367427217) and internal/bus 25.2 s (run 44195030350,
           # job 134434361048), and 4.6 / 30 = 0.15 and 25.2 / 30 = 0.84, so 1m each, the
-          # smallest whole minute there is.
+          # smallest whole minute there is. internal/broker/natscallout's command came from main
+          # after that pair, so the pair holds no reading of it: its limit is the group's 1m
+          # until the R6 commit after the next pair sets it from that pair.
           rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
           cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
           callout=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/broker/natscallout)
           { go test -json -count=1 -timeout 1m -tags natslive -run "$rig" ./internal/testnats/ &&
             go test -json -count=1 -timeout 1m -tags natslive -run "$cap" -v ./internal/bus/ &&
-            go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/broker/natscallout/; } > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
+            go test -json -count=1 -timeout 1m -tags natslive -run "$callout" ./internal/broker/natscallout/; } > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
           natslive=$!
           # The integration suite, which runs a real NATS server in the test process.
           # -timeout 1m, by R6 from the pair at 4f1f4436 (the table on this job): this call's

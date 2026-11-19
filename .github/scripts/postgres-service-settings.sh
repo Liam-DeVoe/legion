@@ -4,10 +4,11 @@
 # Who runs it, and why it is a script: the read-back step of every ci.yaml job whose Postgres
 # service starts on the lane's disposable settings, each such job's services and steps declared
 # in its own .github/workflows/ci-job-<job>.yaml - daemon-go, envoy-go (one step for each of its
-# five services), envoy-go-race, envoy-go-race-api, envoy-go-race-docs, envoy-go-docs-finalizers,
-# dispatch-memory, dispatch-multiprocess, dispatch-two-builds, dispatch-two-builds-same,
-# broker-multiprocess, envoy-session-stall and sessions-script: every step of one body across
-# those jobs. One of them, dispatch-two-builds-same, runs in a merge group only.
+# five services), envoy-go-checks, envoy-go-race, envoy-go-race-api, envoy-go-race-docs,
+# envoy-go-docs-finalizers, dispatch-memory, dispatch-multiprocess, dispatch-two-builds,
+# dispatch-two-builds-same, broker-multiprocess, envoy-session-stall and sessions-script: every
+# step of one body across those jobs. One of them, dispatch-two-builds-same, runs in a merge group
+# only.
 # dispatch-browser-postgres.sh's head records this repository's rule for a step body repeated
 # across jobs, and this follows it: the five settings are written once, here, and each step is one
 # line calling this.

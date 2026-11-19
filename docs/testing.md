@@ -228,9 +228,11 @@ A Legion issue pod does not run that whole package: `skills/legion-worker/refere
 CI leaves that package out of `envoy-go`'s package list and runs it under `-race` in
 `envoy-go-race-api`, the job that runs it by itself, which gives it 32 minutes (`-timeout 32m`,
 `.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's steps); `text-checks`
-runs its fifteen source-guard tests by name. `docs` runs under `-race` in `envoy-go-race-docs`,
-which gives it 46 (`-timeout 46m`). Of those two packages `envoy-go` keeps only the few tests the
-race build leaves out or runs smaller, by name, in the race-impossible call of its unit step.
+runs its fifteen source-guard tests by name.
+`docs` runs under `-race` in `envoy-go-race-docs`, which gives it 46 (`-timeout 46m`).
+A plain run covers, by name, the few tests of those two packages that the race build leaves out or runs smaller.
+`envoy-go` runs those of `docs` in the race-impossible call of its unit step.
+Those of `api` are its xid window tests, whose assertion is a wall-clock time measured in the test's own process, so they run away from that call's load: alone on the runner, as the first test step of `envoy-go-checks` (`.github/workflows/ci-job-envoy-go-checks.yaml`).
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default

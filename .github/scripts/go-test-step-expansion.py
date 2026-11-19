@@ -224,7 +224,7 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci-job-envoy-go.yaml", "Unit test envoy Go package"),
+            (".github/workflows/ci-job-envoy-go-race.yaml", "Test the wall-clock measurements alone"),
             (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials and the NATS auth service"),
         }),
         package="github.com/sjawhar/envoy/internal/broker/natscallout",
@@ -233,9 +233,10 @@ EXCEPTIONS = (
             "c-callout-available (the NATS auth service's verification): five hundred "
             "connections reconnect at once after a server restart and every one is admitted. The "
             "restart storm opens two hundred under the race detector (raceEnabled), whose cost per "
-            "in-process connect fails the setup at five hundred on a loaded runner, so envoy-go's "
-            "plain run of it (the race-impossible call of its unit step) is its full-size run and "
-            "envoy-go-race the detector's run of the smaller one."
+            "in-process connect fails the setup at five hundred on a loaded runner, so "
+            "envoy-go-race's plain run of it (its step that tests the wall-clock measurements "
+            "alone, before the race step) is its full-size run and the race step the detector's "
+            "run of the smaller one."
         ),
     ),
     Exception_(

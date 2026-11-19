@@ -806,9 +806,9 @@ RULES = {
          "emitter's bytes with)")),
     f"{ENVOY}/internal/dispatch/api/session_answers_test.go": reads(
         (f"{FIX}/ask-reply-recipients.json",
-         "internal/dispatch/api/session_answers_test.go:1496 os.ReadFile (askReplyRecipientsFixture :1167, "
-         "../../../../contracts/fixtures): TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers compares "
-         "the copies the outbox published with the committed fixture, which :1489 writes under -update")),
+         "internal/dispatch/api/session_answers_test.go: TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers "
+         "reads askReplyRecipientsFixture (../../../../contracts/fixtures) with os.ReadFile and compares the copies "
+         "the outbox published with that committed fixture, which the same test writes under -update")),
     f"{ENVOY}/internal/dispatch/api/lock_level_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/review_write_guard_test.go": MODULE_SOURCES,
@@ -989,9 +989,10 @@ def json_stream_script(command: str, stream: str) -> str:
     """A test step whose one go command writes its `go test -json` stream to a file under
     $RUNNER_TEMP/go-test-json and replays it to the log: the package result lines of a green run,
     the whole stream of a red one (the envoy-go unit step in ci-job-envoy-go.yaml says why). The
-    race lane's envoy-go-race and envoy-go-race-api, and envoy-go-checks' architecture-note tests,
-    listenerwire tests and display-tree fixture check, are the steps of this shape; envoy-go's unit
-    step runs nine calls and builds its own (UNIT_TEST_SCRIPT)."""
+    race lane's envoy-go-race and envoy-go-race-api, the alone steps of envoy-go-race and
+    envoy-go-checks (ALONE_STEPS), and envoy-go-checks' architecture-note tests, listenerwire tests
+    and display-tree fixture check, are the steps of this shape; envoy-go's unit step runs nine
+    calls and builds its own (UNIT_TEST_SCRIPT)."""
     return f"""\
 mkdir -p "$RUNNER_TEMP/go-test-json"
 s=0
@@ -1007,11 +1008,11 @@ exit $s"""
 # The steps whose go commands are not in the simple form, pinned whole: envoy-go-checks' pack
 # step, envoy-smoke's schema step, the tag steps below, and every step that writes a `go test
 # -json` stream - envoy-go's unit step, which writes the streams of eight of its nine calls,
-# envoy-go-checks' architecture-note tests, listenerwire tests and display-tree fixture check, and
-# the race lane's envoy-go-race and envoy-go-race-api - since neither -json nor the redirect that
-# keeps the stream is a form the check reduces. envoy-go-race-docs is pinned for a reason of its
-# own: its two lines make a directory and run the package under .github/scripts/race_memory.py
-# (RACE_DOCS_SCRIPT below).
+# envoy-go-checks' architecture-note tests, listenerwire tests and display-tree fixture check, the
+# race lane's envoy-go-race and envoy-go-race-api, and the alone steps of envoy-go-race and
+# envoy-go-checks - since neither -json nor the redirect that keeps the stream is a form the check
+# reduces. envoy-go-race-docs is pinned for a reason of its own: its two lines make a directory and
+# run the package under .github/scripts/race_memory.py (RACE_DOCS_SCRIPT below).
 PACK_STEP = "Pack envoy binaries"
 PACK_SCRIPT = """\
 pids=()
@@ -1525,7 +1526,8 @@ hold_supervise_table_tests()
 # once: each job's step name, its -timeout, and the packages the step names, in the order it names
 # them. Everything the lane decides is built from this list - the three steps' own texts, the
 # envoy-go unit step's `grep -Ev`, which leaves out exactly what the lane runs, and the -run lists
-# of the plain call that runs what a race build cannot (RACE_IMPOSSIBLE_CALL below) - and
+# of the plain call that runs what a race build cannot (RACE_IMPOSSIBLE_CALL below) and of the
+# steps that run its wall-clock tests alone (ALONE_STEPS below) - and
 # check-ci-filters.sh fails when ci.yaml's text for any of them differs from the text built here,
 # so a package added to the lane reaches all of them or the check goes red. internal/dispatch/pmdoc
 # is not in the lane: it runs plain only.
@@ -2035,8 +2037,9 @@ RACE_IMPOSSIBLE_TIMEOUT = "14m"
 
 
 def race_impossible_call(packages) -> str:
-    """envoy-go's plain run of the tests the detector makes impossible: one `go test` over every
-    package of `packages` (race_impossible_tests), their tests anchored and sorted in one -run.
+    """envoy-go's plain run of the tests the detector makes impossible but those that run alone
+    (alone_split, below): one `go test` over every package of `packages` (the rest alone_split
+    leaves of race_impossible_tests), their tests anchored and sorted in one -run.
     It is a call of the unit step, started in the background beside the package list, so it
     carries -json like the step's other calls and its stream and log are added where
     UNIT_TEST_SCRIPT places it.
@@ -2073,10 +2076,155 @@ def race_impossible_script(packages) -> str:
     return "\n".join(lines)
 
 
-# The call as the lane and packages/envoy's own source make it, so a test added under
-# `//go:build !race` or behind raceEnabled changes this text and ci-job-envoy-go.yaml stops
-# matching it.
-RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(ENVOY)
+# The tests of the walk that run alone on a runner, as main runs them, rather than in envoy-go's
+# race-impossible call: the tests whose assertion is a wall-clock time measured in the test's own
+# process, which the load of the unit step's other calls moves. Main runs them in a step of its
+# own, one package at a time, with nothing else running on the runner (its ci-job-envoy-go.yaml,
+# step "Test what the race build cannot run at all or at full size"). This branch folded that
+# step into the unit step's race-impossible call, and each run of the measurement pair at
+# c3e93e7e failed one xid window test there: TestXidWindowIssueAskRepairRestoration (run
+# 44476496859, job 135398348168) and TestXidWindowAskBlockEditThenIssueClose/
+# issue_close_with_open_asks, whose largest gap was 24.836 ms (run 44476544762, job
+# 135411145948). So each runs in an alone step (ALONE_STEPS below), and the call runs the rest.
+#
+# Every xid window test is one by its name, so a TestXidWindow* test main adds later lands here
+# by itself: each judges the largest statement-free gap in a transaction's xid window against
+# storetest.XidMaxGap (5 ms, internal/dispatch/store/storetest/xidwindow.go). ALONE_TESTS names the
+# others, keyed by the directory of their package in this repository, each for its reason:
+#   * internal/broker/natscallout's restart storm asserts that the slowest of its decisions took
+#     less than decideBudget (storm_test.go), and at full size its setup fails on a loaded runner
+#     (race_disabled_test.go).
+# A name ALONE_TESTS holds that the walk no longer finds in its package is refused (alone_split),
+# as a TEXT_CHECK_TESTS row the walk never reads is, so a rename cannot put the test back beside
+# the load with every check green.
+ALONE_PREFIX = "TestXidWindow"
+ALONE_TESTS = {
+    f"{ENVOY}/internal/broker/natscallout": {"TestACalloutStormAfterAServerRestartAdmitsEveryConnection"},
+}
+
+
+def alone_split(root, packages) -> tuple:
+    """`packages` (race_impossible_tests over `root`) in two, each per package in its order: the
+    tests that run alone - every name that starts with ALONE_PREFIX, and each name ALONE_TESTS
+    holds for a package under `root` - and the rest, which envoy-go's race-impossible call runs.
+    A name ALONE_TESTS holds under `root` that `packages` does not hold for that package is
+    refused: the row would otherwise go on naming a test that was renamed, moved or deleted, and
+    the test it meant would run in the call, beside the load."""
+    named = {key.removeprefix(f"{root}/"): names for key, names in ALONE_TESTS.items()
+             if key.startswith(f"{root}/")}
+    gone = sorted(f"{name} in {under}" for under, names in named.items()
+                  for name in names - packages.get(under, set()))
+    if gone:
+        raise ValueError(f"ALONE_TESTS names {', '.join(gone)}, which the lane's walk of {root} does not find "
+                         "there (race_impossible_tests): the test was renamed, moved or deleted, or no longer "
+                         "runs smaller under the detector, and the row now keeps nothing out of the "
+                         "race-impossible call; follow the test, or drop the name")
+    alone, rest = {}, {}
+    for under, names in packages.items():
+        timed = {name for name in names if name.startswith(ALONE_PREFIX)} | named.get(under, set())
+        if timed:
+            alone[under] = timed
+        if names - timed:
+            rest[under] = names - timed
+    return alone, rest
+
+
+# The -timeout of each alone step's one go test: main's 10 minutes, the limit main gives each such
+# call (one go test per package in its step "Test what the race build cannot run at all or at full
+# size"), since the pair at 4f1f4436 holds no reading of these steps. Until the R6 commit after the
+# next measurement pair sets it, and the timeout-minutes of each job that holds such a step, from
+# that pair, the 10 minutes are main's.
+ALONE_TIMEOUT = "10m"
+
+
+def alone_call(packages) -> str:
+    """A plain run of alone tests: one `go test` over every package of `packages` (an alone step's
+    share of alone_split's first half), their tests anchored and sorted in one -run, as
+    race_impossible_call builds the call it leaves them out of. -p 1 runs the packages one at a
+    time, each one's build and tests before the next one's, as main's one call per package did, so
+    no package's measurement runs beside another package's build or tests. -timeout
+    ALONE_TIMEOUT."""
+    if not packages:
+        return ""
+    names = sorted(set().union(*packages.values()))
+    return (f"go test -json -count=1 -p 1 -timeout {ALONE_TIMEOUT} -run '^({'|'.join(names)})$' "
+            + " ".join(f"./{under}" for under in packages))
+
+
+class AloneStep(NamedTuple):
+    """An alone step: the ci.yaml job whose step it is, the race job whose packages' alone tests
+    it runs, and the file its `go test -json` stream is written to."""
+
+    job: str
+    lane: str
+    stream: str
+
+
+# The alone steps. Each is the first test step of its job, after that job's Postgres read-back and
+# sizing steps, so the job's Postgres service is quiet and nothing else runs on the runner while it
+# does. envoy-go-race runs the alone tests of the packages it race-tests, delivery's and the auth
+# service's. The API's run in envoy-go-checks, not in envoy-go-race-api: the API's plain test
+# binary compiles its eight `//go:build !race` guard files whatever -run selects, and their RULES
+# rows read every non-test file of packages/envoy (MODULE_SOURCES), which envoy-go-checks' filter
+# covers already (packages/envoy/**), as envoy_go_race_api's, the closure of the API's race build,
+# does not; and that job is off envoy-go's critical path, as envoy-go-race-api is.
+ALONE_STEP = "Test the wall-clock measurements alone"
+ALONE_STEPS = (
+    AloneStep("envoy-go-race", "envoy-go-race", "alone.json"),
+    AloneStep("envoy-go-checks", "envoy-go-race-api", "alone-api.json"),
+)
+ALONE_STEP_OF = {step.job: step for step in ALONE_STEPS}
+
+
+def race_job_of(under) -> str:
+    """The lane's job whose race step runs the package `under`, a path under packages/envoy: the
+    first, in the lane's order, that names the package alone or as a tree holding it, as
+    race_lane_packages() reads a package once, for the first job that names it."""
+    for job in ENVOY_RACE_LANE:
+        for package in job.packages:
+            if under == package.name or (package.tree and under.startswith(f"{package.name}/")):
+                return job.job
+    raise ValueError(f"{under} is no package of the race lane")
+
+
+def alone_jobs(alone) -> dict:
+    """Each AloneStep -> its share of `alone` (alone_split's first half): the alone tests of the
+    packages its lane job race-tests, per package in `alone`'s order. Refuses an alone test of a
+    race job no AloneStep names, which would then run in no step, and an AloneStep with no test,
+    whose step would run none."""
+    shares = {step: {} for step in ALONE_STEPS}
+    for under, names in alone.items():
+        lane = race_job_of(under)
+        step = next((s for s in ALONE_STEPS if s.lane == lane), None)
+        if step is None:
+            raise ValueError(f"{under} holds alone tests ({', '.join(sorted(names))}) and is race-tested by {lane}, "
+                             "which no AloneStep names, so no step would run them: add an alone step for that job "
+                             "to ALONE_STEPS")
+        shares[step][under] = names
+    empty = [f"{step.job}'s (for {step.lane})" for step, share in shares.items() if not share]
+    if empty:
+        raise ValueError(f"the alone step {', '.join(empty)} has no test to run: drop it from ALONE_STEPS and "
+                         "from its workflow")
+    return shares
+
+
+def alone_step(step):
+    """An alone step, pinned whole as race_step() pins a race step: alone_call over the step's
+    share of ALONE_PACKAGES in the `go test -json` stream json_stream_script writes. One plain Run
+    per package, since the step compiles each package's plain test binary whichever tests its -run
+    then selects."""
+    share = ALONE_SHARES[step]
+    return pinned_step(step.job, ALONE_STEP, ENVOY, json_stream_script(alone_call(share), step.stream), [
+        (ENVOY, [f"./{under}"], f"go test -run of the wall-clock measurements in ./{under}", {})
+        for under in share
+    ])
+
+
+# The call and the alone steps as the lane and packages/envoy's own source make them, so a test
+# added under `//go:build !race` or behind raceEnabled changes one of these texts and the workflow
+# holding it stops matching it.
+ALONE_PACKAGES, RACE_IMPOSSIBLE_PACKAGES = alone_split(ENVOY, race_impossible_tests(ENVOY))
+ALONE_SHARES = alone_jobs(ALONE_PACKAGES)
 RACE_IMPOSSIBLE_CALL = race_impossible_call(RACE_IMPOSSIBLE_PACKAGES)
 
 
@@ -2118,23 +2266,25 @@ rest=$(go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | grep -vxF "$lead")
 printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '{UNIT_TEST_SKIP}' -timeout 26m > "$RUNNER_TEMP/go-test-json/unit.json" &
 unit=$!
 # The tests the race detector makes impossible, which the race job of each of these
-# packages therefore cannot make, so envoy-go keeps a plain run of exactly them:
+# packages therefore cannot make, so envoy-go keeps a plain run of them:
 # internal/bus counts HoldsSeed's allocations, which the race runtime's own
-# allocations would be counted into; the API's and delivery's xid window tests judge
-# a window's gaps, which the detector stretches past any bound, so a race run checks
-# only their shape, which this run checks as well (storetest.XidJudgesGaps,
-# INFRA-636); and the documents package measures the heap a room keeps, which the
-# detector's shadow memory and instrumentation move. Those are
+# allocations would be counted into, and the documents package measures the heap a
+# room keeps, which the detector's shadow memory and instrumentation move. Those are
 # out of the race build altogether (//go:build !race), and the two render-reuse storms
 # run fewer seeds and fewer edits under it (raceEnabled), so this is their full-size
-# run. So is the NATS auth service's restart storm's: five hundred connections, two
-# hundred under the detector (raceEnabled), whose instrumentation makes each in-process
-# connect several times the cost (natscallout's race_disabled_test.go says why). The
-# API's seven source guards, and one_expression_guard_test.go beside them,
+# run. The API's seven source guards, and one_expression_guard_test.go beside them,
 # carry that tag too and are deliberately not here: they read the module's source,
 # the text-check job runs their fifteen tests by name, and ci_job_reads.py's
 # TEXT_CHECK_TESTS leaves exactly those out of this call rather than have each of
-# them run twice.
+# them run twice. Nor are the tests whose assertion is a wall-clock time measured in
+# their own process: the API's and delivery's xid window tests, which judge a
+# window's gaps against storetest.XidMaxGap, and the NATS auth service's restart
+# storm, which judges its slowest decision against decideBudget. Beside this step's
+# other calls the load moved those times, and each run of the pair at c3e93e7e failed
+# an xid window test here (runs 44476496859 and 44476544762). So they run as main
+# runs them, alone on a runner: delivery's and the storm in envoy-go-race and the
+# API's in envoy-go-checks, each job's first test step (ci_job_reads.py's
+# ALONE_PREFIX, ALONE_TESTS and ALONE_STEPS).
 # It was a step of its own before this one until dispatch://INFRA-985's condition for
 # running it here was measured: the three documents memory bounds read this process's
 # own heap after two forced collections, and the question was whether a slow mark
@@ -2147,14 +2297,13 @@ unit=$!
 # and delivery-hub tests wait for the event log's safe horizon and run in
 # envoy-go-race-api now. The one -run list is derived in
 # .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
-# //go:build !race and raceEnabled, so a test added to either and missing here fails
-# the ci-filters job naming this step. The restart storm took 17 s on a dev box.
+# //go:build !race and raceEnabled, less the tests that run alone, so a test added to
+# either and missing here fails the ci-filters job naming this step.
 # -timeout 14m, by R6 from the pair at 4f1f4436
 # (the table on this job): this call's slowest package on the slower run is
 # internal/dispatch/docs, 413.9 s (run 44195030350, job 134434361048), and
 # 413.9 / 30 = 13.80, so 14m. The limit leaves 426.1 s above that time, over the 30 s
-# of the documents package's roomWaitMargin. With the xid window tests in, one run on a
-# two-vCPU pod took the API 134.082 s and delivery 4.106 s (INFRA-636).
+# of the documents package's roomWaitMargin.
 #
 # One go test over its packages rather than one per package: go builds the test
 # binaries together and runs each package's tests as soon as its own binary is
@@ -2255,13 +2404,15 @@ shutdown=$!
 # 4f1f4436 (the table on this job): on the slower run of each, internal/testnats took
 # 4.6 s (run 44175873364, job 134367427217) and internal/bus 25.2 s (run 44195030350,
 # job 134434361048), and 4.6 / 30 = 0.15 and 25.2 / 30 = 0.84, so 1m each, the
-# smallest whole minute there is.
+# smallest whole minute there is. internal/broker/natscallout's command came from main
+# after that pair, so the pair holds no reading of it: its limit is the group's 1m
+# until the R6 commit after the next pair sets it from that pair.
 rig=$(../../{TAGGED_TESTS} natslive ./internal/testnats)
 cap=$(../../{TAGGED_TESTS} natslive ./internal/bus)
 callout=$(../../{TAGGED_TESTS} natslive ./internal/broker/natscallout)
 {{ go test -json -count=1 -timeout 1m -tags natslive -run "$rig" ./internal/testnats/ &&
   go test -json -count=1 -timeout 1m -tags natslive -run "$cap" -v ./internal/bus/ &&
-  go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/broker/natscallout/; }} > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
+  go test -json -count=1 -timeout 1m -tags natslive -run "$callout" ./internal/broker/natscallout/; }} > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
 natslive=$!
 # The integration suite, which runs a real NATS server in the test process.
 # -timeout 1m, by R6 from the pair at 4f1f4436 (the table on this job): this call's
@@ -3314,8 +3465,9 @@ GATES = [
         #     runs both, with the check that makes the first a requirement. The tests stay
         #     compiled into the list's binaries, which is what a skipped test is;
         #   * the race-impossible call is one go test over every package of the plain run the
-        #     race lane cannot make (RACE_IMPOSSIBLE_*), selecting their tests with one -run,
-        #     so it gets a Run per package of that walk;
+        #     race lane cannot make, the tests that run alone apart (RACE_IMPOSSIBLE_*,
+        #     alone_split), selecting their tests with one -run, so it gets a Run per package of
+        #     what that split leaves;
         #   * internal/pgmigrate, internal/dispatch/routes, internal/dispatch/events and
         #     internal/integration, which the list leaves to calls of their own, get a Run each,
         #     and so does the shutdown call, whose package cmd/dispatch the list runs too, so a
@@ -3369,11 +3521,18 @@ GATES = [
     # architecture-note and spec-file rules and their commands, the note check over this
     # repository's notes through the composite action, the spec-file check over its spec
     # directory through the other one, and the guard that no CI file compares the spec files with
-    # the approved spec. Its gofmt step reads the whole module, so no closure stands for it.
+    # the approved spec, and the API's alone tests (ALONE_STEPS), on a Postgres service of the
+    # job's own that its read-back and sizing steps read as the race jobs' steps read theirs. Its
+    # gofmt step reads the whole module, so no closure stands for it.
     gate("envoy_go_checks", "envoy-go-checks", runs=[
         step_run("envoy-go-checks", "Build envoy services", "go build ./cmd/dispatch ./cmd/listener", ENVOY,
                  ["./cmd/dispatch", "./cmd/listener"], mode="build"),
+        ceiling_run("envoy-go-checks"),
     ], exact=[
+        # The API's xid window tests, alone on the runner (ALONE_STEPS says why they run in this
+        # job): one plain go test, which writes a `go test -json` stream, so the step is pinned
+        # whole rather than reduced.
+        alone_step(ALONE_STEP_OF["envoy-go-checks"]),
         # LISTENERWIRE_PACKAGES' tests (listenerwire's, its clients test's type check of the daemon's
         # listener clients among them, and internal/wirecheck's), built from the list the unit
         # step's `grep -Ev` leaves them out by. The step writes a `go test -json` stream, so it is
@@ -3481,7 +3640,8 @@ GATES = [
                  "spec-check guard reads every file under it")
           for glob in (".github/workflows/**", ".github/actions/**", ".github/scripts/**", "scripts/**")],
     ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks")
-      + darwin_vet_reads("envoy-go-checks", ENVOY_DARWIN_VET, ENVOY)),
+      + darwin_vet_reads("envoy-go-checks", ENVOY_DARWIN_VET, ENVOY)
+      + ceiling_reads("envoy-go-checks") + service_settings("envoy-go-checks")),
 
 
     gate("envoy_infra_go", "envoy-infra-go", runs=[
@@ -3545,9 +3705,13 @@ GATES = [
     # (dispatch://INFRA-1075, as envoy-go's own steps). envoy-go-race-docs is the one whose step
     # is not race_step's text at all: it runs the package under .github/scripts/race_memory.py
     # (dispatch://INFRA-1085), so its gate pins that whole line while the lane table still names
-    # the package, which is what keeps it out of the unit step.
+    # the package, which is what keeps it out of the unit step. envoy-go-race also runs the alone
+    # tests of the packages it race-tests, in a plain step before its race step (alone_step,
+    # pinned whole for the same reason), and restores go-envoy for that plain build, as
+    # envoy-go-docs-finalizers does: the restore's key is the Go version setup-go read from
+    # packages/envoy/go.mod, which is the read setup_go() declares, so the restore adds none.
     gate("envoy_go_race", "envoy-go-race", runs=[ceiling_run("envoy-go-race")],
-         exact=[race_step(RACE_JOBS["envoy-go-race"])],
+         exact=[alone_step(ALONE_STEP_OF["envoy-go-race"]), race_step(RACE_JOBS["envoy-go-race"])],
          reads=ceiling_reads("envoy-go-race") + setup_go("envoy-go-race", f"{ENVOY}/go.mod")
          + service_settings("envoy-go-race")),
 
