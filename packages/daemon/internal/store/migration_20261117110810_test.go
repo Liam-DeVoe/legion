@@ -14,10 +14,10 @@ const basisSeedsVersion = 20261117110810
 // and a re-parent seed the new parent of a root that ran (record.ReparentSeed). The outbox refuses
 // a kind its constraint does not name, so neither row could be queued before this migration: the
 // negative control is that refusal, read before the migration, on a database that already carries
-// the role-holders kind list (20261116165926), which this version stands above. After it both rows
-// are queued, and so is every kind the constraint already named, the two merge-queue kinds and the
-// role-holders publication among them, since the migration rewrites the list whole and a kind left
-// out would stop its own effect. A kind that is none is still refused, and so is a merge-lane kind,
+// the step-record kind list (20261117000528), which this version stands above. After it both rows
+// are queued, and so is every kind the constraint already named, the two merge-queue kinds, the
+// role-holders publication and the step record among them, since the migration rewrites the list
+// whole and a kind left out would stop its own effect. A kind that is none is still refused, and so is a merge-lane kind,
 // which went with the merge the daemon no longer submits.
 func TestTheOutboxTakesTheBasisSeedKindsWith20261117110810(t *testing.T) {
 	ctx := context.Background()
@@ -43,8 +43,8 @@ func TestTheOutboxTakesTheBasisSeedKindsWith20261117110810(t *testing.T) {
 		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
 		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
 		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
-		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "pending_basis_seed",
-		"reparent_seed",
+		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record",
+		"pending_basis_seed", "reparent_seed",
 	} {
 		if err := queue(kind); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)

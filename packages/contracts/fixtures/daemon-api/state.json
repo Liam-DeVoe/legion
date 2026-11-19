@@ -351,7 +351,7 @@
               }
             },
             "pendingCause": "died",
-            "leakCheckCause": "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found"
+            "leakCheckCause": "the shared public leak check could not be installed: GitHub answered the read of example-org/deployment at leak-check-v3 with HTTP 404: Not Found"
           },
           "pass": 1,
           "rounds": 1
@@ -973,6 +973,13 @@
             "wait_seconds": 8,
             "interval_milliseconds": 250
           }
+        },
+        "volume_trim": {
+          "enabled": true,
+          "high_percent": 90,
+          "low_percent": 60,
+          "min_age_minutes": 120,
+          "interval_seconds": 30
         },
         "sandbox": {
           "type": "gvisor",

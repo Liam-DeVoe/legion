@@ -10,14 +10,15 @@
 -- marks requirement blocks and holds a person's approval of its latest version.
 --
 -- The check is one list, so the migration that sets it names every kind, as 20261106041346,
--- 20261108000545, 20261110235320, 20261113082214, 20261114031356 and 20261116165926 did:
--- whichever of two open branches merges last admits both their kinds. The list is
--- 20261116165926's twenty-five kinds, merge_queue_read, merge_queue_removal and
--- role_holders_publish among them, with pending_basis_seed and reparent_seed added. It drops the
--- constraint if it exists before adding it, so it is safe on a database at either branch. Its
--- version stands above 20261116165926, and Migrate applies every unrecorded migration in version
--- order, so this list is the last word on a fresh database and on one main migrated. No release
--- carries this file, so no deployment's database records it.
+-- 20261108000545, 20261110235320, 20261113082214, 20261114031356, 20261116165926 and
+-- 20261117000528 did: whichever of two open branches merges last admits both their kinds. The
+-- list is 20261117000528's twenty-six kinds, merge_queue_read, merge_queue_removal,
+-- role_holders_publish and step_record among them, with pending_basis_seed and reparent_seed
+-- added. It drops the constraint if it exists before adding it, so it is safe on a database at
+-- either branch. Its version stands above 20261117000528, and Migrate applies every unrecorded
+-- migration in version order, so this list is the last word on a fresh database and on one main
+-- migrated, and a list that left out step_record would refuse every record of a step's start or
+-- end. No release carries this file, so no deployment's database records it.
 --
 -- A database a build of this branch migrated before 2026-11-17 recorded this list under the version
 -- 20261114064235, which stood above main's newest kind list then, and recorded neither
@@ -44,5 +45,5 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
-  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'pending_basis_seed',
-  'reparent_seed'));
+  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record',
+  'pending_basis_seed', 'reparent_seed'));
