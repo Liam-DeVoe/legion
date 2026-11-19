@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -199,6 +202,70 @@ func projectOwnerOf(t *testing.T, database *store.Store, key string) string {
 		t.Fatalf("read %s's owner: %v", key, err)
 	}
 	return owner
+}
+
+// TestACreateSetsOnlyAnOwnerSetOwnerWouldTake: one owner rule, at a create as at every later
+// write. A broker token can act for a person no people row holds, whom SetOwner refuses as an
+// owner, so a create acting for one leaves the owner to its default assignee, held to the full-
+// member check a credential acting for nobody is: a full member's default owns the project, a
+// restricted one is 400 OWNER_NOT_ALLOWED with nothing written, and naming none is
+// 400 ASSIGNEE_NOT_ALLOWED, since that person is the default and has not signed in. Every owner a
+// create sets is one SetOwner takes.
+func TestACreateSetsOnlyAnOwnerSetOwnerWouldTake(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	seedPeople(t, rig.database, accessCarol, accessErin)
+	markRestricted(t, rig.database, accessErin)
+	const nobody = "nobody@outside.example"
+	tokens := map[string]string{nobody: "token-nobody", brokerTestPerson: "token-alice"}
+	for person, token := range tokens {
+		answer := liveNamedToken(caller.jkt)
+		answer.Person = person
+		answer.ProjectScope, answer.Projects = brokertoken.ProjectScopePerson, nil
+		rig.broker.Says(token, answer)
+	}
+	create := func(token, key string, body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		body["key"], body["name"] = key, key
+		return rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/projects", tokens[token], body))
+	}
+
+	// (a) A person no people row holds never becomes an owner.
+	if response := create(nobody, "NOROW", map[string]any{"default_assignee": accessCarol}); response.Code != http.StatusCreated {
+		t.Fatalf("%s's create naming %s: %d %s", nobody, accessCarol, response.Code, response.Body.String())
+	}
+	if owner := projectOwnerOf(t, rig.database, "NOROW"); owner != accessCarol {
+		t.Fatalf("NOROW's owner = %q, want its default assignee %s: %s has never signed in, so SetOwner would refuse them", owner, accessCarol, nobody)
+	}
+	before := allEvents(t, rig.database)
+	wantRefusal(t, create(nobody, "NORES", map[string]any{"default_assignee": accessErin}),
+		http.StatusBadRequest, "OWNER_NOT_ALLOWED", nobody, "POST /api/v1/projects naming a restricted member")
+	wantRefusal(t, create(nobody, "NONE", map[string]any{}),
+		http.StatusBadRequest, "ASSIGNEE_NOT_ALLOWED", nobody, "POST /api/v1/projects naming no default")
+	if got := countRows(t, rig.database, `select count(*) from projects where key in ('NORES', 'NONE')`); got != 0 || allEvents(t, rig.database) != before {
+		t.Fatalf("the refused creates stored %d projects and moved events from %d to %d", got, before, allEvents(t, rig.database))
+	}
+	// A full member acting for themself still owns what they create.
+	if response := create(brokerTestPerson, "MINE", map[string]any{}); response.Code != http.StatusCreated {
+		t.Fatalf("%s's create: %d %s", brokerTestPerson, response.Code, response.Body.String())
+	}
+	if owner := projectOwnerOf(t, rig.database, "MINE"); owner != brokerTestPerson {
+		t.Fatalf("MINE's owner = %q, want %s, who created it", owner, brokerTestPerson)
+	}
+
+	// (b) SetOwner takes every owner a create set.
+	for _, key := range []string{"NOROW", "MINE"} {
+		owner := projectOwnerOf(t, rig.database, key)
+		tx, err := rig.database.Pool.Begin(context.Background())
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		_, _, err = access.SetOwner(context.Background(), tx, events.NewBroker(), key, owner, model.Actor{Kind: "user", ID: owner})
+		_ = tx.Rollback(context.Background())
+		if err != nil {
+			t.Errorf("SetOwner(%s, %s), the owner the create set: %v", key, owner, err)
+		}
+	}
 }
 
 // TestWhoamiOfAFullMemberIsUnchanged (R9): GET /api/v1/whoami answers a full member and the shared
