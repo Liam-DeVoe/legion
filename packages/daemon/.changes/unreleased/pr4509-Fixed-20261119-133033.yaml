@@ -1,0 +1,5 @@
+kind: Fixed
+body: With `pod_update_rounds_per_minute` set, a sweep that took a while in its walk before it opened a pod update round (on a slow read of a pod from the cluster, for one) recorded the time the sweep started as the time of that opening, so the next sweep could open another round 50 seconds or less after the real opening. Each opening is now dated when the sweep makes it.
+time: 2026-11-19T13:30:33.373716494Z
+custom:
+    Issue: pr4509
