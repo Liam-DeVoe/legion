@@ -542,16 +542,17 @@ check "an argv by its name, cmd:, node's command and args; the chain; each opera
 
 # --- One row both checks read through these modules ------------------------------------------------
 
-# both <name>: a tree holding both checks, a ci.yaml, a file of each language the go check reads
-# and a Go test file the Oh My Pi check reads. Each check imports the modules from the directory
-# its link resolves to, this one. Echoes its root.
+# both <name>: a tree holding both checks, a ci.yaml whose one job sets up Go and runs with
+# GOPROXY=off and GOFLAGS=-mod=readonly (a Go job the go check's rule 4 reads), a file of each
+# language the go check reads and a Go test file the Oh My Pi check reads. Each check imports the
+# modules from the directory its link resolves to, this one. Echoes its root.
 both() {
   local root="$work/$1"
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/packages/app" "$root/packages/web" "$root/tools"
   for linked in check-go-offline.sh check-omp-offline.sh; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
-  printf 'name: CI\non: pull_request\njobs:\n  lint:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo lint\n' \
+  printf 'name: CI\non: pull_request\nenv:\n  GOPROXY: "off"\n  GOFLAGS: -mod=readonly\njobs:\n  lint:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/setup-go@v5\n      - run: echo lint\n' \
     >"$root/.github/workflows/ci.yaml"
   printf 'package app\n\nfunc App() {}\n' >"$root/packages/app/app.go"
   printf 'package app\n\nimport "testing"\n\nfunc TestApp(t *testing.T) {}\n' >"$root/packages/app/app_test.go"
