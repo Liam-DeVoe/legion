@@ -121,13 +121,20 @@ func TestTwoFirstRecordsOfAPairWithCrossedIssueLocksBothCommit(t *testing.T) {
 		t.Fatalf("the first write on PP-1: %v", err)
 	}
 
+	// The second write's backend is read before it writes, so the test can watch that one backend
+	// queue behind the first write's transaction (storetest.QueuedBehind): a record of the pair
+	// that waited on the first's uncommitted row queues there, and fails the test the moment it
+	// does. The 30 s bound only turns a write that neither commits nor queues into a failure.
+	pids := make(chan uint32, 1)
 	second := make(chan error, 1)
 	go func() {
 		second <- func() error {
 			tx, err := database.Pool.Begin(context.Background())
 			if err != nil {
+				pids <- 0
 				return err
 			}
+			pids <- tx.Conn().PgConn().PID()
 			defer tx.Rollback(context.Background())
 			if _, err := broker.Append(context.Background(), tx, issueEvent("PP-2")); err != nil {
 				return err
@@ -135,13 +142,29 @@ func TestTwoFirstRecordsOfAPairWithCrossedIssueLocksBothCommit(t *testing.T) {
 			return tx.Commit(context.Background())
 		}()
 	}()
-	select {
-	case err := <-second:
-		if err != nil {
-			t.Fatalf("the second write on PP-2 = %v, want it committed", err)
+	pid := <-pids
+	deadline := time.Now().Add(30 * time.Second)
+	for committed := false; !committed; {
+		select {
+		case err := <-second:
+			if err != nil {
+				t.Fatalf("the second write on PP-2 = %v, want it committed", err)
+			}
+			committed = true
+			continue
+		default:
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the second write on PP-2 waited 10s on the first's uncommitted record of the same pair")
+		queued, err := storetest.QueuedBehind(ctx, first, pid)
+		if err != nil {
+			t.Fatalf("read whether the second write queues behind the first: %v", err)
+		}
+		if queued {
+			t.Fatal("the second write on PP-2 waits on a lock the first write holds: its record of the pair waits for the first's uncommitted row")
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the second write on PP-2 neither committed nor queued behind the first within 30s")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 
 	if _, err := broker.Append(ctx, first, issueEvent("PP-2")); err != nil {
