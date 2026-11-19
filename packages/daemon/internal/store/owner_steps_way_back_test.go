@@ -138,7 +138,11 @@ func TestTheOwnerStepsWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCannotRea
 				Role: claim.RoleImplementer, Phase: phase.Retro, Reason: key + " passed its last step"}},
 			{name: "the notice of a plan not taken", newKind: true, payload: record.Notice{Kind: "plan-not-taken", Role: claim.RoleArchitect,
 				Reason: "The first step of " + key + " took no plan of an earlier owner"}},
-			{name: "the controller's copy of a stop's notice", newKind: true, payload: record.ControllerNotice{Kind: "task-stopped",
+			// No writer of this release queues a controller notice of the three kinds: each is told
+			// through Engine.notice alone, never noticeWithController. The kind takes every kind an
+			// architect is told (record's validateOutboxPayload), so the block deletes such a row too,
+			// and this row is that state, which no write of this release reaches.
+			{name: "a controller notice of a stop, which no writer of this release queues", newKind: true, payload: record.ControllerNotice{Kind: "task-stopped",
 				Role: claim.RoleTester, Phase: phase.Testing, Reason: "task a of " + key + " was stopped"}},
 			{name: "the stop of a stopped task's step", newKind: true, payload: record.SuperviseRequest{Op: "step_stop", Tree: tree,
 				Role: claim.RoleTester, Generation: 1, Reason: "task a of " + key + " was stopped by its owner"}},
