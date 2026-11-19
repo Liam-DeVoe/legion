@@ -592,6 +592,16 @@ func main() {
 		fatal("dispatch: build the broker access-token verifier", "error", err)
 	}
 	built.BrokerTokens = brokerTokens
+	// The registry /metrics serves on the API port (dispatchHandler), built whether or not NATS is
+	// configured: the probe answers from the moment the server does, and a process with no bus
+	// simply leaves the outbox's counter at zero. The API adds the gauges of the mention sends it
+	// holds behind an earlier event to it (api.Deps.Metrics), and the outbox those of its fallback
+	// copies. It is its own registry, not the metrics listener's (startMetrics,
+	// newDispatchMetrics): that listener binds only where DISPATCH_METRICS_ADDR is set, which no
+	// deployment here does and the load test does, while what this registry counts is owed
+	// wherever Dispatch runs, so each registry serves its own /metrics.
+	met := metrics.New()
+	built.Metrics = met
 	if brokerTokens != nil {
 		slog.Info("dispatch: deciding access tokens the secrets broker issued", "broker", redact.URL(boot.AgentSecretsURL))
 	}
@@ -771,13 +781,6 @@ func main() {
 	// shutdown waits for before it closes the pools; it stays nil with no outbox.
 	var outboxPublisher *outbox.Outbox
 	var outboxStopped chan struct{}
-	// The registry /metrics serves on the API port (dispatchHandler), built whether or not NATS is
-	// configured: the probe answers from the moment the server does, and a process with no bus
-	// simply leaves the outbox's counter at zero. It is its own registry, not the metrics
-	// listener's (startMetrics, newDispatchMetrics): that listener binds only where
-	// DISPATCH_METRICS_ADDR is set, which no deployment here does and the load test does, while
-	// this counter is owed wherever Dispatch runs, so each registry serves its own /metrics.
-	met := metrics.New()
 	outboxPublishFailures := met.NewCounter(
 		"envoy_dispatch_outbox_publish_failures_total",
 		"Destinations of an outbox publish attempt that were not reached, by reason: denied (the server refused the send under the connection's own publish permissions), refused (NATS refuses it however often it is retried), unanswered (NATS took the forward and the stream did not acknowledge the copy it stored, which is the whole of a forward's answer) or failed (every other failure)",
@@ -808,6 +811,7 @@ func main() {
 			KeptLanes:        natsClient,
 			PublishFailures:  outboxPublishFailures,
 			RoleForwardsHeld: outboxRoleForwardsHeld,
+			Metrics:          met,
 		})
 		outboxStopped = make(chan struct{})
 		go func() {
@@ -1885,6 +1889,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.HorizonStallAfter = boot.HorizonStallAfter
 	built.HorizonWarnEvery = boot.HorizonWarnEvery
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
+	built.OutboxPublishes = !boot.NATSDisabled
 	built.DevSignIn = boot.DevSignIn
 	return built
 }

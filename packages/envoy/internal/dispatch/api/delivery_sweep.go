@@ -239,7 +239,10 @@ func resumeWorkers(background *store.Pool) int {
 
 // resumeOwedDelivery sends one owed attempt, as a repeat under its write's key sends it, bound to
 // its number and holding no claim of its own: an attempt a live sender took in the meantime, or
-// that settled, is left as it is, and no attempt of the sweep's own is opened.
+// that settled, is left as it is, and no attempt of the sweep's own is opened. A mention attempt
+// whose session must take an earlier event of the comment's owner first, or whose read of that
+// rule failed (mentionHeldForOrder), is handed, under the claim the send took, to this process's
+// mention sender, whose lane for that session sends it once the outbox has sent that event.
 func (s *server) resumeOwedDelivery(ctx context.Context, owed owedDelivery) error {
 	if owed.commentID != "" {
 		comment, err := s.loadComment(ctx, s.workStore(ctx).Pool, owed.commentID)
@@ -250,9 +253,12 @@ func (s *server) resumeOwedDelivery(ctx context.Context, owed owedDelivery) erro
 		if err != nil {
 			return err
 		}
-		_, err = s.deliverResolvedCommentMention(ctx, comment, created,
+		_, held, err := s.deliverResolvedCommentMention(ctx, comment, created,
 			ResolvedMention{Target: owed.target, Delivery: owed.delivery}, comment.Author,
 			attemptClaim{attempt: owed.attempt}, s.newTakeoverRetry())
+		if held != nil {
+			s.mentions.enqueue(ctx, held.send(created, comment.Author, s.newTakeoverRetry()))
+		}
 		return err
 	}
 	message, err := s.loadMessage(ctx, s.workStore(ctx).Pool, "", owed.messageID)

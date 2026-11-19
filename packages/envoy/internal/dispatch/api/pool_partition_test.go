@@ -312,16 +312,17 @@ func TestAMentionClaimRefreshRunsWhileTheRequestPoolIsFullyAcquired(t *testing.T
 	if !claimedPending(t, database, queued, "session:s1") {
 		t.Fatal("the attempt behind the held send is not held by the sender")
 	}
-	// With the pool held, the claim is moved back a lease on the row and in the sender's record
-	// together: a refresh already in flight when the pool filled carries the claim as it stood
-	// before that, which this write leaves the row no longer matching, so only a refresh made
-	// after it - one that took no request connection - can write the claim again.
+	// With the pool held, the claim is moved back to just short of a lease on the row and in the
+	// sender's record together: a refresh already in flight when the pool filled carries the claim
+	// as it stood before that, which this write leaves the row no longer matching, so only a refresh
+	// made after it - one that took no request connection - can write the claim again. One a whole
+	// lease old has lapsed, and the refresh no longer writes it (refreshMentionClaims).
 	holdEveryConnection(t, database.Pool)
 	background, err := database.Pool.Background()
 	if err != nil {
 		t.Fatalf("open the background pool: %v", err)
 	}
-	ageQueuedClaims(t, background, served.mentions, model.DeliveryClaimLapse)
+	ageQueuedClaims(t, background, served.mentions, model.DeliveryClaimLapse-5*time.Second)
 	aged := attemptClaimedAt(t, background, queued, "session:s1")
 
 	for deadline := time.Now().Add(10 * time.Second); ; {
