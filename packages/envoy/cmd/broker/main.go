@@ -11,6 +11,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/x509"
 	"encoding/pem"
@@ -1239,7 +1240,8 @@ func judgeDispatch(cfg config.Config) *judge.Dispatch {
 // fails this build rather than a deployment's first judged request.
 var _ judge.Requests = (*requests.Machine)(nil)
 
-// judgeDispatchTimeout bounds each of the judge's two Dispatch GETs. A run's own 30-second
+// judgeDispatchTimeout bounds each of the judge's Dispatch GETs (the issue, its spec document and
+// the ask the reason cites). A run's own 30-second
 // budget already ends a read whose server never answers, but that budget is shared with the
 // 20-second model call, so a client with no timeout of its own would let one stalled read eat
 // the whole run. Ten seconds is wake.Envoy's own bound for the same kind of call, an authorized
@@ -1251,6 +1253,10 @@ const judgeDispatchTimeout = 10 * time.Second
 // one line which of the two brokers this is. The five settings are all-or-none (config.Load
 // refuses a start that sets some of them), so the model URL alone says whether there is a judge,
 // and a judge always has dispatch, the read of Dispatch main built once and gave m as well.
+// The line of a broker with a judge names the identity whose token it presents to its model:
+// metadata for the metadata server's identity token, or the service account
+// BROKER_JUDGE_MODEL_ACCOUNT names, whose token is minted at generateIdToken. It is read off the
+// reader the model holds, so the line shows what was wired rather than what was configured.
 //
 // ctx is main's own signal.NotifyContext, which the first SIGTERM cancels, and not boot's
 // `serving`, which outlives the drain: every run hangs off it, so one in flight when the broker
@@ -1269,10 +1275,12 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 		slog.Info("model judge", "state", "off", "detail", detail)
 		return
 	}
+	account := brokertoken.NewGoogleAccount(cfg.JudgeModelAudience)
+	account.ServiceAccount = cfg.JudgeModelAccount
 	runner := judge.New(ctx, judge.Options{
 		Rules:      rules,
 		Dispatch:   *dispatch,
-		Model:      judge.NewModel(cfg.JudgeModelURL, cfg.JudgeModel, cfg.JudgeModelProtocol, cfg.JudgeModelAudience),
+		Model:      judge.NewModel(cfg.JudgeModelURL, cfg.JudgeModel, cfg.JudgeModelProtocol, account),
 		Requests:   m,
 		SkipChecks: cfg.JudgeTestSkipChecks,
 	})
@@ -1280,8 +1288,9 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 	// machine's own type, so this is the method and nothing else. Consider returns at once, so
 	// nothing of a run is on the requester's path.
 	m.Judge = runner.Consider
+	identity := cmp.Or(account.ServiceAccount, "metadata")
 	slog.Info("model judge", "state", "on", "model", cfg.JudgeModel, "protocol", cfg.JudgeModelProtocol,
-		"dispatch", cfg.JudgeDispatchURL, "skip_checks", cfg.JudgeTestSkipChecks)
+		"dispatch", cfg.JudgeDispatchURL, "identity", identity, "skip_checks", cfg.JudgeTestSkipChecks)
 }
 
 // googleExchangeAudience is the Google audience GET /v1/settings publishes: BROKER_GOOGLE_OIDC_AUDIENCE

@@ -3207,9 +3207,8 @@ jobs:
               - *listener_command
               # What cmd/listener's test binary compiles that `go list -deps ./cmd/listener` does
               # not, so listener_command, which is that build closure, leaves them to the jobs
-              # that run the tests: the chat client, the redirect table and the router.
+              # that run the tests: the chat client and the router.
               - 'packages/envoy/going/*'
-              - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/routing/*'
               # The two listener pod specs cmd/listener/pod_grace_period_test.go:23,28 read: it
               # holds each pod's grace, less its pre-stop wait, to the listener's stop budget.
