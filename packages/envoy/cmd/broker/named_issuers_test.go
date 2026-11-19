@@ -3,8 +3,9 @@
 // on a real Postgres and over HTTP alone: each token is checked by the issuer it names, an issuer
 // the broker cannot read stops neither the boot nor the other issuer and its tokens are answered
 // 503 until it can be read, the token exchange takes the issuers BROKER_EXCHANGE_K8S_ISSUER names,
-// and a listed account is taken only from the issuers its entry names. Every request and
-// answer is logged, with no token, as the live run's transcript.
+// a listed account is taken only from the issuers its entry names, and an account
+// BROKER_SESSION_ACCOUNT_PAIRS pairs with a name's holder takes the name only with a token its own
+// entry took. Every request and answer is logged, with no token, as the live run's transcript.
 package main
 
 import (
@@ -23,6 +24,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
@@ -810,4 +812,109 @@ func TestAnAccountIsAcceptedFromTheIssuersItsEntryNames(t *testing.T) {
 		{"the credential B's token login made stops authenticating", func() (int, string) { return client.authenticates(fromB) }, http.StatusUnauthorized, "LAUNCHER_INVALID"},
 		{"the credential A's token login made under the entry naming no issuer still authenticates", func() (int, string) { return client.authenticates(fromA) }, http.StatusNoContent, ""},
 	})
+}
+
+// TestAPairedAccountsPodTakesNoNameWithATokenOfAnIssuerItsEntryDoesNotName is
+// BROKER_SESSION_ACCOUNT_PAIRS against the issuers an account's tokens are taken from, on the real
+// binary with two named issuers, A and B, and a third, C, that BROKER_K8S_OIDC_ISSUER does not
+// name. A session name's holder is the account alone (exchange.AccountPrincipal), whatever cluster
+// signed the token, so what keeps a pair to the clusters an operator listed is the check each
+// token meets where it comes in, which runs before any claim on a name: the exchange takes a pod's
+// token only from an issuer its account's BROKER_EXCHANGE_ACCOUNTS entry names
+// (exchange.Set.Pod), and an enrollment only from an issuer BROKER_K8S_OIDC_ISSUER names
+// (enroll.Service.verifyPodToken), since a BROKER_SERVICES entry names none.
+//
+// oldAccount's exchange entry names A and B, and movedAccount's names none, so it takes A alone:
+// an entry written for one cluster. The two accounts are paired and bound to the daemon's service,
+// and the daemon registers each pod for the name before it trades. While oldAccount holds the
+// name, movedAccount's pod trading a token of B is refused invalid_request for its issuer, and its
+// pod enrolling with a token of C is refused 403 POD_IDENTITY_MISMATCH: the name stays
+// oldAccount's and no take is logged. The pair is then shown live from each named issuer:
+// movedAccount's pod trading a token of A takes the name, and oldAccount's pod enrolling with a
+// token of B takes it back, each take logged once.
+func TestAPairedAccountsPodTakesNoNameWithATokenOfAnIssuerItsEntryDoesNotName(t *testing.T) {
+	const (
+		oldAccount   = namedWorker
+		movedAccount = "system:serviceaccount:legion:legion-worker-next"
+	)
+	databaseURL := storetest.URL(t)
+	a, b, c := oidctest.New(t), oidctest.New(t), oidctest.New(t)
+	aKey, bKey, cKey := a.PublishKey(t, "a-key"), b.PublishKey(t, "b-key"), c.PublishKey(t, "c-key")
+	broker := startBroker(t, brokerOptions{Env: namedIssuersEnv(t, databaseURL, bothIssuers(a, b),
+		"BROKER_SERVICES="+namedService+"="+oldAccount+" "+namedService+"="+movedAccount,
+		"BROKER_SERVICE_LOGINS="+namedService+"="+namedDaemonA,
+		"BROKER_EXCHANGE_K8S_AUDIENCE="+exchangeAudience,
+		"BROKER_EXCHANGE_K8S_ISSUER=a,b",
+		"BROKER_EXCHANGE_ACCOUNTS="+oldAccount+"=ACME=ada@example.com==a,b "+movedAccount+"=ACME=ada@example.com",
+		"BROKER_SESSION_ACCOUNT_PAIRS="+oldAccount+"="+movedAccount,
+	)})
+	broker.AwaitRecord(t, "session account pairs", map[string]any{"state": "on"})
+	db := connectToBroker(t, databaseURL)
+	live := newLiveBroker(broker.Addr, proofKey(t))
+	client := namedClient{t: t, base: "http://" + broker.Addr}
+	oldPrincipal, movedPrincipal := exchange.AccountPrincipal(oldAccount), exchange.AccountPrincipal(movedAccount)
+	registrar := clusterToken(t, a, aKey, namedDaemonA, "")
+	// trade has the daemon register the pod uid of account, by a token issuer signs with key, for
+	// namedSession, and then trades that pod's token of the same issuer under the name.
+	trade := func(issuer *oidctest.Issuer, key *oidctest.Key, account, uid string) (int, map[string]any) {
+		t.Helper()
+		live.registered(t, clusterToken(t, issuer, key, account, uid), namedSession, registrar)
+		return live.exchange(t, exchangeForm(mintPodToken(t, issuer, key, account, exchangeAudience, uid), namedSession))
+	}
+	// holds fails t unless principal holds namedSession, as an ordinary claim, and the broker has
+	// logged exchangeTakes takes of a name by an exchange and enrollmentTakes by an enrollment.
+	holds := func(principal string, exchangeTakes, enrollmentTakes int) {
+		t.Helper()
+		if holder, fixed := sessionHolder(t, db, namedSession); holder != principal || fixed {
+			t.Fatalf("the name %s is held by %q (the configuration's hold: %t), want %q", namedSession, holder, fixed, principal)
+		}
+		if takes := recordsWith(broker.Log(), exchangeTookName, nil); len(takes) != exchangeTakes {
+			t.Fatalf("the broker logged %d %q lines, want %d: %v", len(takes), exchangeTookName, exchangeTakes, takes)
+		}
+		if takes := recordsWith(broker.Log(), enrollmentTookName, nil); len(takes) != enrollmentTakes {
+			t.Fatalf("the broker logged %d %q lines, want %d: %v", len(takes), enrollmentTookName, enrollmentTakes, takes)
+		}
+	}
+
+	t.Log("--- the old account's pod trades a token of A under the name, which makes the name its account's")
+	if status, body := trade(a, aKey, oldAccount, "pod-old-a"); status != http.StatusOK || body["access_token"] == nil {
+		t.Fatalf("the old account's pod trading a token of A under %s = %d %v, want 200 with an access token", namedSession, status, body)
+	}
+	holds(oldPrincipal, 0, 0)
+
+	t.Log("--- the moved account's pod trades a token of B, which its entry does not name, and takes nothing")
+	status, body := trade(b, bKey, movedAccount, "pod-moved-b")
+	description, _ := body["error_description"].(string)
+	if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil ||
+		!strings.Contains(description, "does not name the issuer of its token") {
+		t.Fatalf("the moved account's pod trading a token of B under %s = %d %v, want 400 invalid_request saying its entry does not name the token's issuer: the pair reaches a token only once its own entry took it", namedSession, status, body)
+	}
+	holds(oldPrincipal, 0, 0)
+
+	t.Log("--- the moved account's pod enrols with a token of C, which no setting names, and takes nothing")
+	status, code, daemon := client.tokenLogin(clusterToken(t, a, aKey, namedDaemonA, ""), proofKey(t))
+	if status != http.StatusOK || daemon.credentialID == "" {
+		t.Fatalf("the daemon's token login of A = %d %q, want 200 with a credential", status, code)
+	}
+	pods := func(issuer *oidctest.Issuer, key *oidctest.Key) podBroker {
+		return podBroker{t: t, base: client.base, issuer: issuer, key: key, audience: enrolmentAudience}
+	}
+	if _, status, answer := pods(c, cKey).enrolPod(daemon, "pod-moved-c", movedAccount, namedSession); status != http.StatusForbidden || codeOf(answer) != "POD_IDENTITY_MISMATCH" {
+		t.Fatalf("the moved account's pod enrolling %s with a token of C = %d %s, want 403 POD_IDENTITY_MISMATCH: a token of an issuer the broker does not name is refused before the name is claimed", namedSession, status, bytes.TrimSpace(answer))
+	}
+	holds(oldPrincipal, 0, 0)
+
+	t.Log("--- the moved account's pod trades a token of A, which its entry names, and takes the name")
+	if status, body := trade(a, aKey, movedAccount, "pod-moved-a"); status != http.StatusOK || body["access_token"] == nil {
+		t.Fatalf("the moved account's pod trading a token of A under %s = %d %v, want 200 with an access token: a paired account takes the name its pair holds", namedSession, status, body)
+	}
+	broker.AwaitRecord(t, exchangeTookName, map[string]any{"session": namedSession, "from": oldPrincipal, "to": movedPrincipal})
+	holds(movedPrincipal, 1, 0)
+
+	t.Log("--- the old account's pod enrols with a token of B, which BROKER_K8S_OIDC_ISSUER names, and takes the name back")
+	if _, status, answer := pods(b, bKey).enrolPod(daemon, "pod-old-b", oldAccount, namedSession); status != http.StatusCreated {
+		t.Fatalf("the old account's pod enrolling %s with a token of B = %d %s, want 201: a paired account takes the name its pair holds", namedSession, status, bytes.TrimSpace(answer))
+	}
+	broker.AwaitRecord(t, enrollmentTookName, map[string]any{"session": namedSession, "from": movedPrincipal, "to": oldPrincipal})
+	holds(oldPrincipal, 1, 1)
 }

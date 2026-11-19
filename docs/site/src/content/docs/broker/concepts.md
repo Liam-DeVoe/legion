@@ -796,10 +796,17 @@ nothing but the grants it asks for.
 Two Kubernetes service accounts can be paired so that either takes a session name the other holds:
 `BROKER_SESSION_ACCOUNT_PAIRS`, which an operator sets before moving a deployment's pods from one
 account to the other ([Operate](/legion/broker/operate/#what-to-run)).
-A pod's principal is the account its projected token proves, so without the pair a role's next
-pod, on the new account, is refused its own session name, and what the name carries stays behind.
+A pod's principal is the account its projected token proves, by the account's name alone,
+whichever of the broker's clusters signed the token, so a pod that moves to another cluster under
+the same account keeps its session names with no pair, and without the pair a role's next pod, on
+a new account, is refused its own session name, and what the name carries stays behind.
 With the pair, the claim takes the name, whether an enrollment or a token exchange makes it
 (`oauthstore/exchange.go`, `BindSession`).
+A pair names no issuer, and the claim it widens is made only once the broker has taken the pod's
+token where it came in: from an issuer `BROKER_K8S_OIDC_ISSUER` names at an enrollment
+(`enroll.go`, `verifyPodToken`), and from one the account's own exchange entry names at the token
+exchange (`packages/envoy/internal/broker/exchange/exchange.go`, `Set.Pod`), so a token either of
+them refuses takes no name through a pair.
 An enrollment under the name then takes what the other account's enrollments of it still hold, by
 the rule above for a successor under the same principal: the grants, the pending requests and the
 withheld names (`enroll.go`, `adopt`).

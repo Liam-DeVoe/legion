@@ -6627,6 +6627,8 @@ Before the release, the other cluster and the daemon need these:
   The pods of the other cluster enroll with their own cluster's tokens, since a `BROKER_SERVICES` entry names no issuer.
   The daemon keeps logging in with its own cluster's token: its `BROKER_SERVICE_LOGINS` entry names its own cluster's issuer, or names none while that issuer is the list's first.
   Keep that login's account: the broker holds a pod's grants to the pair of the pod's account and the account its daemon logs in as, so a role's session enrolled in the other cluster takes what the same session held in the first only while both accounts keep their names ([Operator configuration](#operator-configuration)).
+  Keep the pods' account too: the broker holds a session name for the account a pod's token proves, by the account's name alone and whichever cluster's issuer signed the token, so each role's pod in the other cluster enrolls and trades under the session name its pod held in the first, with no `BROKER_SESSION_ACCOUNT_PAIRS`.
+  A move that also changes `runtime.kubernetes.pod.service_account` needs that setting first, which pairs accounts and names no cluster (the item on moving the daemon's pods to another ServiceAccount in [Operator configuration](#operator-configuration)).
   The broker reads each issuer in the background, so it serves while the other cluster's issuer cannot be read, and answers that cluster's tokens `503 OIDC_ISSUER_UNAVAILABLE` until it can.
   The broker's token exchange takes the tokens of each cluster that `BROKER_EXCHANGE_K8S_ISSUER` names, by their names in the list and separated by commas.
   Where the broker sets `BROKER_EXCHANGE_K8S_AUDIENCE` and the list names two or more issuers, the broker refuses to boot without that setting.
@@ -7725,6 +7727,8 @@ each issue's pod (every role of it alike) and the image probe's.
   So before changing `service_account`, give the broker both settings and redeploy it:
   the new account's `legion-daemon=` entry in `BROKER_SERVICES` (above), without which the broker refuses each pod of that account `403 POD_NOT_LAUNCHED`, and the pair, which its start line then names, `session account pairs state=on pairs=<pairs>`.
   Where `runtime.kubernetes.agent_secrets.exchange_audience` is set (below), the new account also needs an entry of its own in `BROKER_EXCHANGE_ACCOUNTS`, without which the broker refuses the daemon's registration of each of its pods' sessions `403 POD_ACCOUNT_NOT_LISTED`, and refuses each token those pods trade.
+  A pair names its accounts by name alone, as the broker holds a session name, and reaches a pod only with a token the broker took where it came in: from an issuer `BROKER_K8S_OIDC_ISSUER` names at an enrollment, and from an issuer the account's own `BROKER_EXCHANGE_ACCOUNTS` entry names at the exchange.
+  So on a broker that trusts several clusters ([Moving a project's pods to another cluster](#moving-a-projects-pods-to-another-cluster)), the new account's entry names the issuer of each cluster its pods run in, and a pod whose token its entry does not take is refused that trade and takes no name.
   A pair works both ways, so moving the pods back needs no change of the setting.
   A pair added after a role's enrollment was refused takes effect at that role's next enrollment, which the daemon makes at the shim's next hello, on a redial of its connection or at the claim's next generation (above):
   the old enrollment's grants and pending requests come across while the broker still keeps them, `BROKER_SESSION_CARRY_SECONDS` (12 hours by default) after that enrollment ended, and its withheld secrets come across at that next enrollment whenever it comes.
@@ -7886,7 +7890,7 @@ A 404 is Dispatch holding no such project only with the code `PROJECT_NOT_FOUND`
 A `named` token naming a project fails until every broker replica, Dispatch and listener run the release that carries the list: this release's readers refuse an older broker's `project` answer, the broker also stores a named token's one project under `project` so an older replica answers it that way, and an older Dispatch refuses this release's named answers.
 The grant issues no refresh token, so each renewal is a fresh trade that Dispatch is asked about again.
 
-A session name belongs to one principal — the service account, the workflow, the Google account, or the person
+A session name belongs to one principal — the service account, by its name alone whichever cluster's issuer signed its token, the workflow, the Google account, or the person
 — and the broker refuses `invalid_grant` to another principal that names it (`claimSession`, `packages/envoy/internal/broker/oauth/exchange.go`), but for a service account `BROKER_SESSION_ACCOUNT_PAIRS` pairs with a holding service account:
 that account's claim takes the name, which the broker logs at WARN as `broker: the token exchange took a session name from the account paired with its own` (the item on moving the daemon's pods in [Operator configuration](#operator-configuration)).
 A claim, a pair's take among them, holds the name for `oauthstore.SessionRetention`, 90 days, past the expiry of the token the claim was made for (`BindSession`, `packages/envoy/internal/broker/oauthstore/exchange.go`).

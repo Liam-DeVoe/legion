@@ -297,7 +297,14 @@ requests of the old enrollment come across only while the broker still keeps the
 `BROKER_SESSION_CARRY_SECONDS` after that enrollment ended. While a pair stands, a pod of either
 account can claim any session name the other holds, not only its own role's, so remove the pairs
 with the old account once no live pod runs as it. The start line `session account pairs` names
-the pairs the broker read ([Health and logs](#health-and-logs)).
+the pairs the broker read ([Health and logs](#health-and-logs)). A pair names no issuer, as a
+session name's holder is the account alone, whichever cluster's issuer signed its pod's token: it
+reaches a pod only with a token the broker took where the token came in, from an issuer
+`BROKER_K8S_OIDC_ISSUER` names at an enrollment and from one the account's own
+`BROKER_EXCHANGE_ACCOUNTS` entry names at the exchange, so on a broker of several clusters the
+new account's exchange entry names each cluster its pods run in, and a pod whose token its entry
+does not take is refused and takes no name. Moving a service's pods to another cluster while they
+keep their account needs no pair: they hold the same session names there.
 
 A service's launcher, such as the Legion daemon, logs in with its own projected ServiceAccount
 token, and no person approves it. `BROKER_SERVICE_LOGINS` lists which ServiceAccounts may log in
