@@ -52,4 +52,6 @@ body: |-
   SQL. Delivery, the CI reconcile, the architecture importer and the results read of a check CI
   proves each refuse a stored repository name GitHub does not allow, naming it, before they make
   any GitHub request, so a mapping or a `renamed_to` stored before this release, and a pull
-  request row stored under one, never reaches GitHub.
+  request row stored under one, never reaches GitHub. `DISPATCH_REPO_PROJECTS` is held to the
+  same rule: an entry whose repository the rule refuses, such as `acme/.git=KEY`, which reads as
+  `acme/`, or `acme/..=KEY`, stops the boot, naming the entry, where an earlier release seeded it.
