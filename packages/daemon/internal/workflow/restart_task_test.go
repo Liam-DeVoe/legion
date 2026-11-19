@@ -40,7 +40,7 @@ func stoppedAtTesting(t *testing.T, pool *pgxpool.Pool, engine *Engine) record.I
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester")
 	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-	if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, "a")); result.Refusal != nil {
+	if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 		t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
 	}
 	held := issueOf(t, pool, engine, root.Key)

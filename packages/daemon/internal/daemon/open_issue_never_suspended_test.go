@@ -334,7 +334,7 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 				t.Fatal(err)
 			}
 			engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-			result, err := intake.ApplyFact(ctx, pool, "test", "stop-task", intake.TaskStopped{Issue: root.Key, Task: "a", By: architect}, engine)
+			result, err := intake.ApplyFact(ctx, pool, "test", "stop-task", intake.TaskStopped{Issue: root.Key, Task: "a", By: architect, Generation: root.Generation}, engine)
 			if err != nil {
 				t.Fatalf("stop task a: %v", err)
 			}

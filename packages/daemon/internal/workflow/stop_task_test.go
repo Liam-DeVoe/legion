@@ -16,11 +16,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// ownersStop is the stop_task of task of key by the architect of LEGION-208, the tree's root, as
-// the route hands it to the workflow (api's stopTask).
-func ownersStop(t *testing.T, key, task string) intake.TaskStopped {
+// ownersStop is the stop_task of task of issue by the architect of LEGION-208, the tree's root, as
+// the route hands it to the workflow (api's stopTask): at the generation of issue, the record the
+// route read.
+func ownersStop(t *testing.T, issue record.Issue, task string) intake.TaskStopped {
 	t.Helper()
-	return intake.TaskStopped{Issue: key, Task: task, By: claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))}
+	return intake.TaskStopped{Issue: issue.Key, Task: task, By: claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect)), Generation: issue.Generation}
 }
 
 // stopsBy is the reason a task stopped by its owner keeps, and the reason its step's process is
@@ -48,7 +49,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
 		statuses := len(issueOutboxOf(t, pool, root.Key, string(record.OutboxKindDispatchStatus)))
-		stop := ownersStop(t, root.Key, "a")
+		stop := ownersStop(t, root, "a")
 
 		if result := applyFacts(t, pool, engine)("stop", stop); result.Refusal != nil {
 			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
@@ -126,7 +127,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerTesterPassed, "", record.PhaseRow{})
 
-		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, "a")); result.Refusal != nil {
+		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
 		}
 
@@ -150,7 +151,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-		stop := ownersStop(t, root.Key, "a")
+		stop := ownersStop(t, root, "a")
 
 		if result := applyFacts(t, pool, engine)("stop", stop); result.Refusal != nil {
 			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
@@ -186,7 +187,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		assertWalksAt(t, pool, engine, root.Key, phase.Merging, record.TaskPlace{Kind: record.PlaceMerge})
 		apply := applyFacts(t, pool, engine)
 
-		if result := apply("stop", ownersStop(t, root.Key, "a")); result.Refusal != nil {
+		if result := apply("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
 		}
 		if stops := superviseRowsOf(t, pool, root.Key, "step_stop"); len(stops) != 1 || stops[0].Role != claim.RoleMerger {
@@ -246,7 +247,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 			planned bool
 			want    *intake.Refusal
 		}{
-			{"a task the plan does not hold", ownersStop(t, planned.Key, "b"), true, intake.TaskNotFound(planned.Key, "b", []string{"a"})},
+			{"a task the plan does not hold", ownersStop(t, planned, "b"), true, intake.TaskNotFound(planned.Key, "b", []string{"a"})},
 		} {
 			before := standingOf(t, pool, engine, planned.Key, tc.planned)
 			result := apply(tc.name, tc.fact)
@@ -261,7 +262,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		unplanned := migratedPool(t)
 		root := stepRoot(t, unplanned, phase.Testing)
 		before := standingOf(t, unplanned, engine, root.Key, false)
-		result := applyFacts(t, unplanned, engine)("stop", ownersStop(t, root.Key, "a"))
+		result := applyFacts(t, unplanned, engine)("stop", ownersStop(t, root, "a"))
 		if want := intake.TaskNotFound(root.Key, "a", nil); result.Refusal == nil || result.Refusal.Code != want.Code || result.Refusal.Message != want.Message {
 			t.Fatalf("the stop of a task of an issue with no plan rows = %+v, want %+v", result.Refusal, want)
 		}
@@ -281,7 +282,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		// done and keeps the member's phase and its running task.
 		leaveAs(t, pool, engine, root.Key, "done")
 		before := standingOf(t, pool, engine, member.Key, true)
-		result := applyFacts(t, pool, engine)("stop", ownersStop(t, member.Key, "a"))
+		result := applyFacts(t, pool, engine)("stop", ownersStop(t, member, "a"))
 		want := "the tree LEGION-208 is lingering after it left the workflow, so the owner's stop of task a of LEGION-209 changed nothing"
 		if result.Refusal == nil || result.Refusal.Code != "TREE_LINGERING" || result.Refusal.Message != want {
 			t.Fatalf("the stop in a lingering tree = %+v, want TREE_LINGERING %q", result.Refusal, want)
@@ -297,7 +298,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester")
 		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, "a")); result.Refusal != nil {
+		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
 		}
 		leave := func(pool *pgxpool.Pool, key string) {
@@ -372,7 +373,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 					t.Fatalf("task a of %s is %s before the stop, want %s", issue.Key, task.State, tc.state)
 				}
 				before := standingOf(t, pool, engine, issue.Key, true)
-				result := applyFacts(t, pool, engine)("stop", ownersStop(t, issue.Key, "a"))
+				result := applyFacts(t, pool, engine)("stop", ownersStop(t, issue, "a"))
 				if result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Code != "TASK_DONE" || result.Refusal.Message != tc.want {
 					t.Fatalf("the stop of %s = %+v, want 409 TASK_DONE %q", tc.name, result.Refusal, tc.want)
 				}

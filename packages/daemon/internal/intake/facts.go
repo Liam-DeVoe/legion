@@ -912,12 +912,19 @@ type PlanRating struct {
 	Reason string
 }
 
-// BackwardMove asks the workflow to return to an earlier phase.
+// BackwardMove asks the workflow to return to an earlier phase. By, Generation and Entry are the
+// architect's request from accepting (Requester claim.RoleArchitect, api's phaseBackward): the
+// claim of the architect, the issue's generation and the run of the step the issue stood in
+// (record.Store.OpenStep) as its route read them, which the workflow judges again under the fact
+// lock (ArchitectRequest, EnteredRequest). A phase worker's move carries none of the three.
 type BackwardMove struct {
-	Issue     string
-	Requester claim.Role
-	To        phase.Phase
-	Reason    string
+	Issue      string
+	Requester  claim.Role
+	To         phase.Phase
+	Reason     string
+	By         claim.Token
+	Generation uint64
+	Entry      record.StepEntry
 }
 
 func (BackwardMove) isFact() {}
@@ -933,11 +940,16 @@ const (
 // RetryOrEscalate is an API-originated response to a held phase. Reason is why the architect
 // answered as it did, which a retry writes into the task the restarted role is given and into
 // the daemon's own log line for the release; it is empty for a response that names none, which
-// leaves the daemon's own words in both.
+// leaves the daemon's own words in both. By and Generation are the architect's retry_or_escalate
+// (api's phaseRetry): its claim and the issue's generation its route read, which the workflow
+// judges again under the fact lock (ArchitectRequest). The operator's retry of a held claim
+// (`legion claims retry`, api's retryClaim) is no architect's request, and carries neither.
 type RetryOrEscalate struct {
-	Issue    string
-	Decision RetryOrEscalateDecision
-	Reason   string
+	Issue      string
+	Decision   RetryOrEscalateDecision
+	Reason     string
+	By         claim.Token
+	Generation uint64
 }
 
 func (RetryOrEscalate) isFact() {}
@@ -961,8 +973,16 @@ type RestartPhase struct {
 
 func (RestartPhase) isFact() {}
 
-// SignOff records the architect's post-production-check approval.
-type SignOff struct{ Issue string }
+// SignOff records the architect's post-production-check approval: the claim of the architect, and
+// the issue's generation and the run of the step it stood in (record.Store.OpenStep, the run of
+// accepting) as the route read them (api's signOff), which the workflow judges again under the
+// fact lock (ArchitectRequest, EnteredRequest).
+type SignOff struct {
+	Issue      string
+	By         claim.Token
+	Generation uint64
+	Entry      record.StepEntry
+}
 
 func (SignOff) isFact() {}
 
@@ -1016,14 +1036,18 @@ func (GateRegistered) isFact() {}
 // architect whose grant gave it, which is how the first step tells its owner's plan from an
 // earlier owner's.
 //
-// The workflow stores it (workflow's planGiven) where its task has not started, and applies the
-// rules of a later version. It answers PLAN_REFUSED (RunningTaskChanged, or
-// StartedBeforePlans for an issue that ran before Legion took plans), PLAN_VERSION_OLD,
-// PLAN_DOCUMENT_CHANGED, TASK_DONE (PlanOfDoneTask, PlanOfLeftTask), PLAN_STALE_GENERATION and
-// TREE_LINGERING, and it leaves each of those refusals unspent (Result.Unspent). The route names
-// one registration by the issue, the generation, the document and the version, so a version
-// refused while its task ran is the same fact when the owner gives it again after stop_task, and
-// must apply then.
+// The workflow judges the giver and the generation again in the fact's own transaction, since
+// the route read them before the fact lock: a giver that owns the issue no longer is refused
+// ISSUE_OUTSIDE_TREE (IssueOutsideTree), and a plan of a run the issue has left
+// PLAN_STALE_GENERATION, a plan given at generation 0 among them once the daemon recorded the
+// issue and its first step took a plan. It stores the plan (workflow's planGiven) where its task
+// has not started, and applies the rules of a later version. It answers PLAN_REFUSED
+// (RunningTaskChanged, or StartedBeforePlans for an issue that ran before Legion took plans),
+// PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (PlanOfDoneTask, PlanOfLeftTask),
+// PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE and TREE_LINGERING, and it leaves each of those
+// refusals unspent (Result.Unspent). The route names one registration by the issue, the
+// generation, the document and the version, so a version refused while its task ran is the same
+// fact when the owner gives it again after stop_task, and must apply then.
 type PlanGiven struct {
 	Issue      string
 	Generation uint64
@@ -1034,16 +1058,117 @@ type PlanGiven struct {
 func (PlanGiven) isFact() {}
 
 // TaskStopped is the owner's stop_task of one task of a recorded issue (api's stopTask), by the
-// claim of the architect whose grant asked for it. The workflow stops the task in the fact's own
-// transaction, or answers TaskNotFound or TaskDone; a stop of a task already stopped changes
-// nothing and is no refusal. Each request is its own fact, so a task the owner stops, starts
-// again with a later version and stops once more is stopped twice.
+// claim of the architect whose grant asked for it, at Generation, the issue's generation the route
+// read. The workflow judges the stop again in the fact's own transaction: an architect that owns
+// the issue no longer is refused ISSUE_OUTSIDE_TREE (IssueOutsideTree), and a stop of a run the
+// issue has left TASK_STALE_GENERATION (TaskStaleGeneration), each left unspent. It then stops the
+// task, or answers TaskNotFound or TaskDone; a stop of a task already stopped changes nothing and
+// is no refusal. Each request is its own fact, so a task the owner stops, starts again with a
+// later version and stops once more is stopped twice.
 type TaskStopped struct {
 	Issue, Task string
 	By          claim.Token
+	Generation  uint64
 }
 
 func (TaskStopped) isFact() {}
+
+// ArchitectRequest is a fact an architect's request applies to one issue (Request). Its route
+// judged the requester and read the issue before the fact lock (api's architectForIssue,
+// architectOwns and planOwner), and an adoption, a new run or a re-parent can commit between that
+// read and the fact. So the workflow judges the request again on the record as the fact reads it,
+// before the fact's own handler reads anything (workflow's Engine.Apply): the owner, by the rule
+// its route judged, then the generation. Each refusal there is left unspent.
+type ArchitectRequest interface {
+	Fact
+	// Request is the request the fact carries; ok is false where the fact is no architect's
+	// request: a phase worker's backward move, or the operator's retry.
+	Request() (request Request, ok bool)
+	// StaleGeneration is the refusal of the request where the issue is on generation now, and
+	// not on the one its route read.
+	StaleGeneration(now uint64) *Refusal
+}
+
+// EnteredRequest is an ArchitectRequest about the run of the step its issue stands in, accepting:
+// sign_off and request_backward_move. The run its route read (record.Store.OpenStep) is judged
+// too, so the request of an architect that read one run of accepting does not act on the next.
+type EnteredRequest interface {
+	ArchitectRequest
+	// ReadEntry is the run of the step its route read.
+	ReadEntry() record.StepEntry
+	// StaleEntry is the refusal of the request where now is the run that stands.
+	StaleEntry(now record.StepEntry) *Refusal
+}
+
+// Request is one architect's request on one issue as its route read it: Issue the issue the
+// request names, By the claim of the architect that made it, and Generation the issue's
+// generation the route read, 0 where it read no record of the issue, which only register_plan
+// takes (that plan waits at generation 0 for the issue's first step). Owners is the rule of who
+// owns the issue for the request, the one its route judges, and Operation the request's name, which
+// a refusal names.
+type Request struct {
+	Issue      string
+	By         claim.Token
+	Generation uint64
+	Owners     record.OwnerRule
+	Operation  string
+}
+
+func (f PlanGiven) Request() (Request, bool) {
+	return Request{Issue: f.Issue, By: f.GivenBy, Generation: f.Generation, Owners: record.OwnerOfTree, Operation: "register_plan"}, true
+}
+
+func (f PlanGiven) StaleGeneration(now uint64) *Refusal {
+	return PlanStaleGeneration(f.Issue, f.Generation, now)
+}
+
+func (f TaskStopped) Request() (Request, bool) {
+	return Request{Issue: f.Issue, By: f.By, Generation: f.Generation, Owners: record.OwnerOfTree, Operation: "stop_task"}, true
+}
+
+func (f TaskStopped) StaleGeneration(now uint64) *Refusal {
+	return TaskStaleGeneration(f.Issue, f.Generation, now)
+}
+
+func (f SignOff) Request() (Request, bool) {
+	return Request{Issue: f.Issue, By: f.By, Generation: f.Generation, Owners: record.OwnerAbove, Operation: "sign_off"}, true
+}
+
+func (f SignOff) StaleGeneration(now uint64) *Refusal {
+	return staleGeneration("SIGNOFF_STALE_GENERATION", "the sign-off", f.Issue, f.Generation, now, "Read the issue again before you sign it off. This sign-off changed nothing.")
+}
+
+func (f SignOff) ReadEntry() record.StepEntry { return f.Entry }
+
+func (f SignOff) StaleEntry(now record.StepEntry) *Refusal {
+	return staleEntry("SIGNOFF_STALE_ENTRY", "the sign-off", f.Issue, f.Entry, now, "Read the evidence of the run that stands before you sign it off. This sign-off changed nothing.")
+}
+
+// Request is the architect's move from accepting alone (Requester claim.RoleArchitect): a phase
+// worker's move is judged by its role (workflow's backwardRefusal).
+func (f BackwardMove) Request() (Request, bool) {
+	return Request{Issue: f.Issue, By: f.By, Generation: f.Generation, Owners: record.OwnerAbove, Operation: "request_backward_move"},
+		f.Requester == claim.RoleArchitect
+}
+
+func (f BackwardMove) StaleGeneration(now uint64) *Refusal {
+	return staleGeneration("BACKWARD_STALE_GENERATION", "the backward move", f.Issue, f.Generation, now, "Read the issue again before you move it back. This move changed nothing.")
+}
+
+func (f BackwardMove) ReadEntry() record.StepEntry { return f.Entry }
+
+func (f BackwardMove) StaleEntry(now record.StepEntry) *Refusal {
+	return staleEntry("BACKWARD_STALE_ENTRY", "the backward move", f.Issue, f.Entry, now, "Read the run that stands before you move it back. This move changed nothing.")
+}
+
+// Request is the architect's retry_or_escalate; the operator's retry carries no claim (By "").
+func (f RetryOrEscalate) Request() (Request, bool) {
+	return Request{Issue: f.Issue, By: f.By, Generation: f.Generation, Owners: record.OwnerAbove, Operation: "retry_or_escalate"}, f.By != ""
+}
+
+func (f RetryOrEscalate) StaleGeneration(now uint64) *Refusal {
+	return staleGeneration("RETRY_STALE_GENERATION", "the retry_or_escalate", f.Issue, f.Generation, now, "Read the issue again before you decide its hold. This decision changed nothing.")
+}
 
 // CloseRoot is a tree root's architect ending its tree before the tree's first phase starts, with
 // the reason it gives: a human decided no change at the design gate, or the issue is moot.
@@ -1493,11 +1618,64 @@ func StartedBeforePlans(issue string) plan.Refusal {
 }
 
 // PlanStaleGeneration is the 409 PLAN_STALE_GENERATION refusal of a plan given at generation given
-// of issue, which is on generation now: the route read the issue before its generation moved, so
-// the plan was given for a run that is over.
+// of issue, which is on generation now: the route read the issue before its generation moved, or
+// read it unrecorded (given 0) before the daemon recorded it and its first step took a plan, so
+// the plan was given for a run that is over or that started without it.
 func PlanStaleGeneration(issue string, given, now uint64) *Refusal {
 	return &Refusal{Status: 409, Code: "PLAN_STALE_GENERATION", Message: fmt.Sprintf(
 		"the plan was given for generation %d of %s, and %s is on generation %d now. Give the plan again. This plan changed nothing.", given, issue, issue, now)}
+}
+
+// TaskStaleGeneration is the 409 TASK_STALE_GENERATION refusal of a stop of a task of issue asked
+// at generation given, where issue is on generation now: the route read the issue before its
+// generation moved, so the stop names a task of a run that is over, and a task of the new run has
+// the same id where its plan gives it one.
+func TaskStaleGeneration(issue string, given, now uint64) *Refusal {
+	return staleGeneration("TASK_STALE_GENERATION", "the stop", issue, given, now, "Ask for the stop again if the task of this run must stop. This stop changed nothing.")
+}
+
+// staleGeneration is the 409 refusal code of request, an architect's request on issue that its
+// route read at generation given, where issue is on generation now (ArchitectRequest's
+// StaleGeneration), and then, what the architect does.
+func staleGeneration(code, request, issue string, given, now uint64, then string) *Refusal {
+	return &Refusal{Status: 409, Code: code, Message: fmt.Sprintf(
+		"%s was asked for generation %d of %s, and %s is on generation %d now. %s", request, given, issue, issue, now, then)}
+}
+
+// staleEntry is the 409 refusal code of request, an architect's request on issue that its route
+// read at the run given of the step the issue stood in, where the run now stands
+// (EnteredRequest's StaleEntry), and then, what the architect does.
+func staleEntry(code, request, issue string, given, now record.StepEntry, then string) *Refusal {
+	return &Refusal{Status: 409, Code: code, Message: fmt.Sprintf(
+		"%s was asked of %s of %s, and %s stands at %s now. %s", request, describeEntry(given), issue, issue, describeEntry(now), then)}
+}
+
+// describeEntry names a run of a step as a refusal does.
+func describeEntry(entry record.StepEntry) string {
+	if entry.Starts == 0 {
+		return "no run of a step"
+	}
+	return fmt.Sprintf("run %d of the %s at place %d of task %s", entry.Starts, entry.Place.Kind, entry.Place.Place, entry.Place.Task)
+}
+
+// IssueOutsideTree is the 403 ISSUE_OUTSIDE_TREE refusal of operation, a request that architect
+// made as an owner of issue, where architect is no architect of the issue's tree when the workflow
+// applies it (record.ArchitectOfTree): an adoption moved the issue to another tree, or the member
+// whose architect it is left the issue's tree, after the route judged the request. The code is the
+// one the route answers for an issue outside the architect's tree.
+func IssueOutsideTree(issue string, architect claim.Token, operation string) *Refusal {
+	return &Refusal{Status: 403, Code: "ISSUE_OUTSIDE_TREE", Message: fmt.Sprintf(
+		"%s is outside the architect tree now: %s is no architect of its tree, so %s changed nothing.", issue, architect, operation)}
+}
+
+// IssueNotOwned is the 403 ISSUE_NOT_OWNED refusal of operation, which only an issue's own
+// architect or one above it in its tree makes (record.ArchitectAbove), where architect is neither
+// when the workflow applies it: a person moved the issue under another issue of the tree after the
+// route judged the request. The code is the one the route answers for that rule (api's
+// architectOwns).
+func IssueNotOwned(operation, issue string, architect claim.Token) *Refusal {
+	return &Refusal{Status: 403, Code: "ISSUE_NOT_OWNED", Message: fmt.Sprintf(
+		"%s of %s belongs to its own architect or one above it in the tree, and %s is neither now, so %s changed nothing.", operation, issue, architect, operation)}
 }
 
 // TaskNotFound is the 404 TASK_NOT_FOUND refusal of stop_task for task, which the plan Legion

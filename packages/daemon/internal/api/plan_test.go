@@ -383,7 +383,8 @@ func TestStopTaskRecordsTheOwnersStop(t *testing.T) {
 			t.Fatalf("stop task a = %d %s, want 200 {}", stopped.Code, stopped.Body)
 		}
 	}
-	stop := intake.TaskStopped{Issue: "LEGION-208", Task: "a", By: architect.token}
+	// The fact carries the generation the route read, which the workflow judges again.
+	stop := intake.TaskStopped{Issue: "LEGION-208", Task: "a", By: architect.token, Generation: 1}
 	if got, want := facts.recorded(), []intake.Fact{stop, stop}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("facts = %#v, want %#v: each stop its own fact", got, want)
 	}

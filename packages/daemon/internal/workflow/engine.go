@@ -208,6 +208,11 @@ func (e *Engine) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 }
 
 func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
+	// An architect's request is judged again on the record as the fact reads it before its
+	// handler runs (requestRefusal); its refusal writes nothing and is left unspent.
+	if refusal, err := e.requestRefusal(ctx, tx, fact); err != nil || refusal != nil {
+		return intake.Result{Refusal: refusal, Unspent: refusal != nil}, err
+	}
 	switch fact := fact.(type) {
 	case intake.DispatchIssue:
 		return e.dispatchIssue(ctx, tx, fact)

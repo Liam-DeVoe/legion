@@ -1770,6 +1770,9 @@ type Store interface {
 	// of the latest, unchanged: the zero StepStart where the place has no row, no start counted
 	// and no uncounted end written.
 	StepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, error)
+	// OpenStep is the run of a step of issue that has no end yet, the run of the step the issue
+	// stands in, and the zero StepEntry where none is open.
+	OpenStep(ctx context.Context, tx pgx.Tx, issue string) (StepEntry, error)
 	// EndStepStart marks the open run of place on issue ended and answers its start and EndedNow,
 	// in the transaction that writes the run's end (workflow's endStep); AlreadyEnded where that
 	// run has its end already, so one run gets one end, and NotCounted where no start of this
@@ -2293,6 +2296,64 @@ func ArchitectOfTree(ctx context.Context, store Store, tx pgx.Tx, architect clai
 		return false, err
 	}
 	return slices.ContainsFunc(members, func(member Issue) bool { return architectOf(member.Key) }), nil
+}
+
+// OwnerRule is which architects own an issue for an architect's request on it, the rule the
+// request's route judges and its fact judges again under the fact lock (workflow's Engine.Apply):
+// OwnerOfTree, every architect of the issue's tree (ArchitectOfTree), for register_plan and
+// stop_task; or OwnerAbove, of those the issue's own architect or one above it in its tree
+// (ArchitectAbove), for sign_off, request_backward_move and retry_or_escalate.
+type OwnerRule int
+
+const (
+	OwnerOfTree OwnerRule = iota
+	OwnerAbove
+)
+
+// ArchitectAbove says whether architect owns issue for a request that only the issue's own
+// architect or one above it in its tree makes: architect is the architect of issue, or of an issue
+// above it through its recorded parents in its tree, and the tree root's architect owns every
+// issue of the tree. So a sub-architect, which holds a grant for the whole tree and can name any
+// issue of it, owns its own issue and those under it, never the root or a sibling. A chain that
+// leaves the tree before it reaches architect's issue (no parent on a child, a parent not recorded
+// or recorded in another tree, a cycle) ends at the tree root, whose architect owns the issue: a
+// human's re-parent in Dispatch leaves an issue's tree as it was (admit's recordObservation),
+// except a root that never ran, which joins its parent's live tree (workflow/adopt.go), and the
+// notice router ends the same walk at the same place (internal/daemon's owningArchitect), so the
+// architect the reviewer's phase-finished notice reaches is the one that may accept the issue. An
+// architect this answers true for is an architect of the issue's tree (ArchitectOfTree), since the
+// walk stays in that tree. The route judges it on its own read and the fact again under the lock,
+// so the two never judge different rules.
+func ArchitectAbove(ctx context.Context, store Store, tx pgx.Tx, architect claim.Token, issue Issue) (bool, error) {
+	if _, role, ok := architect.Cut(); !ok || role != claim.RoleArchitect {
+		return false, nil
+	}
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return false, fmt.Errorf("the architects above %s: %w", issue.Key, err)
+	}
+	architectOf := func(key string) bool {
+		token, err := claim.NewToken(project, key, claim.RoleArchitect)
+		return err == nil && token == architect
+	}
+	seen := map[string]bool{}
+	for current := &issue; ; {
+		if architectOf(current.Key) {
+			return true, nil
+		}
+		if current.Parent == nil || claim.IsTreeRoot(current.Key, current.Tree) || seen[current.Key] {
+			return architectOf(issue.Tree), nil
+		}
+		seen[current.Key] = true
+		parent, err := store.Issue(ctx, tx, *current.Parent)
+		if err != nil {
+			return false, err
+		}
+		if parent == nil || parent.Tree != issue.Tree {
+			return architectOf(issue.Tree), nil
+		}
+		current = parent
+	}
 }
 
 // PhaseRowOf is role's row among rows, and the zero row where the record holds no row of that

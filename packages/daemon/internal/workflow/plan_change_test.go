@@ -407,7 +407,7 @@ func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
 		assertPlanRefusal(t, pool, engine, key, gen, otherID, apply(otherID, other), &intake.Refusal{Status: 409, Code: "PLAN_DOCUMENT_CHANGED",
 			Message: "the plan in force of LEGION-208 is document " + planArtifact + "; give a later version of that document."}, kept)
 
-		if result := apply("stop", ownersStop(t, key, "a")); result.Refusal != nil {
+		if result := apply("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
 		}
 		stopped := planStandingOf(t, pool, engine, key, gen)
@@ -509,7 +509,7 @@ func TestARefusedVersionIsTakenWhenGivenAgainAfterTheStop(t *testing.T) {
 	if result := apply(id, version2); !reflect.DeepEqual(result.Refusal, runningRefusal()) || processed(t, pool, id) {
 		t.Fatalf("version 2 while a runs = %+v (processed %v), want the running refusal, its id unmarked", result, processed(t, pool, id))
 	}
-	if result := apply("stop", ownersStop(t, key, "a")); result.Refusal != nil {
+	if result := apply("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 		t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
 	}
 
@@ -577,7 +577,7 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 		assertPlanRefusal(t, pool, engine, key, gen, id, apply(id, version1), &intake.Refusal{Status: 409, Code: "PLAN_REFUSED",
 			Message: "Legion refused this plan and recorded nothing: " + reason, Reasons: []plan.Refusal{{Task: plan.DefaultTask, Reason: reason}}}, before)
 
-		if result := apply("stop", ownersStop(t, key, plan.DefaultTask)); result.Refusal != nil {
+		if result := apply("stop", ownersStop(t, root, plan.DefaultTask)); result.Refusal != nil {
 			t.Fatalf("the owner's stop of default was refused: %+v", result.Refusal)
 		}
 		held := issueOf(t, pool, engine, key)

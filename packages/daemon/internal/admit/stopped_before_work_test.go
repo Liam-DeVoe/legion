@@ -61,7 +61,7 @@ func implementerEntries(t *testing.T, pool *pgxpool.Pool, key string) []int64 {
 func stopWaitingTask(t *testing.T, pool *pgxpool.Pool, admission *Admission, key string) {
 	t.Helper()
 	applyOwnersCall(t, pool, admission, "plan-v1", ownersVersion(t, key, 1, "Build the widget."))
-	applyOwnersCall(t, pool, admission, "stop", intake.TaskStopped{Issue: key, Task: "a", By: architectClaim(t, pathsRoot)})
+	applyOwnersCall(t, pool, admission, "stop", intake.TaskStopped{Issue: key, Task: "a", By: architectClaim(t, pathsRoot), Generation: 1})
 	got, task := issue(t, pool, key), taskOf(t, pool, key)
 	if got.Phase != phase.Held || got.Hold == nil || *got.Hold != (record.Hold{From: phase.Admitted, Reason: record.HoldTaskStopped}) ||
 		task.State != record.TaskStopped || task.Place != (record.TaskPlace{}) {
@@ -174,7 +174,7 @@ func TestATaskStoppedBeforeItsFirstStepWaitsForWhatStartsThatStep(t *testing.T) 
 		applyOwnersCall(t, pool, admission, "plan-v1", ownersVersion(t, pathsRoot, 1, "Build the widget."))
 		assertStartsItsFirstStepOnce(t, pool, pathsRoot)
 		first := implementerEntries(t, pool, pathsRoot)
-		applyOwnersCall(t, pool, admission, "stop", intake.TaskStopped{Issue: pathsRoot, Task: "a", By: architectClaim(t, pathsRoot)})
+		applyOwnersCall(t, pool, admission, "stop", intake.TaskStopped{Issue: pathsRoot, Task: "a", By: architectClaim(t, pathsRoot), Generation: 1})
 		if got := issue(t, pool, pathsRoot); got.Phase != phase.Held || got.Hold == nil || got.Hold.From != phase.Implementing {
 			t.Fatalf("the premise: %s stands in %s (hold %+v), want it held from implementing for its stopped task", pathsRoot, got.Phase, got.Hold)
 		}

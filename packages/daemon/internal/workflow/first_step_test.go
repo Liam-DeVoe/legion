@@ -256,7 +256,7 @@ func TestAnIssueOfThisReleaseJudgesALaterPlanAsALaterVersion(t *testing.T) {
 		assertPlanRefusal(t, pool, engine, key, gen, id, apply(id, version1), &intake.Refusal{Status: 409, Code: "PLAN_REFUSED",
 			Message: "Legion refused this plan and recorded nothing: " + reason, Reasons: []plan.Refusal{{Task: plan.DefaultTask, Reason: reason}}}, before)
 
-		if result := apply("stop", ownersStop(t, key, plan.DefaultTask)); result.Refusal != nil {
+		if result := apply("stop", ownersStop(t, root, plan.DefaultTask)); result.Refusal != nil {
 			t.Fatalf("the owner's stop of default was refused: %+v", result.Refusal)
 		}
 		mustTake(t, "version 1 given again after the stop", apply(id, version1))

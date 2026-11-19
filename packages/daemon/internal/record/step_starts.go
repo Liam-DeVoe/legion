@@ -105,6 +105,33 @@ func (s *Postgres) StepStarts(ctx context.Context, tx pgx.Tx, issue string, plac
 	return start, nil
 }
 
+// StepEntry is one run of a step of an issue: the place it runs at and the count of starts of that
+// place that began it (StepStart.Starts). The zero StepEntry is no run the record counts.
+type StepEntry struct {
+	Place  StepPlace
+	Starts int64
+}
+
+// OpenStep is the run of a step of issue that has no end yet, the run of the step the issue
+// stands in: each start of a step of an issue follows the end of the run before it (workflow's
+// startStep and endStep), so at most one is open, and of two the latest start is answered. It is
+// the zero StepEntry where no run is open: an issue that stands in no step, or whose step started
+// under an earlier release, which counts no start. An architect's request about the step an issue
+// stands in names the run its route read here, and the fact refuses it where another run stands
+// under the fact lock (sign_off, request_backward_move).
+func (s *Postgres) OpenStep(ctx context.Context, tx pgx.Tx, issue string) (StepEntry, error) {
+	var entry StepEntry
+	err := tx.QueryRow(ctx, `select task, kind, place, starts from step_starts where issue = $1 and run = 'open'
+		order by started_at desc nulls last, task, kind, place limit 1`, issue).Scan(&entry.Place.Task, &entry.Place.Kind, &entry.Place.Place, &entry.Starts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return StepEntry{}, nil
+	}
+	if err != nil {
+		return StepEntry{}, fmt.Errorf("read the open step of %s: %w", issue, err)
+	}
+	return entry, nil
+}
+
 // EndStepStart is the end of the step running at place on issue, in the transaction that writes
 // that run's end. An open run it marks ended, and answers that start, marked, and EndedNow. It
 // marks nothing otherwise, and answers the place as it stands: AlreadyEnded for a run whose end

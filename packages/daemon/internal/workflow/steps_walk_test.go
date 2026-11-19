@@ -158,7 +158,7 @@ func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
 		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, "a")); result.Refusal != nil {
+		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
 		}
 		assertStepWrites(t, pool, root.Key, root.Generation, []walkedWrite{
@@ -368,7 +368,7 @@ func TestThePlanNodeIsTheOwnersAndIsWrittenAgainAtEachVersionTaken(t *testing.T)
 		defaults := record.PlanRecord{ID: PlanID(root.Key, 1), Generation: 1, Source: record.PlanSourceDefault,
 			Tasks: []record.PlanRecordTask{{ID: plan.DefaultTask, Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
 		assertPlanNodes(t, pool, root.Key, "at the start on the default steps", defaults)
-		if result := apply("stop", ownersStop(t, root.Key, plan.DefaultTask)); result.Refusal != nil {
+		if result := apply("stop", ownersStop(t, root, plan.DefaultTask)); result.Refusal != nil {
 			t.Fatalf("the owner's stop of default was refused: %+v", result.Refusal)
 		}
 		mustTake(t, "version 1, which replaces default with a", apply(planID(root.Key, root.Generation, 1),

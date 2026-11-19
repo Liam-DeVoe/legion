@@ -1280,9 +1280,14 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 		if !ok || !s.architectOwns(w, r, architect, recorded, "request_backward_move") {
 			return
 		}
+		entry, ok := s.openStep(w, r, req.Issue)
+		if !ok {
+			return
+		}
 		s.awaitStreamOf(r.Context(), architect.Claim)
 		s.applyFact(w, r, requestFactID("phase/backward"),
-			intake.BackwardMove{Issue: req.Issue, Requester: claim.RoleArchitect, To: req.To, Reason: req.Reason}, PhaseBackwardResponse{})
+			intake.BackwardMove{Issue: req.Issue, Requester: claim.RoleArchitect, To: req.To, Reason: req.Reason,
+				By: architect.Claim, Generation: recorded.Generation, Entry: entry}, PhaseBackwardResponse{})
 		return
 	}
 	grant, ok = s.phaseWorkerGrant(w, r, req.GrantID)
@@ -1320,7 +1325,7 @@ func (s *server) phaseRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.applyFact(w, r, requestFactID("phase/retry"),
-		intake.RetryOrEscalate{Issue: req.Issue, Decision: req.Decision, Reason: req.Reason}, PhaseRetryResponse{})
+		intake.RetryOrEscalate{Issue: req.Issue, Decision: req.Decision, Reason: req.Reason, By: grant.Claim, Generation: recorded.Generation}, PhaseRetryResponse{})
 }
 
 func (s *server) signOff(w http.ResponseWriter, r *http.Request) {
@@ -1336,8 +1341,12 @@ func (s *server) signOff(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.architectOwns(w, r, grant, recorded, "sign_off") {
 		return
 	}
+	entry, ok := s.openStep(w, r, req.Issue)
+	if !ok {
+		return
+	}
 	s.awaitStreamOf(r.Context(), grant.Claim)
-	s.applyFact(w, r, requestFactID("signoff"), intake.SignOff{Issue: req.Issue}, SignOffResponse{})
+	s.applyFact(w, r, requestFactID("signoff"), intake.SignOff{Issue: req.Issue, By: grant.Claim, Generation: recorded.Generation, Entry: entry}, SignOffResponse{})
 }
 
 // closeRoot ends the architect's tree while its root has started no phase — admitted, or waiting
@@ -1419,7 +1428,9 @@ func (s *server) rootArchitectOf(w http.ResponseWriter, r *http.Request, grant c
 }
 
 // architectOwns says whether grant's architect owns recorded, an issue of its tree, for the
-// operation op, writing a 403 ISSUE_NOT_OWNED when it does not (owns).
+// operation op, writing a 403 ISSUE_NOT_OWNED when it does not (owns). The fact the route then
+// applies names the architect and the generation read here, and the workflow judges the same rule
+// again under the fact lock (workflow's requestRefusal), so this is the early refusal.
 func (s *server) architectOwns(w http.ResponseWriter, r *http.Request, grant credential.Grant, recorded record.Issue, op string) bool {
 	owns, err := s.owns(r.Context(), grant, recorded)
 	if err != nil {
@@ -1432,53 +1443,50 @@ func (s *server) architectOwns(w http.ResponseWriter, r *http.Request, grant cre
 	return owns
 }
 
-// owns says whether grant's architect owns recorded, an issue of its tree: recorded is the grant's
-// own issue or lies under it, through its recorded parents. So the tree root's architect owns every
-// issue of its tree, and a sub-architect its own issue and those under it, never the root or a
-// sibling: a sub-architect holds a grant for the whole tree and can name any issue of it. A chain
-// that leaves the tree before reaching the grant's issue (no parent on a child, a parent not
-// recorded or recorded in another tree, a cycle) ends at the tree root, whose architect owns the
-// issue: a human's re-parent in Dispatch leaves an issue's tree as it was (admit's
-// recordObservation), except a root that never ran, which joins its parent's live tree
-// (workflow/adopt.go), and the notice router ends the same walk at the same place
-// (owningArchitect, internal/daemon/notice_routing.go), so the architect the reviewer's
-// phase-finished notice reaches is the one that may accept the issue. The walk reads every parent
-// in one read-only transaction, opened only when it has a parent to read.
+// owns says whether grant's architect owns recorded, an issue of its tree: the issue's own
+// architect or one above it in its tree (record.ArchitectAbove, the one statement of that rule,
+// which the workflow judges again under the fact lock), read in one read-only transaction.
 func (s *server) owns(ctx context.Context, grant credential.Grant, recorded record.Issue) (bool, error) {
-	var tx pgx.Tx
-	defer func() {
-		if tx != nil {
-			_ = tx.Rollback(ctx)
-		}
-	}()
-	byRoot := claim.IsTreeRoot(grant.Issue, grant.Tree)
-	seen := map[string]bool{}
-	for current := &recorded; ; {
-		if current.Key == grant.Issue {
-			return true, nil
-		}
-		if current.Parent == nil || claim.IsTreeRoot(current.Key, current.Tree) || seen[current.Key] {
-			return byRoot, nil
-		}
-		seen[current.Key] = true
-		if tx == nil {
-			if s.pool == nil {
-				return false, errors.New("record dependencies are unavailable")
-			}
-			var err error
-			if tx, err = s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly}); err != nil {
-				return false, err
-			}
-		}
-		parent, err := s.records.Issue(ctx, tx, *current.Parent)
-		if err != nil {
-			return false, err
-		}
-		if parent == nil || parent.Tree != grant.Tree {
-			return byRoot, nil
-		}
-		current = parent
+	if s.pool == nil || s.records == nil {
+		return false, errors.New("record dependencies are unavailable")
 	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	owns, err := record.ArchitectAbove(ctx, s.records, tx, grant.Claim, recorded)
+	if err != nil {
+		return false, err
+	}
+	return owns, tx.Commit(ctx)
+}
+
+// openStep is the run of the step issue stands in (record.Store.OpenStep), read in one read-only
+// transaction: what a request about accepting, sign_off and request_backward_move, names on its
+// fact, so the workflow refuses it where another run of accepting stands under the fact lock. A
+// failed read is answered 500 RECORD_UNAVAILABLE.
+func (s *server) openStep(w http.ResponseWriter, r *http.Request, issue string) (record.StepEntry, bool) {
+	entry, err := func() (record.StepEntry, error) {
+		if s.pool == nil || s.records == nil {
+			return record.StepEntry{}, errors.New("record dependencies are unavailable")
+		}
+		tx, err := s.pool.BeginTx(r.Context(), pgx.TxOptions{AccessMode: pgx.ReadOnly})
+		if err != nil {
+			return record.StepEntry{}, err
+		}
+		defer func() { _ = tx.Rollback(r.Context()) }()
+		entry, err := s.records.OpenStep(r.Context(), tx, issue)
+		if err != nil {
+			return record.StepEntry{}, err
+		}
+		return entry, tx.Commit(r.Context())
+	}()
+	if err != nil {
+		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the step the issue stands in")
+		return record.StepEntry{}, false
+	}
+	return entry, true
 }
 
 // parkChild takes a running child of the architect's tree out of the workflow by moving it to

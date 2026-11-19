@@ -2322,7 +2322,20 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			apply("handoff:reviewer:reviewing:2", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RoleReviewer,
 				Claim: "reviewer", HandoffRecord: "review-round-2", HandoffVersion: 2})
 			if tc.accept {
-				apply("signoff", intake.SignOff{Issue: issue.Key})
+				// The sign-off names the root's architect, the generation and the run of accepting,
+				// as the route reads them (api's signOff).
+				architect, err := claim.NewToken("legion", issue.Key, claim.RoleArchitect)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var entry record.StepEntry
+				if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+					entry, err = records.OpenStep(ctx, tx, issue.Key)
+					return err
+				}); err != nil {
+					t.Fatalf("read the run of accepting: %v", err)
+				}
+				apply("signoff", intake.SignOff{Issue: issue.Key, By: architect, Generation: issue.Generation, Entry: entry})
 			}
 			implementerLaunches := func() int {
 				n := 0

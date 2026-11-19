@@ -2169,6 +2169,18 @@ package api
 // before ran gets the new answers. `readBody` refuses an unknown field, so a plugin sending
 // `returnTo` to a daemon below 162 would have the completion refused, and a daemon below 162 has
 // neither route; the bump is why the two never meet (`api.OwnerPlanContract`).
+// Every architect request of one issue — register_plan, stop_task, sign_off,
+// request_backward_move and retry_or_escalate — names on its fact the claim of the architect and
+// the issue's generation its route read, and sign_off and request_backward_move the run of
+// accepting it read too (`record.Store.OpenStep`). The workflow judges each again under the fact
+// lock (`intake.ArchitectRequest`, workflow's `requestRefusal`), since an adoption, a new run, a
+// re-parent or a new run of accepting can commit between the route's read and the fact, and
+// answers, with nothing changed and the fact unspent: `403 ISSUE_OUTSIDE_TREE` for an architect of
+// another tree now, `403 ISSUE_NOT_OWNED` for one no longer the issue's own architect or one above
+// it (the three routes that hold that rule, `record.ArchitectAbove`), `409 PLAN_STALE_GENERATION`,
+// `409 TASK_STALE_GENERATION`, `409 SIGNOFF_STALE_GENERATION`, `409 BACKWARD_STALE_GENERATION` or
+// `409 RETRY_STALE_GENERATION` for a run that is over, and `409 SIGNOFF_STALE_ENTRY` or
+// `409 BACKWARD_STALE_ENTRY` for a run of accepting that is over. No request shape moves.
 // One value set of `GET /legion/v1/state` gets wider: an issue's `holdReason` takes
 // `task-stopped` (its owner stopped its task) and `children` (a parent whose plan has no
 // acceptance step waits, before its retro, for the issues beneath it) beside `escalated`. A caller

@@ -152,6 +152,8 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 // child before release_children records it — is the tree's when Dispatch's parent chain
 // reaches the tree (dispatchTreeMember) and it has not entered the workflow, triage, backlog,
 // icebox or todo, and its plan is given at generation 0, where it waits for the issue's first step.
+// These reads come before the fact lock, so each refusal here is an early one: the workflow judges
+// the giver and the generation again on the record its fact reads (workflow's planGiven).
 func (s *server) planOwner(w http.ResponseWriter, r *http.Request, grantID, issue string) (credential.Grant, uint64, bool) {
 	grant, ok := s.architectGrant(w, r, grantID)
 	if !ok {
@@ -197,10 +199,13 @@ type TaskStopRequest struct {
 
 // stopTask is stop_task: an architect of the tree of an issue the daemon has recorded
 // (architectForIssue) stops one task of it, answered 200 with no body. The stop is the
-// workflow's (intake.TaskStopped), which answers a task the plan does not hold (TaskNotFound) and
-// one that is done (TaskDone). Each request is its own fact (requestFactID): a task the owner
-// stops, starts again with a later version and stops once more is stopped twice, and a retry of a
-// stop already applied finds the task stopped, which changes nothing.
+// workflow's (intake.TaskStopped), at the generation the route read: the workflow judges the
+// owner and the generation again under the fact lock, since an adoption or a new run can commit
+// between this read and the fact, and it answers a task the plan does not hold (TaskNotFound) and
+// one that is done (TaskDone). This route's own refusals are the early ones. Each request is its
+// own fact (requestFactID): a task the owner stops, starts again with a later version and stops
+// once more is stopped twice, and a retry of a stop already applied finds the task stopped, which
+// changes nothing.
 func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 	var req TaskStopRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
@@ -214,11 +219,11 @@ func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
 		return
 	}
-	grant, _, ok := s.architectForIssue(w, r, req.GrantID, req.Issue)
+	grant, recorded, ok := s.architectForIssue(w, r, req.GrantID, req.Issue)
 	if !ok {
 		return
 	}
-	s.applyFact(w, r, requestFactID("tasks/stop"), intake.TaskStopped{Issue: req.Issue, Task: req.Task, By: grant.Claim}, EmptyResponse{})
+	s.applyFact(w, r, requestFactID("tasks/stop"), intake.TaskStopped{Issue: req.Issue, Task: req.Task, By: grant.Claim, Generation: recorded.Generation}, EmptyResponse{})
 }
 
 // planAt is the plan in version of the document artifactID, which documentOfIssue already held

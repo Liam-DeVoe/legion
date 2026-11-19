@@ -480,8 +480,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		if got := issuePhase(t, pool); got != phase.Accepting {
 			t.Fatalf("after the approval the issue is in %s, want accepting", got)
 		}
-		if result := apply("move-back", intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleArchitect, To: phase.Implementing,
-			Reason: "the API needs another shape"}); result.Refusal != nil {
+		if result := apply("move-back", rootsMoveBack(t, pool, "LEGION-208", phase.Implementing, "the API needs another shape")); result.Refusal != nil {
 			t.Fatalf("the architect's move back was refused: %+v", result.Refusal)
 		}
 		backToReviewing(t, apply, 2)

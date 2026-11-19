@@ -431,6 +431,10 @@ func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Iss
 // (Notice.StoppedBy): the daemon's notice executor publishes it only where that is another
 // claim, since the caller is answered by its own call.
 //
+// Apply judged the stop already on the record as the fact reads it (requestRefusal): an
+// architect that owns the issue no longer, or a stop of a run the issue has left since its route
+// read it (TaskStaleGeneration), is refused there, unspent, before this reads anything.
+//
 // An issue the record does not hold, or one with no plan rows, has no task to stop, and a task
 // the plan does not hold is none either (TaskNotFound, which lists the plan's tasks only where it
 // has some): an issue with no plan rows changes nothing. A stop of a task already stopped
@@ -611,10 +615,18 @@ func (e *Engine) waitForFirstStep(ctx context.Context, tx pgx.Tx, issue record.I
 // node names the plan the run walks now. A version taken before the work starts writes none, since
 // the start writes the version in force.
 //
-// A plan given at a generation the issue has left, or in a lingering tree, is refused too. Each
-// refusal writes nothing and leaves the fact unspent, so the same registration, whose id names the
-// issue, the generation, the document and the version (api's registerPlan), applies when it is
-// given again: a version refused while its task ran is taken after stop_task.
+// Apply judged the plan already on the record as the fact reads it, since the route read the
+// record, or Dispatch, before the fact lock (requestRefusal): a giver that owns the issue no
+// longer is refused ISSUE_OUTSIDE_TREE there, and a plan of a run the issue has left
+// PLAN_STALE_GENERATION. A plan given at generation 0, for an issue the route read unrecorded, of
+// an issue the daemon recorded since, waits at generation 0 only while that issue stands before
+// its first step with no plan rows at its own generation (waitsAtZero); once its first step took a
+// plan, it is of a run that started without it, and is refused PLAN_STALE_GENERATION here. A plan
+// given in a lingering tree is refused too. Each refusal writes nothing and leaves the fact
+// unspent, so the same registration, whose id names the issue, the generation, the document and
+// the version (api's registerPlan), applies when it is given again: a version refused while its
+// task ran is taken after stop_task, and the owner's plan given again at the generation the record
+// holds meets the rules of a later version there.
 func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven) (intake.Result, error) {
 	refuse := func(refusal *intake.Refusal) (intake.Result, error) {
 		return intake.Result{Refusal: refusal, Unspent: true}, nil
@@ -623,11 +635,17 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 	if err != nil {
 		return intake.Result{}, err
 	}
-	// The route gives generation 0 to an issue it found unrecorded. The daemon may record it
-	// before the fact applies; that plan still waits at generation 0 for the first step.
+	// The route gives generation 0 to an issue it found unrecorded, and such a plan waits at
+	// generation 0 for the issue's first step; recorded is a plan of the issue's own generation.
 	recorded := issue != nil && fact.Generation != 0
-	if recorded && fact.Generation != issue.Generation {
-		return refuse(intake.PlanStaleGeneration(fact.Issue, fact.Generation, issue.Generation))
+	if issue != nil && !recorded {
+		waits, err := e.waitsAtZero(ctx, tx, *issue)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if !waits {
+			return refuse(intake.PlanStaleGeneration(fact.Issue, fact.Generation, issue.Generation))
+		}
 	}
 	stored, err := e.store.Plan(ctx, tx, fact.Issue, fact.Generation)
 	if err != nil {
@@ -733,6 +751,28 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 		return intake.Result{}, fmt.Errorf("start task %s of %s again after version %d of its plan: %s", w.Task, issue.Key, fact.Plan.Version, refusal.Message)
 	}
 	return intake.Result{}, nil
+}
+
+// waitsAtZero says whether a plan given at generation 0 for issue, which the daemon recorded after
+// the route read it unrecorded, still waits there for the issue's first step: the issue stands
+// before that step (beforeItsWork), and its generation holds no plan the step keeps — none, or
+// only one an earlier owner gave, which the step passes over (passOverEarlierOwners) — so the
+// step takes the newest plan its owner gave (planFirstStep). Once a plan of the generation is the
+// one its run walks, the default steps the step wrote or a plan of its owner's, the run went on
+// without the one given at generation 0.
+func (e *Engine) waitsAtZero(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
+	if !beforeItsWork(issue) {
+		return false, nil
+	}
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil || stored == nil {
+		return err == nil, err
+	}
+	if stored.Version.Source != record.PlanSourceOwner {
+		return false, nil
+	}
+	owners, err := record.ArchitectOfTree(ctx, e.store, tx, stored.Version.GivenBy, issue)
+	return !owners && err == nil, err
 }
 
 // beforeItsWork says whether issue stands before its first step: admitted, or a root waiting

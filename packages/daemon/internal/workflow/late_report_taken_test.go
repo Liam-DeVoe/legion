@@ -180,7 +180,7 @@ func TestAFirstReportAfterItsRunsEventIsTakenOnTheEndedStep(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root, reviewer := ownerAtReviewing(t, pool, engine)
-		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, "a")); result.Refusal != nil {
+		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
 		}
 		before := reportedOf(t, pool, engine, root.Key, claim.RoleReviewer, true)

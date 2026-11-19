@@ -501,7 +501,7 @@ func TestAReviewsReportIsItsCompletionsWhicheverLandsFirst(t *testing.T) {
 				if tc.want != phase.Accepting {
 					return
 				}
-				apply("sign-off", intake.SignOff{Issue: "LEGION-208"})
+				apply("sign-off", rootsSignOff(t, pool, "LEGION-208"))
 				var ended bool
 				for _, w := range writesAt(stepWrites(t, pool, "LEGION-208"), "step", 5) {
 					if w.Report != nil {
@@ -583,7 +583,7 @@ func TestAChildsAcceptanceIsItsTreeArchitects(t *testing.T) {
 		seedChildPR(t, pool, record.PullRequestOpen)
 		engine := stepEngine(agent)
 		enter(pool, engine)
-		applyFacts(t, pool, engine)("sign-off", intake.SignOff{Issue: "LEGION-209"})
+		applyFacts(t, pool, engine)("sign-off", rootsSignOff(t, pool, "LEGION-209"))
 		if got := issueAt(t, pool, "LEGION-209"); got != phase.Retro {
 			t.Fatalf("LEGION-209 stands at %s after the sign-off, want retro", got)
 		}

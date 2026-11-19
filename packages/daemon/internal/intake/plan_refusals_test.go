@@ -6,12 +6,16 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/plan"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // The refusals of register_plan and stop_task that the workflow answers, each with its exact
 // words: the route and the workflow name them through these constructors, so an owner reads the
 // same text whichever of the two refused, and a change of a word is a change of this test.
 func TestThePlanRefusalsSayWhy(t *testing.T) {
+	accepting := func(starts int64) record.StepEntry {
+		return record.StepEntry{Place: record.StepPlace{Task: "a", Kind: "step", Place: 2}, Starts: starts}
+	}
 	running := RunningTaskChanged("a")
 	if want := (plan.Refusal{Task: "a", Reason: "task a is running: stop it with stop_task before you change it."}); running != want {
 		t.Fatalf("RunningTaskChanged(a) = %+v, want %+v", running, want)
@@ -51,6 +55,24 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 			Reasons: []plan.Refusal{{Reason: "LEGION-208 started its work before Legion took plans, so it runs the steps it started with to their end. This plan changed nothing."}}}},
 		{"a plan given at a generation the issue has left", PlanStaleGeneration("LEGION-208", 1, 2), Refusal{Status: http.StatusConflict, Code: "PLAN_STALE_GENERATION",
 			Message: "the plan was given for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Give the plan again. This plan changed nothing."}},
+		{"a stop asked at a generation the issue has left", TaskStaleGeneration("LEGION-208", 1, 2), Refusal{Status: http.StatusConflict, Code: "TASK_STALE_GENERATION",
+			Message: "the stop was asked for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Ask for the stop again if the task of this run must stop. This stop changed nothing."}},
+		{"a request of an architect that is no architect of the issue's tree now", IssueOutsideTree("LEGION-209", "legion-legion-legion-210-architect", "stop_task"), Refusal{Status: http.StatusForbidden,
+			Code: "ISSUE_OUTSIDE_TREE", Message: "LEGION-209 is outside the architect tree now: legion-legion-legion-210-architect is no architect of its tree, so stop_task changed nothing."}},
+		{"a request of an architect that is not above the issue now", IssueNotOwned("sign_off", "LEGION-211", "legion-legion-legion-209-architect"), Refusal{Status: http.StatusForbidden,
+			Code: "ISSUE_NOT_OWNED", Message: "sign_off of LEGION-211 belongs to its own architect or one above it in the tree, and legion-legion-legion-209-architect is neither now, so sign_off changed nothing."}},
+		{"a sign-off asked at a generation the issue has left", SignOff{Issue: "LEGION-208", Generation: 1}.StaleGeneration(2), Refusal{Status: http.StatusConflict, Code: "SIGNOFF_STALE_GENERATION",
+			Message: "the sign-off was asked for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Read the issue again before you sign it off. This sign-off changed nothing."}},
+		{"a sign-off asked of a run of accepting that is over", SignOff{Issue: "LEGION-208", Entry: accepting(1)}.StaleEntry(accepting(2)), Refusal{Status: http.StatusConflict,
+			Code: "SIGNOFF_STALE_ENTRY", Message: "the sign-off was asked of run 1 of the step at place 2 of task a of LEGION-208, and LEGION-208 stands at run 2 of the step at place 2 of task a now. " +
+				"Read the evidence of the run that stands before you sign it off. This sign-off changed nothing."}},
+		{"a backward move asked at a generation the issue has left", BackwardMove{Issue: "LEGION-208", Generation: 1}.StaleGeneration(2), Refusal{Status: http.StatusConflict, Code: "BACKWARD_STALE_GENERATION",
+			Message: "the backward move was asked for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Read the issue again before you move it back. This move changed nothing."}},
+		{"a backward move asked of a run of accepting that is over", BackwardMove{Issue: "LEGION-208", Entry: accepting(1)}.StaleEntry(record.StepEntry{}), Refusal{Status: http.StatusConflict,
+			Code: "BACKWARD_STALE_ENTRY", Message: "the backward move was asked of run 1 of the step at place 2 of task a of LEGION-208, and LEGION-208 stands at no run of a step now. " +
+				"Read the run that stands before you move it back. This move changed nothing."}},
+		{"a retry_or_escalate asked at a generation the issue has left", RetryOrEscalate{Issue: "LEGION-208", Generation: 1}.StaleGeneration(2), Refusal{Status: http.StatusConflict, Code: "RETRY_STALE_GENERATION",
+			Message: "the retry_or_escalate was asked for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Read the issue again before you decide its hold. This decision changed nothing."}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.got == nil || !reflect.DeepEqual(*tc.got, tc.want) {

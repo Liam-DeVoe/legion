@@ -43,6 +43,23 @@ func architectClaim(t *testing.T, root string) claim.Token {
 	return token
 }
 
+// rootArchitectsRead is what an architect route reads of key for the architect of key's tree
+// root (api's architectForIssue and openStep): that architect's claim, the issue's generation and
+// the run of the step it stands in, which sign_off and request_backward_move name on their facts.
+func rootArchitectsRead(t *testing.T, pool *pgxpool.Pool, key string) (claim.Token, uint64, record.StepEntry) {
+	t.Helper()
+	recorded := issue(t, pool, key)
+	var entry record.StepEntry
+	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		var err error
+		entry, err = record.NewStore().OpenStep(context.Background(), tx, key)
+		return err
+	}); err != nil {
+		t.Fatalf("read the open step of %s: %v", key, err)
+	}
+	return architectClaim(t, recorded.Tree), recorded.Generation, entry
+}
+
 // ownersPlanRows is the plan `implementer reviewer` that the architect of root gave for key at
 // generation: version 1 of one document, its one task a standing as task says.
 func ownersPlanRows(t *testing.T, key, root string, generation uint64, task record.PlanTask) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
