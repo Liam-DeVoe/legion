@@ -652,7 +652,7 @@ func (d *durableReach) bootedAs(logged *testlog.Buffer, daemonController, readsL
 // a release that closed its cases in memory alone and a roll forward, leaves no line open that
 // would silence the next line of its case (R6). A case that still holds keeps its line.
 func TestAStoredLineWhoseCaseNoLongerHoldsIsClosedByTheFirstSweep(t *testing.T) {
-	controller := storedController(false).Token
+	controller := storedController().Token
 	for _, tc := range []struct {
 		name             string
 		stored           []fleetalert.Line
@@ -668,25 +668,24 @@ func TestAStoredLineWhoseCaseNoLongerHoldsIsClosedByTheFirstSweep(t *testing.T) 
 		{name: "the list's lines where no list is read", daemonController: true, readsList: false,
 			stored: []fleetalert.Line{{Word: fleetalert.NoLiveSession.Word}, {Word: fleetalert.SessionListUnreadable.Word}}},
 		{name: "the controller's line where no list is read, its stored record marked", daemonController: true, readsList: false,
-			stored: []fleetalert.Line{{Word: fleetalert.ControllerUnreachable.Word, Claim: string(controller)}},
-			claims: []supervise.Claim{storedController(true)}, markedReach: true},
+			stored:      []fleetalert.Line{{Word: fleetalert.ControllerUnreachable.Word, Claim: string(controller)}},
+			markedReach: true},
 		{name: "the controller's line of a controller back in reach", daemonController: true, readsList: true,
 			stored: []fleetalert.Line{{Word: fleetalert.ControllerUnreachable.Word, Claim: string(controller)}},
-			claims: []supervise.Claim{storedController(false)}},
+			claims: []supervise.Claim{storedController()}},
 		{name: "the controller's line of a controller gone from the claims", daemonController: true, readsList: true,
 			stored: []fleetalert.Line{{Word: fleetalert.ControllerUnreachable.Word, Claim: string(controller)}}},
 		{name: "the controller's line of a controller still out of reach", daemonController: true, readsList: true,
-			stored: []fleetalert.Line{{Word: fleetalert.ControllerUnreachable.Word, Claim: string(controller)}},
-			claims: []supervise.Claim{storedController(true)}, markedReach: true, open: true},
+			stored:      []fleetalert.Line{{Word: fleetalert.ControllerUnreachable.Word, Claim: string(controller)}},
+			markedReach: true, open: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newDurableReach(t)
+			if tc.markedReach {
+				d.markController()
+			}
 			for _, c := range tc.claims {
-				if tc.markedReach {
-					d.markController(c)
-				} else {
-					d.put(c)
-				}
+				d.put(c)
 			}
 			for _, l := range tc.stored {
 				if err := d.st.PutFleetAlertLine(context.Background(), store.FleetAlertLine{Project: "LEGION", Case: l.Word, Claim: l.Claim}); err != nil {
@@ -718,33 +717,32 @@ func TestAStoredLineWhoseCaseNoLongerHoldsIsClosedByTheFirstSweep(t *testing.T) 
 	}
 }
 
-// storedController is the project controller's claim as a daemon before this one left it: idle
-// on its session, last ready an hour before the boot and, where relaunched, relaunched by that
-// daemon 25 minutes before the boot, past notBackAfter, at the generation it runs. So a sweep that
-// reads its case as holding opens its line, which an open line keeps it from writing again.
-func storedController(relaunched bool) supervise.Claim {
+// storedController is the project controller's claim as a daemon before this one left it, with no
+// relaunch: idle on its session at generation 2, last ready an hour before the boot.
+func storedController() supervise.Claim {
 	project, _ := claim.ProjectToken("legion")
 	controller := claim.ControllerToken(project)
-	c := supervise.Claim{Token: controller, Project: project, Role: claim.RoleController, Generation: 2,
+	return supervise.Claim{Token: controller, Project: project, Role: claim.RoleController, Generation: 2,
 		State: supervise.StateIdle, Session: "ses_controller", LastReady: reachBoot.Add(-time.Hour),
 		Locator: pluginTestLocator(controller), ActivityAt: reachBoot}
-	if relaunched {
-		c.LastRelaunch, c.LastRelaunchGeneration = reachBoot.Add(-25*time.Minute), 2
-	}
-	return c
 }
 
-// markController stores c, a relaunched storedController, and its reach record marked out of
-// reach since 30 minutes before the boot with that relaunch taken in, as the daemon before this one
-// left them.
-func (d *durableReach) markController(c supervise.Claim) {
+// markController stores storedController relaunched by the daemon before this one 25 minutes
+// before the boot, past notBackAfter, at the generation it runs, and its reach record marked out
+// of reach since 30 minutes before the boot with that relaunch taken in, as that daemon left them,
+// and returns the claim. So a sweep that reads its case as holding opens its line, which an open
+// line keeps it from writing again.
+func (d *durableReach) markController() supervise.Claim {
 	d.t.Helper()
+	c := storedController()
+	c.LastRelaunch, c.LastRelaunchGeneration = reachBoot.Add(-25*time.Minute), c.Generation
 	d.put(c)
 	marked := supervise.Reach{Session: c.Session, FirstReady: c.LastReady, Since: reachBoot.Add(-30 * time.Minute),
 		Generation: c.LastRelaunchGeneration, Relaunched: true, RelaunchedAt: c.LastRelaunch}
 	if known, err := d.st.PutClaimReach(context.Background(), c.Token, marked); err != nil || !known {
 		d.t.Fatalf("mark the controller out of reach = %t, %v", known, err)
 	}
+	return c
 }
 
 // A read of Envoy's list that fails right after a boot ends no case: the controller's line the
@@ -755,9 +753,7 @@ func (d *durableReach) markController(c supervise.Claim) {
 func TestAFailedListReadAfterABootKeepsTheControllersStoredLine(t *testing.T) {
 	ctx := context.Background()
 	d := newDurableReach(t)
-	c := storedController(true)
-	d.markController(c)
-	controller := c.Token
+	controller := d.markController().Token
 	line := store.FleetAlertLine{Project: "LEGION", Case: fleetalert.ControllerUnreachable.Word, Claim: string(controller)}
 	if err := d.st.PutFleetAlertLine(ctx, line); err != nil {
 		t.Fatalf("store the open line %+v: %v", line, err)

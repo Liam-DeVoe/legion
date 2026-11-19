@@ -749,10 +749,10 @@ func (k *reachKeeper) controllerBack(c supervise.Claim, rec supervise.Reach) boo
 // for its relaunch's own launch (R6): a resume that finds no session starts the controller on a
 // fresh one, or has recorded none yet. That launch is the relaunch's while c records the relaunch
 // rec has taken in and stands at the generation that relaunch counts from (relaunchGeneration,
-// whose second reader this is, after relaunchTakenIn), and a later launch is
-// not. So the episode, and R6's line 20 minutes after the relaunch, goes on through that change,
-// for a launch that runs, is starting, or has failed; a worker's relaunch keeps its session, and
-// a controller suspended or retired has nothing left to judge.
+// whose second reader this is, after relaunchTakenIn), and a later launch is not. So the episode,
+// and R6's line 20 minutes after the relaunch, goes on through that change, for a launch that
+// runs, is starting, or has failed; a worker's relaunch keeps its session, and a controller
+// suspended or retired has nothing left to judge.
 func (k *reachKeeper) carriesItsEpisode(c supervise.Claim, rec supervise.Reach) bool {
 	return c.Role == claim.RoleController && rec.Relaunched && rec.Unreachable() && c.Session != rec.Session &&
 		c.LastRelaunch.Equal(rec.RelaunchedAt) &&
