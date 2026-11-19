@@ -152,7 +152,9 @@ func reopenWithoutRestoring(t *testing.T, f repairFixture, issue, status string,
 // reopen just committed reaches this process from its commit (migration 20261101181500's trigger
 // and the room-sync lane the fixture runs, runDocumentRoomSync), and that lane closes every room
 // the issue's documents held, storing what each had taken first (setRoomIssueOpen, then
-// closeRoomForIssue in internal/dispatch/docs/service.go). Nothing here loads one again meanwhile.
+// closeRoomForIssue in internal/dispatch/docs/service.go). Nothing here loads one again meanwhile
+// (a settlement armed before a reopen would, once the reopen has closed its room: docs'
+// settlement.take; so a caller whose own writes armed one settles the issue's documents first).
 //
 // The wait has no bound of its own (testwait.Until), and nothing but that close can end it: the
 // fixture's rooms never idle out (repairRoomsNeverIdleOut), the close is asked for before the wait
