@@ -104,13 +104,6 @@ stays the one listener slot it is, written only by the paths that establish a Le
 `test/omp-harness.ts` runs the real Oh My Pi binary (`LEGION_TEST_OMP`) for each plugin's
 `*-omp.test.ts`; `test/omp-natives.ts` shares one natives cache per binary with the Go tests;
 `test/host-registry.ts` is the `AgentRegistry` stand-in every plugin suite's mock spreads in.
-Every child process a test starts gets `childThreadsEnvironment`
-(`@legion/test-fixtures/child-threads`): `TOKIO_WORKER_THREADS=1` and
-`RAYON_NUM_THREADS=1`. The natives' Tokio runtime and rayon's global pool, and jj's rayon pool,
-otherwise each start one thread per CPU. On a 288-CPU machine one omp held 1,177 threads with
-neither set and about 316 with Tokio's alone, more than a test under a 512-task limit can start.
-`OMP_THREADS_ENV` is that fixture for the harness; `versionControlEnvironment` gives it to jj and
-git; a test with another child spreads it into that child's environment.
 `spawnRpc` takes **absolute** extension paths — this module lives in another package than its
 callers, so `import.meta.dir` here is not the caller's — and pi-envoy's `dispatch-first-omp.test.ts`
 passes `path.join(import.meta.dir, "envoy.ts")`. `spawnInteractive` starts interactive `omp` (the
@@ -128,19 +121,7 @@ since nothing in a pane runs `legion` from bash (LEGION-631). `name` keys every 
 case asserts (`<name>-grant-<n>`, `legion-<name>-<issue>-<role>`); `answer` is tried before the
 runner's routes (a case answers `handoff/complete` there), `prepare` runs before the profile and
 the spawn, and `quietMs` settles on gateway silence instead of the terminal `agent_end`. The pane
-it returns reads back as `turns`, `selfChecks`, `toolResults` and `transcriptEntries`. Each file
-installs its teardown with `cleanupHook(afterEach, [cleanup])`, or `afterAll` over one list per
-session its cases share: the hook's bound is `OMP_TEARDOWN_MS` for each omp one list ends (its
-third argument, 1 by default) and 5 s for the steps that end no process, so an omp group that does
-not end fails naming each of its processes, never on bun's unnamed hook timeout, and a list that
-ends more omps than the hook is bounded for fails naming the number to pass. An omp the case did
-not spawn itself, a tmux pane's, is ended the same way by `cleanupEndsGroup(<its pid>, cleanup)`.
-A case's scratch root (`ompRoot`, and `runLegionPane`'s `scratch`) is made in the file's own
-`temporaryDirectory("<file>-omp")` (`@legion/test-fixtures/temporary-directories`), reserved at
-module scope below the file's `cleanupHook`: no case removes its root, and the fixture's `afterAll`
-removes them all after the last case, after the hook that ends the omps, since Bun runs a scope's
-hooks in the order they were registered. `scripts/refusal-fallback-pane.ts` in pi-legion is a
-script, not a test: it makes its own directory and removes it at its end.
+it returns reads back as `turns`, `selfChecks`, `toolResults` and `transcriptEntries`.
 
 ## Where to look
 
