@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // issueStatusOrderSQL derives the SQL ordering from Dispatch's canonical lifecycle.
@@ -440,24 +441,6 @@ func parseAdvancesFilter(values []string) (ids []string, none, some bool, err er
 	return slices.Compact(ids), none, some, nil
 }
 
-// microsecondCeiling is a listing's time bound as the statement compares it. Postgres stores a
-// timestamptz to the microsecond and pgx encodes a bound by truncating its nanoseconds, which
-// lowers it: an issue stored at the truncated microsecond, before the bound the caller named,
-// would be kept by `>= since` and dropped by `< before`. Every stored time is a whole
-// microsecond, so it is at or after a bound exactly when it is at or after the bound rounded up
-// to the next microsecond, and before the bound exactly when it is before that: rounding up keeps
-// both meanings. nil is no bound.
-func microsecondCeiling(bound *time.Time) *time.Time {
-	if bound == nil {
-		return nil
-	}
-	ceiling := bound.Truncate(time.Microsecond)
-	if ceiling.Before(*bound) {
-		ceiling = ceiling.Add(time.Microsecond)
-	}
-	return &ceiling
-}
-
 // claimScan reads an issue's two claim columns as one nullable claim. A row has both or
 // neither (the issues_claim_complete constraint), so either absent means unclaimed.
 type claimScan struct {
@@ -782,8 +765,9 @@ func (f issueListRead) statement() string {
 // which is not true, so a read that named no label would match no issue at all
 // (issueListFilters).
 //
-// Every time bound is bound as microsecondCeiling reads it, which is the value the statement's
-// comparisons mean (microsecondCeiling says why), so no reader of this type rounds its own.
+// Every time bound is bound as store.MicrosecondCeiling reads it, which is the value the
+// statement's comparisons mean (store.MicrosecondCeiling says why), so no reader of this type
+// rounds its own.
 func (f issueListRead) arguments() []any {
 	statuses, labels := f.statuses, f.labels
 	priorities, advances := f.priorities, f.advances
@@ -800,8 +784,8 @@ func (f issueListRead) arguments() []any {
 		advances = []string{}
 	}
 	arguments := []any{
-		f.project, statuses, f.parent, microsecondCeiling(f.updatedSince), labels, f.open, priorities,
-		f.unsetPriority, microsecondCeiling(f.closedSince), microsecondCeiling(f.closedBefore),
+		f.project, statuses, f.parent, store.MicrosecondCeiling(f.updatedSince), labels, f.open, priorities,
+		f.unsetPriority, store.MicrosecondCeiling(f.closedSince), store.MicrosecondCeiling(f.closedBefore),
 		advances, f.advancesNone, f.advancesAny, f.moved,
 	}
 	if f.pinnedBy != "" {

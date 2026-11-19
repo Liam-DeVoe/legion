@@ -11,7 +11,8 @@
  * needs must not drag a schema builder into a browser, so the constants live here, an area
  * module that reads one imports it from here, and `dispatch-api.ts` re-exports every one of
  * them: an import of that module, or of the package index, answers exactly what it answered
- * before.
+ * before. A new constant of the contract goes here too, rather than beside the schemas, so this
+ * module also holds codes no browser reads, which were added after it was split out.
  */
 
 // Types only: a type import is erased by the compiler, so it builds no edge a bundler would
@@ -444,6 +445,17 @@ export function everyBuildReadsSearch(request: object): boolean {
 export const AUTH_NO_IDENTITY = "NO_IDENTITY";
 
 /**
+ * The code of the `403` for a request by an access token the secrets broker issued that holds
+ * only the OAuth scope `read`, to a route the read list does not name. Such a token names a
+ * service and a session, no person and no project, and Dispatch serves it on the routes its read
+ * list (`readScopeRoutes`) names and refuses it on every other one, before the route's handler
+ * runs and before its idempotency key is read, so the refused request claims no key and writes
+ * nothing but the row that records its DPoP proof as spent. No sign-in and no other scope makes
+ * the request possible for that token.
+ */
+export const DISPATCH_READ_ONLY_TOKEN = "READ_ONLY_TOKEN";
+
+/**
  * The close code the document websocket (`/ws/doc/{room}`) refuses a room with when the tree it
  * holds is outside the Proof schema: it completes the upgrade and closes with this code, and
  * `DOCUMENT_SCHEMA_CLOSE_REASON`, before any sync, so a browser editor never receives a tree it
@@ -452,6 +464,45 @@ export const AUTH_NO_IDENTITY = "NO_IDENTITY";
  * connection to retry. Generated into Go as `contracts.DocumentSchemaCloseCode`.
  */
 export const DOCUMENT_SCHEMA_CLOSE_CODE = 4409;
+
+/**
+ * The close code the document websocket (`/ws/doc/{room}`) refuses a room with when the tree it
+ * holds has an element that this Dispatch process's build cannot read: a newer build wrote it while
+ * two builds serve one database during a release. It completes the upgrade and closes with this
+ * code, and `DOCUMENT_NEWER_CONTENT_CLOSE_REASON`, before any sync, so a browser editor never
+ * receives a tree it would write back without that element. The pinned `@hocuspocus/provider`
+ * (2.15) stops reconnecting only on 4401 and 1009 (`HocuspocusProviderWebsocket.ts` `onClose`), so
+ * it reconnects on this code with its backoff, and a later attempt can reach a build that reads the
+ * document. 425 is HTTP's "Too Early". Generated into Go as
+ * `contracts.DocumentNewerContentCloseCode`.
+ */
+export const DOCUMENT_NEWER_CONTENT_CLOSE_CODE = 4425;
+
+/** The reason the document websocket closes with `DOCUMENT_NEWER_CONTENT_CLOSE_CODE`: the code reads
+ *  of that document answer (`409 DOC_NEWER_CONTENT`). Generated into Go as
+ *  `contracts.DocumentNewerContentCloseReason`. */
+export const DOCUMENT_NEWER_CONTENT_CLOSE_REASON = "DOC_NEWER_CONTENT";
+
+/**
+ * The close code the document websocket (`/ws/doc/{room}`) ends an open writable socket with once
+ * the live server processes no longer admit the page that opened it: a build whose numbers the
+ * admission held against has joined or rolled away, so that page may no longer write
+ * (`RunSchemaAdmission`). The close carries this code and
+ * `DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON`; what that close waits for, and what a peer too slow
+ * to take it reads instead, are in `packages/envoy/cmd/dispatch/README.md`, "Two builds at once",
+ * which is the one statement of that rule. The pinned `@hocuspocus/provider` (2.15) stops
+ * reconnecting only on 4401, 4403 and 1009 (`HocuspocusProviderWebsocket.ts` `onClose`), so the
+ * page reconnects on this code, presents its numbers again and is admitted again: read-only,
+ * unless a live process admits it. 412 is HTTP's "Precondition Failed", which the admission the
+ * fleet withdrew is. The socket closes with it too once the Identity-Aware Proxy assertion its
+ * upgrade carried expires (`DISPATCH_IDENTITY=iap`): the reconnect carries a fresh assertion, which
+ * is judged again. Generated into Go as `contracts.DocumentAdmissionRevokedCloseCode`.
+ */
+export const DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE = 4412;
+
+/** The reason the document websocket closes with `DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE`.
+ *  Generated into Go as `contracts.DocumentAdmissionRevokedCloseReason`. */
+export const DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON = "DOC_ADMISSION_REVOKED";
 
 /**
  * The code of the `409` Dispatch answers an id written as a prefix two items or more carry: a

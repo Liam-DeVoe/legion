@@ -15,12 +15,18 @@ import {
   PROJECT_NAME_MAX,
 } from "./dispatch-api-constants";
 import {
+  ARTIFACT_NAME_EXISTS_RULE,
+  ARTIFACT_STORED_TEXT_RULE,
   ASK_URGENCIES,
   DISPATCH_BLOCK_UNITS,
   ISSUE_STATUSES,
+  MARKDOWN_EXTENSION,
+  NAME_EXTENSION,
+  PATH_KEEPS_BYTES,
   PROJECT_KEY_PATTERN,
   SEARCH_QUERY_MAX,
 } from "./dispatch-tools-constants";
+import { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST } from "./legion-roles";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
 
 export interface DispatchToolSpec {
@@ -142,49 +148,7 @@ const CONTENT_IS_MARKDOWN =
 const DOCUMENT_IS_MARKDOWN =
   "a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph)";
 
-export const PATH_KEEPS_BYTES =
-  "path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged";
-
 const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so a document's name ends in .md or .markdown or has no extension, under content and under neither flag alike; upload any other file (.jsonl, .tsv, .json, .txt) with ${PATH_KEEPS_BYTES}.`;
-
-/**
- * What `dispatch artifact` says of a name the owner already holds. The command refuses it before
- * it uploads anything, because an upload of that name writes the document's next version and
- * replaces its text. `force` is what asks for that version. The refusal is the command's: the
- * API writes the version for every other caller, the Dispatch page's own upload among them.
- */
-export const ARTIFACT_NAME_EXISTS_RULE =
-  "An upload under the name of a document the owner already holds is refused: it writes that document's next version, over the text it holds. Change a document with dispatch doc-edit. Send the upload again with force (--force) to write the next version.";
-
-/**
- * What `dispatch artifact` says of inline text the store would change. The command renders the
- * text as Dispatch renders a document it stores and compares the two, so a text stored under
- * another spelling (a `*` list stored with `-`, an ordered list renumbered, a CR LF stored as a
- * line feed) is refused before the upload rather than stored changed. The rule holds for both
- * kinds of name: `--path` keeps the bytes of a name that is not Markdown, and a Markdown name is
- * parsed and rendered whichever flag sends it, so its one way out is to send the stored text.
- */
-export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused. The refusal prints the text Dispatch stores: send that text. A name that does not end in .md or .markdown has a second way out, which keeps the text as it was written: send it as a file with ${PATH_KEEPS_BYTES}.`;
-
-/** A name's extension, or undefined for a name with none: what follows its last dot when that
- *  holds no blank. Digits count, so "rows.jsonl.1" has one, and so does a title such as
- *  "plan v1.2", which takes content once it ends in .md. */
-const NAME_EXTENSION = /\.([^\s.]+)$/u;
-
-const MARKDOWN_EXTENSION = /^(md|markdown)$/i;
-
-/**
- * Whether `--path` would store this name's text as the bytes it was written as: true for every
- * name that does not end in .md or .markdown, a name with no extension included. Dispatch reads
- * an upload's media type, which a Markdown path alone makes `text/markdown`, and parses and
- * renders only a document (`PATH_KEEPS_BYTES`). A refusal of inline text the store would change
- * names `--path` for such a name, and never for a Markdown one, which `--path` would change the
- * same way.
- */
-export function pathKeepsBytesOf(name: string): boolean {
-  const extension = NAME_EXTENSION.exec(name.trim())?.[1];
-  return extension === undefined || !MARKDOWN_EXTENSION.test(extension);
-}
 
 const artifactOwner = documentOwnerValidation(false);
 
@@ -462,39 +426,6 @@ const ASK_BOUND_RULE =
  */
 export const DISPATCH_HANDOFF_BODY_MAX = 262144;
 
-/** The words of a step record, written once for Dispatch's store and the Legion daemon, a Go module
- *  of its own that reads them through `github.com/sjawhar/envoy/steprecord`. A word one side drifts
- *  on is a `400 STEP_INPUT` the daemon's outbox ends the row on, and the record is lost.
- *
- *  The kinds of a run: a step a plan names, at its place from 1, and the retro and the merge,
- *  acts of Legion that no plan names, at the place 0. Generated into Go as
- *  `contracts.StepKindStep`, `contracts.StepKindRetro` and `contracts.StepKindMerge`. */
-export const STEP_KINDS = ["step", "retro", "merge"] as const;
-
-/** The results of a run that ended: generated into Go as `contracts.StepResultPassed`,
- *  `contracts.StepResultFailed` and `contracts.StepResultStopped`. A run that still runs has none. */
-export const STEP_RESULTS = ["passed", "failed", "stopped"] as const;
-
-/** The codes of the step write's refusals that no retry changes: a value outside its form, a writer
- *  that is not the daemon's session, and an id whose record is a run of another issue. Generated
- *  into Go as `contracts.StepInputCode`, `contracts.StepWriterCode` and
- *  `contracts.StepOtherIssueCode`, which the route answers and the daemon ends a row on. */
-export const STEP_INPUT_CODE = "STEP_INPUT";
-export const STEP_WRITER_CODE = "STEP_WRITER";
-export const STEP_OTHER_ISSUE_CODE = "STEP_OTHER_ISSUE";
-
-/** The form of the agent, the session and the model a step record names: printable ASCII with no
- *  space, from 1 to 128 characters. The session and the model come from the agent's own frames,
- *  and `dispatch steps` joins a record's fields with spaces, so a space or a control character in
- *  one would shift its columns or forge a line. Generated into Go as
- *  `contracts.StepAgentTextPattern`: Dispatch refuses a step write that names text outside it,
- *  and the Legion daemon leaves such text out of the record it writes. */
-export const STEP_AGENT_TEXT_PATTERN = /^[!-~]{1,128}$/;
-
-/** STEP_AGENT_TEXT_PATTERN's rule in words, which Dispatch's refusal gives: generated into Go as
- *  `contracts.StepAgentTextRule`. */
-export const STEP_AGENT_TEXT_RULE_WORDS = "printable ASCII with no space, from 1 to 128 characters";
-
 /** A handoff's phase, the `{phase}` segment of the handoff routes: a lowercase slug. Legion writes
  *  `plan`, `implement`, `test` and `review`. Generated into Go as `contracts.HandoffPhasePattern`,
  *  which the server compiles; the `handoffs.phase` check constraint holds the same rule. */
@@ -630,6 +561,18 @@ export const SEARCH_KIND_DEPTH = 100;
  *  it, the tool's and the server's alike: generated into Go as `contracts.ProjectKeyRule`. */
 export const PROJECT_KEY_RULE =
   "an uppercase letter, then 1 to 9 uppercase letters or digits, such as CORE";
+
+/** The refusal of a `project` argument that is not a project key, for the tools that hold their
+ *  key to the rule before it is sent: `dispatch_related` and `dispatch_plans`, which send it in the
+ *  request path, and `dispatch_search` past an empty one. A missing project is each schema's own
+ *  refusal. */
+const projectKeyValidation: NonNullable<DispatchToolSpec["validation"]> = {
+  check: (value) => {
+    const { project } = value as { readonly project?: unknown };
+    return typeof project !== "string" || PROJECT_KEY_PATTERN.test(project);
+  },
+  message: `project is not a project key: ${PROJECT_KEY_RULE}`,
+};
 
 /** A GitHub repository as `owner/name`, as `dispatch architecture-sync --repo` sends it in the
  *  path of `/api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync`. A name of `.` or
@@ -1936,13 +1879,14 @@ export const dispatchToolSpecs = [
         .describe("Results to skip before the page; nonnegative integer; default 0.")
         .optional(),
     }),
-    // An empty project searches every project, as the server reads it.
+    // An empty project searches every project, as the server reads it; any other value is held
+    // to the project-key rule.
     validation: {
       check: (value) => {
         const { project } = value as { readonly project?: unknown };
-        return typeof project !== "string" || project === "" || PROJECT_KEY_PATTERN.test(project);
+        return project === "" || projectKeyValidation.check(value);
       },
-      message: `project is not a project key: ${PROJECT_KEY_RULE}`,
+      message: projectKeyValidation.message,
     },
   },
   {
@@ -1985,14 +1929,7 @@ export const dispatchToolSpecs = [
         .describe("Search by keywords only, skipping meaning search.")
         .optional(),
     }),
-    // The key rides in the request path; a missing project is the schema's own refusal.
-    validation: {
-      check: (value) => {
-        const { project } = value as { readonly project?: unknown };
-        return typeof project !== "string" || PROJECT_KEY_PATTERN.test(project);
-      },
-      message: `project is not a project key: ${PROJECT_KEY_RULE}`,
-    },
+    validation: projectKeyValidation,
   },
   {
     name: "dispatch_issues",
@@ -2287,6 +2224,39 @@ export const dispatchToolSpecs = [
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
     }),
+    strict: true,
+  },
+  {
+    name: "dispatch_plans",
+    example: { project: "INFRA" },
+    description:
+      "Print each finished issue of a project, newest close first, with the plan Legion ran it " +
+      "from, the rating each retro gave that plan with its reason, its time and its count of " +
+      "failed steps. An issue is finished when its status is done and Dispatch closed it. The " +
+      "first line is `<PROJECT>: <n> finished issues`. Then each issue prints one line: `<KEY> " +
+      "closed <closed_at> plan <source> (<n> tasks: <steps of the first task>) ratings " +
+      `<rating>/${LEGION_PLAN_RATING_MOST} "<reason>"[, <rating>/${LEGION_PLAN_RATING_MOST} "<reason>" ...] time <h>h<m>m failed steps <n>\`. ` +
+      "source is default (Legion's default steps) or owner (the plan the issue's owner wrote), " +
+      `and the plan is the one of the issue's newest run. A rating is ${LEGION_PLAN_RATING_LEAST} (the plan cost the ` +
+      `work) to ${LEGION_PLAN_RATING_MOST} (the plan fit the work), one for each retro in the order the retros ran, and ` +
+      "its reason prints as a JSON string. time runs from the first start of the issue's steps " +
+      "to the last end, in whole hours and minutes rounded down. failed steps counts the runs " +
+      "of a step that failed, retros and merges left out. An issue with no plan prints plan " +
+      "none, one with no rating prints ratings none, and one whose time is not known prints " +
+      "time -: an issue Legion never ran prints all three. since and until, each an RFC 3339 " +
+      "time, keep the issues closed at or after since and before until.",
+    arguments: (z) => ({
+      project: z.string().describe("Project key whose finished issues to list, such as INFRA."),
+      since: z
+        .string()
+        .describe("Optional RFC 3339 time; only issues closed at or after it.")
+        .optional(),
+      until: z
+        .string()
+        .describe("Optional RFC 3339 time; only issues closed before it.")
+        .optional(),
+    }),
+    validation: projectKeyValidation,
     strict: true,
   },
   {
