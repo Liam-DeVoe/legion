@@ -573,12 +573,21 @@ func (h *heldScans) listened() {
 
 // listening runs once a LISTEN connection is up, after the catch-up wake it sends. The holder can
 // have taken that wake, scanned and parked before this, while the connection did not count as up
-// yet: that wait is a rest now, when nothing has happened since.
+// yet: that wait is a rest now, when nothing has happened since (rest).
 func (h *heldScans) listening() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.up = true
-	if len(h.starts) == 0 && !h.lastQueued && !h.lastArmed && len(h.outbox.wake) == 0 && h.outbox.claims.Load() == h.lastClaims {
+	h.rest()
+}
+
+// rest records the holder's last wait as a rest when nothing is left to do at it: the LISTEN
+// connection up and reported, no take or LISTEN without its scan, no wake queued at that wait or
+// since, no retry the scan it ended armed, and no claim since it. waited calls it once it has
+// recorded the wait, and listening once the connection counts as up, each with mu held: those are
+// the two moments a rest can begin.
+func (h *heldScans) rest() {
+	if h.up && len(h.starts) == 0 && !h.lastQueued && !h.lastArmed && len(h.outbox.wake) == 0 && h.outbox.claims.Load() == h.lastClaims {
 		h.restingAt.Store(h.lastClaims)
 	}
 }
@@ -658,9 +667,7 @@ func (h *heldScans) waited() {
 	queued := len(h.outbox.wake) > 0
 	h.scans = append(h.scans, scan)
 	h.lastClaims, h.lastHold, h.lastQueued, h.lastArmed = claims, held, queued, len(scan.armed) > 0
-	if h.up && !queued && !h.lastArmed && len(h.starts) == 0 {
-		h.restingAt.Store(claims)
-	}
+	h.rest()
 }
 
 // logged reads the lines heldScans keeps: a failed renewal of the publisher hold, a lost LISTEN
@@ -805,10 +812,17 @@ func logFaults(t *testing.T, part string, scans []judgedScan) {
 // the outbox and the database recorded - the scans and what started each, the waits armed, the
 // moment the database marked the event published - and never from how long a step took.
 //
-// One case the row cannot tell from a fault of the outbox's: a stall of the test process itself
-// that sends no renewal of the publisher hold for the 4 s to its loss deadline. The hold lapses
-// with no renewal warning and no window of the witness's, and the take that follows is counted. A
-// log of the runner's clock tells that case apart: it shows the process stopped for that long.
+// Two cases the row cannot tell from a fault of the outbox's, and counts. The first is a stall of
+// the test process itself that sends no renewal of the publisher hold for the 4 s to its loss
+// deadline. The hold lapses with no renewal warning, since none was sent; the witness's question
+// in flight can time out when the process resumes and so open a window over the stop, but no
+// unanswered renewal names the lapse's deadline, so the take that follows is counted. A log of
+// the runner's clock tells that case apart: it shows the process stopped for that long. The second
+// is a lock of the publisher hold's row of the strength an UPDATE takes, held past a renewal's
+// wait by a transaction that is not stuck in its commit: the renewals wait on it, and the
+// witness's for key share does not (witnessQuestion). The CI job's Postgres lines fit that lock as
+// well as a renewal whose commit stalled with the row locked; the witness sees the stalled commit,
+// since its own commit waits as the renewal's does.
 func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	database := storetest.Open(t)
 	other := storetest.SecondProcess(t, database)
