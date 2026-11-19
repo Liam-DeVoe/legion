@@ -501,17 +501,7 @@ jobs:
 
       - name: Point the manifest at the publishing repository
         if: steps.version.outputs.skip != 'true'
-        run: |
-          # As in pi_envoy_build, and for the reason .github/scripts/release-pi-envoy-manifest-repository.sh
-          # gives: npm refuses a publish with
-          # provenance whose repository.url is not the publishing repository's, case for case, and
-          # the publish job packs nothing of its own. The committed manifest keeps today's
-          # repository; this writes whichever one the job runs in, and this job's tree is
-          # discarded.
-          url=$(.github/scripts/repo-paths.sh repository_url)
-          for manifest in packages/claude-envoy/package.json packages/claude-envoy/codex/package.json; do
-            jq --arg u "$url" '.repository.url = $u' "$manifest" > tmp.json && mv tmp.json "$manifest"
-          done
+        run: .github/scripts/release-claude-envoy-manifest-repository.sh
 
       # why: .github/ci-notes/release.md#what-the-claude-plugins-build-and-pack-step-checks
       - name: Build, check and pack the plugin

@@ -533,6 +533,7 @@ claude_envoy:
   - '.claude-plugin/marketplace.json'
   - '.agents/plugins/marketplace.json'
   - '.github/scripts/release-claude-envoy-check-packed.sh'
+  - '.github/scripts/release-claude-envoy-manifest-repository.sh'
   - '.github/scripts/release-claude-envoy-version.sh'
   - '.github/scripts/repo-paths.sh'
 contracts:
