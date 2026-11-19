@@ -12,11 +12,12 @@
  *  Where each test runs. The `dispatch-ui` job of `.github/workflows/ci.yaml` runs this
  *  directory with a Postgres service and `LEGION_TEST_PG_DSN`, and with no stack provider, so its
  *  `bun test` leaves out every file that calls `requirePostgres`, through one
- *  `--path-ignore-patterns` per file in the `test` script of `packages/dispatch/package.json`.
- *  A job of `.github/workflows/dispatch-browser.yaml` that names a provider runs each of those
- *  files. `postgres-provider.test.ts` holds the three together: a file that calls
- *  `requirePostgres` and is not left out of that lane fails the lane, and one that is left out
- *  and that no such job names runs nowhere, which that test refuses.
+ *  `--path-ignore-patterns` per file in the harness lane's script, `test:harness` of
+ *  `packages/dispatch/package.json`, which its `test` script runs, and so does the weekly repeated
+ *  job (`test:repeat`). A job of `.github/workflows/dispatch-browser.yaml` that names a provider
+ *  runs each of those files. `postgres-provider.test.ts` holds the three together: a file that
+ *  calls `requirePostgres` and is not left out of that lane fails the lane, and one that is left
+ *  out and that no such job names runs nowhere, which that test refuses.
  *
  *  `bun test` collects only a file whose name carries a `test` or `spec` token, so this module
  *  runs nowhere by itself. */

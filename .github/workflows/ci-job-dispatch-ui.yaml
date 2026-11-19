@@ -90,9 +90,15 @@ jobs:
       # names, this job's service, and drop it again; the login is the image's superuser, since
       # each of them starts with a CREATE DATABASE. The tests that start a stack's own Postgres
       # need DISPATCH_E2E_PG_IMAGE or DISPATCH_E2E_PG_BIN, which this job names neither of, so the
-      # package's `test` script leaves those files out of this run (one --path-ignore-patterns
-      # each, held to the files by e2e/__tests__/postgres-provider.test.ts), and the jobs of
+      # package's harness lane (its `test:harness` script, which `test` runs) leaves those files out
+      # (one --path-ignore-patterns each, held to the files by
+      # e2e/__tests__/postgres-provider.test.ts), and the jobs of
       # .github/workflows/dispatch-browser.yaml that name a provider run them.
+      #
+      # This step runs both lanes in random order, which packages/dispatch/bunfig.toml sets. Each
+      # lane prints its own ` --seed=<n>` in its summary. A red row that failed from the order is
+      # reproduced with its file alone and that seed, as docs/testing.md ("A Dispatch unit test runs
+      # in random order") says; it also says what a row that failed from the lane's load needs.
       - name: Test dispatch dashboard
         run: bun run test
         working-directory: packages/dispatch

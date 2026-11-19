@@ -65,7 +65,8 @@ test("a run outside CI that lacks a Postgres skips, and a CI run fails instead",
 function stackTestFaults(input: {
   /** Each test file of the directory, relative to `e2e`, with its source. */
   readonly files: readonly { readonly file: string; readonly source: string }[];
-  /** The `test` script of packages/dispatch/package.json, which runs the `dispatch-ui` lane. */
+  /** The `test:harness` script of packages/dispatch/package.json: the harness lane, which its
+   *  `test` script runs in the `dispatch-ui` job, and `test:repeat` in the weekly repeated job. */
   readonly laneScript: string;
   /** The `run:` text of every step of dispatch-browser.yaml, with the job it is in. */
   readonly steps: readonly { readonly job: string; readonly run: string }[];
@@ -126,9 +127,12 @@ test("every test that requires a stack's Postgres is left out of the dispatch-ui
     0
   );
   expect(steps.length).toBeGreaterThan(0);
+  // The `dispatch-ui` job's `test` runs e2e/__tests__ through the harness lane, whose script holds
+  // the files it leaves out.
+  expect(manifest.scripts.test).toContain("bun run test:harness e2e/__tests__");
   expect(
-    stackTestFaults({ files, laneScript: manifest.scripts.test ?? "", steps }),
-    "Leave each such file out of packages/dispatch/package.json's `test` script with a " +
+    stackTestFaults({ files, laneScript: manifest.scripts["test:harness"] ?? "", steps }),
+    "Leave each such file out of packages/dispatch/package.json's `test:harness` script with a " +
       "--path-ignore-patterns of its own, and run it in a step of " +
       ".github/workflows/dispatch-browser.yaml that exports the provider it needs."
   ).toEqual([]);

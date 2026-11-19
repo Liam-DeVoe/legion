@@ -20,15 +20,16 @@
  * `delivery-live-probe.test.ts` read line by line and stop, the runner the interrupted-runner row
  * of `bounded-subprocess.test.ts` interrupts, the proxies the hooks of `round-robin-proxy.test.ts`
  * and `plain-http-proxy.test.ts` start, the fake Envoy of `fake-envoy.test.ts`, the program that
- * holds the stub server's old port in a row of `stub-web-server.test.ts`, and the processes
- * `local-instance-support.test.ts` starts through its `Supervisor`. Two subprocesses a row can
- * wait for run outside it, as stated edges. One is the psql of `e2e/psql.ts` (the rows and hooks
- * of `psql-session.test.ts`, and the scratch databases of `replace-blocks-guard.test.ts`), whose
- * `sqlAt` `e2e/harness-postgres.ts` and `e2e/local-instance.ts` call too, so bounding that psql
- * would reach past `e2e/__tests__/`. The other is the `ps` that
- * reads the process table on a machine with no `/proc`, here (`processTable`) and in
- * `bounded-subprocess.test.ts`, which runs with no bound. Linux lists its processes under `/proc`
- * and never runs that `ps`.
+ * holds the stub server's old port in a row of `stub-web-server.test.ts`, the fake Dispatch host
+ * `outside-path-reach-fixtures.ts` starts for the rows of the four `outside-path-reach*` test
+ * files, and the processes `local-instance-support.test.ts` starts through its `Supervisor`. Two
+ * subprocesses a row can wait for run outside it, as stated edges. One is the psql of
+ * `e2e/psql.ts` (the rows and hooks of `psql-session.test.ts`, and the scratch databases of
+ * `replace-blocks-guard.test.ts`), whose `sqlAt` `e2e/harness-postgres.ts` and
+ * `e2e/local-instance.ts` call too, so bounding that psql would reach past `e2e/__tests__/`. The
+ * other is the `ps` that reads the process table on a machine with no `/proc`, here
+ * (`processTable`) and in `bounded-subprocess.test.ts`, which runs with no bound. Linux lists its
+ * processes under `/proc` and never runs that `ps`.
  *
  * `bun test` collects only a file whose name carries a `test` or `spec` token, `*.test.ts` and
  * its kin (`collectedTestFile` of `e2e/row-limits.ts` holds the measured set), so a plain `.ts`
@@ -88,8 +89,8 @@
  * when the row itself stalls outside its children, at most 7.5 minutes from its start, so such a
  * row, stalled from the lane's start, fails about 9.5 minutes into the job. The
  * two-stack row's 1 830 000 ms is longer than that job, and that job does not run the row: it
- * names no Postgres provider, so the package's `test` script leaves the row's file out of the
- * lane (`e2e/__tests__/postgres-provider.test.ts`). The `multiprocess` job of
+ * names no Postgres provider, so the harness lane's script, `test:harness` of package.json, leaves
+ * the row's file out of the lane (`e2e/__tests__/postgres-provider.test.ts`). The `multiprocess` job of
  * `.github/workflows/dispatch-browser.yaml` runs it, with the Go build cache warm, in a step whose
  * budget is two minutes, so there a stuck child fails at that budget, which names the step, long
  * before its own bound. The row read 39 s warm on a shared Linux machine on 2026-11-17; the bound
