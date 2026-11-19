@@ -178,7 +178,7 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 	} else if waits {
 		return wait.Errorf("the merge-queue removal of %s waits for its merger's released pod to come back", row.Issue)
 	}
-	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(token), noticeSummary(texts.MergeQueueRemoval, row.Issue),
+	published := r.publish(ctx, notify.RoleTopicPrefix+string(token), noticeSummary(texts.MergeQueueRemoval, row.Issue),
 		payload.Record(row.Issue, pr.Repo), texts.UrgencyOf(texts.MergeQueueRemoval, claim.RoleMerger, texts.Variant{}), record.OutboxKey(row.ID))
 	switch {
 	case published == nil:
