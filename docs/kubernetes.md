@@ -448,7 +448,8 @@ Then:
   Unlike the `emptyDir`, that disk reports its own size, so the launcher can read the bytes free on it.
   With `--test-postgres-disk`, the launcher's first `ensure` stays a plain `ensure`, run before any role starts and bounded at 60 s, since the daemon's boot of the pod waits on it.
   Right after it, and then at each 15-second tick in place of the plain `ensure`, the launcher runs a check of the disk (`checkTestPGDisk`, `packages/daemon/internal/launcher/testpg.go`), which no role's start waits on.
-  Each check first deletes `data.reset` in the cluster's directory where it finds one: the old cluster a reset cut after its rename set aside, which would otherwise hold its bytes for the pod's life.
+  Each check first deletes `data.reset` in the cluster's directory where it finds one: the old cluster a reset moved aside and did not delete, which would otherwise hold its bytes for the pod's life.
+  A reset leaves it there when it is cut after its rename, when its new cluster fails to start and when its own delete of the old cluster fails, and the reset's own lines say which.
   It deletes it without the script's lock, because only a reset makes `data.reset`, and the launcher runs its resets one at a time, from this check alone, each under a bound that kills its whole process group, so no run of the script still uses it.
   It never touches `data.init`, where every start makes a new cluster before it renames it into place (next bullet):
   the bound of an `ensure` kills the script's own process and not its `flock`, so a start may still be filling that directory under the lock, and every start deletes what a cut `initdb` left there before its own `initdb`.

@@ -73,8 +73,9 @@ sockets=$dir/sockets
 # aside is where a reset moves the cluster it replaces, in one rename, before it makes the new one,
 # and init is where start makes a new cluster, before it renames it to the data directory. The
 # launcher names aside's path (testPGSetAsideName, internal/launcher/testpg.go) and deletes
-# whatever it finds there before it reads the disk's free bytes, so the old cluster a reset cut
-# after its rename leaves there is gone at the next check. The launcher may do that without this
+# whatever it finds there before it reads the disk's free bytes, so the old cluster a reset leaves
+# there, cut after its rename, failed at its new cluster's start or failed at its own delete, is
+# gone at the next check. The launcher may do that without this
 # script's lock because only a reset makes aside, and the launcher runs its resets one at a time,
 # from its check alone, and kills each one's whole process group at its bound, so no run of this
 # script still uses aside when the next check deletes it. init is touched under the lock alone:
@@ -104,8 +105,10 @@ superuser=$(id -un)
 # fails when the two differ.
 max_connections=475
 
+# printf, not echo: dash's echo reads a backslash sequence in its text, and a message may name a
+# process's command line, which a role's database or role name can reach.
 die() {
-	echo "$name: $*" >&2
+	printf '%s: %s\n' "$name" "$*" >&2
 	exit 1
 }
 
@@ -516,11 +519,13 @@ reset_locked() {
 	# its working directory and may write it, so nothing is moved while any process is in there.
 	# The wait is bounded, and a holder still there at the bound is named and the cluster is left
 	# where it is: the next check under the floor tries again, and a reset never moves or deletes
-	# what a process still holds.
+	# what a process still holds. A backend's command line is its process title, which holds the
+	# user and database names as the client sent them, so every byte of it that is not printable,
+	# a newline among them, is written ? and the line cannot be split.
 	deadline=$(($(date +%s) + 60))
 	while holders "$data"; do
 		[ "$(date +%s)" -lt "$deadline" ] ||
-			die "reset: process $holder ($(tr '\0' ' ' 2> /dev/null < "/proc/$holder/cmdline")) still runs in $data 60 s after the server stopped, so the cluster is left where it is and nothing is renamed"
+			die "reset: process $holder ($(tr '\0' ' ' 2> /dev/null < "/proc/$holder/cmdline" | tr -c '[:print:]' '?')) still runs in $data 60 s after the server stopped, so the cluster is left where it is and nothing is renamed"
 		sleep 1
 	done
 	# The line goes to the container's log here, once the databases are read and the server is

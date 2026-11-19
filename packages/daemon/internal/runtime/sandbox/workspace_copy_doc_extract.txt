@@ -1,4 +1,4 @@
-# A copy of the eight regions of docs/kubernetes.md that this package's workspace_copy_doc_test.go
+# A copy of the regions of docs/kubernetes.md that this package's workspace_copy_doc_test.go
 # holds to the runtime's annotations, pod-end reasons and restore record, each in the guide's own
 # bytes and none of the prose around it, in the guide's order: the stop-eviction annotations of a
 # microVM issue pod in "Issue pods in microVMs", the extended-run-time annotation's bullet of

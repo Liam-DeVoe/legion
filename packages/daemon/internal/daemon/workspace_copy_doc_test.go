@@ -20,7 +20,7 @@ import (
 // on the copy and on pod ends through the same reader, internal/testdoc.
 //
 // These checks do not read the guide. They read workspace_copy_doc_extract.txt, this package's
-// own copy of the two regions in the guide's bytes, which internal/textcheck's
+// own copy of the regions in the guide's bytes, which internal/textcheck's
 // TestTheWorkspaceCopyDocExtractsAreTheGuidesOwnLines holds to the guide's lines between the same
 // markers. The split is what keeps docs/kubernetes.md out of this job's filter: a declared read
 // applies to every compiled source file of a run, so a test that reads the guide starts the whole

@@ -219,16 +219,18 @@ var testPGDiskSpace = func(dir string) (free, size uint64, err error) {
 // emptyDir, so the bytes free on it are the cluster's own to fill, and a cluster that fills it
 // is reset before the server meets a full disk.
 //
-// It first deletes a cluster a reset cut after its rename set aside (testPGSetAsideName): that is
-// the old cluster whole, which would otherwise hold its bytes for the pod's life and count
-// against the free bytes read next. It deletes it without the script's lock, because only a reset
-// makes that path, and the launcher runs its resets one at a time, from this check alone, each
-// under a bound that kills its whole process group (resetRun), so no run of the script still uses
-// it. It leaves alone the directory the script's start makes a new cluster in (legion-testpg's
-// init) and renames into place: an `ensure` its bound cut may leave a start still filling that
-// directory under the lock (ensureRun), and every start deletes what a cut initdb left there
-// before its own initdb. It then reads the disk with space (testPGDiskSpace). Under
-// testPGResetFloor it runs `legion-testpg reset` (resetRun, bounded by resetBound,
+// It first deletes the old cluster a reset moved aside and did not delete (testPGSetAsideName),
+// which would otherwise hold its bytes for the pod's life and count against the free bytes read
+// next. A reset leaves it there when it is cut after its rename, when its new cluster fails to
+// start and when its own delete of the old cluster fails; the reset's own lines say which, so the
+// words logged here name what the check found and not why it was left. It deletes it without the
+// script's lock, because only a reset makes that path, and the launcher runs its resets one at a
+// time, from this check alone, each under a bound that kills its whole process group (resetRun),
+// so no run of the script still uses it. It leaves alone the directory the script's start makes a
+// new cluster in (legion-testpg's init) and renames into place: an `ensure` its bound cut may leave
+// a start still filling that directory under the lock (ensureRun), and every start deletes what a
+// cut initdb left there before its own initdb. It then reads the disk with space (testPGDiskSpace).
+// Under testPGResetFloor it runs `legion-testpg reset` (resetRun, bounded by resetBound,
 // testPGResetBound, which the caller reads); at or over the floor, and where the disk cannot be
 // read, it runs the plain `ensure`. A failure is logged and never thrown, as the plain
 // `ensure`'s is.
@@ -237,12 +239,12 @@ func checkTestPGDisk(ctx context.Context, cfg Config, log *roleLog, guard *pidGu
 	aside := filepath.Join(dir, testPGSetAsideName)
 	if _, err := os.Lstat(aside); err == nil {
 		if err := os.RemoveAll(aside); err != nil {
-			log.linef("launcher: test database: delete %s, the old cluster a reset cut after its rename set aside: %v", aside, err)
+			log.linef("launcher: test database: delete %s, the old cluster a reset moved aside and did not delete: %v", aside, err)
 		} else {
-			log.linef("launcher: test database: deleted %s, the old cluster a reset cut after its rename set aside", aside)
+			log.linef("launcher: test database: deleted %s, the old cluster a reset moved aside and did not delete", aside)
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		log.linef("launcher: test database: read %s, where a reset cut after its rename sets the old cluster aside: %v", aside, err)
+		log.linef("launcher: test database: read %s, where a reset moves the old cluster aside: %v", aside, err)
 	}
 	free, size, err := space(dir)
 	if err != nil {
