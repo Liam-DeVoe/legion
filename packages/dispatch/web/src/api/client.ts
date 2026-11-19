@@ -1556,6 +1556,13 @@ export class DispatchApiClient {
     return (await this.readWholeList("/api/v2/issues/{key}/handoffs", { key })).items;
   }
 
+  /** `GET /api/v2/issues/{key}/steps`, every page: each run of each step Legion recorded of the
+   *  issue, task by task in the order of each task's first run. An issue Legion never ran answers
+   *  no run. */
+  async listSteps(key: string) {
+    return (await this.readWholeList("/api/v2/issues/{key}/steps", { key })).items;
+  }
+
   /** `GET /api/v2/handoffs/{id}`: one handoff with the body its session wrote. */
   getHandoff(id: string) {
     return this.read("/api/v2/handoffs/{id}", { id });

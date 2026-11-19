@@ -174,7 +174,9 @@ func (s *server) v2MiscRows() []routeRow {
 				"many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null " +
 				"when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, " +
 				"session, document_version, result and handoff - each {kind, items}, items being how many of it the " +
-				"database holds. Every number is read in one statement, so they all read one snapshot.",
+				"database holds. Every number is read in one statement, so they all read one snapshot, under a 10 s " +
+				"statement_timeout: a statement that runs past it counts nothing and answers 503 " +
+				"SEARCH_COVERAGE_TIMEOUT, to be asked again later.",
 			Handler:  s.searchCoverage,
 			Resource: "search-coverage", Kind: kindReport,
 			Shape:    routeShape{Status: http.StatusOK, Response: model.SearchCoverage{}},

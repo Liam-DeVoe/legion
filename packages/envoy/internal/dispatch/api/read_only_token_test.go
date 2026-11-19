@@ -29,6 +29,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
@@ -146,23 +147,26 @@ func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *
 		walked, liveSocketPattern, listed, walked-listed+1, contracts.DispatchReadOnlyToken)
 }
 
-// readListAnswers is what each route of the read list answers the mounted walk below for the
-// probe's project, TEST, which the walk's server does not hold: its handler's own answer, which a
-// request the gate refused could not carry - /api/v1's architecture read the project's missing
-// source, and /api/v2's the project itself (decision 11). A route added to the list adds its
-// answer here.
+// readListAnswers is what each route of the read list answers the mounted walk below at its probe
+// path, which names a project TEST the walk's server does not hold and an issue it does not hold
+// either: its handler's own answer, which a request the gate refused could not carry - /api/v1's
+// architecture read the project's missing source, /api/v2's the project itself (decision 11),
+// /api/v1's steps read NOT_FOUND, as the issue's own read answers it, and /api/v2's the issue
+// itself. A route added to the list adds its answer here.
 var readListAnswers = map[string]struct {
 	status int
 	code   string
 }{
 	"GET /api/v1/projects/{key}/architecture": {http.StatusNotFound, "SOURCE_NOT_FOUND"},
 	"GET /api/v2/projects/{key}/architecture": {http.StatusNotFound, "PROJECT_NOT_FOUND"},
+	"GET /api/v1/issues/{key}/steps":          {http.StatusNotFound, "NOT_FOUND"},
+	"GET /api/v2/issues/{key}/steps":          {http.StatusNotFound, "ISSUE_NOT_FOUND"},
 }
 
 // TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone walks the server register mounted,
 // test hooks in, with a read-only token: every row the list does not name and GET /ws/live answer
 // 403 READ_ONLY_TOKEN; GET /ws/doc/{room}, which reads no broker token at all, answers 401; and
-// each listed route answers its handler's own 404 (readListAnswers) for a project it does not hold.
+// each listed route answers its handler's own refusal of its probe path (readListAnswers).
 // A row is counted once its assertions have run, and the count is held to the rows the
 // registered server mounts, as the walk above is.
 func TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone(t *testing.T) {
@@ -352,8 +356,10 @@ var (
 	writeWord = regexp.MustCompile(`(?i)\b(insert|update|delete)\b`)
 	// upsertUpdate is an insert's own conflict clause, whose table is the insert's.
 	upsertUpdate = regexp.MustCompile(`(?i)\bdo\s+update\b`)
-	// sourcesRead is the listed route's first read, of the project's architecture sources.
+	// sourcesRead is the architecture's first read, of the project's architecture sources.
 	sourcesRead = regexp.MustCompile(`(?i)\bfrom\s+architecture_sources\b`)
+	// stepsRead is the steps read's one read, of the tuples that make each run part of its issue.
+	stepsRead = regexp.MustCompile(`(?i)\bfrom\s+workflow_tuples\b`)
 )
 
 // writesOf answers each write statement makes, as "<verb> <table>", and false when it holds a
@@ -384,20 +390,30 @@ func readOnlyTreeFiles(nonce string) map[string]string {
 	}
 }
 
-// readOnlyArchitectureReads are the routes the read list names, each with a project and a
+// readOnlyArchitectureReads are the architecture reads of the read list, each with a project and a
 // repository of its own, whose prose no other read of the test has shown.
 var readOnlyArchitectureReads = []struct{ version, project, repo string }{
 	{"v1", "RDR", "reader/arch"},
 	{"v2", "RDRTWO", "reader/arch-two"},
 }
 
+// readOnlyStepsReads are the steps reads of the read list, each with the title of an issue of its
+// own, far enough from the other's that the near-copy gate lets both in, and the id of the one run
+// that issue's daemon writes before the read.
+var readOnlyStepsReads = []struct{ version, title, run string }{
+	{"v1", "A run to read", "6f1d2c3b-4a59-4e7d-8c6b-5a4f3e2d1c0b"},
+	{"v2", "Steps a read-only token lists through the second version", "6f1d2c3b-4a59-4e7d-8c6b-5a4f3e2d1c0c"},
+}
+
 // TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches sends each route the read list names, with
-// a read-only token, Dispatch-Trees: 1, a cold display cache and a stale route_roster, and reads
-// every statement the request ran - its handler's and the tree store it detaches - through a
-// tracer on the one pool the server and the verifier's replay store share. Every insert, update
-// and delete is to dpop_proofs, text_trees or route_roster: the proof's replay row and the two
-// caches Dispatch rebuilds from what it holds. The positive controls are the proof's insert, a
-// tree's insert and the read of architecture_sources, so a tracer that saw nothing cannot pass.
+// a read-only token, and reads every statement the request ran - its handler's and the work it
+// detaches - through a tracer on the one pool the server and the verifier's replay store share.
+// The architecture is read with Dispatch-Trees: 1, a cold display cache and a stale route_roster,
+// and the steps of an issue the daemon wrote a run of. Every insert, update and delete is to
+// dpop_proofs, text_trees or route_roster: the proof's replay row and the two caches Dispatch
+// rebuilds from what it holds. The positive controls are each proof's insert, a tree's insert,
+// the read of architecture_sources and the read of workflow_tuples, so a tracer that saw nothing
+// cannot pass.
 func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 	database := storetest.Open(t)
 	marked := &markedStatements{}
@@ -495,35 +511,76 @@ func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 			}
 
 			statements := marked.take()
-			allowed := map[string]bool{"dpop_proofs": true, "text_trees": true, "route_roster": true}
-			var proofInserted, treeInserted, readSources bool
-			var written []string
-			for _, statement := range statements {
-				writes, readable := writesOf(statement)
-				if !readable {
-					t.Errorf("the request ran a write this test cannot read a table for: %s", statement)
-				}
-				for _, write := range writes {
-					written = append(written, write)
-					verb, table, _ := strings.Cut(write, " ")
-					if !allowed[table] {
-						t.Errorf("the request wrote %s, which is neither its proof's replay row nor a cache Dispatch rebuilds: %s", table, statement)
-					}
-					proofInserted = proofInserted || (verb == "insert" && table == "dpop_proofs")
-					treeInserted = treeInserted || (verb == "insert" && table == "text_trees")
-				}
-				readSources = readSources || sourcesRead.MatchString(statement)
-			}
-			if !proofInserted {
-				t.Errorf("the tracer saw no insert into dpop_proofs among %d statements: it did not see the request's proof spent", len(statements))
-			}
-			if !treeInserted {
+			if !requireOnlyProofAndCaches(t, statements, sourcesRead) {
 				t.Errorf("the tracer saw no insert into text_trees among %d statements: it did not see the trees the read stored", len(statements))
 			}
-			if !readSources {
-				t.Errorf("the tracer saw no read of architecture_sources among %d statements: it did not see the handler's reads", len(statements))
-			}
-			t.Logf("the request ran %d statements, whose writes were %v", len(statements), written)
 		})
 	}
+
+	// The steps of an issue, in each version: the daemon writes one run, over its own credential
+	// and outside the counted read, and the read-only token reads it back.
+	const project = "RDRSTEPS"
+	createTestProject(t, rig.handler, project)
+	for _, read := range readOnlyStepsReads {
+		t.Run("steps "+read.version, func(t *testing.T) {
+			issue := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": project, "title": read.title})
+			if issue.Code != http.StatusCreated {
+				t.Fatalf("create an issue in %s: status=%d body=%s", project, issue.Code, issue.Body.String())
+			}
+			issueKey := decodeBody[struct {
+				Key string `json:"key"`
+			}](t, issue).Key
+			putStepOK(t, rig.handler, issueKey, read.run, implementerStart(daemonSessionOf(project)))
+			marked.take()
+			request := caller.presenting(t, http.MethodGet, "/api/"+read.version+"/issues/"+issueKey+"/steps", token, nil)
+			request = request.WithContext(context.WithValue(request.Context(), countedRead{}, true))
+			response := rig.serve(request)
+			runs := 0
+			if read.version == "v1" {
+				for _, task := range decodeBody[model.IssueSteps](t, response).Tasks {
+					runs += len(task.Steps)
+				}
+			} else {
+				runs = len(decodeBody[page[model.StepRecord]](t, response).Items)
+			}
+			if response.Code != http.StatusOK || runs != 1 {
+				t.Fatalf("the read-only token's read of the steps of %s: status=%d body=%s, want 200 and its one run", issueKey, response.Code, response.Body.String())
+			}
+			requireOnlyProofAndCaches(t, marked.take(), stepsRead)
+		})
+	}
+}
+
+// requireOnlyProofAndCaches fails unless every write of statements is to the proof's replay row or
+// a cache Dispatch rebuilds, the proof's insert among them, and handlerRead, the handler's own
+// read, is among them too. It answers whether a tree was stored.
+func requireOnlyProofAndCaches(t *testing.T, statements []string, handlerRead *regexp.Regexp) bool {
+	t.Helper()
+	allowed := map[string]bool{"dpop_proofs": true, "text_trees": true, "route_roster": true}
+	var proofInserted, treeInserted, readByHandler bool
+	var written []string
+	for _, statement := range statements {
+		writes, readable := writesOf(statement)
+		if !readable {
+			t.Errorf("the request ran a write this test cannot read a table for: %s", statement)
+		}
+		for _, write := range writes {
+			written = append(written, write)
+			verb, table, _ := strings.Cut(write, " ")
+			if !allowed[table] {
+				t.Errorf("the request wrote %s, which is neither its proof's replay row nor a cache Dispatch rebuilds: %s", table, statement)
+			}
+			proofInserted = proofInserted || (verb == "insert" && table == "dpop_proofs")
+			treeInserted = treeInserted || (verb == "insert" && table == "text_trees")
+		}
+		readByHandler = readByHandler || handlerRead.MatchString(statement)
+	}
+	if !proofInserted {
+		t.Errorf("the tracer saw no insert into dpop_proofs among %d statements: it did not see the request's proof spent", len(statements))
+	}
+	if !readByHandler {
+		t.Errorf("the tracer saw no statement matching %s among %d statements: it did not see the handler's reads", handlerRead, len(statements))
+	}
+	t.Logf("the request ran %d statements, whose writes were %v", len(statements), written)
+	return treeInserted
 }

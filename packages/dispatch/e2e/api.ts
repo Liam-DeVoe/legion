@@ -1215,6 +1215,27 @@ async function marksOf(
   return Object.fromEntries(marks.items.map((mark) => [mark.id, mark]));
 }
 
+/** The Legion daemon of `issue`'s project writes one run of a step, as its outbox does: under the
+ *  agent bearer, naming the session `legion-daemon:<PROJECT>`, the one writer the route admits
+ *  for that project's issues, under an `Idempotency-Key` of its own. A field the record already
+ *  holds is kept, so a start and an end may arrive in either order. */
+export function putStep(
+  issue: string,
+  id: string,
+  input: Body<"/api/v2/issues/{key}/steps/{id}", "put">
+) {
+  const project = issue.slice(0, issue.indexOf("-"));
+  return put(
+    "/api/v2/issues/{key}/steps/{id}",
+    { body: input, params: { id, key: issue } },
+    {
+      actor: { id: `legion-daemon:${project}`, kind: "session" },
+      as: "agent",
+      idempotencyKey: crypto.randomUUID(),
+    }
+  );
+}
+
 /** The signed-in human's own per-agent conversation state, as another of their devices sets it
  *  (`PATCH /api/v2/me/marks/agent/{session_id}`). */
 export function putAgentState(

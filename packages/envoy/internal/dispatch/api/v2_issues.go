@@ -6,12 +6,13 @@ package api
 // read of one issue, whose include= gives what GET /api/v1/issues/{key} answered (the route map's
 // J3); the patch, which takes the design gates PUT /api/v1/issues/{key}/design-gates wrote (J16);
 // the claim; and an issue's collaborators, coverage, decisions and the keep of one, references,
-// checks, results and the retraction of one, and subscribers. Every route runs the work its
-// /api/v1 route runs (readIssueListing, createIssueFrom, readIssueParts, patchIssueAs,
-// claimIssueAs, releaseIssueClaimAs, issueCollaboratorsOf, issueCoverage, issueDecisionsOf,
-// writeDecisionKeep, refs.Closure, readIssueChecks, recordCheckResultFrom,
-// retractCheckResultAs, subscribersOf, unsubscribeSession), each path object checked first and
-// answered with its own 404, and a {session_id} keeps the answer /api/v1 gives it (R7).
+// checks, results and the retraction of one, subscribers, and the steps #4400 added to /api/v1
+// and the write of one. Every route runs the work its /api/v1 route runs (readIssueListing,
+// createIssueFrom, readIssueParts, patchIssueAs, claimIssueAs, releaseIssueClaimAs,
+// issueCollaboratorsOf, issueCoverage, issueDecisionsOf, writeDecisionKeep, refs.Closure,
+// readIssueChecks, recordCheckResultFrom, retractCheckResultAs, subscribersOf, unsubscribeSession,
+// issueStepTasks, putIssueStepFrom), each path object checked first and answered with its own
+// 404, and a {session_id} keeps the answer /api/v1 gives it (R7).
 
 import (
 	"context"
@@ -31,11 +32,21 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
 // resultMissingRefusal is the refusal of a result id no check result has
 // (dispatch://INFRA-4071/spec R7).
 var resultMissingRefusal = apicode.Refusal{Condition: apicode.ResultMissing, Code: apicode.ResultNotFound}
+
+// stepMissingRefusal is the refusal of a step record id no record holds, under a write that does
+// not name the run's identity and so cannot make one (dispatch://INFRA-4071/spec R7).
+var stepMissingRefusal = apicode.Refusal{Condition: apicode.StepMissing, Code: apicode.StepNotFound}
+
+// stepRecordText is what both step routes' descriptions say of the record they answer.
+const stepRecordText = "{id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, " +
+	"started_at, ended_at, result, returned_to, report}, attempt its place among the issue's runs of the same " +
+	"task, step and kind from 1"
 
 // The refusals of a parent or blocked_by write that would make a loop, which /api/v2 answers with
 // one code, 409 ISSUE_CYCLE, where /api/v1 answers PARENT_INPUT and DEPENDENCY_CYCLE (R7).
@@ -86,7 +97,8 @@ const issueClaimText = "The status does not move. Answers the issue with legion_
 
 // v2IssueRows are the issue routes: rows 80 and 82; 81; the project's
 // list R1.3 adds; 83 and 115; 84 and 102; 95; 96; 97; 100; 101; 17; 110; 111; 112; 113; 114; and
-// 173 of the route map.
+// 173 of the route map; and #4400's two rows of /api/v1, which the map predates
+// (testdata/v1-only-routes.txt).
 func (s *server) v2IssueRows() []routeRow {
 	person := routeScopeSet{model.ScopePerson}
 	issueList := listBounds{Default: contracts.DefaultIssuePageLimit, Max: contracts.MaxIssuePageLimit}
@@ -406,6 +418,42 @@ func (s *server) v2IssueRows() []routeRow {
 			IDs:      &idRoute{Reason: "a check result id"},
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal, resultMissingRefusal},
 		},
+		{
+			Method: http.MethodGet, Pattern: "/issues/{key}/steps", Auth: authAny, Versions: onlyV2,
+			Description: "Every run of every step of the issue's workflow, as the Legion daemon wrote them, task by task " +
+				"in the order of each task's first run and each task's runs in the order they ran: each " + stepRecordText +
+				". A closed issue's read too; an issue no step ran on reads []. limit 1 to 200 (default 50) and offset; " +
+				"{items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
+			Handler:  s.listIssueStepsV2,
+			Resource: "steps", Kind: kindCollection, Key: "{id}",
+			Query:    issueStepsV2Query{},
+			Shape:    routeShape{Status: http.StatusOK, Response: page[model.StepRecord]{}},
+			Refusals: listRefusals(issueMissingRefusal),
+		},
+		{
+			Method: http.MethodPut, Pattern: "/issues/{key}/steps/{id}", Auth: authAny, Versions: onlyV2,
+			Description: "Write one run of one step of the issue's workflow {task?, step?, kind?, role?, type?, agent?, " +
+				"session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}, a bearer naming " +
+				"its session in actor: the Legion daemon writes it at the run's start and at its end under one id, the " +
+				"uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is " +
+				"left, but returned_to, which only the write that sets the result sets, so a start and an end land in " +
+				"either order; a field left out or null states nothing, and so does an empty text, while returned_to 0 " +
+				"names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. " +
+				"The actor must be session legion-daemon:<PROJECT> of the issue's project, else 403 STEP_WRITER; before " +
+				"the airlock a bearer caller names its own session, so any caller whose credential proves no session can " +
+				"name that one. A closed issue takes a write too, and no write appends an issue event. Answers 200 the " +
+				"record as it stands after the write, " + stepRecordText + "; a body every field of which the record " +
+				"holds as sent answers the record and writes nothing. A value outside its form is 400 STEP_INPUT naming " +
+				"the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and a write that names no " +
+				"identity to an id no record has 404 STEP_NOT_FOUND; 404 ISSUE_NOT_FOUND for an issue that does not exist.",
+			Handler:  s.putIssueStepV2,
+			Resource: "steps", Kind: kindItem, Key: "{id}",
+			Body:  requestBody{Kind: bodyJSON, Type: stepRecordInput{}},
+			Shape: routeShape{Status: http.StatusOK, Response: model.StepRecord{}},
+			Scope: scopeProject, ProjectOf: projectPathIssue,
+			IDs:      &idRoute{Reason: "a step record id: the uuid the Legion daemon derives for one run of one step"},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal, stepMissingRefusal},
+		},
 	}
 }
 
@@ -670,6 +718,11 @@ type issueChecksV2 struct {
 
 // issueSubscribersV2Query is GET /api/v2/issues/{key}/subscribers's query: one page.
 type issueSubscribersV2Query struct {
+	pageQuery
+}
+
+// issueStepsV2Query is GET /api/v2/issues/{key}/steps's query: one page.
+type issueStepsV2Query struct {
 	pageQuery
 }
 
@@ -1276,4 +1329,81 @@ func (s *server) putResultStateV2(w http.ResponseWriter, r *http.Request) {
 	}
 	result.Retracted = &retraction
 	WriteJSON(w, http.StatusOK, result)
+}
+
+// listIssueStepsV2 answers GET /api/v2/issues/{key}/steps: one page of the runs GET
+// /api/v1/issues/{key}/steps lists (issueStepTasks), task after task in its order, the issue held
+// to exist first.
+func (s *server) listIssueStepsV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	key := r.PathValue("key")
+	if !s.requireIssueV2(w, r, key) {
+		return
+	}
+	steps, err := workflowstore.IssueSteps(r.Context(), s.deps.Store.Pool, key)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	records := make([]model.StepRecord, 0, len(steps))
+	for _, task := range issueStepTasks(key, steps).Tasks {
+		records = append(records, task.Steps...)
+	}
+	WriteJSON(w, http.StatusOK, pageOf(records, v2Query[issueStepsV2Query](r).pageQuery))
+}
+
+// putIssueStepV2 answers PUT /api/v2/issues/{key}/steps/{id}: the write PUT
+// /api/v1/issues/{key}/steps/{id} makes (putIssueStepFrom), the issue held to exist first, once the
+// no-op rule of dispatch://INFRA-4071/spec R8 has found the body is a change; a write that names no
+// identity to an id no record has is 404 STEP_NOT_FOUND (R7). A record has one writer, the daemon
+// of its issue's project, which the write holds every caller to, so a body every member of which
+// the record holds as sent answers the record and writes nothing (noSetterRecorded).
+func (s *server) putIssueStepV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) || !s.requireIssueV2(w, r, r.PathValue("key")) {
+		return
+	}
+	body := v2Body[stepRecordInput](r)
+	s.putIssueStepFrom(w, r, body, apicode.StepNotFound, func(stored workflowstore.StepRead) bool {
+		return putChangesNothing(body, stepHeld(body, stored), noSetterRecorded, "")
+	})
+}
+
+// stepHeld is the record stored in the body's own type, for the members sent states alone: a
+// member sent leaves out, or sends null or "", states nothing (stepRecordInput), and stands as
+// sent, and so does its actor, which is no field of the record.
+func stepHeld(sent stepRecordInput, stored workflowstore.StepRead) stepRecordInput {
+	held := sent
+	text := func(member *string, value string) *string {
+		if member == nil || *member == "" {
+			return member
+		}
+		return &value
+	}
+	held.Task = text(sent.Task, stored.Task)
+	held.Kind = text(sent.Kind, stored.Kind)
+	held.Role = text(sent.Role, stored.Role)
+	held.Type = text(sent.Type, stored.Type)
+	held.Agent = text(sent.Agent, stored.Agent)
+	held.Session = text(sent.Session, stored.Session)
+	held.Model = text(sent.Model, stored.Model)
+	held.Result = text(sent.Result, stored.Result)
+	held.Report = text(sent.Report, stored.Report)
+	if sent.Step != nil {
+		held.Step = &stored.Place
+	}
+	if sent.Generation != nil {
+		held.Generation = &stored.Generation
+	}
+	if sent.StartedAt != nil {
+		held.StartedAt = stored.StartedAt
+	}
+	if sent.EndedAt != nil {
+		held.EndedAt = stored.EndedAt
+	}
+	if sent.ReturnedTo != nil {
+		held.ReturnedTo = stored.ReturnedTo
+	}
+	return held
 }

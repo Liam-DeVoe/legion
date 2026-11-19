@@ -47,6 +47,10 @@ var (
 	// that names no thread's root: no ask, no root comment and no root message. A thread is one
 	// of the three by its root's id, so an id that names none of them names no thread.
 	ThreadMissing = Condition{"thread missing"}
+	// StepMissing is a step record's {id} (PUT /api/v2/issues/{key}/steps/{id}) that no record
+	// holds, under a write that does not name the run's identity: the first write of a run makes
+	// its record, so only a write that cannot make it meets a missing step.
+	StepMissing = Condition{"step missing"}
 )
 
 // The conditions every v2 route can meet in its query or its loops (R4, R5 and R7 of

@@ -369,6 +369,7 @@ var (
 	RouteChanged                   = both("ROUTE_CHANGED", http.StatusConflict)
 	RouteInvalid                   = both("ROUTE_INVALID", http.StatusBadRequest)
 	RunIDInput                     = both("RUN_ID_INPUT", http.StatusBadRequest)
+	SearchCoverageTimeout          = both("SEARCH_COVERAGE_TIMEOUT", http.StatusServiceUnavailable)
 	SessionGroupIDInput            = both("SESSION_GROUP_ID_INPUT", http.StatusBadRequest)
 	SessionGroupInput              = both("SESSION_GROUP_INPUT", http.StatusBadRequest)
 	SessionGroupNameIsSessionTitle = both("SESSION_GROUP_NAME_IS_SESSION_TITLE", http.StatusConflict)
@@ -419,6 +420,11 @@ var (
 	// ReadOnlyToken is a read-only token's call of a route the read list does not name
 	// (refuseReadOnlyToken).
 	ReadOnlyToken = both(contracts.DispatchReadOnlyToken, http.StatusForbidden)
+	// The refusals of a write of a step record (steps.go), which the Legion daemon reads to end a
+	// row on.
+	StepInput      = both(contracts.StepInputCode, http.StatusBadRequest)
+	StepWriter     = both(contracts.StepWriterCode, http.StatusForbidden)
+	StepOtherIssue = both(contracts.StepOtherIssueCode, http.StatusConflict)
 
 	// AnswerNotKept answers a repeat of a keyed write whose first answer could not be kept, with
 	// the status that first answer had (request_keys.go): its status is the call's, so only
@@ -527,6 +533,10 @@ var (
 	// ThreadNotFound is a thread mark's {id} that names no ask, root comment or root message
 	// (ThreadMissing): /api/v1 wrote nothing for such an id and answered 204.
 	ThreadNotFound = v2Only("THREAD_NOT_FOUND", http.StatusNotFound)
+	// StepNotFound is a step record's {id} that no record holds, under a write that does not
+	// name the run's identity and so cannot make one (StepMissing): /api/v1 answers that write 400
+	// STEP_INPUT.
+	StepNotFound = v2Only("STEP_NOT_FOUND", http.StatusNotFound)
 )
 
 // The codes only /api/v1 answers.

@@ -259,6 +259,7 @@ export type {
   SearchOwner,
   SearchResult,
   SearchResultsV2,
+  StepRecord,
   Subscriber,
   Suggestion,
   Suggestions,

@@ -10860,6 +10860,235 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v2/issues/{key}/steps": {
+      "get": {
+        "description": "Every run of every step of the issue's workflow, as the Legion daemon wrote them, task by task in the order of each task's first run and each task's runs in the order they ran: each {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report}, attempt its place among the issue's runs of the same task, step and kind from 1. A closed issue's read too; an issue no step ran on reads []. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
+        "operationId": "getApiV2IssuesByKeySteps",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageOfStepRecord"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/QueryKeyUnknownBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-list": {
+          "default_limit": 50,
+          "max_limit": 200,
+          "min_limit": 1
+        },
+        "x-refusal-codes": {
+          "BROKER_TOKEN_KEY_MISMATCH": 401,
+          "BROKER_TOKEN_NOT_ACTIVE": 401,
+          "BROKER_TOKEN_NOT_A_SESSION": 401,
+          "BROKER_TOKEN_PROOF_INVALID": 401,
+          "BROKER_TOKEN_RATE_LIMITED": 429,
+          "BROKER_UNAVAILABLE": 503,
+          "IDENTITY_ERROR": 500,
+          "INTERNAL": 500,
+          "INVALID_LIMIT": 400,
+          "INVALID_OFFSET": 400,
+          "INVALID_QUERY": 400,
+          "INVALID_UTF8": 400,
+          "ISSUE_NOT_FOUND": 404,
+          "NO_IDENTITY": 401,
+          "NUL_CHARACTER": 400,
+          "OIDC_ISSUER_UNAVAILABLE": 503,
+          "OIDC_TOKEN_INVALID": 401,
+          "QUERY_KEY_UNKNOWN": 400,
+          "SIGNIN_UNAVAILABLE": 503,
+          "TOKEN_REVOKED": 401,
+          "UNAUTHORIZED": 401
+        }
+      }
+    },
+    "/api/v2/issues/{key}/steps/{id}": {
+      "put": {
+        "description": "Write one run of one step of the issue's workflow {task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}, a bearer naming its session in actor: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so a start and an end land in either order; a field left out or null states nothing, and so does an empty text, while returned_to 0 names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project, else 403 STEP_WRITER; before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes a write too, and no write appends an issue event. Answers 200 the record as it stands after the write, {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report}, attempt its place among the issue's runs of the same task, step and kind from 1; a body every field of which the record holds as sent answers the record and writes nothing. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and a write that names no identity to an id no record has 404 STEP_NOT_FOUND; 404 ISSUE_NOT_FOUND for an issue that does not exist.",
+        "operationId": "putApiV2IssuesByKeyStepsById",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepRecordInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepRecord"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/QueryKeyUnknownBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-refusal-codes": {
+          "ANSWER_NOT_KEPT": "*",
+          "BROKER_TOKEN_KEY_MISMATCH": 401,
+          "BROKER_TOKEN_NOT_ACTIVE": 401,
+          "BROKER_TOKEN_NOT_A_SESSION": 401,
+          "BROKER_TOKEN_PROOF_INVALID": 401,
+          "BROKER_TOKEN_RATE_LIMITED": 429,
+          "BROKER_UNAVAILABLE": 503,
+          "IDENTITY_ERROR": 500,
+          "INTERNAL": 500,
+          "INVALID_JSON": 400,
+          "INVALID_QUERY": 400,
+          "INVALID_UTF8": 400,
+          "ISSUE_NOT_FOUND": 404,
+          "JSON_CONTENT_TYPE": 415,
+          "KEY_COMMITTED": 409,
+          "KEY_INVALID": 400,
+          "KEY_IN_FLIGHT": 409,
+          "KEY_REUSED": 422,
+          "LOGIN_CHANGED": 409,
+          "NO_IDENTITY": 401,
+          "NUL_CHARACTER": 400,
+          "OIDC_ISSUER_UNAVAILABLE": 503,
+          "OIDC_TOKEN_INVALID": 401,
+          "PROJECT_SCOPE": 403,
+          "QUERY_KEY_UNKNOWN": 400,
+          "READ_ONLY_TOKEN": 403,
+          "REQUEST_BODY_UNREADABLE": 400,
+          "REQUEST_TOO_LARGE": 413,
+          "SIGNIN_UNAVAILABLE": 503,
+          "SIGN_IN_REQUIRED": 403,
+          "STEP_NOT_FOUND": 404,
+          "TOKEN_REVOKED": 401,
+          "UNAUTHORIZED": 401
+        },
+        "x-write-scope": "project"
+      }
+    },
     "/api/v2/issues/{key}/subscribers": {
       "get": {
         "description": "The sessions subscribed to an issue's topics (the person scope), newest heartbeat first: each {session_id, title, live, state?, last_seen, topics, removable, via?}, removable false where only a broader topic matches, which via names. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 503 ENVOY_UNAVAILABLE or ENVOY_REFILLING when the listener cannot answer; 404 ISSUE_NOT_FOUND.",
@@ -17030,7 +17259,7 @@
     },
     "/api/v2/search-coverage": {
       "get": {
-        "description": "Meaning search's coverage {identity, place, model, total, kinds, not_indexed}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, session, document_version, result and handoff - each {kind, items}, items being how many of it the database holds. Every number is read in one statement, so they all read one snapshot.",
+        "description": "Meaning search's coverage {identity, place, model, total, kinds, not_indexed}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, session, document_version, result and handoff - each {kind, items}, items being how many of it the database holds. Every number is read in one statement, so they all read one snapshot, under a 10 s statement_timeout: a statement that runs past it counts nothing and answers 503 SEARCH_COVERAGE_TIMEOUT, to be asked again later.",
         "operationId": "getApiV2SearchCoverage",
         "parameters": [
           {
@@ -31774,6 +32003,36 @@
         ],
         "type": "object"
       },
+      "PageOfStepRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StepRecord"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "type": "object"
+      },
       "PageOfSubscriber": {
         "additionalProperties": false,
         "properties": {
@@ -34216,6 +34475,221 @@
         ],
         "type": "object"
       },
+      "StepRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "attempt": {
+            "type": "integer"
+          },
+          "ended_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "generation": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "step",
+              "retro",
+              "merge"
+            ],
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "report": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "result": {
+            "enum": [
+              "",
+              "passed",
+              "failed",
+              "stopped"
+            ],
+            "type": "string"
+          },
+          "returned_to": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "role": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "step": {
+            "type": "integer"
+          },
+          "task": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "issue",
+          "task",
+          "step",
+          "kind",
+          "role",
+          "type",
+          "agent",
+          "session",
+          "model",
+          "generation",
+          "attempt",
+          "started_at",
+          "ended_at",
+          "result",
+          "returned_to",
+          "report"
+        ],
+        "type": "object"
+      },
+      "StepRecordInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "agent": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "ended_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "generation": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "step",
+              "retro",
+              "merge",
+              null
+            ],
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "model": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "report": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "result": {
+            "enum": [
+              "passed",
+              "failed",
+              "stopped",
+              null
+            ],
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "returned_to": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "role": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "session": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "step": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "task": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "type": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "Subscriber": {
         "additionalProperties": false,
         "properties": {
@@ -35085,6 +35559,7 @@
       "ROUTE_CHANGED": 409,
       "ROUTE_INVALID": 400,
       "RUN_ID_INPUT": 400,
+      "SEARCH_COVERAGE_TIMEOUT": 503,
       "SESSION_GROUP_ID_INPUT": 400,
       "SESSION_GROUP_INPUT": 400,
       "SESSION_GROUP_NAME_IS_SESSION_TITLE": 409,
@@ -35105,6 +35580,10 @@
       "SOURCE_NOT_FOUND": 404,
       "STATE_INVALID": 400,
       "STATE_STALE": 409,
+      "STEP_INPUT": 400,
+      "STEP_NOT_FOUND": 404,
+      "STEP_OTHER_ISSUE": 409,
+      "STEP_WRITER": 403,
       "STREAM_UNAVAILABLE": 503,
       "SUBSCRIBER_NOT_FOUND": 404,
       "SUMMARY_INPUT": 400,

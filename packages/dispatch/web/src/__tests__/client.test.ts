@@ -806,14 +806,14 @@ test("API client searches with the documented query parameters", async () => {
   await api.search("astrolabe", { project: ["LEGION", "CORE"], limit: 5, offset: 10 });
   await api.search("astrolabe", { status: "in_progress" });
   await api.search("astrolabe", { number_project: "INFRA", keywords_only: true });
-  await api.search("astrolabe", { author: "sami@theorem.dev", from: "2026-11-01T00:00:00Z" });
+  await api.search("astrolabe", { author: "sami@example.com", from: "2026-11-01T00:00:00Z" });
 
   expect(stub.requests.map(({ path }) => path)).toEqual([
     "/api/v2/search-results?q=astrolabe",
     "/api/v2/search-results?q=astrolabe&project=LEGION&project=CORE&limit=5&offset=10",
     "/api/v2/search-results?q=astrolabe&status=in_progress",
     "/api/v2/search-results?q=astrolabe&number_project=INFRA&keywords_only=true",
-    "/api/v2/search-results?q=astrolabe&author=sami%40theorem.dev&from=2026-11-01T00%3A00%3A00Z",
+    "/api/v2/search-results?q=astrolabe&author=sami%40example.com&from=2026-11-01T00%3A00%3A00Z",
   ]);
 });
 test("API client reaches project artifact and owner-scoped document endpoints", async () => {

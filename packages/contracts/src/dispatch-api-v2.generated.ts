@@ -1333,6 +1333,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v2/issues/{key}/steps": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Every run of every step of the issue's workflow, as the Legion daemon wrote them, task by task in the order of each task's first run and each task's runs in the order they ran: each {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report}, attempt its place among the issue's runs of the same task, step and kind from 1. A closed issue's read too; an issue no step ran on reads []. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
+    get: operations["getApiV2IssuesByKeySteps"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/issues/{key}/steps/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Write one run of one step of the issue's workflow {task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}, a bearer naming its session in actor: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so a start and an end land in either order; a field left out or null states nothing, and so does an empty text, while returned_to 0 names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. The actor must be session legion-daemon:<PROJECT> of the issue's project, else 403 STEP_WRITER; before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes a write too, and no write appends an issue event. Answers 200 the record as it stands after the write, {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report}, attempt its place among the issue's runs of the same task, step and kind from 1; a body every field of which the record holds as sent answers the record and writes nothing. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and a write that names no identity to an id no record has 404 STEP_NOT_FOUND; 404 ISSUE_NOT_FOUND for an issue that does not exist. */
+    put: operations["putApiV2IssuesByKeyStepsById"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v2/issues/{key}/subscribers": {
     parameters: {
       query?: never;
@@ -2083,7 +2117,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Meaning search's coverage {identity, place, model, total, kinds, not_indexed}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, session, document_version, result and handoff - each {kind, items}, items being how many of it the database holds. Every number is read in one statement, so they all read one snapshot. */
+    /** @description Meaning search's coverage {identity, place, model, total, kinds, not_indexed}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, session, document_version, result and handoff - each {kind, items}, items being how many of it the database holds. Every number is read in one statement, so they all read one snapshot, under a 10 s statement_timeout: a statement that runs past it counts nothing and answers 503 SEARCH_COVERAGE_TIMEOUT, to be asked again later. */
     get: operations["getApiV2SearchCoverage"];
     put?: never;
     post?: never;
@@ -5277,6 +5311,12 @@ export interface components {
       offset: number;
       total: number;
     };
+    PageOfStepRecord: {
+      items: components["schemas"]["StepRecord"][] | null;
+      limit: number;
+      offset: number;
+      total: number;
+    };
     PageOfSubscriber: {
       items: components["schemas"]["Subscriber"][] | null;
       limit: number;
@@ -5858,6 +5898,51 @@ export interface components {
       delay_ms?: number;
       method: string;
       path: string;
+    };
+    StepRecord: {
+      agent: string;
+      attempt: number;
+      /** Format: date-time */
+      ended_at: null | string;
+      /** Format: int64 */
+      generation: number;
+      id: string;
+      issue: string;
+      /** @enum {string} */
+      kind: "step" | "retro" | "merge";
+      model: string;
+      report: null | string;
+      /** @enum {string} */
+      result: "" | "passed" | "failed" | "stopped";
+      returned_to: null | number;
+      role: string;
+      session: string;
+      /** Format: date-time */
+      started_at: null | string;
+      step: number;
+      task: string;
+      type: string;
+    };
+    StepRecordInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      agent?: null | string;
+      /** Format: date-time */
+      ended_at?: null | string;
+      generation?: null | number;
+      /** @enum {null|string} */
+      kind?: "step" | "retro" | "merge" | null;
+      model?: null | string;
+      report?: null | string;
+      /** @enum {null|string} */
+      result?: "passed" | "failed" | "stopped" | null;
+      returned_to?: null | number;
+      role?: null | string;
+      session?: null | string;
+      /** Format: date-time */
+      started_at?: null | string;
+      step?: null | number;
+      task?: null | string;
+      type?: null | string;
     };
     Subscriber: {
       /** Format: int64 */
@@ -10731,6 +10816,103 @@ export interface operations {
       };
     };
   };
+  getApiV2IssuesByKeySteps: {
+    parameters: {
+      query?: {
+        limit?: number;
+        offset?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PageOfStepRecord"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV2IssuesByKeyStepsById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["StepRecordInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StepRecord"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV2IssuesByKeySubscribers: {
     parameters: {
       query?: {
@@ -14157,6 +14339,7 @@ export type PageOfProjectV2 = components["schemas"]["PageOfProjectV2"];
 export type PageOfReferenceTarget = components["schemas"]["PageOfReferenceTarget"];
 export type PageOfRepoProject = components["schemas"]["PageOfRepoProject"];
 export type PageOfShapedComment = components["schemas"]["PageOfShapedComment"];
+export type PageOfStepRecord = components["schemas"]["PageOfStepRecord"];
 export type PageOfSubscriber = components["schemas"]["PageOfSubscriber"];
 export type PageOfVersion = components["schemas"]["PageOfVersion"];
 export type PassCounts = components["schemas"]["PassCounts"];
@@ -14225,6 +14408,8 @@ export type SessionAnswerAsk = components["schemas"]["SessionAnswerAsk"];
 export type SessionAnswersV2 = components["schemas"]["SessionAnswersV2"];
 export type SignInRevokedV2 = components["schemas"]["SignInRevokedV2"];
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
+export type StepRecord = components["schemas"]["StepRecord"];
+export type StepRecordInput = components["schemas"]["StepRecordInput"];
 export type Subscriber = components["schemas"]["Subscriber"];
 export type Suggestion = components["schemas"]["Suggestion"];
 export type Suggestions = components["schemas"]["Suggestions"];
