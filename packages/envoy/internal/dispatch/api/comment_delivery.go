@@ -743,9 +743,11 @@ func (s *server) deliverResolvedCommentMention(
 	// (queueDeletedPostSettlement moves claimed_at for exactly this), or another sender took it
 	// over. So nothing is sent, and the settle reads the row as it stands and appends whatever
 	// receipt that row still owes, as the message sender's settle does once its renew finds its
-	// claim gone (deliverMessageResuming).
+	// claim gone (deliverMessageResuming). The send is held behind no event either: the attempt is
+	// no longer this sender's to send later, so its lane has nothing to wait for.
 	if !mine {
-		return s.completeCommentDelivery(ctx, stored, recorded, actor, held, sendOutcome{})
+		settled, err := s.completeCommentDelivery(ctx, stored, recorded, actor, held, sendOutcome{})
+		return settled, nil, err
 	}
 	frame, err := json.Marshal(struct {
 		Event    model.Event `json:"event"`
