@@ -29,6 +29,7 @@ export type IssueRoute =
   | ({ key: string; kind: "spec" } & BlockTarget)
   | { key: string; kind: "verification" }
   | { key: string; kind: "plan" }
+  | { key: string; kind: "steps" }
   | { key: string; kind: "conversation" }
   | { key: string; kind: "activity" }
   | { key: string; kind: "decisions" }
@@ -140,6 +141,7 @@ export type IssueTab =
   | "spec"
   | "verification"
   | "plan"
+  | "steps"
   | "conversation"
   | "children"
   | "artifacts"
@@ -149,14 +151,15 @@ export type IssueTab =
 
 /** The issue tabs whose whole route is the tab itself: no block, no slug, no id. Each one is
  *  parsed from the segment of its own name, built as `<issue>/<kind>`, shown as `<KEY> <kind>`
- *  and is the tab of its own name, so the chains below hold the seven in one arm rather than one
- *  apiece and an eighth tab is this list. The spec and the conversation stay out of it: a spec
+ *  and is the tab of its own name, so the chains below hold the eight in one arm rather than one
+ *  apiece and a ninth tab is this list. The spec and the conversation stay out of it: a spec
  *  route carries a block, and the conversation is written `log` in a reference and
  *  `conversation` in a path. The Decisions tab reads the issue's decision nodes, so its page and
  *  its reference `dispatch://<KEY>/decisions` name the issue, as the server's `text` reads both. */
 const PLAIN_ISSUE_TABS = [
   "verification",
   "plan",
+  "steps",
   "activity",
   "decisions",
   "children",
