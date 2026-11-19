@@ -7,13 +7,13 @@
 -- handler ends the wait and writes the wait's own task, or ends nothing for a wait that is already
 -- over (workflow's waitDue).
 --
--- The check is one list, so the migration that sets it names every kind, as 20261117023932 did:
--- its twenty-seven kinds, which are the kinds the daemon writes, plan_record, step_record,
--- role_holders_publish, merge_queue_read and merge_queue_removal among them, and this one. Its
--- version stands above 20261117023932 on purpose: Migrate applies every unrecorded migration in
--- version order, so the list with the higher version is the last word on any database, and a list
--- that left out plan_record or step_record would refuse every such record and fail the upgrade of
--- a database that holds one pending. It drops the constraint if it exists before adding it, so it is safe on a database
+-- The check is one list, so the migration that sets it names every kind, as 20261119003157 did:
+-- its twenty-nine kinds, which are the kinds the daemon writes, conflict_confirm, merge_forward,
+-- plan_record and step_record among them, phase_ended, which 20261119003157 keeps for a release
+-- before it, and this one. Its version stands above 20261119003157 on purpose: Migrate applies
+-- every unrecorded migration in version order, so the list with the higher version is the last
+-- word on any database, and a list that left out a kind would refuse every row of it and fail the
+-- upgrade of a database that holds one pending. It drops the constraint if it exists before adding it, so it is safe on a database
 -- at either release.
 --
 -- A rollback to a release before this one needs nothing of these rows: that release puts the kind
@@ -29,4 +29,4 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
-  'wait_due'));
+  'conflict_confirm', 'merge_forward', 'wait_due'));
