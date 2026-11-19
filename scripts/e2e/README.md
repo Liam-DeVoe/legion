@@ -5134,7 +5134,7 @@ LEGION_TEST_PG_DSN=… bash scripts/e2e/plan-ratings.sh
 # → ok three-finished-issues-each-rated (<n>s)
 #   == a-retro-with-no-rating-is-refused
 #      planning, implementing, testing, an approving review and the architect's sign-off walked SR<6 hex>-4 to its retro
-#       plan_ratings_live_test.go:<line of l.unratedRetroRefused(c)>: the retro's completion of SR<6 hex>-4 with no rating from the implementer at plugin contract 167 = 200 {}
+#       plan_ratings_live_test.go:<line of l.unratedRetroRefused(c)>: the retro's completion of SR<6 hex>-4 with no rating from the implementer at plugin contract 168 = 200 {}
 #           , want 400 PLAN_RATING_REQUIRED
 #   --- FAIL: TestPlanRatingsLive (<n>s)
 #   FAIL proof: the proof's driver failed; see <evidence>/proof.log and <evidence>/daemon.log

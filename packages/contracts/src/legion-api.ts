@@ -1727,10 +1727,10 @@ export function legionPlanRatingLoneField(
  * the check's last must name (`CHECK_WAKE_REQUIRED`) and which no other verdict and no phase
  * completion may carry (`CHECK_WAKE_UNEXPECTED`). It is a `LegionInstant`, not a `timestamp`:
  * the daemon's decode of it refuses a time with no seconds, and so does this. `planRating` and
- * `planReason` are the rating of the plan the issue ran (contract 167), which the completion that
+ * `planReason` are the rating of the plan the issue ran (contract 168), which the completion that
  * ends the retro carries and no other completion does (`PLAN_RATING_UNEXPECTED`): a whole number
  * from 1 (the plan cost the work) to 5 (the plan fit the work), and why, the two together
- * (`PLAN_RATING_INPUT`). A plugin at contract 167 or later must send both on its retro
+ * (`PLAN_RATING_INPUT`). A plugin at contract 168 or later must send both on its retro
  * (`PLAN_RATING_REQUIRED`). */
 export const LegionHandoffCompleteRequest = z
   .strictObject({

@@ -132,7 +132,7 @@ const schemas: Record<string, z.ZodType> = {
     instruction: z.string().min(1),
   }),
   // `api.HandoffCompleteRequest` as the completion that ends the retro sends it, rated: the one
-  // request of the route a plugin at contract 167 must send, written by `internal/api`'s
+  // request of the route a plugin at contract 168 must send, written by `internal/api`'s
   // TestHandoffCompleteRequestRatedGolden from Go's own struct. The request schema is strict, so
   // a name of the rating Go writes and the contract does not read fails the gate above, and the
   // case "the rated completion the daemon reads parses under the contract's names" below.
