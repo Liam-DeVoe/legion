@@ -104,13 +104,20 @@ jobs:
 
       # The worker image: apt, the npm registry, the Go module proxy and the release hosts of
       # mise, uv, Node, the AWS CLI, Go, kubectl, yq and Chromium, each behind one of the
-      # Dockerfile's inline retries.
+      # Dockerfile's inline retries, and since main's #4377 four more, each behind one too: the
+      # Google Cloud SDK's archive and component list from dl.google.com (google.com), uv's
+      # CPython from releases.astral.sh (astral.sh; its fallback is github.com), azure-cli's index
+      # and wheels from pypi.org and files.pythonhosted.org (pythonhosted.org), and Playwright's
+      # WebKit from cdn.playwright.dev and playwright.download.prss.microsoft.com (playwright.dev,
+      # microsoft.com). windows.net is the one host here no retry stands behind: `az version` reads
+      # the newest azure-cli versions from azcliprod.blob.core.windows.net and exits 0 without
+      # them, as the Dockerfile's toolchain step says, so a build that meets the fault there passes.
       - name: Start the recovering fault for the worker image build
         id: worker-proxy
         run: |
           .github/scripts/download-retry-proof.sh start worker --mode recover --recover-after 60 \
             --bind docker-bridge \
-            --hosts debian.org,npmjs.org,github.com,githubusercontent.com,jdx.dev,nodejs.org,awscli.amazonaws.com,go.dev,dl.k8s.io,googleapis.com,golang.org,googlesource.com,postgresql.org
+            --hosts debian.org,npmjs.org,github.com,githubusercontent.com,jdx.dev,nodejs.org,awscli.amazonaws.com,go.dev,dl.k8s.io,googleapis.com,golang.org,googlesource.com,postgresql.org,google.com,astral.sh,pypi.org,pythonhosted.org,playwright.dev,microsoft.com,windows.net
           .github/scripts/download-retry-proof.sh probe worker
       - name: Build the worker image under the recovering fault
         id: worker-build
