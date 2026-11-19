@@ -208,20 +208,31 @@ function resultLines(check: CheckBlock, result: CheckResult, brief: boolean): st
  *  (`ciResultIDPrefix` in packages/envoy/internal/dispatch/api/results_ci.go). */
 const CI_RESULT_ID_PREFIX = "ci-run:";
 
-/** A check CI proves, which Dispatch marks with `ci`: no role records its result. Its derived
- *  result at the head `ci` was read at, the one whose id begins with `ci-run:` wherever the API
- *  serves it, reads as one line with the check: its verdict, its commit, the producer `ci`, the
- *  run and the conclusion that decided it, and where that commit stands, as a recorded result's
- *  line says it; a check the run did not decide says why, in the sentence Dispatch wrote. The
- *  check's words end the line. Whether a pass stands follows, from the same `pass_stands` and in
- *  the same words as a recorded check's head line, so the gate reads both kinds alike, then the
- *  line of each head (`subjectLines`), each with the pull-request body line Dispatch wrote for
- *  that head, which the implementer copies into that pull request's body. A server that names no
- *  read at each head gets the one body line of `ci` under the pass line instead, and so does no
- *  issue with no pull request head (`no_head`), which has no body to write it in. Then the run's
- *  reading: its conclusion, output and URL. Each other result follows, the derived results at
- *  the other heads and each the CI job recorded, in the order the API serves them, as a recorded
- *  result prints (`resultLines`). */
+/** The result `ci` derived, among results. Dispatch names the head `ci` read (`commit`, and
+ *  `repo`) and the result that read derived (`result`, absent where the run decided nothing), so
+ *  the result is the one of that id, and no other read's result can stand in for it however alike
+ *  their words are. A server that names no head of `ci` read one head alone, the newest, so the
+ *  result derived from a run is that read's, wherever the API serves it. */
+function derivedResult(ci: CheckCI, results: readonly CheckResult[]): CheckResult | undefined {
+  if (ci.commit === undefined) {
+    return results.find((result) => result.id.startsWith(CI_RESULT_ID_PREFIX));
+  }
+  return ci.result === undefined ? undefined : results.find((result) => result.id === ci.result);
+}
+
+/** A check CI proves, which Dispatch marks with `ci`: no role records its result. The result
+ *  derived from the read `ci` names (`derivedResult`) reads as one line with the check: its
+ *  verdict, its commit, the producer `ci`, the run and the conclusion that decided it, and where
+ *  that commit stands, as a recorded result's line says it; a check the run did not decide says
+ *  why, in the sentence Dispatch wrote. The check's words end the line. Whether a pass stands
+ *  follows, from the same `pass_stands` and in the same words as a recorded check's head line, so
+ *  the gate reads both kinds alike, then the line of each head (`subjectLines`), each with the
+ *  pull-request body line Dispatch wrote for that head, which the implementer copies into that
+ *  pull request's body. A server that names no read at each head gets the one body line of `ci`
+ *  under the pass line instead, and so does no issue with no pull request head (`no_head`), which
+ *  has no body to write it in. Then the run's reading: its conclusion, output and URL. Each other
+ *  result follows, the derived results at the other heads and each the CI job recorded, in the
+ *  order the API serves them, as a recorded result prints (`resultLines`). */
 function ciCheckLines(
   check: CheckBlock,
   ci: CheckCI,
@@ -230,16 +241,7 @@ function ciCheckLines(
 ): string[] {
   const results = check.results ?? [];
   const subjects = pass.subjects ?? [];
-  // `ci` is the read of one head, the open pull request of the highest number; the subject that
-  // carries the same read is that head, so the head line names the result derived there.
-  const ciHeads = subjects
-    .filter((subject) => subject.ci?.line === ci.line)
-    .map((subject) => subject.basis.commit);
-  const derived = results.find(
-    (result) =>
-      result.id.startsWith(CI_RESULT_ID_PREFIX) &&
-      (ciHeads.length === 0 || ciHeads.includes(result.commit_sha))
-  );
+  const derived = derivedResult(ci, results);
   const others = results.filter((result) => result !== derived);
   const recorded = others.flatMap((result) => resultLines(check, result, brief));
   const passStandsLine = `  ${passStandsText(check, pass)}.`;

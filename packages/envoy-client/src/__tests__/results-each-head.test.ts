@@ -7,10 +7,11 @@ import { formatCheckResults } from "../dispatch-commands/check-results";
 // roles and the ids of the results that decide it, and the repository of a pull request of another
 // repository than the issue's beside its number; how many of the heads read yes, each head counted
 // once however many pull requests it is the head of (R3); one line that counts the merged pull
-// requests; the pass and the fail at one head, and what ends that state; and the newest result
-// that decides a check compared with a branch. It holds an answer that names no state to no state
-// line at all. Each answer is in the wire shape of the server, typed as unknown, so the file
-// builds against a client that predates these fields and fails there on its own assertion.
+// requests; the pass and the fail at one head, and what ends that state; the newest result that
+// decides a check compared with a branch; and the result a check CI proves derived from the read
+// the server names. It holds an answer that names no state to no state line at all. Each answer is
+// in the wire shape of the server, typed as unknown, so the file builds against a client that
+// predates these fields and fails there on its own assertion.
 
 /** The lines `dispatch results` prints for answer. */
 function printed(answer: unknown): string[] {
@@ -296,7 +297,8 @@ describe("dispatch results: the state at each head", () => {
   // A check CI proves, read at two open heads: CI's run passed at #702 and is absent at #703, the
   // open pull request of the highest number, whose read is the check's own `ci`. The head line says
   // that read derives no result, and no CI job's result: the result derived at #702 is no result of
-  // the job, and #702's own line says it decides that head.
+  // the job, and #702's own line says it decides that head. Each read names its head and the result
+  // it derived, as the server answers them.
   test("names the head CI's run passed at, under a check whose newest head has no run", () => {
     const [h702, h703] = [hex("2"), hex("3")];
     const ciAt = (head: string, number: number) => ({
@@ -309,6 +311,8 @@ describe("dispatch results: the state at each head", () => {
       case: "absent",
       detail: `No CI run named docs is on ${h703}, the head of example/widgets#703.`,
       line: "- Check c1 (before_merge): CI run docs has no result (absent)",
+      commit: h703,
+      repo: "example/widgets",
     };
     const passed = {
       run: "docs",
@@ -316,6 +320,9 @@ describe("dispatch results: the state at each head", () => {
       case: "success",
       detail: `CI run docs concluded success at ${h702}, the head of example/widgets#702.`,
       line: `- Check c1 (before_merge): pass at ${h702}, from CI run docs. The words of c1.`,
+      commit: h702,
+      repo: "example/widgets",
+      result: "ci-run:9001",
     };
     const lines = printed(
       answer(
@@ -464,6 +471,81 @@ describe("dispatch results: how many heads read yes", () => {
     expect(checkBlock(lines, "k1")[0]).toBe(
       "- k1 (before_merge). Compared with the heads of 2 open pull requests. A pass stands: no, as 1 of 2 heads read yes."
     );
+  });
+});
+
+// A check CI proves is read at each open head, and the server names the head of the check's own
+// `ci` read and the result that read derived (`commit`, `repo`, `result`). Here ACME-1's repository
+// acme/app and the linked acme/infra hold one commit H as the heads of acme/app#70 and acme/infra#9,
+// and CI's run docs passed at both, so both reads carry the same pull-request body line. The check's
+// `ci` is the read of #70, which derived ci-run:701; the read of acme/infra#9 derived ci-run:902,
+// which is newer and so served first. The head line names ci-run:701, at #70, with its own reading.
+describe("dispatch results: the result a check CI proves derived from its read", () => {
+  test("names the result of the read the server names, where two heads' lines are equal", () => {
+    const h = hex("5");
+    const appHead = openHead(70, h);
+    const infraHead = { ...openHead(9, h), repo: "acme/infra" };
+    const line = `- Check c1 (before_merge): pass at ${h}, from CI run docs. The words of c1.`;
+    const read = (repo: string, number: number, id: string) => ({
+      run: "docs",
+      state: "pass",
+      case: "success",
+      detail: `CI run docs concluded success at ${h}, the head of ${repo}#${number}.`,
+      line,
+      commit: h,
+      repo,
+      result: id,
+    });
+    const derived = (id: string, repo: string, basis: unknown, at: string) => ({
+      ...result(id, "ci", "pass", h, { answer: "at_basis", basis }, at),
+      observed: `conclusion: success\nhttps://github.com/${repo}/actions/runs/${id.slice(7)}`,
+    });
+    const appRead = read("acme/app", 70, "ci-run:701");
+    const infraRead = read("acme/infra", 9, "ci-run:902");
+    const lines = printed(
+      answer(
+        check("c1", "before_merge", {
+          ci_check: "docs",
+          ci: appRead,
+          compared_with: [appHead, infraHead],
+          results: [
+            derived("ci-run:902", "acme/infra", infraHead, "2026-11-19T00:02:00Z"),
+            derived("ci-run:701", "acme/app", appHead, "2026-11-19T00:01:00Z"),
+          ],
+          pass_stands: {
+            answer: "yes",
+            roles: ["ci"],
+            subjects: [
+              {
+                basis: appHead,
+                answer: "yes",
+                roles: ["ci"],
+                results: ["ci-run:701"],
+                ci: appRead,
+              },
+              {
+                basis: infraHead,
+                answer: "yes",
+                roles: ["ci"],
+                results: ["ci-run:902"],
+                ci: infraRead,
+              },
+            ],
+          },
+        })
+      )
+    );
+    expect(checkBlock(lines, "c1").slice(0, 7)).toEqual([
+      `- c1 (before_merge): pass at ${h} by ci (CI run docs, success), that commit is the head of pull request #70. The words of c1.`,
+      "  A pass stands: yes, from ci.",
+      `  - #70 at ${h}: yes, from ci. Pass ci-run:701 decides it.`,
+      `    Pull request line: ${line}`,
+      `  - acme/infra#9 at ${h}: yes, from ci. Pass ci-run:902 decides it.`,
+      `    Pull request line: ${line}`,
+      "  Reading: conclusion: success\\nhttps://github.com/acme/app/actions/runs/701",
+    ]);
+    expect(checkBlock(lines, "c1")[7]).toStartWith(`  - pass by ci at ${h}.`);
+    expect(checkBlock(lines, "c1")[7]).toEndWith("Result ci-run:902.");
   });
 });
 
