@@ -13,9 +13,9 @@
  * the three is what has to stay inside that timeout, and `tests/hooks-timeout.test.ts` asserts it
  * against the number `hooks.json` itself carries. A broker credential (envoy-client's
  * `brokerCredential`) runs no token command: `DispatchClient` awaits the credential's headers, the
- * broker's token trade among them, before the fetch, and only the fetch takes
- * `OPEN_ASKS_TIMEOUT_MS`, so the sum does not cover that trade and nothing in this module bounds
- * it. By then the overlay's export is written, so a kill on that route costs only the summary.
+ * broker's token trade among them, before the fetch, and gives them the client's own deadline,
+ * which is `OPEN_ASKS_TIMEOUT_MS` here, less the request's reserve (`credentialDeadline`). So on
+ * that route the trade and the read share the 3 s, and the sum covers both.
  */
 
 /** The bound on the Dispatch read that prints the session's open asks. A Dispatch that does not
