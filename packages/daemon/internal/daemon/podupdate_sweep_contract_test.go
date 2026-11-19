@@ -6,15 +6,17 @@ package daemon
 // claim's role, exactly where that rule owes it an ask, it has a session, its agent said it is
 // ready and a machine of this daemon holds it, over every state, role and fact of a claim, in groups
 // of every size and mix an issue's claims make, and over every field of a claim at every depth,
-// alone and in pairs. An ask that waited in the outbox while its claim moved on is
-// podupdate_undelivered_ask_test.go's.
+// alone, in pairs and all at once; and the tick that opens a round posts it to every claim with a
+// session. The rig these tests drive the path with is podupdate_sweep_rig_test.go's. An ask that
+// waited in the outbox while its claim moved on is podupdate_undelivered_ask_test.go's.
 
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -31,9 +33,12 @@ import (
 // round reached its session or its role answered the round, and a failed claim, one that has left
 // the round's pod and a claim in another round are owed none. This is the list before the sweep
 // asks whether the claim's agent said it is ready (askRound's supervise.SaidReady), which drops a
-// failed claim as it drops every claim that is not ready, so the rule's failed case taken out
-// shows here and in no sweep that runs. The control is the ready claim with none of these, which
-// the sweep owes its ask.
+// failed claim as it drops every claim that is not ready, so the sweep asks no failed claim
+// whether the rule refuses it or not. With the rule's failed case taken out, this test shows it in
+// the list itself, and the property and field tests show it only where the tick decides a group's
+// round before openPodUpdate, since the round waits for no failed claim (waitingClaims), and so
+// posts the round to no claim while the rule owes a failed claim an ask (sweepPath.posts). The
+// control is the ready claim with none of these, which the sweep owes its ask.
 //
 // The negative control is the rule with its failed case taken out: the failed claim is then on
 // the list, and its case fails. This test holds each case of the rule as the sweep reads it, and
@@ -68,40 +73,114 @@ func TestPodUpdateSweepOwesAnAskWhereTheClaimsOwnRecordOwesOne(t *testing.T) {
 	}
 }
 
+// sweepFact is one fact of a claim that sweepFacts sets or leaves out, and the facts a claim holds
+// are the bits of the ones it holds, read from its own fields (factsOf).
+type sweepFact int
+
+const (
+	// factSession is a session (Claim.Session).
+	factSession sweepFact = 1 << iota
+	// factAsked is an ask of the round that reached its session (Claim.UpdateTaskedAt).
+	factAsked
+	// factAnswered is its role's answer to the round (Claim.UpdateSignalledAt).
+	factAnswered
+	// factLeft is a leave of the round's pod (Claim.UpdateLeftRound).
+	factLeft
+	// factOtherRound is another round than the one swept (Claim.UpdateRound).
+	factOtherRound
+	// factLocator is a process the claim records (Claim.Locator).
+	factLocator
+	// sweepFactSets is how many sets of those facts there are, each of which sweepFacts builds a
+	// claim of for every state and role.
+	sweepFactSets
+)
+
+var sweepFactNames = []struct {
+	fact sweepFact
+	name string
+}{
+	{factSession, "session"}, {factAsked, "asked"}, {factAnswered, "answered"}, {factLeft, "left"},
+	{factOtherRound, "other round"}, {factLocator, "locator"},
+}
+
+func (f sweepFact) String() string {
+	var names []string
+	for _, n := range sweepFactNames {
+		if f&n.fact != 0 {
+			names = append(names, n.name)
+		}
+	}
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, "|")
+}
+
+// factsOf is the facts c holds, read from its own fields: what the tests select claims of sweepFacts
+// by (sweepKindsOf), and what sweepFacts holds each claim it builds to.
+func factsOf(c supervise.Claim) sweepFact {
+	var f sweepFact
+	if c.Session != "" {
+		f |= factSession
+	}
+	if c.UpdateTaskedAt != nil {
+		f |= factAsked
+	}
+	if c.UpdateSignalledAt != nil {
+		f |= factAnswered
+	}
+	if c.UpdateLeftRound == podUpdateRound {
+		f |= factLeft
+	}
+	if c.UpdateRound != podUpdateRound {
+		f |= factOtherRound
+	}
+	if c.Locator != nil {
+		f |= factLocator
+	}
+	return f
+}
+
 // sweepFacts is the claims the sweep tests below hold the sweep to the rule over: every state a
 // claim can be in (supervise.States), every role a claim can be on (claim.Roles, and the
-// controller's, which is none of them), and each of a session, a delivered ask, an answer, a leave
-// of the round's pod, another round and a process locator, set or not, which is 64 claims for each
-// state and role, in that order. Each claim carries token(role) and records the round's opening at
-// at, as the one write of a round on a claim does (supervise's openPodUpdate), so the sweep's ask
-// has a bound to state (roundBound); the tests give at as the rig's held clock, so no round they
-// build has reached its bound. A state or a role added to those lists joins the tests without an
-// edit.
-func sweepFacts(at time.Time, token func(claim.Role) claim.Token) []supervise.Claim {
+// controller's, which is none of them), and each set of the facts a claim holds or not (sweepFact):
+// a session, a delivered ask, an answer, a leave of the round's pod, another round and a process
+// locator, which is 64 claims for each state and role. Each claim carries token(role) and records
+// the round's opening at at, as the one write of a round on a claim does (supervise's
+// openPodUpdate), so the sweep's ask has a bound to state (roundBound); the tests give at as the
+// rig's held clock, so no round they build has reached its bound. A state or a role added to those
+// lists joins the tests without an edit. A claim that does not hold the facts it was built of, read
+// from its fields (factsOf), fails the test, naming the facts set on the wrong fields.
+func sweepFacts(t *testing.T, at time.Time, token func(claim.Role) claim.Token) []supervise.Claim {
+	t.Helper()
 	var claims []supervise.Claim
 	for _, state := range supervise.States() {
-		for _, role := range sweepRoles() {
-			for bits := range 1 << 6 {
+		for _, role := range sweepRoleList {
+			for facts := range sweepFactSets {
 				opened := at
 				c := supervise.Claim{Token: token(role), Role: role, State: state, UpdateRound: podUpdateRound,
 					UpdateOpenedAt: &opened}
-				if bits&1 != 0 {
+				if facts&factSession != 0 {
 					c.Session = "ses_i"
 				}
-				if bits&2 != 0 {
+				if facts&factAsked != 0 {
 					c.UpdateTaskedAt = &at
 				}
-				if bits&4 != 0 {
+				if facts&factAnswered != 0 {
 					c.UpdateSignalledAt = &at
 				}
-				if bits&8 != 0 {
+				if facts&factLeft != 0 {
 					c.UpdateLeftRound = podUpdateRound
 				}
-				if bits&16 != 0 {
+				if facts&factOtherRound != 0 {
 					c.UpdateRound = "pod:" + podUpdateReplacementPod
 				}
-				if bits&32 != 0 {
+				if facts&factLocator != 0 {
 					c.Locator = &runtime.Locator{Claim: c.Token, Incarnation: "inc-1"}
+				}
+				if got := factsOf(c); got != facts {
+					t.Fatalf("sweepFacts built the %s %s claim of the facts %s, and its fields hold %s: the facts %s are set on the wrong fields",
+						state, role, facts, got, facts^got)
 				}
 				claims = append(claims, c)
 			}
@@ -110,34 +189,44 @@ func sweepFacts(at time.Time, token func(claim.Role) claim.Token) []supervise.Cl
 	return claims
 }
 
-// sweepRoles is every role a claim can be on: claim.Roles, and the controller's.
-func sweepRoles() []claim.Role { return append(slices.Clone(claim.Roles), claim.RoleController) }
+// sweepRoleList is every role a claim can be on: claim.Roles, and the controller's.
+var sweepRoleList = append(slices.Clone(claim.Roles), claim.RoleController)
 
 // sweepRoleCount is how many roles sweepFacts tries, which is also the most claims a group of one
 // issue holds: one of each role, the controller's included.
-var sweepRoleCount = len(sweepRoles())
+var sweepRoleCount = len(sweepRoleList)
 
-// sweepRoleOf is the role, as its index in sweepRoles, of the claim at index i of sweepFacts or of
-// a copy of it.
-func sweepRoleOf(i int) int { return i / 64 % sweepRoleCount }
+// sweepRoleIndex is the index of role in sweepRoleList.
+func sweepRoleIndex(role claim.Role) int { return slices.Index(sweepRoleList, role) }
 
-// sweepKindsOf is the claims of sweepFacts, by index, that the property test puts in groups of
-// four or more and the field test sets a field on: for every state and role, the claim with a
-// session, in the round, that no ask of the round reached, that has not answered it and has not
-// left its pod — which the rule owes an ask unless it failed — with a process locator and without;
-// and that claim refused by one fact alone: an ask of the round reached it, its role answered the
-// round, it left the round's pod, or it is in another round; and that claim with no session. A
-// claim refused by two of those facts at once is tried alone and in groups of two and three, as
-// every claim of sweepFacts is, and not in the larger groups or with a field set: the seven kinds
-// a state and role give are what a statement that reads one fact beside the field or the group can
-// tell apart, at a ninth of the claims.
-func sweepKindsOf(facts []supervise.Claim) []int {
+// sweepKinds is the facts of each kind of claim (sweepKindsOf): the claim with a session, in the
+// round, that no ask of the round reached, that has not answered it and has not left its pod —
+// which the rule owes an ask unless it failed — without a process locator and with one; that claim
+// refused by one fact alone: an ask of the round reached it, its role answered the round, it left
+// the round's pod, or it is in another round; and that claim with no session.
+var sweepKinds = []sweepFact{
+	factSession, factSession | factLocator,
+	factSession | factAsked, factSession | factAnswered, factSession | factLeft, factSession | factOtherRound,
+	0,
+}
+
+// sweepKindsOf is the claims of sweepFacts, by index, that hold the facts of a kind (sweepKinds),
+// read from each claim's own fields: the claims the property test puts in groups of four or more
+// and the field test sets fields on, seven for every state and role. A claim refused by two of the
+// facts at once is tried alone and in groups of two and three, as every claim of sweepFacts is, and
+// not in the larger groups or with a field set: the seven kinds a state and role give are what a
+// statement that reads one fact beside the field or the group can tell apart, at a ninth of the
+// claims.
+func sweepKindsOf(t *testing.T, facts []supervise.Claim) []int {
+	t.Helper()
 	var kinds []int
-	for i := range facts {
-		switch i % 64 {
-		case 1, 1 | 32, 1 | 2, 1 | 4, 1 | 8, 1 | 16, 0:
+	for i, c := range facts {
+		if slices.Contains(sweepKinds, factsOf(c)) {
 			kinds = append(kinds, i)
 		}
+	}
+	if want := len(facts) / int(sweepFactSets) * len(sweepKinds); len(kinds) != want {
+		t.Fatalf("sweepFacts holds %d claims of the kinds %v, want %d: one of each kind for every state and role", len(kinds), sweepKinds, want)
 	}
 	return kinds
 }
@@ -150,16 +239,17 @@ func sweepOwed(c supervise.Claim) bool {
 }
 
 // sweepKind is a kind of claim a group is built of: one the rule refuses an ask, one it owes an
-// ask (sweepOwed), or either.
+// ask (sweepOwed), one the sweep asks (sweepRig.asks), or either of the first two.
 type sweepKind int
 
 const (
 	sweepRefused sweepKind = iota
 	sweepOwedOne
+	sweepAsked
 	sweepEither
 )
 
-func (k sweepKind) String() string { return [...]string{"refused", "owed", "either"}[k] }
+func (k sweepKind) String() string { return [...]string{"refused", "owed", "asked", "either"}[k] }
 
 // sweepPools is a set of claims — sweepFacts, or sweepFacts with one more field set — by kind and
 // by role, from which groups are built. The roles of a group's other claims, and the claims of
@@ -167,20 +257,25 @@ func (k sweepKind) String() string { return [...]string{"refused", "owed", "eith
 // groups alike, and no claim's place in the set decides what stands beside it.
 type sweepPools struct {
 	claims []supervise.Claim
-	pool   [3][][]int // by kind, then role: indexes into claims
-	taken  [3][]int   // by kind, then role: how many claims were taken
+	pool   [4][][]int // by kind, then role: indexes into claims
+	taken  [4][]int   // by kind, then role: how many claims were taken
 	roles  int        // how many roles were taken
 }
 
-func newSweepPools(claims []supervise.Claim) *sweepPools {
+// newSweepPools sorts claims into their pools by kind and role. asks is whether the sweep asks a
+// claim (sweepRig.asks); a claim it asks is in the pool of owed claims too.
+func newSweepPools(claims []supervise.Claim, asks func(supervise.Claim) bool) *sweepPools {
 	p := &sweepPools{claims: claims}
 	for k := range p.pool {
 		p.pool[k], p.taken[k] = make([][]int, sweepRoleCount), make([]int, sweepRoleCount)
 	}
 	for i, c := range claims {
-		r, k := sweepRoleOf(i), sweepRefused
+		r, k := sweepRoleIndex(c.Role), sweepRefused
 		if sweepOwed(c) {
 			k = sweepOwedOne
+			if asks(c) {
+				p.pool[sweepAsked][r] = append(p.pool[sweepAsked][r], i)
+			}
 		}
 		p.pool[k][r] = append(p.pool[k][r], i)
 		p.pool[sweepEither][r] = append(p.pool[sweepEither][r], i)
@@ -197,7 +292,7 @@ func newSweepPools(claims []supervise.Claim) *sweepPools {
 func (p *sweepPools) group(dst []supervise.Claim, i, at int, others []sweepKind, vary func(*supervise.Claim)) []supervise.Claim {
 	dst = dst[:0]
 	var held [8]int
-	roles := append(held[:0], sweepRoleOf(i))
+	roles := append(held[:0], sweepRoleIndex(p.claims[i].Role))
 	for _, kind := range others {
 		r, j := p.take(kind, roles)
 		roles = append(roles, r)
@@ -229,10 +324,13 @@ func (p *sweepPools) take(kind sweepKind, roles []int) (role, index int) {
 
 // sweepShape is one group a claim is put to the sweep in: the kinds of the claims beside it, and
 // its place among them, where place < 0 is the claim's index in the set mod the group's size.
+// askedOnly is whether the claims put in it are the kinds the sweep asks alone: a group of four or
+// more beside no claim owed an ask holds a claim the sweep asks that way.
 type sweepShape struct {
-	name   string
-	others []sweepKind
-	place  int
+	name      string
+	others    []sweepKind
+	place     int
+	askedOnly bool
 }
 
 func (s sweepShape) at(i int) int {
@@ -245,8 +343,11 @@ func (s sweepShape) at(i int) int {
 // sweepPropertyShapes is each group the property test puts a claim to the sweep in: alone; at
 // each place of a group of two and of three, beside claims of every mix of the two kinds, owed an
 // ask and refused one; and in a group of each size from four to one claim of every role, beside
-// claims of which every count from none to all is owed and the rest refused. So every size of
-// group an issue's claims make is tried, and every count of owed claims at each size.
+// claims of which every count from none to all is owed and the rest refused, each group holding a
+// claim the sweep asks: the first owed claim beside the one tried is one, and beside no owed claim
+// the claim tried is one. So every size of group an issue's claims make is tried, every count of
+// owed claims at each size, and in every group of four or more the sweep asks a claim, so a
+// statement of its own there that reads the claims beside a claim changes what an ask reaches.
 func sweepPropertyShapes() []sweepShape {
 	shapes := []sweepShape{{name: "alone"}}
 	for size := 2; size <= 3; size++ {
@@ -263,9 +364,13 @@ func sweepPropertyShapes() []sweepShape {
 		}
 	}
 	for size := 4; size <= sweepRoleCount; size++ {
-		for owed := range size {
-			others := append(slices.Repeat([]sweepKind{sweepOwedOne}, owed), slices.Repeat([]sweepKind{sweepRefused}, size-1-owed)...)
-			shapes = append(shapes, sweepShape{name: fmt.Sprintf("in a group of %d, beside %d claims owed an ask and %d refused one", size, owed, size-1-owed), others: others, place: -1})
+		shapes = append(shapes, sweepShape{name: fmt.Sprintf("in a group of %d, a claim the sweep asks beside %d claims refused one", size, size-1),
+			others: slices.Repeat([]sweepKind{sweepRefused}, size-1), place: -1, askedOnly: true})
+		for owed := 1; owed < size; owed++ {
+			others := append(append([]sweepKind{sweepAsked}, slices.Repeat([]sweepKind{sweepOwedOne}, owed-1)...),
+				slices.Repeat([]sweepKind{sweepRefused}, size-1-owed)...)
+			shapes = append(shapes, sweepShape{name: fmt.Sprintf("in a group of %d, beside %d claims owed an ask, one the sweep asks among them, and %d refused one", size, owed, size-1-owed),
+				others: others, place: -1})
 		}
 	}
 	return shapes
@@ -279,11 +384,11 @@ func sweepPropertyShapes() []sweepShape {
 // of two and of three, beside claims of every mix of the two kinds, one the rule owes an ask and
 // one it refuses; and each kind of claim of every state and role (sweepKindsOf) in a group of each
 // size from four to one claim of every role, beside claims of every count owed and the rest
-// refused. The claims beside it are taken in turn (sweepPools), and each of them holds one more
-// field of the claim, a field at any depth taken in turn that keeps it of its kind (claimLeaves).
-// Every claim of every group is held to the rule, the claims beside it included, so a group that
-// holds two or more claims the sweep owes an ask fails the test where any one of them is not asked
-// or not reached.
+// refused, with a claim the sweep asks in every such group. The claims beside it are taken in turn
+// (sweepPools), and each of them holds one more field of the claim, a field at any depth taken in
+// turn that keeps it of its kind (claimLeaves). Every claim of every group is held to the rule, the
+// claims beside it included, so a group that holds two or more claims the sweep owes an ask fails
+// the test where any one of them is not asked or not reached.
 //
 // With the test above it holds the one rule of whom a round asks, which is neither a failed claim
 // nor one that has left the round's pod: that test fails when the rule loses a case, and this one
@@ -293,7 +398,8 @@ func sweepPropertyShapes() []sweepShape {
 // present or absent, its own failed filter put back while the rule's failed case is taken out, its
 // left-pod check taken out, a filter on a pending task that holds only in a group of one size or
 // only beside a given count of owed claims, a claim refused while another claim of its group is
-// owed an ask too, or only the first owed claim of a group asked. The test after it holds the same
+// owed an ask too, only the first owed claim of a group asked, or a claim refused in askRound
+// beside a claim of one state and role in a group of one size. The test after it holds the same
 // over every field of a claim. None of them fails for a statement of the sweep's own that agrees
 // with the rule in every group, such as that failed filter put back with the rule whole: it changes
 // no claim's answer, and it shows here the first time the rule changes and the two disagree.
@@ -301,17 +407,17 @@ func sweepPropertyShapes() []sweepShape {
 // The negative control is the sweep's own failed filter put back with the rule's failed case taken
 // out: this test then fails on each failed claim with a session that the rule owes an ask, and the
 // test above passes. The test also fails when it saw no claim owed an ask or no claim refused one,
-// no group in which the sweep asks two claims, or a size of group in which it asks no claim, since
-// such a set shows nothing.
+// no group in which the sweep asks two claims, a size of group in which it asks no claim, or a
+// group of four or more in which it asks none, since such a set shows nothing.
 func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoes(t *testing.T) {
 	r := newSweepRig(t)
 	at := podUpdateStart
-	facts := sweepFacts(at, r.token)
-	leaves, unset := claimLeaves()
+	facts := sweepFacts(t, at, r.token)
+	leaves, unset := claimLeaves(sweepSliceLength(t))
 	if len(unset) > 0 || len(leaves) == 0 {
 		t.Fatalf("the claim holds fields this test cannot set (%v), or none it can (%d), so it cannot vary the claims beside each claim", unset, len(leaves))
 	}
-	pools := newSweepPools(facts)
+	pools := newSweepPools(facts, r.asks)
 	next := 0
 	// vary sets one more field on a claim beside the claim tried: the next field in turn that the
 	// claim leaves empty and whose value keeps it of its kind, owed an ask or refused one.
@@ -331,18 +437,22 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoes(t *testing.T) {
 		}
 	}
 	shapes := sweepPropertyShapes()
-	checked, owed, refused, groups, twoAsked := 0, 0, 0, 0, 0
+	checked, owed, refused, groups, twoAsked, unasked := 0, 0, 0, 0, 0, 0
 	askedBySize := make([]int, sweepRoleCount+1)
 	buf := make([]supervise.Claim, 0, sweepRoleCount)
-	every, kinds := make([]int, len(facts)), sweepKindsOf(facts)
+	every, kinds := make([]int, len(facts)), sweepKindsOf(t, facts)
 	for i := range every {
 		every[i] = i
 	}
+	askedKinds := slices.DeleteFunc(slices.Clone(kinds), func(i int) bool { return !r.asks(facts[i]) })
 	for _, s := range shapes {
 		wrong, seen, example := 0, 0, ""
 		tried := every
 		if len(s.others) >= 3 {
 			tried = kinds
+		}
+		if s.askedOnly {
+			tried = askedKinds
 		}
 		for n, i := range tried {
 			group := pools.group(buf, i, s.at(n), s.others, vary)
@@ -354,6 +464,9 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoes(t *testing.T) {
 			askedBySize[len(group)] += asked
 			if asked >= 2 {
 				twoAsked++
+			}
+			if asked == 0 && len(group) >= 4 {
+				unasked++
 			}
 			wrong += len(misses)
 			if example == "" && len(misses) > 0 {
@@ -371,11 +484,11 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoes(t *testing.T) {
 			noAsk = append(noAsk, size)
 		}
 	}
-	if owed == 0 || refused == 0 || twoAsked == 0 || len(noAsk) > 0 {
-		t.Fatalf("checked %d claims of %d groups, %d owed an ask and %d refused one, %d groups in which the sweep asks two claims or more, and groups of the sizes %v in which it asks none: a set with no owed or no refused claim, no group of two asked claims, or a size of group with no ask shows nothing",
-			checked, groups, owed, refused, twoAsked, noAsk)
+	if owed == 0 || refused == 0 || twoAsked == 0 || len(noAsk) > 0 || unasked > 0 {
+		t.Fatalf("checked %d claims of %d groups, %d owed an ask and %d refused one, %d groups in which the sweep asks two claims or more, groups of the sizes %v in which it asks none, and %d groups of four or more in which it asks none: a set with no owed or no refused claim, no group of two asked claims, a size of group with no ask, or a larger group with no ask shows nothing",
+			checked, groups, owed, refused, twoAsked, noAsk, unasked)
 	}
-	t.Logf("checked %d claims of %d groups in %d shapes, of every size from 1 to %d: %d owed an ask, %d refused one; in %d groups the sweep asks two claims or more",
+	t.Logf("checked %d claims of %d groups in %d shapes, of every size from 1 to %d: %d owed an ask, %d refused one; in %d groups the sweep asks two claims or more, and in every group of four or more it asks one",
 		checked, groups, len(shapes), sweepRoleCount, owed, refused, twoAsked)
 }
 
@@ -385,13 +498,13 @@ var sweepFieldsEveryClaimSets = map[string]string{
 	"Token":          "a claim is known by it; each role's claim has its own, so the test above varies it with the role",
 	"Role":           "the test above tries every role",
 	"State":          "the test above tries every state",
-	"UpdateRound":    "the test above tries the round and another round",
+	"UpdateRound":    "the test above tries the round and another round, and the opening rows the claim in no round",
 	"UpdateOpenedAt": "every claim of a round records the round's opening, which the ask's bound is read from",
 }
 
-// sweepFieldShapes is each group the field test puts a claim to the sweep in: alone, beside one
-// claim of another role, and beside one claim of every other role, which is an issue pod with all
-// its roles, each claim beside it of either kind.
+// sweepFieldShapes is each group the field test puts a claim to the sweep in with one field set:
+// alone, beside one claim of another role, and beside one claim of every other role, which is an
+// issue pod with all its roles, each claim beside it of either kind.
 var sweepFieldShapes = []sweepShape{
 	{name: "alone"},
 	{name: "beside a claim of another role", others: []sweepKind{sweepEither}, place: -1},
@@ -409,43 +522,48 @@ var sweepFieldShapes = []sweepShape{
 // of claim of every state and role (sweepKindsOf) that leaves that field empty is put to the sweep
 // again with the field set, alone, beside a claim of another role and beside a claim of every other
 // role (sweepFieldShapes), each of which holds the field too and is the next claim of its role in
-// turn (sweepPools). Then each pair of those fields is set together on the ready implementer the
-// rule owes an ask and on that claim refused an ask by each case of the rule or by having no
-// session (sweepPairBases). So a filter of the sweep's own on a field the test above does not vary,
-// or on two of them together —
-// a pending task, a task's text or the moment a turn confirmed it, the round's told mark, the
-// claim's deaths or prompt failures, the claim's issue, a claim with more than one or two turn
-// outcomes, a pending task on a claim whose round was told — fails here, wherever it stands from
-// the tick to the publish, on the claims with a session the rule owes an ask: a sweep that skipped
-// every claim holding a task would leave a working role unasked until the round's bound. A field
-// added to the claim joins the test without an edit, and a field of a type this test cannot set
-// fails it.
+// turn (sweepPools). A field the machine's view reads from the machine's own state rather than the
+// claim's record — a compaction in flight, a process the runtime reported gone — is set by putting
+// the claim's machine in that state (sweepMachineStates), on each claim whose machine takes it.
+//
+// Then fields are set together, in sets that put every pair of fields together in one set
+// (sweepFieldBlocks), and in one set every field at once, on each kind of claim of every state and
+// role, each claim alone and in a group of one claim of every role, each of a state and a kind of
+// its own, that holds the same set (sweepKindGroups). So a filter of the sweep's own on a field
+// the test above does not vary, on two of them together on any kind of claim, on two of them
+// together beside a claim of another state, or on any number of them set together — a pending
+// task, a task's text or the moment a turn confirmed it, the round's told mark, the claim's deaths
+// or prompt failures, the claim's issue, a claim with more than one or two turn outcomes, a claim
+// being compacted or whose process is gone, a pending task on a claim whose round was told — fails
+// here, wherever it stands from the tick to the publish, on the claims with a session the rule
+// owes an ask: a sweep that skipped every claim holding a task would leave a working role unasked
+// until the round's bound. Last, each field is set on each claim of every state and role with a
+// session at the tick that opens the round, alone and in groups of every role: the tick reads the
+// group live there and must post the round to each of them (sweepRig.open). A field added to the
+// claim joins the test without an edit, and a field of a type this test cannot set fails it.
 //
 // The test leaves out the fields every claim of sweepFacts sets (sweepFieldsEveryClaimSets: the
 // token, the role, the state, the round and the round's opening), each named with why, and it
 // fails when one of them is no field of the claim or is empty on some claim, and when a field it
-// does not name is tried on no claim.
+// does not name is tried on no claim, or held by no machine of a claim it was set on.
 //
 // Each field is set to one value. So this test does not fail for a filter of the sweep's own on one
 // value of a field other than the one it sets: a filter on a claim an operator suspended
-// (supervise.SuspendedByOperator) passes it, since SuspendedBy is set to "x" here. A pair is tried
-// on the ready implementer and its refused forms alone, so a filter that reads two of these fields
-// together with one state or role, or three of them together, passes it too. Compacting and
-// ProcessGone are the machine's own state, which its view puts over the claim's record (supervise's
-// Machine.View), so the live read finds both false on every claim here, and a filter on either
-// placed after the live read passes. Nor does the test fail for a filter that agrees with the rule
-// in every group, as the test above says.
+// (supervise.SuspendedByOperator) passes it, since SuspendedBy is set to "x" here. Nor does it fail
+// for a filter that agrees with the rule in every group, as the test above says.
 //
 // The negative control is a filter of the sweep's own on a pending task (Claim.Pending), anywhere
 // from the tick to the publish: this test then fails with each field of Pending set, and the test
 // above fails too, on the groups beside whose claims a pending task is set. A filter on a pending
-// task together with the round's told mark fails the pairs alone. The test also fails when it
-// tried no field or no pair, or saw no owed or no refused claim, since such a set shows nothing.
+// task together with the round's told mark fails the sets of fields alone. The test also fails
+// when it tried no field or no set of fields, left a pair of fields set together on no kind of
+// claim that leaves both empty, or saw no owed or no refused claim, since such a set shows nothing.
 func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds(t *testing.T) {
 	r := newSweepRig(t)
 	at := podUpdateStart
-	facts := sweepFacts(at, r.token)
-	leaves, unset := claimLeaves()
+	facts := sweepFacts(t, at, r.token)
+	kinds := sweepKindsOf(t, facts)
+	leaves, unset := claimLeaves(sweepSliceLength(t))
 	if len(unset) > 0 {
 		t.Fatalf("the fields %v cannot be set, so this test cannot try them", unset)
 	}
@@ -458,18 +576,23 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 			t.Fatalf("%s is named as a field every claim of sweepFacts sets, and the claim has no such field", name)
 		}
 	}
+	base := facts[slices.IndexFunc(facts, func(c supervise.Claim) bool {
+		return c.State == supervise.StateReady && c.Role == claim.RoleImplementer && factsOf(c) == factSession
+	})]
+	if wrong := r.path.machineStatesRead(base, leaves, at); len(wrong) > 0 {
+		t.Fatalf("the machine's view reads fields this test does not set as a machine holds them: %s", strings.Join(wrong, "; "))
+	}
 	checked, owed, refused, fields := 0, 0, 0, 0
 	buf := make([]supervise.Claim, 0, sweepRoleCount)
 	others := make([]supervise.Claim, len(facts))
-	kinds := sweepKindsOf(facts)
 	for _, leaf := range leaves {
 		for j, c := range facts {
 			if others[j] = c; leaf.empty(c) {
 				leaf.set(&others[j], at)
 			}
 		}
-		pools := newSweepPools(others)
-		tried, wrong, example := 0, 0, ""
+		pools := newSweepPools(others, r.asks)
+		tried, held, wrong, example := 0, 0, 0, ""
 		for n, i := range kinds {
 			c := facts[i]
 			if !leaf.empty(c) {
@@ -479,6 +602,9 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 			for _, s := range sweepFieldShapes {
 				group := pools.group(buf, i, s.at(n), s.others, nil)
 				asked, misses := r.hold(group)
+				if !leaf.empty(group[s.at(n)]) {
+					held++
+				}
 				checked += len(group)
 				owed += asked
 				refused += len(group) - asked
@@ -494,6 +620,8 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 			t.Errorf("%s is named as a field every claim of sweepFacts sets, and %d claims leave %s empty: try it, and take it off the list", leaf.top, tried, leaf.name)
 		case !everyClaimSets && tried == 0:
 			t.Errorf("no claim of sweepFacts leaves %s empty, so this test tried it on no claim: name %s among the fields every claim sets, with why the sweep's tests still hold the sweep over it", leaf.name, leaf.top)
+		case tried > 0 && held == 0:
+			t.Errorf("no machine of the %d claims %s was set on held it, so this test tried it on no claim", tried, leaf.name)
 		case tried > 0:
 			fields++
 		}
@@ -502,89 +630,308 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 				leaf.name, wrong, tried*len(sweepFieldShapes), example)
 		}
 	}
-	bases := sweepPairBases(at, r.token(claim.RoleImplementer))
-	pairs, pairsOwed, pairsWrong := 0, 0, 0
-	for i, a := range leaves {
-		for _, b := range leaves[i+1:] {
-			tried, wrong, example := 0, 0, ""
-			for _, base := range bases {
-				if !a.empty(base) || !b.empty(base) {
+
+	blocks := sweepFieldBlocks(sweepFlips(facts, kinds, leaves, at))
+	if missing := sweepUncoveredPairs(facts, kinds, leaves, blocks); len(missing) > 0 {
+		t.Fatalf("%d pairs of fields that a kind of claim leaves empty are set together on it in no set of fields, for example %s", len(missing), missing[0])
+	}
+	groups := sweepKindGroups(facts, kinds, sweepKinds)
+	sets, setsWrong := 0, 0
+	for _, block := range blocks {
+		with := func(c supervise.Claim) supervise.Claim {
+			for _, l := range block {
+				if leaves[l].empty(c) {
+					leaves[l].set(&c, at)
+				}
+			}
+			return c
+		}
+		wrong, seen, example := 0, 0, ""
+		try := func(shape string, group []supervise.Claim) {
+			asked, misses := r.hold(group)
+			checked += len(group)
+			seen += len(group)
+			owed += asked
+			refused += len(group) - asked
+			wrong += len(misses)
+			if example == "" && len(misses) > 0 {
+				example = shape + ", " + misses[0]
+			}
+		}
+		for _, i := range kinds {
+			try("alone", append(buf[:0], with(facts[i])))
+		}
+		for _, g := range groups {
+			group := buf[:0]
+			for _, i := range g {
+				group = append(group, with(facts[i]))
+			}
+			try("in a group of every role", group)
+		}
+		sets++
+		if wrong > 0 {
+			if setsWrong++; setsWrong <= 10 {
+				t.Errorf("with %s set together, the sweep disagrees with the rule on %d of %d claims, for example %s",
+					sweepLeafNames(leaves, block), wrong, seen, example)
+			}
+		}
+	}
+	if setsWrong > 10 {
+		t.Errorf("and with %d more sets of fields", setsWrong-10)
+	}
+
+	opening := sweepKindsOfFacts(facts, factSession, factSession|factLocator)
+	openingGroups := sweepKindGroups(facts, opening, []sweepFact{factSession, factSession | factLocator})
+	opened := 0
+	openAt := func(label string, set func(*supervise.Claim)) {
+		build := func(i int) supervise.Claim {
+			c := facts[i]
+			c.UpdateRound, c.UpdateOpenedAt = "", nil
+			set(&c)
+			return c
+		}
+		wrong, seen, example := 0, 0, ""
+		try := func(shape string, group []supervise.Claim) {
+			asked, misses := r.open(group)
+			checked += len(group)
+			seen += len(group)
+			refused += len(group) - asked
+			wrong += len(misses)
+			if example == "" && len(misses) > 0 {
+				example = shape + ", " + misses[0]
+			}
+		}
+		for _, i := range opening {
+			try("alone", append(buf[:0], build(i)))
+		}
+		for _, g := range openingGroups {
+			group := buf[:0]
+			for _, i := range g {
+				group = append(group, build(i))
+			}
+			try("in a group of every role", group)
+		}
+		opened++
+		if wrong > 0 {
+			t.Errorf("at the tick that opens the round, %s, the sweep disagrees with the rule on %d of %d claims, for example %s; want the round posted to each claim with a session that has not retired, and no ask, since no claim records the round yet",
+				label, wrong, seen, example)
+		}
+	}
+	openAt("with no field set", func(*supervise.Claim) {})
+	for _, leaf := range leaves {
+		if _, everyClaimSets := sweepFieldsEveryClaimSets[leaf.top]; everyClaimSets {
+			continue
+		}
+		openAt("with "+leaf.name+" set", func(c *supervise.Claim) {
+			if leaf.empty(*c) {
+				leaf.set(c, at)
+			}
+		})
+	}
+	if fields == 0 || sets == 0 || opened < 2 || owed == 0 || refused == 0 {
+		t.Fatalf("checked %d claims over %d fields, %d sets of fields and %d openings, %d owed and %d refused: a set with no field, no set of fields or no opening tried, or no owed or no refused claim, shows nothing",
+			checked, fields, sets, opened, owed, refused)
+	}
+	t.Logf("checked %d claims over %d fields of a claim at every depth, %d sets of them that put every pair together and all of them at once, and the round's opening with each field: %d owed an ask, %d refused one",
+		checked, fields, sets, owed, refused)
+}
+
+// sweepKindsOfFacts is the claims of facts, by index, that hold one of the sets of facts of.
+func sweepKindsOfFacts(facts []supervise.Claim, of ...sweepFact) []int {
+	var kinds []int
+	for i, c := range facts {
+		if slices.Contains(of, factsOf(c)) {
+			kinds = append(kinds, i)
+		}
+	}
+	return kinds
+}
+
+// sweepKindGroups is the claims of kinds, of the sets of facts of, each in one group of one claim
+// of every role, so a field set on every claim of a group stands beside claims of every other role,
+// each of a state and a kind of its own: in group (a, k) the role of index r in sweepRoleList holds
+// the claim of the facts of index (k+r) mod len(of), in the state of index (a+r) mod the states.
+// For each state and role a claim is tried in, the claims beside it are of six other states.
+func sweepKindGroups(facts []supervise.Claim, kinds []int, of []sweepFact) [][]int {
+	states := supervise.States()
+	index := map[[3]int]int{}
+	for _, i := range kinds {
+		c := facts[i]
+		index[[3]int{slices.Index(states, c.State), sweepRoleIndex(c.Role), slices.Index(of, factsOf(c))}] = i
+	}
+	var groups [][]int
+	for a := range states {
+		for k := range of {
+			g := make([]int, 0, sweepRoleCount)
+			for r := range sweepRoleCount {
+				g = append(g, index[[3]int{(a + r) % len(states), r, (k + r) % len(of)}])
+			}
+			groups = append(groups, g)
+		}
+	}
+	return groups
+}
+
+// sweepFlips is, for each leaf, whether setting it on some kind of claim changes whether the rule
+// owes that claim an ask with a session (sweepOwed): a session on a claim with none, a delivered
+// ask or an answer on a claim the rule owes one.
+func sweepFlips(facts []supervise.Claim, kinds []int, leaves []claimLeaf, at time.Time) []bool {
+	flips := make([]bool, len(leaves))
+	for l, leaf := range leaves {
+		for _, i := range kinds {
+			c := facts[i]
+			if !leaf.empty(c) {
+				continue
+			}
+			owed := sweepOwed(c)
+			if leaf.set(&c, at); sweepOwed(c) != owed {
+				flips[l] = true
+				break
+			}
+		}
+	}
+	return flips
+}
+
+// sweepFieldBlocks is the sets of leaves, by index, that the field test sets together on each kind
+// of claim, so that every pair of leaves stands together in one set, and no set that holds a pair
+// whose answer the rule leaves as it is also holds a leaf that changes the answer (flips), which
+// would hide what a filter on that pair does. The leaves that change no answer are the points of an
+// affine plane of order q, the least prime whose square is at least their count, and each line of
+// the plane is a set: any two points of the plane lie on one line. Each leaf that changes an answer
+// is set with each run of q of the others in turn, and with each other leaf that changes one,
+// alone. Last, every leaf that changes no answer is set at once, alone and with each leaf that
+// changes one, so a filter on any number of fields set together fails too.
+func sweepFieldBlocks(flips []bool) [][]int {
+	var keep, change []int
+	for l, f := range flips {
+		if f {
+			change = append(change, l)
+		} else {
+			keep = append(keep, l)
+		}
+	}
+	q := 2
+	for q*q < len(keep) || !sweepPrime(q) {
+		q++
+	}
+	var blocks [][]int
+	line := func(point func(i int) int) {
+		var block []int
+		for i := range q {
+			if p := point(i); p < len(keep) {
+				block = append(block, keep[p])
+			}
+		}
+		if len(block) >= 2 {
+			blocks = append(blocks, block)
+		}
+	}
+	for m := range q {
+		for b := range q {
+			line(func(x int) int { return x*q + (m*x+b)%q })
+		}
+	}
+	for x := range q {
+		line(func(y int) int { return x*q + y })
+	}
+	for i, f := range change {
+		for start := 0; start < len(keep); start += q {
+			blocks = append(blocks, append([]int{f}, keep[start:min(start+q, len(keep))]...))
+		}
+		for _, g := range change[i+1:] {
+			blocks = append(blocks, []int{f, g})
+		}
+	}
+	blocks = append(blocks, slices.Clone(keep))
+	for _, f := range change {
+		blocks = append(blocks, append([]int{f}, keep...))
+	}
+	return blocks
+}
+
+// sweepPrime is whether n is a prime.
+func sweepPrime(n int) bool {
+	for d := 2; d*d <= n; d++ {
+		if n%d == 0 {
+			return false
+		}
+	}
+	return n >= 2
+}
+
+// sweepUncoveredPairs is each pair of leaves that some kind of claim leaves empty and that no set of
+// blocks puts together on it: those of a block that the kind leaves empty are set on it together.
+func sweepUncoveredPairs(facts []supervise.Claim, kinds []int, leaves []claimLeaf, blocks [][]int) (missing []string) {
+	n := len(leaves)
+	seen := map[string]bool{}
+	for _, i := range kinds {
+		empty := make([]bool, n)
+		key := make([]byte, n)
+		for l, leaf := range leaves {
+			if empty[l] = leaf.empty(facts[i]); empty[l] {
+				key[l] = 1
+			}
+		}
+		if seen[string(key)] {
+			continue
+		}
+		seen[string(key)] = true
+		covered := make([]bool, n*n)
+		for _, block := range blocks {
+			for x, a := range block {
+				if !empty[a] {
 					continue
 				}
-				c := base
-				a.set(&c, at)
-				b.set(&c, at)
-				asked, misses := r.hold([]supervise.Claim{c})
-				tried++
-				checked++
-				owed += asked
-				pairsOwed += asked
-				refused += 1 - asked
-				wrong += len(misses)
-				if example == "" && len(misses) > 0 {
-					example = misses[0]
+				for _, b := range block[x+1:] {
+					if empty[b] {
+						covered[a*n+b], covered[b*n+a] = true, true
+					}
 				}
 			}
-			if tried > 0 {
-				pairs++
-			}
-			if wrong > 0 {
-				if pairsWrong++; pairsWrong <= 10 {
-					t.Errorf("with %s and %s set together, the sweep disagrees with the rule on %d of %d claims, for example %s",
-						a.name, b.name, wrong, tried, example)
+		}
+		for a := range n {
+			for b := a + 1; b < n; b++ {
+				if empty[a] && empty[b] && !covered[a*n+b] {
+					missing = append(missing, fmt.Sprintf("%s and %s on %s", leaves[a].name, leaves[b].name, describeSwept(facts[i])))
 				}
 			}
 		}
 	}
-	if pairsWrong > 10 {
-		t.Errorf("and on %d more pairs of fields", pairsWrong-10)
-	}
-	if fields == 0 || pairs == 0 || pairsOwed == 0 || owed == 0 || refused == 0 {
-		t.Fatalf("checked %d claims over %d fields and %d pairs of fields (%d owed in the pairs), %d owed and %d refused: a set with no field or no pair tried, or no owed or no refused claim, shows nothing",
-			checked, fields, pairs, pairsOwed, owed, refused)
-	}
-	t.Logf("checked %d claims over %d fields of a claim at every depth and %d pairs of them: %d owed an ask, %d refused one", checked, fields, pairs, owed, refused)
+	return missing
 }
 
-// sweepPairBases is the claims the field test sets each pair of fields on: the ready implementer of
-// the round with a session, which the rule owes an ask, and that claim refused an ask by each case
-// of the rule — an ask of the round reached its session, its role answered the round, it left the
-// round's pod, it is in another round, it failed — and by having no session. None records a
-// process, so every field under the locator is empty on each of them and tried in each pair.
-func sweepPairBases(at time.Time, token claim.Token) []supervise.Claim {
-	opened := at
-	owed := supervise.Claim{Token: token, Role: claim.RoleImplementer, State: supervise.StateReady, Session: "ses_i",
-		UpdateRound: podUpdateRound, UpdateOpenedAt: &opened}
-	bases := []supervise.Claim{owed}
-	for _, refuse := range []func(*supervise.Claim){
-		func(c *supervise.Claim) { c.UpdateTaskedAt = &opened },
-		func(c *supervise.Claim) { c.UpdateSignalledAt = &opened },
-		func(c *supervise.Claim) { c.UpdateLeftRound = podUpdateRound },
-		func(c *supervise.Claim) { c.UpdateRound = "pod:" + podUpdateReplacementPod },
-		func(c *supervise.Claim) { c.State = supervise.StateFailed },
-		func(c *supervise.Claim) { c.Session = "" },
-	} {
-		c := owed
-		refuse(&c)
-		bases = append(bases, c)
+// sweepLeafNames names the leaves of block, the first few of a long one.
+func sweepLeafNames(leaves []claimLeaf, block []int) string {
+	var names []string
+	for _, l := range block[:min(len(block), 4)] {
+		names = append(names, leaves[l].name)
 	}
-	return bases
+	if len(block) > 4 {
+		return fmt.Sprintf("the %d fields %s and %d more", len(block), strings.Join(names, ", "), len(block)-4)
+	}
+	return strings.Join(names, " and ")
 }
 
 // sweepSliceLength is how many elements claimLeaves walks each slice of the claim to:
-// launch_failure_limit's shipped value (config.ConfigReference), which is how many turn outcomes a
-// claim's window holds (supervise's turnOutcomeWindow) where a deployment leaves the key unset.
-func sweepSliceLength() (int, error) {
-	for _, key := range config.ConfigReference() {
-		if key.Name == "launch_failure_limit" {
-			n, err := strconv.Atoi(strings.Trim(key.Default, "`"))
-			if err != nil || n < 1 {
-				return 0, fmt.Errorf("launch_failure_limit's shipped value %q is no positive number: %v", key.Default, err)
-			}
-			return n, nil
-		}
+// launch_failure_limit's shipped value, which the daemon loads where a legion.yaml leaves the key
+// unset (config.Config.LaunchFailureLimit), and which is how many turn outcomes a claim's window
+// holds (supervise's turnOutcomeWindow) there.
+func sweepSliceLength(t *testing.T) int {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "legion.yaml")
+	body := "project: demo\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	return 0, fmt.Errorf("the key table holds no launch_failure_limit")
+	cfg, err := config.LoadForValidation(path, func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("load a legion.yaml that leaves launch_failure_limit unset: %v", err)
+	}
+	if cfg.LaunchFailureLimit < 1 {
+		t.Fatalf("launch_failure_limit's shipped value is %d, want a positive number", cfg.LaunchFailureLimit)
+	}
+	return cfg.LaunchFailureLimit
 }
 
 // claimLeaf is one exported field of supervise.Claim at any depth below it, through structs,
@@ -607,14 +954,11 @@ type leafStep struct {
 // claimLeaves is every leaf of supervise.Claim, and the name of each field at any depth that holds
 // a value this test cannot set — an interface, a map, a function, a channel, a struct with no
 // exported field, or a type that holds itself — which the tests fail on. A slice is walked at each
-// of its elements up to sweepSliceLength, the element at index i giving the slice i+1 elements, so
-// that a statement that reads how many elements a slice holds (a claim's turn outcomes) is tried
-// with one, with two and with three, the most a claim holds under the shipped launch_failure_limit.
-func claimLeaves() (leaves []claimLeaf, unset []string) {
-	elements, err := sweepSliceLength()
-	if err != nil {
-		unset = append(unset, fmt.Sprintf("every slice (%v)", err))
-	}
+// of its elements up to elements (sweepSliceLength), the element at index i giving the slice i+1
+// elements, so that a statement that reads how many elements a slice holds (a claim's turn
+// outcomes) is tried with one, with two and with three, the most a claim holds under the shipped
+// launch_failure_limit.
+func claimLeaves(elements int) (leaves []claimLeaf, unset []string) {
 	timeType := reflect.TypeOf(time.Time{})
 	var walk func(t reflect.Type, name, top string, path []leafStep, seen []reflect.Type)
 	walk = func(t reflect.Type, name, top string, path []leafStep, seen []reflect.Type) {
@@ -732,16 +1076,17 @@ func (l claimLeaf) set(c *supervise.Claim, at time.Time) {
 // the role-message lane's run of that row delivers one ask to the implementer's topic, exactly
 // where the claim's own record owes it one (supervise's Claim.OwesUpdateAsk, which owes a failed
 // claim and one that has left the round's pod nothing) and its agent said it is ready; and the
-// tick posts the round to the claim once. Through every case the round's ask to another role, the
-// tester's, waits in the outbox as a row the lane has not run yet, so the tick asks each case
-// beside an ask of the round still queued: askRound skips a claim whose own ask of the round is
-// queued (the store's QueuedUpdateAsks), and an ask queued for one role holds back no other role's.
-// Each case's rows are run and finished before the next case, so no row of the implementer's that
-// an earlier case queued stands in its way. The acceptance test of this change wrote it as the red
-// of a filter placed in askRound: a sweep that skipped every claim holding a pending task there
-// passed every other test of the sweep, and failed this one. The same filter placed anywhere from
-// the tick to the outbox's publish fails it the same way, and so does a sweep that skips every
-// claim while any ask of the round is queued.
+// tick posts the round to the claim once. A field the machine's view reads from the machine's own
+// state is set by putting the machine in that state (sweepMachineStates). Through every case the
+// round's ask to another role, the tester's, waits in the outbox as a row the lane has not run yet,
+// so the tick asks each case beside an ask of the round still queued: askRound skips a claim whose
+// own ask of the round is queued (the store's QueuedUpdateAsks), and an ask queued for one role
+// holds back no other role's. Each case's rows are run and finished before the next case, so no
+// row of the implementer's that an earlier case queued stands in its way. The acceptance test of
+// this change wrote it as the red of a filter placed in askRound: a sweep that skipped every claim
+// holding a pending task there passed every other test of the sweep, and failed this one. The same
+// filter placed anywhere from the tick to the outbox's publish fails it the same way, and so does
+// a sweep that skips every claim while any ask of the round is queued.
 //
 // The negative control is that filter: this test then fails with each field of Pending set, as
 // "the tick queued 0 rows and the lane delivered 0 asks". The test also fails when it tried no
@@ -752,15 +1097,13 @@ func TestPodUpdateTheSweepsAskReachesEveryOwedReadyClaimWhateverElseItHolds(t *t
 	base := rig.claimOf(claim.RoleImplementer)
 	base.UpdateRound, base.UpdateOpenedAt, base.UpdateReasons = podUpdateRound, &opened, podUpdateDrift
 	path := newSweepPath(rig)
-	leaves, unset := claimLeaves()
+	leaves, unset := claimLeaves(sweepSliceLength(t))
 	if len(unset) > 0 {
 		t.Fatalf("the fields %v cannot be set, so this test cannot try them", unset)
 	}
 	fields, owedSeen, refusedSeen := 0, 0, 0
 	try := func(label string, c supervise.Claim) {
 		t.Helper()
-		owed, why := c.OwesUpdateAsk(podUpdateRound)
-		want := owed && supervise.SaidReady(c.State)
 		heard := rig.deliveredTo(claim.RoleImplementer)
 		other := record.UpdateAsk{Role: claim.RoleTester, Round: podUpdateRound, Pod: podUpdatePod,
 			Text: supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateStart.Add(podUpdateGrace))}
@@ -769,8 +1112,11 @@ func TestPodUpdateTheSweepsAskReachesEveryOwedReadyClaimWhateverElseItHolds(t *t
 		}
 		group := []supervise.Claim{c}
 		path.hold(group)
-		path.sweep(group, podUpdatePod)
-		if wrong := path.posts(group, podUpdateRound); len(wrong) > 0 {
+		c = group[0]
+		owed, why := c.OwesUpdateAsk(podUpdateRound)
+		want := owed && supervise.SaidReady(c.State)
+		path.sweep(group, podUpdatePod, podUpdateRound)
+		if wrong := path.posts(group, podUpdateRound, false); len(wrong) > 0 {
 			t.Errorf("%s: %s", label, strings.Join(wrong, "; "))
 		}
 		queued, others := 0, 0

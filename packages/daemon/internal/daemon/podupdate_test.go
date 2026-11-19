@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -149,6 +151,9 @@ type podUpdateRig struct {
 	// asked is every update-ask row the sweep has written, by id, kept once read: the lane
 	// deletes each row it finishes, as the outbox does, and asks reads every row ever written.
 	asked map[int64]record.UpdateAsk
+	// afterTick, where it is set, runs at the end of each tick: a machine held inside a decision
+	// through a number of ticks is released there (holdDeciding).
+	afterTick func()
 }
 
 func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
@@ -319,6 +324,9 @@ func (r *podUpdateRig) tick() {
 		r.t.Fatalf("read the claims for the sweep: %v", err)
 	}
 	r.s.reconcilePodUpdates(r.ctx, claims)
+	if r.afterTick != nil {
+		r.afterTick()
+	}
 }
 
 // claimOf is the claim as its machine holds it, which is what the next tick reads from the store.
@@ -702,8 +710,16 @@ func (r *podUpdateRig) awaitReplacement(n int, what string) []fake.Call {
 // The replacement once every worker has answered is read as awaitReplacement reads it, sweeping
 // until it is made: a sweep that reads a worker while its machine is deciding reads it unanswered
 // (roundGroup's mask) and leaves the replacement to the next sweep, so how busy a machine was at
-// that sweep changes nothing the check reads. That no replacement is made before is read once.
+// that sweep changes nothing the check reads; podupdate_deciding_test.go runs the check with a
+// machine held there. That no replacement is made before is read once.
 func TestPodUpdateReplacesThePodOnlyOnceEveryBlockingClaimHasAnswered(t *testing.T) {
+	replacesThePodOnceEveryBlockingClaimHasAnswered(t, nil)
+}
+
+// replacesThePodOnceEveryBlockingClaimHasAnswered is the steps and the assertions of the check
+// above, with busy, where it is not nil, run on the rig once the implementer's answer is read and
+// before the tester answers.
+func replacesThePodOnceEveryBlockingClaimHasAnswered(t *testing.T, busy func(*podUpdateRig)) {
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		readyWorker(claim.RoleTester),
@@ -739,6 +755,9 @@ func TestPodUpdateReplacesThePodOnlyOnceEveryBlockingClaimHasAnswered(t *testing
 		t.Errorf("the implementer's reported head = %q, want a1b2c3d", c.UpdateHead)
 	}
 
+	if busy != nil {
+		busy(rig)
+	}
 	rig.signal(claim.RoleTester, "")
 	calls := rig.awaitReplacement(1, "once every worker answered")
 	if calls[0].Pod.Locator == nil || calls[0].Pod.Locator.Sandbox.PodUID != podUpdatePod {
@@ -2655,13 +2674,15 @@ func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplace
 	// turn would tell the operator's side of a pod that is gone.
 	rig.clock.advance(podUpdateGrace + time.Hour)
 
+	before := len(rig.logs.String())
 	rig.tick()
 
 	// What the sweep itself did, read before the round's end is waited for: a sweep that waited
 	// on the turn instead says so in these three, and leaves the round open behind them. The wait is
-	// read by the fields of its line (turnWaits), so a change of its words changes nothing here.
-	if waits := turnWaits(t, rig.logs.String(), podUpdateRound); len(waits) != 0 {
-		t.Errorf("the sweep waited for the turns still running %d times, and that turn is in the pod that replaced this round's own: %+v",
+	// read from the lines of this tick by the round and the role in a turn each line names
+	// (turnWaits), so neither a change of its words nor a renamed field changes what is read here.
+	if waits := turnWaits(t, rig.logs.String()[before:], podUpdateRound, claim.RoleImplementer); len(waits) != 0 {
+		t.Errorf("the sweep waited for the turns still running %d times, and that turn is in the pod that replaced this round's own: %s",
 			len(waits), waits)
 	}
 	if lines := loggedLines(t, rig.logs.String(), overAGonePod); len(lines) != 1 {
@@ -2687,28 +2708,68 @@ func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplace
 	}
 }
 
-// turnWaits is every line of the daemon's JSON log that says a turn holds round's replacement, read
-// by its fields rather than its words: the line names the round and the roles whose turns run
-// (working), and it is no line of a replacement made, which names the roles that answered beside
-// them (answered).
-func turnWaits(t *testing.T, logs, round string) []map[string]any {
+// turnWait is one line of the daemon's JSON log that names an update round and the roles whose
+// turns run: its message, and the field that names the roles.
+type turnWait struct {
+	msg, field string
+}
+
+func (w turnWait) String() string {
+	return fmt.Sprintf("the line %q, which names the roles in a turn under %q", w.msg, w.field)
+}
+
+// turnWaits is every line of logs that names round in one of its fields and each of the roles in a
+// turn in one of its fields, read by what it names rather than by its words or its field names: the
+// line that holds a round's replacement for the turns still running names the round and those
+// roles (completePodUpdate's waitsForTurn), so a line of that wait in other words, or with its
+// fields renamed, is read here too, and its failure names the field that named the roles. The
+// caller hands it the lines of one tick, so a line an earlier tick wrote that names the roles for
+// another reason (the ask of the round to them) is not read.
+func turnWaits(t *testing.T, logs, round string, working ...claim.Role) []turnWait {
 	t.Helper()
-	var waits []map[string]any
+	var waits []turnWait
 	for line := range strings.SplitSeq(logs, "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		var fields map[string]any
-		if err := json.Unmarshal([]byte(line), &fields); err != nil {
-			t.Fatalf("decode the log line %q: %v", line, err)
+		fields := decodedLogLine(t, line)
+		namesRound, roles := false, ""
+		for _, key := range slices.Sorted(maps.Keys(fields)) {
+			if fields[key] == round {
+				namesRound = true
+			}
+			if roles == "" && namesEachRole(fields[key], working) {
+				roles = key
+			}
 		}
-		_, working := fields["working"]
-		_, answered := fields["answered"]
-		if fields["round"] == round && working && !answered {
-			waits = append(waits, fields)
+		if namesRound && roles != "" {
+			msg, _ := fields["msg"].(string)
+			waits = append(waits, turnWait{msg: msg, field: roles})
 		}
 	}
 	return waits
+}
+
+// namesEachRole is whether value, one field of a decoded log line, names each of roles, as a string
+// or a list of strings.
+func namesEachRole(value any, roles []claim.Role) bool {
+	var names []string
+	switch v := value.(type) {
+	case string:
+		names = []string{v}
+	case []any:
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				names = append(names, s)
+			}
+		}
+	}
+	for _, role := range roles {
+		if !slices.Contains(names, string(role)) {
+			return false
+		}
+	}
+	return len(roles) > 0
 }
 
 // Two rounds can stand on one group at once while a dead round's end is still on its way: the

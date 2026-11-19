@@ -750,10 +750,18 @@ func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T)
 // (supervise's Machine.PublishUpdateAsk). A sweep that reads the tester while its machine is
 // deciding reads it unanswered (roundGroup's mask) and queues a row for it; that row reaches nobody,
 // because the tester's own record holds its answer. So how busy a machine was at a sweep changes
-// nothing the check reads, and an ask that did reach the tester fails it.
+// nothing the check reads, and an ask that did reach the tester fails it; the deciding test
+// (podupdate_deciding_test.go) runs the check with the tester's machine held at those sweeps.
 //
 // The control is a reset that also clears update_signalled_at: then the tester is asked as well.
 func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *testing.T) {
+	roundOpenAtTheDeployAsksOnlyTheUnanswered(t, nil)
+}
+
+// roundOpenAtTheDeployAsksOnlyTheUnanswered is the steps and the assertions of the check above,
+// with busy, where it is not nil, run on the restarted rig once the implementer's ask has reached
+// it and before the three sweeps that follow.
+func roundOpenAtTheDeployAsksOnlyTheUnanswered(t *testing.T, busy func(*podUpdateRig)) {
 	deploy := podUpdateStart.Add(3 * time.Hour)
 	unanswered := readyWorker(claim.RoleImplementer)
 	unanswered.round, unanswered.reasons = podUpdateRound, podUpdateDrift
@@ -778,6 +786,9 @@ func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *
 
 	next.tick()
 	next.awaitAsked(claim.RoleImplementer, podUpdateRound)
+	if busy != nil {
+		busy(next)
+	}
 	for range 3 {
 		next.tick()
 	}
