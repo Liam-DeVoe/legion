@@ -22,29 +22,20 @@ func nulError(place string, at int) string {
 	return fmt.Sprintf("%s holds a NUL character (U+0000) at character %d, which the daemon cannot store", place, at)
 }
 
-// The decoder of every request body refuses a string holding a NUL character wherever it stands:
-// a member at the top, a member of a nested object, an element of an array, an element of an
-// array inside an array and a member of an array's object, in strict mode and in lenient. It reads
-// every string the body writes, not the value a decoder keeps: a repeated member's earlier copy is
-// refused whatever the later one holds, since a later null leaves a string field as the earlier
-// copy set it and a later object merges into a struct field, so the route would act on the NUL. The
-// refusal names the string's place in the body and where in it the NUL stands, counted in code
-// points, and never the string. Lenient mode reads every string the body holds, a member it ignores
-// and a member's name among them, the name written with the six characters \u0000 so the refusal
-// carries no NUL. The controls are taken in both modes: the same members with no NUL, repeated
-// members holding none, and a string holding the six characters \u0000 as text.
+// The decoder of every request body refuses a string holding a NUL character, in strict mode and
+// in lenient, with the daemon's own refusal: the string's place in the body, as Dispatch's walk
+// finds it (dispatchbody.NulInJSON, whose own test holds every place it reads), and where in the
+// string the NUL stands, counted in code points as the daemon's caps count, never the string
+// itself. A character past the Basic Multilingual Plane counts once, where Dispatch's UTF-16 count
+// would count two. Lenient mode reads a member it ignores, and a member's name, the name written
+// with the six characters \u0000 so the refusal carries no NUL. The control is the same body with
+// no NUL, taken in both modes.
 func TestTheBodyDecoderRefusesAStringHoldingANul(t *testing.T) {
 	type task struct {
 		Text string `json:"text"`
 	}
 	type body struct {
-		PlanReason string `json:"planReason"`
-		Plan       struct {
-			Source string `json:"source"`
-		} `json:"plan"`
-		Labels []string   `json:"labels"`
-		Tasks  []task     `json:"tasks"`
-		Grid   [][]string `json:"grid"`
+		Tasks []task `json:"tasks"`
 	}
 	decode := func(raw string, strict bool) error {
 		var into body
@@ -57,15 +48,7 @@ func TestTheBodyDecoderRefusesAStringHoldingANul(t *testing.T) {
 		at                int
 		lenientOnly       bool
 	}{
-		{name: "a top-level member", body: `{"planReason":"fit\u0000"}`, place: "planReason", at: 4},
-		{name: "a nested object's member", body: `{"plan":{"source":"own\u0000er"}}`, place: "plan.source", at: 4},
-		{name: "an array element", body: `{"labels":["ok","b\u0000"]}`, place: "labels[1]", at: 2},
-		{name: "a member of an array's object", body: `{"tasks":[{"text":"a"},{"text":"é\u0000"}]}`, place: "tasks[1].text", at: 2},
-		{name: "an element of an array in an array", body: `{"grid":[["ok"],["ok","é\u0000"]]}`, place: "grid[1][1]", at: 2},
-		{name: "a member a later null repeats", body: `{"planReason":"fit\u0000","planReason":null}`, place: "planReason", at: 4},
-		{name: "a member a later string repeats", body: `{"planReason":"fit\u0000","planReason":"fit"}`, place: "planReason", at: 4},
-		{name: "an object a later one repeats", body: `{"plan":{"source":"own\u0000er"},"plan":{}}`, place: "plan.source", at: 4},
-		{name: "a member the route does not read", body: `{"ignored":"x\u0000"}`, place: "ignored", at: 2, lenientOnly: true},
+		{name: "a member of an array's object", body: `{"tasks":[{"text":"a"},{"text":"\ud83d\ude00\u0000"}]}`, place: "tasks[1].text", at: 2},
 		{name: "a member's name", body: `{"a\u0000b":"x"}`, place: `a\u0000b`, at: 2, lenientOnly: true},
 	} {
 		for _, strict := range []bool{true, false} {
@@ -84,15 +67,9 @@ func TestTheBodyDecoderRefusesAStringHoldingANul(t *testing.T) {
 		}
 	}
 
-	for _, taken := range []string{
-		`{"planReason":"fit","plan":{"source":"owner"},"labels":["ok","b"],"tasks":[{"text":"a"},{"text":"é"}],"grid":[["ok"],["b"]]}`,
-		`{"planReason":"fit\\u0000"}`,
-		`{"planReason":"fit\\u0000","planReason":null,"plan":{"source":"owner"},"plan":{},"grid":[["ok","b"]]}`,
-	} {
-		for _, strict := range []bool{true, false} {
-			if err := decode(taken, strict); err != nil {
-				t.Fatalf("decode %s, strict %t = %v, want it taken", taken, strict, err)
-			}
+	for _, strict := range []bool{true, false} {
+		if err := decode(`{"tasks":[{"text":"a"},{"text":"\ud83d\ude00"}]}`, strict); err != nil {
+			t.Fatalf("decode the body with no NUL, strict %t = %v, want it taken", strict, err)
 		}
 	}
 }

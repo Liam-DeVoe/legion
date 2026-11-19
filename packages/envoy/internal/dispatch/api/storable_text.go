@@ -1,9 +1,6 @@
 package api
 
 import (
-	"bytes"
-	"encoding/json"
-	"fmt"
 	"maps"
 	"net/http"
 	"net/url"
@@ -49,109 +46,16 @@ func unstorableText(field, value string) *apiError {
 	return nil
 }
 
-// escapedName is a name the caller wrote, a JSON member's, a query parameter's or a multipart
-// field's, as a refusal names it: each U+0000 in it written as the six characters \u0000, so no
-// refusal sends the character back.
-func escapedName(name string) string {
-	return strings.ReplaceAll(name, "\x00", `\u0000`)
-}
-
-// nulEscape is the only way JSON carries U+0000: a decoder refuses the raw control character.
-var nulEscape = []byte(`\u0000`)
-
 // unstorableJSON refuses the first string of the JSON value data opens with - a member name or a
 // value, in the order data writes them - that holds U+0000, naming it as the caller wrote it under
-// prefix: title, options[1].label, ops[0].attributes.title, or prefix itself, "body" when prefix is
-// empty, for a bare string. A body without the escape is passed over unread. Every string of the
-// value is read, each copy of a repeated member among them, because a route's own decoder keeps
-// strings of more copies than the last: it merges a repeated object into its first copy, so a
-// member the later copy leaves out stays as the first copy set it, and a null leaves a string as it
-// was. The read stops where data stops being JSON, which the route's own decoder refuses.
+// prefix (text.NulInJSON, the one walk of a value's strings, which reads every copy of a repeated
+// member and stops where data stops being JSON, which the route's own decoder refuses).
 func unstorableJSON(prefix string, data []byte) *apiError {
-	if !bytes.Contains(data, nulEscape) {
+	place, value, found := text.NulInJSON(prefix, data)
+	if !found {
 		return nil
 	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	var open []jsonFrame
-	for {
-		token, err := decoder.Token()
-		if err != nil {
-			return nil
-		}
-		if token == json.Delim('}') || token == json.Delim(']') {
-			open = open[:len(open)-1]
-			if len(open) == 0 {
-				return nil
-			}
-			continue
-		}
-		at := prefix
-		if len(open) > 0 {
-			frame := &open[len(open)-1]
-			switch frame.next {
-			case nextElement:
-				at = fmt.Sprintf("%s[%d]", frame.path, frame.elements)
-				frame.elements++
-			case nextName:
-				// The token is a member's name; its value is the next one.
-				name, _ := token.(string)
-				frame.member, frame.next = escapedName(name), nextValue
-				if frame.path != "" {
-					frame.member = frame.path + "." + frame.member
-				}
-				if refusal := unstorableText(frame.member, name); refusal != nil {
-					return refusal
-				}
-				continue
-			case nextValue:
-				at, frame.next = frame.member, nextName
-			}
-		}
-		switch token := token.(type) {
-		case json.Delim:
-			frame := jsonFrame{path: at, next: nextElement}
-			if token == '{' {
-				frame.next = nextName
-			}
-			open = append(open, frame)
-		case string:
-			if refusal := unstorableText(jsonField(at), token); refusal != nil {
-				return refusal
-			}
-		}
-		if len(open) == 0 {
-			return nil
-		}
-	}
-}
-
-// jsonFrame is an array or an object unstorableJSON reads inside: where it stands, what the token
-// read next stands for in it, its count of elements read for an array, and, for an object, the
-// path of the member whose name was read last.
-type jsonFrame struct {
-	path     string
-	next     jsonNext
-	elements int
-	member   string
-}
-
-// jsonNext is what the token read next inside a jsonFrame stands for: an array's next element,
-// an object's next member name, or the value of the member just named.
-type jsonNext int
-
-const (
-	nextElement jsonNext = iota
-	nextName
-	nextValue
-)
-
-// jsonField names a JSON value at path, "body" for the body itself.
-func jsonField(path string) string {
-	if path == "" {
-		return "body"
-	}
-	return path
+	return unstorableText(place, value)
 }
 
 // unstorableForm refuses a multipart form field holding text unstorableText refuses, naming the
@@ -159,7 +63,7 @@ func jsonField(path string) string {
 func unstorableForm(values map[string][]string) *apiError {
 	for _, name := range slices.Sorted(maps.Keys(values)) {
 		for _, value := range values[name] {
-			if refusal := unstorableText(escapedName(name), value); refusal != nil {
+			if refusal := unstorableText(text.NulEscaped(name), value); refusal != nil {
 				return refusal
 			}
 		}
@@ -209,7 +113,7 @@ func unstorableQuery(raw string) *apiError {
 	}
 	query, _ := url.ParseQuery(raw)
 	for _, name := range slices.Sorted(maps.Keys(query)) {
-		field := "query parameter " + escapedName(name)
+		field := "query parameter " + text.NulEscaped(name)
 		if refusal := unstorableText(field, name); refusal != nil {
 			return refusal
 		}
