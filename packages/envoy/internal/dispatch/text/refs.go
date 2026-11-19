@@ -256,7 +256,7 @@ func trimReference(raw string) string {
 // dashboard's `/issues/CORE-1/plan`, reads as the issue, as the dashboard draws it, so the graph
 // holds the edge the page shows. The shared text table holds a row per tab in both forms, so a tab
 // one reader names and the other does not fails there.
-var issueTabs = []string{"verification", "plan", "activity", "children", "artifacts", "collaborators", "conversation"}
+var issueTabs = []string{"verification", "plan", "steps", "activity", "children", "artifacts", "collaborators", "conversation"}
 
 // parseDispatch reads a `dispatch://` reference, without its scheme, by the grammar the dashboard's
 // `parseDispatchReference` reads: a slug as written, an `@v` version, an agent's session id as

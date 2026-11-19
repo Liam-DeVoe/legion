@@ -4,7 +4,6 @@ import {
   dispatchWritingBox,
 } from "@legion/contracts";
 
-import { REF_PICKER_WORDS } from "../web/src/features/refs/ref-picker";
 import { agentRow } from "./agents";
 import {
   answerAsk,
@@ -39,7 +38,6 @@ import {
   heldRow,
   heldRows,
   keyboardOnly,
-  NO_MATCH,
   OFF_ISSUE_PERSON,
   QUERY,
   rowsOfBox,
@@ -426,12 +424,23 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
           .toEqual(DOOR_ROWS[door]);
         await clearLine();
       }
-      await page.keyboard.type(`[[${NO_MATCH}`);
-      await expect(list.getByTestId("ref-picker-empty")).toHaveText(REF_PICKER_WORDS.empty);
-      await clearLine();
+      // The editor stores what is typed in it, and the search reads the stored text, so a query
+      // typed here comes back naming this document and its issue once the draft is stored. The
+      // empty state the other boxes show for a query nothing answers is a race in this box (CI
+      // run 44453148990 drew this document's row for `[[zzqqxx`), so the box holds no such probe,
+      // and its people rule is held on the rows the picker draws after the search has answered.
       // The document belongs to an issue, so the picker offers that issue's people alone.
+      const searched = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return (
+          url.pathname === "/api/v1/search/results" &&
+          url.searchParams.get("q") === OFF_ISSUE_PERSON
+        );
+      });
       await page.keyboard.type(`@${OFF_ISSUE_PERSON}`);
-      await expect(list.getByTestId("ref-picker-empty")).toHaveText(REF_PICKER_WORDS.empty);
+      await searched;
+      await expect(list.getByTestId("ref-picker-loading")).toHaveCount(0);
+      expect((await pickerRows(list)).filter((row) => row.startsWith("People:"))).toEqual([]);
       await clearLine();
 
       // The pick lands at the caret, written through the editor's own transaction.
