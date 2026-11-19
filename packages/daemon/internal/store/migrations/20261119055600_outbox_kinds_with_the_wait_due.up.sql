@@ -7,13 +7,13 @@
 -- handler ends the wait and writes the wait's own task, or ends nothing for a wait that is already
 -- over (workflow's waitDue).
 --
--- The check is one list, so the migration that sets it names every kind, as 20261117000528 did:
--- its twenty-six kinds, which are the kinds the daemon writes, step_record, role_holders_publish,
--- merge_queue_read and merge_queue_removal among them, and this one. Its version stands above
--- 20261117000528 on purpose: Migrate applies every unrecorded migration in version order, so the
--- list with the higher version is the last word on any database, and a list that left out
--- step_record would refuse every record of a step and fail the upgrade of a database that holds
--- one pending. It drops the constraint if it exists before adding it, so it is safe on a database
+-- The check is one list, so the migration that sets it names every kind, as 20261117023932 did:
+-- its twenty-seven kinds, which are the kinds the daemon writes, plan_record, step_record,
+-- role_holders_publish, merge_queue_read and merge_queue_removal among them, and this one. Its
+-- version stands above 20261117023932 on purpose: Migrate applies every unrecorded migration in
+-- version order, so the list with the higher version is the last word on any database, and a list
+-- that left out plan_record or step_record would refuse every such record and fail the upgrade of
+-- a database that holds one pending. It drops the constraint if it exists before adding it, so it is safe on a database
 -- at either release.
 --
 -- A rollback to a release before this one needs nothing of these rows: that release puts the kind
@@ -28,4 +28,5 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
-  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'wait_due'));
+  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
+  'wait_due'));

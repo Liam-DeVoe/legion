@@ -2383,7 +2383,45 @@ package api
 // #4180 and #4193) and 159 (#4049 and #4175), so 160 is still the lowest number above main's 152
 // that no open head declares.)
 //
-// 170: dispatch://INFRA-2040 -- a phase worker declares that it waits on something outside its
+// 168: the completion that ends the retro rates the plan the issue ran. `POST
+// /legion/v1/handoff/complete` (`api.HandoffCompleteRequest`, contracts'
+// `LegionHandoffCompleteRequest`) takes two optional fields: `planRating`, a whole number from 1
+// (the plan cost the work) to 5 (the plan fit the work), and `planReason`, why, in one to 2,000
+// characters counted as Unicode code points and not all blank, the two together
+// (`PLAN_RATING_INPUT`). The agent that does the retro gives them, so the completion that ends the
+// retro takes them, and every other completion and a production check's report are refused them
+// (`PLAN_RATING_UNEXPECTED`). Which completion ends the retro the workflow judges where it ends
+// it, on the issue as the completion's own transaction reads it (`TriggerRetroCompleted`), and its
+// own refusals, a held issue's 409 among them, come first. A claim whose plugin declared this
+// contract or a later one must rate (`PLAN_RATING_REQUIRED`), so a plugin built from this commit
+// sends both on its retro; a plugin below it never sends them, and its retro, where the daemon
+// serves its claim (`staleClaim`: a claim in a turn, in an update round, with no plugin install,
+// or on a daemon that relaunches onto no plugin), completes with no rating
+// (`api.PlanRatingContract`).
+// Every refusal is a 400 that records nothing, so the same completion, corrected, is taken: the
+// route writes `PLAN_RATING_INPUT` and a report's `PLAN_RATING_UNEXPECTED` before the fact is
+// applied, and the workflow refuses the rest with the fact left unspent (`intake.Result.Unspent`).
+// The route hands the two to the workflow on the completion's fact as one value
+// (`intake.HandoffComplete.PlanRating`), beside whether the claim must rate (`MustRate`).
+// `readBody` refuses an unknown field, so a plugin sending them to a daemon below 168 would have
+// every retro refused; the bump is why the two never meet. No shape of `GET /legion/v1/state`
+// moves, so no caller is served a narrower one.
+// The decoder of every request body (`decodeJSON`) also refuses a body any string of which, a
+// member's name and an earlier copy of a repeated member included, holds U+0000, which
+// PostgreSQL's text and jsonb cannot hold: 400 `invalid request body` naming the string's place and
+// where in it the character stands (`unstorableJSON`), or first the stale-caller 409 where the
+// route can name a stale caller (`readBody`'s identity check), as for any body that does not
+// decode. A route that stored such a string answered 500 before, and one that only compared it
+// took it; every route now refuses it before it reads the body.
+// (This entry takes 168, the lowest number above main's 160 that no open pull request declared
+// when the merge of 2026-11-19 brought main in at c70a80228d: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 235 open pull requests, made between
+// 2026-11-19T08:26:23Z and 08:26:52Z, found each of 161 to 166 declared, 167 declared by #4030,
+// #4485, #4493 and this change's own head before this merge, and nothing above 167. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 176: dispatch://INFRA-2040 -- a phase worker declares that it waits on something outside its
 // own work, until a time it names, and the record shows each wait that stands. Two claim routes
 // are added, each authenticated by the registration's secret as `POST /legion/v1/claims/activity`
 // is and held to the session the claim records. `POST /legion/v1/claims/wait` (`api.WaitRequest`:
@@ -2397,7 +2435,7 @@ package api
 // `{ended: false, updateAsk: true}` for a key of the claim's own update ask, which ends nothing
 // and records nothing (record.IsUpdateAskKey). Each refuses a stale plugin's claim with the
 // stale-contract 409 as every claim route does (refuseIfStaleClaim), and neither refuses a caller
-// by a contract of its own: a plugin below 170 knows neither route and sends neither.
+// by a contract of its own: a plugin below 176 knows neither route and sends neither.
 // Every claim view of `GET /legion/v1/state` gains `wait` (`api.WaitView`, the four keys the
 // declaration's answer named) while its worker's wait stands (workflow.WaitStands): declared and
 // not ended, in the session, phase, generation and phase entry it was declared at, of a claim
@@ -2409,10 +2447,10 @@ package api
 // `version`) while the closed design gate holds that merger (workflow.HeldByDesignGate), so
 // `read_record` carries it, and the plain `legion state` prints one `holds:` line naming each.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 170 is served every claim view without the two keys (api's stateFor,
+// contract below 176 is served every claim view without the two keys (api's stateFor,
 // withoutWait and withoutHold), as a caller below 146, INFRA-2614's entry, is served the issues
 // without their entry times (withoutEntryTimes), and every older band as the rows of
-// stateNarrowings list it; they compose, and every reader from 170 on takes each key as optional
+// stateNarrowings list it; they compose, and every reader from 176 on takes each key as optional
 // (`packages/contracts/src/legion-api.ts`).
 // A plugin from 58 to 166 does not refuse either key, since every answer-side schema of
 // `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788. The strip
@@ -2425,16 +2463,17 @@ package api
 // are the two routes and the two keys above.
 // (This change declared 125, the lowest number above the base's 111 that no open pull request
 // declared, read on 2026-11-14 against main at b994309153eba441588f393cabf50d0200684c49. It took
-// 167 at the forward merge of 2026-11-19 that brought main in at 97b85d34a35d, and takes 170 at
-// the forward merge of that same day that brings main in at 9aff682b9037, which carries
-// INFRA-2009's 160, the entry right above and the number the base carries.
+// 167 at the forward merge of 2026-11-19 that brought main in at 97b85d34a35d, 170 at the forward
+// merge of that same day that brought main in at 9aff682b9037, and takes 176 at the forward merge
+// of that same day that brings main in at 0ec926f5cdcb, which carries #4488's 168, the entry right
+// above and the number the base carries.
 // .github/scripts/check-daemon-api-contract.sh, run as CI runs it on a tree declaring the base's
-// own 160 against main at 9aff682b9037 at 2026-11-19T09:55:49Z, refused it and named 170,
-// passing over 161 (#4173, #4180, #4193 and #4259), 162 (#3712), 163 (#4049), 164 (#4017), 165
-// (#4392), 166 (#4432), 167 (#3831, #4485 and #4493, beside this pull request), 168 (#2230, #3659,
-// #4273 and #4488) and 169 (#4065). Each of those is the number that head declared at that
-// reading and no head's for good. Read the base's own number and every open head again at the
-// last push rather than from this line, as
+// own 168 against main at 0ec926f5cdcb at 2026-11-19T17:47:34Z, refused it and named 176,
+// passing over 169 (#3831 and #4065), 170 (#2230, #4173, #4180 and #4193, beside this pull
+// request), 171 (#4115 and #4485), 172 (#3659), 173 (#4493), 174 (#3993 and #4273) and 175
+// (#3712, #4392 and #4495). Each of those is the number that head declared at that reading and no
+// head's for good. Read the base's own number and every open head again at the last push rather
+// than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 170
+const DaemonAPIVersion = 176

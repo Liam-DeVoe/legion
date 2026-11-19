@@ -51,6 +51,7 @@ import {
   LegionWaveReleaseResponse,
 } from "./legion-api";
 import { DISPATCH_KEY_PATTERN, isLegionRole, LEGION_ROLES } from "./legion-roles";
+import { PlanRatingCases } from "./plan-rating-cases";
 
 const fixtureDir = path.join(import.meta.dir, "..", "fixtures", "daemon-api");
 
@@ -143,6 +144,17 @@ const schemas: Record<string, z.ZodType> = {
     code: z.literal("HANDOFF_STALE_ENTRY"),
     instruction: z.string().min(1),
   }),
+  // `api.HandoffCompleteRequest` as the completion that ends the retro sends it, rated: the one
+  // request of the route a plugin at contract 168 must send, written by `internal/api`'s
+  // TestHandoffCompleteRequestRatedGolden from Go's own struct. The request schema is strict, so
+  // a name of the rating Go writes and the contract does not read fails the gate above, and the
+  // case "the rated completion the daemon reads parses under the contract's names" below.
+  "handoff-complete-request-rated.json": LegionHandoffCompleteRequest,
+  // Nor this one: the daemon's verdict on each case of a rating, which internal/api's
+  // TestPlanRatingCasesGolden posts as its raw body to the completion that ends a retro and writes
+  // down as the route answered it, so that the case "the request schema takes exactly the ratings
+  // the daemon takes" below, and the plugin's tool in packages/pi-shared, hold their own rule to it.
+  "plan-rating-cases.json": PlanRatingCases,
   // Nor this one: one claim, one update round and the time it was opened on the claim, to the
   // microsecond, with the key the daemon publishes that round's ask to the claim's role under
   // (`record.UpdateAskKey`). `internal/record`'s TestUpdateAskKeyIsTheContractFixturesKey holds
@@ -922,6 +934,71 @@ test("a phase completion names its handoff record", () => {
   }
 });
 
+// The completion that ends the retro rates the plan the issue ran: `planRating`, a whole number from
+// 1 to 5, and `planReason`, why, in one to 2,000 characters counted as the daemon counts them
+// (Unicode code points) and not all blank, the two together. A completion that carries neither
+// stays what it was.
+test("the retro's completion rates the plan from 1 to 5 with a reason", () => {
+  const completion = { grantId: "g", summary: "s", verdict: "" };
+  const retro = { ...completion, planRating: 4, planReason: "r" };
+  expect(LegionHandoffCompleteRequest.parse(retro)).toEqual(retro);
+  expect(LegionHandoffCompleteRequest.safeParse(completion).success).toBeTrue();
+  for (const planRating of [1, 5]) {
+    expect(LegionHandoffCompleteRequest.safeParse({ ...retro, planRating }).success).toBeTrue();
+  }
+  for (const planRating of [0, 6, -1, 4.5]) {
+    expect(LegionHandoffCompleteRequest.safeParse({ ...retro, planRating }).success).toBeFalse();
+  }
+  for (const planReason of ["", " \t\n", "a".repeat(2001)]) {
+    expect(LegionHandoffCompleteRequest.safeParse({ ...retro, planReason }).success).toBeFalse();
+  }
+  // 2,000 code points of two UTF-16 units each is 2,000 characters, as the daemon counts them.
+  expect(
+    LegionHandoffCompleteRequest.safeParse({ ...retro, planReason: "😀".repeat(2000) }).success
+  ).toBeTrue();
+  expect(
+    LegionHandoffCompleteRequest.safeParse({ ...completion, planRating: 4 }).success
+  ).toBeFalse();
+  expect(
+    LegionHandoffCompleteRequest.safeParse({ ...completion, planReason: "r" }).success
+  ).toBeFalse();
+});
+
+// Go writes the rated completion from its own struct, so this is the one place its JSON names of
+// the rating meet the contract's: every other test of either side writes its own side's names.
+// The request schema is strict, so a name one side renames alone fails the parse, and the parse
+// keeps the rating and its reason under the contract's names, values no default and no other
+// field of the request holds.
+test("the rated completion the daemon reads parses under the contract's names", () => {
+  const request = LegionHandoffCompleteRequest.parse(
+    fixture("handoff-complete-request-rated.json")
+  );
+  expect(request.planRating).toBe(3);
+  expect(request.planReason).toBe("The tester found the bug the plan had left out.");
+});
+
+// A rating's rule is the daemon's, and the request schema states it again: the scale, the pair,
+// blank and the bound. Blank is Go's strings.TrimSpace on the daemon's side, so the schema reads
+// it by goBlankPattern rather than by JavaScript's trim, and `./go-blank.ts`'s doc comment names
+// the two characters on which the two differ. Every case the daemon's golden test answered is run
+// through the schema, and the schema must take exactly the ones the daemon accepted.
+test("the request schema takes exactly the ratings the daemon takes", () => {
+  const { cases } = PlanRatingCases.parse(fixture("plan-rating-cases.json"));
+  const parted = cases
+    .filter((c) => {
+      const { name: _name, verdict, ...rating } = c;
+      const taken = LegionHandoffCompleteRequest.safeParse({
+        grantId: "g",
+        summary: "s",
+        verdict: "",
+        ...rating,
+      }).success;
+      return taken !== (verdict === "accepted");
+    })
+    .map((c) => `${c.name}: the daemon answers ${c.verdict}`);
+  expect(parted).toEqual([]);
+});
+
 // The state shows the record a worker's completion of its current file-backed phase named, its id
 // and positive version; a worker that named none shows no field.
 test("the state golden carries a worker's handoff record", () => {
@@ -1229,12 +1306,12 @@ test("a claim carries the leak check's cause beside its failure", () => {
   expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
 });
 
-// Contract 170: a claim whose worker declared a wait that stands carries it on its view of the
+// Contract 176: a claim whose worker declared a wait that stands carries it on its view of the
 // state, which is what `read_record` reads an issue's record from: the id the daemon minted, what
 // the wait waits on, its time, and when the daemon recorded the declaration, to the microsecond.
 // The schema must name the key, since a key it does not name is stripped and the seat never sees
 // it: the golden carries it on LEGION-208's implementer alone, and this reads it before the parse
-// and after. A daemon narrows it away for a caller below 170 (`api.withoutWait`), so a claim
+// and after. A daemon narrows it away for a caller below 176 (`api.withoutWait`), so a claim
 // without it parses, and a wait with no text — which the daemon never records — is refused.
 test("a claim carries its standing wait", () => {
   const state = fixture("state.json") as {
@@ -1267,12 +1344,12 @@ test("a claim carries its standing wait", () => {
   expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
 });
 
-// Contract 170: a merger the closed design gate holds carries the hold on its view of the state,
+// Contract 176: a merger the closed design gate holds carries the hold on its view of the state,
 // which is what `read_record` reads an issue's record from: the gated step whose row holds it, the
 // document registered for that step, and the version of it that is with its reviewer. The schema
 // must name the key, since a key it does not name is stripped and the seat never sees it: the
 // golden carries it on LEGION-215's merger alone, and this reads it before the parse and after. A
-// daemon narrows it away for a caller below 170 (`api.withoutHold`), so a claim without it parses,
+// daemon narrows it away for a caller below 176 (`api.withoutHold`), so a claim without it parses,
 // and a hold that names no gated step, or a version below 1, is refused.
 test("a held merger carries the design gate's hold", () => {
   const state = fixture("state.json") as {
