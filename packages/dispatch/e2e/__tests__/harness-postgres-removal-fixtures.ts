@@ -648,15 +648,23 @@ console.log(ctl.pid);
  *  the row's own starts find (`postmasterProgram`): it waits for `go`, for at most 600 s, and then
  *  starts that postmaster with `<data>` for its working directory, names it in `<data>`'s
  *  `postmaster.pid` and ends, as `pg_ctl -w` ends once its server is up; where `<data>` is gone,
- *  it fails, as `pg_ctl` does. It uses shell builtins and that postmaster alone. */
+ *  it fails, as `pg_ctl` does. It uses shell builtins and that postmaster alone: it waits with
+ *  `read -t` on a FIFO in `bin` (`fifoAt`), so it forks no process while it waits. A wait of
+ *  `sleep 0.05` forked a shell that named `<data>` in its arguments until it became `sleep`, and a
+ *  start's holder read that met that moment named it as a second holder beside `pg_ctl`: 1 of 20
+ *  runs of a row on a shared Linux machine on 2026-11-19, and 2,830 of 301,387 reads of the
+ *  stand-in's children in 10 s. */
 export function startingPgCtl(bin: string, go: string): void {
   const sleep = Bun.which("sleep");
   if (sleep === null) throw new Error("no sleep on PATH to stand in for a postmaster");
   const postgres = postmasterProgram(bin, sleep, "its TMPDIR");
+  const pause = fifoAt(join(bin, "pg_ctl.pause"));
   writeFileSync(
     join(bin, "pg_ctl"),
-    `#!/usr/bin/env bash\nend=$((SECONDS + 600))\n` +
-      `until [ -e ${JSON.stringify(go)} ] || [ "$SECONDS" -ge "$end" ]; do sleep 0.05; done\n` +
+    `#!/usr/bin/env bash\nend=$((SECONDS + 600))\nexec 3<>${JSON.stringify(pause)}\n` +
+      `until [ -e ${JSON.stringify(go)} ] || [ "$SECONDS" -ge "$end" ]; do read -r -t 0.05 -u 3 _; done\n` +
+      // The postmaster gets no descriptor of the FIFO.
+      "exec 3<&-\n" +
       // A command that a script runs in the background ignores SIGQUIT unless job control is
       // on, and a start's stop of a postmaster sends SIGQUIT first.
       `cd "$2" || exit 1\nset -m\n${JSON.stringify(postgres)} 600 </dev/null >/dev/null 2>&1 &\n` +
