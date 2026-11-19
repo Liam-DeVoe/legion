@@ -10,21 +10,11 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 )
 
-// listedOn reads whether login's pending list holds recordID.
-func listedOn(t *testing.T, m *Machine, login, recordID string) bool {
-	t.Helper()
-	pending, err := m.PendingForApprover(t.Context(), login, PendingStates{})
-	if err != nil {
-		t.Fatalf("PendingForApprover(%s): %v", login, err)
-	}
-	return slices.ContainsFunc(pending, func(p PendingSummary) bool { return p.RecordID == recordID })
-}
-
 // wantListed fails t unless exactly the logins in want, of every login in all, list recordID.
 func wantListed(t *testing.T, m *Machine, recordID string, all, want []string) {
 	t.Helper()
 	for _, login := range all {
-		if got := listedOn(t, m, login, recordID); got != slices.Contains(want, login) {
+		if _, got := listedRow(t, m, login, PendingStates{}, recordID); got != slices.Contains(want, login) {
 			t.Errorf("%s's list holds record %s: %v; want %v", login, recordID, got, slices.Contains(want, login))
 		}
 	}
