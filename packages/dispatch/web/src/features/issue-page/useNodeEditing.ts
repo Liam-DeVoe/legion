@@ -573,12 +573,15 @@ export function useNodeEditing({
     box.addEventListener(
       "keydown",
       (event) => {
+        // A Tab pressed in an input method's composition is the input method's, and moves no
+        // focus and ends no editing (`inputMethodKey`).
         if (
           event.key !== "Tab" ||
           event.defaultPrevented ||
           event.altKey ||
           event.ctrlKey ||
           event.metaKey ||
+          inputMethodKey(event) ||
           hold.current !== "on" ||
           !(event.target instanceof Element)
         ) {
@@ -608,8 +611,9 @@ export function useNodeEditing({
     if (editingRow === undefined || box === null) return;
     const leave = (event: KeyboardEvent) => {
       // An Escape that ends an input method's composition is the input method's, and ends no
-      // editing: it acts on nothing, as every key that ends a composition does.
-      if (event.key !== "Escape" || event.isComposing || event.defaultPrevented) return;
+      // editing: it acts on nothing, as every key that ends a composition does
+      // (`inputMethodKey`).
+      if (event.key !== "Escape" || inputMethodKey(event) || event.defaultPrevented) return;
       event.preventDefault();
       (document.activeElement as HTMLElement | null)?.blur();
       box.querySelector<HTMLElement>(rowSelectorOf(editingRow))?.focus();
@@ -635,6 +639,14 @@ export function useNodeEditing({
   }, [container, editingRow]);
 
   return { edit, editing, stopEditing };
+}
+
+/** Whether `event` is an input method's key, which acts on nothing of the page's: one pressed in
+ *  a composition, or the one that ends it, which Safari sends after its compositionend with
+ *  `isComposing` false and keyCode 229 (WebKit bug 165004), as the title's editor reads it
+ *  (`IssueTitleRow.tsx`). */
+export function inputMethodKey(event: KeyboardEvent): boolean {
+  return event.isComposing || event.keyCode === 229;
 }
 
 /** Whether the focus is still the edited row's: on the row itself, or inside the box its editor

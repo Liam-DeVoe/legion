@@ -280,7 +280,8 @@ function EditedDocument({
  *  holds nothing, none where it is not given; `isClosed` is whether the issue is closed;
  *  `readsHeld` is whether the reads the tree is built from hold their answers, until `holdReads`
  *  draws the same tree with them held; `redraw` draws the same tree again, as a read answering
- *  does; `admit` answers for a document's room, as the page's row editor reports what that room
+ *  does, and `reread` draws it over another tree, as a read answering with other nodes does;
+ *  `admit` answers for a document's room, as the page's row editor reports what that room
  *  admitted the page to (`document-admission.tsx`). */
 function renderTree(
   root: TreeNode,
@@ -308,6 +309,7 @@ function renderTree(
   if (decisions !== undefined) client.setQueryData(["decisions", KEY], decisions);
   const edited: (string | undefined)[] = [];
   const reads = { held: readsHeld };
+  const tree = { root };
   const editedDocument: { set?: OnEditing } = {};
   const seen: { path?: string } = {};
   const focused: { node?: FocusedNode } = {};
@@ -338,7 +340,7 @@ function renderTree(
                     }}
                     readsHeld={reads.held}
                     reveal={reveal}
-                    root={root}
+                    root={tree.root}
                     rootRow
                   />
                   {editor === undefined ? null : (
@@ -364,6 +366,10 @@ function renderTree(
       view.rerender(draw());
     },
     redraw: () => view.rerender(draw()),
+    reread: (next: TreeNode) => {
+      tree.root = next;
+      view.rerender(draw());
+    },
     ...view,
   };
 }
@@ -1519,6 +1525,27 @@ test("an Escape that ends an input-method composition in a row's editor leaves t
   );
 });
 
+// Safari sends the Escape that ends a composition after the composition's end, unmarked -
+// `isComposing` false - with keyCode 229 (WebKit bug 165004), as the title's editor reads it
+// (`IssueTitleRow.tsx`): that Escape is the input method's as well, and leaves the editing and
+// the focus as they were.
+test("an Escape that ends an input-method composition in a row's editor, sent unmarked with keyCode 229, leaves the editing as it was", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await caretInStatement(user);
+  await act(async () => {
+    pressIn(editable, "Escape", { isComposing: false, keyCode: 229 });
+  });
+  await nextFrame();
+  expect(view.edited.at(-1), "an Escape that ended a composition ended the editing").toBe(
+    "artifact-spec"
+  );
+  expect(
+    document.activeElement === editable,
+    "an Escape that ended a composition moved the focus"
+  ).toBe(true);
+});
+
 // The tester's red row on c-keys (`the caret Enter puts in a statement deep in its document
 // stays on screen while the reader writes`): the row the reader is editing in grows as they
 // write, and put back at its top at each change of its size (`NodeRow.tsx`'s
@@ -1915,6 +1942,26 @@ async function editStatement(
     { timeout: 10_000 }
   );
   return editable;
+}
+
+/** `editStatement` with a plain editable as the row's editor and `after` under the statement,
+ *  answering the tree as well as the editable. */
+async function caretInStatement(user: UserEvent, after: readonly TreeNode[] = []) {
+  const entered = await enterStatement(
+    user,
+    <div contentEditable suppressContentEditableWarning />,
+    after
+  );
+  await drawStatementBlocks(entered.editable);
+  await waitFor(
+    () =>
+      expect(
+        document.activeElement === entered.editable && caretBlock() === "r1",
+        "Enter did not put the caret in the statement"
+      ).toBe(true),
+    { timeout: 10_000 }
+  );
+  return entered;
 }
 
 /** A comment and then a statement of the spec, and `after` under them where given, with Enter
@@ -3548,6 +3595,30 @@ test("Shift+Tab from the row's editor goes to the row past a control another blo
   );
   await nextFrame();
   expect(document.activeElement === row, "the focus left the row as the editing ended").toBe(true);
+});
+
+// A Tab pressed in an input method's composition is the input method's - marked `isComposing`,
+// or unmarked with keyCode 229 as Safari sends the key that ends one - and ends no editing: the
+// focus stays in the row's editor, and the row keeps its editing.
+test.each([
+  ["isComposing", { isComposing: true }],
+  ["keyCode 229", { isComposing: false, keyCode: 229 }],
+] as const)("a Tab pressed in an input-method composition in the row's editor, marked by %s, leaves the editing and the focus as they were", async (_mark, modifiers) => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await caretInStatement(user);
+  controlOutside();
+  await act(async () => {
+    pressIn(editable, "Tab", modifiers);
+  });
+  await nextFrame();
+  expect(
+    document.activeElement === editable,
+    "a Tab pressed in a composition moved the focus out of the row's editor"
+  ).toBe(true);
+  expect(view.edited.at(-1), "a Tab pressed in a composition ended the editing").toBe(
+    "artifact-spec"
+  );
 });
 
 // What the node's own block draws is the node's: from the caret in a plan task's words, Tab stops
@@ -8017,6 +8088,49 @@ test("a read that drops the focused comment's row, the tree's last, leaves the f
   } finally {
     names.mockRestore();
   }
+});
+
+// A read that drops the row being edited takes the editor's focus out with it, and the nearest
+// row still drawn takes the focus, as for any row. The editing ends with it, as Escape ends it:
+// the page draws the document's editor nowhere, the panel holds the facts of the row the focus
+// went to, and the tree holds that row as any other. Left on, the editing waited for a row no
+// read draws, and the tree held every row the focus came to as the edited one: a Tab out of the
+// tree kept that row's body and its facts in Details.
+test("a read that drops the row being edited ends the editing, and a Tab out of the tree lets go of the row the focus went to", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const last = node({ id: "comment-2", text: "The last words.", type: "comment" });
+  const { view } = await caretInStatement(user, [last]);
+  const { control } = controlOutside();
+  const first = node({ id: "comment-1", text: "The first words.", type: "comment" });
+  await act(async () => view.reread(node({ children: [first, last], id: KEY, type: "issue" })));
+  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+  await waitFor(() =>
+    expect(
+      focusedRow(view.container),
+      "the focus did not go to the row now in the dropped row's place"
+    ).toBe("comment-2")
+  );
+  await waitFor(() =>
+    expect(view.edited.at(-1), "the editing of the row the read dropped went on").toBeUndefined()
+  );
+  expect(
+    document.querySelector(`[${EDITOR_BOX_ATTRIBUTE}]`),
+    "the editor's box is still drawn"
+  ).toBeNull();
+  expect(
+    view.focusedNode()?.id,
+    "the panel does not hold the facts of the row the focus went to"
+  ).toBe("comment-2");
+
+  await user.tab();
+  expect(document.activeElement, "Tab did not leave the outline").toBe(control);
+  const row = rowsFor(view.container, "comment-2")[0];
+  if (row === undefined) throw new Error("the last comment's row is not drawn");
+  await waitFor(() =>
+    expect(rowLetGo(row), "the row Tab left kept its body or its focused look").toBe(true)
+  );
+  expect(view.focusedNode(), "the panel still holds the facts of the row Tab left").toBeUndefined();
 });
 
 // What a following decided is its own: a following that landed on a comment's row leaves the
