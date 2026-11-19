@@ -153,13 +153,10 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 	if original.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("the listener answered the delivery %d, want 503 while the stream is full:\n%s", original.StatusCode, listener.output.String())
 	}
-	failed := listener.line(t, "github publish failed")
-	if !strings.Contains(failed, "is full") {
-		t.Fatalf("the listener logged %q for the delivery, want the full stream's refusal:\n%s", failed, listener.output.String())
-	}
-	t.Logf("2. GitHub delivered pull_request.opened %s (%s#%d on legion/%s): the listener answered %d (%s); GitHub's log lists attempt %d, status_code %d, status %q",
+	cause, failed := refusedPublish(t, listener)
+	t.Logf("2. GitHub delivered pull_request.opened %s (%s#%d on legion/%s): the listener answered %d, as %s (%s); GitHub's log lists attempt %d, status_code %d, status %q",
 		redeliveredGUID, redeliveredRepo, redeliveredNumber, redeliveredIssue, original.StatusCode,
-		failed, original.ID, original.StatusCode, original.Status)
+		cause, failed, original.ID, original.StatusCode, original.Status)
 	subject := "notifications.github.acme.widgets.pr." + strconv.Itoa(redeliveredNumber)
 	if n := storedOn(t, stream, subject); n != 0 {
 		t.Fatalf("the stream holds %d messages on %s after the refused publish, want none", n, subject)
@@ -372,6 +369,41 @@ func (l *listenerProcess) line(t *testing.T, text string) string {
 		}
 	}
 	return ""
+}
+
+// The two causes the listener's line can give for the delivery it answered 503 while the stream
+// was full, in the words of Envoy's bus errors, which this module cannot import: the stream
+// refused the publish for its byte limit (bus.ErrStreamFull), or no answer to the publish came
+// within its bound, as when the hub stalls while the publish is in flight and the full stream's
+// refusal is lost with the connection (bus.ErrUnacknowledged). Either way the stream must hold
+// nothing of the delivery, which the test reads next (storedOn).
+const (
+	streamFullRefusal     = "stream ENVOY_NOTIFICATIONS is full"
+	unacknowledgedPublish = "the stream did not acknowledge the publish, so it may hold the message"
+)
+
+// refusedPublish waits for the listener's line for the delivery it refused, and returns the cause
+// the line names, with the line. The listener writes the line before it answers 503, but the line
+// reaches output through the copy os/exec runs on a goroutine of its own, which a loaded machine
+// can run after the answer has been read here, so the line is waited for, within the test's
+// deadline (testwait.Bounded, as Eventually). No line by then, or a line that names neither cause,
+// fails the test with what the listener wrote.
+func refusedPublish(t *testing.T, listener *listenerProcess) (cause, line string) {
+	t.Helper()
+	testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+		line = listener.line(t, "github publish failed")
+		return line != ""
+	})
+	switch {
+	case line == "":
+		t.Fatalf("the listener logged no failed publish for the delivery it answered 503, want the full stream's refusal or an unacknowledged publish:\n%s", listener.output.String())
+	case strings.Contains(line, streamFullRefusal):
+		return "the stream is full", line
+	case strings.Contains(line, unacknowledgedPublish):
+		return "the stream did not acknowledge the publish", line
+	}
+	t.Fatalf("the listener logged %q for the delivery, want the full stream's refusal or an unacknowledged publish:\n%s", line, listener.output.String())
+	return "", ""
 }
 
 // startListener runs the listener against the NATS at natsURL with the GitHub webhook mounted,
