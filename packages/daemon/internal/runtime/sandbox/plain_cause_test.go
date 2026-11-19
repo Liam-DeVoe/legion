@@ -163,9 +163,9 @@ func checkSelfEvictions(t *testing.T, cases []selfEviction) {
 
 				obs := g.observed(rolesLocator(workerToken, recorded))
 
-				if obs.Kind != runtime.Gone || obs.PodEnd != "" || obs.Cause != tc.want {
-					t.Fatalf("observed %s PodEnd=%q Cause=%+v (%s), want Gone read neither way with the cause %+v",
-						obs.Kind, obs.PodEnd, obs.Cause, obs.Detail, tc.want)
+				if obs.Kind != runtime.Gone || obs.EndReading != "" || obs.Cause != tc.want {
+					t.Fatalf("observed %s EndReading=%q Cause=%+v (%s), want Gone read neither way with the cause %+v",
+						obs.Kind, obs.EndReading, obs.Cause, obs.Detail, tc.want)
 				}
 			})
 		}
@@ -314,9 +314,9 @@ func TestPlainCauseANodePressureEvictionNamingThisPodsContainerIsItsOwnUse(t *te
 
 			obs := g.observed(rolesLocator(workerToken, recorded))
 
-			if obs.Kind != runtime.Gone || obs.PodEnd != tc.reading || obs.Cause != tc.want {
-				t.Fatalf("observed %s PodEnd=%q Cause=%+v (%s), want Gone PodEnd=%q with the cause %+v",
-					obs.Kind, obs.PodEnd, obs.Cause, obs.Detail, tc.reading, tc.want)
+			if obs.Kind != runtime.Gone || obs.EndReading != tc.reading || obs.Cause != tc.want {
+				t.Fatalf("observed %s EndReading=%q Cause=%+v (%s), want Gone EndReading=%q with the cause %+v",
+					obs.Kind, obs.EndReading, obs.Cause, obs.Detail, tc.reading, tc.want)
 			}
 		})
 	}

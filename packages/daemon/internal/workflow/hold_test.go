@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -156,9 +157,12 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 // TestASubArchitectsFailedClaimTellsTheArchitectAboveIt), because the evidence each carries is a
 // decision of its own: the worker-died of a role that does not work the issue's phase names the
 // failure too, since that role's architect decides whether to start it again on the same
-// evidence; the tree architect's own names it as well, since the controller's copy of it is all
-// the controller is told of what killed that architect (dispatch://INFRA-1117 R9); and the one
-// that ends a closed issue's production-check look names none, its reason already naming the cause.
+// evidence; the tree architect's own carries no failure record and names the sentence in its
+// reason instead, as R5 has it, while the controller's copy of it carries the failure record,
+// since that copy is all the controller is told of what killed that architect
+// (dispatch://INFRA-1117 R9), and so names no sentence in its reason; and the one that ends a
+// closed issue's production-check look carries no failure record either, since its reason
+// already names the cause.
 func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 	const sentence = "the planner's process died with its task outstanding, and its relaunches ran out"
 	failed := func(issue string, role claim.Role) intake.ClaimFailed {
@@ -214,16 +218,17 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 		}
 	})
 
-	t.Run("a tree architect's claim names it to the controller", func(t *testing.T) {
+	t.Run("a tree architect's claim names the sentence in its reason and the failure to the controller", func(t *testing.T) {
 		pool := migratedPool(t)
 		seedIssue(t, pool, root)
 
 		if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "architect-failed", failed(root.Key, claim.RoleArchitect), testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 			t.Fatalf("ApplyFact the architect's failed claim: %v", err)
 		}
-		died := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning, Failure: named}
-		if got, want := noticeRows(t, pool), []record.OutboxPayload{died, record.ControllerNotice(died)}; !sameNotices(got, want) {
-			t.Fatalf("notice rows = %+v, want %+v, the controller's copy naming the failure", got, want)
+		died := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning, Reason: strconv.Quote(sentence)}
+		told := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning, Failure: named}
+		if got, want := noticeRows(t, pool), []record.OutboxPayload{died, record.ControllerNotice(told)}; !sameNotices(got, want) {
+			t.Fatalf("notice rows = %+v, want %+v, the architect's naming no failure record and the sentence as the reason, and the controller's copy naming the failure", got, want)
 		}
 	})
 
@@ -254,10 +259,12 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 				died = append(died, notice)
 			}
 		}
+		// The supervisor's sentence is quoted, as every worker-died's reason carries it
+		// (deathSentence); this one is a single short line, so nothing of it is cut.
 		want := record.Notice{Kind: "worker-died", Role: claim.RoleTester,
-			Reason: "production check look 1 lost its tester: " + sentence}
+			Reason: "production check look 1 lost its tester: " + strconv.Quote(sentence)}
 		if len(died) != 1 || !reflect.DeepEqual(died[0], want) {
-			t.Fatalf("worker-died notices of the ended look = %+v, want %+v once: its reason names the failure already", died, want)
+			t.Fatalf("worker-died notices of the ended look = %+v, want %+v once: its reason names the failure already, the sentence quoted", died, want)
 		}
 	})
 }

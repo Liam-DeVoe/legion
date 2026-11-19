@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,11 +19,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// toldNotice is one notice row a failure wrote: its outbox kind, the notice's own kind, and the
-// failure it carries.
+// toldNotice is one notice row a failure wrote: its outbox kind, the notice's own kind, the
+// failure it carries and its reason. inReason, on a wanted row, says the row carries no failure
+// record and names the death in its reason instead.
 type toldNotice struct {
 	outbox, kind string
 	failure      *record.NoticeFailure
+	reason       string
+	inReason     bool
 }
 
 // When a role's deaths for memory fail its claim, whoever is told of the failure reads what killed
@@ -30,9 +34,11 @@ type toldNotice struct {
 // (dispatch://INFRA-1117 R9): for a phase worker, the hold its architect gets and the controller's
 // copy of it, and the worker-died beside them; for the tree's own architect, which nobody inside
 // the tree is left to read, the worker-died the controller gets. Each carries the claim's record of
-// its last death as failure.death. The deaths are real ones: a `roles` container the kubelet ended
-// OOMKilled under a 19Gi limit ends the role's open turn twice, against a launch failure limit of
-// two, and the daemon's own hook carries the failure to the workflow, which writes the notices.
+// its last death as failure.death, and the row to the tree architect's own role, which carries no
+// failure record, names the same words in its reason (workflow's deathReason). The deaths are real
+// ones: a `roles` container the kubelet ended OOMKilled under a 19Gi limit ends the role's open turn
+// twice, against a launch failure limit of two, and the daemon's own hook carries the failure to
+// the workflow, which writes the notices.
 func TestPlainCauseTheNoticesOfAClaimItsDeathsFailSayWhatKilledIt(t *testing.T) {
 	const detail = "pod legion-legion-legion-208 (uid uid-pod-1) Failed: container roles terminated (OOMKilled, exit code 137)"
 	const death = "the pod's roles container, which runs every role of this issue, was killed because it used more than its 19 GiB " +
@@ -48,7 +54,7 @@ func TestPlainCauseTheNoticesOfAClaimItsDeathsFailSayWhatKilledIt(t *testing.T) 
 			{outbox: string(record.OutboxKindNotice), kind: "worker-died"},
 		}},
 		{name: "the tree's own architect", role: claim.RoleArchitect, want: []toldNotice{
-			{outbox: string(record.OutboxKindNotice), kind: "worker-died"},
+			{outbox: string(record.OutboxKindNotice), kind: "worker-died", inReason: true},
 			{outbox: string(record.OutboxKindControllerNotice), kind: "worker-died"},
 		}},
 	} {
@@ -111,6 +117,13 @@ func TestPlainCauseTheNoticesOfAClaimItsDeathsFailSayWhatKilledIt(t *testing.T) 
 					t.Errorf("notice %d is a %s %s, want a %s %s", i, got.outbox, got.kind, want.outbox, want.kind)
 					continue
 				}
+				if want.inReason {
+					if got.failure != nil || !strings.Contains(got.reason, death) {
+						t.Errorf("the %s %s carries the failure %+v and the reason %q, want no failure record and %q in the reason",
+							got.outbox, got.kind, got.failure, got.reason, death)
+					}
+					continue
+				}
 				if got.failure == nil || got.failure.Death != death {
 					t.Errorf("the %s %s carries the failure %+v, want failure.death %q", got.outbox, got.kind, got.failure, death)
 				}
@@ -149,7 +162,7 @@ func plainCauseNotices(t *testing.T, pool *store.Pool) []toldNotice {
 			t.Fatalf("notice row %d decodes as %T", row.ID, payload)
 		}
 		if notice.Kind == "held" || notice.Kind == "worker-died" {
-			told = append(told, toldNotice{outbox: string(row.Kind), kind: string(notice.Kind), failure: notice.Failure})
+			told = append(told, toldNotice{outbox: string(row.Kind), kind: string(notice.Kind), failure: notice.Failure, reason: notice.Reason})
 		}
 	}
 	if err := rows.Err(); err != nil {

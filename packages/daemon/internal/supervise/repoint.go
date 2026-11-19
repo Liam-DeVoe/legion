@@ -87,7 +87,7 @@ func (m *Machine) displaced(ctx context.Context, observation runtime.Observation
 	}
 	m.log.Warn("supervise: the process was displaced through no fault of its own, its pod replaced by the daemon, its pod ended by something outside it, or it another runtime's process this daemon takes over; relaunching it uncharged",
 		"incarnation", incarnation, "process", process, "observed", string(observation.Kind),
-		"podEnd", string(observation.PodEnd), "detail", observation.Detail, "cause", cause)
+		"podEndReading", string(observation.EndReading), "detail", observation.Detail, "cause", cause)
 	m.recordGoneEnd(ctx, cause, "")
 	_, err := m.replaceProcess(ctx, "the process was displaced mid-turn, its pod replaced by the daemon, its pod ended by something outside it, or it another runtime's process this daemon takes over", observation.OutOfMemory, cause)
 	return err

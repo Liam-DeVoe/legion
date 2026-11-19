@@ -95,9 +95,9 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 167 (dispatch://INFRA-1117:
+number is the one `DaemonAPIVersion` declares, last bumped by contract 169 (dispatch://INFRA-1117:
 a pod's `legion launcher` may be told `--test-postgres-disk`, which the daemon renders only when
-`runtime.kubernetes.test_postgres_disk` is set; a launcher built before 167 exits 2 on the unknown
+`runtime.kubernetes.test_postgres_disk` is set; a launcher built before 169 exits 2 on the unknown
 flag, so the image probe refuses such an image at boot; no shape the plugin parses moves, and the
 state's settings carry the key loosely), after contract 146's (dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries
