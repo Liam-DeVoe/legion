@@ -186,7 +186,10 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 	if err := json.Unmarshal([]byte(taken.Payload), &payload); err != nil {
 		t.Fatalf("decode the controller's payload %q: %v", taken.Payload, err)
 	}
-	if want := (record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning}); !reflect.DeepEqual(payload, want) {
+	// The tree architect's own worker-died carries no failure record, so its reason carries the
+	// launch failure's sentence instead (workflow's deathReason).
+	if want := (record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning,
+		Reason: "launch failures ran out: pane launch failed"}); !reflect.DeepEqual(payload, want) {
 		t.Fatalf("the controller's payload = %+v, want the architect's own notice %+v", payload, want)
 	}
 }

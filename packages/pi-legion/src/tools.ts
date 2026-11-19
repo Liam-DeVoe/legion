@@ -441,9 +441,13 @@ export function createLegionTool(deps: {
         "The daemon refuses it for an issue of another project and for an issue with no claim that it supervises " +
         "(NO_CLAIM), for an issue whose claims run no worker in a pod (NO_POD), for an issue whose pod it replaces " +
         "already (POD_CHANGING), and while a limit of the project holds the round back (POD_UPDATE_LIMITED, which " +
-        "names the limit). Those refused requests open nothing, and each sentence says when to ask again. The daemon answers only once a claim " +
-        "of the issue records the round. It refuses a round that no claim records in time (POD_UPDATE_NOT_RECORDED): " +
-        "that round can still open, so read updateRound on the issue's claims before you ask again. " +
+        "names the limit). Those refused requests open nothing: NO_CLAIM leaves no pod to replace, NO_POD names what " +
+        "must change before you ask again, and POD_CHANGING and POD_UPDATE_LIMITED say when to ask again. A request " +
+        "that ends while a sweep holds the daemon's walk over the project's issues opens nothing either (POD_UPDATE_BUSY, " +
+        "with Retry-After). The daemon answers only once a claim of the issue records the round. It refuses a round " +
+        "that no claim records in time (POD_UPDATE_NOT_RECORDED), and answers 500 POD_UPDATE_FAILED where it cannot " +
+        "read the claims back after the post: either round can still open, so read updateRound on the issue's claims " +
+        "before you ask again. " +
         "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
         "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
         "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +

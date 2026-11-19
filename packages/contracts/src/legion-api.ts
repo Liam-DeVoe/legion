@@ -1488,7 +1488,7 @@ const legionDeliveryView = z.object({
  * the claim's phase and its pending task until the next wake for its role; an `operator`, a
  * `controller` and an `architect` one hold against the daemon's rules, ranked in that order: the
  * controller's resume lifts its own and an architect's and never the operator's, and an
- * architect's resume lifts an architect's alone (contract 156). */
+ * architect's resume lifts an architect's alone (contract 169). */
 const legionSuspendedBy = z.enum([
   "unknown",
   "operator",
@@ -1501,7 +1501,7 @@ const legionSuspendedBy = z.enum([
 
 /** `api.ClaimOperationResponse`, what the four claim operations of the controller and of an
  * architect answer (`POST /legion/v1/claims/stop|retry|suspend|resume`, each taking
- * `LegionClaimRequest`, contract 156): the claim's `state` after the request — `retired` after a
+ * `LegionClaimRequest`, contract 169): the claim's `state` after the request — `retired` after a
  * stop; `suspended` after a suspension that landed, and still `working` or `launching` with
  * `suspensionHeld` after one held for the agent's turn or its ready; `launching` after a resume or
  * a retry the claim's machine ran; and still `failed` or `retired` after a retry of a phase worker
@@ -1510,7 +1510,7 @@ const legionSuspendedBy = z.enum([
  * architect's, which an architect's resume and the controller's lift; `controller` for the
  * controller's own, which its resume lifts and an architect's does not; and `operator` for the
  * operator's, which only the operator lifts. These routes are the one session-facing surface that
- * names a suspender, since no plugin below contract 156 calls them; the state does not ("no
+ * names a suspender, since no plugin below contract 169 calls them; the state does not ("no
  * session-facing response carries suspendedBy" in legion-api.test.ts). */
 export const LegionClaimOperationResponse = z.object({
   state: z.enum(LEGION_CLAIM_STATES),
@@ -1520,7 +1520,7 @@ export const LegionClaimOperationResponse = z.object({
 });
 
 /** `api.PodUpdateRequest`, the project's controller asking the daemon to replace the pod one issue
- * of its project runs in (`POST /legion/v1/issues/pod-update`, contract 156): its grant and the
+ * of its project runs in (`POST /legion/v1/issues/pod-update`, contract 169): its grant and the
  * issue. The daemon opens its update round over that pod as a drift opens one: each role of the
  * pod is asked to push its work and answer `ready_for_update`, and the pod is replaced once each
  * has answered or at the round's bound (`pod_update_grace_minutes`). It takes a controller grant
@@ -1529,7 +1529,9 @@ export const LegionClaimOperationResponse = z.object({
  * being replaced already is `POD_CHANGING`; an opening a limit of the project holds back is
  * `POD_UPDATE_LIMITED`, whose message names the limit; and a round no claim records within the
  * daemon's wait is `POD_UPDATE_NOT_RECORDED` (503), since a 200 is only ever a round a claim
- * records in the daemon's store, which the daemon's sweeps carry across a restart. */
+ * records in the daemon's store, which the daemon's sweeps carry across a restart. A request that
+ * ends while a sweep of the update rounds holds the daemon's walk over the project's issues opens
+ * nothing and is `POD_UPDATE_BUSY` (503, with `Retry-After`). */
 export const LegionPodUpdateRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,

@@ -8,11 +8,13 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -51,15 +53,22 @@ func newPodUpdateRoute(t *testing.T, s *supervision, sup *supervisor, log *slog.
 	}).Handler}
 }
 
-// ask posts the controller's pod update of issue, and answers the status and the body.
-func (r *podUpdateRoute) ask(issue string) (int, []byte) {
+// request is the controller's pod update of issue as the HTTP server hands it to the route, its
+// context ctx: the one the request's connection lives in.
+func (r *podUpdateRoute) request(ctx context.Context, issue string) *http.Request {
 	r.t.Helper()
 	body, err := json.Marshal(api.PodUpdateRequest{GrantID: r.grant, Issue: issue})
 	if err != nil {
 		r.t.Fatal(err)
 	}
+	return httptest.NewRequestWithContext(ctx, http.MethodPost, "/legion/v1/issues/pod-update", bytes.NewReader(body))
+}
+
+// ask posts the controller's pod update of issue, and answers the status and the body.
+func (r *podUpdateRoute) ask(issue string) (int, []byte) {
+	r.t.Helper()
 	recorder := httptest.NewRecorder()
-	r.handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/legion/v1/issues/pod-update", bytes.NewReader(body)))
+	r.handler.ServeHTTP(recorder, r.request(context.Background(), issue))
 	return recorder.Code, recorder.Body.Bytes()
 }
 
@@ -462,4 +471,75 @@ func TestPodUpdateTheControllerAsksForSurvivesARestartAndIsCarriedWithNoDrift(t 
 	next.sweepUntilReplaced(issue)
 	next.awaitRoundEnded(issue)
 	next.replacedOnce(issue)
+}
+
+// A request that comes while a sweep's walk over the project's issues holds the walk's turn
+// (podUpdateWalk) waits for that turn only as long as the request lives. The test holds the turn
+// as a walk holds it (walkPodUpdates): the request waits while its context lives, and once that
+// context ends it is refused 503 POD_UPDATE_BUSY with a Retry-After of the sweep's interval in
+// seconds, having read nothing and opened nothing: no claim records a round once its machine has
+// handled every event posted to it, nothing is charged to the project's limits, and no ask is
+// written. Once the walk gives the turn back, the same request opens the round.
+//
+// The negative control is the request taking the turn with no bound, as the walk takes it: it
+// waits for the turn past its context's end, and no answer comes.
+func TestPodUpdateTheControllerAsksForWaitsForASweepsWalkOnlyAsLongAsItsRequestLives(t *testing.T) {
+	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
+
+	walk := rig.s.podUpdateWalkTurn()
+	walk <- struct{}{}
+	ctx, end := context.WithCancel(context.Background())
+	defer end()
+	request := route.request(ctx, podUpdateIssue)
+	answers := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		route.handler.ServeHTTP(recorder, request)
+		answers <- recorder
+	}()
+	select {
+	case recorder := <-answers:
+		t.Fatalf("the request answered %d while its context lived and the walk held the turn; body %s", recorder.Code, recorder.Body)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	end()
+	var recorder *httptest.ResponseRecorder
+	select {
+	case recorder = <-answers:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the request never answered once its context ended, while the walk held the turn")
+	}
+	var failure api.Failure
+	if err := json.Unmarshal(recorder.Body.Bytes(), &failure); err != nil {
+		t.Fatalf("decode the refusal %s: %v", recorder.Body, err)
+	}
+	if recorder.Code != http.StatusServiceUnavailable || failure.Code != "POD_UPDATE_BUSY" {
+		t.Fatalf("the request = %d %s, want 503 POD_UPDATE_BUSY; body %s", recorder.Code, failure.Code, recorder.Body)
+	}
+	if got, want := recorder.Header().Get("Retry-After"), strconv.Itoa(int(orphanSweepInterval/time.Second)); got != want {
+		t.Errorf("Retry-After = %q, want %q, the sweep's interval in seconds", got, want)
+	}
+	for _, role := range roles {
+		handled := make(chan struct{})
+		rig.sup.drained(rig.tokens[role], handled)
+		<-handled
+		if c := rig.claimOf(role); c.UpdateRound != "" {
+			t.Errorf("the %s records round %q after the refused request, want none", role, c.UpdateRound)
+		}
+	}
+	if opened, inFlight := charged(rig.s); !opened.IsZero() || len(inFlight) != 0 {
+		t.Errorf("the refused request charged an opening at %v, in flight %v, want nothing charged", opened, inFlight)
+	}
+	if asks := rig.asks(); len(asks) != 0 {
+		t.Errorf("the refused request left %d asks, want none: %+v", len(asks), asks)
+	}
+
+	<-walk
+	route.answered(podUpdateIssue, requestedRound)
+	for _, role := range roles {
+		rig.awaitRound(role, podUpdateRound)
+	}
 }

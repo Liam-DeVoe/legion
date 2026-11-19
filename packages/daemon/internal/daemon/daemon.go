@@ -1379,13 +1379,18 @@ type supervision struct {
 	podUpdateMu       sync.Mutex
 	podUpdateOpenedAt time.Time
 	podUpdateOpened   map[string]podUpdateOpening
-	// podUpdateWalkMu is held by the sweep's walk over the issues (walkPodUpdates) and by the
-	// controller's request for one issue's round (requestPodUpdate), each from its read of the
+	// podUpdateWalk is the turn the sweep's walk over the issues (walkPodUpdates) and the
+	// controller's request for one issue's round (requestPodUpdate) each hold, from its read of the
 	// project's limits to the last opening it makes on them. The request comes on an API
 	// goroutine, and an opening weighed against limits another opening has moved since they were
 	// read would take the project over them: two openings each reading the one slot left. The
 	// sweep's replacements run after the walk, outside it, since a replacement waits its pod out.
-	podUpdateWalkMu sync.Mutex
+	// It is a one-slot semaphore rather than a mutex so the request waits for it only as long as
+	// its own context lives (postRequestedPodUpdate), as stream.Conn's negotiation is; the walk
+	// waits for it as long as it takes. podUpdateWalkOnce makes it at its first use
+	// (podUpdateWalkTurn), so a supervision a test builds by hand needs none of its own.
+	podUpdateWalkOnce sync.Once
+	podUpdateWalk     chan struct{}
 	// podRoundRecordBound is how long the controller's request for a pod's round waits for a claim
 	// to record the round it posted (awaitPodRoundRecorded); zero is defaultPodRoundRecordBound, the
 	// value the daemon runs. A test sets a shorter one so it need not wait out the default.

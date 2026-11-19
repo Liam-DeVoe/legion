@@ -276,7 +276,7 @@ func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 
 // refuseCarried is a release refused because the secrets broker still carries something for some
 // of the names it would free, names of them: logged at Warn, and answered as a RefusedError, which
-// the operator's route answers 409 (operatorFailure).
+// the operator's route answers 409 (operationFailure).
 func (m *Machine) refuseCarried(refusal *NamesCarriedError, names int) error {
 	m.log.Warn("supervise: refused a release of a claim's names: the secrets broker still carries some of them",
 		"names", names, "carried", len(refusal.Carried), "error", refusal.Error())

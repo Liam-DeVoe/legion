@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -88,24 +89,46 @@ func TestThePodUpdateNeedsAControllerGrantAnIssueKeyAndAnIssueOfTheDaemonsProjec
 	}
 }
 
+// An architect's grant is refused 403 CONTROLLER_REQUIRED, as a phase worker's is, though it opens
+// the claim door's six operations for the claims of the issues it owns: the pod update is the
+// controller's alone, and the daemon is asked nothing. The architect is LEGION-208's root
+// architect, built as the claim door's tests build it (treeArchitect), asking for the pod of its
+// own issue.
+//
+// The negative control is the route taking any grant (no grant.Controller check): the daemon is
+// asked for the pod of LEGION-208, and the route answers the round with 200.
+func TestThePodUpdateRefusesAnArchitectsGrant(t *testing.T) {
+	h, asked, _ := podUpdateHarness(t, func(string) (PodUpdateResponse, error) { return podUpdateAnswer, nil })
+	architect := treeArchitect(t, h)
+
+	assertFailure(t, askPodUpdate(h, architect.grant(t), "LEGION-208"), http.StatusForbidden, "CONTROLLER_REQUIRED")
+	if len(*asked) != 0 {
+		t.Fatalf("the daemon was asked to open a round over the pods of %v, want the architect's request to reach it not at all", *asked)
+	}
+}
+
 // What the daemon answers is the route's answer: the round with 200, and one log line naming the
 // caller, the issue and the round; each refusal with its own status and code and the daemon's
-// sentence unchanged, since that sentence names the issue, the pod or the limit; and a failure
-// of the daemon's own read with 500 POD_UPDATE_FAILED.
+// sentence unchanged, since that sentence names the issue, the pod or the limit, and a Retry-After
+// in whole seconds where the refusal names a wait and none where it names none; and a failure of
+// the daemon's own read with 500 POD_UPDATE_FAILED.
 //
 // The negative control is the refusals answered as one failure (every one 500): each row of the
 // table below names the code it reads.
 func TestThePodUpdateAnswersTheDaemonsRoundOrItsRefusal(t *testing.T) {
 	refusals := map[string]struct {
-		refused *PodUpdateRefused
-		status  int
-		code    string
+		refused    *PodUpdateRefused
+		status     int
+		code       string
+		retryAfter string
 	}{
-		"LEGION-210": {&PodUpdateRefused{Refusal: PodUpdateNoClaim, Message: "this daemon supervises no claim of LEGION-210"}, http.StatusNotFound, "NO_CLAIM"},
-		"LEGION-211": {&PodUpdateRefused{Refusal: PodUpdateNoPod, Message: "no claim of LEGION-211 records a process in a pod"}, http.StatusNotFound, "NO_POD"},
-		"LEGION-212": {&PodUpdateRefused{Refusal: PodUpdatePodChanging, Message: "the claims of LEGION-212 record two pods"}, http.StatusConflict, "POD_CHANGING"},
-		"LEGION-213": {&PodUpdateRefused{Refusal: PodUpdateLimited, Message: "the project's pod_update_max_open_rounds (1) holds back the update round of LEGION-213"}, http.StatusConflict, "POD_UPDATE_LIMITED"},
-		"LEGION-215": {&PodUpdateRefused{Refusal: PodUpdateNotRecorded, Message: "no claim of LEGION-215 recorded the update round within 30s"}, http.StatusServiceUnavailable, "POD_UPDATE_NOT_RECORDED"},
+		"LEGION-210": {&PodUpdateRefused{Refusal: PodUpdateNoClaim, Message: "this daemon supervises no claim of LEGION-210"}, http.StatusNotFound, "NO_CLAIM", ""},
+		"LEGION-211": {&PodUpdateRefused{Refusal: PodUpdateNoPod, Message: "no claim of LEGION-211 records a process in a pod"}, http.StatusNotFound, "NO_POD", ""},
+		"LEGION-212": {&PodUpdateRefused{Refusal: PodUpdatePodChanging, Message: "the claims of LEGION-212 record two pods"}, http.StatusConflict, "POD_CHANGING", ""},
+		"LEGION-213": {&PodUpdateRefused{Refusal: PodUpdateLimited, Message: "the project's pod_update_max_open_rounds (1) holds back the update round of LEGION-213"}, http.StatusConflict, "POD_UPDATE_LIMITED", ""},
+		"LEGION-215": {&PodUpdateRefused{Refusal: PodUpdateNotRecorded, Message: "no claim of LEGION-215 recorded the update round within 30s"}, http.StatusServiceUnavailable, "POD_UPDATE_NOT_RECORDED", ""},
+		"LEGION-216": {&PodUpdateRefused{Refusal: PodUpdateBusy, Message: "a sweep of this daemon's update rounds held its walk over the project's issues until the request for LEGION-216 ended", RetryAfter: time.Minute},
+			http.StatusServiceUnavailable, "POD_UPDATE_BUSY", "60"},
 	}
 	h, _, logs := podUpdateHarness(t, func(issue string) (PodUpdateResponse, error) {
 		if row, refused := refusals[issue]; refused {
@@ -149,6 +172,9 @@ func TestThePodUpdateAnswersTheDaemonsRoundOrItsRefusal(t *testing.T) {
 		if refused.Code != row.status || failure.Code != row.code || failure.Error != row.refused.Message {
 			t.Errorf("the refusal of %s = %d %s %q, want %d %s with the daemon's own %q",
 				issue, refused.Code, failure.Code, failure.Error, row.status, row.code, row.refused.Message)
+		}
+		if got := refused.Header().Get("Retry-After"); got != row.retryAfter {
+			t.Errorf("the refusal of %s carries Retry-After %q, want %q", issue, got, row.retryAfter)
 		}
 	}
 	assertFailure(t, askPodUpdate(h, controller, "LEGION-214"), http.StatusInternalServerError, "POD_UPDATE_FAILED")

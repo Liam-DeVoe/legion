@@ -170,16 +170,22 @@ configuration.
 **The command.** `legion({ op: "replace_pod", issue: "<KEY>" })`. The daemon opens the update
 round on that issue's pod. Where a round is open on that pod already, the answer names that
 round, and the daemon opens no second one. An answer that names a round means a claim of the
-issue records it. A refusal opens nothing, and its sentence says what to do:
+issue records it. Each refusal below says what to do:
 
 - `NO_CLAIM`: the issue is not one of your project's, or the daemon runs no claim of it. There
-  is no pod of it to replace.
-- `NO_POD`: no role of the issue runs in a pod now. Ask again once one does, if the pod must
-  still go.
+  is no pod of it to replace. It opens nothing.
+- `NO_POD`: no role of the issue runs in a pod now, or the pod's roles have no worker the round
+  could ask. Ask again once a role of the issue runs in its pod, if the pod must still go. It
+  opens nothing.
 - `POD_CHANGING` or `POD_UPDATE_LIMITED`: a replacement is in flight, or a limit of the project
-  holds the round back, and the sentence names the limit. Ask again at a later wake.
-- `POD_UPDATE_NOT_RECORDED`: no claim recorded the round within the wait, and its post may still
-  land. Read `updateRound` on the issue's claims before you ask again.
+  holds the round back, and the sentence names the limit. Ask again at a later wake. It opens
+  nothing.
+- `POD_UPDATE_BUSY`: your request ended while a sweep of the update rounds held the daemon's walk
+  over the project's issues. It opens nothing. Ask again after the answer's `Retry-After`.
+- `POD_UPDATE_NOT_RECORDED`: the daemon posted the round, and no claim recorded it within the
+  wait, so its post may still land and open it. A `500 POD_UPDATE_FAILED` can come after the post
+  too, where the daemon could not read the claims back. After either, read `updateRound` on the
+  issue's claims before you ask again.
 
 Ask no other session to remove the pod.
 
@@ -190,9 +196,11 @@ role's word and nothing verifies. The daemon replaces the pod once every role ha
 no turn runs, or at the round's bound, `pod_update_grace_minutes` after the round opened,
 whatever the roles answered. Work that a role did not push by then is lost with the disk, as in
 any update round. The round is done when no claim of the issue shows `updateRound`. A round that
-does not end at its bound is told as an `update-stalled` wake: to the architect that owns a claim
-an architect's suspension holds, and to you for every other hold
-(`skill://legion-controller/references/wakes.md`).
+does not end at its bound is told as an `update-stalled` wake. An architect's suspension is told
+to the architect that owns the held claim, and every other hold is told to you. You are also told
+of an architect's suspension that no architect can act on, and of one whose notice to that
+architect ended undelivered: `skill://legion-controller/references/wakes.md`, the
+`update-stalled` row, names each case.
 
 ## A re-run of a CI run
 

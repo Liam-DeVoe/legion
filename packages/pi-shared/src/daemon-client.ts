@@ -202,7 +202,9 @@ export interface LegionDaemonClient {
    * daemon supervises (`NO_CLAIM`), one whose claims run no worker in a pod (`NO_POD`), one whose
    * pod is being replaced already (`POD_CHANGING`), an opening a limit of the project holds back
    * (`POD_UPDATE_LIMITED`, naming the limit), and a round no claim recorded within the daemon's
-   * wait (`POD_UPDATE_NOT_RECORDED`, 503): a 200 is only ever a round a claim records. */
+   * wait (`POD_UPDATE_NOT_RECORDED`, 503): a 200 is only ever a round a claim records. A request
+   * that ends while a sweep holds the daemon's walk over the project's issues opens nothing
+   * (`POD_UPDATE_BUSY`, 503, with `Retry-After`). */
   readonly issuePodUpdate: (
     input: z.input<typeof LegionPodUpdateRequest>
   ) => Promise<z.output<typeof LegionPodUpdateResponse>>;

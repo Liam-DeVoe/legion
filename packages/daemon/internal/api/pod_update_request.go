@@ -3,7 +3,10 @@ package api
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -40,10 +43,12 @@ const (
 	// NO_CLAIM, the code the claim operations give a claim this daemon does not supervise, which is
 	// the form another project's claim takes there (claimDoor).
 	PodUpdateNoClaim PodUpdateRefusal = iota + 1
-	// PodUpdateNoPod: the issue's claims run no worker in a pod a round could ask — none records
-	// a process in a pod (each is suspended or between launches, or the runtime runs no pods), or
-	// none of them has a session that has not failed, so no claim would record the round. 404
-	// NO_POD: the claims are there, and the pod a round is opened over is what is missing.
+	// PodUpdateNoPod: the issue's claims run no worker in a pod a round could ask, in either of two
+	// ways: no claim records a process in a pod (each is suspended or between launches, or the
+	// runtime runs no pods), or the claims record a pod and none of them is a worker the round could
+	// ask (none has a session, or each one that has one has failed), so no claim would record the
+	// round. 404 NO_POD: the claims are there, and a worker in the pod the round is opened over is
+	// what is missing.
 	PodUpdateNoPod
 	// PodUpdatePodChanging: the issue's pod is changing under the request — its claims record two
 	// pods, a replacement in flight, or a round over the pod before this one is still ending — and
@@ -59,14 +64,21 @@ const (
 	// 503 POD_UPDATE_NOT_RECORDED: the post may still land, and a later request answers the round
 	// once a claim records it. A 200 is only ever a round a claim records.
 	PodUpdateNotRecorded
+	// PodUpdateBusy: the request's own context ended while a sweep's walk over the project's
+	// issues held the turn the request waits for, so it read nothing and opened nothing. 503
+	// POD_UPDATE_BUSY, with a Retry-After of the sweep's interval (PodUpdateRefused.RetryAfter).
+	PodUpdateBusy
 )
 
 // PodUpdateRefused is the daemon's refusal of a request for a pod's update round
-// (Options.RequestPodUpdate): what refused it, and the sentence the answer carries, which names
-// the issue and, for a limit, the limit. No round is recorded on any claim.
+// (Options.RequestPodUpdate): what refused it, the sentence the answer carries, which names the
+// issue and, for a limit, the limit, and how long the caller should wait before it asks again,
+// which the answer carries as its Retry-After in whole seconds, zero for none. No round is
+// recorded on any claim.
 type PodUpdateRefused struct {
-	Refusal PodUpdateRefusal
-	Message string
+	Refusal    PodUpdateRefusal
+	Message    string
+	RetryAfter time.Duration
 }
 
 func (r *PodUpdateRefused) Error() string { return r.Message }
@@ -84,6 +96,8 @@ func podUpdateRefusal(refusal PodUpdateRefusal) (int, string) {
 		return http.StatusConflict, "POD_UPDATE_LIMITED"
 	case PodUpdateNotRecorded:
 		return http.StatusServiceUnavailable, "POD_UPDATE_NOT_RECORDED"
+	case PodUpdateBusy:
+		return http.StatusServiceUnavailable, "POD_UPDATE_BUSY"
 	default:
 		return http.StatusInternalServerError, "POD_UPDATE_FAILED"
 	}
@@ -95,7 +109,7 @@ func podUpdateRefusal(refusal PodUpdateRefusal) (int, string) {
 // project is refused `404 NO_CLAIM` before the daemon is asked anything, since this daemon runs no
 // claim of it. Every other answer is the daemon's (Options.RequestPodUpdate): 200 with the round,
 // opened by this request or already open, which a claim of the issue records in the store by
-// then, or a PodUpdateRefused.
+// then, or a PodUpdateRefused, with a Retry-After header where the refusal names a wait.
 //
 // The round's ask, its bound and the replacement are the sweep's, as for a round a drift opened:
 // the ask reaches each role at the first sweep that reads the round recorded on its claim, and
@@ -136,6 +150,9 @@ func (s *server) issuePodUpdate(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.As(err, &refused):
 		status, code := podUpdateRefusal(refused.Refusal)
+		if refused.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(refused.RetryAfter.Seconds()))))
+		}
 		writeFailure(w, status, code, refused.Message)
 		return
 	case err != nil:

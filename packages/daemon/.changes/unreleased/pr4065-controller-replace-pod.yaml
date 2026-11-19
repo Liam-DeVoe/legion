@@ -12,4 +12,6 @@ body: |-
   claims run no worker in a pod (`404 NO_POD`), and an issue whose pod is being replaced already
   (`409 POD_CHANGING`). The route answers 200 only once a claim of the issue records the round in
   the store, which a restart restores and the sweeps carry; a round no claim records within 30
-  seconds is refused `503 POD_UPDATE_NOT_RECORDED`.
+  seconds is refused `503 POD_UPDATE_NOT_RECORDED`. A request waits for the update-round sweep's
+  walk over the project's issues only as long as the request lasts; one that ends first opens
+  nothing and is refused `503 POD_UPDATE_BUSY` with `Retry-After: 60`, the sweep's interval.

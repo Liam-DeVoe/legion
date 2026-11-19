@@ -32,6 +32,9 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 // It reads the issue as the sweep groups it — every claim of the issue that has not retired — and
 // answers, in this order:
 //
+//   - ctx ending while a sweep's walk holds the turn the request waits for (podUpdateWalk):
+//     refused, the sweep is busy (api.PodUpdateBusy), with nothing read and nothing opened, and
+//     the answer asks the caller to wait one sweep interval before it asks again.
 //   - no such claim: refused (api.PodUpdateNoClaim). An issue of another project is one, since
 //     this daemon runs no claim of it.
 //   - a round open over the issue's pod: that round, opened nothing new. A round over the pod the
@@ -62,11 +65,12 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 // within the bound is refused (api.PodUpdateNotRecorded): its post may still land, which a later
 // request answers as the round open over the pod.
 //
-// It holds podUpdateWalkMu from its read of the claims to its post, so the claims it decides from
-// are no older than the last sweep's walk, the limits it reads are the ones it charges, and no
-// sweep's walk opens a round on them in between. The wait for the record is made after, outside
-// that lock: a machine in a relaunch can hold the post for minutes, and the sweep's walk must not
-// wait on it.
+// It holds the walk's turn (podUpdateWalk) from its read of the claims to its post, so the claims
+// it decides from are no older than the last sweep's walk, the limits it reads are the ones it
+// charges, and no sweep's walk opens a round on them in between. It waits for that turn only as
+// long as ctx lives, since a sweep's walk holds it across the store reads and writes of every
+// issue of the project. The wait for the record is made after, outside that turn: a machine in a
+// relaunch can hold the post for minutes, and the sweep's walk must not wait on it.
 func (s *supervision) requestPodUpdate(ctx context.Context, issue string) (api.PodUpdateResponse, error) {
 	answer, asked, err := s.postRequestedPodUpdate(ctx, issue)
 	if err != nil || len(asked) == 0 {
@@ -78,13 +82,26 @@ func (s *supervision) requestPodUpdate(ctx context.Context, issue string) (api.P
 	return answer, nil
 }
 
-// postRequestedPodUpdate is requestPodUpdate's decision, made under podUpdateWalkMu, and the post
-// of the round it decides on. It answers the round and the claims the post asks
-// (askedClaims), whose record of it the answer then waits for; none where the claims record the
-// round already.
+// postRequestedPodUpdate is requestPodUpdate's decision, made holding the walk's turn
+// (podUpdateWalk), and the post of the round it decides on. It answers the round and the claims
+// the post asks (askedClaims), whose record of it the answer then waits for; none where the claims
+// record the round already.
 func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) (api.PodUpdateResponse, []claim.Token, error) {
-	s.podUpdateWalkMu.Lock()
-	defer s.podUpdateWalkMu.Unlock()
+	turn := s.podUpdateWalkTurn()
+	select {
+	case turn <- struct{}{}:
+	case <-ctx.Done():
+		// One sweep interval (plan.orphanSweep, a minute in a deployment) is the wait the answer
+		// asks for. Only the sweep's walk holds the turn this long, one walk at a time and one a
+		// sweep interval, so a walk that outlived the request's whole wait is one running long.
+		// Asked again sooner, the request queues behind that same walk; asked a sweep interval
+		// later, it comes after the time the sweep itself gives that walk before it walks again.
+		retry := s.plan.orphanSweep
+		return api.PodUpdateResponse{}, nil, &api.PodUpdateRefused{Refusal: api.PodUpdateBusy, RetryAfter: retry, Message: fmt.Sprintf(
+			"a sweep of this daemon's update rounds held its walk over the project's issues until the request for %s ended (%v). Nothing was read and nothing was opened; ask again in %s, once that sweep has moved on",
+			issue, ctx.Err(), retry)}
+	}
+	defer func() { <-turn }()
 	claims, err := s.supervisor.Claims(ctx)
 	if err != nil {
 		return api.PodUpdateResponse{}, nil, fmt.Errorf("read the claims of %s: %w", issue, err)

@@ -74,14 +74,16 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 
 // walkPodUpdates is the sweep's walk over the issues, in key order, and the record of what it
 // decided under the project's limits (recordPodUpdateSweep). It reports the replacements the
-// walk left the sweep to make, and none where ctx ended inside the walk. It holds
-// podUpdateWalkMu from its read of the limits (beginPodUpdateSweep) to its record, so a round
+// walk left the sweep to make, and none where ctx ended inside the walk. It holds the walk's turn
+// (podUpdateWalk) from its read of the limits (beginPodUpdateSweep) to its record, so a round
 // the controller asks for (requestPodUpdate) is opened before that read or after that record,
-// and never between them on limits the walk has already spent.
+// and never between them on limits the walk has already spent. It waits for the turn as long as
+// a request holds it: a request holds it for its read of the claims and its post alone.
 func (s *supervision) walkPodUpdates(ctx context.Context, claims []supervise.Claim) []podReplacement {
 	issues, byIssue := podUpdateGroups(claims)
-	s.podUpdateWalkMu.Lock()
-	defer s.podUpdateWalkMu.Unlock()
+	turn := s.podUpdateWalkTurn()
+	turn <- struct{}{}
+	defer func() { <-turn }()
 	now := s.plan.clock.Now()
 	sweep := s.beginPodUpdateSweep(now, byIssue)
 	var replacements []podReplacement
@@ -99,6 +101,13 @@ func (s *supervision) walkPodUpdates(ctx context.Context, claims []supervise.Cla
 	}
 	s.recordPodUpdateSweep(issues, byIssue, sweep)
 	return replacements
+}
+
+// podUpdateWalkTurn is the walk's turn (podUpdateWalk), a one-slot semaphore made at its first
+// use: a send takes the turn, and a receive gives it back.
+func (s *supervision) podUpdateWalkTurn() chan struct{} {
+	s.podUpdateWalkOnce.Do(func() { s.podUpdateWalk = make(chan struct{}, 1) })
+	return s.podUpdateWalk
 }
 
 // podUpdateGroups is every claim of claims an update round can cover, by issue, each group in
