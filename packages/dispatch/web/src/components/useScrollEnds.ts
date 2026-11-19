@@ -36,8 +36,8 @@ export function useScrollEnds({
   ends = "both",
 }: {
   /** Which ends the caller reads. A strip whose only fade is its trailing one reads `trailing`
-   *  alone, so a scroll that changes only how far it is from its start draws its owner again for
-   *  nothing; `leading` then stays false. */
+   *  alone, so a scroll that changes only how far it is from its start does not draw its owner
+   *  again; `leading` then stays false. */
   readonly ends?: "both" | "trailing";
 } = {}): ScrollEnds {
   const [node, ref] = useState<HTMLElement | null>(null);

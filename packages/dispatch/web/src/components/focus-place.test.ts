@@ -1229,6 +1229,81 @@ test("a second press on a control its first press holds keeps the first press th
   });
 });
 
+// (ba) A second press on a control its first press holds, and that press's release, leave the
+// first press's write deadline where it was: counted from the first press's release, as in (ax),
+// so the reader pressing the held control again 20 s on keeps the first press live no longer. A
+// live update taking the row away a little over 30 s after the first release is no doing of the
+// reader's: the focus goes into no other row and nothing scrolls (ag).
+test("a second press on a control its first press holds leaves the write deadline counted from the first release", async () => {
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  jest.useFakeTimers();
+  try {
+    await withRescue(async () => {
+      const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+      const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+      const dismiss = buttonIn(second.row, "Dismiss");
+      dismiss.focus();
+      placeAt(dismiss, 200);
+      box.dispatchEvent(new Event("scroll"));
+      pointerPress(dismiss);
+      dismiss.setAttribute("aria-disabled", "true");
+      // A frame and a task after the release the press finds its control held, and watches it.
+      await frame();
+      jest.advanceTimersByTime(0);
+      // 20 s on, the reader presses the held control again and lets go, a frame and a task before
+      // the clock moves on.
+      jest.advanceTimersByTime(20_000);
+      pointerPress(dismiss);
+      await frame();
+      jest.advanceTimersByTime(0);
+      // The deadline from the first release passes with the control still held; the press stops a
+      // frame and a task on.
+      jest.advanceTimersByTime(SEND_DEADLINE_MS - 20_000);
+      await frame();
+      jest.advanceTimersByTime(0);
+      expect(dismiss).toHaveFocus();
+      second.row.remove();
+      // The rescue's check, a frame and a task after the removal its watcher reads.
+      await frame();
+      await frame();
+      jest.advanceTimersByTime(0);
+      expect(box).toHaveFocus();
+      expect(document.activeElement?.closest("[data-inbox-row]")).toBeNull();
+      expect(rows[2]?.mark).not.toHaveFocus();
+    });
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    jest.useRealTimers();
+    scrolls.mockRestore();
+  }
+});
+
+// (bb) A second press on an element inside the control its first press holds - an icon drawn in
+// the button - is a press on that control, which takes it without a write: the first press stays
+// the cause, and the row taken away in the commit that ends the hold keeps the hand-off of (az),
+// to the control now at the row's place.
+test("a second press inside a control its first press holds keeps the first press the cause of the row's going", async () => {
+  await withRescue(async () => {
+    const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+    const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+    const third = rows[2] as { mark: HTMLInputElement; row: HTMLElement };
+    const dismiss = buttonIn(second.row, "Dismiss");
+    const icon = document.createElement("span");
+    icon.setAttribute("aria-hidden", "true");
+    dismiss.append(icon);
+    dismiss.focus();
+    placeAt(dismiss, 200);
+    box.dispatchEvent(new Event("scroll"));
+    pointerPress(dismiss);
+    await holdFor(dismiss);
+    pointerPress(icon);
+    await holdFor(dismiss);
+    expect(dismiss).toHaveFocus();
+    second.row.remove();
+    await waitFor(() => expect(third.mark).toHaveFocus());
+  });
+});
+
 /** A row's list - an Inbox row's `Hand this question to` - opened from its trigger in the row
  *  (`openListFrom`), the trigger laid out in the row box's sight. */
 function rowList(row: HTMLElement): { list: ListPanel; trigger: HTMLButtonElement } {

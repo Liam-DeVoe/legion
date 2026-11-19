@@ -2196,7 +2196,10 @@ test("the Delivery list still answers the keyboard and stays windowed, and each 
   // The global binding that opens each page, and each page's own list binding.
   await seedAgents();
   await seedSurfaces();
+  // The keys wait for the Inbox's heading: pressed as the page loads, before the shell has
+  // registered its keys, they can open nothing.
   await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
   await page.locator("body").focus();
   await page.keyboard.press("g");
   await page.keyboard.press("a");

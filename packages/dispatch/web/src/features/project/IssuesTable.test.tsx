@@ -1622,6 +1622,45 @@ test("a row's Start next stays held until the list read again takes it away, and
   expect(screen.getByTestId("issues-table-scroll")).not.toHaveFocus();
 });
 
+// A row's Start next whose write Dispatch refuses changed nothing, so the list read again after it
+// has nothing to take away: the Start next is free again at the refusal, while that read is still
+// out, rather than held through it.
+test("a row's Start next that Dispatch refuses is free again before the list read again answers", async () => {
+  const user = userEvent.setup();
+  const send = spyOn(api, "send").mockRejectedValue(
+    new ApiError(403, { error: "Rank refused", code: "FORBIDDEN" })
+  );
+  restores.push(() => send.mockRestore());
+  const { listing } = table([
+    issue("CORE-1", { labels: ["legion"], rank: "B" }),
+    issue("CORE-2", { labels: ["legion"], rank: "C" }),
+  ]);
+  const row = await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  const startNext = within(row).getByRole("button", { name: "Start next" });
+  // The read after the refusal, held until the test answers it with the queue unchanged.
+  const reread = Promise.withResolvers<IssueSummary[]>();
+  const reads = listing.mock.calls.length;
+  listing.mockImplementation(() => reread.promise);
+  act(() => startNext.focus());
+  await user.keyboard("{Enter}");
+  expect((await screen.findByRole("alert")).textContent).toContain("Rank refused");
+  await waitFor(() => expect(listing.mock.calls.length).toBeGreaterThan(reads));
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(startNext).not.toHaveAttribute("aria-disabled");
+
+  await act(async () =>
+    reread.resolve([
+      issue("CORE-1", { labels: ["legion"], rank: "B" }),
+      issue("CORE-2", { labels: ["legion"], rank: "C" }),
+    ])
+  );
+  expect(
+    within(screen.getByRole("row", { name: "CORE-2 Work CORE-2" })).getByRole("button", {
+      name: "Start next",
+    })
+  ).not.toHaveAttribute("aria-disabled");
+});
+
 // A notice's button that takes the notice away hands the focus on, never to the page's body
 // (ruling ff1a60f5): to the control now at its place among the List's notices, else the one
 // before it, else the toolbar's search box.
