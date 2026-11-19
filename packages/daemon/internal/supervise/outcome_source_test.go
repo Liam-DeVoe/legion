@@ -47,6 +47,12 @@ import (
 // what it follows, and the reviewer reads the rest of each change to these four packages for a
 // match of an agent's words.
 //
+// It also follows the text through a pointer to it, into the parameters of the package's own
+// functions (assignments), and into the field of a local variable, within the function that
+// writes the field (fieldAssignments). Within one function it does not follow the text into a
+// variable of an interface type other than error, through a copy of a struct variable (q := note;
+// q.words), or into a field of a variable of the package.
+//
 // It type-checks each package's non-test source against the compiler's export data for its
 // dependencies (compiledDependencies, as TestProcessEndsListsEveryEndDeclared does), so it reads
 // what the compiler resolved — which constant, which field, which function — rather than how a
@@ -435,52 +441,28 @@ func (s *goSource) params(decl *ast.FuncDecl) []types.Object {
 	return objects
 }
 
-// assignments is every expression the package's source gives each variable: by := and =, by a
-// var declaration, by a range — its value, and its key where the key is an element too — and,
-// for a parameter, by each call of its function. A value no expression stands for alone — one of
-// several results of one call, an element of what a loop ranges over — is recorded as that call
-// or as what it ranges over. It is read once per package (given).
+// assignments is every expression the package's source gives each variable or constant: by := and
+// =, by a var or const declaration, by a range — its value, and its key where the key is an element
+// too — and, for a parameter, by each call of its function. A value no expression stands for alone
+// — one of several results of one call, an element of what a loop ranges over — is recorded as that
+// call or as what it ranges over. It is read once per package (given).
 func (s *goSource) assignments() map[types.Object][]ast.Expr {
 	if s.given != nil {
 		return s.given
 	}
 	given := map[types.Object][]ast.Expr{}
-	object := func(expr ast.Expr) types.Object {
-		ident, ok := ast.Unparen(expr).(*ast.Ident)
-		if !ok {
-			return nil
-		}
-		if def := s.info.Defs[ident]; def != nil {
-			return def
-		}
-		return s.info.Uses[ident]
-	}
 	give := func(target, expr ast.Expr) {
-		if object := object(target); object != nil {
-			given[object] = append(given[object], expr)
-		}
-	}
-	pair := func(lhs, rhs []ast.Expr) {
-		for i, left := range lhs {
-			if len(lhs) == len(rhs) {
-				give(left, rhs[i])
-			} else if len(rhs) == 1 {
-				give(left, rhs[0])
+		if ident, ok := ast.Unparen(target).(*ast.Ident); ok {
+			if object := s.info.ObjectOf(ident); object != nil {
+				given[object] = append(given[object], expr)
 			}
 		}
 	}
 	decls := s.funcs()
 	for _, file := range s.files {
 		ast.Inspect(file, func(node ast.Node) bool {
+			paired(node, give)
 			switch node := node.(type) {
-			case *ast.AssignStmt:
-				pair(node.Lhs, node.Rhs)
-			case *ast.ValueSpec:
-				lhs := make([]ast.Expr, len(node.Names))
-				for i, name := range node.Names {
-					lhs[i] = name
-				}
-				pair(lhs, node.Values)
 			case *ast.RangeStmt:
 				// The key is an index of a string, a slice, an array or an integer's count, and no
 				// part of what the loop ranges over; of a map, a channel or an iterator it is an
@@ -523,15 +505,11 @@ type fieldOf struct{ variable, field types.Object }
 // x.F gives F of x. A variable of the package outside any function belongs to no one function,
 // and a value handed to another function's parameter is that function's, so the test follows
 // neither (TestOutcomeSourceHoldsThePolicyAtItsSites). A value no expression stands for alone is
-// recorded as assignments records it.
+// recorded as assignments records it (paired).
 func (s *goSource) fieldAssignments() map[fieldOf][]ast.Expr {
 	given := map[fieldOf][]ast.Expr{}
 	local := func(ident *ast.Ident) types.Object {
-		object := s.info.Defs[ident]
-		if object == nil {
-			object = s.info.Uses[ident]
-		}
-		variable, ok := object.(*types.Var)
+		variable, ok := s.info.ObjectOf(ident).(*types.Var)
 		if !ok || variable.Parent() == nil || variable.Parent() == s.pkg.Scope() {
 			return nil
 		}
@@ -578,15 +556,6 @@ func (s *goSource) fieldAssignments() map[fieldOf][]ast.Expr {
 			}
 		}
 	}
-	pair := func(lhs, rhs []ast.Expr) {
-		for i, left := range lhs {
-			if len(lhs) == len(rhs) {
-				give(left, rhs[i])
-			} else if len(rhs) == 1 {
-				give(left, rhs[0])
-			}
-		}
-	}
 	for _, file := range s.files {
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
@@ -594,21 +563,37 @@ func (s *goSource) fieldAssignments() map[fieldOf][]ast.Expr {
 				continue
 			}
 			ast.Inspect(fn.Body, func(node ast.Node) bool {
-				switch node := node.(type) {
-				case *ast.AssignStmt:
-					pair(node.Lhs, node.Rhs)
-				case *ast.ValueSpec:
-					lhs := make([]ast.Expr, len(node.Names))
-					for i, name := range node.Names {
-						lhs[i] = name
-					}
-					pair(lhs, node.Values)
-				}
+				paired(node, give)
 				return true
 			})
 		}
 	}
 	return given
+}
+
+// paired hands give each target node gives a value, with the expression that gives it: an
+// assignment or a var or const declaration gives each target the expression in its place where
+// it has as many expressions as targets, and every target its one expression where one gives
+// them all, such as a call of several results. Any other node gives nothing.
+func paired(node ast.Node, give func(target, expr ast.Expr)) {
+	var lhs, rhs []ast.Expr
+	switch node := node.(type) {
+	case *ast.AssignStmt:
+		lhs, rhs = node.Lhs, node.Rhs
+	case *ast.ValueSpec:
+		lhs = make([]ast.Expr, len(node.Names))
+		for i, name := range node.Names {
+			lhs[i] = name
+		}
+		rhs = node.Values
+	}
+	for i, left := range lhs {
+		if len(lhs) == len(rhs) {
+			give(left, rhs[i])
+		} else if len(rhs) == 1 {
+			give(left, rhs[0])
+		}
+	}
 }
 
 // refusalTaint is every variable of the package a refusal's words reach, through assignments,
@@ -702,12 +687,13 @@ func (r *refusalTaint) spread() {
 }
 
 // carriesText is whether a variable of typ holds a refusal's words as its value rather than in a
-// field: a string of any type, bytes or runes, a slice, an array or a map of texts, or an error,
-// whose Error method returns them. A struct built around the words holds every other field beside
-// them — the end a failure records (EndedWork) holds its cause, which can quote the provider, and
-// the kinds of work a report named — so the test follows the words into the field that holds them
-// and no other, within the function that writes it (fieldAssignments), or into a field
-// refusalWords names. An interface other than error, such as an Event, holds any of its kinds.
+// field: a string of any type, bytes or runes, a slice, an array or a map of texts, a pointer to
+// a text, or an error, whose Error method returns them. A struct built around the words holds
+// every other field beside them — the end a failure records (EndedWork) holds its cause, which
+// can quote the provider, and the kinds of work a report named — so the test follows the words
+// into the field that holds them and no other, within the function that writes it
+// (fieldAssignments), or into a field refusalWords names. An interface other than error, such as
+// an Event, holds any of its kinds.
 func carriesText(typ types.Type) bool {
 	if types.Identical(typ, errorType) {
 		return true
@@ -722,6 +708,8 @@ func carriesText(typ types.Type) bool {
 		return carriesText(under.Elem())
 	case *types.Map:
 		return carriesText(under.Key()) || carriesText(under.Elem())
+	case *types.Pointer:
+		return carriesText(under.Elem())
 	}
 	return false
 }
@@ -730,13 +718,13 @@ func carriesText(typ types.Type) bool {
 var errorType = types.Universe.Lookup("error").Type()
 
 // sendAnswer is whether expr gives target the error a call of a runtime.Conn method answers — a
-// prompt send's, as the send goroutine holds it (Machine.startSend), an adoption's or a
-// compaction's — from the call itself or from another variable that holds it. A refusal carries
-// the agent's words in that error (runtime.RefusalReason), and its Error method returns them
-// (reaches). Only a target of type error holds it: of a call with several results, the others,
-// such as get_state's answer beside its error, carry no refusal; and a value built around the
-// error, such as the PromptRefused the send goroutine hands on, holds it in a field, which the
-// test follows where refusalWords names the field and nowhere else.
+// prompt send's, in the variable the send goroutine also gives its adoption's error
+// (Machine.startSend), or a compaction's — from the call itself or from another variable that
+// holds it. A refusal carries the agent's words in that error (runtime.RefusalReason), and its
+// Error method returns them (reaches). Only a target of type error holds it: of a call with
+// several results, the others, such as get_state's answer beside its error, carry no refusal; and
+// a value built around the error, such as the PromptRefused the send goroutine hands on, holds it
+// in a field, which the test follows where refusalWords names the field and nowhere else.
 func (r *refusalTaint) sendAnswer(target types.Object, expr ast.Expr) bool {
 	if !types.Identical(target.Type(), errorType) {
 		return false

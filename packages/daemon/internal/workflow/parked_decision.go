@@ -125,17 +125,14 @@ func ReadKeptGates(ctx context.Context, tx pgx.Tx, store record.Store, tree stri
 	if owed.Approved > 0 && !slices.Contains(issues, tree) {
 		issues = append(issues, tree)
 	}
-	if len(issues) == 0 {
-		return KeptGates{}, nil
-	}
 	return store.Gates(ctx, tx, issues)
 }
 
 // ForgetSuperseded reads the gates owed is asked of (ReadKeptGates) and deletes in tx the row of
-// every decision of owed that a later approval superseded (keptSuperseded, SupersedingApproval), and
-// returns the gates it read, for the caller to render the task from (KeptDecisionsTask). It is the
-// write half of a kept-decisions task, and every caller that renders one at a start, a ready or a
-// send calls it first; the delivery of a catch-up, whose read is read-only, renders from
+// every decision of owed that a later approval superseded (keptSuperseded, SupersedingApproval),
+// and returns the gates it read, for the caller to render the task from (KeptDecisionsTask). It is
+// the write half of a kept-decisions task, and every caller that renders one at a start, a ready or
+// a send calls it first; the delivery of a catch-up, whose read is read-only, renders from
 // ReadKeptGates and deletes nothing.
 //
 // A decision a later approval superseded is forgotten: the approval is the person's word, the gate
@@ -177,17 +174,17 @@ func ForgetSuperseded(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // names nothing is "", which is retired rather than sent.
 //
 // Each decision is asked in the loop that writes it whether it is still the person's word
-// (SupersedingApproval), so no task can name a kept decision that nobody asked about. A kept decision
-// records no version, so it is asked at the version its gate holds approved and at its own place
-// in Dispatch's log (record.DecisionMark.Seq and At, which the outbox's parkDecision keeps from
-// the notice's Review). The approval is the root's own, and it is named only while steps gates its
-// step (gates.design off asks no person, and a step the deployment stopped gating asks no person
-// either), on the document of that step (record.DesignStep.Document), which is the document the
-// person reviewed and the one whose approval the architect requests again. It is asked at the
+// (SupersedingApproval), so no task can name a kept decision that nobody asked about. A kept
+// decision records no version, so it is asked at the version its gate holds approved and at its own
+// place in Dispatch's log (record.DecisionMark.Seq and At, which the outbox's parkDecision keeps
+// from the notice's Review). The approval is the root's own, and it is named only while steps gates
+// its step (gates.design off asks no person, and a step the deployment stopped gating asks no
+// person either), on the document of that step (record.DesignStep.Document), which is the document
+// the person reviewed and the one whose approval the architect requests again. It is asked at the
 // version the person approved, with no mark: the gate's approval of that same version is the kept
-// approval as the new generation's registration read it again, so it stands, and an approval of
-// a later version is the person's word in its place, so the sentence would ask them again for
-// what they already decided.
+// approval as the new generation's registration read it again, so it stands, and an approval of a
+// later version is the person's word in its place, so the sentence would ask them again for what
+// they already decided.
 func KeptDecisionsTask(gates KeptGates, steps []record.DesignStep, tree string, owed record.KeptDecisions) (string, record.KeptDecisions) {
 	var kept record.KeptDecisions
 	named := make([]string, 0, len(owed.Decisions))

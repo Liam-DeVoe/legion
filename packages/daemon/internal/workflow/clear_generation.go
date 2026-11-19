@@ -14,8 +14,7 @@ import (
 // a merged or closed pull request, the last generation's reading of a still-open one, its design
 // gates, and each role's handoff, review rounds, verdict and summary. If the clear deletes gate
 // rows of issue, the empty set of design-gate documents is queued for it, due at now
-// (publishEmptied). issue is the record as tx holds it: the decisions asked first are those its
-// tree keeps on it.
+// (publishEmptied). issue is the record as tx holds it.
 //
 // It and ClearTreeGeneration are the only callers that clear a generation: one issue's, for an
 // adopted member and a re-entered child, or a whole tree's, for a re-admitted root. The record

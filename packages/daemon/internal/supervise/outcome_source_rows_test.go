@@ -28,26 +28,35 @@ func TestOutcomeSourceFindsEachPlantedShape(t *testing.T) {
 	imports := outcomeImporter(t, fileset)
 	bridge := checkOutcomeSource(t, fileset, imports, claudebridgePath, outcomeDirs[claudebridgePath])
 	words := constant.StringVal(bridge.bridgeBusyWords(t).Val())
+	copies := copyOutcomeSources(t)
+	planted := func(match wordMatch) bool {
+		return filepath.Base(fileset.Position(match.at.Pos()).Filename) == plantedFile
+	}
 	for _, row := range plantedShapes {
 		t.Run(row.name, func(t *testing.T) {
 			if !slices.Contains(outcomePaths, row.path) {
 				t.Fatalf("the source test reads no package %s, where this row plants its shape", row.path)
 			}
-			pkg := plantShape(t, fileset, imports, row.path, row.source)
-			found := append(pkg.refusalMatches(t), pkg.busyHeld(t, words)...)
+			pkg := plantShape(t, fileset, imports, row.path, copies[row.path], row.source)
 			if row.clean {
-				for _, match := range found {
+				for _, match := range append(pkg.refusalMatches(t), pkg.busyHeld(t, words)...) {
 					t.Errorf("%s, in %s: the analysis reports %s, where it should let the read pass", pkg.pos(match.at), match.in, match.what)
 				}
 				return
 			}
-			for _, match := range found {
-				if filepath.Base(fileset.Position(match.at.Pos()).Filename) == plantedFile {
-					t.Logf("%s, in %s: %s", pkg.pos(match.at), match.in, match.what)
-					return
-				}
+			// One match in the planted file passes the row, so the busy words are looked for only
+			// where no match of a refusal's words is there.
+			found := pkg.refusalMatches(t)
+			at := slices.IndexFunc(found, planted)
+			if at < 0 {
+				found = pkg.busyHeld(t, words)
+				at = slices.IndexFunc(found, planted)
 			}
-			t.Errorf("the analysis reports nothing in %s of %s: the source test no longer finds %s", plantedFile, row.path, row.name)
+			if at < 0 {
+				t.Errorf("the analysis reports nothing in %s of %s: the source test no longer finds %s", plantedFile, row.path, row.name)
+				return
+			}
+			t.Logf("%s, in %s: %s", pkg.pos(found[at].at), found[at].in, found[at].what)
 		})
 	}
 }
@@ -55,26 +64,39 @@ func TestOutcomeSourceFindsEachPlantedShape(t *testing.T) {
 // plantedFile is the file plantShape writes a row's shape to.
 const plantedFile = "planted.go"
 
-// plantShape copies the non-test source of the package at path, as this build compiles it, into
-// a directory of the test's own, writes source beside it as plantedFile, and type-checks the copy
-// as that package (checkOutcomeSource), so the analysis reads the package as it would read it with
-// the shape written into it.
-func plantShape(t *testing.T, fileset *gotoken.FileSet, imports types.Importer, path, source string) *goSource {
+// copyOutcomeSources copies the non-test source of each package the source test reads
+// (outcomePaths), as this build compiles it, into a directory of the test's own, and answers each
+// copy's directory by import path. It copies each package once for all the rows, which run one
+// after another, each planting its shape in its package's copy (plantShape).
+func copyOutcomeSources(t *testing.T) map[string]string {
 	t.Helper()
-	listed, err := gobuild.ImportDir(outcomeDirs[path], 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	for _, name := range listed.GoFiles {
-		text, err := os.ReadFile(filepath.Join(outcomeDirs[path], name))
+	copies := map[string]string{}
+	for _, path := range outcomePaths {
+		listed, err := gobuild.ImportDir(outcomeDirs[path], 0)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, name), text, 0o600); err != nil {
-			t.Fatal(err)
+		dir := t.TempDir()
+		for _, name := range listed.GoFiles {
+			text, err := os.ReadFile(filepath.Join(outcomeDirs[path], name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, name), text, 0o600); err != nil {
+				t.Fatal(err)
+			}
 		}
+		copies[path] = dir
 	}
+	return copies
+}
+
+// plantShape writes source as plantedFile into dir, the copy of the package at path
+// (copyOutcomeSources), over the shape the row before it planted there, and type-checks the copy
+// as that package (checkOutcomeSource), so the analysis reads the package as it would read it
+// with the shape written into it, and no other row's.
+func plantShape(t *testing.T, fileset *gotoken.FileSet, imports types.Importer, path, dir, source string) *goSource {
+	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, plantedFile), []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -88,9 +110,10 @@ func plantShape(t *testing.T, fileset *gotoken.FileSet, imports types.Importer, 
 // field the text is written into in the same function, by a literal, its address, a positional
 // literal or an assignment; a match of the result of LastRefusal(); and a match of err.Error()
 // where err is a prompt send's answer. The matchers of cmp, path, path/filepath, fmt and sort
-// follow, and a clean row for each of the four packages. The analysis finds each shape by one
-// route alone — its source, the range or the field it passes through, if any, and its matcher, or
-// the busy words its constant holds — so taking any of those out of the analysis fails that row.
+// follow, then a match of a text compared through a pointer to it, and a clean row for each of the
+// four packages. The analysis finds each shape by one route alone — its source, the range, the
+// field or the pointer it passes through, if any, and its matcher, or the busy words its constant
+// holds — so taking any of those out of the analysis fails that row.
 var plantedShapes = []struct {
 	name, path, source string
 	// clean is a row of reads the analysis lets pass, which must report nothing.
@@ -343,6 +366,14 @@ import "sort"
 
 func plantedShape(err error) bool {
 	return sort.SearchStrings([]string{"Agent is busy"}, RefusalReason(err)) == 0
+}
+`},
+	{name: "a pointer to RefusalReason dereferenced and compared in the same function in runtime", path: runtimePath, source: `package runtime
+
+func plantedShape(err error) bool {
+	reason := RefusalReason(err)
+	p := &reason
+	return *p == "Agent is busy"
 }
 `},
 	{name: "clean reads in supervise", path: supervisePath, clean: true, source: `package supervise

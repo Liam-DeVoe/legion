@@ -1920,7 +1920,7 @@ type Store interface {
 	// the one those rows recorded, so the caller queues the empty set's publication for each, in
 	// tx, through its own store, which is the one that wakes the issue's board lane on commit
 	// (workflow.Engine.ClearGeneration, the daemon's projectRecords). issue is the record as tx
-	// holds it: the decisions asked first are those its tree keeps on it.
+	// holds it.
 	//
 	// Before it clears, it runs forget over every decision the tree keeps on a cleared issue,
 	// while that issue's gates stand, and forget deletes each one a later approval superseded.
@@ -1928,13 +1928,11 @@ type Store interface {
 	// superseded a decision kept for the tree: a start or catch-up that names the decision after
 	// the clear asks a gate that is gone or new, and the decision would read as the
 	// person's word again. A person who requested changes and then approved the latest version as
-	// their hand-over would send the new architect to revise the spec they approved. A row a queued
-	// task holds is deleted too, since that task is asked again at its send and its gates are gone
-	// by then; a row an outbox row claims stays, since its text is already written and that row
-	// settles it (ForgetKeptDecisions). forget is required, so no clear can skip it: a nil forget
-	// is refused before anything is written. The workflow passes the forget every start and
-	// catch-up runs (workflow.ForgetSuperseded, through workflow.Engine.ClearGeneration, the only
-	// caller), so the clear asks its one rule.
+	// their hand-over would send the new architect to revise the spec they approved. Which rows
+	// forget deletes, and which it leaves, is the forget's own rule (workflow.ForgetSuperseded,
+	// ForgetKeptDecisions). forget is required, so no clear can skip it: a nil forget is refused
+	// before anything is written. The workflow passes the forget every start and catch-up runs,
+	// through workflow.Engine.ClearGeneration, the only caller, so the clear asks its one rule.
 	ClearGeneration(ctx context.Context, tx pgx.Tx, issue Issue, forget KeptForget) ([]string, error)
 	// ClearTreeGeneration empties them for every issue of tree, and runs forget over every
 	// decision the tree keeps first, as ClearGeneration does, answering the issues whose gates it
@@ -1969,7 +1967,8 @@ type Store interface {
 	GatesOf(ctx context.Context, tx pgx.Tx, issue string) (map[DesignStep]DesignGate, error)
 	// Gates is the design gates of each of issues, by issue and then step, in one read: the
 	// gates one look over many trees judges from (ReadLineFacts), rather than a read per tree
-	// under the fact lock. An issue with no gate has no entry.
+	// under the fact lock. An issue with no gate has no entry. An empty issues makes no read and
+	// answers an empty map.
 	Gates(ctx context.Context, tx pgx.Tx, issues []string) (map[string]map[DesignStep]DesignGate, error)
 	// GatedIssues is the key of each issue of project that holds at least one design gate and that
 	// Dispatch does not show as done, in key order: the issues a pass over every recorded gate
