@@ -1,11 +1,11 @@
 // packages/broker-client/src/__tests__/remote-words.test.ts
 //
 // The broker's words are its own, and they can quote a URL that carries a credential: a user and
-// password in its user information, a token in a query or fragment value. A refusal prints them
-// as the rule for remote text reads them (`redactRemoteText`), as the Go client's `RefusedError`
-// does (packages/envoy/internal/brokerclient/remote_words_test.go): in its message, in
-// `JSON.stringify`, in Bun's and Node's inspection, and in a registration still pending that
-// quotes it.
+// password in its user information, a token in a query or fragment value. A refusal prints a code
+// only where it is one the clients handle, and a description only where it is a known refusal
+// (`token-errors.ts`), each read through the box (`RemoteText`), so none of these words prints: in
+// its message, in `JSON.stringify`, in Bun's and Node's inspection, and in a registration still
+// pending that quotes it. An answer's token_type and credential_expires_at are quoted nowhere.
 //
 // Each check is the designated assertion of cmd/redact-gate's mutation gate: it prints the output
 // it read as `REDACT-CAPTURE <capture> <base64>` and fails with a message that begins
@@ -13,15 +13,12 @@
 
 import { expect, test } from "bun:test";
 import { inspect } from "node:util";
-import { WORDS_NOT_READABLE } from "@legion/contracts/remote-text";
+import { RemoteText } from "@legion/contracts/remote-text";
 import { newDpopKey } from "../dpop";
+import { REFUSAL_TEXT_WITHHELD } from "../refusal-text";
 import type { TokenSource } from "../source";
-import {
-  BrokerRefusedError,
-  type BrokerToken,
-  BrokerTokenClient,
-  RegistrationPendingError,
-} from "../token-client";
+import { type BrokerToken, BrokerTokenClient } from "../token-client";
+import { BrokerRefusedError, RegistrationPendingError } from "../token-errors";
 import { SUBJECT_TOKEN_TYPE_KUBERNETES, TOKEN_TYPE_DPOP } from "../wire";
 import { accepted, refusalOf, stubBroker } from "./stub";
 
@@ -32,22 +29,18 @@ const TOKEN = "not-a-secret-token";
  *  as a credential to a scanner. */
 const PARAM = ["access", "token"].join("_");
 const WORDS = `the issuer at https://${USER}:${PASSWORD}@issuer.example/path?${PARAM}=${TOKEN}`;
-const SHOWN = `the issuer at https://issuer.example/path?${PARAM}=`;
 const CODE = `https://${USER}:${PASSWORD}@issuer.example/code?${PARAM}=${TOKEN}`;
-const CODE_SHOWN = `https://issuer.example/code?${PARAM}=`;
+/** The code as a refusal shows a code the clients do not handle: its length as the rule reads it,
+ *  none of its characters. */
+const CODE_SHOWN = `unrecognised error code (${String(new RemoteText(CODE)).length} chars)`;
 
 const DESCRIPTIONS = [
-  { name: "user information and a query value", words: WORDS, shown: SHOWN },
+  { name: "user information and a query value", words: WORDS },
   {
     name: "a fragment's value",
     words: `sign in again at https://issuer.example/callback#${PARAM}=${TOKEN}`,
-    shown: `sign in again at https://issuer.example/callback#${PARAM}=`,
   },
-  {
-    name: "words the rule cannot read",
-    words: `${WORDS} refused the subject token`,
-    shown: WORDS_NOT_READABLE,
-  },
+  { name: "words the rule cannot read", words: `${WORDS} refused the subject token` },
 ] as const;
 
 const SCRIPTED: TokenSource = {
@@ -100,7 +93,7 @@ const REFUSALS = [
     name: "the code, with a description",
     code: CODE,
     description: "revoked",
-    want: `HTTP 400 ${CODE_SHOWN}: revoked`,
+    want: `HTTP 400 ${CODE_SHOWN}: ${REFUSAL_TEXT_WITHHELD}`,
   },
   {
     name: "the code, with no description",
@@ -112,23 +105,23 @@ const REFUSALS = [
     name: `the description: ${row.name}`,
     code: "invalid_grant",
     description: row.words,
-    want: `HTTP 400 invalid_grant: ${row.shown}`,
+    want: `HTTP 400 invalid_grant: ${REFUSAL_TEXT_WITHHELD}`,
   })),
 ];
 
 test.each(
   REFUSALS.map((row) => [row.name, row] as const)
-)("a refusal prints the broker's words as the rule reads them: %s", async (_name, row) => {
+)("a refusal prints none of the broker's words it does not know: %s", async (_name, row) => {
   const refusal = await refusalFor(400, { error: row.code, error_description: row.description });
   expect(refusal).toBeInstanceOf(BrokerRefusedError);
   requireNoneFormatted("ts.BrokerRefusedError", refusal as Error);
   expect(refusal?.message).toBe(`the secrets broker refused a scripted identity: ${row.want}`);
-  expect((refusal as BrokerRefusedError).hasCode(row.code)).toBe(true);
+  expect((refusal as BrokerRefusedError).code).toBe(row.code === "invalid_grant" ? row.code : "");
 });
 
 test.each(
   DESCRIPTIONS.map((row) => [row.name, row] as const)
-)("a registration still pending prints the refusal's words as the rule reads them: %s", (_name, row) => {
+)("a registration still pending prints none of the refusal's words: %s", (_name, row) => {
   const refusal = new BrokerRefusedError(
     400,
     "invalid_grant",
@@ -137,17 +130,13 @@ test.each(
   );
   const pending = new RegistrationPendingError("session-1", refusal);
   requireNoneFormatted("ts.RegistrationPendingError", pending);
-  expect(pending.message).toContain(
-    row.shown === WORDS_NOT_READABLE
-      ? `(${WORDS_NOT_READABLE})`
-      : `(pod_session_not_registered: ${row.shown})`
-  );
+  expect(pending.message).toContain(`(${REFUSAL_TEXT_WITHHELD})`);
   expect(refusal.podSessionUnregistered).toBe(true);
 });
 
 test.each(
   DESCRIPTIONS.map((row) => [row.name, row] as const)
-)("an answer's credential_expires_at prints as the rule reads it: %s", async (_name, row) => {
+)("an answer's credential_expires_at is quoted nowhere: %s", async (_name, row) => {
   const refusal = await refusalFor(200, {
     access_token: "a",
     token_type: "DPoP",
@@ -156,9 +145,7 @@ test.each(
     credential_expires_at: row.words,
   });
   requireNone("ts.credential-expires-at", refusal?.message ?? "");
-  expect(refusal?.message).toEndWith(
-    `answered a credential_expires_at that is no RFC 3339 time (${JSON.stringify(row.shown)})`
-  );
+  expect(refusal?.message).toContain("answered a credential_expires_at that is no RFC 3339 time");
 });
 
 /** One trade at a stub broker whose accepted answer has `field` set to `value`. */
@@ -194,15 +181,20 @@ test("a token type is compared as it came and kept as the closed DPoP", async ()
 // `openid-client` refuses a token_type other than bearer and DPoP before this client reads the
 // answer, so the token type that reaches `#read` and is refused there is Bearer.
 test.each([
-  ["token_type", "Bearer", `token_type ${JSON.stringify("Bearer")}`],
-  ["credential_expires_at", DESCRIPTIONS[0].words, `(${JSON.stringify(DESCRIPTIONS[0].shown)})`],
-  ["credential_expires_at", "soon", `(${JSON.stringify("soon")})`],
-] as const)("an answer whose %s is not this grant's quotes it only as the rule reads it", async (field, value, quoted) => {
+  ["token_type", "Bearer", "a token_type that is not DPoP"],
+  [
+    "credential_expires_at",
+    DESCRIPTIONS[0].words,
+    "a credential_expires_at that is no RFC 3339 time",
+  ],
+  ["credential_expires_at", "soon", "a credential_expires_at that is no RFC 3339 time"],
+] as const)("an answer whose %s is not this grant's quotes none of it", async (field, value, said) => {
   const { token, error } = await tradeWith(field, value);
   expect(token).toBeUndefined();
   if (error === undefined) throw new Error(`${field} ${value} was taken`);
   requireNoneFormatted("ts.token-answer", error);
-  expect(error?.message).toContain(quoted);
+  expect(error?.message).toContain(said);
+  expect(error?.message).not.toContain(JSON.stringify(value));
 });
 
 test("a credential expiry is parsed through the box", async () => {

@@ -14,13 +14,15 @@ test("box print test: RemoteText prints no secret by any printer at any placemen
   expect(failures.map((f) => f.why)).toEqual([]);
 });
 
-/** A LibraryError's twin: an Error whose code, description and cause's message are public
- *  strings, as they came, and whose message quotes the library's own message as it came. */
+/** A LibraryError's twin: an Error whose code and description are public strings, as they came,
+ *  with the classes LibraryError keeps, and whose message quotes the library's own message as it
+ *  came. */
 class LibraryErrorTwin extends Error {
   readonly status = 400;
   readonly code = REMOTE_WORDS;
   readonly description = REMOTE_WORDS;
-  readonly causeMessage = REMOTE_WORDS;
+  readonly thrownClass = "ResponseBodyError (message withheld)";
+  readonly causeClass = "Error (message withheld)";
   constructor() {
     super(REMOTE_WORDS);
     this.name = "ResponseBodyError";

@@ -9,7 +9,8 @@ import { type Holder, printTest, REMOTE_WORDS } from "@legion/test-fixtures/prin
 import { newDpopKey } from "../dpop";
 import type { MadeBrokerClient } from "../environment";
 import type { TokenSource } from "../source";
-import { BrokerRefusedError, BrokerTokenClient } from "../token-client";
+import { BrokerTokenClient } from "../token-client";
+import { BrokerRefusedError } from "../token-errors";
 import { POD_SESSION_NOT_REGISTERED, SUBJECT_TOKEN_TYPE_KUBERNETES } from "../wire";
 import { stubBroker } from "./stub";
 

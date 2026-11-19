@@ -5,6 +5,7 @@
 // WORDS_NOT_READABLE. Go's half is `redact.Remote` in packages/envoy/internal/redact, and both
 // halves are held to the fixture at packages/envoy/internal/redact/testdata/remote.json.
 
+import { errorClass } from "./log-text";
 import { isPublicRequestName } from "./public-request-names";
 
 /** What a message prints in place of a field the rule cannot read as clean: Go's
@@ -273,6 +274,21 @@ export class RemoteText {
     const at = new Date(this.#text);
     return Number.isNaN(at.getTime()) ? undefined : at;
   }
+
+  /** The rule's reading of the field ({@link redactRemoteText}) where `isKnown` accepts it, after
+   *  `scrub`, with each credential the box was given redacted ({@link tokens}); `undefined` where
+   *  `isKnown` refuses it. For a caller that prints a field only where it is one of a closed set of
+   *  shapes, a known refusal, with the credentials it holds scrubbed its own way first. It answers
+   *  no more of the field than {@link toString} prints. */
+  knownReading(
+    isKnown: (reading: string) => boolean,
+    scrub: (reading: string) => string
+  ): string | undefined {
+    const reading = redactRemoteText(this.#text);
+    if (!isKnown(reading)) return undefined;
+    const carried = carriedOf.get(this) ?? [];
+    return carried.length === 0 ? scrub(reading) : tokens(scrub(reading), -1, ...carried);
+  }
 }
 
 /**
@@ -281,10 +297,10 @@ export class RemoteText {
  * issuer's or the broker's words in `error`, `error_description` and `error_uri`, the answer's
  * body (a `ResponseBodyError`'s `cause`; an `UnsupportedOperationError`'s `cause.body`, which
  * holds a token the answer minted), the answer itself (`response`), and an error of its own
- * under `cause`. This one keeps none of them: the status, the library's name for the error, and
- * each of its words as a {@link RemoteText} — the code, the description, the library's message and
- * the message of the error directly under it — so every way JavaScript prints it, an inspection
- * that follows `cause` included, prints only the rule's reading of them. Go's `redact.OAuthAnswer`.
+ * under `cause`. This one keeps none of them: the status, the library's name for the error, its
+ * class and its cause's ({@link errorClass}, which names no word of a message), and each of its
+ * words as a {@link RemoteText}, the code and the description, so every way JavaScript prints it
+ * prints only the rule's reading of them. Go's `redact.OAuthAnswer`.
  */
 export class LibraryError extends Error {
   /** The HTTP status of the answer behind the error, 0 where it names none. */
@@ -293,8 +309,10 @@ export class LibraryError extends Error {
   readonly code: RemoteText;
   /** The answer's `error_description`, empty where it names none. */
   readonly description: RemoteText;
-  /** The message of the error the library's own error was thrown over, empty where none. */
-  readonly causeMessage: RemoteText;
+  /** What a text says of the error the library threw: its class ({@link errorClass}). */
+  readonly thrownClass: string;
+  /** The class of the error the library's own error was thrown over, "" where none. */
+  readonly causeClass: string;
 
   constructor(thrown: unknown) {
     const error = thrown instanceof Error ? thrown : undefined;
@@ -309,8 +327,9 @@ export class LibraryError extends Error {
     this.status = statusOfThrown(thrown);
     this.code = new RemoteText(code, carried);
     this.description = new RemoteText(description, carried);
+    this.thrownClass = errorClass(thrown);
     const cause = error?.cause;
-    this.causeMessage = new RemoteText(cause instanceof Error ? cause.message : "", carried);
+    this.causeClass = cause instanceof Error ? errorClass(cause) : "";
   }
 }
 

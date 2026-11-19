@@ -8,11 +8,13 @@
 
 import { afterEach, expect, test } from "bun:test";
 import { inspect } from "node:util";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { type IssuerAnswer, signedIn, stubIssuer } from "../../test/sign-ins";
 import { newDpopKey } from "../dpop";
 import { personIdentity } from "../person-identity";
 import type { TokenSource } from "../source";
-import { BrokerTokenClient, SignInEndedError } from "../token-client";
+import { BrokerTokenClient } from "../token-client";
+import { SignInEndedError } from "../token-errors";
 import { SUBJECT_TOKEN_TYPE_KUBERNETES } from "../wire";
 import { accepted, refusalOf, stubBroker } from "./stub";
 
@@ -29,7 +31,7 @@ const SECRETS = [USER, PASSWORD, TOKEN, MINTED];
 
 const PERSON = "ada@example.com";
 const CLIENT_ID = "example-device-client";
-const CLIENT_SECRET = "example-device-client-not-a-secret";
+const CLIENT_SECRET = fixtureSecret("client");
 
 const stops: (() => void)[] = [];
 afterEach(() => {

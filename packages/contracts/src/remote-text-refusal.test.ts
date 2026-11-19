@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { LibraryError, refusalFetch, requestCredentials } from "./remote-text";
 
 // requestCredentials is every value a request carries under a name no contract declares public;
@@ -7,6 +8,7 @@ test("requestCredentials reads every value a request carries", () => {
   const basic = btoa(`client:${encodeURIComponent("basic secret/RDX")}`);
   // The URL's user information, assembled so no line of this file reads as a credential.
   const userinfo = ["user", "url-secret-RDX-7a8b"].join(":");
+  const subject = fixtureSecret("subject");
   const got = requestCredentials(`https://${userinfo}@idp.example/token?code=query-code-RDX-5e6f`, {
     headers: {
       authorization: `Basic ${basic}`,
@@ -14,7 +16,7 @@ test("requestCredentials reads every value a request carries", () => {
       cookie: "session=cookie-RDX-4f5a",
       "content-type": "application/x-www-form-urlencoded",
     },
-    body: new URLSearchParams({ subject_token: "form-subject-RDX-1a2b", scope: "openid" }),
+    body: new URLSearchParams({ subject_token: subject, scope: "openid" }),
   });
   for (const want of [
     "basic secret/RDX",
@@ -24,7 +26,7 @@ test("requestCredentials reads every value a request carries", () => {
     "user",
     "url-secret-RDX-7a8b",
     "query-code-RDX-5e6f",
-    "form-subject-RDX-1a2b",
+    subject,
   ]) {
     expect(got).toContain(want);
   }
@@ -40,7 +42,7 @@ test("requestCredentials reads every value a request carries", () => {
 // a LibraryError over the library's error of that answer prints none of them, while its code
 // compares as the answer gave it.
 test("a refusal echoing the request prints none of its credentials, and keeps its code", async () => {
-  const secret = "rt-invalid_grant-not-a-secret-refresh";
+  const secret = fixtureSecret("refresh");
   const answer = JSON.stringify({
     error: "invalid_grant",
     error_description: `refresh_token ${secret} is revoked`,
