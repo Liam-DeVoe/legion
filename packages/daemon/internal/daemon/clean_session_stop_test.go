@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,10 +12,15 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -41,13 +47,19 @@ type askedRoute struct {
 // /v1/sessions/<session_id>) — keeping what each was asked and answering as the real listener
 // does. held is the registration both routes work on, and relaunched, when a test sets it,
 // replaces it the moment the read has been answered: a claim relaunching under the same session
-// id while the stop is in flight. The delete is judged as deleteSessionHandler judges it
-// (packages/envoy/cmd/listener/api.go), under both conditions at the moment it lands, and
-// entryRemoved says whether the registration went. readStatus is a registry route that refuses
-// the read instead of answering it, and heldRead one that answers only once the test closes it
-// (or the request's own context ends first): a read still in flight when the daemon's stop
-// begins, or, never closed, a read held past the stop's own budget.
+// id while the stop is in flight. register is that relaunch at the moment a test's own runtime
+// picks: the process it started registering the session. The delete is judged as
+// deleteSessionHandler judges it (packages/envoy/cmd/listener/api.go), under both conditions at
+// the moment it lands, and entryRemoved says whether the registration went; one it removed is
+// held no longer. readStatus is a registry route that refuses the read instead of answering it,
+// and heldRead one that answers only once the test closes it (or the request's own context ends
+// first): a read still in flight when the daemon's stop begins, or, never closed, a read held
+// past the stop's own budget.
 type listenerRecorder struct {
+	// mu guards what the routes and register read and write, since a stop's requests and a
+	// relaunch's registration reach the recorder on goroutines of their own. A test reads the
+	// fields directly once the request it waited for has been answered.
+	mu           sync.Mutex
 	held         storedRegistration
 	relaunched   *storedRegistration
 	readStatus   int
@@ -60,16 +72,34 @@ type listenerRecorder struct {
 	arrived, settled chan struct{}
 }
 
+// register is a process registering the session under test: the listener holds its
+// registration from now on.
+func (l *listenerRecorder) register(registration storedRegistration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.held = registration
+}
+
+// holding is the registration the listener holds now.
+func (l *listenerRecorder) holding() storedRegistration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.held
+}
+
 func (l *listenerRecorder) server(t *testing.T) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		l.mu.Lock()
 		asked := &l.read
 		if r.Method == http.MethodDelete {
 			asked = &l.delete
 		}
 		asked.method, asked.path, asked.query, asked.bearer = r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
 		asked.requests++
-		if l.arrived != nil && l.read.requests+l.delete.requests == 1 {
+		first := l.read.requests+l.delete.requests == 1
+		l.mu.Unlock()
+		if l.arrived != nil && first {
 			close(l.arrived)
 		}
 		if r.Method != http.MethodDelete {
@@ -98,6 +128,8 @@ func (l *listenerRecorder) answerRead(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.readStatus != 0 {
 		w.WriteHeader(l.readStatus)
 		_, _ = io.WriteString(w, `{"error":"the session registry did not answer"}`)
@@ -129,6 +161,8 @@ func (l *listenerRecorder) answerRead(w http.ResponseWriter, r *http.Request) {
 // delete belongs to, and otherwise the entry goes. Both answers are 200, since the caller has
 // nothing to retry either way.
 func (l *listenerRecorder) answerDelete(w http.ResponseWriter, r *http.Request) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	conditions, _ := url.ParseQuery(r.URL.RawQuery)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -142,6 +176,7 @@ func (l *listenerRecorder) answerDelete(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	l.entryRemoved = true
+	l.held = storedRegistration{absent: true}
 	_, _ = io.WriteString(w, `{"deleted":true}`)
 }
 
@@ -254,12 +289,14 @@ func TestCleanSessionStopReportsARelaunchsRegistrationTheListenerKept(t *testing
 	}
 }
 
-// The race only the moment covers: a suspended claim's later wake resumed it under the same
-// session id, and the relaunch registered before the stop's read was answered, so the read hands
-// back the relaunch's own instance id and the delete names it. The id cannot tell that entry from
-// the ended process's; the moment can, since the listener stamped the relaunch's registration
-// after it. So the listener keeps the registration and the stop reports it kept, with the
-// listener's own reason, and the woken session stays reachable.
+// What the moment keeps on its own: an entry the read hands back is newer than the stop, so the
+// delete names that entry's own instance id and the id refuses nothing. The daemon starts no
+// relaunch while its stop is in flight (supervise.Machine.awaitSessionStops, and
+// TestARelaunchIsNotRemovedByTheStopBeforeItWhenTheListenersClockIsBehind for a listener clock
+// that runs behind), so a relaunch of its own never registers before the read; on clocks that
+// agree the moment still keeps an entry that did, since the listener stamped it after the moment.
+// So the listener keeps the registration and the stop reports it kept, with the listener's own
+// reason, and the session stays reachable.
 func TestCleanSessionStopKeepsARelaunchThatRegisteredBeforeItsRead(t *testing.T) {
 	goneAt := time.Now()
 	listener := &listenerRecorder{held: storedRegistration{clientInstanceID: "inst_relaunched", lastSeen: goneAt.Add(2 * time.Second)}}
@@ -288,6 +325,136 @@ func TestCleanSessionStopKeepsARelaunchThatRegisteredBeforeItsRead(t *testing.T)
 	})
 	if kept < 0 {
 		t.Fatalf("logged %q, want the registration reported kept for being written after the moment", logged.String())
+	}
+}
+
+// relaunchRegistering is the fake runtime whose Resume brings the relaunched agent up: once the
+// runtime has started the process, that process registers the claim's session at the listener
+// under a client instance of its own (register), and resumed is closed.
+type relaunchRegistering struct {
+	*fake.Runtime
+	register func()
+	resumed  chan struct{}
+	once     sync.Once
+}
+
+func (r *relaunchRegistering) Resume(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
+	loc, err := r.Runtime.Resume(ctx, prev, spec)
+	if err == nil {
+		r.once.Do(func() {
+			r.register()
+			close(r.resumed)
+		})
+	}
+	return loc, err
+}
+
+// The relaunch that wakes a suspended claim, in the same session, is not removed by the clean
+// stop of the process before it, whatever the listener's clock says (R3 of the suspension's clean
+// stop), and neither is the relaunch a death decides at once. Here the listener's clock runs a
+// minute behind the daemon's, so every registration it stamps reads as written before the stop's
+// moment and the moment keeps none; and the claim is relaunched while the stop still waits for its
+// registry read, so the relaunched agent comes up, and registers, before that read is answered
+// unless something orders the two. A read answered after that registration hands back the
+// relaunch's own client instance, the delete names it, and nothing keeps the relaunch's
+// registration. The daemon starts no process of the claim while a clean stop of its session is in
+// flight, so the read answers the ended process's instance, the delete removes that registration
+// alone, and the relaunch's stays.
+func TestARelaunchIsNotRemovedByTheStopBeforeItWhenTheListenersClockIsBehind(t *testing.T) {
+	const listenerBehind = time.Minute
+	listenerNow := func() time.Time { return time.Now().Add(-listenerBehind) }
+	for _, tc := range []struct {
+		name string
+		// end ends the claim's process, which sends the clean stop of its session.
+		end func(t *testing.T, d *daemon, rt *relaunchRegistering, token claim.Token)
+		// relaunch brings the claim back in the same session and answers the status of the
+		// request that did, or nil where the daemon relaunches it unasked.
+		relaunch func(d *daemon, token claim.Token) <-chan int
+	}{
+		{
+			name: "the operator's resume of a suspended claim",
+			end: func(t *testing.T, d *daemon, _ *relaunchRegistering, token claim.Token) {
+				if status, body := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil, true); status != http.StatusOK {
+					t.Fatalf("the operator's suspension = %d; body %s", status, body)
+				}
+			},
+			relaunch: func(d *daemon, token claim.Token) <-chan int {
+				return operatorRequest(d, http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/resume", nil)
+			},
+		},
+		{
+			name: "the relaunch a death decides",
+			end: func(t *testing.T, d *daemon, rt *relaunchRegistering, token claim.Token) {
+				rt.Emit(runtime.Observation{Locator: *d.claim(token).Locator, Kind: runtime.Gone, Detail: "pane gone"})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t)
+			envoy := &listenerRecorder{
+				held:     storedRegistration{clientInstanceID: "inst_ended", lastSeen: listenerNow()},
+				heldRead: make(chan struct{}),
+				arrived:  make(chan struct{}),
+				settled:  make(chan struct{}),
+			}
+			cfg.EnvoyURL = envoy.server(t).URL
+			rt := &relaunchRegistering{Runtime: fake.NewRuntime(), resumed: make(chan struct{})}
+			rt.register = func() {
+				envoy.register(storedRegistration{clientInstanceID: "inst_relaunched", lastSeen: listenerNow()})
+			}
+			logs := &syncBuffer{}
+			d := startDaemonLogging(t, cfg, fakeRuntime(rt, &built{}), slog.New(slog.NewJSONHandler(logs, nil)))
+			token := d.spawn(api.SpawnRequest{Tree: "LEGION-9", Issue: "LEGION-9", Role: claim.RoleArchitect, Prompt: "Reply ready and wait."})
+			readyClaim(t, d, rt.Runtime, token)
+
+			tc.end(t, d, rt, token)
+			select {
+			case <-envoy.arrived:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("the clean stop never reached the listener; log:\n%s", logs)
+			}
+			var answered <-chan int
+			if tc.relaunch != nil {
+				answered = tc.relaunch(d, token)
+			}
+			// The relaunch either comes up, which registers it while the stop's read is still
+			// held, or says that it waits for the stop in flight; the read is answered only after
+			// one of the two.
+			testwait.Eventually(t, "the relaunch to come up, or to wait for the clean stop in flight", func() bool {
+				select {
+				case <-rt.resumed:
+					return true
+				default:
+				}
+				return strings.Contains(logs.String(), `"msg":"supervise: the launch waits for the clean stop of the session the claim records"`)
+			})
+			close(envoy.heldRead)
+			if answered != nil {
+				select {
+				case status := <-answered:
+					if status != http.StatusOK {
+						t.Fatalf("the request that relaunched the claim = %d, want 200; log:\n%s", status, logs)
+					}
+				case <-time.After(20 * time.Second):
+					t.Fatalf("the request that relaunched the claim was not answered; log:\n%s", logs)
+				}
+			}
+			for what, done := range map[string]chan struct{}{"the relaunch to come up": rt.resumed, "the stop's delete to be answered": envoy.settled} {
+				select {
+				case <-done:
+				case <-time.After(20 * time.Second):
+					t.Fatalf("waited 20s for %s; log:\n%s", what, logs)
+				}
+			}
+
+			if held := envoy.holding(); held.absent || held.clientInstanceID != "inst_relaunched" {
+				t.Fatalf("the listener holds %+v once the stop's delete %q was answered, want the relaunch's registration, inst_relaunched: the stop of the process before it removed it",
+					held, envoy.delete.query)
+			}
+			if got := envoy.deleteConditions(t).Get("client_instance_id"); got != "inst_ended" {
+				t.Errorf("the stop's delete named client instance %q, want the ended process's own, inst_ended", got)
+			}
+		})
 	}
 }
 

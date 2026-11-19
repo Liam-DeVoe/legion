@@ -526,11 +526,14 @@ func unreadAnswer(what, status string, err error) error {
 // (ReadSessionRegistration), and names that one client process, which no comparison of moments
 // can. It is what makes carrying the moment undated safe: where the read answered the ended
 // process's own entry, a relaunch's registration is refused by its own identity, whatever the
-// daemon's clock and the listener's say about the moment. Where the read was answered after the
-// relaunch had registered, the id handed back is the successor's and only the moment keeps that
-// registration — the listener judges both at the revision it deletes, under its own
-// compare-and-swap (session.SessionRegistry.DeleteIf), so what is stored when the delete lands
-// decides it, whatever this daemon knew when it sent it. Against a listener that answers no
+// daemon's clock and the listener's say about the moment. The read always answers before the
+// relaunch registers, since the machine starts no process of the claim while its clean stop is in
+// flight (supervise.Machine.awaitSessionStops): answered after the relaunch had registered, the
+// read would hand back the successor's id, only the moment would keep that registration, and a
+// listener clock behind this daemon's stamps it before the moment. The listener judges both at the
+// revision it deletes, under its own compare-and-swap (session.SessionRegistry.DeleteIf), so what
+// is stored when the delete lands decides it, and a delete that lands after the relaunch
+// registered meets the relaunch's own id. Against a listener that answers no
 // client_instance_id at all the id is empty and the moment judges alone, which is the whole of
 // the condition until that listener is upgraded.
 //

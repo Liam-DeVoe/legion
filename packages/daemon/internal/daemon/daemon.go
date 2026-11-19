@@ -126,13 +126,15 @@ const (
 	// packages/envoy/cmd/listener/api.go: 3.5 s) and shorter than two of them, so a listener
 	// answering promptly answers both inside it, while a read that spends the whole budget sends
 	// no delete and one answered late leaves the delete less than its own route's budget — which
-	// costs that session at most the wait it already had. It is short enough that a listener
-	// which never answers is abandoned while the claim's relaunch is still a launch backoff and
-	// a process boot away (launchBackoffFirst), rather than left in flight for as long as the
-	// listener likes, and it is at most half of stopBudget, so a stop the daemon's stop waits for
-	// (sessionStopsInFlight) that was sent before the halt or in the first half of the stop's
-	// budget ends inside that budget. What keeps a stop that does land late off the relaunch's
-	// registration is the two conditions the stop carries (cleanSessionStop), not this bound.
+	// costs that session at most the wait it already had. It is also the longest a relaunch of
+	// the claim waits for the stop before it starts its process
+	// (supervise.Machine.awaitSessionStops), so a listener which never answers holds that
+	// relaunch two and a half launch backoffs at most (launchBackoffFirst), rather than for as
+	// long as the listener likes, and it is at most half of stopBudget, so a stop the daemon's
+	// stop waits for (sessionStopsInFlight) that was sent before the halt or in the first half of
+	// the stop's budget ends inside that budget. What keeps a stop that does land late off the
+	// relaunch's registration is the two conditions the stop carries (cleanSessionStop), not this
+	// bound.
 	cleanSessionStopBudget = 5 * time.Second
 )
 
@@ -1679,12 +1681,16 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 //
 // That delete must never take the registration of the process that replaced the ended one. For
 // a death the very decision that asks for the stop goes on to relaunch the claim under the same
-// session id (Machine.died); for a suspension a later wake resumes it under that id, which can
-// register before the stop's read is answered. Either relaunch registers that id again. So the
-// stop names the ended process's own registration — its client instance id, read from the
-// listener first (send) — and carries goneAt beside it, and the listener deletes only under
-// both. What each condition is for, and why neither alone would do, is on
-// notify.DeleteConditions.
+// session id (Machine.died); for a suspension a later wake resumes it under that id. Either
+// relaunch registers that id again. So the stop names the ended process's own registration — its
+// client instance id, read from the listener first (send) — and carries goneAt beside it, and the
+// listener deletes only under both. What each condition is for, and why neither alone would do,
+// is on notify.DeleteConditions. The id is the ended process's only because the read is answered
+// before the relaunch registers, which no clock orders: the channel the stop returns is closed
+// once send has returned, and the machine starts no process of the claim before then
+// (supervise.Machine.awaitSessionStops). A relaunch that registered before the read would hand
+// the read its own id, and a listener whose clock runs behind this daemon's stamps that
+// registration before goneAt, so the delete would remove it.
 //
 // The listener keeps the entry when either condition refuses it, so the id rescues no
 // registration the moment refuses: a heartbeat whose write lands after the moment, or a listener
@@ -1699,20 +1705,23 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 // session nothing beyond the wait it already had: the registration lapses on its own when its
 // record expires (the session bucket's maximum age, 5 minutes by default). With no listener
 // configured nothing is told.
-func cleanSessionStop(inFlight *sessionStopsInFlight, envoyURL, token string, log *slog.Logger) func(string) {
+func cleanSessionStop(inFlight *sessionStopsInFlight, envoyURL, token string, log *slog.Logger) func(string) <-chan struct{} {
 	if envoyURL == "" {
 		return nil
 	}
 	stop := sessionStop{sessions: notify.New(envoyURL, token), log: log}
-	return func(session string) {
+	return func(session string) <-chan struct{} {
 		goneAt := time.Now()
 		counted := inFlight.start()
+		ended := make(chan struct{})
 		go func() {
+			defer close(ended)
 			if counted {
 				defer inFlight.end()
 			}
 			stop.send(session, goneAt)
 		}()
+		return ended
 	}
 }
 

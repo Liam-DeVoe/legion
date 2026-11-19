@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // sessionStops is a harness whose Envoy clean stops are recorded rather than sent, over a claim
@@ -25,7 +26,10 @@ func sessionStopsOf(t *testing.T, c Claim) (*harness, *[]string) {
 	h := newBareHarness(t)
 	h.token = c.Token
 	stopped := &[]string{}
-	h.deps.SessionGone = func(session string) { *stopped = append(*stopped, session) }
+	h.deps.SessionGone = func(session string) <-chan struct{} {
+		*stopped = append(*stopped, session)
+		return nil
+	}
 	if err := h.store.PutClaim(h.ctx, c); err != nil {
 		t.Fatal(err)
 	}
@@ -273,11 +277,11 @@ func TestASuspensionThatEndsAProcessStopsItsSessionOnce(t *testing.T) {
 				// to stop the process by then: that is what puts the process's last heartbeat
 				// before the moment the listener deletes under.
 				record, toldFirst := h.m.deps.SessionGone, false
-				h.m.deps.SessionGone = func(s string) {
+				h.m.deps.SessionGone = func(s string) <-chan struct{} {
 					if !slices.ContainsFunc(h.calls("Suspend"), func(c fake.Call) bool { return c.Locator == loc }) {
 						toldFirst = true
 					}
-					record(s)
+					return record(s)
 				}
 				h.must(RequestSuspend{Claim: h.token, Reason: "the idle pod was released", By: SuspendedByReleased})
 				h.wantState(StateSuspended)
@@ -438,6 +442,67 @@ func TestASuspensionThatEndsAProcessStopsItsSessionOnce(t *testing.T) {
 			h, stopped := sessionStopsOf(t, c)
 			row.end(t, h, stopped)
 			wantStops(t, *stopped, row.want)
+		})
+	}
+}
+
+// A relaunch starts no process while a clean stop of the session the claim records is in flight
+// (awaitSessionStops). The stop reads which client process the listener's registration names
+// before it deletes it, and a relaunch that had registered first would be the one it named. Here
+// the death's own decision relaunches the claim: the launch says it waits, starts nothing while
+// the stop runs, and resumes the recorded session once the stop has ended. A suspension that comes
+// while it waits cuts the launch short, as it cuts a start the runtime is making short, and
+// charges nothing beyond the one launch failure the death itself charged (relaunchAfterFailure).
+func TestARelaunchStartsNoProcessWhileTheCleanStopIsInFlight(t *testing.T) {
+	for _, suspends := range []bool{false, true} {
+		name := "the stop ends"
+		if suspends {
+			name = "a suspension comes first"
+		}
+		t.Run(name, func(t *testing.T) {
+			h, _ := sessionStops(t)
+			stopping := make(chan struct{})
+			h.m.deps.SessionGone = func(string) <-chan struct{} { return stopping }
+			h.reach(StateReady)
+			died := make(chan error, 1)
+			go func() {
+				died <- h.m.Handle(h.ctx, RuntimeObservation{Observation: runtime.Observation{
+					Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}})
+			}()
+			// The launch either says it waits or, with nothing to hold it, resumes the session at
+			// once; either ends the wait for it, and only the first is right.
+			testwait.Eventually(t, "the relaunch to wait for the clean stop in flight, or to resume", func() bool {
+				return len(h.records.of(launchWaitsForSessionStop)) > 0 || len(h.calls("Resume")) > 0
+			})
+			if resumes := h.calls("Resume"); len(resumes) != 0 {
+				t.Fatalf("the relaunch resumed the session %d times while the stop of the process before it was in flight, want none", len(resumes))
+			}
+
+			if suspends {
+				if err := h.m.Handle(h.ctx, RequestSuspend{Claim: h.token, Reason: "the operator stops it", By: SuspendedByOperator}); err != nil {
+					t.Fatalf("suspend: %v", err)
+				}
+			} else {
+				close(stopping)
+			}
+			select {
+			case <-died:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the death's decision did not return once the wait for the stop was over")
+			}
+			h.m.Wait()
+
+			if failures := h.claim().Budgets.LaunchFailures; failures != 1 {
+				t.Fatalf("the claim is charged %d launch failures, want the death's own one and none for the wait", failures)
+			}
+			if suspends {
+				h.wantCalls("Resume", 0)
+				h.wantState(StateSuspended)
+				return
+			}
+			if resumed := h.wantCalls("Resume", 1)[0]; resumed.Spec.ResumeSessionFile != h.claim().SessionFile {
+				t.Fatalf("the relaunch resumed %q, want the recorded session %q", resumed.Spec.ResumeSessionFile, h.claim().SessionFile)
+			}
 		})
 	}
 }
