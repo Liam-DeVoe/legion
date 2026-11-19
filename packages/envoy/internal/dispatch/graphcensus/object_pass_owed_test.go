@@ -93,6 +93,22 @@ func TestAnEventOwesTheObjectPassOnlyWhileItLeavesARowAndItsNodeApart(t *testing
 				from message;
 			`)
 		}},
+		{name: "a reply to a message", owed: true, write: func(t *testing.T) {
+			// The message the "a message" case made holds its node by now. A session's reply keeps
+			// its parent's target (api's insertSessionReply) and appends message.answered, not
+			// message.created.
+			executeStatements(t, database, `
+				with reply as (
+					insert into messages (issue_key, author, body, target, in_reply_to)
+					select null, '{"kind":"session","id":"ses_owed"}', 'Answered.', target, id
+					from messages where body = 'Owed.'
+					returning id
+				)
+				insert into events (seq, type, actor, payload, notify)
+				select 0, 'message.answered', '{"kind":"session","id":"ses_owed"}', jsonb_build_object('id', reply.id::text), false
+				from reply;
+			`)
+		}},
 		{name: "a removed document whose node stands", owed: true, write: func(t *testing.T) {
 			// The document the "a document" case made holds its node by now.
 			if err := database.Pool.QueryRow(context.Background(), `

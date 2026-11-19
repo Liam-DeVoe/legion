@@ -21,10 +21,11 @@ import (
 // meanwhile is in the event log: each create of these kinds appends its kind's create event in
 // the transaction that writes the row - issue.created for an issue and its spec, which names the
 // issue and no document, artifact.created for a document, whose payload carries the artifact,
-// ask.opened for an ask, whose payload is the ask, and message.created for a message, whose payload
-// is the message - and its removal of a document appends artifact.removed, whose payload carries
-// the removed artifact and its address. A conversation's file is created with no event, so only a
-// pass started for another reason reaches it: the pass reads the four tables whole.
+// ask.opened for an ask, whose payload is the ask, and message.created for a message, or
+// message.answered for a reply to one, a session's reply included, whose payload is the message -
+// and its removal of a document appends artifact.removed, whose payload carries the removed
+// artifact and its address. A conversation's file is created with no event, so only a pass started
+// for another reason reaches it: the pass reads the four tables whole.
 //
 // The read collects the ids the events name, kind by kind, and reads only those rows and their
 // nodes, through each row's unique key and the node's, so a tick whose events name only rows that
@@ -48,11 +49,11 @@ var eventsOweObjectPass = `
 		select coalesce(array_agg(e.issue_key) filter (where e.type = 'issue.created'), '{}') as issues,
 		       coalesce(array_agg(e.payload->'artifact'->>'id') filter (where e.type = 'artifact.created'), '{}') as documents,
 		       coalesce(array_agg(e.payload->>'id') filter (where e.type = 'ask.opened'), '{}') as asks,
-		       coalesce(array_agg(e.payload->>'id') filter (where e.type = 'message.created'), '{}') as messages,
+		       coalesce(array_agg(e.payload->>'id') filter (where e.type in ('message.created', 'message.answered')), '{}') as messages,
 		       coalesce(array_agg(e.payload->'artifact'->>'ref_key') filter (where e.type = 'artifact.removed'), '{}') as removed
 		from events e
 		where e.id > $1 and e.id <= $2
-		  and e.type in ('issue.created', 'artifact.created', 'ask.opened', 'message.created', 'artifact.removed')
+		  and e.type in ('issue.created', 'artifact.created', 'ask.opened', 'message.created', 'message.answered', 'artifact.removed')
 	)
 	select exists (select 1 from named c join issues i on i.key = any(c.issues) where ` + unmarked(graphstore.KindIssue, "i.key") + `)
 	    or exists (select 1 from named c join artifacts a on a.issue_key = any(c.issues)
