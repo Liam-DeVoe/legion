@@ -516,11 +516,10 @@ func (s *server) writeBroadcast(
 		if err != nil {
 			return broadcastRead{}, nil, err
 		}
-		event, err := s.appendEvent(ctx, tx, messageEvent(message, "message.created", actor, payload))
+		// The event and what the copy's node write stated under it, in one batch
+		// (appendCausingEvent).
+		event, err := s.appendCausingEvent(ctx, tx, messageEvent(message, "message.created", actor, payload), messageNode)
 		if err != nil {
-			return broadcastRead{}, nil, err
-		}
-		if err := graphstore.Caused(ctx, tx, messageNode, event.ID); err != nil {
 			return broadcastRead{}, nil, err
 		}
 		events = append(events, event)

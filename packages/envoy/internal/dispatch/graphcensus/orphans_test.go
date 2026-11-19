@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -297,6 +299,136 @@ func TestRowsNoPassCanWriteNeitherSpendTheBudgetNorKeepMore(t *testing.T) {
 	}
 }
 
+// A backlog of rows no pass can write - more than one batch of them - opens no transaction of the
+// pass and takes no owner lock, so a pass over it ends within its bound even while a writer holds
+// the owners' locks: 200 conversation files whose session holds white space and ORPH-1/a-md, whose
+// node is gone in project ELSEWHERE, behind an issue and an ask that hold their nodes. With issue
+// ORPH-1's owner lock held by another transaction, a pass of one batch answers no row, no More and
+// the moved row, well before the test's deadline.
+//
+// Its control is every batch written through writeObjectBatch, as before writableRows: the
+// first batch, which holds ORPH-1/a-md, queues behind the held owner lock and the pass runs out
+// the deadline.
+func TestABacklogOfRowsNoPassCanWriteTakesNoOwnerLock(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seedOrphanIssueWithAsks(t, database, 1)
+	writeEveryOwedNode(t, database)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('ELSEWHERE', 'Elsewhere', 'alice')`); err != nil {
+			return err
+		}
+		moved := graphstore.ArtifactNode(orphanIssue+"/a-md", "ELSEWHERE", "", alice, time.Now().UTC().Add(-time.Hour))
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{moved}, nil); err != nil {
+			return err
+		}
+		// A node not gone that names a project is marked, and its row read by no pass; gone,
+		// it leaves the row unmarked, and its project another than the row's.
+		moved.State, moved.MadeAt = graphstore.StateGone, time.Now().UTC().Add(-time.Minute)
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{moved}, nil); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+			values ('ORPH-1', 'ORPH', 'a-md', 'A', 'doc', '{"kind":"user","id":"alice"}');
+			insert into artifacts (session_id, slug, name, kind, created_by)
+			select 'ses bad', 'n-' || g, 'Notes', 'file', '{"kind":"session","id":"ses bad"}'
+			from generate_series(1, 200) as g;
+		`)
+		return err
+	}); err != nil {
+		t.Fatalf("seed the backlog no pass can write: %v", err)
+	}
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the owner lock's holder: %v", err)
+	}
+	defer holder.Rollback(ctx)
+	if err := store.LockOwners(ctx, holder, store.IssueOwner(orphanIssue)); err != nil {
+		t.Fatalf("hold issue %s's owner lock: %v", orphanIssue, err)
+	}
+	bounded, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	started := time.Now()
+	pass, err := WriteOwedObjectNodes(bounded, database, 1)
+	if err != nil || pass.Rows != 0 || pass.More || pass.Moved == nil {
+		t.Fatalf("a pass of one batch over the backlog answered %+v (%v) after %s, want no row, no More and the moved row, with %s's owner lock held elsewhere",
+			pass, err, time.Since(started).Round(time.Millisecond), orphanIssue)
+	}
+}
+
+// A row whose node is gone in another project stays unmarked, so every pass reads it again, and a
+// batch that holds a writable row beside such rows leaves them before its transaction opens: they
+// cost the read of their projects and no transaction, owner lock or transaction id each, on every
+// pass. Twenty documents of ORPH-1 whose nodes are gone in project ELSEWHERE and one writable
+// document, all in one batch: the pass writes the one row in the one transaction it opens and
+// answers the twenty in Moved.
+//
+// Its control is writableRows answering every row writable, as before it left these: the batch
+// fails on the first moved node and is written again one row at a time, 22 transactions in all.
+func TestRowsWhoseNodeIsGoneInAnotherProjectOpenNoTransaction(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seedOrphanIssueWithAsks(t, database, 0)
+	writeEveryOwedNode(t, database)
+	const movedRows = 20
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('ELSEWHERE', 'Elsewhere', 'alice')`); err != nil {
+			return err
+		}
+		var nodes []graphstore.Node
+		for index := range movedRows {
+			nodes = append(nodes, graphstore.ArtifactNode(fmt.Sprintf("%s/m-%02d-md", orphanIssue, index), "ELSEWHERE", "", alice,
+				time.Now().UTC().Add(-time.Hour)))
+		}
+		if err := graphstore.Write(ctx, tx, nodes, nil); err != nil {
+			return err
+		}
+		for index := range nodes {
+			nodes[index].State, nodes[index].MadeAt = graphstore.StateGone, time.Now().UTC().Add(-time.Minute)
+		}
+		if err := graphstore.Write(ctx, tx, nodes, nil); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+			select 'ORPH-1', 'ORPH', 'm-' || lpad(g::text, 2, '0') || '-md', 'Moved', 'doc', '{"kind":"user","id":"alice"}'::jsonb
+			from generate_series(0, $1::integer - 1) as g
+			union all
+			select 'ORPH-1', 'ORPH', 'w-md', 'Writable', 'doc', '{"kind":"user","id":"alice"}'::jsonb
+		`, movedRows)
+		return err
+	}); err != nil {
+		t.Fatalf("seed the rows whose nodes are gone in another project and the writable row: %v", err)
+	}
+	begins := &beginCounter{}
+	traced := storetest.TracedStore(t, database, begins)
+	pass, err := WriteOwedObjectNodes(ctx, traced, 0)
+	var moved interface{ Unwrap() []error }
+	if err != nil || pass.Rows != 1 || !errors.As(pass.Moved, &moved) || len(moved.Unwrap()) != movedRows {
+		t.Fatalf("the pass answered %+v (%v), want the writable row written and the %d rows whose nodes are in ELSEWHERE in Moved",
+			pass, err, movedRows)
+	}
+	if opened := begins.count.Load(); opened != 1 {
+		t.Errorf("the pass opened %d transaction(s), want 1: the writable row's batch alone", opened)
+	}
+}
+
+// beginCounter is a pgx tracer that counts the transactions a pool opens: pgx sends each BEGIN as a
+// statement of its own.
+type beginCounter struct{ count atomic.Int64 }
+
+func (c *beginCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(data.SQL)), "begin") {
+		c.count.Add(1)
+	}
+	return ctx
+}
+
+func (*beginCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
 // A kind whose batch fails holds back no other kind: with the store refusing every ask's node, the
 // pass still writes the message's node, and answers the asks' failure.
 //
@@ -333,9 +465,10 @@ func TestAFailingKindHoldsBackNoOtherKind(t *testing.T) {
 // answers no failure, and a second pass does the same. The project census names a-md `differs`,
 // with the cure no command gives, and not `gone` with the backfill the passes just ran.
 //
-// Its controls are the batch written whole with no retry of its rows one at a time, with which the
-// pass fails at that batch and b-md keeps no node, and the census reading gone before another
-// project, with which it names a-md gone and the backfill as its cure.
+// Its controls are the batch written whole, with neither the rows in another project left before
+// the write (writableRows) nor the retry of its rows one at a time, with which the pass fails at
+// that batch and b-md keeps no node, and the census reading gone before another project, with
+// which it names a-md gone and the backfill as its cure.
 func TestARowWhoseNodeStandsInAnotherProjectHoldsBackNoOtherRow(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
