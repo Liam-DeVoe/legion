@@ -168,10 +168,10 @@ func TestADocumentALaterReleaseMarkedWhileItStandsIsComplete(t *testing.T) {
 }
 
 // A create's transaction can start while the removal of the document at its address is still
-// under way: the removal holds the issue's row, the create queues behind it, and the removal
-// states the node gone and deletes the row before it commits. The create dates its row and its
-// node's live statement with one time it reads from the database's clock after it holds the
-// issue's row (graphstore.StatementTime), so that time is later than the removal's gone
+// under way: the removal holds the issue's owner lock, the create queues behind it, and the
+// removal states the node gone and deletes the row before it commits. The create dates its row
+// and its node's live statement with one time it reads from the database's clock after it holds
+// the issue's owner lock (graphstore.StatementTime), so that time is later than the removal's gone
 // statement: the node's newest state statement, read by the order the store appends it in and by
 // the order of its time alike, is the new document's live one, dated at its row's created_at.
 //
@@ -188,18 +188,18 @@ func TestACreateThatWaitedOnARemovalDatesItsDocumentAfterIt(t *testing.T) {
 		t.Fatalf("begin the removal: %v", err)
 	}
 	defer removal.Rollback(ctx)
-	if _, err := removal.Exec(ctx, `select 1 from issues where key = $1 for no key update`, issue.Key); err != nil {
-		t.Fatalf("take the issue's row as the removal does: %v", err)
+	if err := store.LockOwners(ctx, removal, store.IssueOwner(issue.Key)); err != nil {
+		t.Fatalf("take the issue's owner lock as the removal does: %v", err)
 	}
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		answered <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts",
 			map[string]any{"name": "Scratch.md"}, "alice")
 	}()
-	// The create's own statement, the owner check every upload takes (issueStatus with
-	// ownerRowLock): a document settlement queues on the issue's row too, with another statement,
-	// and is never taken for the create.
-	waitForLockWait(t, database, `%select status, closed_at is null from issues where key = $1 for no key update%`)
+	// The create's own owner lock, which every upload takes before its owner check (issueStatus
+	// under lockIssue): a document settlement queues on the issue's owner lock too, and is never
+	// taken for the create, since it runs no settlement while this test holds the lock.
+	waitForLockWait(t, database, `%public.owner_lock(%`)
 	// The create's transaction has begun. The removal states the node gone at its own time and
 	// deletes the row, as removeArtifact does, then commits.
 	goneAt, err := graphstore.StatementTime(ctx, removal, graphstore.KindArtifact, first.RefKey)
@@ -318,7 +318,7 @@ func removeAsAnEarlierBuild(t *testing.T, database *store.Store, artifactID stri
 }
 
 // earlierBuildRemoval removes the untouched document as a build before this one does, in one
-// transaction: the document's owner row first, as every writer of the store takes it
+// transaction: the document's owner lock first, as every writer of the store takes it
 // (events.LockOwnerRows, the order a settlement of the document takes it in), then the rows
 // removeArtifact clears and the artifact row, and no node written.
 func earlierBuildRemoval(ctx context.Context, database *store.Store, artifactID string) error {
