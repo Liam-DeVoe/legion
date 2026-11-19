@@ -12,17 +12,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// TestMain drops the databases the package's tests clone (storetest.Main). The xid window row
-// judges its windows' gaps only in the timing lane (storetest.JudgeXidGaps).
+// TestMain drops the databases the package's tests clone (storetest.Main).
 func TestMain(m *testing.M) {
-	storetest.JudgeXidGaps(os.Getenv(benchtime.TimingEnv) != "")
 	os.Exit(storetest.Main(m.Run))
 }
 

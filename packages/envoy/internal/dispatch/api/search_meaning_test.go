@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -1052,6 +1054,66 @@ func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
 	searchHit(t, response, "document", long.ID)
 	searchHit(t, response, "document", short.ID)
 	searchHit(t, response, "comment", comment.ID)
+}
+
+// The meaning search's answer on the plan a large table's statistics call for: every arm through
+// embeddings_cosine, pgvector's HNSW index. The rows above meet the exact scan that a table this
+// small calls for, analyzed once its vectors are in; here the server's pool refuses sequential
+// scans and sorts (enable_seqscan and enable_sort off), so no arm can read its kind's rows through
+// embeddings_kind_project and sort them by distance, and each walks the HNSW index for its order
+// instead. The search still finds each item the query is nearest to: two documents and a comment,
+// each window carrying a vector of its own.
+// The index's own scan count (pg_stat_user_indexes) shows the search walked it. The miss
+// storetest's comment once recorded on that plan - the short document's one window among a
+// hundred identical vectors, in 13 of 33 forced searches - is not this fixture: here every
+// window's vector differs, and the row holds the search's answer on the index, not pgvector's on
+// duplicates.
+func TestMeaningSearchAnswersOnTheHNSWPlan(t *testing.T) {
+	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
+	database := storetest.Open(t)
+	forced := storetest.Reopened(t, database, func(config *pgxpool.Config) {
+		config.ConnConfig.RuntimeParams["enable_seqscan"] = "off"
+		config.ConnConfig.RuntimeParams["enable_sort"] = "off"
+	})
+	handler, _, deps := newTestServer(t, testServerOptions{embedder: embedder, store: forced})
+	issue := createInteractionIssue(t, handler, "HNSW", "On the index", "Body text.")
+	first := uploadSearchDocument(t, handler, issue.Key, "first.md", "A first note on the subject.\n")
+	second := uploadSearchDocument(t, handler, issue.Key, "second.md", "A second note on another side of it.\n")
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "One remark on the same subject."}, "alice")
+	windowOwedOwners(t, deps)
+	embedWindowsAs(t, forced, embedder, "document_block", first.ID, angledVector(0.9, 2))
+	embedWindowsAs(t, forced, embedder, "document_block", second.ID, angledVector(0.8, 3))
+	embedWindowsAs(t, forced, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.7, 4))
+	processAllPending(t, forced, embedder)
+
+	before := hnswScans(t, database)
+	requireNoKeywordHit(t, "q=wibbleflorp")
+	response := searchResponse(t, handler, "q=wibbleflorp")
+	if response.Degraded != "" {
+		t.Fatalf("Degraded = %q, want empty", response.Degraded)
+	}
+	searchHit(t, response, "document", first.ID)
+	searchHit(t, response, "document", second.ID)
+	searchHit(t, response, "comment", comment.ID)
+	// A backend hands its scan counts to the shared statistics as it goes idle, and at most once a
+	// second, so the count is waited for.
+	after := testwait.Until(t, "the search's scans of embeddings_cosine in pg_stat_user_indexes", func() (int64, bool) {
+		scans := hnswScans(t, database)
+		return scans, scans > before
+	})
+	t.Logf("measured: pg_stat_user_indexes counted %d scan(s) of embeddings_cosine before the search and %d after it", before, after)
+}
+
+// hnswScans is how many scans of embeddings_cosine the database has counted.
+func hnswScans(t *testing.T, database *store.Store) int64 {
+	t.Helper()
+	var scans int64
+	if err := database.Pool.QueryRow(context.Background(), `
+		select coalesce(sum(idx_scan), 0)::bigint from pg_stat_user_indexes where indexrelname = 'embeddings_cosine'
+	`).Scan(&scans); err != nil {
+		t.Fatalf("read embeddings_cosine's scans: %v", err)
+	}
+	return scans
 }
 
 // TestProjectScopedSearchFindsItsCommentPastOtherProjectsNearerComments is the trade

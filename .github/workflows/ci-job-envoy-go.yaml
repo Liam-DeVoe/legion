@@ -109,9 +109,9 @@ jobs:
       # The tests the race detector makes impossible, which the race job of each of these packages
       # therefore cannot make, so envoy-go keeps a plain run of exactly them: internal/bus counts
       # HoldsSeed's allocations, which the race runtime's own allocations would be counted into;
-      # the API's and delivery's xid window tests judge a window's gaps, which the detector
-      # stretches past any bound, so a race run checks only their shape, which this run checks as
-      # well (storetest.XidJudgesGaps, INFRA-636); and the documents package measures the heap a
+      # the API's and delivery's xid window tests, whose checks (a window's statement count, the
+      # collaborators and the document work inside it, none of which reads a clock) a race run
+      # would repeat at four times the cost (storetest's xidwindow.go, INFRA-636); and the documents package measures the heap a
       # room keeps, which the detector's shadow memory and instrumentation move. Those are out of
       # the race build altogether (//go:build !race), and the two render-reuse storms run fewer
       # seeds and fewer edits under it (raceEnabled), so this is their full-size run. So is the

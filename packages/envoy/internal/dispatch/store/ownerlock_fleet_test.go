@@ -286,17 +286,14 @@ var earlierBuildArrivals = []earlierBuildArrival{
 	}},
 }
 
-// arriveOn runs arrival for key in a transaction of its own on conn, bounded by a lock timeout so
-// a wait that never ends fails rather than hangs, and commits it.
+// arriveOn runs arrival for key in a transaction of its own on conn and commits it. Its waits have
+// no bound of their own: a wait that never ends fails at the test binary's deadline.
 func arriveOn(ctx context.Context, conn *pgxpool.Conn, arrival earlierBuildArrival, key string) error {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local lock_timeout = '20s'`); err != nil {
-		return err
-	}
 	if err := arrival.arrive(ctx, tx, key); err != nil {
 		return err
 	}
@@ -358,9 +355,6 @@ func raceWriter(ctx context.Context, s *Store, shape writerShape, owners []Owner
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local lock_timeout = '20s'`); err != nil {
-		return false, err
-	}
 	switch shape {
 	case legacyModeWriter:
 		if err := LockOwners(ctx, tx, owners...); err != nil {
@@ -537,9 +531,6 @@ func heartbeatAsThisBuild(ctx context.Context, s *Store, instance string) error 
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local lock_timeout = '20s'`); err != nil {
-		return err
-	}
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1)`, registryLockKey); err != nil {
 		return err
 	}
@@ -700,14 +691,14 @@ func TestTheReadTheOwnerLockGuardsSeesTheCommitOfAWriterOfAnEarlierBuild(t *test
 				if err, early := awaitRowLockWaiter(t, s, answered); early {
 					t.Fatalf("LockOwnerAndRead answered (%v, %q) while a writer of an earlier build held the row; want it to wait for that row", err, <-read)
 				}
-			} else if err := <-answered; err != nil {
+			} else if err := testwait.Receive(t, "LockOwnerAndRead to answer beside a writer that holds no row", answered); err != nil {
 				t.Fatal(err)
 			}
 			if err := holder.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
 			if state.legacy {
-				if err := <-answered; err != nil {
+				if err := testwait.Receive(t, "LockOwnerAndRead to answer once the earlier build's writer committed", answered); err != nil {
 					t.Fatal(err)
 				}
 			}

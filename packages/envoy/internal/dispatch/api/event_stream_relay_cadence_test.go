@@ -107,7 +107,12 @@ func TestEventStreamRelayClosesAHeldGapOnTheHoldersCommitNotification(t *testing
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, handler, "OTHER", "Other issue", "A spec")
-	waitForQuietEventLog(t, database, 500*time.Millisecond)
+	// No write of the setup is still to notify once its writes are committed: only an insert into
+	// events notifies the relay (events_notify, 0107), the two creates committed theirs before
+	// they answered, and the one write each leaves running past its answer, its project's search
+	// term statistics, inserts no event. The relay then LISTENs after every notification the setup
+	// sent, so none of them reaches it.
+	awaitNoTransactionIDHolder(t, database, "TEST", "OTHER")
 	relay, fake, horizon, reads := newCadenceRelay(t, deps, database, coalesce)
 	subscription, _, _ := subscribeRelay(t, relay)
 	settleCadenceRelay(t, relay, fake, coalesce, reads)
@@ -156,20 +161,6 @@ func TestEventStreamRelayClosesAHeldGapOnTheHoldersCommitNotification(t *testing
 	if left := horizon.left(); left != 0 {
 		t.Fatalf("the relay published after %d of its 3 scripted observations", 3-left)
 	}
-}
-
-// waitForQuietEventLog waits until the event log's head has stood still for quiet, so no write
-// the test's setup made is still to notify. The quiet spell is what the row needs, not a bound;
-// the wait has none of its own (testwait.Until).
-func waitForQuietEventLog(t *testing.T, database *store.Store, quiet time.Duration) {
-	t.Helper()
-	head, since := eventHead(t, database), time.Now()
-	testwait.Until(t, "the event log's head to stand still for "+quiet.String(), func() (int64, bool) {
-		if now := eventHead(t, database); now != head {
-			head, since = now, time.Now()
-		}
-		return head, time.Since(since) >= quiet
-	})
 }
 
 // relayRead is one read of a cadence relay's generation as run reports it (afterRead): the

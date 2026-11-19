@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -722,11 +724,28 @@ func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *tes
 	if !strings.Contains(gateQuery, "insert into server_processes") {
 		t.Errorf("the %s waits for the gate in %q, want its registration's insert: with no web app it publishes no dashboard", builds.previousName(), gateQuery)
 	}
-	// The registration's bound is its lock_timeout: the previous build is refused with 55P03 and
-	// exits while this build's PATCH is still paused. A registration with no bound waits for the
-	// PATCH as long as it is held, so the shared wait's end is what fails it.
+	// The registration's bound is its lock_timeout, owner_lock_legacy_registration's own setting
+	// of 5 seconds (migration 20261115200014_owner_lock_legacy_gate), read off pg_proc: the
+	// previous build is refused with 55P03 and exits while this build's PATCH is still paused. A
+	// registration with no bound waits for the PATCH as long as it is held, so the shared wait's end
+	// is what fails it; one whose bound was raised fails the setting's check. How long the refusal
+	// takes on the clock is read in the timing lane alone (benchtime.TimingEnv).
+	const registrationGateBound = 5 * time.Second
+	var config []string
+	if err := builds.database.Pool.QueryRow(ctx, `
+		select coalesce(proconfig, '{}') from pg_proc where proname = 'owner_lock_legacy_registration'
+	`).Scan(&config); err != nil {
+		t.Fatalf("read owner_lock_legacy_registration's settings: %v", err)
+	}
+	if !slices.Contains(config, "lock_timeout=5s") {
+		t.Errorf("owner_lock_legacy_registration runs under %q, want lock_timeout=5s, the bound the %s's registration waits for the gate", config, builds.previousName())
+	}
 	testwait.Receive(t, "the "+builds.previousName()+"'s registration to be refused at its lock_timeout while this build's PATCH is held", previous.Exited)
-	t.Logf("the %s exited %s after its registration began to wait for the gate", builds.previousName(), time.Since(waiting).Round(time.Millisecond))
+	took := time.Since(waiting)
+	t.Logf("the %s exited %s after its registration began to wait for the gate", builds.previousName(), took.Round(time.Millisecond))
+	if os.Getenv(benchtime.TimingEnv) != "" && took > registrationGateBound+3*time.Second {
+		t.Errorf("the %s exited %s after its registration began to wait for the gate, want within its bound of %s and the exit", builds.previousName(), took.Round(time.Millisecond), registrationGateBound)
+	}
 	if output := previous.Output.String(); !strings.Contains(output, `msg="dispatch: register this server process"`) || !strings.Contains(output, "SQLSTATE 55P03") {
 		t.Errorf("the %s exited without logging its registration refused for the lock timeout (55P03):\n%s", builds.previousName(), output)
 	}

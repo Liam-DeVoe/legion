@@ -106,7 +106,7 @@ func TestHeavyBodiesAtTheBlockCapParseInWorkProportionalToTheirLength(t *testing
 		}
 		t.Run(shape.Name, func(t *testing.T) {
 			sizes := []int{shape.Grown / growthStep, shape.Grown}
-			growsLinearly(t, "parsing "+shape.Name, sizes, linearSlack, func(size int) uint64 {
+			growsLinearly(t, "parsing "+shape.Name, sizes, linearSlack, func(size int) work {
 				body := shape.Body(size)
 				var err error
 				work := workOf(func() { _, err = ParseForWrite(body, nil) })
@@ -127,9 +127,13 @@ func TestHeavyBodiesAtTheBlockCapParseInWorkProportionalToTheirLength(t *testing
 // that has grown quadratically before (linear_test.go holds the shapes that did), and the write is
 // counted beside it (UpdateWork) because it is the rest of what an API write does with a body,
 // which the end-to-end bound this test replaced used to cover (INFRA-985). The encode is ygo's,
-// which counts no steps of its own; it is counted by the bytes it allocates (workOf), which an
-// encode that copied its buffer again for each item it wrote would make grow with the square of
-// the document, and a write that encodes no update fails.
+// which counts no steps of its own; it is counted by the bytes it allocates (workOf), judged apart
+// from the steps (growsLinearly), which an encode that copied its buffer again for each item it
+// wrote would make grow with the square of the document - the control that plants such an encode
+// into ygo's encodeV1Locked fails this row on its bytes - and a write that encodes no update
+// fails. An encode that grew superlinearly while allocating nothing would be counted by nothing
+// here: that work is ygo's alone, which this module pins (sjawhar/ygo) and which holds no count of
+// its own.
 //
 // Each size gets a document of its own, since a write changes the document it writes into, and
 // the body it writes is built before the count starts.
@@ -140,7 +144,7 @@ func TestHeavyBodiesAtTheBodyCapParseAndEncodeInWorkProportionalToTheirLength(t 
 		}
 		t.Run(shape.Name, func(t *testing.T) {
 			sizes := []int{shape.Grown / growthStep, shape.Grown}
-			growsLinearly(t, "writing "+shape.Name, sizes, linearSlack, func(size int) uint64 {
+			growsLinearly(t, "writing "+shape.Name, sizes, linearSlack, func(size int) work {
 				body := shape.Body(size)
 				// "prosemirror" is the fragment the document service writes a document's blocks
 				// into (fragmentName, internal/dispatch/docs/tree.go).

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -188,24 +189,25 @@ func transactionIDHolders(t *testing.T, database *store.Store) (int, string) {
 	return holders, running
 }
 
-// awaitNoTransactionIDHolder waits until the TEST project's search term statistics are committed
-// and then until no backend holds a transaction id. An issue create leaves one write running past
-// its answer: the refresh of the project's search term statistics its related-item check starts
-// for a project that has none (ensureSearchTermStats), a background write with an id of its own.
-// That refresh can begin after the create answers, and its rebuild takes its id only once it
-// inserts, so a moment with no holder does not show it has ended; its row of search_term_totals,
-// written in the same transaction, does. A test that counts every backend waits it out first, as
-// the refusal tests wait it out, so what it counts afterwards is the writers it drives.
-func awaitNoTransactionIDHolder(t *testing.T, database *store.Store) {
+// awaitNoTransactionIDHolder waits until the search term statistics of each of projects are
+// committed and then until no backend holds a transaction id. An issue create leaves one write
+// running past its answer: the refresh of the project's search term statistics its related-item
+// check starts for a project that has none (ensureSearchTermStats), a background write with an id
+// of its own. That refresh can begin after the create answers, and its rebuild takes its id only
+// once it inserts, so a moment with no holder does not show it has ended; its row of
+// search_term_totals, written in the same transaction, does. A test that counts every backend
+// waits it out first, as the refusal tests wait it out, so what it counts afterwards is the
+// writers it drives.
+func awaitNoTransactionIDHolder(t *testing.T, database *store.Store, projects ...string) {
 	t.Helper()
-	testwait.Eventually(t, "the TEST project's search term statistics to be refreshed", func() bool {
-		var refreshed bool
+	testwait.Eventually(t, fmt.Sprintf("the search term statistics of %v to be refreshed", projects), func() bool {
+		var refreshed int
 		if err := database.Pool.QueryRow(context.Background(), `
-			select exists (select 1 from search_term_totals where project_key = 'TEST')
-		`).Scan(&refreshed); err != nil {
+			select count(distinct project_key) from search_term_totals where project_key = any($1)
+		`, projects).Scan(&refreshed); err != nil {
 			t.Fatalf("read search_term_totals: %v", err)
 		}
-		return refreshed
+		return refreshed == len(projects)
 	})
 	type reading struct {
 		Holders int
@@ -232,7 +234,7 @@ func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
 	release := func() { released.Do(func() { close(gate.release) }) }
 	defer release()
 	issue := createInteractionIssue(t, handler, "TEST", "Serialized writers", "alpha bravo charlie delta")
-	awaitNoTransactionIDHolder(t, database)
+	awaitNoTransactionIDHolder(t, database, "TEST")
 
 	comment := func(quote, body string) *httptest.ResponseRecorder {
 		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
@@ -312,7 +314,7 @@ func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
 func TestTwoPatchesOfOneIssueSerializeOnItsOwnerLockAndLoseNoUpdate(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Two patches", "A spec")
-	awaitNoTransactionIDHolder(t, database)
+	awaitNoTransactionIDHolder(t, database, "TEST")
 
 	holder, err := database.Pool.Begin(context.Background())
 	if err != nil {

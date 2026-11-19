@@ -48,19 +48,23 @@ func newProcessPair(t *testing.T) processPair {
 }
 
 // answerWait is the wait every process of a test's pair gives the other's answers
-// (roomQueries.wait) in place of production's roomQueryWait: the shared wait's own, which ends
-// only where testwait gives up, 30 s before the test binary's deadline, and never under no
-// deadline. roomQueryWait is a latency budget, and on a loaded machine an answer can take longer
-// than that to cross Postgres twice, which failed TestAShareHoldsEveryQueuedUpdateOfAPendingBatch
-// with no answer at all (dispatch://INFRA-3904); a wait of a length the test picked would fail the
-// same way on a slower machine still. TestAMemberThatNeverAnswersCostsTheWaitAndAWarn holds the
-// budget itself, on the clock it moves.
-func answerWait(t *testing.T) time.Duration {
+// (roomQueries.wait) in place of production's roomQueryWait: what is left of the shared wait's
+// own, read at each ask, so every ask's wait ends where testwait gives up, 30 s before the test
+// binary's deadline, however late in the test the ask comes, and never under no deadline.
+// roomQueryWait is a latency budget, and on a loaded machine an answer can take longer than that
+// to cross Postgres twice, which failed TestAShareHoldsEveryQueuedUpdateOfAPendingBatch with no
+// answer at all (dispatch://INFRA-3904); a wait of a length the test picked would fail the same
+// way on a slower machine still. TestAMemberThatNeverAnswersCostsTheWaitAndAWarn holds the budget
+// itself, on the clock it moves.
+func answerWait(t *testing.T) func() time.Duration {
 	t.Helper()
-	if deadline, ok := testwait.Context(t).Deadline(); ok {
-		return max(time.Until(deadline), time.Nanosecond)
+	shared := testwait.Context(t)
+	return func() time.Duration {
+		if deadline, ok := shared.Deadline(); ok {
+			return max(time.Until(deadline), time.Nanosecond)
+		}
+		return time.Duration(math.MaxInt64)
 	}
-	return time.Duration(math.MaxInt64)
 }
 
 // newSeededProcessPair is the pair on a document seeded with markdown and not settled, which

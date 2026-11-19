@@ -22,6 +22,60 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
+// The event feed stands behind the event horizon: a subscription's events_start is the last thing
+// it sends, once the relay's first cursor has awaited the horizon (firstRelayCursor), and the relay
+// sends an event only once the horizon has passed its id. The horizon's proof is instance-wide, so
+// a frame of the feed is as late as the longest transaction open anywhere on the Postgres
+// instance, and no clock bounds the wait for one: it keys on the horizon's own account of itself
+// (internal/dispatch/horizontest), which fails the wait at once, naming the holder, on a hold in
+// the test's own database that has stood OwnHoldBound. Every server these tests build warns at
+// horizontest.StallWarning (newRegisteredTestServer).
+
+// eventFeedFrame is the next frame but a heartbeat client is sent, which what names: a frame of
+// the event feed, so the wait for it is the horizon's (horizontest.PollInProcess), on the store of
+// client's server (servedBy).
+func eventFeedFrame(t *testing.T, client *socketClient, what string) any {
+	t.Helper()
+	if client.database == nil {
+		t.Fatalf("waiting for %s on a socket whose server's database no one named (servedBy)", what)
+	}
+	for {
+		var data []byte
+		horizontest.PollInProcess(t, what, client.database, func() bool {
+			var arrived bool
+			data, arrived = client.poll(t, what)
+			return arrived
+		})
+		if frame := decodeSocketFrame(t, data); !isHeartbeat(frame) {
+			return frame
+		}
+	}
+}
+
+// isHeartbeat reports whether frame is the socket's heartbeat.
+func isHeartbeat(frame any) bool {
+	_, beat := frame.(LiveHeartbeat)
+	return beat
+}
+
+// eventFeedEvent is client's next frame but a heartbeat, which must be one of sub's events.
+func eventFeedEvent(t *testing.T, client *socketClient, sub string) LiveEventFrame {
+	t.Helper()
+	frame := eventFeedFrame(t, client, "an event of "+sub)
+	event, ok := frame.(LiveEventFrame)
+	if !ok || event.Sub != sub {
+		t.Fatalf("frame = %+v, want an event of %s", frame, sub)
+	}
+	return event
+}
+
+// servedBy names database as the one the server behind c reads, for a wait on its event feed: a
+// socket a rig opens names the rig's, and one dialled to another process names that process's.
+func (c *socketClient) servedBy(database *store.Store) *socketClient {
+	c.database = database
+	return c
+}
+
 // eventHead is the newest committed event id: what a page resuming now would name as its since.
 func eventHead(t *testing.T, database *store.Store) int64 {
 	t.Helper()
@@ -63,7 +117,7 @@ func sendEventsSubscribe(t *testing.T, client *socketClient, sub string, since *
 // eventsStart reads sub's events_start, the frame its subscription opens with.
 func eventsStart(t *testing.T, client *socketClient, sub string) LiveEventsStart {
 	t.Helper()
-	frame := client.next(t, "the events_start of "+sub)
+	frame := eventFeedFrame(t, client, "the events_start of "+sub)
 	start, ok := frame.(LiveEventsStart)
 	if !ok || start.Sub != sub {
 		t.Fatalf("the first frame of %s = %+v, want its events_start", sub, frame)
@@ -94,7 +148,7 @@ type feedEvent struct {
 // it carries, whose id must be the one the frame names.
 func nextEvent(t *testing.T, client *socketClient, sub string) (LiveEventFrame, feedEvent) {
 	t.Helper()
-	frame := client.event(t, sub)
+	frame := eventFeedEvent(t, client, sub)
 	var event feedEvent
 	if err := json.Unmarshal(frame.Event, &event); err != nil {
 		t.Fatalf("decode the event of %s's frame %+v: %v", sub, frame, err)
@@ -545,7 +599,7 @@ func TestARelayDropWithinTheBoundsCatchesTheSubscriptionUp(t *testing.T) {
 	running := served.startEventsSubscription(ctx, stream, "feed", new(int64(0)))
 	t.Cleanup(running.stop)
 	relay := served.eventRelay
-	testwait.Eventually(t, "the subscription subscribes to the relay", func() bool { return relaySubscribers(relay) == 1 })
+	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool { return relaySubscribers(relay) == 1 })
 
 	// More events in one commit than the relay holds for one subscriber, and fewer than the
 	// replay's bound, so the catch-up covers the whole of what the drop lost.
@@ -553,7 +607,7 @@ func TestARelayDropWithinTheBoundsCatchesTheSubscriptionUp(t *testing.T) {
 	if head > maxLiveReplay {
 		t.Fatalf("the backlog of %d events is past the replay's bound of %d", head, maxLiveReplay)
 	}
-	testwait.Eventually(t, "the relay drops the subscription that fell behind", func() bool {
+	horizontest.PollInProcess(t, "the relay drops the subscription that fell behind", database, func() bool {
 		return relaySubscribers(relay) == 0
 	})
 
@@ -597,12 +651,12 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 	running := served.startEventsSubscription(ctx, stream, "feed", new(int64(0)))
 	t.Cleanup(running.stop)
 	relay := served.eventRelay
-	testwait.Eventually(t, "the subscription subscribes to the relay", func() bool { return relaySubscribers(relay) == 1 })
+	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool { return relaySubscribers(relay) == 1 })
 
 	// More events in one commit than the relay holds for one subscriber, and past the replay's
 	// bound, so nothing can catch the subscription up.
 	seedEvents(t, database, issue, liveEventsBuffer+maxLiveReplay+2, 0)
-	testwait.Eventually(t, "the relay drops the subscription that fell behind", func() bool {
+	horizontest.PollInProcess(t, "the relay drops the subscription that fell behind", database, func() bool {
 		return relaySubscribers(relay) == 0
 	})
 
@@ -695,7 +749,7 @@ func TestAnEventCommittedDuringTheCatchUpIsSentOnce(t *testing.T) {
 	stream := newGatedStream()
 	running := served.startEventsSubscription(ctx, stream, "feed", new(int64(0)))
 	t.Cleanup(running.stop)
-	testwait.Eventually(t, "the subscription subscribes to the relay", func() bool {
+	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool {
 		return relaySubscribers(served.eventRelay) == 1
 	})
 

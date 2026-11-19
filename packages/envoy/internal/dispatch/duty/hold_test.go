@@ -463,6 +463,12 @@ func TestHoldZeroRowRenewalClosesLost(t *testing.T) {
 	if now := fake.Now(); !now.Before(loss) {
 		t.Fatalf("the hold's clock stands at %s, at or past the loss deadline %s: Lost may have closed at the deadline rather than on the zero-row renewal", now, loss)
 	}
+	// The loss pulls the deadline back to the moment it was learned (loseLocked), so a reader of
+	// Deadline - the outbox's stopped stamp among them - never takes the old deadline, still ahead,
+	// for when the hold ended. The fake stands where the zero-row renewal left it.
+	if deadline, now := hold.Deadline(), fake.Now(); !deadline.Equal(now) {
+		t.Fatalf("the lost hold's deadline is %s, want %s, the moment the zero-row renewal reported the loss (the deadline it lost was %s)", deadline, now, loss)
+	}
 
 	if err := hold.Release(ctx); err != nil {
 		t.Fatalf("release after the loss: %v", err)

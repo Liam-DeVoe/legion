@@ -643,7 +643,7 @@ func TestTheRelaysFirstStartReadsAboveThePersistedHorizonWhileAnEventInsertFromB
 	second, _, _, served := newRegisteredTestServer(t, testServerOptions{store: storetest.SecondProcess(t, database)})
 	server := httptest.NewServer(second)
 	t.Cleanup(server.Close)
-	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/live", withBearer("agent-token")).read()
+	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/live", withBearer("agent-token")).servedBy(database).read()
 	sendEventsSubscribe(t, client, "events", nil)
 	awaitRelayStart(t, served)
 	renameIssue(t, first, issue.Key, "Renamed while the insert is open")

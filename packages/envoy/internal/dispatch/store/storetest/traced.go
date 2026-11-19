@@ -59,9 +59,13 @@ func SingleConnection(t testing.TB, database *store.Store) *store.Store {
 // configuration (store.Pool.Leases, store.Pool.Listener) are traced too. Only the code under test
 // is given it, so everything tracer sees is that code's. pgx reports one query start per statement
 // sent on its own and one batch start per batch, whatever that batch holds, so a tracer that also
-// implements pgx.BatchTracer counts a read's round trips.
+// implements pgx.BatchTracer counts a read's round trips. An XidTracer also watches the document
+// work of t's run from here on (XidTracer.watchDocumentWork), until t ends.
 func Traced(t testing.TB, pool *store.Pool, tracer pgx.QueryTracer, params map[string]string) *store.Pool {
 	t.Helper()
+	if xid, ok := tracer.(*XidTracer); ok {
+		xid.watchDocumentWork(t)
+	}
 	return reopenedPool(t, pool, func(config *pgxpool.Config) {
 		config.ConnConfig.Tracer = tracer
 		for name, value := range params {

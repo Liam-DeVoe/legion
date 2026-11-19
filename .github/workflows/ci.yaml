@@ -658,6 +658,9 @@ jobs:
               # pmdoc reads a stored text's display tree through this cache (pmdoc/display_json.go),
               # so every build of the parser compiles it.
               - 'packages/envoy/internal/dispatch/bytelru/*'
+              # pmdoc and text announce each entry point of their document work to this observer
+              # (pmdoc/parse.go, text/refs.go), so every build of the parser compiles it.
+              - 'packages/envoy/internal/dispatch/docwork/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
@@ -750,6 +753,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/delivery/**'
               - 'packages/envoy/internal/dispatch/docs/*'
               - 'packages/envoy/internal/dispatch/docs/crafted/*'
+              - 'packages/envoy/internal/dispatch/docwork/*'
               - 'packages/envoy/internal/dispatch/duty/*'
               - 'packages/envoy/internal/dispatch/embed/*'
               - 'packages/envoy/internal/dispatch/embedqueue/*'
@@ -899,6 +903,9 @@ jobs:
               # pmdoc reads a stored text's display tree through this cache (pmdoc/display_json.go),
               # so every build of the parser compiles it.
               - 'packages/envoy/internal/dispatch/bytelru/*'
+              # pmdoc and text announce each entry point of their document work to this observer
+              # (pmdoc/parse.go, text/refs.go), so every build of the parser compiles it.
+              - 'packages/envoy/internal/dispatch/docwork/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
@@ -2109,6 +2116,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/delivery/**'
               - 'packages/envoy/internal/dispatch/docs/*'
               - 'packages/envoy/internal/dispatch/docs/crafted/*'
+              - 'packages/envoy/internal/dispatch/docwork/*'
               - 'packages/envoy/internal/dispatch/duty/*'
               - 'packages/envoy/internal/dispatch/embed/*'
               - 'packages/envoy/internal/dispatch/embedqueue/*'
@@ -2449,6 +2457,9 @@ jobs:
               # internal/contracts mints an envelope's ids through it (message_envelope.go).
               - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/dispatch/bytelru/*'
+              # pmdoc and text announce each entry point of their document work to this observer
+              # (pmdoc/parse.go, text/refs.go), so every build of the parser compiles it.
+              - 'packages/envoy/internal/dispatch/docwork/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
@@ -3265,6 +3276,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/delivery/**'
               - 'packages/envoy/internal/dispatch/docs/*'
               - 'packages/envoy/internal/dispatch/docs/crafted/*'
+              - 'packages/envoy/internal/dispatch/docwork/*'
               - 'packages/envoy/internal/dispatch/duty/*'
               - 'packages/envoy/internal/dispatch/embed/*'
               - 'packages/envoy/internal/dispatch/embedqueue/*'
@@ -4005,6 +4017,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/docs/*'
               - 'packages/envoy/internal/dispatch/docs/crafted/*'
               - 'packages/envoy/internal/dispatch/docs/docstest/*'
+              - 'packages/envoy/internal/dispatch/docwork/*'
               - 'packages/envoy/internal/dispatch/duty/*'
               - 'packages/envoy/internal/dispatch/embed/*'
               - 'packages/envoy/internal/dispatch/embed/embedtest/*'
@@ -4208,6 +4221,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/docs/*'
               - 'packages/envoy/internal/dispatch/docs/crafted/*'
               - 'packages/envoy/internal/dispatch/docs/docstest/*'
+              - 'packages/envoy/internal/dispatch/docwork/*'
               - 'packages/envoy/internal/dispatch/duty/*'
               - 'packages/envoy/internal/dispatch/events/*'
               - 'packages/envoy/internal/dispatch/githubreads/*'
@@ -4372,6 +4386,9 @@ jobs:
               # pmdoc reads a stored text's display tree through this cache (pmdoc/display_json.go),
               # so every build of the parser compiles it.
               - 'packages/envoy/internal/dispatch/bytelru/*'
+              # pmdoc and text announce each entry point of their document work to this observer
+              # (pmdoc/parse.go, text/refs.go), so every build of the parser compiles it.
+              - 'packages/envoy/internal/dispatch/docwork/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'

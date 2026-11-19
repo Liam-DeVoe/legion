@@ -78,18 +78,22 @@ func (rig *liveSocketRig) sockets(t *testing.T, n int) []*liveSocket {
 
 // socketClient is one page's GET /ws/live connection. Once it reads, every message it is sent
 // lands in frames, and ended closes when the connection ends, with err saying how and endedAt when.
+// database is the store of the server behind the socket, which a wait on its event feed reads the
+// horizon's own-hold rule off (eventFeedFrame): a rig's socket names the rig's, and one dialled to
+// another process names that process's (servedBy).
 type socketClient struct {
-	conn    *gws.Conn
-	frames  chan []byte
-	ended   chan struct{}
-	err     error
-	endedAt time.Time
+	conn     *gws.Conn
+	frames   chan []byte
+	ended    chan struct{}
+	err      error
+	endedAt  time.Time
+	database *store.Store
 }
 
 // open dials the socket, failing the test unless the upgrade succeeds; it reads nothing until read.
 func (rig *liveSocketRig) open(t *testing.T, dialer *gws.Dialer, header http.Header) *socketClient {
 	t.Helper()
-	return openLiveSocketAt(t, dialer, rig.url, header)
+	return openLiveSocketAt(t, dialer, rig.url, header).servedBy(rig.database)
 }
 
 // openLiveSocketAt dials the live socket at url, failing the test unless the upgrade succeeds; it
@@ -169,25 +173,31 @@ func (c *socketClient) sendText(t *testing.T, data []byte) {
 // take is the next message, failing the test when the socket ends before one comes.
 func (c *socketClient) take(t *testing.T, what string) []byte {
 	t.Helper()
-	return testwait.Until(t, what, func() ([]byte, bool) {
+	return testwait.Until(t, what, func() ([]byte, bool) { return c.poll(t, what) })
+}
+
+// poll is the next message if the socket has been sent one, without waiting, and fails the test
+// when the socket has ended with none left: one try of take's wait, which a wait of another kind
+// (eventFeedFrame's, on the horizon) makes in its own turn.
+func (c *socketClient) poll(t *testing.T, what string) ([]byte, bool) {
+	t.Helper()
+	select {
+	case data := <-c.frames:
+		return data, true
+	default:
+	}
+	select {
+	case <-c.ended:
+		// The reader queues every message before it ends.
 		select {
 		case data := <-c.frames:
 			return data, true
 		default:
 		}
-		select {
-		case <-c.ended:
-			// The reader queues every message before it ends.
-			select {
-			case data := <-c.frames:
-				return data, true
-			default:
-			}
-			t.Fatalf("the socket ended (%v) waiting for %s", c.err, what)
-		default:
-		}
-		return nil, false
-	})
+		t.Fatalf("the socket ended (%v) waiting for %s", c.err, what)
+	default:
+	}
+	return nil, false
 }
 
 // next is the next frame but a heartbeat, decoded by its type.
@@ -1037,7 +1047,9 @@ func TestPingsKeepAnIdleSocketOpen(t *testing.T) {
 	rig.sockets(t, 1)
 }
 
-// A page that answers no ping is closed once two heartbeats pass without a pong. It has gone or
+// A page that answers no ping is closed once its pong deadline passes (two heartbeats after its
+// last pong, live_socket.go's pongWait, a read deadline on the real connection, which this row
+// does not time: it holds the end itself). It has gone or
 // stopped reading, so the socket sends it no close frame: the connection ends, which gorilla and a
 // browser report as 1006, and the page reconnects on its backoff, as after every close but 1012,
 // which starts the backoff over (packages/dispatch/web/src/api/live-socket.ts, lost). 1008 would

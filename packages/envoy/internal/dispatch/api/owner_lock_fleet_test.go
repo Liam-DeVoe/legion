@@ -364,11 +364,21 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 			if waited {
 				// The arrival is queued behind the PATCH's backend (pg_blocking_pids, read just
 				// above), and that backend waits on this test's pause, so the arrival cannot end
-				// before the pause is let go: that state, not a span, is what this reads.
+				// before the pause is let go: that state, not a span, is what this reads, here and
+				// again as the pause is let go, when the arrival must still be queued behind the
+				// PATCH. Its gate function catches no error (store's gateWaitsEndOnlyByTheLock), so
+				// the wait ends only once the gate is granted or with an error the Receive fails on.
 				select {
 				case err := <-arrived:
 					t.Fatalf("%s ended (%v) while the PATCH it waited for was still under way", arrival.name, err)
 				default:
+				}
+				var still bool
+				if err := fixture.database.Pool.QueryRow(ctx, `select $2::integer = any(pg_blocking_pids($1))`, arrivalPID, pid).Scan(&still); err != nil {
+					t.Fatal(err)
+				}
+				if !still {
+					t.Fatalf("%s no longer waits for the PATCH as its pause is let go: it gave its wait up", arrival.name)
 				}
 				if err := pause.Rollback(ctx); err != nil {
 					t.Fatal(err)

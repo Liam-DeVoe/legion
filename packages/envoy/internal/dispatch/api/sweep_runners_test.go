@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/clock"
@@ -155,22 +157,23 @@ func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T
 // one before at the soonest, and no wake earns more than one. A pass is counted by the cursor row
 // it holds, one read per pass, since the loop takes no lease and logs nothing of its own. The loop
 // runs on a fake clock: it holds each pass a wake earns to its gap there, and the row moves the
-// clock to it. Once the last pass has run with no wake pending, the loop holds no timer on its
-// clock, its own record that nothing it holds can start another pass.
+// clock to it. Once the last pass has ended - its transaction's COMMIT has returned, after which
+// the pass makes no statement and the loop decides what to arm next - with no wake pending, the
+// loop holds no timer on its clock, its own record that nothing it holds can start another pass.
 func TestALoneSuggestionSweepRunnerPassesOnEveryWake(t *testing.T) {
 	database := storetest.Open(t)
-	pool, statements := recordedPool(t, database)
+	tracer := &sweepPassTracer{held: map[uint32]bool{}}
+	pool := storetest.Traced(t, database.Pool, tracer, nil)
 	wake := make(chan struct{}, 1)
 	fake := clocktest.New(time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC))
 	runSweep(t, func(ctx context.Context) {
 		runSuggestionOutcomeSweep(ctx, fake, pool, sweepHorizon(pool), wake, sweepRunnerSchedule)
 	})
-	passes := func() int { return countStatements(statements.Statements(), cursorHeld) }
 
 	const wakes = 5
 	for woken := 0; woken <= wakes; woken++ {
 		testwait.Until(t, "the pass the last wake earned, moving the loop's clock to the gap it holds", func() ([]time.Time, bool) {
-			if passes() == woken+1 {
+			if tracer.passes() == woken+1 {
 				return nil, true
 			}
 			armed := fake.Armed()
@@ -183,11 +186,55 @@ func TestALoneSuggestionSweepRunnerPassesOnEveryWake(t *testing.T) {
 			wake <- struct{}{}
 		}
 	}
-	armed := testwait.Until(t, "the loop to hold no timer once the last wake's pass has run", func() ([]time.Time, bool) {
-		armed := fake.Armed()
-		return armed, len(armed) == 0
-	})
-	if ran := passes(); ran != wakes+1 || len(armed) != 0 {
-		t.Fatalf("a lone runner made %d passes for its start and %d wakes and holds timers for %v; want %d and none", ran, wakes, armed, wakes+1)
+	testwait.Eventually(t, "the last wake's pass to commit", func() bool { return tracer.ended() == wakes+1 })
+	if armed, ran := fake.Armed(), tracer.passes(); ran != wakes+1 || len(armed) != 0 {
+		t.Fatalf("a lone runner made %d passes for its start and %d wakes and holds timers for %v once the last had ended; want %d and none",
+			ran, wakes, armed, wakes+1)
 	}
+}
+
+// sweepPassTracer counts a suggestion sweep's passes on the pool it traces (storetest.Traced): one
+// begun for each statement that holds the cursor row (cursorHeld), and one ended for each COMMIT
+// or ROLLBACK that returns on a connection whose transaction held it.
+type sweepPassTracer struct {
+	mu              sync.Mutex
+	held            map[uint32]bool
+	begun, finished int
+}
+
+type sweepPassSQL struct{}
+
+func (p *sweepPassTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(data.SQL, cursorHeld) {
+		p.mu.Lock()
+		p.held[conn.PgConn().PID()] = true
+		p.begun++
+		p.mu.Unlock()
+	}
+	return context.WithValue(ctx, sweepPassSQL{}, data.SQL)
+}
+
+func (p *sweepPassTracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, _ pgx.TraceQueryEndData) {
+	sql, _ := ctx.Value(sweepPassSQL{}).(string)
+	if verb := strings.ToLower(strings.TrimSpace(sql)); verb != "commit" && verb != "rollback" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if pid := conn.PgConn().PID(); p.held[pid] {
+		delete(p.held, pid)
+		p.finished++
+	}
+}
+
+func (p *sweepPassTracer) passes() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.begun
+}
+
+func (p *sweepPassTracer) ended() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.finished
 }

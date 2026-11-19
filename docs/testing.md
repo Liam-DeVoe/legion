@@ -308,12 +308,13 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),
 which reads as a failure of the change under test. `packages/envoy/internal/dispatch/api` alone
-takes close to that, about 600 s on a workstation, so every command that runs that package, on its
-own or in a pattern that includes it (`./...`, `./internal/dispatch/...`), passes `-timeout 20m`:
+takes close to that, about 600 s plain on a workstation and up to 1508.156 s under `-race` in CI's
+`envoy-go-race-api`, so every command that runs that package, on its own or in a pattern that
+includes it (`./...`, `./internal/dispatch/...`), passes `-timeout 60m`:
 
 ```sh
 cd packages/envoy
-go test -timeout 20m ./internal/dispatch/api
+go test -timeout 60m ./internal/dispatch/api
 ```
 
 A Legion issue pod does not run that whole package: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
@@ -326,6 +327,22 @@ A command that runs one of its tests by name (`-run`) needs no deadline of its o
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
+
+The commands `packages/envoy/cmd/dispatch/AGENTS.md` ("Checks") gives for the Dispatch server
+take these deadlines, each from the reading beside it:
+
+- The run of every other `internal/dispatch` and `cmd/dispatch` package, `-timeout 60m`: its
+  slowest package, `internal/dispatch/docs`, took 1690 s plain in an issue pod.
+- `-tags memory`, `-timeout 90m`: the command runs the package's untagged tests beside the memory
+  tests, so 90 minutes are twice the two together over CI's 20 newest green merge-group runs of
+  each job up to 2026-11-18T08:56Z: 517.930 s in `envoy-go`'s unit step (run 44228248957) and
+  2077.561 s in `dispatch-memory` (run 44228254232), 2595.491 s.
+- `-tags multiprocess`, `-timeout 50m`: the same, with 940.253 s in `dispatch-multiprocess` (run
+  44172328284), 1458.183 s together.
+- `-tags twobuild`, `-timeout 30m`: the `dispatch-two-builds` job's own step, which passes no
+  `-run`, so it too runs the untagged tests beside the two-build tests; 30 minutes are 3.1 times
+  that step's slowest run over the job's 8 green merge-group runs up to 2026-11-15, 575.933 s
+  (run 43717090111).
 
 `packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI's
 `daemon-go` job (`.github/workflows/ci-job-daemon-go.yaml`) runs it only under the race

@@ -16,6 +16,8 @@ import (
 	gws "github.com/gorilla/websocket"
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -79,25 +81,38 @@ func (k iapSocketKeys) expiring(t *testing.T, lifetime time.Duration) http.Heade
 // and never with the 1008 that says its person is gone. The reopened socket carries a fresh
 // assertion, which is judged again: the expired one opens nothing, and a fresh one opens a socket.
 // The control, the same person on a nine-minute assertion, stays open throughout.
+//
+// The heartbeats are the server's, on its clock (whileCallerResolves), a fake the row moves to each
+// one. The assertion's expiry is the IAP verifier's, which reads the wall clock and has no seam, so
+// the row waits for that clock to pass the short assertion's exp before it moves the fake to the
+// heartbeat that re-checks it. The heartbeat is a second, so the client's pong, which runs on the
+// real clock, meets the pong deadline on a loaded runner.
 func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T) {
 	database := storetest.Open(t)
 	iap := newIAPSocketKeys(t, database)
-	const heartbeat = 200 * time.Millisecond
-	rig := newLiveSocketRig(t, testServerOptions{store: database, streamHeartbeat: heartbeat, identity: iap.identity}, nil)
+	const heartbeat = time.Second
+	fake := clocktest.New(time.Now())
+	opened := fake.Now()
+	rig := newLiveSocketRig(t, testServerOptions{store: database, streamHeartbeat: heartbeat, identity: iap.identity, clock: fake}, nil)
 
-	expiring := iap.expiring(t, 2*time.Second)
+	const lifetime = 2 * time.Second
+	admittedUntil := time.Now().Add(lifetime)
+	expiring := iap.expiring(t, lifetime)
 	short := rig.dial(t, expiring)
 	long := rig.dial(t, iap.assertion(t, time.Now().Add(9*time.Minute)))
 
+	testwait.Eventually(t, "the wall clock, which the IAP verifier judges an assertion's exp by, to pass the short assertion's",
+		func() bool { return time.Now().After(admittedUntil) })
+	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 1, heartbeat)
 	closed := short.closeError(t)
 	if closed.Code != contracts.LiveSocketMaxAgeClose || closed.Text != liveSocketCredentialExpiredReason {
 		t.Fatalf("the socket whose upgrade's assertion expired closed with %d %q, want %d %q, which a page answers by reopening at once",
 			closed.Code, closed.Text, contracts.LiveSocketMaxAgeClose, liveSocketCredentialExpiredReason)
 	}
-	// A few more heartbeats: the control is re-checked on each and stays open.
-	testwait.Span(t, 3*heartbeat, "the heartbeat is the server's own ticker (streamHeartbeat), whose ticks the test "+
-		"cannot count, and the control's verdict is that it stays open across them: no state, no synctest bubble "+
-		"(real sockets) and no later action shows the control's heartbeats ran")
+	// Three more heartbeats: the control is re-checked on each and stays open. Each heartbeat the
+	// row sees armed proves the checks two or more heartbeats before it returned with the control
+	// still resolving (driveHeartbeats), and a check that closed the socket would arm no more.
+	driveHeartbeats(t, fake, next, 3, heartbeat)
 	select {
 	case <-long.ended:
 		t.Fatalf("control: the socket on a nine-minute assertion ended: %v", long.err)
@@ -189,6 +204,13 @@ type iapDocumentRig struct {
 
 func newIAPDocumentRig(t *testing.T, heartbeat time.Duration) *iapDocumentRig {
 	t.Helper()
+	return newIAPDocumentRigOn(t, heartbeat, nil)
+}
+
+// newIAPDocumentRigOn is newIAPDocumentRig whose server runs its heartbeats on clk (the real
+// clock when nil).
+func newIAPDocumentRigOn(t *testing.T, heartbeat time.Duration, clk clock.Clock) *iapDocumentRig {
+	t.Helper()
 	database := storetest.Open(t)
 	rig := &iapDocumentRig{iap: newIAPSocketKeys(t, database)}
 	rig.switched = newSwitchedIdentity(rig.iap.identity)
@@ -197,7 +219,7 @@ func newIAPDocumentRig(t *testing.T, heartbeat time.Duration) *iapDocumentRig {
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: rig.switched, AgentTokens: sharedAgentTokens(t, "agent-token"),
-		ServerURL: testServerURL, Docs: documents, Events: broker, StreamHeartbeat: heartbeat,
+		ServerURL: testServerURL, Docs: documents, Events: broker, StreamHeartbeat: heartbeat, Clock: clk,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -253,21 +275,30 @@ func (rig *iapDocumentRig) openDocument(t *testing.T, headers http.Header) *sync
 // assertion expires the socket closes with the document socket's own reopen code, 4412, on which
 // the provider reconnects and the reconnect is admitted again on a fresh assertion; never the
 // silent drop (1006) that ends a socket whose person no longer resolves. The control, a nine-minute
-// assertion, keeps its socket open and answering its editor.
+// assertion, keeps its socket open and answering its editor. The heartbeats are on the server's
+// clock, a fake the row moves, and the assertion's expiry on the wall clock, which the IAP
+// verifier reads, as in TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires.
 func TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires(t *testing.T) {
-	const heartbeat = 250 * time.Millisecond
-	rig := newIAPDocumentRig(t, heartbeat)
-	short := rig.openDocument(t, rig.iap.expiring(t, 3*time.Second))
+	const heartbeat = time.Second
+	fake := clocktest.New(time.Now())
+	opened := fake.Now()
+	rig := newIAPDocumentRigOn(t, heartbeat, fake)
+	const lifetime = 3 * time.Second
+	admittedUntil := time.Now().Add(lifetime)
+	short := rig.openDocument(t, rig.iap.expiring(t, lifetime))
 	long := rig.openDocument(t, rig.iap.assertion(t, time.Now().Add(9*time.Minute)))
 
+	testwait.Eventually(t, "the wall clock, which the IAP verifier judges an assertion's exp by, to pass the short assertion's",
+		func() bool { return time.Now().After(admittedUntil) })
+	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 1, heartbeat)
 	testwait.Receive(t, "the document socket whose upgrade's assertion expired to close", short.connection().Ended)
 	if code := short.connection().CloseCode(); code != contracts.DocumentAdmissionRevokedCloseCode {
 		t.Fatalf("the document socket whose upgrade's assertion expired closed with %d, want %d, on which the provider reconnects",
 			code, contracts.DocumentAdmissionRevokedCloseCode)
 	}
-	testwait.Span(t, 3*heartbeat, "the heartbeat is the document socket's own ticker, whose ticks the test cannot "+
-		"count, and the control's verdict is that it stays open across them: no state, no synctest bubble (real "+
-		"sockets) and no later action shows the control's heartbeats ran; the barrier below then shows it still answers")
+	// Three more heartbeats, each a check of the control that returned with it still resolving
+	// (driveHeartbeats); the barrier below then shows it still answers.
+	driveHeartbeats(t, fake, next, 3, heartbeat)
 	select {
 	case <-long.connection().Ended:
 		t.Fatalf("control: the document socket on a nine-minute assertion ended with %d", long.connection().CloseCode())

@@ -91,18 +91,21 @@ func TestPoolRefusesASecondConnectionInsideATransaction(t *testing.T) {
 	}
 }
 
-// A transaction is past its first write batch (SentWriteBatch) from the batch WriteBatch.Send
-// sends until the transaction ends: its reads and an empty batch leave it in its read phase, and
-// the next transaction on the same context starts there again.
-func TestSentWriteBatchMarksATransactionFromItsFirstBatchToItsEnd(t *testing.T) {
+// A transaction is inside its xid window (InXidWindow) from the moment a test's statement tracer
+// opens it (OpenXidWindow) until the transaction ends, on its context and every context derived
+// from it, and nothing else opens one: a read, an empty batch and a sent batch leave it closed,
+// so production, which installs no such tracer, never marks a transaction. The next transaction
+// on the same context starts outside its window again.
+func TestAnXidWindowIsOpenFromItsHookToTheEndOfItsTransaction(t *testing.T) {
 	database := openEmptyTestStore(t)
 	if err := database.Migrate(context.Background()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	ctx := WithTransactionTracking(context.Background())
-	if SentWriteBatch(ctx) {
-		t.Fatal("a context that holds no connection is marked past a write batch")
+	if OpenXidWindow(ctx) || InXidWindow(ctx) {
+		t.Fatal("a context that holds no connection had an xid window opened")
 	}
+	type derived struct{}
 	for round := range 2 {
 		tx, err := database.Pool.Begin(ctx)
 		if err != nil {
@@ -116,17 +119,20 @@ func TestSentWriteBatchMarksATransactionFromItsFirstBatchToItsEnd(t *testing.T) 
 		if err := empty.Send(ctx, tx); err != nil {
 			t.Fatalf("round %d: send an empty batch: %v", round, err)
 		}
-		if SentWriteBatch(ctx) {
-			t.Fatalf("round %d: a transaction that read and sent an empty batch is marked past a write batch", round)
-		}
 		if err := RunWrite(ctx, tx, func(b *WriteBatch) error {
 			b.Queue("a write", "select 1")
 			return nil
 		}); err != nil {
 			t.Fatalf("round %d: send a batch: %v", round, err)
 		}
-		if !SentWriteBatch(ctx) {
-			t.Fatalf("round %d: a transaction that sent a batch is not marked past it", round)
+		if InXidWindow(ctx) {
+			t.Fatalf("round %d: a transaction whose window no tracer opened is inside one", round)
+		}
+		if !OpenXidWindow(ctx) {
+			t.Fatalf("round %d: the hook found no transaction to mark", round)
+		}
+		if !InXidWindow(ctx) || !InXidWindow(context.WithValue(ctx, derived{}, round)) {
+			t.Fatalf("round %d: the transaction or a context derived from it is outside the window the hook opened", round)
 		}
 		end := tx.Commit
 		if round == 1 {
@@ -135,8 +141,8 @@ func TestSentWriteBatchMarksATransactionFromItsFirstBatchToItsEnd(t *testing.T) 
 		if err := end(ctx); err != nil {
 			t.Fatalf("round %d: end the transaction: %v", round, err)
 		}
-		if SentWriteBatch(ctx) {
-			t.Fatalf("round %d: a context whose transaction ended is still marked past a write batch", round)
+		if InXidWindow(ctx) {
+			t.Fatalf("round %d: a context whose transaction ended is still inside its xid window", round)
 		}
 	}
 }
