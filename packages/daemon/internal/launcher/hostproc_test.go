@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"context"
 	"os"
 	"testing"
 
@@ -8,17 +9,19 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/hostproc/hostproctest"
 )
 
-// sweepScanner and reaperScanner are the names hostproc's refusal gives the launcher's two
-// listings of a /proc.
+// sweepScanner, reaperScanner and trimmerScanner are the names hostproc's refusal gives the
+// launcher's listings of a /proc.
 const (
-	sweepScanner  = "the launcher's git lock sweep"
-	reaperScanner = "the launcher's reaper"
+	sweepScanner   = "the launcher's git lock sweep"
+	reaperScanner  = "the launcher's reaper"
+	trimmerScanner = "the cache trimmer's used-path read"
 )
 
 // Each listing of a /proc the launcher makes refuses the machine's in a test that gave it no /proc
 // of its own: the sweep's holder read, the reaper's two passes (the drain's and the orphan
-// reaper's), its signal of the namespace and role-init's pass. A test process is never PID 1 of
-// the machine's PID namespace, so none of them is the namespace's own listing.
+// reaper's), its signal of the namespace, role-init's pass and the cache trimmer's read of what
+// the pod's processes use. A test process is never PID 1 of the machine's PID namespace, so none
+// of them is the namespace's own listing.
 func TestEachLauncherListingRefusesTheMachinesProc(t *testing.T) {
 	discard := func(string, ...any) {}
 	t.Run("the git lock sweep, built as the launcher builds it", func(t *testing.T) {
@@ -41,7 +44,12 @@ func TestEachLauncherListingRefusesTheMachinesProc(t *testing.T) {
 	t.Run("role-init's pass", func(t *testing.T) {
 		hostproctest.Refused(t, "role-init's reaper", func() { _, _ = reapNamespace() })
 	})
-	// The control: the same sweep and reaper over a /proc of the test's own list it.
+	t.Run("the cache trimmer's sweep, built as the launcher builds it", func(t *testing.T) {
+		hostproctest.Refused(t, trimmerScanner, func() {
+			_ = launcherTrimmerOverItsOwnVolume(t).sweep(context.Background(), *trimSettings(), usageAt(90))
+		})
+	})
+	// The control: the same sweep, reaper and trimmer over a /proc of the test's own list it.
 	t.Run("the same listings over a /proc of the test's own", func(t *testing.T) {
 		hostproctest.Allowed(t, func() {
 			useGitLockProc(t, procRoot(t, os.Getpid()))
@@ -54,8 +62,26 @@ func TestEachLauncherListingRefusesTheMachinesProc(t *testing.T) {
 			if err := (&pidGuard{proc: procRoot(t, os.Getpid())}).reapOrphans(); err != nil {
 				t.Fatal(err)
 			}
+			tr := launcherTrimmerOverItsOwnVolume(t)
+			tr.procRoot = procRoot(t, os.Getpid())
+			_ = tr.sweep(context.Background(), *trimSettings(), usageAt(90))
+			if len(tr.refusedReads) > 0 {
+				t.Fatalf("the trimmer's read of a /proc of the test's own was refused: %v", tr.refusedReads)
+			}
 		})
 	})
+}
+
+// launcherTrimmerOverItsOwnVolume is the trimmer the launcher builds (newTrimmer), its /proc the
+// one the launcher gives it, with a volume and roots of the test's own and a remover in the test's
+// process: a sweep of it that the refusal did not stop deletes nothing of the machine's.
+func launcherTrimmerOverItsOwnVolume(t *testing.T) *trimmer {
+	t.Helper()
+	tr := newTrimmer(nil, nil, nil, func(string, ...any) {}, RoleCover{}, &pidGuard{})
+	tr.volumeRoot = t.TempDir()
+	tr.roots = rebasedOnto(tr.volumeRoot, tr.roots)
+	tr.removals = inProcessRemovals
+	return tr
 }
 
 // A sweep is judged by the /proc it was built with. Pointing the package's default at a /proc of
