@@ -281,6 +281,50 @@ func TestACICheckABrowserGivesACheckHoldingNoResultTakesEffectWhenTheEditSettles
 	})
 }
 
+// TestACICheckASettlementGivesBetweenAWritesResolveAndItsLocksRefusesARolesResult: k1 is an
+// ordinary check holding no result when a tester's pass of it resolves, so the judgement the write
+// makes before its transaction opens lets the pass through. A settlement then gives k1 ci_check
+// before the write takes its locks. The write judges the pass again by the check its locks find
+// (recordResultUnderOwnerLocks), which CI proves now, and refuses it 409 CHECK_PROVED_BY_CI with
+// nothing stored. The control: the same edit settled before the tester's pass resolves is refused
+// the same way, by the judgement made before the transaction opens.
+func TestACICheckASettlementGivesBetweenAWritesResolveAndItsLocksRefusesARolesResult(t *testing.T) {
+	ordinary := ciCheckBlock("k1", `negative_control="`+ciJobNegativeControl+`"`)
+	edited := strings.Replace(ciJobVerification, ordinary,
+		ciCheckBlock("k1", `negative_control="`+ciJobNegativeControl+`" ci_check="`+ciJobName+`"`), 1)
+	if edited == ciJobVerification {
+		t.Fatalf("fixture: no ordinary k1 block %q in %q", ordinary, ciJobVerification)
+	}
+	tester := resultBody("k1", "pass", heldWriteCommit, map[string]any{"role": "tester"})
+	ordinaryK1 := func(t *testing.T, rig *ciJobRig) {
+		t.Helper()
+		if k1 := checkOf(t, readResults(t, rig.handler, rig.issue), "k1"); k1.CICheck != "" || len(k1.Results) != 0 {
+			t.Fatalf("k1 reads %+v before the edit, want an ordinary check holding no result", k1)
+		}
+	}
+
+	t.Run("the edit settles between the write's resolve and its locks", func(t *testing.T) {
+		rig, documents := newUnsettledCIJobRig(t)
+		ordinaryK1(t, rig)
+		held := holdWriteBeforeItsLocks(t, rig, rig.sessionToken(), tester)
+		settleVerification(t, rig, documents, edited, "the edit giving k1 ci_check")
+		if k1 := checkOf(t, readResults(t, rig.handler, rig.issue), "k1"); k1.CICheck != ciJobName {
+			t.Fatalf("fixture: k1 reads ci_check %q once the edit settled, want %q", k1.CICheck, ciJobName)
+		}
+		held.release()
+		rig.refusedWith(t, "a tester's pass of k1 that resolved before the edit settled", <-held.answered,
+			http.StatusConflict, "CHECK_PROVED_BY_CI")
+	})
+
+	t.Run("the control: the edit settles before the write resolves", func(t *testing.T) {
+		rig, documents := newUnsettledCIJobRig(t)
+		ordinaryK1(t, rig)
+		settleVerification(t, rig, documents, edited, "the edit giving k1 ci_check")
+		rig.refusedWith(t, "a tester's pass of k1 once the edit settled", rig.post(t, rig.issue, rig.sessionToken(), tester),
+			http.StatusConflict, "CHECK_PROVED_BY_CI")
+	})
+}
+
 // TestAJobsResultCountsOnlyForTheJobItsCheckNames is the second line of the binding of a CI job's
 // result to its check: a row of ci_check_results that another job's run recorded, stored against
 // the digest c1 carries now, as no route of this build writes one, counts for nothing on c1, which

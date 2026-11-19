@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // results_retract.go retracts one recorded result, a role's or a CI job's. A retraction is a
@@ -31,28 +32,42 @@ type checkResultRetractionInput struct {
 
 // retractedResult is what the write reads about the result it is asked to retract: the issue
 // the result was recorded on, whose claim is one of the three credentials that may retract it,
-// the check's issue, which the event is appended on, the session that recorded it, and the table
-// a retraction of it is a row of.
+// the check's issue, which the event is appended on and whose owner lock the route takes before
+// it reads anything else, the session that recorded it, and the table a retraction of it is a
+// row of.
 type retractedResult struct {
 	IssueKey      string
 	CheckIssueKey string
 	CheckBlockID  string
 	CommitSHA     string
 	Session       string
-	Retractions   string
+	Table         resultTable
 }
 
 // resultTable is one table of recorded results (results_rows.go) with the table that holds their
-// retractions, whose key is a foreign key into it.
+// retractions, whose key is a foreign key into it, and the statement that inserts one of those
+// retractions.
 type resultTable struct {
-	results     string
-	retractions string
+	results          string
+	retractions      string
+	insertRetraction string
 }
+
+// The insert of one retraction, of a role's result and of a CI job's, each naming its table in
+// its own text, so a reader of this module's SQL reads which table it writes: the owner-lock
+// census (item_writer_census_test.go) refuses a write whose table only a runtime value names.
+const (
+	retractionInsertValues = ` (result_id, reason, session, actor, event_seq)
+		values ($1, $2, $3, $4, $5)
+		returning created_at`
+	insertRoleResultRetraction  = `insert into check_result_retractions` + retractionInsertValues
+	insertCIJobResultRetraction = `insert into ci_check_result_retractions` + retractionInsertValues
+)
 
 // resultTables is each table a result's id may name a row of: a role's results, then a CI job's.
 var resultTables = [...]resultTable{
-	{results: "check_results", retractions: "check_result_retractions"},
-	{results: "ci_check_results", retractions: "ci_check_result_retractions"},
+	{results: "check_results", retractions: "check_result_retractions", insertRetraction: insertRoleResultRetraction},
+	{results: "ci_check_results", retractions: "ci_check_result_retractions", insertRetraction: insertCIJobResultRetraction},
 }
 
 // POST /api/v1/results/{id}/retract  (the recording session, the claimant, or a person)
@@ -92,13 +107,24 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 
-	// The result's row is locked before anything is judged, and the retraction is looked for in
-	// the statement after that lock. In READ COMMITTED each statement takes its own snapshot, so
-	// a second retraction that waited here reads the first one as soon as that one commits. No
-	// writer of a result ever holds this lock — nothing updates a row of either table of results —
-	// and the record route takes its issue rows before it inserts, so the two cannot deadlock.
-	result, err := lockRetractedResult(r.Context(), tx, resultID)
+	// The read phase holds no transaction id (INFRA-636). The result's row is read plainly, for
+	// the owner it names: nothing ever updates a row of either table of results, and their one
+	// writer, the record route, inserts a row of each under that same owner's lock (results.go,
+	// lockIssueOwners), so the row read here holds still. The owner's lock comes next, and it is
+	// the lock the event's append would otherwise be the first to take (store.LockOwner, events'
+	// lockEventOwner): advisory, so this route waits for it holding no transaction id, where a
+	// `select ... for update` of the result taken first would have held one across the wait and
+	// across every read below it.
+	//
+	// Everything the retraction is decided on is read in the statements after that lock, each
+	// taking a fresh snapshot: a second retraction of this result, whose only writer is this
+	// route under this lock, reads the first one as soon as that one commits.
+	result, err := readRetractedResult(r.Context(), tx, resultID)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := store.LockOwner(r.Context(), tx, store.IssueOwner(result.CheckIssueKey)); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -106,7 +132,7 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	retracted, err := resultIsRetracted(r.Context(), tx, result.Retractions, resultID)
+	retracted, err := resultIsRetracted(r.Context(), tx, result.Table.retractions, resultID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -118,9 +144,10 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The event is appended inside the transaction and published after the commit, as the record
-	// route appends result.recorded (results.go): the Verification tab refetches on it, and a
-	// reader woken before the row committed would read the result as evidence still.
+	// The write phase: the event and the retraction's row, back to back, and the COMMIT behind
+	// them. The event is appended inside the transaction and published after the commit, as the
+	// record route appends result.recorded (results.go): the Verification tab refetches on it,
+	// and a reader woken before the row committed would read the result as evidence still.
 	event, err := s.appendEvent(r.Context(), tx, issueOwner(result.CheckIssueKey).event(
 		"result.retracted", actor, model.CheckResultRetractedEventPayload{
 			ResultID: resultID, Issue: result.IssueKey, CheckIssue: result.CheckIssueKey,
@@ -134,7 +161,7 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	retraction := model.CheckResultRetraction{
 		ResultID: resultID, Reason: reason, Session: sessionOf(actor), Actor: actor, EventSeq: &seq,
 	}
-	if err := insertCheckResultRetraction(r.Context(), tx, result.Retractions, &retraction); err != nil {
+	if err := insertCheckResultRetraction(r.Context(), tx, result.Table, &retraction); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -201,16 +228,20 @@ func claimingSession(ctx context.Context, q queryer, key string) (string, error)
 	return holder, nil
 }
 
-// lockRetractedResult reads the result a retraction names, a role's or a CI job's
-// (resultTables), and locks its row for the length of the write, so two retractions of one
-// result are taken one after the other. An id that neither table holds is 404 RESULT_NOT_FOUND.
-func lockRetractedResult(ctx context.Context, tx pgx.Tx, id string) (retractedResult, error) {
+// readRetractedResult reads the result a retraction names, a role's or a CI job's
+// (resultTables), which is the one read this route makes before it takes the owner's lock: it
+// names that owner (check_issue_key). It takes no row lock, so it leaves the transaction without
+// a transaction id for the wait on that lock. A row lock here would serialise nothing the
+// owner's lock does not: a row of either table is written once, by the record route under the
+// check issue's owner lock, and two retractions of one result are taken one after the other
+// because both hold that lock while they read and write (retractCheckResult). An id that
+// neither table holds is 404 RESULT_NOT_FOUND.
+func readRetractedResult(ctx context.Context, tx pgx.Tx, id string) (retractedResult, error) {
 	for _, table := range resultTables {
-		result := retractedResult{Retractions: table.retractions}
+		result := retractedResult{Table: table}
 		err := tx.QueryRow(ctx, `
 			select issue_key, check_issue_key, check_block_id, commit_sha, session
 			from `+table.results+` where id = $1
-			for update
 		`, id).Scan(&result.IssueKey, &result.CheckIssueKey, &result.CheckBlockID,
 			&result.CommitSHA, &result.Session)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -284,18 +315,15 @@ func loadCheckResultRetractions(
 	return retractions, nil
 }
 
-// insertCheckResultRetraction writes the retraction's row into retractions, the table of the
-// result's retractions (resultTables), and fills in the created_at the row takes, which the route
+// insertCheckResultRetraction writes the retraction's row into the retractions of table, the
+// result's table (resultTables), and fills in the created_at the row takes, which the route
 // answers with: the pointer is the caller's own value, not a copy of it.
-func insertCheckResultRetraction(ctx context.Context, tx pgx.Tx, retractions string, retraction *model.CheckResultRetraction) error {
+func insertCheckResultRetraction(ctx context.Context, tx pgx.Tx, table resultTable, retraction *model.CheckResultRetraction) error {
 	actorJSON, err := encodeJSON(retraction.Actor)
 	if err != nil {
 		return err
 	}
-	return tx.QueryRow(ctx, `
-		insert into `+retractions+` (result_id, reason, session, actor, event_seq)
-		values ($1, $2, $3, $4, $5)
-		returning created_at
-	`, retraction.ResultID, retraction.Reason, retraction.Session, actorJSON, retraction.EventSeq,
+	return tx.QueryRow(ctx, table.insertRetraction,
+		retraction.ResultID, retraction.Reason, retraction.Session, actorJSON, retraction.EventSeq,
 	).Scan(&retraction.CreatedAt)
 }

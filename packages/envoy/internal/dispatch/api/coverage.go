@@ -172,7 +172,7 @@ func (s *server) requirementBlocksIn(ctx context.Context, artifactID string, tre
 // When trees is true, visit is handed as content the markdown the block's text_tree is read
 // from, and "" otherwise. That markdown is blockTextContent of the block's text as the block
 // index stores it: the block's slice of the document's markdown, between the byte range the
-// document read itself gives for the block (docs.Service.TextWithBlocks), as refs.IndexBlocks
+// document read itself gives for the block (docs.Service.TextWithBlocks), as refs.PlanBlocks
 // cuts it. GET /api/v1/reference-targets has only that stored text to read a block's tree from,
 // and the results read takes a check's tree from the same stored text (checkBlocksOf), so one
 // block answers one tree in all three reads, the whole stored text of a typed block in a quote
@@ -306,7 +306,7 @@ func servingBlockCounts(ctx context.Context, q queryer, specArtifactID string, i
 //
 // It is read before the request opens its transaction. Reading it folds the issue's live spec,
 // which for a document no room holds is a cold read bounded by a minute (docs/read_cache.go),
-// and no owner row lock is held across a read that long: four writers parked on one issue's row
+// and no owner lock is held across a read that long: four writers parked on one issue's row
 // lock already cost a read of an unrelated issue the whole seventeen seconds the lock was held
 // (store/pool.go). Nothing the lock protects is settled here - the coverage is a report the
 // answer carries, and a gap refuses nothing.

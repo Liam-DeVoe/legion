@@ -35,9 +35,9 @@ const settledCheckText = `left join document_block_texts t
 
 // settledCheckNode is check block blockID of document artifactID as the block index holds it:
 // parsed out of stored, the text the index recorded at the block's changed version, which must be
-// the text whose digest is sum. Dispatch writes both in one transaction (refs.IndexBlocks), so a
-// text that is missing or answers another digest is a fault of Dispatch's own records, never a
-// state to read a check from.
+// the text whose digest is sum. Dispatch writes both in one transaction (refs.BlockIndexing.Queue),
+// so a text that is missing or answers another digest is a fault of Dispatch's own records, never
+// a state to read a check from.
 func settledCheckNode(artifactID, blockID string, stored *string, sum string) (*pmdoc.Node, error) {
 	if stored == nil || refs.BlockTextSum(*stored) != sum {
 		return nil, fmt.Errorf("read check %s of document %s: the block index holds no text of it whose digest is %s", blockID, artifactID, sum)
@@ -59,16 +59,16 @@ func settledCheckNode(artifactID, blockID string, stored *string, sum string) (*
 	return found, nil
 }
 
-// readSettled fills in check's attributes and surface from stored, the block index's text of it at
-// check.Version, whose digest is check.SHA256 (settledCheckNode).
-func (check *resolvedCheck) readSettled(stored *string) error {
-	node, err := settledCheckNode(check.ArtifactID, check.BlockID, stored, check.SHA256)
+// settledResolution is the reading of check block check at indexed, out of stored, the block
+// index's text of it at indexed.Version, whose digest is indexed.SHA256 (settledCheckNode): its
+// attributes and its surface, carried with that version and digest.
+func settledResolution(check checkBlockRef, indexed indexedCheck, stored *string) (checkResolution, error) {
+	node, err := settledCheckNode(check.ArtifactID, check.BlockID, stored, indexed.SHA256)
 	if err != nil {
-		return err
+		return checkResolution{}, err
 	}
 	block := docs.CheckBlockOf(node)
-	check.Attributes, check.Surface = docs.CheckAttributesOfBlock(block), block.Surface
-	return nil
+	return checkResolution{indexedCheck: indexed, Attributes: docs.CheckAttributesOfBlock(block), Surface: block.Surface}, nil
 }
 
 // resolveCheck finds the check a result names among the Verification documents of the recording
@@ -122,7 +122,7 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 	var texts []*string
 	var references []string
 	for rows.Next() {
-		check := resolvedCheck{BlockID: blockID}
+		check := resolvedCheck{checkBlockRef: checkBlockRef{BlockID: blockID}}
 		var slug string
 		var settled *string
 		if err := rows.Scan(&check.IssueKey, &slug, &check.ArtifactID, &check.Version, &check.SHA256, &settled); err != nil {
@@ -152,40 +152,54 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 			blockID, strings.Join(issues, " and "), strings.Join(references, " or "))
 	}
 	check := found[0]
-	if err := check.readSettled(texts[0]); err != nil {
+	if check.checkResolution, err = settledResolution(check.checkBlockRef, check.indexedCheck, texts[0]); err != nil {
 		return resolvedCheck{}, err
 	}
 	return check, nil
 }
 
-// refreshResolvedCheck reads again, under the locks the transaction holds, the block index's
-// version and digest of a check resolved before it opened (recordCheckResult), so the row
-// records the block as it stands at the commit, and its attributes with them when that block
-// moved: the refusal a closed issue earns turns on `when`, the refusal of a result by another
-// recorder on ci_check, run, `when` and negative control, and a CI job's row takes the check's
-// surface and negative control, all read before the lock, and a settlement landing in between can
-// have changed them. A digest the resolve already read is the same text, so the same attributes;
-// a digest that moved is read out of its own text, the one state of the check the row is stored
-// against (settledCheckNode). A block the index no longer holds is no check any more.
-func refreshResolvedCheck(ctx context.Context, q queryer, check *resolvedCheck, named string) error {
-	resolved := check.SHA256
+// settledCheckUnderLocks reads, under the locks the record route's transaction holds
+// (recordResultUnderOwnerLocks), what the block index holds for one check block: the version
+// its words last changed in, their digest, and the text whose digest that is, in one statement.
+// A block the index no longer holds is no check any more. A pair that is the one resolved, the
+// reading made before the transaction opened, is the same text, so the same reading, and that
+// reading is the answer; a pair that moved is read again whole out of its own text, the one
+// state of the check the row is stored against (settledResolution), and the caller judges the
+// result again by it.
+//
+// The digest is document_blocks.text_sha256, the sha256 of the block's whole markdown as the
+// index writes it (refs.BlockTextSum over markdown[From:To]), its opening line and that line's
+// attributes included, so a check reworded from before_merge to after_merge, or given a
+// ci_check, carries a digest of its own. The version is changed_version, which every version that
+// changes the block's text moves, one that restores words an earlier version replaced included.
+// Both are compared, though it is the version that catches every rewording, since
+// changed_version moves on each of them. The digest is the backstop for a block whose text the
+// index rewrote without that number moving, which no writer does today: refs.BlockIndexing.Queue
+// writes both in one upsert.
+//
+// None of this is a read of the live document, which never happens under these locks: the
+// pair and its text are one statement over the block index, and the document's owner lock,
+// which a settlement writes the index under (refs.BlockIndexing.Queue), is the check's issue's,
+// one of the two these locks hold, so what the statement reads stands until the commit.
+func settledCheckUnderLocks(ctx context.Context, q queryer, check checkBlockRef, resolved checkResolution, named string) (checkResolution, error) {
+	var indexed indexedCheck
 	var settled *string
 	err := q.QueryRow(ctx, `
 		select d.changed_version, d.text_sha256, t.text
 		from document_blocks d
 		`+settledCheckText+`
 		where d.artifact_id = $1::uuid and d.block_id = $2 and d.type = 'check'
-	`, check.ArtifactID, check.BlockID).Scan(&check.Version, &check.SHA256, &settled)
+	`, check.ArtifactID, check.BlockID).Scan(&indexed.Version, &indexed.SHA256, &settled)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return unknownCheck(named)
+		return checkResolution{}, unknownCheck(named)
 	}
 	if err != nil {
-		return fmt.Errorf("read the check %s of document %s: %w", check.BlockID, check.ArtifactID, err)
+		return checkResolution{}, fmt.Errorf("read the check %s of document %s: %w", check.BlockID, check.ArtifactID, err)
 	}
-	if check.SHA256 == resolved {
-		return nil
+	if indexed == resolved.indexedCheck {
+		return resolved, nil
 	}
-	return check.readSettled(settled)
+	return settledResolution(check, indexed, settled)
 }
 
 // checkBlocksOf is every `check` block of one Verification document as the block index holds it:

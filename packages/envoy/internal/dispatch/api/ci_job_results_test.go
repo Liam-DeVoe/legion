@@ -71,6 +71,10 @@ type ciJobGitHub struct {
 	// hidden has GitHub answer 404 for the repository itself, as it does for a repository the
 	// App cannot see.
 	hidden bool
+	// commitRead, when set, is handed each commit GitHub is asked whether the repository holds,
+	// with the asking request's context, before GitHub answers, and holds that request for as
+	// long as it runs (holdCommitReads).
+	commitRead func(ctx context.Context, sha string)
 }
 
 // ciJobBranchHead is GitHub's answer for one branch's head: the commit it is at, or, where
@@ -115,6 +119,14 @@ func (g *ciJobGitHub) branchReadsOf(branch string) int {
 	return g.branchReads[branch]
 }
 
+// holdCommitReads has GitHub hand read each commit it is asked whether the repository holds,
+// before it answers.
+func (g *ciJobGitHub) holdCommitReads(read func(ctx context.Context, sha string)) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.commitRead = read
+}
+
 func (g *ciJobGitHub) serve(t *testing.T) string {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -155,6 +167,12 @@ func (g *ciJobGitHub) serve(t *testing.T) string {
 		}
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}", func(w http.ResponseWriter, r *http.Request) {
+		g.mu.Lock()
+		read := g.commitRead
+		g.mu.Unlock()
+		if read != nil {
+			read(r.Context(), r.PathValue("sha"))
+		}
 		fmt.Fprintf(w, `{"sha":%q}`, r.PathValue("sha"))
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/pulls", func(w http.ResponseWriter, _ *http.Request) {
