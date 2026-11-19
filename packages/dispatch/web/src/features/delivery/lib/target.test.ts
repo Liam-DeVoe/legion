@@ -183,6 +183,36 @@ test("an inclusive target of 0 on an eval better lower reads as the value alone,
   expect(targetLabel({ ...unowned, direction: "higher_better" })).toBe("\u2265 0");
 });
 
+// R3-C1, the architect's rule for review round 3: a target is a value a person set, so a caption
+// writes it exactly. A rate's target rounded to a whole percent reads "> 76%" for 0.755, beside a
+// run success of 75.6% its own tone says meets it.
+test("a caption writes its target exactly: a rate as its percentage, 0.755 as 75.5% and 0.05 as 5%, with no float noise", () => {
+  const success = (value: number, inclusive = true) =>
+    deploys({ value, inclusive, judges: ["runs.rate"] });
+  expect(targetLabel(success(0.755, false))).toBe("> 75.5%");
+  expect(targetWords(success(0.755, false))).toBe("above 75.5%");
+  expect(targetLabel(success(0.7602))).toBe("\u2265 76.02%");
+  expect(targetLabel(success(0.9))).toBe("\u2265 90%");
+  const failures = (value: number, judges: Judge[]) =>
+    deploys({ value, inclusive: false, direction: "lower_better", judges });
+  expect(targetLabel(failures(0.05, ["per_deploy.rate"]))).toBe("< 5% per deploy");
+  expect(targetLabel(failures(0.0496, ["per_deploy.rate"]))).toBe("< 4.96% per deploy");
+  // 0.07 x 100 is 7.000000000000001 in floating point: the noise is not the person's.
+  expect(targetLabel(failures(0.07, ["per_pr.rate"]))).toBe("failure rate < 7% per PR");
+  expect(targetWords(failures(0.035, ["upper_bound.rate"]))).toBe(
+    "failure rate's upper bound under 3.5% per deploy"
+  );
+  // Minutes, deploys a day and counts are written as the number the target holds, exact already.
+  expect(targetLabel(minutes(["minutes.median"], { value: 44.5 }))).toBe("median < 44.5m");
+  expect(targetWords(minutes(["minutes.max"], { value: 44.5 }))).toBe(
+    "under 44.5m for every change"
+  );
+  expect(targetLabel(deploys({ value: 0.25 }))).toBe("\u2265 0.25/day");
+  expect(targetLabel(minutes(["minutes.n"], { value: 3, direction: "higher_better" }))).toBe(
+    "count > 3"
+  );
+});
+
 test("meetsTarget: a value at an inclusive target meets it, at a strict one misses it, in the target's own direction, and an off target judges nothing", () => {
   expect(meetsTarget(20, deploys())).toBe(true);
   expect(meetsTarget(20, deploys({ inclusive: false }))).toBe(false);

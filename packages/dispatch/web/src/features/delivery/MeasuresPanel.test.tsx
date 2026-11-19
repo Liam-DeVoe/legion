@@ -1378,6 +1378,30 @@ test("a day's Deploys cell is toned by its own deploys under deploys a day: a co
   ).toEqual(["met", "missed", "plain"]);
 });
 
+// R3-C1: a caption writes its target exactly, as the person set it. Rounded to a whole percent, a
+// target of 75.5% read "> 76%" beside a run success of 75.6% in green.
+test("a card's caption writes its rate target exactly: above 75.5% beside a run success of 75.6% that meets it, under 5% per deploy", () => {
+  renderPanel({
+    ...fixtureMeasures,
+    measures: {
+      ...fixtureMeasures.measures,
+      deploy_run_success: { ...fixtureMeasures.measures.deploy_run_success, rate: 0.756 },
+    },
+    targets: {
+      ...catalogueTargets,
+      deploy_run_success_rate: {
+        ...catalogueTargets.deploy_run_success_rate,
+        value: 0.755,
+        inclusive: false,
+      },
+    },
+  });
+  const runs = card("Deploy runs reaching production");
+  expect(within(runs).getByText("target > 75.5%")).toBeDefined();
+  expect(written(runs)["runs.rate"]).toBe("75.6% met");
+  expect(within(card("Change failure rate")).getByText("target < 5% per deploy")).toBeDefined();
+});
+
 test("a lead-time card whose target is off reads off alone, with no verdict", () => {
   renderPanel({
     ...fixtureMeasures,

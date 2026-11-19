@@ -146,6 +146,9 @@ judged by that day's value only for a rate or a median, 90th percentile or longe
 over the window, such as the concluded runs or the deploys, is judged by the window's total, so its
 figure on the card takes the colour and no day does. The dashed target line is drawn exactly where
 the bars can take a colour. With the target off, nothing takes a colour and no line is drawn.
+A coloured figure takes more decimals where its usual ones would show the target itself or a
+number past it, so it always reads on the side its colour says (4.96% under a 5% target, never
+5.0%), and a label writes its target exactly as it was set.
 
 ## For agents
 
@@ -356,6 +359,9 @@ when the eval's target judges the statistic it shows, by its own value, the targ
 included where the eval counts it as met; today's figures and the bars are a day's, so under a
 target of the count of pull requests only the seven days' count takes a colour. The dashed line
 marks the target exactly where a bar can take a colour.
+A coloured figure takes more decimals where whole minutes would show the target itself or a time
+past it, so it always reads on the side its colour says (59.9m under 60 minutes, never 60m), and
+the card writes its target exactly as it was set.
 
 **PR CI: slowest jobs** ranks the checks workflow's jobs by their seven-day median, slowest first,
 and shows five. A job needs a number of timed results in the seven days to be ranked, so a rarely

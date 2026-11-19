@@ -9,7 +9,6 @@
 // the target (`judgeFigure`). Pure.
 
 import type { DeliveryLeadTimeCell, DeliveryTargets } from "../../../api/types";
-import { pct } from "./format";
 
 /** One measure's target, or null where it is off. */
 export type Target = DeliveryTargets["deploys_per_day"];
@@ -43,13 +42,19 @@ interface Statistic {
   readonly alone?: (value: number) => string;
 }
 
+// A caption writes a target exactly, as the person set it (dispatch://INFRA-2916, R3-C1): a
+// target rounded away could read on the other side of a figure its tone says meets it. A number
+// is written as JavaScript writes it, the shortest text that reads back as the same number.
 const minutes = (value: number) => `${value}m`;
 const everyChange = (value: number) => `${value}m for every change`;
 const count = (value: number) => `${value}`;
 const perDay = (value: number) => `${value}/day`;
-const share = (value: number) => pct(value, 0);
-const perDeploy = (value: number) => `${pct(value, 0)} per deploy`;
-const perPR = (value: number) => `${pct(value, 0)} per PR`;
+/** A rate's target as its percentage, to the twelve significant digits that keep every digit a
+ *  person set and drop the floating-point noise of scaling it by 100: 0.755 as "75.5%", 0.07
+ *  (7.000000000000001 once scaled) as "7%". */
+const share = (value: number) => `${Number((value * 100).toPrecision(12))}%`;
+const perDeploy = (value: number) => `${share(value)} per deploy`;
+const perPR = (value: number) => `${share(value)} per PR`;
 
 /** Every statistic a delivery eval's target may judge: the judges the server's register write
  *  takes of the six delivery evals (packages/envoy/internal/dispatch/evals/delivery_targets.go,
