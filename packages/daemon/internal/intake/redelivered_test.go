@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -60,13 +61,18 @@ const (
 	redeliveredSecret   = "redelivered-webhook-secret"
 	redeliveredClientID = "Iv1.redelivered"
 	githubSubjects      = "notifications.github.>"
-	// streamGenerationKey and narrowedGeneration are those of Envoy's bustest.NarrowStream, which
+	// streamGenerationKey and stampedGeneration are those of Envoy's bustest.ChangeStream, which
 	// this module cannot import: the key every Envoy build reads the generation of the stream's
 	// settings under, and a generation no build reaches. The listener leaves a stream stamped with
 	// it exactly as it is, at the ensure of each reconnect and in its keeper, as it leaves a newer
-	// build's, so a narrowing that carries it holds however long the test takes.
+	// build's, so a change that carries it holds however long the test takes.
 	streamGenerationKey = "dispatch.stream-generation"
-	narrowedGeneration  = "1000000"
+	stampedGeneration   = "1000000"
+	// jsStreamStoreFailed and maxBytesExceeded are nats-server's answer to a publish a full stream
+	// refused: the code of a message the stream did not store, and the description of a stream
+	// that holds its byte limit and discards new messages (Envoy's bus.ErrStreamFull reads both).
+	jsStreamStoreFailed = 10077
+	maxBytesExceeded    = "maximum bytes exceeded"
 )
 
 // redeliveredRepositories records an issue on acme/widgets at main, as the daemon would once
@@ -80,10 +86,10 @@ func (redeliveredRepositories) ResolveRepository(resolved string) (workflow.Reso
 	return workflow.Resolution{Refusal: "GitHub has not been read for " + resolved + " yet", Unread: true}, nil
 }
 
-// GitHub sends a pull request opened on an issue's branch while the stream does not capture
-// GitHub's subjects, so Envoy's listener cannot store it and answers 503, which GitHub records as
-// a failed attempt and never retries on its own. Once the stream captures the subjects again,
-// Dispatch's redelivery sweep (`envoy-dispatch redeliver-webhooks`) finds the failed attempt and
+// GitHub sends a pull request opened on an issue's branch while the stream is full, so Envoy's
+// listener cannot store it and answers 503, which GitHub records as a failed attempt and never
+// retries on its own. Once the stream has room again, Dispatch's redelivery sweep
+// (`envoy-dispatch redeliver-webhooks`) finds the failed attempt and
 // asks GitHub to redeliver it; GitHub re-sends the original body under the same delivery GUID, the
 // listener stores it, and the daemon's consumer applies it with the workflow's handler: the pull
 // request is recorded on its issue, once, under the delivery's fact id. The listener and the
@@ -133,28 +139,34 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 		}
 	})
 
-	// The stream stops capturing GitHub's subjects: the listener reconciled it when it started,
-	// so its subjects are the listener's own, and every one but GitHub's stays.
-	deployed := narrowStream(t, js, stream, githubSubjects)
-	t.Logf("1. the stream ENVOY_NOTIFICATIONS captures %v: no %s", streamSubjects(t, stream), githubSubjects)
+	// The stream refuses every new message: the listener reconciled it when it started, so its
+	// subjects are the listener's own, and it now holds its byte limit. It still captures GitHub's
+	// subjects, so the listener, which reads them again at each reconnect and every 60 s, keeps
+	// publishing GitHub's deliveries through JetStream, where the full stream refuses them.
+	deployed := fillStream(t, js, stream)
+	t.Logf("1. the stream ENVOY_NOTIFICATIONS captures %v and is full", streamSubjects(t, stream))
 
 	key, pemText := redeliveredAppKey(t)
 	github := newFakeGitHub(t, &key.PublicKey, redeliveredClientID, "http://127.0.0.1:"+strconv.Itoa(listener.port)+"/webhook/github")
 	body := redeliveredPullRequestOpened()
 	original := github.deliver(redeliveredGUID, "pull_request", "opened", body)
 	if original.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("the listener answered the delivery %d, want 503 while the stream does not capture it:\n%s", original.StatusCode, listener.output.String())
+		t.Fatalf("the listener answered the delivery %d, want 503 while the stream is full:\n%s", original.StatusCode, listener.output.String())
+	}
+	failed := listener.line(t, "github publish failed")
+	if !strings.Contains(failed, "is full") {
+		t.Fatalf("the listener logged %q for the delivery, want the full stream's refusal:\n%s", failed, listener.output.String())
 	}
 	t.Logf("2. GitHub delivered pull_request.opened %s (%s#%d on legion/%s): the listener answered %d (%s); GitHub's log lists attempt %d, status_code %d, status %q",
 		redeliveredGUID, redeliveredRepo, redeliveredNumber, redeliveredIssue, original.StatusCode,
-		listener.line(t, "github publish failed"), original.ID, original.StatusCode, original.Status)
+		failed, original.ID, original.StatusCode, original.Status)
 	subject := "notifications.github.acme.widgets.pr." + strconv.Itoa(redeliveredNumber)
 	if n := storedOn(t, stream, subject); n != 0 {
 		t.Fatalf("the stream holds %d messages on %s after the refused publish, want none", n, subject)
 	}
 
 	setStreamConfig(t, js, deployed)
-	t.Logf("3. the stream captures %s again", githubSubjects)
+	t.Logf("3. the stream has room again")
 
 	// redeliver-webhooks reads the GitHub rate limits every Dispatch process shares from
 	// Dispatch's own database, so it needs DATABASE_URL, and it migrates nothing: a deployment
@@ -443,35 +455,57 @@ func streamSubjects(t *testing.T, stream jetstream.Stream) []string {
 	return info.Config.Subjects
 }
 
-// narrowStream takes subject out of the stream, stamped with narrowedGeneration so that the
-// listener leaves the narrowing as it is, reads the stream back, and fails the test unless the
-// subject is gone and the stamp holds. It returns the configuration the stream had, which the test
-// writes back to let the stream capture the subject again.
-func narrowStream(t *testing.T, js jetstream.JetStream, stream jetstream.Stream, subject string) jetstream.StreamConfig {
+// fillStream makes the stream full: it limits the stream to the bytes it holds and 16 KiB more,
+// with new messages discarded at the limit, stamped with stampedGeneration so that the listener
+// leaves the limit as it is, and it publishes on notifications.github.fill.<n>, a subject no
+// consumer of this test hears, until the stream refuses a message of one byte for its limit. It
+// fails the test unless the stream reads back with the limit, the discard and the stamp. It
+// returns the configuration the stream had, which the test writes back to give it room again.
+func fillStream(t *testing.T, js jetstream.JetStream, stream jetstream.Stream) jetstream.StreamConfig {
 	t.Helper()
 	info, err := stream.Info(context.Background())
 	if err != nil {
 		t.Fatalf("read the stream's info: %v", err)
 	}
 	deployed := info.Config
-	if !slices.Contains(deployed.Subjects, subject) {
-		t.Fatalf("the stream the listener reconciled captures %v, want %s among them", deployed.Subjects, subject)
+	if !slices.Contains(deployed.Subjects, githubSubjects) {
+		t.Fatalf("the stream the listener reconciled captures %v, want %s among them", deployed.Subjects, githubSubjects)
 	}
-	narrowed := deployed
-	narrowed.Subjects = slices.DeleteFunc(slices.Clone(deployed.Subjects), func(other string) bool { return other == subject })
-	narrowed.Metadata = maps.Clone(deployed.Metadata)
-	if narrowed.Metadata == nil {
-		narrowed.Metadata = map[string]string{}
+	full := deployed
+	full.MaxBytes = int64(info.State.Bytes) + 16<<10
+	full.Discard = jetstream.DiscardNew
+	full.Metadata = maps.Clone(deployed.Metadata)
+	if full.Metadata == nil {
+		full.Metadata = map[string]string{}
 	}
-	narrowed.Metadata[streamGenerationKey] = narrowedGeneration
-	setStreamConfig(t, js, narrowed)
+	full.Metadata[streamGenerationKey] = stampedGeneration
+	setStreamConfig(t, js, full)
 	info, err = stream.Info(context.Background())
 	if err != nil {
-		t.Fatalf("read the narrowed stream's info: %v", err)
+		t.Fatalf("read the limited stream's info: %v", err)
 	}
-	if slices.Contains(info.Config.Subjects, subject) || info.Config.Metadata[streamGenerationKey] != narrowedGeneration {
-		t.Fatalf("the narrowed stream captures %v with generation %q, want no %s and generation %s",
-			info.Config.Subjects, info.Config.Metadata[streamGenerationKey], subject, narrowedGeneration)
+	if got := info.Config; got.MaxBytes != full.MaxBytes || got.Discard != jetstream.DiscardNew || got.Metadata[streamGenerationKey] != stampedGeneration {
+		t.Fatalf("the limited stream holds %d bytes at most, discard %v, generation %q, want %d, %v and %s",
+			got.MaxBytes, got.Discard, got.Metadata[streamGenerationKey], full.MaxBytes, jetstream.DiscardNew, stampedGeneration)
+	}
+	// Kibibytes first, then single bytes, so the room left is less than any delivery's message.
+	published := 0
+	for _, size := range []int{1 << 10, 1} {
+		for {
+			if published == 100 {
+				t.Fatalf("the stream took %d messages under a limit of %d bytes, want it full", published, full.MaxBytes)
+			}
+			_, err := js.Publish(context.Background(), fmt.Sprintf("notifications.github.fill.%d", published), []byte(strings.Repeat("x", size)))
+			if err == nil {
+				published++
+				continue
+			}
+			var apiErr *jetstream.APIError
+			if !errors.As(err, &apiErr) || apiErr.ErrorCode != jsStreamStoreFailed || apiErr.Description != maxBytesExceeded {
+				t.Fatalf("fill publish %d: %v, want it stored or refused with %q", published, err, maxBytesExceeded)
+			}
+			break
+		}
 	}
 	return deployed
 }
@@ -479,7 +513,7 @@ func narrowStream(t *testing.T, js jetstream.JetStream, stream jetstream.Stream,
 func setStreamConfig(t *testing.T, js jetstream.JetStream, config jetstream.StreamConfig) {
 	t.Helper()
 	if _, err := js.UpdateStream(context.Background(), config); err != nil {
-		t.Fatalf("set the stream's subjects to %v: %v", config.Subjects, err)
+		t.Fatalf("set the stream's configuration: %v", err)
 	}
 }
 
