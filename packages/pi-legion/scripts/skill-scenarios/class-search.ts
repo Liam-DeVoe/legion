@@ -30,6 +30,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { SyncSubprocess } from "bun";
 import { z } from "zod";
 import { labelGhSelectors, RIG_GH_TOKEN } from "./daemon-pane";
 import { endpointPath, methodOf, type Route, readWorld, routeFor, type World } from "./gh-call";
@@ -224,12 +225,41 @@ function scriptDefinitions(script: string): string[] {
 /** The shell a script of the tree's rig.sh starts with to run the rig's own functions: `set -euo
  * pipefail`, every function of the script defined as the script writes it, and its world's values
  * (`worker_repo`, `worker_base`, `world_*`, `text_finding_*`) as it assigns them. */
-function rigShell(tree: Tree): string[] {
+export function rigShell(tree: Tree): string[] {
   const script = tree.text(rig("rig.sh"));
   const values = script.match(
     /^(?:worker_repo|worker_base|world_[a-z_]+|text_finding_[a-z_]+)=.*$/gm
   );
   return ["set -euo pipefail", ...scriptDefinitions(script), ...(values ?? [])];
+}
+
+/** Linux's limit on one argument of a process (MAX_ARG_STRLEN, 32 pages): a longer one fails the
+ * spawn with E2BIG. */
+export const ARGUMENT_LIMIT = 131_072;
+let rigScripts = 0;
+/** Runs `lines`, a script of the rig's own shell (`rigShell`), with `args` as its positional
+ * parameters and `env` as its whole environment, from a file written under `dir` and removed
+ * after: never as `bash -c`'s one argument, since rig.sh's functions run past ARGUMENT_LIMIT
+ * (about 300 KB), which a runner's kernel refuses with E2BIG (CI run 44545489442) where a
+ * gVisor pod's let it through. Not on standard input either, which a command of the script that
+ * reads its standard input would read the rest of the script from. */
+export function runRigShell(
+  dir: string,
+  lines: readonly string[],
+  args: readonly string[],
+  env: Record<string, string>
+): SyncSubprocess<"pipe", "pipe"> {
+  const file = path.join(dir, `rig-shell-${process.pid}-${++rigScripts}.sh`);
+  writeFileSync(file, `${lines.join("\n")}\n`);
+  try {
+    return Bun.spawnSync(rigShellArgv(file, args), { env, stdout: "pipe", stderr: "pipe" });
+  } finally {
+    rmSync(file, { force: true });
+  }
+}
+/** The argument list `runRigShell` runs the script `file` with. */
+export function rigShellArgv(file: string, args: readonly string[]): string[] {
+  return ["bash", file, ...args];
 }
 
 /** The worlds rig.sh builds, each built under `into` by rig.sh's own worker_fixture, for every
@@ -252,22 +282,11 @@ export function buildWorlds(tree: Tree, into: string): BuiltWorld[] {
       const name = one === "" ? scenario : `${scenario}-${one}`;
       const dir = path.join(into, name);
       mkdirSync(dir, { recursive: true });
-      const made = Bun.spawnSync(
-        [
-          "bash",
-          "-c",
-          [
-            ...shell,
-            "fixture_workspace() { :; }",
-            "R=$1 worker_key=$2",
-            'worker_fixture 1 100 "$3"',
-          ].join("\n"),
-          "-",
-          dir,
-          `${WORLD_PROJECT}-1`,
-          one,
-        ],
-        { env: { PATH: process.env.PATH ?? "", HOME: into, ...leakCheckEnv() } }
+      const made = runRigShell(
+        into,
+        [...shell, "fixture_workspace() { :; }", "R=$1 worker_key=$2", 'worker_fixture 1 100 "$3"'],
+        [dir, `${WORLD_PROJECT}-1`, one],
+        { PATH: process.env.PATH ?? "", HOME: into, ...leakCheckEnv() }
       );
       if (made.exitCode !== 0)
         throw new Error(`rig.sh's worker_fixture of ${name}: ${made.stderr.toString().trim()}`);
@@ -803,26 +822,18 @@ export function workflowGrants(tree: Tree): { app: string; workflows: boolean }[
 function appPush(tree: Tree, worlds: Worlds, world: BuiltWorld, role: string) {
   const dir = worlds.copy(world);
   const env = { PATH: process.env.PATH ?? "", HOME: worlds.scratch, ...leakCheckEnv() };
-  const made = Bun.spawnSync(
+  const made = runRigShell(
+    worlds.scratch,
     [
-      "bash",
-      "-c",
-      [
-        ...rigShell(tree),
-        'R=$1 work=$1/push-work && world_remote && world_remote_app "$2"',
-        'git clone -q -b "$3" "$R/remote.git" "$work"',
-        'git -C "$work" config remote.origin.vcs "$world_remote_vcs"',
-        'mkdir -p "$(dirname "$work/$4")" && printf "# %s\\n" "$5" >>"$work/$4" && git -C "$work" add -A',
-        'git -C "$work" -c user.name=probe -c user.email=probe@example.invalid commit -qm "$5"',
-      ].join("\n"),
-      "-",
-      dir,
-      role,
-      world.world.branch,
-      WORKFLOW,
-      SENT,
+      ...rigShell(tree),
+      'R=$1 work=$1/push-work && world_remote && world_remote_app "$2"',
+      'git clone -q -b "$3" "$R/remote.git" "$work"',
+      'git -C "$work" config remote.origin.vcs "$world_remote_vcs"',
+      'mkdir -p "$(dirname "$work/$4")" && printf "# %s\\n" "$5" >>"$work/$4" && git -C "$work" add -A',
+      'git -C "$work" -c user.name=probe -c user.email=probe@example.invalid commit -qm "$5"',
     ],
-    { env }
+    [dir, role, world.world.branch, WORKFLOW, SENT],
+    env
   );
   if (made.exitCode !== 0)
     throw new Error(`${world.name}: the ${role}'s push could not be made: ${made.stderr}`);

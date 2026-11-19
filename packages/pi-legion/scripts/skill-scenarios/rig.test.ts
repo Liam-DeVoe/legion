@@ -11480,7 +11480,7 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
         '  curl -fsS -o /dev/null -d "{\\"secret\\":\\"$secret\\"}" "$at/legion/v1/claims/ready"',
         '  curl -fsS -o "$R/state.json" "$at/legion/v1/state"',
         '  cli read --issue "$worker_key" >"$R/read-after.txt"',
-        '  curl -fsS -H "Authorization: Bearer e2e-token" "http://127.0.0.1:$dispatch_port/api/v1/issues/$worker_key/role-holders" >"$R/holders.json"',
+        `  printf 'Authorization: Bearer %s' e2e-token | curl -fsS -H @- "http://127.0.0.1:$dispatch_port/api/v1/issues/$worker_key/role-holders" >"$R/holders.json"`,
         "fi",
       ].join("\n");
       const seeded = spawnChecked(

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
+  ARGUMENT_LIMIT,
   type BuiltWorld,
   CHECKS,
   type Check,
@@ -15,6 +16,9 @@ import {
   readData,
   readsHeld,
   report,
+  rigShell,
+  rigShellArgv,
+  runRigShell,
   servedReads,
   Tree,
   Worlds,
@@ -73,6 +77,29 @@ test("the class search finds no instance outside its residuals at this checkout,
   );
   for (const check of CHECKS) expect(stdout).toContain(`== ${check.name}\n`);
 }, 900_000);
+
+// The class search runs rig.sh's own functions, about 300 KB of them, which a runner's kernel
+// refuses as one argument (Linux's MAX_ARG_STRLEN, 131,072 bytes): CI run 44545489442 failed every
+// row that built a world with `E2BIG: argument list too long, posix_spawn 'bash'`, where a gVisor
+// pod let the argument through. Catches: the rig's shell handed to bash as one argument again,
+// which no row on a pod would see fail.
+test("the class search hands bash the rig's own shell in a file, and no argument of it is past Linux's limit", () => {
+  const lines = rigShell(tree);
+  expect(Buffer.byteLength(lines.join("\n"))).toBeGreaterThan(ARGUMENT_LIMIT);
+  const dir = temporaryDirectories("class-search-argv")("shell");
+  const file = path.join(dir, "script.sh");
+  const argv = rigShellArgv(file, [dir, "x"]);
+  expect(argv.filter((arg) => Buffer.byteLength(arg) >= ARGUMENT_LIMIT)).toEqual([]);
+  const ran = runRigShell(dir, [...lines, 'printf "%s %s\\n" "$1" "$2"'], [dir, "x"], {
+    PATH: process.env.PATH ?? "",
+  });
+  expect([ran.exitCode, ran.stdout.toString(), ran.stderr.toString()]).toEqual([
+    0,
+    `${dir} x\n`,
+    "",
+  ]);
+  expect(existsSync(file)).toBe(false);
+});
 
 // A pod's `git` is Legion's leak-check wrapper, whose guard refuses every push for which it finds
 // no shared check: through PUBLIC_LEAK_CHECK, then public-leak-check.sh on PATH, then the pointer

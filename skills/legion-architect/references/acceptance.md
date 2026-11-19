@@ -249,8 +249,7 @@ request GitHub has already merged closes at once.
   of its six claims and leaves that role running, because the issue still owes the production
   check; where the setting is `off` no check opens, and the close retires all six and releases
   the pod. When the issue's
-  pod and Sandbox go is in `skill://legion-worker/references/merge-gate.md`, *The production check
-  after the close*.
+  pod and Sandbox go is in `skill://legion-worker/references/production-check.md`.
 - A root's close writes `done`, releases any admission slot the tree's issues still held, and lingers the tree for
   `linger_hours` with every member suspended. The linger's end, the tree's last step, waits until
   every member's open production check has closed.
