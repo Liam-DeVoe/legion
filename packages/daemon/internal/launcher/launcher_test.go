@@ -859,17 +859,22 @@ func TestARolesExitIsReportedWithTheShimsOwnStatus(t *testing.T) {
 	}
 }
 
-// The container's SIGTERM stops every role at once, each given the whole stop grace its own
-// container had: both roles' handlers run to the end, and the launcher leaves in one grace rather
-// than one per role.
-func TestTheContainersStopEndsEveryRoleWithinOneStopGrace(t *testing.T) {
+// The container's SIGTERM starts every role's handler before it waits for either role to leave.
+// Both handlers wait for this test to release them, so a launcher that stopped roles one at a
+// time could start one handler but not the other; a time alone would instead fail on a busy
+// machine. Once both handlers have started, the test releases both, and the launcher leaves.
+func TestTheContainersStopStartsEveryRolesHandlerBeforeEitherLeaves(t *testing.T) {
 	requireRoleNamespaces(t)
 	f := newFleet(t, 6*time.Second, "tester", "reviewer")
-	const handler = `trap '/bin/sleep 1.5; printf done > /tmp/finished; exit 0' TERM
+	const handler = `trap 'printf started > /tmp/started
+while [ ! -e /tmp/release ]; do /bin/sleep 0.01; done
+printf done > /tmp/finished
+exit 0' TERM
 printf ready > /tmp/ready
 while :; do /bin/sleep 600 & wait; done
 `
-	for i, role := range []string{"tester", "reviewer"} {
+	roles := []string{"tester", "reviewer"}
+	for i, role := range roles {
 		got := f.role(role).start(shimwire.LauncherStart{
 			ID: "start-" + role, Generation: uint64(i + 1), Argv: []string{"/bin/sh", "-c", handler},
 		})
@@ -879,21 +884,28 @@ while :; do /bin/sleep 600 & wait; done
 		f.waitForRoleFile(f.roleTmp(role, "ready"))
 	}
 
-	started := time.Now()
+	release := func() {
+		for _, role := range roles {
+			if err := os.WriteFile(f.roleTmp(role, "release"), []byte("release"), 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("release of %s: %v", role, err)
+			}
+		}
+	}
+	t.Cleanup(release)
 	f.cancel()
+	for _, role := range roles {
+		f.waitForRoleFile(f.roleTmp(role, "started"))
+	}
+	release()
 	err := <-f.result
 	f.result <- err
-	elapsed := time.Since(started)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("the launcher returned %v, want its context's end", err)
 	}
-	for _, role := range []string{"tester", "reviewer"} {
+	for _, role := range roles {
 		if body, readErr := os.ReadFile(f.roleTmp(role, "finished")); readErr != nil || string(body) != "done" {
 			t.Fatalf("role %s was cut short at the container's stop: %q, %v; the launcher's log: %s", role, body, readErr, f.stderr.String())
 		}
-	}
-	if elapsed > 2500*time.Millisecond {
-		t.Fatalf("the container's stop took %s for two roles whose handlers take 1.5s each: the roles are stopped one after another, not together", elapsed)
 	}
 }
 
