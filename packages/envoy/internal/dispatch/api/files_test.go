@@ -331,13 +331,15 @@ func (h heldPut) Put(ctx context.Context, sha, mime string, body []byte) error {
 // cannot name is reported as a failure rather than a hang.
 const uploadLockProbeWindow = 20 * time.Second
 
-// issueOwnerLockKey is the pg_locks predicate for an issue's owner lock (store.LockOwner): a
-// two-key advisory lock, the owner namespace as its classid and the hashtext of the owner's lock
-// key as its objid, both read as the unsigned 32-bit values that view carries. The two keys are
-// passed in from store rather than spelled again here (store.OwnerLockNamespace,
-// store.Owner.LockKey), so a change to either reaches this read instead of leaving it looking for
-// a lock nothing takes any more.
+// issueOwnerLockKey is the pg_locks predicate for an issue's owner lock (store.LockOwner) in this
+// test's database: a two-key advisory lock, the owner namespace as its classid and the hashtext of
+// the owner's lock key as its objid, both read as the unsigned 32-bit values that view carries.
+// pg_locks lists every database's locks, and a test of another database holding its own issue of
+// the same key would be named as this one's holder. The two keys are passed in from store rather
+// than spelled again here (store.OwnerLockNamespace, store.Owner.LockKey), so a change to either
+// reaches this read instead of leaving it looking for a lock nothing takes any more.
 const issueOwnerLockKey = `l.locktype = 'advisory' and l.objsubid = 2
+			and l.database = (select oid from pg_database where datname = current_database())
 			and l.classid = ($2::bigint & 4294967295)::oid
 			and l.objid = (hashtext($1)::bigint & 4294967295)::oid`
 

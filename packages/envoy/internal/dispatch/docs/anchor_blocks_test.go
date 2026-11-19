@@ -207,7 +207,8 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 
 // waitForHeldAnchorRefresh returns once the settlement is inside its anchor refresh, waiting on
 // the advisory lock the test holds. The lock's own wait queue is the settlement's observable
-// position; nothing here assumes how long a step takes.
+// position; nothing here assumes how long a step takes. It counts the test's own database's
+// waiters alone, for the reason waitForHeldOwnerLock gives.
 func waitForHeldAnchorRefresh(t *testing.T, service *Service, key int64) {
 	t.Helper()
 	deadline := time.Now().Add(roomWait(t))
@@ -216,6 +217,7 @@ func waitForHeldAnchorRefresh(t *testing.T, service *Service, key int64) {
 		if err := service.store.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_locks
 			where locktype = 'advisory' and not granted
+				and database = (select oid from pg_database where datname = current_database())
 				and ((classid::bigint << 32) | objid::bigint) = $1
 		`, key).Scan(&waiting); err != nil {
 			t.Fatalf("read the anchor refresh hold: %v", err)

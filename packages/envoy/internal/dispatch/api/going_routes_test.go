@@ -452,6 +452,7 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 		var waiting int
 		if err := rig.database.Pool.QueryRow(ctx, `
 			select count(*) from pg_locks where relation = 'going_requests'::regclass and not granted
+			  and database = (select oid from pg_database where datname = current_database())
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("read what is waiting on going_requests: %v", err)
 		}

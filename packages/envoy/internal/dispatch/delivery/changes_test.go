@@ -478,6 +478,7 @@ func TestChangeSeqsFollowCommitOrder(t *testing.T) {
 		err := pool.QueryRow(ctx, `
 			select count(*) from pg_locks
 			where locktype = 'advisory' and not granted and classid = 6900 and objid = 0 and objsubid = 2
+			  and database = (select oid from pg_database where datname = current_database())
 		`).Scan(&waiting)
 		return err == nil && waiting == 1
 	}, func() string { return "B never waited on the change log's advisory lock" })

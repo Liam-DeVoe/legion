@@ -12,8 +12,9 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
-// waitForQueuedLock waits until some session is queued, not yet granted, for mode on relation: a
-// migration the test started, which the test then holds up or races. It fails t after eventWait.
+// waitForQueuedLock waits until some session of store's database is queued, not yet granted, for
+// mode on relation: a migration the test started, which the test then holds up or races. It fails
+// t after eventWait.
 func waitForQueuedLock(t *testing.T, store *Store, relation, mode string) {
 	t.Helper()
 	ctx := context.Background()
@@ -21,7 +22,8 @@ func waitForQueuedLock(t *testing.T, store *Store, relation, mode string) {
 	for {
 		var waiting bool
 		if err := store.Pool.QueryRow(ctx, `
-			select exists(select 1 from pg_locks where relation = $1::regclass and mode = $2 and not granted)
+			select exists(select 1 from pg_locks where relation = $1::regclass and mode = $2 and not granted
+				and database = (select oid from pg_database where datname = current_database()))
 		`, relation, mode).Scan(&waiting); err != nil {
 			t.Fatalf("read pg_locks: %v", err)
 		}

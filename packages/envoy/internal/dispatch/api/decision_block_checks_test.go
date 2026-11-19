@@ -262,6 +262,7 @@ func TestDecisionBlockCheckDoesNotHoldTheConditionalEditGate(t *testing.T) {
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_locks where relation = 'search_term_stats'::regclass and not granted
+			  and database = (select oid from pg_database where datname = current_database())
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("read lock waits: %v", err)
 		}
