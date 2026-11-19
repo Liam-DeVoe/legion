@@ -85,12 +85,17 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   on. An issue whose `reason` is `unclassified` goes in the report with its `phase` and its
   `status`: the daemon could give it no word, and a person reads it.
 - **Phase workers nothing will prompt.** Each entry of the tick's `silent` list, with the role whose
-  claim is silent and how long it has been quiet (`skill://legion-controller/references/wakes.md`).
+  claim is silent and, from the entry's `silent`, how long it has been quiet
+  (`skill://legion-controller/references/wakes.md`).
   That list arrives on the tick wake alone and is in no `read_state` field, so the report names the
   most recent tick's list and says nothing of them on a day no tick carried one.
   An entry with `backgroundSince` is a worker whose own background work has stood past `worker_background_hours`,
   which the daemon does not prompt.
   Name it with how long that work has stood, counted from `backgroundSince`.
+  An entry with no `lastStep` and no `silent` is a worker whose agent the daemon recorded no step of.
+  Only an entry with `backgroundSince` can lack them, since the tick names a plain silence only from a recorded step,
+  so name such an entry by how long its background work has stood, counted from `backgroundSince`,
+  and say that no step of its worker is recorded, never a time quiet.
 - **Waiting on a person.** Each tree whose next step waits on a person's answer, with that ask's
   `dispatch://` reference, while the ask is open. Each row of the weekly plan that moved nothing,
   because no person's request stands behind it, with its deferral ask's `dispatch://` reference,

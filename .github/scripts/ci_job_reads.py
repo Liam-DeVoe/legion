@@ -436,6 +436,7 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
         (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:43-44, legion-pane-mcp.test.ts:19-20, legion-tool.test.ts:13"),
         (".agents/plugins/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
         (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:10"),
+        (f"{DAEMON}/internal/texts/testdata/in-front.json", "packages/claude-envoy/tests/words-in-front.test.ts:70 ('the mod's inFront gives what the cases it shares with the daemon's InFront say') reads the daemon's cases of texts.InFront by relative path, the file packages/daemon/internal/texts's TestInFrontGivesWhatTheSharedCasesSay reads, and holds the mod's copy of inFront to each"),
 )
 
 
@@ -2646,6 +2647,7 @@ GATES = [
         (CONTRACTS_SRC, f"{at('envoy-client', 'Build contracts for Envoy client')}; tsconfig paths @legion/contracts -> ../contracts/src/index.ts"),
         (f"{FIX}/dispatch-targeted-delivery.json", "packages/envoy-client/src/__tests__/delivery.test.ts:19, dispatch-text.test.ts:128"),
         (f"{DAEMON}/internal/daemon/testdata/texts.golden.json", "packages/envoy-client/src/__tests__/delivery.test.ts:2853 ('a daemon card renders the golden payloads') reads the daemon's golden file of every text by relative path, the file TestEveryKindOnTheListStatesItsFields writes in packages/daemon/internal/daemon, and renders each notice and role message of it"),
+        (f"{DAEMON}/internal/texts/testdata/in-front.json", "packages/envoy-client/src/__tests__/words-block.test.ts:102 ('inFront gives what the cases it shares with the daemon's InFront say') reads the daemon's cases of texts.InFront by relative path, the file packages/daemon/internal/texts's TestInFrontGivesWhatTheSharedCasesSay reads, and holds inFront to each"),
         (f"{FIX}/envoy-session-no-interests.json", "packages/envoy-client/src/__tests__/transport.test.ts:3"),
         (f"{FIX}/ask-reply-recipients.json", "packages/envoy-client/src/__tests__/ask-reply-recipients.test.ts:61 renders the copies packages/envoy's TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers writes"),
         (f"{FIX}/dispatch-public-url.json", "packages/envoy-client/src/__tests__/dispatch-config.test.ts:5"),

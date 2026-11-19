@@ -1,10 +1,10 @@
 /**
- * `inFront` of `@legion/envoy-client/words-block`, written a second time for the mod's prompt at
- * the rows a turn never read (`unreadRowPrompt`, `./mod-protocol.ts`). A mod imports nothing from
- * outside `hooks/` (`./mod-protocol.ts` says why), so it cannot take the shared one;
- * `../tests/words-in-front.test.ts` checks that the two give the same text for the same input.
- * Change the two together. Like `./mod-protocol.ts`, this file stays import-free: plain functions
- * over their arguments that read no global.
+ * `inFront` and `TextInFront` of `@legion/envoy-client/words-block`, written a second time for the
+ * mod's prompt at the rows a turn never read (`unreadRowPrompt`, `./mod-protocol.ts`). A mod
+ * imports nothing from outside `hooks/` (`./mod-protocol.ts` says why), so it cannot take the
+ * shared ones; `../tests/words-in-front.test.ts` checks that the two give the same text for the
+ * same input. Change the two together. Like `./mod-protocol.ts`, this file stays import-free:
+ * plain functions and classes over their arguments that read no global.
  */
 
 /**
@@ -17,23 +17,71 @@
  * that neither a part, nor the text of `text` before and after its blocks, nor the words of any
  * block hold as `<tag` or `</tag`, and that no earlier block took. Where neither the parts nor the
  * text after the blocks hold a tag the blocks could take, each block keeps its tag and the result
- * is the parts and `text` joined as they are; so is a text with no drawn block.
+ * is the parts and `text` joined as they are; so is a text with no drawn block. A prompt of
+ * several cards is built with `TextInFront`, which gives each card the text this gives it.
  */
 export function inFront(parts: readonly string[], text: string): string {
-  if (parts.length === 0) return text
-  const front = `${parts.join("\n\n")}\n\n`
-  const found = drawnBlocks(text)
-  const first = found[0]
-  const last = found[found.length - 1]
-  if (first === undefined || last === undefined) return front + text
-  const head = text.slice(0, first.start)
-  const tail = text.slice(last.end)
-  const tags = blockTags([...parts, head, tail], found)
-  const blocks = found.map(
-    ({ attributes, text: words }, index) =>
-      `<${tags[index] ?? ""}${attributes}>\n${words}\n</${tags[index] ?? ""}>`,
-  )
-  return `${front}${head}${blocks.join("\n")}${tail}`
+  const [first, ...rest] = parts
+  if (first === undefined) return text
+  const sent = new TextInFront(first)
+  for (const part of rest) sent.part(part)
+  sent.card(text)
+  return sent.text()
+}
+
+/**
+ * A text built of parts and cards, each joined to the one before by a blank line: the prompt at
+ * the rows a turn never read. A part is joined as it is. A card is joined as `inFront` joins it
+ * behind the whole text before it, every earlier card as it was drawn there included, so the text
+ * is byte for byte the one that joining each part and taking `inFront([text so far], card)` for
+ * each card gives.
+ *
+ * What that draw scans the text before a card for is the tags of the names the card's blocks
+ * have, and all that a part or a card adds to it is its own text. So the text keeps, for each
+ * name a block has had, the tags of that name it holds: a name is scanned for over the text once,
+ * when a block first has it, and each part and card after that is scanned for it on its own. The
+ * whole is drawn in time linear in its length for each name its cards' blocks have, where taking
+ * `inFront` of the text so far for each card scans all of it again at every card, every earlier
+ * card's words included.
+ */
+export class TextInFront {
+  readonly #held: HeldTags
+
+  /** A text that starts with `first`, as it is. */
+  constructor(first: string) {
+    this.#held = new HeldTags([first])
+  }
+
+  /** Joins `text` after a blank line, as it is. */
+  part(text: string): void {
+    this.#held.add(`\n\n${text}`)
+  }
+
+  /** Joins `text`, a card, after a blank line, with its blocks (`drawnBlocks`) drawn again, each
+   *  with its attributes as written and its words as they were, under the tag the rule gives it
+   *  against the whole text before the card and the card (`inFront`). */
+  card(text: string): void {
+    const found = drawnBlocks(text)
+    const first = found[0]
+    const last = found[found.length - 1]
+    if (first === undefined || last === undefined) {
+      this.part(text)
+      return
+    }
+    const head = text.slice(0, first.start)
+    const tail = text.slice(last.end)
+    const tags = blockTags(this.#held, [head, tail], found)
+    const blocks = found.map(
+      ({ attributes, text: words }, index) =>
+        `<${tags[index] ?? ""}${attributes}>\n${words}\n</${tags[index] ?? ""}>`,
+    )
+    this.part(`${head}${blocks.join("\n")}${tail}`)
+  }
+
+  /** The text joined so far. */
+  text(): string {
+    return this.#held.texts.join("")
+  }
 }
 
 /** The opening line of a block as a card draws it: the tag, then each attribute, whose value
@@ -91,53 +139,93 @@ function drawnBlocks(text: string): DrawnBlock[] {
   return blocks
 }
 
-/** The tag of each of `blocks`, the blocks of one text in their order, where `before` is the rest
- *  of the text: the first of `name`, `name-1`, `name-2` and on whose `<tag` and `</tag` neither a
- *  part of `before` nor the words of any block hold, and that no earlier block took. A part is
- *  scanned on its own, which finds what the joined text holds, since a tag holds no new line. */
-function blockTags(before: readonly string[], blocks: readonly DrawnBlock[]): string[] {
-  const texts = [...before, ...blocks.map(({ text }) => text)]
-  // No tag can take a suffix above this: each suffix the texts hold takes a character of them,
-  // and each block takes one suffix.
-  const cap = texts.reduce((length, text) => length + text.length, blocks.length) + 1
-  // For each name, the suffixes held or taken (0 is the bare name), and the least that may be
-  // free: every suffix below it is held or taken.
-  const used = new Map<string, { readonly suffixes: Set<number>; next: number }>()
-  return blocks.map(({ name }) => {
-    let named = used.get(name)
-    if (named === undefined) {
-      named = { suffixes: heldSuffixes(name, texts, cap), next: 0 }
-      used.set(name, named)
+/**
+ * A text in pieces, and for each name it was asked of, the suffixes whose tags it holds
+ * (`holdSuffixes`) and the least suffix it may not hold: it holds every suffix below that one. A
+ * name is scanned for over every piece when it is first asked of, and each piece added after that
+ * is scanned for every name asked of so far, so no piece is scanned twice for one name. A piece is
+ * scanned on its own, which finds what the joined text holds, since a tag holds no new line.
+ */
+class HeldTags {
+  readonly texts: string[]
+  readonly #names = new Map<string, { readonly suffixes: Set<number>; least: number }>()
+
+  constructor(texts: readonly string[]) {
+    this.texts = [...texts]
+  }
+
+  /** Adds `text` after the pieces, scanned for every name asked of so far. */
+  add(text: string): void {
+    this.texts.push(text)
+    for (const [name, held] of this.#names) holdSuffixes(held.suffixes, name, text)
+  }
+
+  /** What the text holds of the tags of `name`. */
+  of(name: string): { readonly suffixes: ReadonlySet<number>; readonly least: number } {
+    let held = this.#names.get(name)
+    if (held === undefined) {
+      held = { suffixes: new Set(), least: 0 }
+      for (const text of this.texts) holdSuffixes(held.suffixes, name, text)
+      this.#names.set(name, held)
     }
-    while (named.suffixes.has(named.next)) named.next++
-    const suffix = named.next
-    named.suffixes.add(suffix)
+    while (held.suffixes.has(held.least)) held.least++
+    return held
+  }
+}
+
+/** The tag of each of `blocks`, the blocks of one text in their order, behind `front`, the text
+ *  in front of that one, where `beside` is the rest of that text: the first of `name`, `name-1`,
+ *  `name-2` and on whose `<tag` and `</tag` neither `front`, nor a text of `beside`, nor the
+ *  words of any block hold, and that no earlier block took. A text is scanned on its own, which
+ *  finds what the joined text holds, since a tag holds no new line. */
+function blockTags(
+  front: HeldTags,
+  beside: readonly string[],
+  blocks: readonly DrawnBlock[],
+): string[] {
+  const texts = [...beside, ...blocks.map(({ text }) => text)]
+  // For each name, the suffixes these texts hold or a block took, and the least that may be
+  // free: every suffix below it is held, in front or here, or taken.
+  const named = new Map<string, { readonly suffixes: Set<number>; next: number }>()
+  return blocks.map(({ name }) => {
+    const held = front.of(name)
+    let own = named.get(name)
+    if (own === undefined) {
+      own = { suffixes: new Set(), next: held.least }
+      for (const text of texts) holdSuffixes(own.suffixes, name, text)
+      named.set(name, own)
+    }
+    while (held.suffixes.has(own.next) || own.suffixes.has(own.next)) own.next++
+    const suffix = own.next
+    own.suffixes.add(suffix)
     return suffix === 0 ? name : `${name}-${suffix}`
   })
 }
 
-/** The suffixes of `name` whose tags `texts` hold, up to `cap`: 0 where a text holds `<name` or
+/** The largest suffix a scan keeps. A block takes the least suffix that is neither held nor
+ *  taken, so never one above the count of those held and taken, and each suffix held takes a
+ *  unit of the text and each one taken a block. No text comes near this many units, so no suffix
+ *  a block could take lies past it, and stopping here keeps every number exact. */
+const SUFFIX_CAP = Number.MAX_SAFE_INTEGER
+
+/** Adds to `held` the suffixes of `name` whose tags `text` holds: 0 where it holds `<name` or
  *  `</name`, and n where it holds `<name-n` or `</name-n`, so `<answer-12` holds 0, 1 and 12. One
- *  scan of each text for each of the two marks, so the time is linear in the texts' length. */
-function heldSuffixes(name: string, texts: readonly string[], cap: number): Set<number> {
-  const held = new Set<number>()
-  for (const text of texts) {
-    for (const mark of [`<${name}`, `</${name}`]) {
-      for (let at = text.indexOf(mark); at !== -1; at = text.indexOf(mark, at + mark.length)) {
-        held.add(0)
-        const dash = at + mark.length
-        if (text[dash] !== "-") continue
-        let suffix = 0
-        for (let index = dash + 1; index < text.length; index++) {
-          const digit = text.charCodeAt(index) - 48
-          // A tag's suffix has no leading zero, so `-0` holds none.
-          if (digit < 0 || digit > 9 || (suffix === 0 && digit === 0)) break
-          suffix = suffix * 10 + digit
-          if (suffix > cap) break
-          held.add(suffix)
-        }
+ *  scan of `text` for each of the two marks, so the time is linear in its length. */
+function holdSuffixes(held: Set<number>, name: string, text: string): void {
+  for (const mark of [`<${name}`, `</${name}`]) {
+    for (let at = text.indexOf(mark); at !== -1; at = text.indexOf(mark, at + mark.length)) {
+      held.add(0)
+      const dash = at + mark.length
+      if (text[dash] !== "-") continue
+      let suffix = 0
+      for (let index = dash + 1; index < text.length; index++) {
+        const digit = text.charCodeAt(index) - 48
+        // A tag's suffix has no leading zero, so `-0` holds none.
+        if (digit < 0 || digit > 9 || (suffix === 0 && digit === 0)) break
+        suffix = suffix * 10 + digit
+        if (suffix > SUFFIX_CAP) break
+        held.add(suffix)
       }
     }
   }
-  return held
 }

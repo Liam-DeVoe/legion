@@ -1308,6 +1308,11 @@ jobs:
               # The same test holds the Codex marketplace entry to the Codex package's name and
               # range.
               - '.agents/plugins/marketplace.json'
+              # tests/words-in-front.test.ts reads the daemon's cases of texts.InFront by relative
+              # path, the file packages/daemon/internal/texts's TestInFrontGivesWhatTheSharedCasesSay
+              # reads, and holds the mod's copy of inFront to each, so a case added there must
+              # start this job.
+              - 'packages/daemon/internal/texts/testdata/in-front.json'
             contracts:
               - *ci_router
               - '.github/workflows/ci-job-contracts.yaml'
@@ -3558,6 +3563,11 @@ jobs:
               # encodes its task texts with the TOON that bun.lock pins (the bun_install anchor
               # above names it), so a new golden file or a TOON bump must start this job.
               - 'packages/daemon/internal/daemon/testdata/texts.golden.json'
+              # src/__tests__/words-block.test.ts's `inFront gives what the cases it shares with the
+              # daemon's InFront say` reads the daemon's cases of texts.InFront by relative path,
+              # the file packages/daemon/internal/texts's TestInFrontGivesWhatTheSharedCasesSay
+              # reads, so a case added there must start this job.
+              - 'packages/daemon/internal/texts/testdata/in-front.json'
             # The secrets broker's TypeScript client: its own sources and tests, the one
             # first-party package its sources import, the fixtures its tests use, the Bun install
             # and the Bun it runs, and Biome.

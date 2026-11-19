@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto"
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
-import { inFront } from "@legion/envoy-client/words-block"
+import { TextInFront } from "@legion/envoy-client/words-block"
 
 /**
  * The Codex plugin's inbox: messages waiting for the running turn of one session.
@@ -191,16 +191,22 @@ export async function takeInbox(
  *  in order, under one line saying where they came from. A person's own message says it is
  *  theirs, since Codex frames hook text as an instruction rather than as something a person
  *  typed. The messages before a card hold other authors' words, so the card's blocks take their
- *  tags again against everything in front of them (`inFront`): nothing ahead of a block opens or
+ *  tags again against everything in front of them (`TextInFront`, which gives each card the text
+ *  `inFront` of all in front of it gives, and scans each message once for the names of the
+ *  blocks rather than the whole text again at each card): nothing ahead of a block opens or
  *  closes its tag. Where nothing ahead holds such a tag, the card is quoted exactly as it came. */
 export function inboxContext(items: readonly CodexInboxItem[]): string {
-  let context =
-    "Messages delivered to this session while it worked (Envoy, through the Envoy plugin):"
+  const context = new TextInFront(
+    "Messages delivered to this session while it worked (Envoy, through the Envoy plugin):",
+  )
   for (const item of items) {
-    context =
-      item.dispatchMessageId === undefined
-        ? inFront([context], item.content)
-        : `${context}\n\nA person wrote to you from Dispatch (message ${item.dispatchMessageId}):\n${item.content}`
+    if (item.dispatchMessageId === undefined) {
+      context.card(item.content)
+    } else {
+      context.part(
+        `A person wrote to you from Dispatch (message ${item.dispatchMessageId}):\n${item.content}`,
+      )
+    }
   }
-  return context
+  return context.text()
 }

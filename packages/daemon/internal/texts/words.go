@@ -233,8 +233,11 @@ func InFront(parts []string, text string) string {
 }
 
 // drawnOpening is the opening tag of a block as drawBlock draws it, a line of its own: the tag,
-// then each attribute as writeAttribute writes it, whose value holds no double quote.
-var drawnOpening = regexp.MustCompile(`^<([A-Za-z_][A-Za-z0-9_]*(?:-[1-9][0-9]*)?)((?: [a-z]+="[^"]*")*)>$`)
+// then each attribute as writeAttribute writes it, whose value holds no double quote and no angle
+// bracket, since writeAttribute escapes all three. It is the TypeScript reader's rule too
+// (OPENING, packages/envoy-client/src/words-block.ts), and testdata/in-front.json holds the two
+// to one output: a line whose value holds a raw <, > or " opens no block for either.
+var drawnOpening = regexp.MustCompile(`^<([A-Za-z_][A-Za-z0-9_]*(?:-[1-9][0-9]*)?)((?: [a-z]+="[^"<>]*")*)>$`)
 
 // drawnBlock is one block of a drawn text: where its opening line starts and where its closing
 // tag ends, its tag, the attributes of its opening tag as written, and its words.

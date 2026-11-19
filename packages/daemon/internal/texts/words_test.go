@@ -1,6 +1,9 @@
 package texts
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -148,5 +151,41 @@ func TestANoteInFrontOfATaskOpensNoTagOfItsBlocks(t *testing.T) {
 	}
 	if sent := InFront(nil, task); sent != task {
 		t.Errorf("a task with no note in front is sent as %q, want it as it is", sent)
+	}
+}
+
+// InFront and the TypeScript inFront of @legion/envoy-client/words-block are one rule, and so is
+// the copy claude-envoy's mod keeps of the second: each reads a drawn text's blocks and draws them
+// again behind what is put in front of them, and a reader that opens a block on a line another
+// reader leaves as it is sends other tags for the same text. The cases are
+// testdata/in-front.json, which the TypeScript tests read too (envoy-client's words-block.test.ts,
+// claude-envoy's words-in-front.test.ts): one file, so a case added for any of the three runs
+// against all three. Among them are opening lines whose attribute value holds a raw <, > or ",
+// which no writer draws (writeAttribute escapes all three) and which are therefore no block.
+func TestInFrontGivesWhatTheSharedCasesSay(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "in-front.json"))
+	if err != nil {
+		t.Fatalf("read the shared cases: %v", err)
+	}
+	var corpus struct {
+		Cases []struct {
+			Label string   `json:"label"`
+			Parts []string `json:"parts"`
+			Text  string   `json:"text"`
+			Sent  string   `json:"sent"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(raw, &corpus); err != nil {
+		t.Fatalf("read the shared cases: %v", err)
+	}
+	// The file held 25 cases when this was written: a read that answers a handful of them, or
+	// none, passes while covering nothing.
+	if len(corpus.Cases) < 25 {
+		t.Fatalf("the shared cases hold %d rows, want at least 25", len(corpus.Cases))
+	}
+	for _, c := range corpus.Cases {
+		if got := InFront(c.Parts, c.Text); got != c.Sent {
+			t.Errorf("%s: InFront(%q, %q) is\n%q\nwant\n%q", c.Label, c.Parts, c.Text, got, c.Sent)
+		}
 	}
 }

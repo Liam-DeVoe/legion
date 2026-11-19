@@ -64,11 +64,16 @@ lines or other messages in front of a card (the Codex inbox's hook text, claude-
 the rows a turn never read): the parts and the card joined by blank lines, with the card's blocks
 drawn again, attributes and words unchanged, under the tags the rule gives them against everything
 in front of them as well. Where nothing in front holds such a tag, and for a text with no block,
-that is the two joined as they are. The opening tag carries `by`, `at`, `field`, `rest` and `more`,
-in that order and escaped, each only where it is set; a card sets `by` and `at` only where its own
-fields do not name the author and the time. `splitWordsBlocks` splits a card, or a daemon text,
-into the part before its blocks, which TOON's `decode` reads, and the blocks, and checks each tag
-against the rule.
+that is the two joined as they are. A host that joins many cards one after another builds the
+text with `TextInFront` (`part` for a text it joins as it is, `card` for a card), which gives the
+same text as `inFront` called on each card with everything before it, and keeps the tags already
+held from one card to the next, so the whole text is drawn in time linear in its length (the
+Go daemon's `texts.InFront` reads a drawn block by the same rule, which
+`packages/daemon/internal/texts/testdata/in-front.json` holds both to). The opening tag carries
+`by`, `at`, `field`, `rest` and `more`, in that order and escaped, each only where it is set; a
+card sets `by` and `at` only where its own fields do not name the author and the time.
+`splitWordsBlocks` splits a card, or a daemon text, into the part before its blocks, which TOON's
+`decode` reads, and the blocks, and checks each tag against the rule.
 
 Malformed input is safe: a non-JSON frame becomes a TOON block naming its topic and an
 `unrecognised` parse failure. The renderer never emits raw frame bytes. Dispatch envelopes
