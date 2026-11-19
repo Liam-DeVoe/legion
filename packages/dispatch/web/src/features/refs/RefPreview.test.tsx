@@ -432,6 +432,7 @@ test("an Escape that ends an IME composition leaves the open card open", () => {
   const view = render(<Harness />);
   try {
     const first = screen.getByRole("link", { name: "first" });
+    // A hover-intent pointer: user-event's hover names no pointerType, which this site needs.
     fireEvent.pointerOver(first, { pointerType: "mouse" });
     act(() => {
       jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
