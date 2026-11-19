@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+    An issue whose link to its pull request is GitHub's `/issues/<n>` form of the number, the URL
+    `dispatch issue --external <owner>/<repo>#<n>` stores, compares its checks with that pull
+    request's head. GitHub serves a pull request at `/issues/<n>` as well as at `/pull/<n>`, and
+    the two share one sequence of numbers. Such a link now owes a read of the pull request, at
+    the create as at a link by hand, and the attribution takes a link in either form. Before,
+    the link matched no pull request, owed no read, and the checks of the issue compared with
+    nothing until someone linked the `/pull/<n>` URL by hand. An `/issues/<n>` link of a number
+    that is an issue costs one read of GitHub, which answers that no such pull request exists.
+time: 2026-11-19T20:36:28.000000000Z
+custom:
+    Issue: pr4209

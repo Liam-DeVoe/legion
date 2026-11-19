@@ -144,6 +144,20 @@ func urlBound(column string) string {
 // (pull_request_texts_keys): an overlap of the list with an array under "C" reads no index.
 const linkURLAsCited = `(lower(l.url collate "C") collate "default")`
 
+// pullRequestURLAsIssue is the column of a pull request's own URL (https://github.com/o/r/pull/N)
+// in the form GitHub also serves it at, https://github.com/o/r/issues/N: the URL
+// `dispatch issue --external o/r#N` stores (api's externalURL). The arm of a reader by key matches
+// a link with either form, each under lower(), which issue_external_links_url_lower serves with
+// one probe each (linkedPullRequest says why either form names one pull request at most).
+func pullRequestURLAsIssue(column string) string {
+	return `regexp_replace(` + column + `, '/pull/([0-9]+)$', '/issues/\1', 'i')`
+}
+
+// linkURLAsPullRequest is a link's URL with an /issues/N ending read as /pull/N, so the arm of a
+// reader by issue compares the link with a pull request's own URL in the one form
+// pull_request_heads_url_lower holds. A link in any other form is its own URL.
+const linkURLAsPullRequest = `regexp_replace(l.url, '/issues/([0-9]+)$', '/pull/\1', 'i')`
+
 // attributedTerms is the statement's terms over judged, a query of (repo, number) under any
 // stored name, for the schema that holds the reading. A caller adds its own select over
 // `attributed`, one row for each judged pull request: repo (the canonical name), number,
@@ -229,7 +243,8 @@ func attributedTermsOver(schema, judged, texts string) string {
 				where t.reading <> r.id offset 0) k on true
 	), named as (
 		select src.repo as pr_repo, src.number as pr_number, l.issue_key as key, '` + string(sourceExternalLink) + `' as source, 0 as rank, 0::bigint as n
-		from batch src cross join lateral (select l.issue_key from issue_external_links l where lower(l.url) = lower(src.url) offset 0) l
+		from batch src cross join lateral (select l.issue_key from issue_external_links l
+			where lower(l.url) in (lower(src.url), lower(` + pullRequestURLAsIssue("src.url") + `)) offset 0) l
 		where src.texts_current and src.own_head and ` + urlBound("src.url") + `
 		union all
 		select src.repo, src.number, l.issue_key, '` + string(sourceGitHubIssueLink) + `', 1, u.n
@@ -299,7 +314,7 @@ func byIssueJudged(is, names func(string) string) string {
 	union select repo, number from pull_request_texts
 		where ` + names("branch_keys") + ` or ` + names("title_keys") + ` or ` + names("commit_keys") + `
 	union select h.repo, h.number from pull_request_heads h
-		where lower(h.url) in (select lower(l.url) from issue_external_links l where ` + is("l.issue_key") + `) and ` + urlBound("h.url") + `
+		where lower(h.url) in (select lower(` + linkURLAsPullRequest + `) from issue_external_links l where ` + is("l.issue_key") + `) and ` + urlBound("h.url") + `
 	union select repo, number from pull_request_texts
 		where cited_issues && array(select ` + linkURLAsCited + ` from issue_external_links l where ` + is("l.issue_key") + `)
 	union select t.repo, t.number from pull_request_texts t

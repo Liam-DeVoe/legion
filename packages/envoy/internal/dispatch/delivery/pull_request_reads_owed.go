@@ -259,13 +259,17 @@ func owedName(ctx context.Context, db refs.Queryer, given string, number int) (s
 // pullRequestURLPrefix is how the URL of each pull request that GitHub gives (html_url) starts.
 const pullRequestURLPrefix = "https://github.com/"
 
-// linkedPullRequest is the repository and the number of the pull request whose own URL link is,
-// with ok true. GitHub gives that URL as https://github.com/<owner>/<repo>/pull/<number>. The
-// statement ties a link to a pull request where lower() of the two URLs is equal
-// (attributedTerms). So this takes that form in any letter case, and no other form: no other part,
-// and no zero before the number. ok is false for each other URL, and for a name or a number that
-// no pull request of GitHub can have (checkPullRequestKey). The repository keeps the letters of
-// the link.
+// linkedPullRequest is the repository and the number of the pull request link names, with ok
+// true. GitHub gives a pull request's own URL as https://github.com/<owner>/<repo>/pull/<number>,
+// and serves the same pull request at https://github.com/<owner>/<repo>/issues/<number>, which is
+// the URL `dispatch issue --external <owner>/<repo>#<number>` stores (api's externalURL): a pull
+// request and an issue of one repository share one sequence of numbers, so either form names at
+// most one of them. The statement ties a link to a pull request in either form where lower() of
+// the URLs is equal (attributedTerms, pullRequestURLAsIssue). So this takes those two forms in any
+// letter case, and no other: no other part, and no zero before the number. An /issues/ link that
+// names an issue owes one read, which GitHub answers as no pull request and the reconcile settles
+// (pullRequestAbsent). ok is false for each other URL, and for a name or a number that no pull
+// request of GitHub can have (checkPullRequestKey). The repository keeps the letters of the link.
 func linkedPullRequest(link string) (repo string, number int, ok bool) {
 	for i := range len(link) {
 		if link[i] >= utf8.RuneSelf {
@@ -276,7 +280,7 @@ func linkedPullRequest(link string) (repo string, number int, ok bool) {
 		return "", 0, false
 	}
 	parts := strings.Split(link[len(pullRequestURLPrefix):], "/")
-	if len(parts) != 4 || !strings.EqualFold(parts[2], "pull") {
+	if len(parts) != 4 || !(strings.EqualFold(parts[2], "pull") || strings.EqualFold(parts[2], "issues")) {
 		return "", 0, false
 	}
 	digits := parts[3]

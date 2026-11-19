@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
@@ -502,6 +503,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.respondWithExistingExternalIssue(w, r, existingKey, input.Project, actor)
+			return
+		}
+		// The link is GitHub's /issues/ form of the number, which GitHub also serves a pull
+		// request at, so the number owes a read as a link by hand does (patchIssue): where it is
+		// a pull request, the next reconcile pass stores its head and the link attributes it.
+		if err := delivery.OweLinkedPullRequestReads(r.Context(), tx, []string{externalURL(externalRepo, externalNumber)}); err != nil {
+			s.writeHandlerError(w, err)
 			return
 		}
 	}

@@ -51,11 +51,15 @@ func TestAttributionMatchesGitHubURLsWhateverTheirCase(t *testing.T) {
 // the wrong source.
 func TestAttributingStoredPullRequestsTakesEverySourceInOrder(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
+	// The GitHub issue the bodies cite is #219, a number no pull request of this test has: a pull
+	// request and an issue of one repository share one sequence of numbers, and GitHub serves pull
+	// request N at /issues/N too, so an /issues/ link of a pull request's own number names that
+	// pull request (linkedPullRequest).
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-211", "ATTR-212", "ATTR-213", "ATTR-214", "ATTR-215"}, map[string][]string{
 		"ATTR-212": {"https://github.com/acme/widgets/pull/210"},
-		"ATTR-213": {"https://github.com/acme/widgets/issues/213"},
+		"ATTR-213": {"https://github.com/acme/widgets/issues/219"},
 	})
-	cites := "Fixes https://github.com/acme/widgets/issues/213."
+	cites := "Fixes https://github.com/acme/widgets/issues/219."
 	want := map[PullRequestKey]string{}
 	for _, row := range []struct {
 		number              int

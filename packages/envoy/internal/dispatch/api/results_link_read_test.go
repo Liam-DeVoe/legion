@@ -80,10 +80,10 @@ func owedReads(t *testing.T, database *store.Store) []string {
 
 // A link by hand owes a read for each URL of a pull request that it adds: also in a repository
 // that no project maps and the App reads, and also where a head row of that pull request is stored
-// (R5 of the results lookup). Four links owe nothing, because none of them is the URL of a pull
-// request:
+// (R5 of the results lookup). GitHub serves a pull request at /issues/<n> as well as at /pull/<n>,
+// so the /issues/ link of #31 owes a read too, which tells whether #31 is a pull request. Three
+// links owe nothing, because none of them is the URL of a pull request:
 //
-//   - a GitHub issue;
 //   - a page of a pull request;
 //   - a URL of another site;
 //   - a number with a zero before it.
@@ -100,8 +100,8 @@ func TestALinkByHandOwesAReadForEachURLOfAPullRequestAndForNoOtherURL(t *testing
 		{"url": "https://github.com/acme/tools/pull/035"},
 	}
 	patchIssue(t, handler, issue.Key, map[string]any{"external_links": others})
-	if owed := owedReads(t, database); len(owed) != 0 {
-		t.Fatalf("after four links that are no URL of a pull request, the owed reads are %q; want none", owed)
+	if owed := owedReads(t, database); !slices.Equal(owed, []string{"acme/tools#31 failure"}) {
+		t.Fatalf("after an /issues/ link and three links that are no URL of a pull request, the owed reads are %q; want the read of #31 alone", owed)
 	}
 	pulls := []map[string]string{
 		{"url": "https://github.com/acme/elsewhere/pull/34"},
@@ -109,7 +109,7 @@ func TestALinkByHandOwesAReadForEachURLOfAPullRequestAndForNoOtherURL(t *testing
 		{"url": "https://github.com/acme/tools/pull/36"},
 	}
 	patchIssue(t, handler, issue.Key, map[string]any{"external_links": append(slices.Clone(others), pulls...)})
-	want := []string{"acme/elsewhere#34 failure", "acme/tools#30 failure", "acme/tools#36 failure"}
+	want := []string{"acme/elsewhere#34 failure", "acme/tools#30 failure", "acme/tools#31 failure", "acme/tools#36 failure"}
 	if owed := owedReads(t, database); !slices.Equal(owed, want) {
 		t.Fatalf("after links to acme/elsewhere#34 (no project maps its repository), acme/tools#30 (its head row is stored) and acme/tools#36 (no row), the owed reads are %q; want %q", owed, want)
 	}
