@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { command, type Row, rowMs, rowOf, type Wait } from "@legion/test-fixtures/row-waits";
+import type { Server } from "bun";
 import { noHookLimit, removeScratch } from "../../../packages/dispatch/e2e/__tests__/step-end";
 import { DISPATCH_TOOL_DEADLINE_MS } from "../../../packages/envoy-client/src/dispatch-http";
 

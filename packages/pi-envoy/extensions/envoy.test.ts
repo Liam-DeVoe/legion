@@ -5048,9 +5048,14 @@ describe("envoy OMP extension", () => {
     const hostStub = join(import.meta.dir, "..", "scripts", "role-takeover", "host-stub.ts");
     const { ENVOY_URL: _url, ENVOY_NATS_URL: _nats, ...rest } = process.env;
     rowOf(oneEntry).charge(theEntry);
+    // The entry loads @oh-my-pi/pi-natives, whose Tokio runtime starts a worker for each CPU the
+    // machine has unless TOKIO_WORKER_THREADS says how many: on a shared Linux machine of 288 CPUs,
+    // on 2026-11-19, this process and the child each held over 300 threads, the child could not
+    // start its own under a limit of 512 tasks, and it exited 1 having printed nothing. The child
+    // runs one session_start, which one worker serves.
     const run = Bun.spawnSync([process.execPath, "--preload", hostStub, "-e", script], {
       cwd: import.meta.dir,
-      env: { ...rest, DISPATCH_SESSION_ID: "parent-session" },
+      env: { ...rest, DISPATCH_SESSION_ID: "parent-session", TOKIO_WORKER_THREADS: "1" },
       stdout: "pipe",
       stderr: "pipe",
       timeout: theEntry.ms,
@@ -5061,7 +5066,7 @@ describe("envoy OMP extension", () => {
       .find((line) => line.startsWith(marker));
     if (run.exitCode !== 0 || report === undefined) {
       throw new Error(
-        `the process that loaded the entry reported nothing: ${run.stderr.toString()}`
+        `the process that loaded the entry exited ${run.exitCode}${run.signalCode ? ` on ${run.signalCode}` : ""} and reported nothing: ${run.stderr.toString()}`
       );
     }
     expect(JSON.parse(report.slice(marker.length))).toEqual({ processEnv: "", pty: "" });

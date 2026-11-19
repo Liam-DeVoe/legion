@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Server } from "bun";
 import { noHookLimit, removeScratch } from "../../../packages/dispatch/e2e/__tests__/step-end";
 import { fixtureSecret } from "../../../packages/test-fixtures/src/fixture-secret";
 import {

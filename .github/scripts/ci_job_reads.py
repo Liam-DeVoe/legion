@@ -2539,7 +2539,7 @@ GATES = [
         ("packages/dispatch/e2e/harness-postgres-processes.ts", "packages/dispatch/e2e/harness-postgres-removal.ts:108-116 imports it"),
         ("packages/pi-legion/scripts/skill-scenarios/rig.sh", "scripts/e2e/lib/sweep-order.test.ts:76,102,533,572 reads and runs it, a shell stack's start"),
         ("packages/dispatch/e2e/__tests__/step-end.ts", "scripts/e2e/lib/sweep-order.test.ts:15, nats-image.test.ts:5, "
-                                                        "dispatch-keyed-comment.test.ts:6 and dispatch-live-events.test.ts:5 import it by path"),
+                                                        "dispatch-keyed-comment.test.ts:7 and dispatch-live-events.test.ts:6 import it by path"),
         ("packages/pi-envoy/extensions/envoy.test.ts", "scripts/e2e/lib/row-waits.test.ts:37,223 reads its rows"),
         ("packages/dispatch/e2e/__tests__/harness-postgres-removal.test.ts", "scripts/e2e/lib/row-waits.test.ts:38,223 reads its rows"),
         ("scripts/dispatch/**", f"{at('test', 'Lint the Dispatch census script')}, typecheck and test; "
