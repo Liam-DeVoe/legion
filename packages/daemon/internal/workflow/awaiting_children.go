@@ -55,8 +55,8 @@ type childrenHold struct {
 	// adds the request once while the merge is owed (ReturnFromChildren).
 	Task string
 	// Cause is what the start was for: the reason the notice the move replaces carried — a
-	// worker's own move back with its words, or the base a conflicting head merges forward — or
-	// else the completion, review, retry or stop that raised it (heldCause). The move adds the
+	// worker's own move back with its words — or else the completion, review, retry or stop that
+	// raised it (heldCause). The move adds the
 	// open children to it for the held start's reason (childrenWaitReason).
 	Cause string
 	// Open is each open Dispatch child of the parent, with the status that holds it and the issue
@@ -67,8 +67,8 @@ type childrenHold struct {
 	// phase-finished notice carried, and empty where it carried none.
 	Summary, Verdict string
 	// Ended is the role whose phase the move ends and that is told so on its own topic
-	// (record.PhaseEnded), and "" where no role is: the role of a phase a conflicting head ended
-	// (phaseEndedRole), or the worker the admission pass stops in the middle of its phase.
+	// (record.PhaseEnded): the worker the admission pass stops in the middle of its phase, and ""
+	// for a move the transition's guard holds.
 	Ended claim.Role
 }
 
@@ -141,8 +141,8 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 // childrenHolding is the open Dispatch children of issue that hold its start of to (R9's guard),
 // none where the rule does not reach that start. It reaches a start of planning through accepting
 // of an issue standing in one of those phases (record.OpenChildHolds) whose pull request has not
-// merged, so it leaves out the first phase (from admitted), a conflicting head's move back from
-// retro or merging, and the sign-off into retro. The open children are read whatever the tree's
+// merged, so it leaves out the first phase (from admitted), a role's move back from retro or
+// merging, and the sign-off into retro. The open children are read whatever the tree's
 // design gate stands at (childrenOpen).
 func (e *Engine) childrenHolding(ctx context.Context, tx pgx.Tx, issue record.Issue, to phase.Phase, pr *record.PullRequest) ([]record.OpenChild, error) {
 	if !record.OpenChildHolds(issue.Phase) || !record.OpenChildHolds(to) || (pr != nil && pr.State == record.PullRequestMerged) {
@@ -153,15 +153,17 @@ func (e *Engine) childrenHolding(ctx context.Context, tx pgx.Tx, issue record.Is
 
 // holdForChildren moves issue to awaiting_children in place of the start of to that trigger's row
 // chose for it (awaitChildren). The hold keeps the task the start would have given its worker
-// (heldTask). The notice it sends carries what the one it replaces (noticeFor) would have
-// carried, and the role a conflicting head ended is told its phase ended (phaseEndedRole).
+// (heldTask). The notice it sends carries what the one it replaces (noticeFor) would have carried.
+// It tells no role that its phase ended: each move it holds is the completion or the move back of
+// the role it leaves, or the daemon's own move on a review or a merge it read, which leaves a role
+// that has just finished the work they report.
 func (e *Engine) holdForChildren(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, to phase.Phase, handoff record.PhaseRow,
 	pr *record.PullRequest, reason string, open []record.OpenChild,
 ) error {
 	replaced := noticeFor(trigger, issue.Phase, to, handoff, reason)
 	return e.awaitChildren(ctx, tx, issue, childrenHold{Start: to, Task: heldTask(issue, to, handoff, pr, reason),
 		Cause: heldCause(trigger, issue.Phase, replaced, reason), Open: open,
-		Summary: replaced.Summary, Verdict: replaced.Verdict, Ended: phaseEndedRole(trigger, issue.Phase)})
+		Summary: replaced.Summary, Verdict: replaced.Verdict})
 }
 
 // heldTask is the task a start of to gives issue's worker, held while the parent waits on its
@@ -175,8 +177,7 @@ func heldTask(issue record.Issue, to phase.Phase, handoff record.PhaseRow, pr *r
 
 // heldCause is what a start the transition's guard held was for (childrenHold.Cause): the reason
 // the notice the move replaces carried — a worker's own move back, with the phase it asked for,
-// the role and its words, or the base a conflicting head merges forward (noticeFor) — and
-// otherwise the completion or the review that raised the start, with the review's own words where
+// the role and its words (noticeFor) — and otherwise the completion or the review that raised the start, with the review's own words where
 // it asked for changes.
 func heldCause(trigger TriggerKind, from phase.Phase, replaced record.Notice, reason string) string {
 	switch {
@@ -307,8 +308,8 @@ func forwardMergeText(issue record.Issue) string {
 // again. So is a parent whose pull request has merged, whose worker R9 leaves unmessaged.
 //
 // So is a parent whose phase's role stands on an entry a move out of retro or merging raised
-// (record.PhaseRow.EntryFrom, acceptedEntry): the move a head that conflicts with its base makes
-// back to implementing after the daemon accepted the issue. R9 holds only the starts each from a
+// (record.PhaseRow.EntryFrom, acceptedEntry): a role's move back to implementing after the daemon
+// accepted the issue, the implementer's out of retro or the merger's out of merging. R9 holds only the starts each from a
 // phase before retro, and the transition's guard leaves that move's start alone
 // (childrenHolding), so the pass leaves it too, whether that start is still written and not
 // delivered or its worker is in the middle of the phase it gave. The exemption is that entry's
@@ -378,8 +379,8 @@ func undeliveredStart(issue record.Issue, owed []record.OwedStart) (record.OwedS
 }
 
 // acceptedEntry says whether row's entry was raised by a move out of retro or merging, the phases
-// past the daemon's acceptance of the issue (record.PhaseRow.EntryFrom): the move a head that
-// conflicts with its base makes back to implementing, whose start R9 does not hold. It is the one
+// past the daemon's acceptance of the issue (record.PhaseRow.EntryFrom): a role's move back to
+// implementing out of one of them, whose start R9 does not hold. It is the one
 // statement of that exemption, read by the admission pass (StopForChildren) and by the release of a
 // hold, which restarts the held phase on that same entry (retryPhase).
 func acceptedEntry(row record.PhaseRow) bool {
@@ -490,6 +491,12 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 		"tree", issue.Tree, "held", held.Start, "to", back.Phase, "merged", merged)
 	role := RoleFor(back.Phase)
 	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
+		return err
+	}
+	// The return is a move into the phase it starts, so the merge forward a conflict asked before
+	// the wait follows it as it follows a transition's move (mergeForwardOnEntry): a return into
+	// implementing drops it, since the implementing round merges the default branch forward itself.
+	if err := e.mergeForwardOnEntry(ctx, tx, back, phase.AwaitingChildren); err != nil {
 		return err
 	}
 	if role != "" && role != claim.RoleArchitect {

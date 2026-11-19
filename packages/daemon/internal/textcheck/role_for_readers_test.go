@@ -49,8 +49,8 @@ type roleForReader struct {
 // (awaiting_children.go, dispatch://INFRA-3320) is of the last kind: each of its readers runs only
 // past record.OpenChildHolds, which refuses admitted, or on the start a hold kept, which is never
 // admitted's, and where one reads accepting's architect it starts none (ReturnFromChildren) or
-// holds accepting with no role told (StopForChildren), as phaseEndedRole tells no architect that
-// its phase ended. The release of a hold reads the held phase's role twice (retryPhase), for the
+// holds accepting with no role told (StopForChildren), since the architect's notice tells it. The
+// release of a hold reads the held phase's role twice (retryPhase), for the
 // entry that phase stands on and for the restart, and a held phase is never admitted.
 // The owner walk reads no role: where it starts is its caller's to say
 // (record.NoticeStartsAtParent, for a notice).
@@ -81,8 +81,9 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/engine.go", fn: "backwardRefusal"}:                      {calls: 2, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}:                    {calls: 2, test: "TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody"},
 	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                            {calls: 3, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
-	{file: "internal/workflow/engine.go", fn: "phaseEndedRole"}:                       {calls: 1, test: "TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic"},
 	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}:                   {calls: 1, test: "TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened"},
+	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForward"}:           {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward"},
+	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardLanded"}:     {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge"},
 	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}:                    {calls: 1, test: "TestASettlementMovesNothingAndTellsTheThreeRoles"},
 	{file: "internal/workflow/resume.go", fn: "Engine.suspendedPhaseOwners"}:          {calls: 1, test: "TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting"},
 	{file: "internal/workflow/steps.go", fn: "Engine.startAgent"}:                     {calls: 1, test: "TestAnIssueAtAdmittedRunsNoStep"},

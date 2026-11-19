@@ -2383,7 +2383,45 @@ package api
 // #4180 and #4193) and 159 (#4049 and #4175), so 160 is still the lowest number above main's 152
 // that no open head declares.)
 //
-// 164: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
+// 168: the completion that ends the retro rates the plan the issue ran. `POST
+// /legion/v1/handoff/complete` (`api.HandoffCompleteRequest`, contracts'
+// `LegionHandoffCompleteRequest`) takes two optional fields: `planRating`, a whole number from 1
+// (the plan cost the work) to 5 (the plan fit the work), and `planReason`, why, in one to 2,000
+// characters counted as Unicode code points and not all blank, the two together
+// (`PLAN_RATING_INPUT`). The agent that does the retro gives them, so the completion that ends the
+// retro takes them, and every other completion and a production check's report are refused them
+// (`PLAN_RATING_UNEXPECTED`). Which completion ends the retro the workflow judges where it ends
+// it, on the issue as the completion's own transaction reads it (`TriggerRetroCompleted`), and its
+// own refusals, a held issue's 409 among them, come first. A claim whose plugin declared this
+// contract or a later one must rate (`PLAN_RATING_REQUIRED`), so a plugin built from this commit
+// sends both on its retro; a plugin below it never sends them, and its retro, where the daemon
+// serves its claim (`staleClaim`: a claim in a turn, in an update round, with no plugin install,
+// or on a daemon that relaunches onto no plugin), completes with no rating
+// (`api.PlanRatingContract`).
+// Every refusal is a 400 that records nothing, so the same completion, corrected, is taken: the
+// route writes `PLAN_RATING_INPUT` and a report's `PLAN_RATING_UNEXPECTED` before the fact is
+// applied, and the workflow refuses the rest with the fact left unspent (`intake.Result.Unspent`).
+// The route hands the two to the workflow on the completion's fact as one value
+// (`intake.HandoffComplete.PlanRating`), beside whether the claim must rate (`MustRate`).
+// `readBody` refuses an unknown field, so a plugin sending them to a daemon below 168 would have
+// every retro refused; the bump is why the two never meet. No shape of `GET /legion/v1/state`
+// moves, so no caller is served a narrower one.
+// The decoder of every request body (`decodeJSON`) also refuses a body any string of which, a
+// member's name and an earlier copy of a repeated member included, holds U+0000, which
+// PostgreSQL's text and jsonb cannot hold: 400 `invalid request body` naming the string's place and
+// where in it the character stands (`unstorableJSON`), or first the stale-caller 409 where the
+// route can name a stale caller (`readBody`'s identity check), as for any body that does not
+// decode. A route that stored such a string answered 500 before, and one that only compared it
+// took it; every route now refuses it before it reads the body.
+// (This entry takes 168, the lowest number above main's 160 that no open pull request declared
+// when the merge of 2026-11-19 brought main in at c70a80228d: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 235 open pull requests, made between
+// 2026-11-19T08:26:23Z and 08:26:52Z, found each of 161 to 166 declared, 167 declared by #4030,
+// #4485, #4493 and this change's own head before this merge, and nothing above 167. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 177: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
 // approval, or wait, closed, on an ancestor's open approval request: a basis. Three surfaces
 // move.
 // `POST /legion/v1/gates/register` (`api.GateRegisterRequest`) takes three optional fields that
@@ -2422,23 +2460,23 @@ package api
 // while a Dispatch child of the issue is open (`record.ChildOpen`). Each names the issues that
 // hold it; the refusal's shape is the one every refusal has.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 164 is served every issue without `treeRuns`, and without `gatedSteps` on an
+// contract below 177 is served every issue without `treeRuns`, and without `gatedSteps` on an
 // issue any step of which reads either new word (api's stateFor, withoutGateBasis), as a caller
 // below 146 is served the issues without both entry times and `architectStalls`, the entry of 146
 // above (withoutEntryTimes), a caller below 141 every issue without `assignments`, the entry of
 // 141 (withoutAssignments), and a caller below 133 the state with no `mergeWait` on any issue,
 // the entry of 133 (withoutMergeWait), and so on down the bands that entry lists; the twenty-one
 // compose. 146's row runs before this one and the two touch no key of each other's, so a caller
-// at 146 through 163 is served the entry times and none of this entry's keys and words.
+// at 146 through 176 is served the entry times and none of this entry's keys and words.
 // The strip of `gatedSteps` is not for the key's sake: every plugin from 55 on
 // reads `status` with a strict enum of the four words and refuses the whole body for a fifth, and
 // no word of the four is true of such a step — `waiting` would send its architect to ask a person
 // for an approval of its own, and `approved` names a person's approval no person gave — so such a
-// caller is served no entry of that issue at all rather than a wrong one. Every reader from 164
+// caller is served no entry of that issue at all rather than a wrong one. Every reader from 177
 // on takes `treeRuns` and `basis` as optional and reads the six words
 // (`packages/contracts/src/legion-api.ts`).
 // The change ships store migrations `20261114064234_design_gate_basis` and
-// `20261117110810_outbox_kinds_with_the_basis_seeds`, which keep the basis on the gate row and
+// `20261119185013_outbox_kinds_with_the_basis_seeds`, which keep the basis on the gate row and
 // admit the two outbox kinds that read it; they move the daemon's own record and are no part of
 // this number. Nor are the new notice kinds `basis-ended`, `basis-changes-requested` and
 // `resting-root`, which reach an architect's session as text, as every notice kind does.
@@ -2446,7 +2484,7 @@ package api
 // `awaiting_children` (dispatch://INFRA-3320 R11 to R13). `GET /legion/v1/state` serves an issue in
 // it with `phase: awaiting_children`, which `LEGION_WORKFLOW_PHASES` names, and an
 // `admission.held` entry for such a parent with `reason: awaiting_children`, which
-// `LEGION_HELD_REASONS` names. A caller from a pod whose claims record a contract below 164 knows
+// `LEGION_HELD_REASONS` names. A caller from a pod whose claims record a contract below 177 knows
 // neither word — its phase enum and its held words are the ones before this change — so the daemon
 // serves it that issue's `phase` as `admitted`, the status that names no worker's phase, and that
 // held entry's `reason` as `children_first`, the word a started parent's wait took over (api's
@@ -2505,5 +2543,13 @@ package api
 // 2026-11-19T08:39:43Z and 08:43:32Z found 164 declared by this change alone (161 by four heads,
 // 162 by two, 163, 165 and 166 by one each, 167 by four and 168 by one), so it holds. Read the
 // base's own number and every open head again, by a REST raw read of each head's file, at the
-// next forward merge rather than from this line.)
-const DaemonAPIVersion = 164
+// next forward merge rather than from this line. At the forward merge of 2026-11-19 that brought
+// main in at 724196efd983, main carried 168 (cybermonklabs/legion#4488's plan ratings, above), and
+// a REST raw read of each of the 242 open heads' file between 2026-11-19T18:56:47Z and 19:02:16Z
+// found 169 (#4065), 170 (#2230, #4173, #4180 and #4193), 172 (#3659), 173 (#4493), 174 (#3993
+// and #4273), 175 (#3712, #4115, #4392, #4432, #4485 and #4495) and 176 (#3831 and #4030)
+// declared, and nothing above 176, so this change moved 164 → 177, the lowest number above main's
+// and above every number another open head declares. Read the base's own number and every open
+// head again, by a REST raw read of each head's file, at the next forward merge rather than from
+// this line.)
+const DaemonAPIVersion = 177

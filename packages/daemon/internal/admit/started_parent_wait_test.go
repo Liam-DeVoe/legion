@@ -283,7 +283,7 @@ func TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds(t *testing.T) {
 		}
 		ended := pwPayloads[record.PhaseEnded](t, pool, spParent)
 		if len(ended) != 1 || ended[0].Role != claim.RoleImplementer || ended[0].From != phase.Implementing ||
-			ended[0].To != phase.AwaitingChildren || ended[0].TaskFollows || !strings.Contains(ended[0].Reason, spChild+" (backlog)") ||
+			ended[0].To != phase.AwaitingChildren || !strings.Contains(ended[0].Reason, spChild+" (backlog)") ||
 			!strings.Contains(ended[0].Reason, "the admission pass stopped the implementer's implementing phase") {
 			t.Fatalf("phase-ended messages = %+v, want one to the implementer out of implementing naming %s", ended, spChild)
 		}
@@ -471,6 +471,41 @@ func TestTheReturnStartsTheHeldPhaseOrImplementing(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A merge forward a conflict asked of the implementer before the wait (workflow's mergeForward,
+// cybermonklabs/legion#4464) is dropped by the return into implementing, as a transition's move
+// into implementing drops it (mergeForwardOnEntry): the round the return starts merges the
+// default branch forward itself, and a later conflict is asked about afresh.
+func TestTheReturnIntoImplementingDropsAMergeForwardAskedBeforeTheWait(t *testing.T) {
+	pool := migratedPool(t)
+	admission := quiet(t, 1)
+	spWaiting(t, pool, spParent, phase.Testing, "Continue LEGION-300. Issue: LEGION-300. Phase: testing.",
+		"the tester completed testing, while these Dispatch children of LEGION-300 were open: LEGION-301 (todo)", nil)
+	inTx(t, pool, func(tx pgx.Tx) {
+		if err := record.NewStore().PutPullRequest(context.Background(), tx, record.PullRequest{Issue: spParent, Repo: "acme/widgets",
+			Number: 42, Branch: "legion/" + spParent, HeadSHA: "head-42", Generation: 1, State: record.PullRequestOpen, Base: "main",
+			Failing: []string{}, MergeForward: &record.MergeForward{Head: "head-42", Base: "main", Phase: phase.Testing,
+				Why: record.ConflictCheckNotGreen, AskedAt: fixedNow.Add(-2 * time.Hour)}}); err != nil {
+			t.Fatalf("record the merge forward asked of %s before the wait: %v", spParent, err)
+		}
+	})
+	seedMirrorChild(t, pool, spChild, "done", spParent)
+
+	spPass(t, pool, admission)
+
+	if got := issue(t, pool, spParent); got.Phase != phase.Implementing {
+		t.Fatalf("the parent = phase %s, want implementing after the return", got.Phase)
+	}
+	inTx(t, pool, func(tx pgx.Tx) {
+		pr, err := record.NewStore().PullRequest(context.Background(), tx, spParent)
+		if err != nil || pr == nil {
+			t.Fatalf("read the pull request of %s: %v", spParent, err)
+		}
+		if pr.MergeForward != nil {
+			t.Fatalf("the merge forward after the return = %+v, want it dropped by the move into implementing", pr.MergeForward)
+		}
+	})
 }
 
 // A held implementing whose task already carries the forward-merge request — the task of a phase

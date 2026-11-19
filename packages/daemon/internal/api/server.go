@@ -552,6 +552,7 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/operator/claims/{token}/retry", s.operator(s.retryClaim)},
 		{"POST /legion/v1/operator/claims/{token}/compact", s.operator(s.compactClaim)},
 		{"POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession)},
+		{"POST /legion/v1/operator/claims/{token}/release-names", s.operator(s.releaseNames)},
 		{"POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree)},
 
 		// The catch-all answers every unrouted request, including a known path asked for with the
@@ -1152,7 +1153,7 @@ const quietTimeContract = 111
 // refuses a word it does not name and with it the whole state body, so a caller below 132 is
 // served such a member without its `kind` (withoutWaitingOnIssue), which that schema takes as
 // optional. mergeWaitContract, assignmentsContract, entryTimesContract and gateBasisContract
-// stand above it, so a caller in a pod at 132 through 163 is served the word and neither
+// stand above it, so a caller in a pod at 132 through 176 is served the word and neither
 // `treeRuns` nor the gated steps of an issue a step of which stands on a basis, one at 132
 // through 145 no `entryQueuedAt`, `entryConfirmedAt` or `architectStalls` either, one at 132
 // through 140 no `assignments` either, and one at 132 no `mergeWait` either.
@@ -1191,7 +1192,7 @@ const assignmentsContract = 141
 const entryTimesContract = 146
 
 // gateBasisContract is the daemon contract that let a root's gated step stand open on an
-// ancestor's approval or wait on an ancestor's approval request (version.go's 164,
+// ancestor's approval or wait on an ancestor's approval request (version.go's 177,
 // dispatch://INFRA-3320, R1 and R2), and served each root whether its tree runs. It added the
 // gated step's `basis` and the two status words `open_on_basis` and `pending_on_basis`, and each
 // root's `treeRuns`. A plugin before it is served the state without `treeRuns`, which one built
@@ -1209,9 +1210,9 @@ const entryTimesContract = 146
 // and a caller in no pod are served the state as it is (stateFor). entryTimesContract stands
 // right below it, and the two rows touch no key of each other's: withoutEntryTimes takes three
 // keys whatever the issue's phase, and withoutGateBasis reads no key it takes, so a caller at 146
-// through 163 is served both times and `architectStalls` and none of this contract's, and a caller
+// through 176 is served both times and `architectStalls` and none of this contract's, and a caller
 // below 146 neither.
-const gateBasisContract = 164
+const gateBasisContract = 177
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

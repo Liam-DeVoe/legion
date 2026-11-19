@@ -1417,6 +1417,12 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		}
 	}
 	if orphan {
+		// The carried run keeps the phase it ran in, past admitted (record.Issue.CarriesRun), so it
+		// never leaves admitted, where a run's plan is written otherwise: its new generation's plan
+		// is written here (WritePlan).
+		if err := a.engine.WritePlan(ctx, tx, stored); err != nil {
+			return fmt.Errorf("write the plan of re-admitted orphan %s: %w", stored.Key, err)
+		}
 		if pr != nil {
 			// The carried pull request starts the generation's fence; its head run goes, as with a
 			// new generation (record.ClearGeneration), since its replay would put the old fence back.
@@ -1715,7 +1721,7 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 // in awaiting_children comes back once its promotion has opened its tree. A key a hold still names
 // (held, the pass's own predicate) is read on the first pass after the hold ends, as the promotion
 // reads it. The engine leaves alone a parent held, in retro or in merging, whose pull request has
-// merged, or whose phase's role stands on an entry a conflicting head raised out of retro or
+// merged, or whose phase's role stands on an entry a role's move back raised out of retro or
 // merging (record.PhaseRow.EntryFrom), and a second pass finds a moved parent in awaiting_children
 // already, so it sends nothing again.
 //

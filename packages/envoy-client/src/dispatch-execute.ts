@@ -33,13 +33,12 @@ export {
   resolveIssueDocument,
   resolveIssueDocumentId,
 } from "./dispatch-commands/document-targets";
-export { goBlankPattern } from "./dispatch-commands/documents";
+export { dispatchRefFromUrl, linkBaseOf } from "./dispatch-commands/links";
 export {
   OPEN_BLOCK_ASK_THE_HUMAN,
   OPEN_BLOCK_WAIVED,
   refuseOpenDecisionBlocks,
 } from "./dispatch-commands/open-decision-blocks";
-export { dispatchRefFromUrl } from "./dispatch-commands/refs";
 export { formatOpenAsksSummary, positionText } from "./dispatch-commands/render-item";
 // The reader of a `dispatch://` reference the commands read theirs with, for a host that takes one
 // of its own: the `legion` tool's register_gate basis names its issue's document by one.

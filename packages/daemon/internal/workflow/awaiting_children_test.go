@@ -115,9 +115,9 @@ func cwVerdict(trigger TriggerKind) string {
 
 // Every start of planning, implementing, testing, reviewing or accepting of a parent standing in
 // one of those phases is held while a Dispatch child of it is open, whatever the move is — a
-// completion, a review, a worker's or the architect's move back, a conflicting head — and the
-// parent waits in awaiting_children holding that start, with no worker started and the one
-// awaiting-children notice in place of the phase-finished or checks-red the start would have sent.
+// completion, a review, or a worker's or the architect's move back — and the parent waits in
+// awaiting_children holding that start, with no worker started and the one awaiting-children
+// notice in place of the phase-finished the start would have sent.
 func TestAnOpenChildHoldsEveryPhaseStartFromPlanningThroughAccepting(t *testing.T) {
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -160,9 +160,9 @@ func TestAnOpenChildHoldsEveryPhaseStartFromPlanningThroughAccepting(t *testing.
 }
 
 // The rule reaches no start outside it, open child or not: the issue's first phase, which the
-// admission line holds instead; a conflicting head's move back from retro or merging, past the
-// daemon's acceptance; the architect's sign-off into retro; and any start of an issue whose pull
-// request has merged.
+// admission line holds instead; a role's move back from retro or merging, past the daemon's
+// acceptance; the architect's sign-off into retro; and any start of an issue whose pull request
+// has merged.
 func TestAnOpenChildHoldsNoStartOutsideTheRule(t *testing.T) {
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -174,8 +174,8 @@ func TestAnOpenChildHoldsNoStartOutsideTheRule(t *testing.T) {
 		merged  bool
 	}{
 		{name: "the first phase", from: phase.Admitted, trigger: TriggerGateOpened, want: phase.Planning},
-		{name: "a conflicting head in retro", from: phase.Retro, trigger: TriggerConflict, want: phase.Implementing},
-		{name: "a conflicting head in merging", from: phase.Merging, trigger: TriggerConflict, want: phase.Implementing},
+		{name: "the implementer's move back from retro", from: phase.Retro, trigger: TriggerBackward, want: phase.Implementing},
+		{name: "the merger's move back from merging", from: phase.Merging, trigger: TriggerBackward, want: phase.Implementing},
 		{name: "the architect's sign-off", from: phase.Accepting, trigger: TriggerSignOff, want: phase.Retro},
 		{name: "a merged pull request", from: phase.Testing, trigger: TriggerTesterPassed, want: phase.Reviewing, merged: true},
 	} {
@@ -188,7 +188,7 @@ func TestAnOpenChildHoldsNoStartOutsideTheRule(t *testing.T) {
 			}
 			seedMirrorChild(t, pool, child, "todo", key)
 
-			cwTransition(t, pool, engine, key, tc.trigger, tc.want, record.PhaseRow{Issue: key, Role: phase.RoleFor(tc.from), Verdict: cwVerdict(tc.trigger)}, "the head conflicts with main")
+			cwTransition(t, pool, engine, key, tc.trigger, tc.want, record.PhaseRow{Issue: key, Role: phase.RoleFor(tc.from), Verdict: cwVerdict(tc.trigger)}, "redo")
 
 			if got := storedIssue(t, pool, key); got.Phase != tc.want || got.ChildrenWait != nil {
 				t.Fatalf("%s after the move = phase %s, held start %+v; want %s and nothing held", key, got.Phase, got.ChildrenWait, tc.want)
@@ -203,9 +203,8 @@ func TestAnOpenChildHoldsNoStartOutsideTheRule(t *testing.T) {
 // The notice that replaces the start's own names the parent, the start it holds, each open child
 // with its Dispatch status, a child whose own blocked_by link names the parent above it, and what
 // ends the wait, and carries what the notice it replaces carried: the worker's summary and the
-// tester's verdict, the words of a move back, or the base a conflicting head merges forward.
+// tester's verdict, or the words of a move back.
 func TestTheAwaitingChildrenNoticeNamesTheWaitAndCarriesWhatItReplaces(t *testing.T) {
-	const conflict = "the head conflicts with main: GitHub runs no checks on it; merge main forward"
 	for _, tc := range []struct {
 		name    string
 		from    phase.Phase
@@ -221,8 +220,6 @@ func TestTheAwaitingChildrenNoticeNamesTheWaitAndCarriesWhatItReplaces(t *testin
 		{name: "a worker's move back", from: phase.Testing, trigger: TriggerBackward, to: phase.Implementing,
 			handoff: record.PhaseRow{Role: claim.RoleTester}, reason: "the build is red",
 			carries: []string{"holding the start of implementing: moved back to implementing by the tester: the build is red."}},
-		{name: "a conflicting head", from: phase.Reviewing, trigger: TriggerConflict, to: phase.Implementing,
-			reason: conflict, carries: []string{"holding the start of implementing: " + conflict + "."}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -254,7 +251,7 @@ func TestTheAwaitingChildrenNoticeNamesTheWaitAndCarriesWhatItReplaces(t *testin
 					t.Fatalf("the notice's reason %q does not say %q", notice.Reason, want)
 				}
 			}
-			for _, replaced := range []record.NoticeKind{"phase-finished", "checks-red"} {
+			for _, replaced := range []record.NoticeKind{"phase-finished"} {
 				if got := noticesOfKind(t, pool, cwParent, replaced); len(got) != 0 {
 					t.Fatalf("%s notices = %+v, want none: the awaiting-children notice replaces it", replaced, got)
 				}
@@ -277,42 +274,6 @@ func TestTheChildrenNoticesEndEachCycleSentenceWithAFullStop(t *testing.T) {
 		if !strings.Contains(reason, want) {
 			t.Errorf("the %s notice's reason %q does not say %q", name, reason, want)
 		}
-	}
-}
-
-// A conflicting head held for the children tells the role whose phase it ended, on that role's own
-// lane, that the issue waits on its children and no task follows (record.PhaseEnded into
-// awaiting_children), its reason naming the open child; accepting's role is the architect, which
-// the notice tells, so no message goes there.
-func TestAConflictHeldForTheChildrenTellsTheEndedRoleNoTaskFollows(t *testing.T) {
-	const conflict = "the head conflicts with main: GitHub runs no checks on it; merge main forward"
-	for _, tc := range []struct {
-		from  phase.Phase
-		ended claim.Role
-	}{
-		{from: phase.Testing, ended: claim.RoleTester},
-		{from: phase.Reviewing, ended: claim.RoleReviewer},
-		{from: phase.Accepting},
-	} {
-		t.Run(string(tc.from), func(t *testing.T) {
-			pool := migratedPool(t)
-			cwSeedParent(t, pool, cwParent, tc.from, 42)
-			seedMirrorChild(t, pool, cwChild, "todo", cwParent)
-
-			cwTransition(t, pool, testEngine(config.DesignGateRootIssues, nil), cwParent, TriggerConflict, phase.Implementing, record.PhaseRow{Issue: cwParent}, conflict)
-
-			ended := cwPhaseEnded(t, pool, cwParent)
-			if tc.ended == "" {
-				if len(ended) != 0 {
-					t.Fatalf("phase-ended messages = %+v, want none: the architect is told by its notice", ended)
-				}
-				return
-			}
-			if len(ended) != 1 || ended[0].Role != tc.ended || ended[0].From != tc.from || ended[0].To != phase.AwaitingChildren || ended[0].TaskFollows ||
-				!strings.Contains(ended[0].Reason, conflict) || !strings.Contains(ended[0].Reason, cwChild+" (todo)") {
-				t.Fatalf("phase-ended messages = %+v, want one to the %s out of %s into awaiting_children, no task following, naming the base and %s", ended, tc.ended, tc.from, cwChild)
-			}
-		})
 	}
 }
 
