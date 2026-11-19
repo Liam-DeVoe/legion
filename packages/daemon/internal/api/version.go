@@ -2383,29 +2383,66 @@ package api
 // #4180 and #4193) and 159 (#4049 and #4175), so 160 is still the lowest number above main's 152
 // that no open head declares.)
 //
-// 170: INFRA-204 (cybermonklabs/legion) -- api.State gains `questionsForController`, every
+// 168: the completion that ends the retro rates the plan the issue ran. `POST
+// /legion/v1/handoff/complete` (`api.HandoffCompleteRequest`, contracts'
+// `LegionHandoffCompleteRequest`) takes two optional fields: `planRating`, a whole number from 1
+// (the plan cost the work) to 5 (the plan fit the work), and `planReason`, why, in one to 2,000
+// characters counted as Unicode code points and not all blank, the two together
+// (`PLAN_RATING_INPUT`). The agent that does the retro gives them, so the completion that ends the
+// retro takes them, and every other completion and a production check's report are refused them
+// (`PLAN_RATING_UNEXPECTED`). Which completion ends the retro the workflow judges where it ends
+// it, on the issue as the completion's own transaction reads it (`TriggerRetroCompleted`), and its
+// own refusals, a held issue's 409 among them, come first. A claim whose plugin declared this
+// contract or a later one must rate (`PLAN_RATING_REQUIRED`), so a plugin built from this commit
+// sends both on its retro; a plugin below it never sends them, and its retro, where the daemon
+// serves its claim (`staleClaim`: a claim in a turn, in an update round, with no plugin install,
+// or on a daemon that relaunches onto no plugin), completes with no rating
+// (`api.PlanRatingContract`).
+// Every refusal is a 400 that records nothing, so the same completion, corrected, is taken: the
+// route writes `PLAN_RATING_INPUT` and a report's `PLAN_RATING_UNEXPECTED` before the fact is
+// applied, and the workflow refuses the rest with the fact left unspent (`intake.Result.Unspent`).
+// The route hands the two to the workflow on the completion's fact as one value
+// (`intake.HandoffComplete.PlanRating`), beside whether the claim must rate (`MustRate`).
+// `readBody` refuses an unknown field, so a plugin sending them to a daemon below 168 would have
+// every retro refused; the bump is why the two never meet. No shape of `GET /legion/v1/state`
+// moves, so no caller is served a narrower one.
+// The decoder of every request body (`decodeJSON`) also refuses a body any string of which, a
+// member's name and an earlier copy of a repeated member included, holds U+0000, which
+// PostgreSQL's text and jsonb cannot hold: 400 `invalid request body` naming the string's place and
+// where in it the character stands (`unstorableJSON`), or first the stale-caller 409 where the
+// route can name a stale caller (`readBody`'s identity check), as for any body that does not
+// decode. A route that stored such a string answered 500 before, and one that only compared it
+// took it; every route now refuses it before it reads the body.
+// (This entry takes 168, the lowest number above main's 160 that no open pull request declared
+// when the merge of 2026-11-19 brought main in at c70a80228d: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 235 open pull requests, made between
+// 2026-11-19T08:26:23Z and 08:26:52Z, found each of 161 to 166 declared, 167 declared by #4030,
+// #4485, #4493 and this change's own head before this merge, and nothing above 167. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 171: INFRA-204 (cybermonklabs/legion) -- api.State gains `questionsForController`, every
 // question to a stopped agent that the daemon's answer loop passed to the controller in the last
 // seven days (id, issue, role, session, asker, ref, reason, passedAt, and writes, each gh call
 // that writes which the loop ran for it), newest first and at most 100: the controller's
 // `agent-question` notice is a live wake only, so a controller that starts later reads what it
 // missed here. A body this contract writes carries it on every state, never
-// null, and a caller from a pod whose claims record a contract under 170 is served the state
+// null, and a caller from a pod whose claims record a contract under 171 is served the state
 // without the key (stateNarrowings, questionsForControllerContract), since the strict reader
-// before 170 refuses it. The 170 reader takes it as optional for that body alone, as it takes
-// `wakesWaiting`; a daemon below 170 is not what serves it a body without the key, since the boot
+// before 171 refuses it. The 171 reader takes it as optional for that body alone, as it takes
+// `wakesWaiting`; a daemon below 171 is not what serves it a body without the key, since the boot
 // gate and `legion probe-image` refuse that mixed pair. (This branch
 // took 38, then 52 while main stood at 51, then 57 while main stood at 56, then 58 while main
 // stood at 57, then 59 while main stood at 58, then 60 while main stood at 59, then 61 while main
 // stood at 59 and #2539 and #2731 also declared 60, then 122 while main stood at 111, then 126
 // while main stood at 123, then 149 while main stood at 144 and kept it while main stood at 146,
 // then 157 while main stood at 151, then 162 while main stood at 152, then 168 while main stood
-// at 160, then 170 while main stood at 160. It takes 170 because open pull requests, drafts
-// included, declared 160 (#2544, #2813, #3178 and #3512), 161 (#4173, #4180, #4193 and #4259),
-// 162 (#3712), 163 (#4049), 164 (#4017), 165 (#4392), 166 (#4432), 167 (#3831, #4030 and
-// #4485), 168 (#3659, #4273 and #4488, beside this one) and 169 (#4065 and #4493) at
-// 2026-11-19T10:20Z, read with the `declared_by_open_pull_requests` of main's
-// .github/scripts/check-daemon-api-contract.sh, so 170 is the lowest number above main's that no
-// open pull request declares. main held 160 at the forward merge that last read this number,
-// main's 46795520; read main's own number and every open pull request's again at the next merge
-// rather than from this line.)
-const DaemonAPIVersion = 170
+// at 160, then 170 while main stood at 160, then 171 while main stood at 168. It takes 171
+// because open pull requests, drafts included, declared 169 (#3831 and #4065), 170 (#4030,
+// #4173, #4180 and #4193, beside this one), 172 (#3659), 173 (#4493), 174 (#3993 and #4273) and
+// 175 (#3712, #4115, #4392, #4432, #4485 and #4495) at 2026-11-19T18:27Z, read with the
+// `declared_by_open_pull_requests` of main's .github/scripts/check-daemon-api-contract.sh, so 171
+// is the lowest number above main's that no open pull request declares. main held 168 at the
+// forward merge that last read this number, main's b2cf98a0; read main's own number and every
+// open pull request's again at the next merge rather than from this line.)
+const DaemonAPIVersion = 171

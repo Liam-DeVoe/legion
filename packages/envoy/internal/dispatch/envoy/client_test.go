@@ -470,7 +470,7 @@ func TestRoleAndSendPreserveTheListenerDeliveryContract(t *testing.T) {
 func TestRolePreservesListenerNotFoundText(t *testing.T) {
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"error":"no holder for role legion-planner"}`))
+		_, _ = w.Write([]byte(`{"error":"no holder for role legion-planner","reason":"unclaimed"}`))
 	}))
 	defer listener.Close()
 
@@ -478,14 +478,15 @@ func TestRolePreservesListenerNotFoundText(t *testing.T) {
 	if err == nil || err.Error() != "no holder for role legion-planner" {
 		t.Fatalf("role error = %v, want listener error text", err)
 	}
-	if !errors.Is(err, ErrNoHolder) || errors.Is(err, ErrUnavailable) {
-		t.Fatalf("role error = %v, want ErrNoHolder and not ErrUnavailable", err)
+	if !errors.Is(err, ErrNoRoleHolder) || errors.Is(err, ErrUnavailable) {
+		t.Fatalf("role error = %v, want ErrNoRoleHolder and not ErrUnavailable", err)
 	}
 }
 
-// Only the listener's 404 naming a reason says the role has no holder. A failure the listener
-// names in its body under any other status - its role read failing on NATS, say - and a 404 that
-// names nothing say nothing about the holder.
+// Only the listener's 404 naming a no-holder reason (roleholder.IsNoHolderReason) says the role has
+// no holder. A failure the listener names in its body under any other status - its role read
+// failing on NATS, say - a 404 that names nothing, and a 404 whose body names no such reason say
+// nothing about the holder.
 func TestRoleReportsOnlyTheListener404AsNoHolder(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -494,6 +495,7 @@ func TestRoleReportsOnlyTheListener404AsNoHolder(t *testing.T) {
 	}{
 		{name: "a NATS failure", status: http.StatusServiceUnavailable, body: `{"error":"nats: timeout"}`},
 		{name: "a 404 naming nothing", status: http.StatusNotFound},
+		{name: "a 404 naming no no-holder reason", status: http.StatusNotFound, body: `{"error":"no holder for role legion-planner"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -503,8 +505,8 @@ func TestRoleReportsOnlyTheListener404AsNoHolder(t *testing.T) {
 			defer listener.Close()
 
 			_, err := New(listener.URL).Role(context.Background(), "legion-planner")
-			if err == nil || errors.Is(err, ErrNoHolder) {
-				t.Fatalf("role error = %v, want a failure that is not ErrNoHolder", err)
+			if err == nil || errors.Is(err, ErrNoRoleHolder) {
+				t.Fatalf("role error = %v, want a failure that is not ErrNoRoleHolder", err)
 			}
 		})
 	}
@@ -1110,7 +1112,7 @@ func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 // and asking the listener to keep the message: the body names the role's topic, Dispatch as its
 // source, the frame as a JSON string, the key, the urgency, expects_reply and keep true, and
 // names no session. The route's three answers are told apart by status: 200 a live holder took
-// it, 202 the listener kept it until kept_until, 404 nothing was kept - ErrNoHolder carrying the
+// it, 202 the listener kept it until kept_until, 404 nothing was kept - ErrNoRoleHolder carrying the
 // listener's own text.
 func TestPublishToRoleAnswersEachStatus(t *testing.T) {
 	const role = "legion-infra-infra-204-planner"
@@ -1187,8 +1189,8 @@ func TestPublishToRoleAnswersEachStatus(t *testing.T) {
 				}
 			case err == nil:
 				t.Fatalf("publish answered %d = %#v, want a failure", tc.status, result)
-			case errors.Is(err, ErrNoHolder) != tc.noHolder:
-				t.Fatalf("publish answered %d: err = %v, want ErrNoHolder %v", tc.status, err, tc.noHolder)
+			case errors.Is(err, ErrNoRoleHolder) != tc.noHolder:
+				t.Fatalf("publish answered %d: err = %v, want ErrNoRoleHolder %v", tc.status, err, tc.noHolder)
 			case errors.Is(err, ErrUnavailable) != (tc.refusal == ""):
 				t.Fatalf("publish answered %d: err = %v, want ErrUnavailable %v", tc.status, err, tc.refusal == "")
 			case tc.refusal != "" && err.Error() != tc.refusal:

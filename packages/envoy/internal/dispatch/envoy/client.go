@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/listenerwire"
+	"github.com/sjawhar/envoy/roleholder"
 )
 
 // ErrUnavailable reports that the Envoy listener could not serve a request.
@@ -71,19 +72,20 @@ var ErrReceiptTimeout = errors.New("envoy listener did not answer the send in ti
 // ErrNotFound reports that the listener has no record of the requested session.
 var ErrNotFound = errors.New("envoy listener: session not found")
 
-// ErrNoHolder reports that the listener holds no live holder for a role: its 404, whose reason
-// is unclaimed or holder_lapsed (cmd/listener/api.go, writeRoleHolderError). The error Role
-// returns carries the listener's own text and matches ErrNoHolder under errors.Is, and so does
-// the one PublishToRole returns for a role publish the listener kept nothing of.
-var ErrNoHolder = errors.New("envoy listener: no live role holder")
+// ErrNoRoleHolder reports the listener's own answer to a role lookup that no live session holds the
+// role: a 404 whose refusal names no claim (roleholder.Unclaimed) or a holder that has lapsed and
+// that this client did not resolve to a record (roleholder.HolderLapsed). Every such error matches
+// it under errors.Is and reads as the listener's own reason. It is the one decided "nobody" a role
+// lookup answers: a status the listener chose otherwise - a 500 for a claim record it cannot read -
+// and every ErrUnavailable say nothing about who holds the role.
+var ErrNoRoleHolder = errors.New("envoy listener: no live session holds the role")
 
-// noHolderError is the 404 of Role and of PublishToRole: the listener's text, so a caller
-// recording it records exactly what the listener said, and ErrNoHolder under errors.Is.
-type noHolderError struct{ text string }
+// noRoleHolderError is an ErrNoRoleHolder carrying the listener's own reason as its text, so a
+// caller that records the failure records the words it recorded before.
+type noRoleHolderError struct{ reason string }
 
-func (e noHolderError) Error() string { return e.text }
-
-func (e noHolderError) Is(target error) bool { return target == ErrNoHolder }
+func (e noRoleHolderError) Error() string        { return e.reason }
+func (e noRoleHolderError) Is(target error) bool { return target == ErrNoRoleHolder }
 
 // noSessionError is Send's 404: the listener holds no live session under the target and handed
 // the message to no daemon (cmd/listener/api.go). It carries the listener's text, so a caller
@@ -440,8 +442,8 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 // answer (listenerwire.RoleHolder). A role answer names the holder's state as holder_state rather
 // than state, and a holder that is only unresponsive still holds the role: the caller delivers to
 // it and the message waits for it. Only a holder the listener has no live claim for at all is the
-// 404 listenerResponseError carries, which matches ErrNoHolder (noLiveRoleHolder) so a caller can
-// tell it from a read that failed.
+// 404 whose reason is one of the listener's no-holder reasons, which matches ErrNoRoleHolder so a
+// caller can tell it from a read that failed.
 //
 // The listener answers an unresponsive holder either way, and both are resolved here. A 200
 // naming it holder_state unresponsive is read as it stands. The 404 the lookup route writes for
@@ -498,7 +500,7 @@ func (c *Client) Role(ctx context.Context, role string) (Session, error) {
 func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) (Session, error) {
 	var refusal listenerwire.RoleRefusal
 	if err := json.NewDecoder(response.Body).Decode(&refusal); err != nil {
-		return Session{}, noLiveRoleHolder(response, listenerRefusal(response, ""))
+		return Session{}, listenerRefusal(response, "")
 	}
 	if refusal.Holder != "" && refusal.HolderState == StateUnresponsive {
 		holder, err := c.Session(ctx, refusal.Holder)
@@ -509,19 +511,11 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 			return Session{}, err
 		}
 	}
-	return Session{}, noLiveRoleHolder(response, listenerRefusal(response, refusal.Error))
-}
-
-// noLiveRoleHolder marks err, a role read the listener refused, as ErrNoHolder when its status is
-// the 404 that says the role has no live holder and the listener named a reason for it. A 404
-// naming nothing is ErrUnavailable (listenerRefusal), and so is every status a gateway or the
-// listener's own starting gate gives, and neither says anything about the holder: only the
-// listener's own decision about the role does.
-func noLiveRoleHolder(response *http.Response, err error) error {
-	if response.StatusCode == http.StatusNotFound && !errors.Is(err, ErrUnavailable) {
-		return noHolderError{text: err.Error()}
+	err := listenerRefusal(response, refusal.Error)
+	if roleholder.IsNoHolderReason(string(refusal.Reason)) && !errors.Is(err, ErrUnavailable) {
+		return Session{}, noRoleHolderError{reason: err.Error()}
 	}
-	return err
+	return Session{}, err
 }
 
 // Session returns one session's listener metadata, whatever its state, or ErrNotFound if the
@@ -797,7 +791,7 @@ type RolePublishResult struct {
 // message for the role's next holder when no live session holds the role (keep true, the route's
 // own default written out). The route answers a role publish one of three ways (roleSend): 200, a
 // live holder took it; 202, it was kept (RolePublishResult.Kept); 404, nothing was kept, which is
-// an error carrying the listener's own text that matches ErrNoHolder. Every other answer and every
+// an error carrying the listener's own text that matches ErrNoRoleHolder. Every other answer and every
 // failure is Send's: a refusal the listener named is its reason alone, a 502, 503 or 504 and a
 // transport failure are ErrUnavailable and ErrUnreachable, and a publish written whose answer
 // missed the client's window is ErrReceiptTimeout, since the listener keeps or forwards the
@@ -821,7 +815,7 @@ func (c *Client) PublishToRole(ctx context.Context, input RolePublishInput) (Rol
 	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusAccepted {
 		err := listenerResponseError(response)
 		if response.StatusCode == http.StatusNotFound && !errors.Is(err, ErrUnavailable) {
-			return RolePublishResult{}, noHolderError{text: err.Error()}
+			return RolePublishResult{}, noRoleHolderError{reason: err.Error()}
 		}
 		return RolePublishResult{}, err
 	}

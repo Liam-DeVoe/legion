@@ -1181,9 +1181,9 @@ const assignmentsContract = 141
 const entryTimesContract = 146
 
 // questionsForControllerContract is the daemon contract that added `questionsForController` to
-// the state (version.go's 170): a plugin before it reads the state with a strict schema that knows
+// the state (version.go's 171): a plugin before it reads the state with a strict schema that knows
 // no such key and refuses the whole body for it, empty as surely as naming a question.
-const questionsForControllerContract = 170
+const questionsForControllerContract = 171
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
