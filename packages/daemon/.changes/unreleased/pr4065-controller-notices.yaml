@@ -2,10 +2,12 @@ kind: Changed
 body: |-
   The daemon sends the project's controller no notice that its skill does nothing for, and no copy
   of a notice that the issue's architect already gets. It no longer sends `awaiting-person` or
-  `unslotted`; the controller reads a root that waits on a person, or that left the workflow,
-  from `legion state`. It no longer copies to the controller a `held` whose budget ran out, a
-  `session-lost`, the `worker-died` of a tree's architect whose root is `done`, or the
-  `worker-stalled` of a tree's architect whose claim did not fail. An escalated `held`, the
+  `unslotted`. The controller reads a root that waits on a person, or that left the workflow, with
+  its `legion` tool's `read_state`. It no longer copies to the controller a `held` whose budget ran
+  out, a `session-lost`, or the `worker-died` of a tree's architect whose root is `done`. It copies
+  the `worker-stalled` of a tree's architect only where the stall failed that architect's claim
+  and the runtime did not confirm the stop of the stalled process. A failed claim whose stop the
+  runtime confirmed reaches the controller as its `worker-died` alone. An escalated `held`, the
   `worker-died` of a tree's architect whose root is not `done`, and `session-store-fault` still
   reach the controller. A `provider-errors` notice now goes to the issue's architect as well, as a
   notice that wakes an architect whose pod was released; a run of a child's own architect's claim

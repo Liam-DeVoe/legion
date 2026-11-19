@@ -16,8 +16,12 @@ import (
 // its project runs in (POST /legion/v1/issues/pod-update, issuePodUpdate): its grant and the
 // issue. The round it opens is the one a drift opens (the daemon's requestPodUpdate): each role
 // of the pod is asked to push its work and answer ready_for_update, and the pod is replaced once
-// each has answered or at the round's bound. It is the one way the controller removes an issue
-// pod whose workspace may hold work.
+// each has answered or at the round's bound. A suspension by the operator, the controller or an
+// architect over a role the round asks keeps the pod past the bound until a resume lifts it (the
+// daemon's heldClaims). The controller's own suspension counts too, so a controller that
+// suspended a role and then asks for the replacement waits on itself, and the round comes back as
+// update-stalled. It is the one way the controller removes an issue pod whose workspace may hold
+// work.
 type PodUpdateRequest struct {
 	GrantID string `json:"grantId"`
 	Issue   string `json:"issue"`

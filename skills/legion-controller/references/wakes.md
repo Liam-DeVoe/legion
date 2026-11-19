@@ -456,8 +456,10 @@ The daemon's stall backstop acted on a stalled turn of the tree's architect: its
 stepped for longer than the `worker_stall_backstop_hours` the deployment gives that role. The
 daemon tried to start a replacement in its place, every try was refused, and that ran the
 architect's launch budget out, so its claim is failed and nothing relaunches it. You get this
-notice only for that end. Every other end of a stall leaves the architect's task owed to it and
-fails nothing, and the architect alone is told of it. The architect then opens the finding ask for
+notice only for that end, and only when the runtime did not confirm the stop of the stalled
+process. A failed claim whose stop the runtime confirmed reaches you as its `worker-died` alone.
+Every other end of a stall leaves the architect's task owed to it and fails nothing, and the
+architect alone is told of it. The architect then opens the finding ask for
 a stop the runtime did not confirm and for stalls that come again and again
 (`skill://legion-architect/references/wake-routing.md`, its `worker-stalled` row), so you open
 none for those ends. You get this one only for a tree's own architect, because no architect stands
@@ -467,9 +469,9 @@ own architect goes to the architect above that child.
 The `reason` is the record the daemon read: when the agent last stepped and how long ago that was,
 the bound it passed, when the turn began, and the last call the daemon saw, with its tool, its call
 id, when it started and whether it ended — never a call's arguments, whose text the daemon keeps in
-no column. It also says what became of the stalled process: that it was stopped, or that the
-runtime did not confirm the stop, in which case that process may be running still and holding what
-it runs on. A stop the runtime would not make is a finding to put to a person
+no column. It also says that the runtime did not confirm the stop of the stalled process, so that
+process may be running still and holding what it runs on. A stop the runtime would not make is a
+finding to put to a person
 ([Findings](skill://legion-controller/SKILL.md#findings-and-the-issues-you-file)), with the notice
 in it, because the daemon stops that process again only at its next launch of that claim or at its
 next restart.

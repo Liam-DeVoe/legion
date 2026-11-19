@@ -15,8 +15,8 @@ references and clear defects no tree owns reach you on
 ## The prioritization pass
 
 The pass keeps the order of the project's work aligned with the project's priorities. No timer
-starts it: a wake does. Run it at most once a turn, after the wake's work, as the last step
-before your summary.
+starts it: a wake does. Run it at most once a turn, after the wake's work. It is the last step
+before your summary, and on the turn that posts the daily report it comes before that report.
 
 **When.**
 

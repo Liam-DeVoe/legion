@@ -392,13 +392,15 @@ it there until that answer comes clean.
     `- Check <block id> (after_merge): not yet run`.
   - `fail`, for a requirement observed as not met, one still unobserved at the last look, or a
     defect: record the failing result with `dispatch result --verdict fail`, file no issue, and
-    take the path `skill://legion-worker/references/findings.md` gives it — a clear fix to its
-    owner, as a Dispatch comment that mentions the architect of the tree whose code it is, or the
-    project's controller, to file, when no tree owns that code; only a defect needing a decision
-    is a `dispatch ask` on the controller's report issue, whose reference you publish to the
-    controller topic. Either names this issue, the pull request, the merge commit, what you drove
-    and what failed, and the result's `observed` and the summary name it
-    (`dispatch://<KEY>/comment/<id>` or `dispatch://<REPORT KEY>/ask/<id>`).
+    take the path `skill://legion-worker/references/findings.md` gives it. A clear fix goes to its
+    owner, as a Dispatch comment that mentions the architect of the tree whose code it is. When no
+    tree owns that code, it goes to the controller of the project that repository maps to, or to
+    your own project's controller when Dispatch maps it to none, which files it. A defect that
+    needs a person's decision, a deploy window or work much larger than your own, and any other
+    finding that needs a decision, is a `dispatch ask` on the controller's report issue, whose
+    reference you publish to the controller topic. Either names this issue, the pull request, the
+    merge commit, what you drove and what failed, and the result's `observed` and the summary name
+    it (`dispatch://<KEY>/comment/<id>` or `dispatch://<REPORT KEY>/ask/<id>`).
 - **Numbers the daemon holds are read with the `legion` tool.** Where the verdict rests on what a
   deployment's idle release has done, `read_release_records` answers a window of the daemon's own
   records of its releases, resumes and holds: its one argument `since` is the RFC 3339 instant

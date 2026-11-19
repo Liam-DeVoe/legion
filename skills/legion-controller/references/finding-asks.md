@@ -38,24 +38,39 @@ report issue, with `controller` as the role, and take it as below.
 
 You file an issue only when nobody owns that code.
 
+Every reply you write under the evidence in the steps below is this one command. Dispatch wakes
+nobody for a session's reply, so the reply mentions the finder's role: the token after
+`Clear defect from ` on the evidence's first line.
+
+```bash
+dispatch comment --issue '<the evidence's issue>' --reply-to '<comment id>' --mention 'role:<the finder's role token>' --body-file - <<'EOF'
+<the reply, its first line as the step gives it>
+EOF
+```
+
+When that token is `controller`, the evidence is your own: leave out `--mention`.
+
 1. Check that it is clear: the fix needs no choice a person must make, and it belongs in a
    repository both role GitHub Apps are installed on, the only repositories Legion records an
-   issue on (your addressing line names the owners your own App is installed on, and
-   `read_state`'s `repositories.refused` names a repository either App is missing from).
-   Otherwise reply `Not filed: <reason>` under the evidence, the reason naming the choice a
-   person must make or the repository the Apps miss, and open nothing: a finder that reads that
-   reply opens its ask itself (`skill://legion-worker/references/findings.md#write-to-the-owner`).
+   issue on. Your addressing line names the owners your own App is installed on. The `read_state`
+   summary names each repository either App is missing from, one
+   `repository refused <repo> <reason>` line for each.
+   When it is not clear, reply `Not filed: <reason>` under the evidence with the command above,
+   the reason naming the choice a person must make or the repository the Apps miss, and open
+   nothing: a finder that reads that reply opens its ask itself
+   (`skill://legion-worker/references/findings.md#write-to-the-owner`).
 2. Search first (`skill://dispatch-first`). When an open issue tracks it, read whether a running
    tree owns that issue before you post anything, as step 3 reads the live trees: its record's
    `tree` field (`read_state` with `issues`) names its root, and an issue with no record stands
-   in no tree. When that root's tree is live, send nothing on and file nothing: reply
+   in no tree. When that root's tree is live, send nothing on and file nothing. Reply
    `Not filed: tracked by dispatch://<KEY>; write to role:<that tree's architect's token>` under
-   the evidence, with the token `issues.<ROOT>.architect.locator.claim` names or, when it names
+   the evidence with the command above. The architect's token is the one
+   `issues.<ROOT>.architect.locator.claim` names or, when it names
    none, `legion-<project>-<root key, lower case>-architect`, the form `roleToken` builds
    (`skill://legion-controller/SKILL.md#rules`), so the role writes there itself: Dispatch
    delivers the mention to that architect and retries it. Only where no running tree owns it is
    the evidence yours to take in: comment it on that issue, reply `Filed dispatch://<KEY>` under
-   the evidence, and file nothing.
+   the evidence with the command above, and file nothing.
 3. Check that no running tree owns that code: no live tree whose repository and component match.
    Find the live trees as `skill://legion-controller/references/admission.md` says: each
    recorded root is a record whose `tree` field is its own key, and its row there says when its
@@ -65,7 +80,8 @@ You file an issue only when nobody owns that code.
    ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)).
    When one matches, send nothing on and file nothing:
    reply `Not filed: dispatch://<ROOT> owns it; write to role:<its architect's token>` under the
-   evidence, with the token `issues.<ROOT>.architect.locator.claim` names or, when it names
+   evidence with the command above. The architect's token is the one
+   `issues.<ROOT>.architect.locator.claim` names or, when it names
    none, `legion-<project>-<root key, lower case>-architect`, as in step 2, so the role writes to
    that tree itself. A second issue would split the work.
 4. No running tree owns that code: file it on the repository where the fix belongs, in the
@@ -80,7 +96,7 @@ You file an issue only when nobody owns that code.
    `Filed for Legion from` line: the sending role's token (or `controller`), the `dispatch://<KEY>`
    it came from, and the evidence comment's reference. It opens in `triage` with the
    label, and triage admits it (`skill://legion-controller/references/triage.md`).
-5. Reply under the evidence comment (`--reply-to '<comment id>'`), its first line exactly
+5. Reply under the evidence with the command above, its first line exactly
    `Filed dispatch://<NEW KEY>`. A later session reads that reply at triage and at every start.
 
 ## Follow it
@@ -182,6 +198,19 @@ finding asks roles opened on their own issues while the report issue was missing
 
    It reads as step 3's read does: exit 0 with `[]` is nothing waiting, anything else failed.
    Take each as [File a clear defect no tree owns](#file-a-clear-defect-no-tree-owns) says.
+5. Take each clear-defect ask that earlier rules opened: its question starts `Clear defect from `,
+   and its first option is `Hand it to the owning tree`. Step 2's list names each open one, on the
+   report issue or on any other issue. Step 3's read names each answered one that waits on you:
+   take it here, not as [Act on its answer](#act-on-its-answer) says. Take each as
+   [File a clear defect no tree owns](#file-a-clear-defect-no-tree-owns) says, with the ask as its
+   evidence. Read a person's answer `Hand it to the owning tree` as a write to that tree's
+   architect, the write that step 3 of that section asks of the finder. Then reply under the ask
+   as that section's last step says, or with the `Not filed:` reply of an earlier step: the same
+   command, with `--reply-to-ask '<ask id>'` in place of `--reply-to`. On a role's own issue, an
+   open ask of this kind holds the acceptance
+   (`skill://legion-architect/references/acceptance.md#accepting`), and your reply releases it.
+   Resolve an open one once it carries your reply (`dispatch resolve-ask --kind resolved`), so the
+   next start does not take it again.
 
 A read that fails, and an assignment Dispatch refuses, are handled as
 `skill://legion-controller/SKILL.md#rules` and

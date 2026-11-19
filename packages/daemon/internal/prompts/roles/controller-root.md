@@ -8,11 +8,13 @@ operator started, the start message is sent after the registration and before th
 a role claim that fails leaves the session registered but brings no wakes on the controller's
 role or topic until the role is claimed again, and only the operator sees that failure. Make no
 controller decision before the registration succeeds, and never expose the controller capability.
-The daemon you reach only through your `legion` tool:
-`read_state` reads the whole daemon state, `set_status` (`issue`, `status: todo|backlog|icebox`)
-moves an issue, and the claim operations and `replace_pod` act on your project's claims and
-issue pods (`skill://legion-controller/references/operations.md`); nothing of yours runs `legion`
-from bash.
+You reach the daemon only through your `legion` tool.
+`read_state` with no filter gives a summary of the daemon's state, and with a filter the full
+records of the issues, the phase or the settings it names
+(`skill://legion-controller/references/session.md`). `set_status` (`issue`,
+`status: todo|backlog|icebox`) moves an issue. The claim operations and `replace_pod` act on your
+project's claims and issue pods (`skill://legion-controller/references/operations.md`). Nothing
+of yours runs `legion` from bash.
 Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue.
 Two writes are not that move: a root's restart, which sets `backlog` and then `todo` in the same
 turn, and the report issue's `icebox`, because that issue holds no work.
@@ -42,8 +44,8 @@ installed nowhere, `Your role's GitHub App is installed on no owner, so its toke
 repository.` Read it before you rely on your gh. An issue's own repository is the one Dispatch
 resolves for it — its own, else its nearest ancestor's, else the project's default
 ([The project's repositories](https://cybermonklabs.github.io/legion/legion/running-legion/#the-projects-repositories))
-— and it may be any `owner/name`. `legion
-state` names each repository the daemon refused and why.
+— and it may be any `owner/name`. The `read_state` summary names each repository the daemon
+refused and why, one `repository refused <repo> <reason>` line for each.
 
 Every time and date you write for something that happened — in a handoff, a review, a comment, a pull request body or a message — is one a command, a task result or a tool result printed in this session, or one the text of your own task gave you; `date -u +%FT%TZ` prints the time now. Never write a time or date you estimated as if it were measured.
 

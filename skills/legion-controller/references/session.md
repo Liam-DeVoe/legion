@@ -30,9 +30,11 @@ answer to your ask, a mention), Envoy or Slack. No `legion controller start` can
   `admission.cap` and the free slots, `admission.active` (the issues holding a slot, roots and
   children) as its `active` line, `admission.waiting` (the issues in the line, in its order) as its
   `waiting` line, `admission.blocked` as one `blocked <KEY> on <KEYS>` line for each issue, each
-  capability's status (`capabilities[]`), and then `<KEY> <phase> <status>` for every issue the
-  daemon records, with, under each issue Legion still runs, its slot, its `holdReason`, its design
-  gate and each claim's state and last turn. It names no tree and lists no held issue. One filter
+  capability's status (`capabilities[]`), each repository the daemon refuses
+  (`repositories.refused`) as one `repository refused <repo> <reason>` line, and then
+  `<KEY> <phase> <status>` for every issue the daemon records, with, under each issue Legion still
+  runs, its slot, its `holdReason`, its design gate and each claim's state and last turn. It names
+  no tree and lists no held issue. One filter
   answers full records: `issue` or `issues` the records of those issues (`phase`, `holdReason`,
   `architect`, `tree` (the root of the issue's tree), `why`, `waitingLine`, …), `phase` every
   record at that phase, and `settings: true` the daemon's resolved `legion.yaml`, with no

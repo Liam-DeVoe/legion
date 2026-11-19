@@ -1343,5 +1343,10 @@ No lifecycle labels carry worker state.
 
   - `docs/solutions/legion/handoff-complete-checks-the-handoff-commits-app-and-nothing-checks-a-code-commits-INFRA-92.md`
 
+- Clear-defect routing in `docs/solutions/`: `skills/legion-worker/references/findings.md` and `skills/legion-controller/references/finding-asks.md` replace the routing of `docs/solutions/legion/fix-a-clear-defect-where-you-are-hand-any-other-to-the-tree-that-owns-the-code-and-ask-only-for-a-decision.md` at its lines 29-35.
+  Those lines have a role send the controller an Envoy message with a clear defect, for the controller to hand to the running tree whose code it is.
+  A role now writes a clear defect to that tree's architect itself, as a Dispatch comment that mentions the architect's role, and writes to the controller only when no tree owns the code.
+  The page keeps its text, because no role writes under `docs/solutions/`.
+
 > Many docs in `docs/plans/` and `docs/solutions/` predate the TypeScript rewrite and contain Python-era references.
 > These are marked with `[HISTORICAL]` headers.

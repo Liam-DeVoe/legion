@@ -79,10 +79,13 @@ dispatch doc-read --project <PROJECT> --artifact merge-holds-md
 `<PROJECT>` is the project of the issue's key (`LEGION` for `LEGION-41`). A line under the
 document's `Holds` heading reads `- <repositories> | <reason> | <end>`. It holds the sign-off when
 it names the repository of the issue's pull request (`owner/name`), or `all`, and its end is not
-past: its end is `until the controller lifts it`, or an RFC 3339 time later than
-`date -u +%Y-%m-%dT%H:%M:%SZ` prints. No line means no hold. A read that answers
+past. An end is past only when it is an RFC 3339 time earlier than the time
+`date -u +%Y-%m-%dT%H:%M:%SZ` prints. `until the controller lifts it` is never past, and neither is
+an end of any other form, so a line with a malformed end holds the sign-off, as it holds the
+merger's merge. No line means no hold. A read that answers
 `document "merge-holds-md" not found by slug` means the project has no such document, and no hold.
-Any other failed read decides nothing: sign off nothing on it.
+Any other failed read decides nothing: sign off nothing on it, and end the turn with a line that
+starts with WAITING and names the failed read, as the merger does.
 
 While a line holds the sign-off:
 
@@ -246,10 +249,11 @@ the person's words, to you by a mention, and tells an agent that asks it to writ
 A CI run of your tree is a run on the head of a pull request of your tree
 ([A pull request no merger merges](#a-pull-request-no-merger-merges) says which pull requests are
 your tree's). Its re-run is yours: ask no other session, the controller included, to re-run it.
-Re-run only its failed jobs, and only for an infrastructure failure that the failed job's log
-shows. Use the rules, the command and the reads of
-`skill://legion-controller/references/operations.md#a-re-run-of-a-ci-run`: the rules are the
-`developing-ci` skill's section 7, and the command takes the token as
+Re-run only the failed jobs of a run, and only after an infrastructure failure its log shows, such
+as a lost runner or a network error. Never re-run to test a theory, never re-run a head that a run
+already tested with the same inputs, and fix a flaky test at its cause. A deployment may ship a
+`developing-ci` skill with more rules than these. Use the command and the reads of
+`skill://legion-controller/references/operations.md#a-re-run-of-a-ci-run`, and take the token as
 [The token the secrets broker lends](#the-token-the-secrets-broker-lends) says. That section is
 written for the controller. Follow it for your own tree's runs alone, and where it names the day's
 report, name the denial in your summary.
@@ -409,12 +413,16 @@ request GitHub has already merged closes at once.
 
 Nothing of the production check is yours. Its record is the pull request and the result of the
 issue's `after_merge` check, whether or not the issue is closed. A defect it finds is never an
-issue the checking role files: a clear defect goes to the architect of the tree whose code it is,
-or to the controller to file when no tree owns that code, and only a defect that needs a decision
-is a `dispatch ask`. `read_record` shows a closed issue's open check (`check`: the pull request, the
-merge commit, the role the check records as the one that works it, the looks, what woke the last
-one, and `nextWakeAt`, when the next look is due — the time the checking agent named for itself on
-a `pending`, the retry of a look nobody reported, or the check's own bound where neither stands).
+issue the checking role files: a clear defect goes to the architect of the tree whose code it is.
+When no tree owns that code, it goes to the controller of the project that repository maps to, or
+to the checking role's own project's controller when Dispatch maps it to none, which files it. A
+defect that needs a person's decision, a deploy window or work much larger than the checking
+role's own, and any other finding that needs a decision, is a `dispatch ask`
+(`skill://legion-worker/references/findings.md`). `read_record` shows a closed issue's open check
+(`check`: the pull request, the merge commit, the role the check records as the one that works it,
+the looks, what woke the last one, and `nextWakeAt`, when the next look is due — the time the
+checking agent named for itself on a `pending`, the retry of a look nobody reported, or the
+check's own bound where neither stands).
 
 ## Hand-over at a root's linger
 

@@ -97,13 +97,14 @@ the same comment on that project's report issue ([Where it goes](#where-it-goes)
 `--mention 'role:legion-<project>-controller'`; your own project's controller is the one your
 `Legion addressing` line names. A closed report issue takes a comment too. When the project has no
 report issue, post the comment on your own issue. The controller files the defect for Legion and
-replies under your comment with the issue it filed. It files nothing when its reply under your
-comment starts `Not filed:`, and then the next step is yours. A reply that names a tree that owns
-the code (`Not filed: dispatch://<ROOT> owns it; write to role:<token>`), or an issue of a running
-tree that tracks it (`Not filed: tracked by dispatch://<KEY>; write to role:<token>`), means write
-the same comment on the issue it names, mentioning that role. Any other `Not filed:` reply names
-a choice a person must make, or a repository the Legion Apps are not installed on: open the ask
-yourself, as step 3 above says ([What the ask says](#what-the-ask-says)).
+replies under your comment with the issue it filed. Its reply mentions your role, the token on
+your comment's first line, so it reaches you as a mention of that role. It files nothing when its
+reply under your comment starts `Not filed:`, and then the next step is yours. A reply that names
+a tree that owns the code (`Not filed: dispatch://<ROOT> owns it; write to role:<token>`), or an
+issue of a running tree that tracks it (`Not filed: tracked by dispatch://<KEY>; write to role:<token>`),
+means write the same comment on the issue it names, mentioning that role. Any other `Not filed:`
+reply names a choice a person must make, or a repository the Legion Apps are not installed on:
+open the ask yourself, as step 3 above says ([What the ask says](#what-the-ask-says)).
 
 Apart from that reply, you file nothing, and you wait for nothing. An architect and its own tree's workers keep their
 Envoy messages: a phase worker sends a fix its pull request cannot carry to the architect that

@@ -1344,8 +1344,11 @@ Where the read finds no process behind a claim stored working the two part: the 
 The project's own controller claim is the one exception: the fresh session refuses it in every state, and the daemon's controller keeper does nothing for a controller stored working, so the compaction names the operator's `legion claims suspend --claim <token>` and then `legion claims resume --claim <token>` instead.
 Each refusal says what the claim is doing when it is given, and which operation reaches each state `legion claims list` shows: it names no report, turn, hold or relaunch to come, and ends by telling the caller to ask again later and read the claim's state in that list.
 The compaction refuses three more: a claim that is suspended, failed or retired, which runs no session to ask and whose refusal names what starts it again, the fresh session for a workflow role and the daemon's controller keeper for the project's own controller claim, a claim whose agent has registered and is not ready yet, which has no session to ask either and which the fresh session reaches, and a claim whose role runs on the Claude Code harness, which has no Oh My Pi session to compact at all.
-The project's controller holds both as tools of its own, `compact (issue, role)` and `fresh_session (issue, role)`, which name the claim by its issue and role rather than by a token the controller never sees: the effect, the refusals and the answer are the operator's own and only the authentication differs, and a `provider-errors on <KEY>` notice is where the controller reaches for them, the compaction first for a claim whose session the provider keeps refusing and a fresh session when the claim is still refused after it, and the fresh session alone for a claim no process stands behind, which the compaction refuses by name (`skills/legion-controller`).
-The controller's own claim is the one asymmetry: a fresh session of it is refused whatever state it is in, because the daemon's controller keeper is what starts the controller — it launches a queued one, resumes one the daemon suspended (its resume is the rule's, which an operator's suspension holds against, so a controller an operator suspended stands until that operator resumes it) and retries one that failed or retired — where a compaction of it is not refused, since the session, its process and everything the controller holds stay and only the transcript gets shorter.
+The project's controller holds both as tools of its own, `compact (issue, role)` and `fresh_session (issue, role)`, which name the claim by its issue and role rather than by a token the controller never sees, and a `provider-errors on <KEY>` notice is where the controller reaches for them, the compaction first for a claim whose session the provider keeps refusing and a fresh session when the claim is still refused after it, and the fresh session alone for a claim no process stands behind, which the compaction refuses by name (`skills/legion-controller`).
+The controller's compaction has the operator's effect, refusals and answer, and only the authentication differs.
+The controller's fresh session has the operator's effect and answer, but not every refusal of the operator's: the suspension and the resume it runs are the controller's own, so before it reads anything else of the claim it is refused `409 SUSPENDED_BY_OPERATOR` for a claim the operator's own suspension holds, landed or held for a turn (`claimFreshSession`, `packages/daemon/internal/api/freshsession.go`).
+Only the operator's `legion claims resume` lifts that hold.
+The controller's own claim is a case of its own: a fresh session of it is refused whatever state it is in, because the daemon's controller keeper is what starts the controller — it launches a queued one, resumes one the daemon suspended (its resume is the rule's, which an operator's suspension holds against, so a controller an operator suspended stands until that operator resumes it) and retries one that failed or retired — where a compaction of it is not refused, since the session, its process and everything the controller holds stay and only the transcript gets shorter.
 The controller cannot name itself through its own door either way, since `controller` is no role a claim token is built from, so the operator's `--claim` is the one way onto that claim.
 
 Use `legion claims forget-session` for a session that is gone rather than refused: a stopped claim's session lost with its volume, or a file session imported before its volume can be reaped.
@@ -2167,6 +2170,19 @@ The controller's `controller_notice` row of a run of provider errors stays, and 
 A held round whose architect's row is deleted stays marked told on its claims, so the earlier release tells nobody of it.
 That is why the `select` above comes first.
 
+**A queued suspend that keeps its holder's hold must lose `keepsHold`.**
+This release writes the key `keepsHold` on the `supervise` row of a production check's suspend of its checking role between looks (`SuperviseRequest.KeepsHold` in `record/outbox.go`), so that suspend takes over no suspension that holds.
+An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows no such key, so a row that carries it fails on its backoff for ever.
+Run this with the daemon stopped, before the earlier image is pinned, as the way back of `20261116234034_phase_reviewed_head` deletes the key `roundNamed`:
+
+```sql
+-- Take keepsHold off each queued supervise row.
+update outbox set payload = payload - 'keepsHold' where kind = 'supervise' and payload ? 'keepsHold';
+```
+
+It prints `UPDATE <n>`, and a rerun prints `UPDATE 0`.
+The earlier release then runs each such row as a suspend of its own, which has no such rule.
+
 **The earlier release does not hold a claim that the controller or an architect suspended, unless you move it to the operator.**
 An earlier release keeps a claim suspended against its own rules only when the operator suspended it (`suspended_by = 'operator'`, supervise's `RuleHolds` and the repair in `admit.go`), and it repairs every other suspended claim as it repairs one the daemon itself suspended.
 To keep each such claim suspended through the rollback, run this with the daemon stopped, before the earlier image is pinned:
@@ -2505,7 +2521,8 @@ A role on Claude Code, whose plugin is its pod image's own and which no install 
 What holds a round past its bound is a claim under a suspension that holds (the operator's, the controller's or an architect's, which the notice names with its holder), a pod replacement the cluster refuses, no process in the round's pod, or two pods at once,
 and the daemon reports such a round as `update-stalled`, once, after the bound has passed:
 to the architect that owns the held claim for a hold an architect placed, and to the project's controller for the rest,
-and for such a hold where that architect's claim has failed or been retired, where there is no owning architect, where the hold is over the tree root's own architect, or where its notice to that architect ends undelivered in a tree that does not linger: the claim ended before the delivery, the session does not advertise the delivery mode, the listener's NATS grant denies the forward, or the notice was queued again the most times a notice is.
+and for such a hold where that architect's claim has failed or been retired, where there is no owning architect, where the hold is over the tree root's own architect, or where its notice to that architect ends undelivered in a tree that neither lingers nor has closed: the claim ended before the delivery, the session does not advertise the delivery mode, the listener's NATS grant denies the forward, or the notice was queued again the most times a notice is.
+Such an undelivered notice reaches the controller only while at least one claim the round asked has neither failed nor retired since: where every one has, nobody is told, since nothing the round asked holds it.
 After this release deploys, move the project's controller onto this release's `skills/legion-controller`.
 The earlier playbook reads an `update-stalled` notice by its `waiting` entries, and for a role that did not answer and is not suspended it opens no ask: it sends that role the round's steps instead.
 This release sends the notice once the bound has passed whatever the roles answered, so the usual notice names roles that did not answer, and on the earlier playbook such a notice reaches no operator.
@@ -6297,8 +6314,9 @@ What the last sweep decided under the two limits is one line of `legion claims l
 A round that outlives its bound is told once, as an `update-stalled` notice, when the bound has passed and something still holds the round (`tellLateRound`):
 to the project's controller, but for a hold an architect placed, which goes to the architect that owns the held claim, and to the controller only where that architect's claim has failed or been retired, before its notice is queued or before it is delivered (`relayUpdateStalled`), where there is none, or where the hold is over the tree root's own architect (`tellUpdateStalled`, `architectHears`),
 or where the listener refuses that notice on every attempt, because the architect's session does not advertise the delivery mode or the listener's own NATS grant denies the forward, or where the notice has been queued again the most times a notice is, whatever re-held it (`relayUpdateStalled`, `reholdNotice`).
-Where that notice ends undelivered in a tree that lingers, the controller is told nothing in the architect's place.
+Where that notice ends undelivered in a tree that lingers or has closed, the controller is told nothing in the architect's place.
 The notice `relayUpdateStalled` writes leaves out of `waiting` each claim that has failed or retired since the sweep read the round, since the round does not wait for such a claim.
+Where that leaves no claim, every claim the round asked has failed or retired, nothing the round asked holds it, and the controller is told nothing either.
 What holds it is a suspension that holds over a claim the round asks — the operator's, the controller's or an architect's, each named with its holder and with who can resume it (`holdSentences`) — a `ReplacePod` the cluster refuses, no claim recording a process in the round's pod or in any pod (`roundWithNoProcessInItsPod`, `tellPodlessRound`), or claims recording two pods at once.
 Its `reason` names that hold, and the notice names the issue, the round, the pod, the drift and every claim the round asked, with that claim's state and whether it answered (`skill://legion-controller/references/escalation.md`).
 One round is told once, however many sweeps find it open.
@@ -7087,7 +7105,7 @@ each issue's pod (every role of it alike) and the image probe's.
   a projected `service_account_token` must last at least 600 s, the least the API server issues, and its `audience` may not still hold a `${…}` placeholder, which nothing expands.
   `volume_mounts` are read-only unless `read_only: false`, and may use `sub_path`.
   `service_account` is the pods' ServiceAccount (unset, pods run as the namespace's `default` ServiceAccount); it may not still hold a `${…}` placeholder, which nothing expands, as a projected token's `audience` may not.
-  Changing it reaches a running pod only by replacing it, which the item after this one describes.
+  Changing it reaches a running pod only by replacing it, which the item **A change of `runtime.kubernetes.pod.service_account`** below describes.
   A name or path that collides with Legion's own is refused at load, naming both:
   a variable the runtime, the worker image's `ENV` or every launch sets, a volume name Legion uses, or a mount at, under or above a path Legion mounts, the image owns, or a tool runs from, or `workspace-init`'s state home (`/home/legion/.local/state`, where `workspace-init` keeps the XDG state it provisions the issue under:
   no role's agent keeps its Oh My Pi state there any more
@@ -7118,7 +7136,7 @@ each issue's pod (every role of it alike) and the image probe's.
   the sweep does not replace the pod of the cache of a repository that neither the mapping nor a live issue record of the project names any more, and that pod goes when the cache's retention deletes the cache ([The repository cache](#the-repository-cache)).
   An issue pod's disk goes with its pod.
   Under the secrets broker the replacement also costs each live role its session name, until `BROKER_SESSION_ACCOUNT_PAIRS` pairs the old account with the new:
-  the broker refuses that name to the role's pod on the new account (`403 SESSION_HELD`), so the role's grants, pending requests and withheld secrets stay behind, and the setting has to be live on the broker before the change (the `BROKER_SERVICES` item below, and the item after it).
+  the broker refuses that name to the role's pod on the new account (`403 SESSION_HELD`), so the role's grants, pending requests and withheld secrets stay behind, and the setting has to be live on the broker before the change (the `BROKER_SERVICES` item below, and the item **Moving the daemon's pods to another ServiceAccount under the secrets broker**).
 
 - **Dispatch's public dashboard.**
   Every pod reaches Dispatch at `dispatch_url`, usually an in-cluster address nobody outside the cluster can open.
@@ -8097,7 +8115,7 @@ It runs no init container (`controllerPod.initContainers`): nothing on its volum
 The pod carries `legion.dev/project` and `legion.dev/role=controller` and no tree or issue label, so no tree's cleanup lists it, and the boot census holds it to exactly the one launcher those labels name and to the volume it owns.
 Under `runtime.kubernetes.agent_secrets` it is enrolled with the secrets broker as an issue pod's roles are:
 it projects the broker's token, has a key directory of its own, and its shim takes the three agent-secrets flags and its agent `AGENT_SECRETS_URL` and `AGENT_SECRETS_KEY_DIR`.
-It runs as `runtime.kubernetes.pod.controller_service_account` where the file names one, and as the operator's `runtime.kubernetes.pod.service_account`, the same account as every issue pod, where it does not, so a deployment that names no controller account runs its controller exactly as before (`controllerPod.serviceAccount`, `podTemplate` in `manifest.go`).
+It runs as `runtime.kubernetes.pod.controller_service_account` where the file names one, and as the operator's `runtime.kubernetes.pod.service_account`, the same account as every issue pod, where it does not, so a deployment that names no controller account runs its controller exactly as before (`controllerPod.serviceAccount` in `podkind.go`, `podTemplate` in `manifest.go`).
 The account a running controller pod is held to is that same one: a pod on any other, `service_account` included while the key names another, is warned of at boot and replaced at the controller's next launch, since no update round covers the controller's pod (`accountDrift`, [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)); every other pod is held to `service_account` whatever the key says.
 The image probe's pod runs as `service_account`, so the probe at boot does not check that the controller's account exists:
 create that ServiceAccount in `runtime.kubernetes.namespace` before naming it.

@@ -204,8 +204,9 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
   "under it now: wait for the ancestor to close, then release it. " +
   "The controller's read_state with no field returns a summary of the daemon's whole state — the project, admission, each " +
-  "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
-  "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
+  "capability, each repository the daemon refuses with its reason, one line per recorded issue, and under each issue " +
+  "Legion still runs its slot, hold, gate and each claim's state with its last turn times — and with issue, issues, " +
+  "phase or settings returns the full records it names; " +
   "set_status moves an issue to todo, backlog or icebox. " +
   "Move an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. " +
   "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
@@ -213,7 +214,10 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "The controller's replace_pod (issue) replaces the pod that runs the roles of an issue of its own project. The " +
   "daemon opens its update round over that pod: it asks each role in the pod to push its work and answer " +
   "ready_for_update, and it replaces the pod when each role has answered, or at the round's bound whatever the " +
-  "roles said. replace_pod is the one way the controller removes an issue pod whose workspace can hold work. The " +
+  "roles said. A suspension by the operator, the controller or an architect over a role the round asks keeps the " +
+  "pod past the bound, until a resume lifts it. The controller's own suspension counts too, so a controller that " +
+  "suspended a role and then asks replace_pod waits on itself, and the round comes back as update-stalled. " +
+  "replace_pod is the one way the controller removes an issue pod whose workspace can hold work. The " +
   "answer names the round, its reasons, and opened, which is false when a round was already open over the pod. " +
   "The daemon refuses it for an issue of another project and for an issue with no claim that it supervises " +
   "(NO_CLAIM), for an issue whose claims run no worker in a pod (NO_POD), for an issue whose pod it replaces " +
@@ -2292,6 +2296,47 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
   // A done issue's claims are retired, so its line stands alone: that is what pays for naming
   // every key.
   expect(summary).toContain("\nINFRA-146 done done\nINFRA-147 done done\n");
+});
+
+// The controller files a clear defect only on a repository both role Apps are installed on, and
+// its skill reads which repositories the daemon refuses from the summary (finding-asks.md, step 1
+// of "File a clear defect no tree owns"). No filter answers for repositories, so the summary
+// names each refused one, with the daemon's reason, after the capabilities.
+test("read_state with no field names each repository the daemon refuses, with its reason", async () => {
+  const state = legionState({
+    capabilities: [{ name: "subagents", status: "present", detail: "6 agents discovered" }],
+    repositories: {
+      owners: ["acme"],
+      mapped: [{ repo: "acme/widgets", default: true }],
+      refused: [
+        { repo: "acme/gadgets", reason: "the review App is not installed on acme/gadgets" },
+        { repo: "other/tools", reason: "the implement App is not installed on other/tools" },
+      ],
+      withoutWebhookApp: [],
+      caches: [],
+    },
+  });
+  const { daemon } = recordingDaemon({ state });
+  const result = await controllerTool(daemon, []).execute(
+    "",
+    { op: "read_state" },
+    undefined,
+    undefined,
+    context("ses_controller")
+  );
+  const [block] = result.content;
+  const summary = block !== undefined && block.type === "text" ? block.text : "";
+
+  expect(summary).toContain(
+    [
+      "\ncapability subagents present",
+      "repository refused acme/gadgets the review App is not installed on acme/gadgets",
+      "repository refused other/tools the implement App is not installed on other/tools",
+      "issues 0",
+    ].join("\n")
+  );
+  // A served repository is no refusal, so it has no line of its own.
+  expect(summary).not.toContain("acme/widgets");
 });
 
 test("read_state's filters answer full records, and name what they cannot select", async () => {

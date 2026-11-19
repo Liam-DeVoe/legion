@@ -156,7 +156,8 @@ type SummaryClaim = NonNullable<LegionIssue["architect"]>;
 /** The first line of every summary: what the lines below it are, since they are not JSON. */
 const SUMMARY_LEGEND =
   "legion state summary. Lines: project; admission cap; active/waiting/blocked; " +
-  "capability <name> <status> [detail] [config <legion.yaml line>]; issues <count>; then " +
+  "capability <name> <status> [detail] [config <legion.yaml line>]; " +
+  "repository refused <repo> <reason>; issues <count>; then " +
   "<KEY> <phase> <status> for every issue the daemon records, and under each issue Legion still " +
   "runs its slot, hold, gate <current> approved <version|none> and <role> <claim state> " +
   "<last turn start> <last turn end> lines, - for a value the daemon has none for. " +
@@ -164,8 +165,9 @@ const SUMMARY_LEGEND =
 
 /**
  * The whole state as the controller reads it between its filtered reads: the project, the
- * admission lists, each capability's status, one line per recorded issue, and under each issue
- * Legion still runs its slot, its hold, its gate and its claims.
+ * admission lists, each capability's status, each repository the daemon refuses and why, one line
+ * per recorded issue, and under each issue Legion still runs its slot, its hold, its gate and its
+ * claims.
  *
  * Line-oriented, not JSON: the INFRA deployment's state is about 160 KB of JSON for the 92 issues
  * it records, and the tool's output reaches the controller cut at about 41 KB
@@ -193,6 +195,11 @@ function stateSummary(state: LegionState): string {
     const detail = capability.status === "present" ? "" : ` ${capability.detail}`;
     const config = capability.configLine === undefined ? "" : ` config ${capability.configLine}`;
     lines.push(`capability ${capability.name} ${capability.status}${detail}${config}`);
+  }
+  for (const refused of state.repositories.refused) {
+    // The controller files a clear defect only on a repository both role Apps are installed on
+    // (finding-asks.md), and no filter answers for repositories, so each refusal is named here.
+    lines.push(`repository refused ${refused.repo} ${refused.reason}`);
   }
   const keys = Object.keys(state.issues).sort();
   lines.push(`issues ${keys.length}`);
@@ -429,8 +436,9 @@ export function createLegionTool(deps: {
         "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
         "under it now: wait for the ancestor to close, then release it. " +
         "The controller's read_state with no field returns a summary of the daemon's whole state — the project, admission, each " +
-        "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
-        "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
+        "capability, each repository the daemon refuses with its reason, one line per recorded issue, and under each issue " +
+        "Legion still runs its slot, hold, gate and each claim's state with its last turn times — and with issue, issues, " +
+        "phase or settings returns the full records it names; " +
         "set_status moves an issue to todo, backlog or icebox. " +
         "Move an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. " +
         "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
@@ -438,7 +446,10 @@ export function createLegionTool(deps: {
         "The controller's replace_pod (issue) replaces the pod that runs the roles of an issue of its own project. The " +
         "daemon opens its update round over that pod: it asks each role in the pod to push its work and answer " +
         "ready_for_update, and it replaces the pod when each role has answered, or at the round's bound whatever the " +
-        "roles said. replace_pod is the one way the controller removes an issue pod whose workspace can hold work. The " +
+        "roles said. A suspension by the operator, the controller or an architect over a role the round asks keeps the " +
+        "pod past the bound, until a resume lifts it. The controller's own suspension counts too, so a controller that " +
+        "suspended a role and then asks replace_pod waits on itself, and the round comes back as update-stalled. " +
+        "replace_pod is the one way the controller removes an issue pod whose workspace can hold work. The " +
         "answer names the round, its reasons, and opened, which is false when a round was already open over the pod. " +
         "The daemon refuses it for an issue of another project and for an issue with no claim that it supervises " +
         "(NO_CLAIM), for an issue whose claims run no worker in a pod (NO_POD), for an issue whose pod it replaces " +

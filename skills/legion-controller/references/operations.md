@@ -213,8 +213,8 @@ nothing holds the round.
 **When.** Re-run only the failed jobs of a run, never a whole run. Re-run them only for an
 infrastructure failure that the failed job's log shows: a lost runner, or a network error. Never
 re-run to test a theory. Never start a run for any other reason on a head that a run tested
-already with the same inputs: that verdict exists, so read it and its logs. These rules are the
-`developing-ci` skill's, section 7. Read the failed job's log first:
+already with the same inputs: that verdict exists, so read it and its logs. A deployment may ship
+a `developing-ci` skill with more rules than these. Read the failed job's log first:
 
 ```sh
 gh run view <id> --log-failed --repo <owner>/<repo>

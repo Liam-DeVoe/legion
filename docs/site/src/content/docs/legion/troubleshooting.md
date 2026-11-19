@@ -516,8 +516,8 @@ failure under the cause word `provider_error`, with the same sentence as its `de
 **After six turns of one claim in a row have ended in a provider error**, the issue's architect
 and the project's controller are each told once, as `provider-errors on <KEY>`, with the run,
 the model and the cause
-(`supervise: a run of turns that ended in a provider error; the controller is told, and an
-architect unless the claim is its tree root's architect's`). A run of the tree root's architect's
+(`supervise: a run of turns that ended in a provider error; it is handed to ProviderErrorRunReached`).
+A run of the tree root's architect's
 own claim is told to the controller alone, and a run of a child's own architect's claim to the
 architect above that child and the controller. Nothing is held and nothing is stopped by that count: the task is still kept
 and still sent again. The run
@@ -996,7 +996,9 @@ That bound is 30 minutes by default, and the configuration refuses a value under
 
 The daemon sends the worker its work again, chosen by the phase entry the issue's phase row names for the role: the work of that entry where the worker's claim was never given it, and the phase's task again where the claim is on that entry already.
 The notice says what the daemon wrote, which is that start row, so the worker is coming back and there is nothing to do.
-A suspension the operator, the controller or an architect holds over the claim is the one thing that refuses the start when the outbox runs it, and the notice says so as well: resume the claim, or have the architect message the role and the controller start its session again with `fresh_session`.
+A suspension the operator, the controller or an architect holds over the claim is the one thing that refuses the start when the outbox runs it, and the notice says so as well.
+Resume the claim, or have the architect message the role and the controller start its session again with `fresh_session`.
+Under your own suspension, the daemon refuses the controller's `fresh_session` with `409 SUSPENDED_BY_OPERATOR`, so lift that hold first with your own `legion claims resume`.
 
 The daemon writes the same record to its own log, as `workflow: a phase worker nothing will prompt was found silent; its architect is told`, so an operator finds every silence without a Dispatch notice.
 
