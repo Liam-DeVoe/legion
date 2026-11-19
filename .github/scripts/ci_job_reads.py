@@ -56,7 +56,7 @@ import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
-from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, load_repository_yaml, run, script_lines
+from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, run
 from ci_filter_coverage import at as at_in, gate as gate_in
 from go_build_tags import go_skips_dir, tag_sets
 
@@ -353,6 +353,28 @@ def apt_cache(job, install_step):
     )
 
 
+# The step every Go job of a required workflow runs after its module-cache restore and before its
+# first go step: go-fetch.sh's file mode over the job's fetch file, whose lines name what every go
+# step of the job loads. The job runs every other go step with the module proxy off
+# (.github/scripts/go_offline_jobs.py holds it to that), so the fetch is what decides which
+# modules those steps find, and a change to the script or to the file must select the job.
+GO_FETCH = ".github/scripts/go-fetch.sh"
+FETCH_STEP = "Fetch the modules this job's go steps load"
+FETCH_FILES = ".github/go-fetch"
+
+
+def fetch_file(name):
+    """The fetch file of a job (or of a job of a called workflow) named `name`."""
+    return f"{FETCH_FILES}/{name}.txt"
+
+
+def go_fetch(job, name, workflow=""):
+    """The fetch step's reads: go-fetch.sh, which it runs, and the fetch file whose lines it runs."""
+    return reads(
+        (GO_FETCH, f"{at(job, FETCH_STEP, workflow)} runs it"),
+        (fetch_file(name), f"{at(job, FETCH_STEP, workflow)} runs its lines (go-fetch.sh file)"),
+    )
+
 
 CI_SELF = reads((CI, "a job reads its own definition"))
 
@@ -494,46 +516,42 @@ def legion_build(why):
 # The listener's Go clients listenerwire/clients_test.go's TestListenerClientsUseListenerwire
 # holds to listenerwire with wirecheck.Check, by the module directory each go list runs in, and the
 # load-test package TestTheLoadTestCallsTheListenerOnlyThroughItsClient lists. Both listings run
-# with GOPROXY=off, so envoy-go-checks fetches their modules in a step before the test, and
-# ci-caches.yaml's go-envoy fill fetches the same so that a filled entry leaves the step nothing
-# to download. This is the one list of them: the RULES rows of clients_test.go are built from it,
-# and hold_listener_clients() holds the test's own table, the fetch step's script and the fill's
-# lines to it.
+# with GOPROXY=off, so envoy-go-checks' fetch step fetches their modules before the test, from two
+# lines of its fetch file, which ci-caches.yaml's go-envoy fill runs too, so that a filled entry
+# leaves the step nothing to download. This is the one list of them: the RULES rows of
+# clients_test.go are built from it, and hold_listener_clients() holds the test's own table and
+# the fetch file's lines to it (check-ci-filters.sh's rule 21 holds the fill to the fetch file).
 LISTENER_CLIENTS_TEST = f"{ENVOY}/listenerwire/clients_test.go"
 LISTENER_CLIENTS = {
     ENVOY: ["./internal/broker/wake", "./internal/dispatch/envoy", "./loadtest/listenerclient", "./internal/testnats/cmd/refillrig"],
     DAEMON: ["./internal/notify", "./internal/controller"],
 }
 LISTENER_LOADTEST = "./loadtest"
-LISTENER_FETCH_STEP = "Fetch the modules of the listener clients the wire test lists"
-LISTENER_FILL_STEP = "Build the listener and natsd, and fetch the modules of the other commands the readers build"
-
-
-def listener_fetch_lines(script, here):
-    """The go-fetch.sh deps line of each module of LISTENER_CLIENTS, the envoy module's with the
-    load-test package after its clients, as a step whose directory is `here` writes them, running
-    go-fetch.sh by the path `script`."""
-    return [f"{script} deps {os.path.relpath(module, here)} "
-            + " ".join(packages + ([LISTENER_LOADTEST] if module == ENVOY else []))
-            for module, packages in LISTENER_CLIENTS.items()]
-
-
-LISTENER_FETCH_SCRIPT = "\n".join(listener_fetch_lines(".github/scripts/go-fetch.sh", "."))
-LISTENER_FILL_LINES = listener_fetch_lines("../../.github/scripts/go-fetch.sh", ENVOY)
+LISTENER_FETCH_FILE = fetch_file("envoy-go-checks")
+# The fetch file's line of each module of LISTENER_CLIENTS, the envoy module's with the load-test
+# package after its clients, as go-fetch.sh's file mode reads it: `deps <module> <packages>`.
+LISTENER_FETCH_LINES = [f"deps {module} " + " ".join(packages + ([LISTENER_LOADTEST] if module == ENVOY else []))
+                        for module, packages in LISTENER_CLIENTS.items()]
 LISTENER_TABLE_ROW = re.compile(r'\{dir: "([^"]+)", pkgs: \[\]string\{([^}]*)\}\}')
 LISTENER_LOADTEST_LISTING = re.compile(r'goList\(t, "([^"]+)", [^\n]*"\.\./loadtest"\)')
 
 
+def fetch_file_lines(path):
+    """A fetch file's commands as go-fetch.sh's file mode reads them: each line with what follows
+    a `#` cut off and its words joined by one space, blank lines aside."""
+    return [" ".join(line.split("#", 1)[0].split()) for line in Path(path).read_text().splitlines()
+            if line.split("#", 1)[0].strip()]
+
+
 def hold_listener_clients():
-    """Refuse a listener-clients list that its four other places no longer follow: the test's own
+    """Refuse a listener-clients list that its other places no longer follow: the test's own
     table (each row's directory, resolved from listenerwire, and its packages, in order), the
-    package the test's load-test listing fetches, envoy-go-checks' fetch step (its whole script),
-    and ci-caches.yaml's go-envoy fill (each line listener_fetch_lines builds, whole, in the step
-    named LISTENER_FILL_STEP). Held to nothing, a client added to the test and to no fetch passes
-    every check and fails the test in CI only when the cache lacks its modules, and a client
-    dropped from the fetch and the fill leaves that test downloading on the first run after its
-    modules move; neither the filter check nor the test sees either. The files are read as text and
-    YAML, as this script runs where no Go toolchain is guaranteed."""
+    package the test's load-test listing fetches, and envoy-go-checks' fetch file (each line
+    LISTENER_FETCH_LINES holds, whole, as a command of it). Held to nothing, a client added to the
+    test and to no fetch passes every check and fails the test in CI only when the cache lacks its
+    modules, and a client dropped from the fetch file leaves that test downloading on the first
+    run after its modules move; neither the filter check nor the test sees either. The files are
+    read as text, as this script runs where no Go toolchain is guaranteed."""
     test = Path(LISTENER_CLIENTS_TEST).read_text()
     table = {os.path.normpath(os.path.join(Path(LISTENER_CLIENTS_TEST).parent, directory)):
              re.findall(r'"([^"]+)"', packages)
@@ -541,32 +559,22 @@ def hold_listener_clients():
     if table != LISTENER_CLIENTS:
         raise ValueError(f"{LISTENER_CLIENTS_TEST}'s TestListenerClientsUseListenerwire checks {table or 'no table'} "
                          f"(its rows' dir resolved from listenerwire), and LISTENER_CLIENTS lists {LISTENER_CLIENTS}: "
-                         f"envoy-go-checks fetches, and ci-caches.yaml's go-envoy fill fills, LISTENER_CLIENTS, so a "
-                         f"client the test checks and the list leaves out is fetched by no step, and one the list "
-                         f"holds and the test no longer checks is fetched for nothing. Make the two the same")
+                         f"envoy-go-checks' fetch file, which ci-caches.yaml's go-envoy fill runs too, fetches "
+                         f"LISTENER_CLIENTS, so a client the test checks and the list leaves out is fetched by no "
+                         f"step, and one the list holds and the test no longer checks is fetched for nothing. Make "
+                         f"the two the same")
     loadtest = LISTENER_LOADTEST_LISTING.findall(test)
     if loadtest != [LISTENER_LOADTEST]:
         raise ValueError(f"{LISTENER_CLIENTS_TEST} lists ../loadtest fetching {loadtest or 'nothing this check reads'}, "
-                         f"and LISTENER_LOADTEST is {LISTENER_LOADTEST}: the fetch step and the fill fetch "
-                         f"LISTENER_LOADTEST's modules for that listing, so the two must name one package")
-    steps = [step for job in (load_repository_yaml(Path(job_file("envoy-go-checks"))) or {}).get("jobs", {}).values()
-             for step in job.get("steps") or [] if step.get("name") == LISTENER_FETCH_STEP]
-    if [str(step.get("run", "")).rstrip() for step in steps] != [LISTENER_FETCH_SCRIPT]:
-        raise ValueError(f"{job_file('envoy-go-checks')} has {len(steps)} steps named {LISTENER_FETCH_STEP!r}, "
-                         f"running {[str(step.get('run', '')).rstrip() for step in steps]}, and LISTENER_CLIENTS makes "
-                         f"it one, running {LISTENER_FETCH_SCRIPT!r}: the step fetches before the test what the "
-                         f"test lists with GOPROXY=off, so a client it leaves out fails the test on an empty cache. "
-                         f"Write the step as this list builds it, or change the list and the test together")
-    fills = [script_lines(str(step.get("run", "")))
-             for job in (load_repository_yaml(Path(CACHE_WORKFLOW)) or {}).get("jobs", {}).values()
-             for step in job.get("steps") or [] if step.get("name") == LISTENER_FILL_STEP]
-    missing = [line for line in LISTENER_FILL_LINES if len(fills) != 1 or line not in fills[0]]
+                         f"and LISTENER_LOADTEST is {LISTENER_LOADTEST}: the fetch file fetches LISTENER_LOADTEST's "
+                         f"modules for that listing, so the two must name one package")
+    commands = fetch_file_lines(LISTENER_FETCH_FILE)
+    missing = [line for line in LISTENER_FETCH_LINES if line not in commands]
     if missing:
-        raise ValueError(f"{CACHE_WORKFLOW} has {len(fills)} steps named {LISTENER_FILL_STEP!r}, and LISTENER_CLIENTS "
-                         f"makes the one go-envoy fill hold {missing}, line by line: a filled entry must leave "
-                         f"envoy-go-checks' {LISTENER_FETCH_STEP!r} nothing to download, so the fill fetches what "
-                         f"that step does. Write the line as this list builds it, or change the list and the test "
-                         f"together")
+        raise ValueError(f"{LISTENER_FETCH_FILE} runs {commands}, and LISTENER_CLIENTS makes it run {missing} too, "
+                         f"each a line of its own: envoy-go-checks' fetch step fetches with it before the test what "
+                         f"the test lists with GOPROXY=off, so a client it leaves out fails the test on an empty "
+                         f"cache. Write the lines as this list builds them, or change the list and the test together")
 
 
 hold_listener_clients()
@@ -1079,13 +1087,12 @@ SCHEMA_SCRIPT = (
     "# shellcheck disable=SC2016 # ${VERSION} is Pulumi's placeholder, not a shell expansion\n"
     """PULUMI_BACKEND_URL="file://$RUNNER_TEMP" PULUMI_SKIP_UPDATE_CHECK=true pulumi package get-schema "$RUNNER_TEMP/pr" | jq -e '.version == "1.2.3" and .pluginDownloadURL == "https://github.com/cybermonklabs/legion/releases/download/envoy-infra-v${VERSION}"'"""
 )
-# envoy-smoke's step that fetches, before the live tests, the modules they build and resolve
-# (go-fetch.sh, whose deps mode lists the plugin's packages and whose pulumi-consumer mode runs
-# package add and a build of host/testdata/sdk-consumer): its one go command of its own is the
-# plugin's build, made as pulumitest.Plugin builds it.
-SMOKE_FETCH_STEP = "Fetch the modules the live tests build"
+# envoy-smoke's step that resolves, before the live tests, what TestLiveGoConsumersCanUseTheSDK
+# reads beyond the job's fetch file (go-fetch.sh's pulumi-consumer mode runs package add and a
+# build of host/testdata/sdk-consumer): its one go command of its own is the plugin's build, made
+# as pulumitest.Plugin builds it.
+SMOKE_FETCH_STEP = "Fetch the modules the SDK consumer's resolution reads"
 SMOKE_FETCH_SCRIPT = (
-    ".github/scripts/go-fetch.sh deps packages/envoy/infra ./cmd/pulumi-resource-envoy-infra\n"
     'plugin="$RUNNER_TEMP/sdk-consumer-plugin/pulumi-resource-envoy-infra"\n'
     'go -C packages/envoy/infra build -ldflags "-X main.version=0.0.1" -o "$plugin" ./cmd/pulumi-resource-envoy-infra\n'
     '.github/scripts/go-fetch.sh pulumi-consumer packages/envoy/infra/host/testdata/sdk-consumer "$plugin"'
@@ -1675,9 +1682,6 @@ DATABASE_SKIPS_RUN = f"{DATABASE_SKIPS_SCRIPT} --timeout {UNIT_TEST_TIMEOUT}"
 DATABASE_SKIPS_TEST_STEP = "Test the database skip counter"
 DATABASE_SKIPS_TEST = "packages/envoy/scripts/database-skips.test.sh"
 DATABASE_SKIPS_TEST_PKGS = ["./internal/broker/api/", "./cmd/broker/", "./internal/dispatch/api/"]
-# The step before it, which fetches the modules of those packages and of their tests: the test
-# runs every go command with GOPROXY=off.
-DATABASE_SKIPS_FETCH_STEP = "Fetch the modules of the packages the skip counter's test runs"
 
 
 def hold_database_skips_packages():
@@ -2334,6 +2338,12 @@ SCRIPT_TEST_GATES = [
     harness("go_fetch_test", "Test the fetch the Go jobs run before their tests", f"{SCRIPTS}/go-fetch.test.sh", [
         (f"{SCRIPTS}/go-fetch.sh", "the script under test"),
     ]),
+    # It also runs the rule over this repository's own tree and prints the result, which judges
+    # nothing here, so the tree's workflows are no read of this step.
+    harness("go_offline_jobs_test", "Test the rule that every required Go job reads the module cache alone",
+            f"{SCRIPTS}/go-offline-jobs.test.sh", [
+        (f"{SCRIPTS}/go_offline_jobs.py", "the rule under test"),
+    ]),
     harness("go_build_offline_test", "Test the offline Go build the test launchers run",
             f"{SCRIPTS}/go-build-offline.test.sh", [
         (GO_BUILD_OFFLINE, "the script under test: go-build-offline.test.sh links it into a fixture repository"),
@@ -2496,7 +2506,8 @@ GATES = [
                  tags="e2e", mode="vet"),
     ], exact=[
         darwin_vet("typecheck", DAEMON_DARWIN_VET, DAEMON),
-    ], reads=setup_go("typecheck", f"{DAEMON}/go.mod") + darwin_vet_reads("typecheck", DAEMON_DARWIN_VET, DAEMON)),
+    ], reads=setup_go("typecheck", f"{DAEMON}/go.mod") + darwin_vet_reads("typecheck", DAEMON_DARWIN_VET, DAEMON)
+      + go_fetch("typecheck", "typecheck")),
 
     # The Go daemon's own suite, in a job of its own (.github/workflows/ci-job-daemon-go.yaml):
     # the plain step over every package of the module but the three concurrent ones and the text
@@ -2549,7 +2560,6 @@ GATES = [
         ]),
     ], reads=reads(
         ("scripts/e2e/stage1-skeleton.sh", at("daemon-go", "Stage 1 live proof")),
-        (".github/scripts/go-fetch.sh", f"{at('daemon-go', 'Fetch the modules of the commands the tests build')} runs it"),
         ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:139 sources it"),
         ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh:93 sources it"),
         ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh:102 sources it"),
@@ -2567,7 +2577,7 @@ GATES = [
         (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} consts Image, SkippingImage"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const HubImage"),
     ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")
-      + apt_cache("daemon-go", "Install tmux")),
+      + apt_cache("daemon-go", "Install tmux") + go_fetch("daemon-go", "daemon-go")),
 
     # The plugin-pack job: the three tests of internal/daemon in PLUGIN_PACK_TESTS, which the
     # daemon-go race step skips by name - the one that packs the two plugin releases and loads
@@ -2587,7 +2597,6 @@ GATES = [
                 "packs packages/pi-envoy and packages/pi-legion with `bun pm pack`, which runs their prepack")
         for g in PACK_READS
     ] + reads(
-        (".github/scripts/go-fetch.sh", f"{at(PLUGIN_PACK_JOB, 'Fetch the modules of the commands the tests build')} runs it"),
         ("packages/envoy-client/scripts/build-dispatch-cli.sh", "scripts/pi-plugin-prepack.sh:96, run by the pack "
                                                                 "in promptreferences_omp_test.go:228"),
         # The prompts this checkout ships, laid out for the agent-model probe as the release lays
@@ -2601,7 +2610,7 @@ GATES = [
         ("skills/**", f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: internal/daemon/agentmodels_omp_test.go:175 "
                       "prepack stages skills/<name>"),
     ) + install_jj(PLUGIN_PACK_JOB) + install_omp(PLUGIN_PACK_JOB)
-      + setup_go(PLUGIN_PACK_JOB, f"{DAEMON}/go.mod") + bun_job(PLUGIN_PACK_JOB)),
+      + setup_go(PLUGIN_PACK_JOB, f"{DAEMON}/go.mod") + bun_job(PLUGIN_PACK_JOB) + go_fetch(PLUGIN_PACK_JOB, "plugin-pack")),
 
     # The private-name port harness, in a job of its own: one step, which builds the `legion`
     # binary of this head and holds the rules that binary carries to the frozen shell script's
@@ -2610,13 +2619,11 @@ GATES = [
     # The comment on PRIVATE_NAMES_PORT_BUILD above says why the step is a job.
     gate("private_names_port", PRIVATE_NAMES_PORT_JOB, runs=[PRIVATE_NAMES_PORT_BUILD], reads=reads(
         (f"{SCRIPTS}/check-private-names-port.test.sh", at(PRIVATE_NAMES_PORT_JOB, PRIVATE_NAMES_PORT_STEP)),
-        (".github/scripts/go-fetch.sh",
-         f"{at(PRIVATE_NAMES_PORT_JOB, 'Fetch the modules of the legion binary the harness builds')} runs it"),
         (TEST_LIB, "check-private-names-port.test.sh:63 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh",
          "the frozen script every case of check-private-names-port.test.sh runs beside the "
          "engine, symlinked into each fixture (:203,411,457,546)"),
-    ) + setup_go(PRIVATE_NAMES_PORT_JOB, f"{DAEMON}/go.mod")),
+    ) + setup_go(PRIVATE_NAMES_PORT_JOB, f"{DAEMON}/go.mod") + go_fetch(PRIVATE_NAMES_PORT_JOB, "private-names-port")),
 
     # What is left of the test job once the daemon's Go suite and the private-name port harness
     # have jobs of their own: the Claude Code plugin build, the changelog fold, about thirty
@@ -2678,7 +2685,7 @@ GATES = [
     ) + envoy_client_dep("scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:17-22, envoy-bridge.ts:11; "
                          "scripts/dispatch/ask-census.ts:10-18 (tsc -p scripts/dispatch); scripts/priorities-seed.ts:30-39 "
                          "and priorities-seed.test.ts:2")
-      + setup_go("test", f"{DAEMON}/go.mod")
+      + setup_go("test", f"{DAEMON}/go.mod") + go_fetch("test", "test")
       + biome(at("test", "Lint the Dispatch census script")) + bun_job("test")),
 
     # The session message-wait suite, in a job of its own: it is the one test of the whole test
@@ -2758,7 +2765,7 @@ GATES = [
             ("internal/broker/approval", "routes.go:668 g.in of the pageAnswerers directory named at :34, which parses it at bodies.go:26"),
             ("internal/broker/airlockproxy", "recorder.go:13,78"),
         ) for path in files_but_tests(f"{ENVOY}/{directory}")],
-    ) + setup_go(DOCS_JOB, f"{DAEMON}/go.mod", DOCS_SITE)
+    ) + setup_go(DOCS_JOB, f"{DAEMON}/go.mod", DOCS_SITE) + go_fetch(DOCS_JOB, "docs", DOCS_SITE)
       + bun_job(DOCS_JOB, DOCS_SITE) + CI_SELF + DOCS_SITE_SELF, workflow=CI),
 
     gate("contracts", "contracts", reads=reads(
@@ -2896,11 +2903,10 @@ GATES = [
         ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:6 imports scripts/e2e/lib/script-functions; rig.sh:275 sources scripts/e2e/lib/rig.sh"),
         (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1168-1170 copies .omp-pin"),
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run (:34-43)"),
-        (".github/scripts/go-fetch.sh", f"{at('pi-legion', 'Fetch the modules of the daemon packages daemon-pane.go imports')} runs it"),
     ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                          "import @legion/envoy-client/*")
       + install_jj("pi-legion") + install_omp("pi-legion") + setup_go("pi-legion", f"{DAEMON}/go.mod")
-      + bun_job("pi-legion")),
+      + go_fetch("pi-legion", "pi-legion") + bun_job("pi-legion")),
 
     # The dashboard's and the proof editor's fast checks (ci.yaml's comment on dispatch-ui says
     # what they are). No go command runs here.
@@ -3042,6 +3048,10 @@ GATES = [
                          "packages/dispatch/e2e/inbox-cli.e2e.ts:328 runs")
       + setup_go(BROWSER_BINARIES, f"{ENVOY}/go.mod", BROWSER_SITE)
       + setup_go(BROWSER_MP, f"{ENVOY}/go.mod", BROWSER_SITE) + bun_job(BROWSER_SHARD, BROWSER_SITE)
+      + go_fetch(BROWSER_BINARIES, "dispatch-browser-binaries", BROWSER_SITE)
+      + go_fetch(BROWSER_MP, "dispatch-browser-multiprocess", BROWSER_SITE)
+      + go_fetch(BROWSER_EMBEDDER, "dispatch-browser-embedder", BROWSER_SITE)
+      + go_fetch(BROWSER_VISUAL, "dispatch-browser-visual", BROWSER_SITE)
       + CI_SELF + BROWSER_SITE_SELF, workflow=CI),
 
     gate("claude_envoy", "claude-envoy", reads=CLAUDE_ENVOY_JOB + reads(
@@ -3124,8 +3134,8 @@ GATES = [
         (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go', DATABASE_SKIPS_STEP)} runs it, and "
                                 f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it and copies it"),
         (DATABASE_SKIPS_TEST, f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it"),
-        (".github/scripts/go-fetch.sh", f"{at('envoy-go', DATABASE_SKIPS_FETCH_STEP)} runs it"),
-    ) + ceiling_reads("envoy-go") + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go")),
+    ) + ceiling_reads("envoy-go") + setup_go("envoy-go", f"{ENVOY}/go.mod") + go_fetch("envoy-go", "envoy-go")
+      + bun_job("envoy-go")),
 
     # envoy-go's fast half: its format and generated-code checks, the shell-script tests,
     # the vet of the module as darwin compiles it, and the build and pack of the envoy commands
@@ -3175,8 +3185,6 @@ GATES = [
         darwin_vet("envoy-go-checks", ENVOY_DARWIN_VET, ENVOY),
     ], reads=reads(
         (f"{ENVOY}/**", f"{at('envoy-go-checks', 'Check Go formatting')}: gofmt -l . in packages/envoy reads every .go file under it, infra included; the script tests below live here too"),
-        (".github/scripts/go-fetch.sh", f"{at('envoy-go-checks', 'Fetch the modules of the listener clients the wire test lists')} "
-                                        f"and {at('envoy-go-checks', 'Fetch the helm the cluster test renders with')} run it"),
         ("packages/contracts/scripts/gen-go.ts", f"{at('envoy-go-checks', 'Check Go contracts are generated from the shared schema')} (packages/contracts/package.json check:go)"),
         ("packages/contracts/schemas/**", "packages/contracts/scripts/gen-go.ts's envelopeFile and blockSchemaFile read schemas/"),
         # The pinned step above compares the emitter's bytes with this file, so an edit of it alone
@@ -3242,6 +3250,7 @@ GATES = [
                  "spec-check guard reads every file under it")
           for glob in (".github/workflows/**", ".github/actions/**", ".github/scripts/**", "scripts/**")],
     ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks")
+      + go_fetch("envoy-go-checks", "envoy-go-checks")
       + darwin_vet_reads("envoy-go-checks", ENVOY_DARWIN_VET, ENVOY)),
 
 
@@ -3270,8 +3279,8 @@ GATES = [
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: consts Image, HubImage"),
         (f"{ENVOY}/internal/testpg/testpg.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: const Image"),
         (TAGGED_TESTS, f"{at('envoy-infra-go', INFRA_NATSLIVE_STEP)} takes each call's -run from it"),
-        (".github/scripts/go-fetch.sh", f"{at('envoy-infra-go', 'Fetch the tools and modules the tests run and build')} runs it"),
-    ) + setup_go("envoy-infra-go", f"{INFRA}/go.mod") + darwin_vet_reads("envoy-infra-go", INFRA_DARWIN_VET, INFRA)),
+    ) + setup_go("envoy-infra-go", f"{INFRA}/go.mod") + go_fetch("envoy-infra-go", "envoy-infra-go")
+      + darwin_vet_reads("envoy-infra-go", INFRA_DARWIN_VET, INFRA)),
 
     # The text-check job: one `go test` of each module's text checks, in that module's own
     # directory, the Dispatch API's source guards by name, and the supervise table's two pure
@@ -3298,9 +3307,7 @@ GATES = [
             (DAEMON, [f"./{SUPERVISE_TABLE_PACKAGE}/"],
              f"go test -run of the table's two pure pins in {SUPERVISE_TABLE_PACKAGE}", {}),
         ]),
-    ], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod") + reads(
-        (".github/scripts/go-fetch.sh", f"{at(TEXT_CHECK_JOB, 'Fetch the modules the infra text checks list')} runs it"),
-    )),
+    ], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod") + go_fetch(TEXT_CHECK_JOB, "text-checks")),
 
     # The lane's three jobs: each step's text and packages come from ENVOY_RACE_LANE, which the
     # envoy-go unit step and its plain companion are built from too. Two steps are not race_step's
@@ -3310,7 +3317,8 @@ GATES = [
     # (dispatch://INFRA-1085), so its gate pins that whole line while the lane table still names
     # the package, which is what keeps it out of the unit step.
     gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")],
-         reads=ceiling_reads("envoy-go-race") + setup_go("envoy-go-race", f"{ENVOY}/go.mod")),
+         reads=ceiling_reads("envoy-go-race") + setup_go("envoy-go-race", f"{ENVOY}/go.mod")
+         + go_fetch("envoy-go-race", "envoy-go-race")),
 
     gate("envoy_go_race_api", "envoy-go-race-api", runs=[ceiling_run("envoy-go-race-api")], exact=[
         pinned_step("envoy-go-race-api", RACE_API.step, ENVOY, RACE_API_SCRIPT, [
@@ -3319,7 +3327,8 @@ GATES = [
         ]),
     ], reads=reads(
         (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go-race-api', RACE_API.step)} runs the package through it"),
-    ) + ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")),
+    ) + ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")
+      + go_fetch("envoy-go-race-api", "envoy-go-race-api")),
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", runs=[ceiling_run("envoy-go-race-docs")], exact=[
         pinned_step("envoy-go-race-docs", RACE_DOCS_STEP, ENVOY, RACE_DOCS_SCRIPT, [
@@ -3327,7 +3336,8 @@ GATES = [
         ]),
     ], reads=reads(
         (".github/scripts/race_memory.py", f"{at('envoy-go-race-docs', RACE_DOCS_STEP)} runs the package under it"),
-    ) + ceiling_reads("envoy-go-race-docs") + setup_go("envoy-go-race-docs", f"{ENVOY}/go.mod")),
+    ) + ceiling_reads("envoy-go-race-docs") + setup_go("envoy-go-race-docs", f"{ENVOY}/go.mod")
+      + go_fetch("envoy-go-race-docs", "envoy-go-race-docs")),
 
     # A second gate on envoy_go_race_docs: this job runs the same package, so it reads that
     # closure and no other, and check-ci-filters.sh keys a claim by (job, step), so the two gates
@@ -3336,7 +3346,8 @@ GATES = [
         pinned_step("envoy-go-docs-finalizers", FINALIZERS_STEP, ENVOY, FINALIZERS_SCRIPT, [
             (ENVOY, ["./internal/dispatch/docs/"], "go test -v -count=1 -timeout 34m ./internal/dispatch/docs/", {}),
         ]),
-    ], reads=ceiling_reads("envoy-go-docs-finalizers") + setup_go("envoy-go-docs-finalizers", f"{ENVOY}/go.mod")),
+    ], reads=ceiling_reads("envoy-go-docs-finalizers") + setup_go("envoy-go-docs-finalizers", f"{ENVOY}/go.mod")
+      + go_fetch("envoy-go-docs-finalizers", "envoy-go-docs-finalizers")),
 
     gate("dispatch_memory", "dispatch-memory", runs=[ceiling_run("dispatch-memory")], exact=[
         pinned_step("dispatch-memory", MEMORY_STEP, ENVOY, MEMORY_SCRIPT, [
@@ -3344,7 +3355,8 @@ GATES = [
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('dispatch-memory', MEMORY_STEP)} takes its -run from it"),
-    ) + ceiling_reads("dispatch-memory") + setup_go("dispatch-memory", f"{ENVOY}/go.mod")),
+    ) + ceiling_reads("dispatch-memory") + setup_go("dispatch-memory", f"{ENVOY}/go.mod")
+      + go_fetch("dispatch-memory", "dispatch-memory")),
 
     gate("dispatch_multiprocess", "dispatch-multiprocess", runs=[ceiling_run("dispatch-multiprocess")], exact=[
         pinned_step("dispatch-multiprocess", DISPATCH_MP_STEP, ENVOY, DISPATCH_MP_SCRIPT, [
@@ -3352,7 +3364,8 @@ GATES = [
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('dispatch-multiprocess', DISPATCH_MP_STEP)} takes its -run from it"),
-    ) + ceiling_reads("dispatch-multiprocess") + setup_go("dispatch-multiprocess", f"{ENVOY}/go.mod")),
+    ) + ceiling_reads("dispatch-multiprocess") + setup_go("dispatch-multiprocess", f"{ENVOY}/go.mod")
+      + go_fetch("dispatch-multiprocess", "dispatch-multiprocess")),
 
     # Its "Build the Dispatch server" step names an output (-o), which the simple form does not
     # reduce, so the step is pinned whole, as dispatch-browser-multiprocess's is. The Go step is a
@@ -3385,7 +3398,8 @@ GATES = [
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds the server's port through it"),
         (GO_BUILD_OFFLINE, "packages/dispatch/e2e/run-server.sh:385 sources it and builds the server through it"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
-    ) + two_builds_go_reads()),
+    ) + two_builds_go_reads() + go_fetch(TWO_BUILDS_JOB, "dispatch-two-builds")
+      + go_fetch(TWO_BUILDS_SAME_JOB, "dispatch-two-builds-same", job_file(TWO_BUILDS_JOB))),
 
     # The two-build job's Go step alone, behind a gate of its own, so the TAG_RUNS pairing below
     # holds envoy_go to what this step reads - cmd/dispatch's twobuild closure, the CLI
@@ -3400,7 +3414,7 @@ GATES = [
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('listener-server-change', SOAK_STEP)} takes its -run from it"),
-    ) + setup_go("listener-server-change", f"{ENVOY}/go.mod")),
+    ) + setup_go("listener-server-change", f"{ENVOY}/go.mod") + go_fetch("listener-server-change", "listener-server-change")),
 
     gate("broker_multiprocess", "broker-multiprocess", exact=[
         pinned_step("broker-multiprocess", BROKER_MP_STEP, ENVOY, BROKER_MP_SCRIPT, [
@@ -3408,7 +3422,7 @@ GATES = [
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('broker-multiprocess', BROKER_MP_STEP)} takes its -run from it"),
-    ) + setup_go("broker-multiprocess", f"{ENVOY}/go.mod")),
+    ) + setup_go("broker-multiprocess", f"{ENVOY}/go.mod") + go_fetch("broker-multiprocess", "broker-multiprocess")),
 
     gate("airlock_lean", AIRLOCK_JOB, exact=[
         pinned_step(AIRLOCK_JOB, AIRLOCK_SEED_STEP, ENVOY, AIRLOCK_SEED_SCRIPT, [
@@ -3428,7 +3442,7 @@ GATES = [
         (f"{AIRLOCK_LEAN}/lean-toolchain", f"{at(AIRLOCK_JOB, 'elan-cache')}: the elan cache's key is hashFiles of it"),
         (AIRLOCK_AXIOMS_SCRIPT, f"{at(AIRLOCK_JOB, AIRLOCK_AXIOMS_STEP)} is one line running it, and check k15 of "
                                 f"{ENVOY}/scripts/airlock-check.sh runs the same script, so the two cannot drift"),
-    ) + setup_go(AIRLOCK_JOB, f"{ENVOY}/go.mod")),
+    ) + setup_go(AIRLOCK_JOB, f"{ENVOY}/go.mod") + go_fetch(AIRLOCK_JOB, "airlock-lean")),
 
 
     # The listener image this job builds and smokes is built from the repository root, so every
@@ -3452,7 +3466,6 @@ GATES = [
         ]),
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-smoke", "Pull test container images")),
-        (".github/scripts/go-fetch.sh", f"{at('envoy-smoke', SMOKE_FETCH_STEP)} runs it"),
         (f"{INFRA}/host/testdata/sdk-consumer/**", f"{at('envoy-smoke', SMOKE_FETCH_STEP)} copies it for package add, "
                                                   "and TestLiveGoConsumersCanUseTheSDK copies it too"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-smoke', 'Pull test container images')}: const HubImage"),
@@ -3507,7 +3520,7 @@ GATES = [
                  "packages/envoy/infra/host/heldportwrapper/Dockerfile:30 COPY packages/envoy /src/packages/envoy")
           for path in files_but_tests(ENVOY, suffix="", tree=True, skip=(".changes",))
           if not path.startswith(tuple(f"{ENVOY}/{d}/" for d in ("internal/integration", "internal/smoke", "deploy")))],
-    ) + setup_go("envoy-smoke", f"{ENVOY}/go.mod")),
+    ) + setup_go("envoy-smoke", f"{ENVOY}/go.mod") + go_fetch("envoy-smoke", "envoy-smoke")),
 
     gate("envoy_e2e_local", "envoy-e2e-local", runs=[
         script_run(f"{ENVOY}/scripts/e2e-local.sh", 'go_build_offline packages/envoy "$listener_binary" ./cmd/listener',
@@ -3518,13 +3531,13 @@ GATES = [
         (f"{ENVOY}/scripts/e2e-local.test.sh", at("envoy-e2e-local", "Refusal test for e2e-local.sh")),
         (f"{ENVOY}/scripts/e2e-local.sh", f"{at('envoy-e2e-local', 'Local end-to-end acceptance')}; e2e-local.test.sh:6,27"),
         (f"{ENVOY}/scripts/fixtures/github/**", "packages/envoy/scripts/e2e-local.sh:118,1255-1286 posts each fixture"),
-        (".github/scripts/go-fetch.sh", f"{at('envoy-e2e-local', 'Fetch the modules of the listener and natsd e2e-local.sh builds')} runs it"),
         (GO_BUILD_OFFLINE, "packages/envoy/scripts/e2e-local.sh:300 sources it and builds the listener and natsd through it"),
         # envoy-client's sources, and broker-client's with them, are the shared read below.
         (CONTRACTS_SRC, "packages/envoy-client/src/delivery.ts imports @legion/contracts"),
     ) + envoy_client_dep("packages/envoy/scripts/e2e-local.sh:1359-1364 and :1760-1767 run bun in packages/envoy-client "
                          "importing @legion/envoy-client/delivery and @legion/envoy-client/transport")
-      + setup_go("envoy-e2e-local", f"{ENVOY}/go.mod") + bun_job("envoy-e2e-local")),
+      + setup_go("envoy-e2e-local", f"{ENVOY}/go.mod") + go_fetch("envoy-e2e-local", "envoy-e2e-local")
+      + bun_job("envoy-e2e-local")),
 
     gate("envoy_session_stall", STALL, runs=[
         script_run("packages/envoy-client/test/envoy-stack.ts",
@@ -3547,14 +3560,13 @@ GATES = [
         ("packages/envoy-client/**", f"{at(STALL, STALL_CLIENT)}: src/__tests__/nats-stall.test.ts and test/*.ts, which the other two import"),
         ("packages/pi-envoy/**", at(STALL, "Stall test of pi-envoy")),
         (TEST_FIXTURES_SRC, "packages/pi-envoy/extensions/envoy.test.ts imports @legion/test-fixtures/environment, and test/envoy-stack.ts its go-command"),
-        (".github/scripts/go-fetch.sh", f"{at(STALL, 'Fetch the modules of the envoy commands the stacks build')} runs it"),
         (GO_BUILD_OFFLINE, f"packages/pi-envoy/scripts/local-stack.sh:67 sources it, and {at(STALL, 'Role takeover smoke')} "
                            "builds natsd and the listener through it"),
         ("packages/claude-envoy/**", f"{at(STALL, 'Stall test of claude-envoy')} (tests/envoy-channel-stall.test.ts runs bin/envoy-channel.ts)"),
         ("packages/pi-shared/src/**", "packages/pi-envoy and packages/claude-envoy import @legion/pi-shared/*"),
         ("packages/contracts/**", at(STALL, "Build contracts for the stall suites")),
         (BROKER_CLIENT_SRC, f"{at(STALL, 'Stall test of claude-envoy')} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/broker-client's seven modules through packages/envoy-client/src/broker-credential.ts:21-34"),
-    ) + ceiling_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL)),
+    ) + ceiling_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + go_fetch(STALL, "envoy-session-stall") + bun_job(STALL)),
 
     gate("go_notices", "lint", step=NOTICES_STEP, runs=go_notices_runs(), reads=reads(
         (NOTICES_LOOPS, f"{at('lint', NOTICES_STEP)} runs it; it holds the loops"),
@@ -3595,6 +3607,8 @@ GATES = [
         (BROWSER_NIGHTLY, "dispatch-browser.yaml's other caller: a change to either must re-run this check, which "
                           "holds the dispatch_browser filter to that gate"),
         (CACHE_WORKFLOW, "ci_workflow_rules.py holds its cache saves to every workflow's restores"),
+        (f"{FETCH_FILES}/**", "ci_workflow_rules.py's rules 21 and 22 read every fetch file a fill or a reader runs: "
+                              "each fill's lines are held to its readers' files, and each key to the files they name"),
         (".github/workflows/**", "ci_workflow_rules.py reads every workflow of the directory: "
                                  "check_one_merge_group_workflow, which refuses a new one and so has to run on the change "
                                  "that adds it, check_cache_round_trip, which holds every restore of a filled family to "

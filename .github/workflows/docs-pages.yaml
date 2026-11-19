@@ -32,6 +32,9 @@ on:
       - '.github/workflows/ci.yaml'
       - '.github/workflows/docs-pages.yaml'
       - '.github/workflows/docs-site.yaml'
+      # The build job's fetch step runs this script over its fetch file.
+      - '.github/scripts/go-fetch.sh'
+      - '.github/go-fetch/docs.txt'
       # ci.yaml's *bun_install:
       - 'package.json'
       - 'bun.lock'

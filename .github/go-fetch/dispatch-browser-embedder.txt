@@ -1,0 +1,2 @@
+# dispatch-browser.yaml's embedder job: the commands the embedder lane's harness builds.
+deps packages/envoy ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed

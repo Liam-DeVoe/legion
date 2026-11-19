@@ -45,9 +45,9 @@ name: CI job text-checks
 # the standard library - because its checker's importer reads source rather than export data
 # (table_test.go:99). The timeout below still leaves the job about three times its cold run.
 # setup-go caches nothing either (`cache: false`), as in every job of ci.yaml. What the job does
-# restore is go-fetch-text-checks, a module cache alone: what the infra fetch step below fetches
-# and nothing else, about 250 MB, which ci-caches.yaml's fetch-text-checks job fills, so that step
-# finds every module there and downloads none.
+# restore is go-fetch-text-checks, a module cache alone: what the fetch step below fetches
+# (.github/go-fetch/text-checks.txt) and nothing else, which ci-caches.yaml's fetch-text-checks
+# job fills from the same file, so that step finds every module there and downloads none.
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
@@ -62,14 +62,24 @@ on:
         type: string
         required: true
 
-# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
-# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
-# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
-# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
-# straight from the source and checks them against go.sum, so this is a second path, not a weaker
-# check.
+# Every go command of this workflow runs with the module proxy off (GOPROXY=off) and go.mod read
+# only (GOFLAGS=-mod=readonly), so a module the cache its job restored lacks fails the step at once
+# and names the module, where it would otherwise be downloaded while a test runs and fail the test
+# whenever the module proxy or the checksum database fails, on a change that touched nothing it
+# tests. A job's fetch step (.github/scripts/go-fetch.sh file, after its restore and before its
+# first go step) is the one step that goes online, through GO_FETCH_PROXY, tried again on failure;
+# a step that must go online and is no fetch step sets its own GOPROXY to GO_FETCH_PROXY, with a
+# `go-offline:` line saying why. .github/scripts/go_offline_jobs.py holds every job to this.
+# GO_FETCH_PROXY: a `|` between proxy entries makes a go command fall through to the next source
+# after ANY error, where a `,` falls through only after a 404 or a 410 (Go's module reference,
+# "GOPROXY protocol"). proxy.golang.org reset a download mid-stream and turned a Go lane red on a
+# module whose hash go.sum already holds (sjawhar/legion#2512); with `|direct` the fetch takes the
+# same bytes straight from the source and checks them against go.sum, so this is a second path,
+# not a weaker check.
 env:
-  GOPROXY: https://proxy.golang.org|direct
+  GO_FETCH_PROXY: https://proxy.golang.org|direct
+  GOPROXY: "off"
+  GOFLAGS: -mod=readonly
 
 jobs:
   text-checks:
@@ -89,26 +99,28 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # go-fetch-text-checks: the modules of the infra fetch step below, under the key
+      # go-fetch-text-checks: the modules of the fetch step below, under the key
       # .github/workflows/ci-caches.yaml's fetch-text-checks job fills: the runner's architecture,
-      # the Go version and the hash of the infra workspace's module files, which that fetch reads.
-      # A pull request that changes those files restores the newest entry by prefix, and the fetch
-      # then downloads only what moved.
+      # the Go version and the hash of the module files of both workspaces that fetch reads, of
+      # its fetch file and of go-fetch.sh. A pull request that changes those files restores the
+      # newest entry by prefix, and the fetch then downloads only what moved.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/go/pkg/mod
-          key: go-fetch-text-checks-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum') }}
+          key: go-fetch-text-checks-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'go.work', 'go.work.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/text-checks.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: ${{ format('go-fetch-text-checks-{0}-{1}-', runner.os, runner.arch) }}
+      # Every go step below reads the module cache alone (GOPROXY=off, this file's env): the test
+      # binaries' own builds, and the infra text checks' two import checks (internal/textcheck's
+      # moduleDeps), which list the whole import graph of ./core and ./gcp, and the copy-lock
+      # guard, which lists the Dispatch server with -export, neither of which the test binaries'
+      # builds load. A fetch while a test runs fails it whenever the module proxy or the checksum
+      # database does, on a change that touched nothing it checks, so this step fetches all of it
+      # first, from the cache restored above, tried again on failure.
+      - name: Fetch the modules this job's go steps load
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/text-checks.txt
       - name: Check the text packages/envoy pins
         run: go test -count=1 ./internal/textcheck/
         working-directory: packages/envoy
-      # The infra text checks' two import checks (internal/textcheck's moduleDeps) list the whole
-      # import graph of ./core and ./gcp, which the test binary's own build does not load, with
-      # GOPROXY=off: a fetch while a test runs fails it whenever the module proxy or the checksum
-      # database does, on a change that touched nothing it checks. So this step fetches that
-      # graph's modules first, from the cache restored above, tried again on failure.
-      - name: Fetch the modules the infra text checks list
-        run: .github/scripts/go-fetch.sh deps packages/envoy/infra ./core ./gcp
       - name: Check the text packages/envoy/infra pins
         run: go test -count=1 ./internal/textcheck/
         working-directory: packages/envoy/infra

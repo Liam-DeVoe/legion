@@ -51,14 +51,24 @@ on:
         type: string
         required: true
 
-# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
-# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
-# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
-# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
-# straight from the source and checks them against go.sum, so this is a second path, not a weaker
-# check.
+# Every go command of this workflow runs with the module proxy off (GOPROXY=off) and go.mod read
+# only (GOFLAGS=-mod=readonly), so a module the cache its job restored lacks fails the step at once
+# and names the module, where it would otherwise be downloaded while a test runs and fail the test
+# whenever the module proxy or the checksum database fails, on a change that touched nothing it
+# tests. A job's fetch step (.github/scripts/go-fetch.sh file, after its restore and before its
+# first go step) is the one step that goes online, through GO_FETCH_PROXY, tried again on failure;
+# a step that must go online and is no fetch step sets its own GOPROXY to GO_FETCH_PROXY, with a
+# `go-offline:` line saying why. .github/scripts/go_offline_jobs.py holds every job to this.
+# GO_FETCH_PROXY: a `|` between proxy entries makes a go command fall through to the next source
+# after ANY error, where a `,` falls through only after a 404 or a 410 (Go's module reference,
+# "GOPROXY protocol"). proxy.golang.org reset a download mid-stream and turned a Go lane red on a
+# module whose hash go.sum already holds (sjawhar/legion#2512); with `|direct` the fetch takes the
+# same bytes straight from the source and checks them against go.sum, so this is a second path,
+# not a weaker check.
 env:
-  GOPROXY: https://proxy.golang.org|direct
+  GO_FETCH_PROXY: https://proxy.golang.org|direct
+  GOPROXY: "off"
+  GOFLAGS: -mod=readonly
 
 jobs:
   private-names-port:
@@ -85,20 +95,20 @@ jobs:
       # go-fetch-private-names-port: the modules of the fetch below, under the key
       # .github/workflows/ci-caches.yaml's fetch-private-names-port job fills: the runner's
       # architecture, the Go version and the hash of the module files that fetch reads in the root
-      # workspace. A pull request that changes those files restores the newest entry by prefix,
-      # and the fetch then downloads only what moved.
+      # workspace, of its fetch file and of go-fetch.sh. A pull request that changes those files
+      # restores the newest entry by prefix, and the fetch then downloads only what moved.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/go/pkg/mod
-          key: go-fetch-private-names-port-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum') }}
+          key: go-fetch-private-names-port-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/private-names-port.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: ${{ format('go-fetch-private-names-port-{0}-{1}-', runner.os, runner.arch) }}
 
       # The harness builds ./cmd/legion from the module cache alone (GOPROXY=off), since a fetch
       # while it runs fails it whenever the module proxy or the checksum database does, on a
       # change that touched nothing it tests. This step fetches that build's modules first, from
       # the cache restored above, tried again on failure.
-      - name: Fetch the modules of the legion binary the harness builds
-        run: .github/scripts/go-fetch.sh deps packages/daemon ./cmd/legion
+      - name: Fetch the modules this job's go steps load
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/private-names-port.txt
 
       - name: Test the private-name rules' port against the frozen script
         run: .github/scripts/check-private-names-port.test.sh

@@ -294,7 +294,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/daemon-go.txt', '.github/go-fetch/pi-legion.txt', '.github/go-fetch/plugin-pack.txt', '.github/go-fetch/typecheck.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: go-daemon-${{ runner.os }}-${{ runner.arch }}-
       # CGO_ENABLED=0: a static binary, as the worker image builds it, so a linux archive runs on any
       # distribution. One archive per target .github/go-release-targets.json lists (the pull

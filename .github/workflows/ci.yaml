@@ -380,6 +380,7 @@ jobs:
       check_release_credentials_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_release_credentials_test }}
       repo_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.repo_paths_test }}
       go_fetch_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_fetch_test }}
+      go_offline_jobs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_offline_jobs_test }}
       go_build_offline_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_build_offline_test }}
       # The test job's step that runs @legion/test-fixtures/go-command's own rows against the real
       # go, which a test-fixtures job without Go no longer runs.
@@ -1035,8 +1036,9 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-daemon-go.yaml'
               - *go_workspace
-              # Its fetch step runs this script before the tests.
+              # Its fetch step runs this script over its fetch file before the tests.
               - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/daemon-go.txt'
               - 'packages/daemon/**'
               - *daemon_envoy_deps
               - *dispatch_server
@@ -1148,8 +1150,9 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-plugin-pack.yaml'
               - *go_workspace
-              # Its fetch step runs this script before the tests.
+              # Its fetch step runs this script over its fetch file before the tests.
               - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/plugin-pack.txt'
               - *bun_install
               - *omp_install
               - 'packages/daemon/**'
@@ -1267,6 +1270,9 @@ jobs:
             typecheck:
               - *ci_router
               - '.github/workflows/ci-job-typecheck.yaml'
+              # Its fetch step runs this script over its fetch file before the vets.
+              - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/typecheck.txt'
               - *go_workspace
               - 'packages/daemon/**'
               - *daemon_envoy_deps
@@ -1649,6 +1655,12 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/go-fetch.test.sh'
               - '.github/scripts/go-fetch.sh'
+            go_offline_jobs_test: &go_offline_jobs_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/go-offline-jobs.test.sh'
+              - '.github/scripts/go_offline_jobs.py'
             go_build_offline_test: &go_build_offline_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1845,6 +1857,9 @@ jobs:
             test:
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
+              # Its fetch step runs this script over its fetch file before the e2e library tests.
+              - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/test.txt'
               - *bun_install
               - *biome
               # The workspace of the one go command left here - the listener build
@@ -1893,6 +1908,7 @@ jobs:
               - *check_release_credentials_test
               - *repo_paths_test
               - *go_fetch_test
+              - *go_offline_jobs_test
               - *go_build_offline_test
               - *go_command_test
               - *select_e2e_proofs_test
@@ -1991,6 +2007,9 @@ jobs:
               - *ci_router
               - '.github/workflows/docs-pages.yaml'
               - '.github/workflows/docs-site.yaml'
+              # The build job's fetch step runs this script over its fetch file before the screenshots.
+              - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/docs.txt'
               - *bun_install
               - *go_workspace
               - 'docs/site/**'
@@ -2514,8 +2533,9 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-pi-legion.yaml'
               - *bun_install
-              # Its fetch step runs this script before the tests.
+              # Its fetch step runs this script over its fetch file before the tests.
               - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/pi-legion.txt'
               - 'packages/pi-legion/**'
               # extensions/legion.test.ts:121 and legion-role-claim.test.ts:61 load the Envoy
               # plugin's entry beside this one, and the typecheck reaches its sources.
@@ -2725,6 +2745,13 @@ jobs:
             # no other reason.
             dispatch_browser:
               - *ci_router
+              # The fetch steps of its binaries, multiprocess, embedder and visual jobs run this
+              # script over each job's fetch file.
+              - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/dispatch-browser-binaries.txt'
+              - '.github/go-fetch/dispatch-browser-embedder.txt'
+              - '.github/go-fetch/dispatch-browser-multiprocess.txt'
+              - '.github/go-fetch/dispatch-browser-visual.txt'
               - *bun_install
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
@@ -2955,8 +2982,9 @@ jobs:
               - '.github/actions/pull-test-images/**'
               # Its natslive step takes that tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
-              # Its fetch step runs this script before the tests.
+              # Its fetch step runs this script over its fetch file before the vets and the tests.
               - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/envoy-infra-go.txt'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/brokeraddr/**/*_test.go'
@@ -2993,6 +3021,9 @@ jobs:
             text_checks:
               - *ci_router
               - '.github/workflows/ci-job-text-checks.yaml'
+              # Its fetch step runs this script over its fetch file before the text checks.
+              - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/text-checks.txt'
               - *go_workspace
               - 'packages/envoy/**'
               - 'packages/daemon/**/*.go'
@@ -3068,6 +3099,9 @@ jobs:
             dispatch_memory:
               - *ci_router
               - '.github/workflows/ci-job-dispatch-memory.yaml'
+              # Its fetch step runs this script over its fetch file before the tests.
+              - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/dispatch-memory.txt'
               - *go_workspace
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
@@ -3105,6 +3139,9 @@ jobs:
             dispatch_multiprocess:
               - *ci_router
               - '.github/workflows/ci-job-dispatch-multiprocess.yaml'
+              # Its fetch step runs this script over its fetch file before the tests.
+              - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/dispatch-multiprocess.txt'
               - *go_workspace
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
@@ -3250,6 +3287,10 @@ jobs:
             dispatch_two_builds:
               - *ci_router
               - '.github/workflows/ci-job-dispatch-two-builds.yaml'
+              # The fetch steps of its two jobs run this script over each job's fetch file.
+              - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/dispatch-two-builds.txt'
+              - '.github/go-fetch/dispatch-two-builds-same.txt'
               - *go_workspace
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
@@ -3352,6 +3393,9 @@ jobs:
             listener_server_change:
               - *ci_router
               - '.github/workflows/ci-job-listener-server-change.yaml'
+              # Its fetch step runs this script over its fetch file before the soak.
+              - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/listener-server-change.txt'
               - *go_workspace
               - *listener_command
               # What cmd/listener's test binary compiles that `go list -deps ./cmd/listener` does
@@ -3471,8 +3515,9 @@ jobs:
               - '.github/workflows/ci-job-envoy-e2e-local.yaml'
               - *bun_install
               - *go_workspace
-              # Its fetch step runs this script before the acceptance run.
+              # Its fetch step runs this script over its fetch file before the acceptance run.
               - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/envoy-e2e-local.txt'
               - 'packages/envoy/scripts/e2e-local.sh'
               - 'packages/envoy/scripts/e2e-local.test.sh'
               # e2e-local.sh:118,1255-1286 posts each fixture.
@@ -3509,8 +3554,9 @@ jobs:
               - '.github/workflows/ci-job-envoy-session-stall.yaml'
               - *bun_install
               - *go_workspace
-              # Its fetch step runs this script before the tests.
+              # Its fetch step runs this script over its fetch file before the tests.
               - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/envoy-session-stall.txt'
               # The role takeover smoke's builds, through packages/pi-envoy/scripts/local-stack.sh.
               - '.github/scripts/go-build-offline.sh'
               - 'packages/envoy/**'
@@ -3797,8 +3843,14 @@ jobs:
               # the step before it runs (packages/envoy/** names both too).
               - 'packages/envoy/scripts/database-skips.sh'
               - 'packages/envoy/scripts/database-skips.test.sh'
-              # Its fetch step runs this script before the counter's test.
+              # Its fetch step runs this script over its fetch file before the tests.
               - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/envoy-go.txt'
+              # The fetch files of the tag jobs whose packages' untagged tests this job runs
+              # (TAG_RUNS): a change to one starts the tagged run, so it starts this one too.
+              - '.github/go-fetch/dispatch-memory.txt'
+              - '.github/go-fetch/dispatch-multiprocess.txt'
+              - '.github/go-fetch/broker-multiprocess.txt'
               # internal/dispatch/testlimits/testlimits_test.go holds this script's
               # max_connections to testlimits.ServerConnections.
               - 'packages/daemon/docker/legion-testpg'
@@ -3834,8 +3886,9 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-envoy-go-checks.yaml'
               - *bun_install
-              # Its fetch step runs this script before the cluster test.
+              # Its fetch step runs this script over its fetch file before the tests.
               - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/envoy-go-checks.txt'
               - *go_workspace
               - 'packages/envoy/**'
               # listenerwire/clients_test.go holds the daemon's listener clients to listenerwire,
@@ -3900,6 +3953,12 @@ jobs:
             envoy_go_race:
               - *ci_router
               - '.github/workflows/ci-job-envoy-go-race.yaml'
+              # Its fetch step runs this script over its fetch file before the tests.
+              - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/envoy-go-race.txt'
+              # listener-server-change's fetch file: that job's soak leans on this job's run of
+              # cmd/listener's untagged tests (TAG_RUNS).
+              - '.github/go-fetch/listener-server-change.txt'
               - *go_workspace
               - 'packages/envoy/**'
               # listener-server-change takes its -run from this script, and this is the job that
@@ -4082,6 +4141,9 @@ jobs:
             envoy_go_race_api:
               - *ci_router
               - '.github/workflows/ci-job-envoy-go-race-api.yaml'
+              # Its fetch step runs this script over its fetch file before the tests.
+              - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/envoy-go-race-api.txt'
               - *go_workspace
               # Its race step runs the package through this skip counter.
               - 'packages/envoy/scripts/database-skips.sh'
@@ -4326,6 +4388,10 @@ jobs:
               # envoy-go-docs-finalizers on it).
               - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
               - '.github/workflows/ci-job-envoy-go-docs-finalizers.yaml'
+              # The fetch steps of both jobs run this script over each job's fetch file.
+              - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/envoy-go-race-docs.txt'
+              - '.github/go-fetch/envoy-go-docs-finalizers.txt'
               # The race step runs the package under this sampler (the step's comment says why).
               - '.github/scripts/race_memory.py'
               # The step that sizes each job's Postgres runs this script, which runs
@@ -4544,8 +4610,9 @@ jobs:
               - *go_workspace
               - *legion_command
               - '.github/scripts/check-private-names-port.test.sh'
-              # Its fetch step runs this script before the harness.
+              # Its fetch step runs this script over its fetch file before the harness.
               - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/private-names-port.txt'
               # test-lib.sh, which the harness sources for check/is/summary (:63), and the
               # frozen script it runs every case through beside the binary, symlinked into each
               # fixture (:203,411,457,546). That script is the subject of
@@ -4563,6 +4630,9 @@ jobs:
             broker_multiprocess:
               - *ci_router
               - '.github/workflows/ci-job-broker-multiprocess.yaml'
+              # Its fetch step runs this script over its fetch file before the tests.
+              - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/broker-multiprocess.txt'
               - *go_workspace
               - 'packages/envoy/brokeraddr/*'
               - 'packages/envoy/agentloop/*'
@@ -4674,6 +4744,9 @@ jobs:
             airlock_lean:
               - *ci_router
               - '.github/workflows/ci-job-airlock-lean.yaml'
+              # Its fetch step runs this script over its fetch file before the tests.
+              - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/airlock-lean.txt'
               - *go_workspace
               - 'packages/envoy/internal/broker/airlock/**'
               - 'packages/envoy/internal/fold/*'
@@ -4702,8 +4775,9 @@ jobs:
               # counts the workflow file holding a build step among the image's inputs, so a
               # change to it must start the build.
               - '.github/workflows/ci-job-envoy-smoke.yaml'
-              # Its fetch step runs this script before the live tests.
+              # Its fetch step runs this script over its fetch file before the live tests.
               - '.github/scripts/go-fetch.sh'
+              - '.github/go-fetch/envoy-smoke.txt'
               # The image: the Dockerfile, its context's .dockerignore, the web stage's frozen
               # install (every workspace manifest and the tarball packages/proof-editor/package.json
               # installs proof-sdk-upstream from) and the Bun pin that stage holds its own Bun to,
@@ -4931,6 +5005,8 @@ jobs:
               # workflow has to run on the change that adds or edits one, which a list of the
               # names already there cannot select.
               - '.github/workflows/**'
+              # Rules 21 and 22 read every fetch file a fill or a reader runs.
+              - '.github/go-fetch/**'
               - '.github/scripts/check-ci-filters.sh'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/ci_job_reads.py'
@@ -5310,6 +5386,7 @@ jobs:
       check_release_credentials_test: ${{ needs.changes.outputs.check_release_credentials_test }}
       repo_paths_test: ${{ needs.changes.outputs.repo_paths_test }}
       go_fetch_test: ${{ needs.changes.outputs.go_fetch_test }}
+      go_offline_jobs_test: ${{ needs.changes.outputs.go_offline_jobs_test }}
       go_build_offline_test: ${{ needs.changes.outputs.go_build_offline_test }}
       go_command_test: ${{ needs.changes.outputs.go_command_test }}
       select_e2e_proofs_test: ${{ needs.changes.outputs.select_e2e_proofs_test }}

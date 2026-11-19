@@ -182,6 +182,10 @@ on:
         description: "ci.yaml's needs.changes.outputs.go_fetch_test: go-fetch.test.sh and what it tests."
         type: string
         required: true
+      go_offline_jobs_test:
+        description: "ci.yaml's needs.changes.outputs.go_offline_jobs_test: go-offline-jobs.test.sh and what it tests."
+        type: string
+        required: true
       go_build_offline_test:
         description: "ci.yaml's needs.changes.outputs.go_build_offline_test: go-build-offline.test.sh and what it tests."
         type: string
@@ -279,14 +283,24 @@ on:
         type: string
         required: true
 
-# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
-# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
-# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
-# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
-# straight from the source and checks them against go.sum, so this is a second path, not a weaker
-# check.
+# Every go command of this workflow runs with the module proxy off (GOPROXY=off) and go.mod read
+# only (GOFLAGS=-mod=readonly), so a module the cache its job restored lacks fails the step at once
+# and names the module, where it would otherwise be downloaded while a test runs and fail the test
+# whenever the module proxy or the checksum database fails, on a change that touched nothing it
+# tests. A job's fetch step (.github/scripts/go-fetch.sh file, after its restore and before its
+# first go step) is the one step that goes online, through GO_FETCH_PROXY, tried again on failure;
+# a step that must go online and is no fetch step sets its own GOPROXY to GO_FETCH_PROXY, with a
+# `go-offline:` line saying why. .github/scripts/go_offline_jobs.py holds every job to this.
+# GO_FETCH_PROXY: a `|` between proxy entries makes a go command fall through to the next source
+# after ANY error, where a `,` falls through only after a 404 or a 410 (Go's module reference,
+# "GOPROXY protocol"). proxy.golang.org reset a download mid-stream and turned a Go lane red on a
+# module whose hash go.sum already holds (sjawhar/legion#2512); with `|direct` the fetch takes the
+# same bytes straight from the source and checks them against go.sum, so this is a second path,
+# not a weaker check.
 env:
-  GOPROXY: https://proxy.golang.org|direct
+  GO_FETCH_PROXY: https://proxy.golang.org|direct
+  GOPROXY: "off"
+  GOFLAGS: -mod=readonly
 
 jobs:
   test:
@@ -474,6 +488,12 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.go_fetch_test == 'true'
         run: .github/scripts/go-fetch.test.sh
 
+      # The rule that every Go job of a required workflow runs with GOPROXY=off and
+      # GOFLAGS=-mod=readonly, over workflow trees the harness writes.
+      - name: Test the rule that every required Go job reads the module cache alone
+        if: inputs.changes-result != 'success' || inputs.go_offline_jobs_test == 'true'
+        run: .github/scripts/go-offline-jobs.test.sh
+
       # The offline Go build the test launchers run after that fetch (e2e-local.sh, local-stack.sh
       # and packages/dispatch/e2e's run-server.sh, run-broker.sh and run-signin-issuer.sh), under a
       # stand-in go.
@@ -616,13 +636,13 @@ jobs:
           cache: false
       # go-fetch-test: the modules of the fetch below, about 70 MB and no build cache, under the
       # key .github/workflows/ci-caches.yaml's fetch-test job fills: the runner's architecture, the
-      # Go version and the hash of the module files that fetch reads in the root workspace. A pull
-      # request that changes those files restores the newest entry by prefix, and the fetch then
-      # downloads only what moved.
+      # Go version and the hash of the module files that fetch reads in the root workspace, of its
+      # fetch file and of go-fetch.sh. A pull request that changes those files restores the newest
+      # entry by prefix, and the fetch then downloads only what moved.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/go/pkg/mod
-          key: go-fetch-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum') }}
+          key: go-fetch-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/test.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: ${{ format('go-fetch-test-{0}-{1}-', runner.os, runner.arch) }}
 
       # held-port.test.ts and nats-image.test.ts build the listener and natsfloor while they run,
@@ -630,8 +650,8 @@ jobs:
       # whenever the module proxy does, on a change that touched nothing it tests. This step
       # fetches those builds' modules first, from the cache restored above, tried again on
       # failure, and the builds then read them from the module cache alone.
-      - name: Fetch the modules of the envoy commands the e2e library tests build
-        run: .github/scripts/go-fetch.sh deps packages/envoy ./cmd/listener ./natsversion/cmd/natsfloor
+      - name: Fetch the modules this job's go steps load
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/test.txt
 
       # After the fetch: held-port.test.ts builds the real envoy-listener and hands it a held socket.
       - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
