@@ -200,7 +200,7 @@ func subjectState(check model.CheckBlock, basis model.CheckBasis, conflicted map
 			if result.Verdict == "pass" {
 				newest = &pass
 			}
-			if *newest == nil || newerResult(*result, **newest) {
+			if *newest == nil || newerResultFirst(*result, **newest) < 0 {
 				*newest = result
 			}
 		}
@@ -233,15 +233,6 @@ func subjectState(check model.CheckBlock, basis model.CheckBasis, conflicted map
 		state.Reason, state.Results = model.PassSubjectReasonFail, []string{newestFail}
 	}
 	return state
-}
-
-// newerResult reports whether a was recorded after b: by created_at, then by id, the order the
-// results read lists them in.
-func newerResult(a, b model.CheckResult) bool {
-	if !a.CreatedAt.Equal(b.CreatedAt) {
-		return a.CreatedAt.After(b.CreatedAt)
-	}
-	return a.ID > b.ID
 }
 
 // passAndFailCommits is each commit at which check, a `before_merge` check, holds both a pass and

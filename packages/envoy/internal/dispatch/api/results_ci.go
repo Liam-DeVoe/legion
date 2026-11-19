@@ -246,16 +246,23 @@ func notCountedOnCICheck(check *model.CheckBlock, name string) {
 	}
 }
 
-// newestResultsFirst orders results as the read of the stored ones does (loadCheckResults):
-// newest first by CreatedAt, the higher ID first between two of one time.
+// newestResultsFirst orders results as the read of the stored ones does (loadCheckResults), by
+// newerResultFirst.
 func newestResultsFirst(results []model.CheckResult) []model.CheckResult {
-	slices.SortStableFunc(results, func(a, b model.CheckResult) int {
-		if order := b.CreatedAt.Compare(a.CreatedAt); order != 0 {
-			return order
-		}
-		return strings.Compare(b.ID, a.ID)
-	})
+	slices.SortStableFunc(results, newerResultFirst)
 	return results
+}
+
+// newerResultFirst is the one order of a check's results, the order the results read lists them
+// in: newest first by CreatedAt, the higher ID first between two of one time. It is below zero
+// where a comes before b, so a was recorded after b. Every choice of "the newest" result among
+// several reads it (newestResultsFirst, subjectState), so the list and the results that decide a
+// state never disagree on which result is newer.
+func newerResultFirst(a, b model.CheckResult) int {
+	if order := b.CreatedAt.Compare(a.CreatedAt); order != 0 {
+		return order
+	}
+	return strings.Compare(b.ID, a.ID)
 }
 
 // provedCI is a check CI proves and name, the run its `ci_check` names as the rules read it,
