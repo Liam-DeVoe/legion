@@ -533,8 +533,11 @@ func TestARelaunchStartsNoProcessWhileTheCleanStopIsInFlight(t *testing.T) {
 // while a slow listener had still not answered the stop's read, and the relaunch would register
 // before it, which is the order the wait exists to prevent. The other relaunch tests end the stop
 // the moment the launch says it waits, so none of them sees such a wait. Here the stop stays in
-// flight for an hour. The test runs in a synctest bubble, so that hour passes on the bubble's
-// clock at once, and a timer the wait set for itself, of any length under the hour, fires in it.
+// flight for an hour on both clocks a wait can read: the synctest bubble's, which the time
+// package reads, and the machine's own (Deps.Clock, on which a machine times its waits), which
+// the harness moves only when a test advances it. The bubble's hour passes at once, and the
+// machine's clock is then advanced an hour, so a timer the wait set for itself on either clock, of
+// any length under the hour, fires in it.
 func TestARelaunchWaitsForTheCleanStopHoweverLongItRuns(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h, _ := sessionStops(t)
@@ -556,10 +559,12 @@ func TestARelaunchWaitsForTheCleanStopHoweverLongItRuns(t *testing.T) {
 		}
 		time.Sleep(time.Hour)
 		synctest.Wait()
+		h.clock.Advance(time.Hour)
+		synctest.Wait()
 		if resumes := h.calls("Resume"); len(resumes) != 0 {
 			close(stopping)
 			<-died
-			t.Fatalf("the relaunch resumed the session %d times while the clean stop had been in flight for an hour: the wait for the stop ended before the stop did", len(resumes))
+			t.Fatalf("the relaunch resumed the session %d times while the clean stop had been in flight for an hour on the bubble's clock and the machine's: the wait for the stop ended before the stop did", len(resumes))
 		}
 		close(stopping)
 		if err := <-died; err != nil {
@@ -570,6 +575,61 @@ func TestARelaunchWaitsForTheCleanStopHoweverLongItRuns(t *testing.T) {
 			t.Fatalf("the relaunch resumed %q, want the recorded session %q", resumed.Spec.ResumeSessionFile, h.claim().SessionFile)
 		}
 	})
+}
+
+// The same wait, outside a synctest bubble: the machine's own clock (Deps.Clock), which is the
+// wall clock in production (RealClock), moves an hour while the clean stop stays in flight, and
+// the death's decision, which holds the relaunch, has still not returned a second later. A wait
+// that gave up on a timer of that clock, the way a machine times every other wait (Timeouts),
+// returns it at once. The daemon's own tests cannot see such a timer: their machines run on a
+// clock whose timers never fire. The clock moves on a goroutine of its own, since a timer whose
+// callback is the machine's Handle waits for the machine's lock, which the death's decision holds
+// until the stop ends.
+func TestARelaunchWaitsForTheCleanStopHoweverFarTheMachinesClockMoves(t *testing.T) {
+	h, _ := sessionStops(t)
+	stopping := make(chan struct{})
+	h.m.deps.SessionGone = func(string) <-chan struct{} { return stopping }
+	h.reach(StateReady)
+	loc := h.locator()
+	died := make(chan error, 1)
+	go func() {
+		died <- h.m.Handle(h.ctx, RuntimeObservation{Observation: runtime.Observation{
+			Locator: loc, Kind: runtime.Gone, At: h.clock.Now()}})
+	}()
+	testwait.Eventually(t, "the relaunch to wait for the clean stop in flight, or to resume", func() bool {
+		return len(h.records.of(launchWaitsForSessionStop)) > 0 || len(h.calls("Resume")) > 0
+	})
+	advanced := make(chan struct{})
+	go func() {
+		h.clock.Advance(time.Hour)
+		close(advanced)
+	}()
+	select {
+	case err := <-died:
+		close(stopping)
+		t.Fatalf("the death's decision returned (%v), resuming the session %d times, while the clean stop was in flight and the machine's clock had moved an hour: the wait for the stop ended before the stop did",
+			err, len(h.calls("Resume")))
+	case <-time.After(time.Second):
+	}
+	close(stopping)
+	bound := testwait.Bounded(t, time.Minute, time.Second)
+	select {
+	case err := <-died:
+		if err != nil {
+			t.Fatalf("the death's decision once the stop ended: %v", err)
+		}
+	case <-time.After(bound):
+		t.Fatalf("the death's decision did not return within %s of the stop's end", bound)
+	}
+	select {
+	case <-advanced:
+	case <-time.After(bound):
+		t.Fatalf("the machine's clock had not moved its hour within %s of the stop's end", bound)
+	}
+	h.m.Wait()
+	if resumed := h.wantCalls("Resume", 1)[0]; resumed.Spec.ResumeSessionFile != h.claim().SessionFile {
+		t.Fatalf("the relaunch resumed %q, want the recorded session %q", resumed.Spec.ResumeSessionFile, h.claim().SessionFile)
+	}
 }
 
 // Two clean stops of one session can be in flight at once. A death whose relaunch the wake pacing
