@@ -602,8 +602,8 @@
 #      37). Another urllib call that reads the network, such as `urllib.request.urlretrieve`,
 #      and Python handed to `python3 -c` as text, are read by no rule, so a read written either
 #      way gets no floor: an accepted limit, named for the next round to close
-#      (dispatch://INFRA-1545, round 38). No rule reads a `.py` or `.jq` program at all, as
-#      PYTHON IS READ IN ONE PLACE ONLY says below.
+#      (dispatch://INFRA-1545, round 38). No rule reads a `.py` or `.jq` program's own downloads
+#      or its runs of other scripts, as PYTHON IS READ IN ONE PLACE ONLY says below.
 #   7. A `mise x`, `mise exec`, `mise up` or `mise upgrade` carries no retry, anywhere: not a
 #      `retry_fetch` call and not a Dockerfile `retry` call. None of the four fails when it
 #      cannot resolve the tool. `mise x` warns (`Failed to resolve tool version list for … HTTP
@@ -680,19 +680,20 @@
 #      `run:`, which the shell rules blank as data, or the text a `python3 -c` is handed — is
 #      read by no rule of this check at all: not rule 8, which puts a figure on none of it, and
 #      not rule 1, so a network read written there gets no floor rather than merely no price.
-#      And no rule reads anything a `.py` or `.jq` program under .github/scripts/ does: not its
-#      own downloads, and not a script it runs, by `subprocess`, `os.system` or a `.sh` path it
-#      holds, whether a step runs it with `python3` or as its own command word, so what that
-#      script fetches is charged to no budget. This check reads shell text, and those files are
-#      programs of other languages: a language boundary INFRA-1310's architect accepted
-#      (dispatch://INFRA-1545, round 39). The set is the twelve `.py` files and the one `.jq`
-#      this tree writes there, and measured at e6de0788 the one of them that runs a CI shell
-#      script, go-test-step-expansion.py, runs go-tagged-tests.sh, which fetches nothing. A
-#      `.py` or `.jq` whose `#!` line names another interpreter is no such program, and is
-#      refused, as WHAT IT READS says. And in the heredocs rule 6 does read it reads a `urlopen`
-#      alone, so another urllib call, such as `urllib.request.urlretrieve`, gets no floor either
-#      (dispatch://INFRA-1545, round 38). ci.yaml's `Check the package holds every row of
-#      .github/ci-images.yaml` is this tree's instance: its reads are `urlopen` calls inside
+#      And no rule reads the downloads of a `.py` or `.jq` program under .github/scripts/, nor
+#      its runs of other scripts, by `subprocess`, `os.system` or a `.sh` path it holds, whether a
+#      step runs it with `python3` or as its own command word. A CI script it runs is still read,
+#      and each of its downloads is held to the floor at the line it is written on, but the time
+#      that script spends is charged to no step's or job's time limit. This check reads shell
+#      text, and those files are programs of other languages: a language boundary INFRA-1310's
+#      architect accepted (dispatch://INFRA-1545, round 39). The set is the twelve `.py` files
+#      and the one `.jq` this tree writes there, and measured at e6de0788 the one of them that
+#      runs a CI shell script, go-test-step-expansion.py, runs go-tagged-tests.sh, which fetches
+#      nothing. A `.py` or `.jq` whose `#!` line names another interpreter is no such program,
+#      and is refused, as WHAT IT READS says. And in the heredocs rule 6 does read it reads a
+#      `urlopen` alone, so another urllib call, such as `urllib.request.urlretrieve`, gets no
+#      floor either (dispatch://INFRA-1545, round 38). ci.yaml's `Check the package holds every
+#      row of .github/ci-images.yaml` is this tree's instance: its reads are `urlopen` calls inside
 #      .github/scripts/check-ci-images.sh, held to the floor by rule 6 and budgeted by hand.
 #      This is the rule ci-budgets.md's Budgets note already writes for a reader — a job carries its
 #      measured duration plus the arithmetic of its slowest retried step — read here as the
@@ -1285,8 +1286,10 @@ VARIABLE_CALL = re.compile(r"\$(?:\{[^{}]*\}|[A-Za-z_]\w*|\d|[@*#?$!-])")
 LITERAL_WORD = re.compile(r"[A-Za-z0-9_@%+:,./=-]+")
 # The characters bash writes a pattern with: a glob's `*`, `?` and `[…]`, which it expands into
 # the names of files that match as it runs, and a brace expansion's `{…,…}` and `{a..b}`, which
-# it expands into several words (CallScanner; dispatch://INFRA-1545, round 38).
-PATTERN_CHARS = frozenset("*?[]{},.")
+# it expands into several words (CallScanner; dispatch://INFRA-1545, round 38); and the `!`, `^`
+# and `-` that negate a `[…]` and write a range in it, each the character itself where it is
+# written in quotes or after a backslash (plain_set; dispatch://INFRA-1545, round 40).
+PATTERN_CHARS = frozenset("*?[]{},.!^-")
 # The escapes of a `$'…'` string bash reads as one character each, by the letter after the
 # backslash (ansi_c_escape; dispatch://INFRA-1545, round 38).
 ANSI_C_ESCAPES = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n",
@@ -1534,9 +1537,10 @@ class Command:
     pipeline's and so is rule 9's question. `quoted` says, for each word the Scanner read, whether
     a quote or a backslash was written in it, which bash reads as no reserved word
     (dispatch://INFRA-1545, round 37). `plain` says, for each word CallScanner read, where in it a
-    character a pattern is written with, `*`, `?`, `[`, `]`, `{`, `}`, `,` or `.`, stands
-    unquoted, as bash reads it for a glob or a brace expansion (globs_in; dispatch://INFRA-1545,
-    round 38)."""
+    character a pattern is written with, `*`, `?`, `[`, `]`, `{`, `}`, `,`, `.`, `!`, `^` or `-`
+    (PATTERN_CHARS), stands unquoted, as bash reads it for a glob or a brace expansion (globs_in;
+    dispatch://INFRA-1545, round 38) and for a set's negation and its ranges (plain_set; round
+    40)."""
 
     def __init__(self, words: list[str], line: int, offset: int) -> None:
         self.words = words
@@ -5989,13 +5993,22 @@ NO_DIRECTORY_RUN = ("which names a script with no directory, so the shell finds 
 PATTERN_RUN = ("a script that fetches or a file this check does not read, since bash fills in its "
                "patterns and expansions from the files and the values the step holds as it runs, "
                "which this check does not see")
-# A word holding a pattern bash accepts that Python cannot compile into the regular expression
-# pattern_words matches the tree's files with, such as a `[…]` range that runs backwards, `[z-c]`
-# (word_pattern copies a class as written), is refused by name whatever it could name, since this
-# check cannot tell (pattern_words; dispatch://INFRA-1545, round 39). Until round 39 such a word
-# at a run's target, or as an argument holding `.github/`, stopped the check with a traceback.
+# A word holding a pattern bash accepts that this check cannot turn into the regular expression
+# pattern_words matches the tree's files with is refused by name whatever it could name, since
+# this check cannot tell (pattern_words; dispatch://INFRA-1545, round 39): a `[…]` range that
+# runs backwards, `[z-c]`, which Python cannot compile (compiled_pattern), and, since word_pattern
+# translates only what it can translate exactly (round 40), any bracket expression other than a
+# plain set (plain_set), such as a POSIX class, `[[:alpha:]]`, or a `]` written first in the set,
+# `[]t]`, and any brace expansion with a part that is no literal text, holding a pattern, a brace
+# or an expansion, `{x,r38-fe*}`. Until round 39 a backwards range at a run's target, or in an
+# argument holding `.github/`, stopped the check with a traceback, and until round 40 `cd
+# .github/scripts && ./r38-fe[[:alpha:]]ch.sh`, `flock /tmp/l
+# .github/scripts/r38-fe[[:alpha:]]ch.sh` and `ls .github/scripts/{x,r38-fe*}.sh`, which bash
+# fills in with r38-fetch.sh, named no file.
 UNREADABLE_PATTERN = ("which holds a pattern bash reads and this check cannot turn into a match, "
-                      "such as a `[…]` range that runs backwards, `[z-c]`")
+                      "such as a `[…]` range that runs backwards, `[z-c]`, a bracket expression "
+                      "other than a plain set, `[[:alpha:]]`, or a brace expansion with a part "
+                      "that is no literal text, `{x,y*}`")
 REASON_CURES = {
     WRITTEN_RUN: (
         "Run no file this text writes: write its commands in the step itself, or move them "
@@ -6018,8 +6031,9 @@ REASON_CURES = {
         ".github/workflows/*.yaml`, passes"),
     UNREADABLE_PATTERN: (
         "Write the path of the script that runs there literally, `.github/scripts/<name>.sh …`, "
-        "with what varies as its arguments, or write each range of the pattern forwards, `[c-z]` "
-        "rather than `[z-c]`"),
+        "with what varies as its arguments, or write each `[…]` of the pattern as a plain set, "
+        "its characters and its ranges run forwards, `[c-z]` rather than `[z-c]` or "
+        "`[[:alpha:]]`, and each part of a brace literally, `{x,y}` rather than `{x,y*}`"),
 }
 
 
@@ -6338,20 +6352,53 @@ def unread_uses(text: str, first_line: int, action: str | None, elsewhere: bool,
     return found
 
 
-def word_pattern(word: str, plain: frozenset[int],
-                 action: str | None) -> tuple[str, str] | None:
+def plain_set(word: str, plain: frozenset[int], start: int, end: int) -> bool:
+    """Whether the `[…]` at word[start:end] (globs_in) is a plain set, the one bracket expression
+    word_pattern translates, since it can do so exactly: literal characters and ranges, `[c-z]`,
+    after an optional `!` or `^` written unquoted, which negates it (dispatch://INFRA-1545, round
+    40). After that `!` or `^` it holds at least one character, and no `[`, `]`, `\\` or `/`, and
+    no `!`, `^` or `-` written in quotes or after a backslash (Command.plain), which bash reads as
+    the character itself. Any other bracket expression, which bash reads by rules this check does
+    not model one form at a time, is refused: a POSIX class, `[[:alpha:]]`, a collating symbol,
+    `[[.c.]]`, or an equivalence class, `[[=c=]]`, whose span globs_in ends at its first `]`; a
+    `]` written first in the set, `[]t]` or `[!]]`, or escaped in it, `[t\\]]`; and a `/`, which
+    a set never matches in a path."""
+    at = start + 1 + (word[start + 1] in "!^" and start + 1 in plain)
+    return at < end - 1 and not any(
+        word[place] in "[]\\/" or (word[place] in "!^-" and place not in plain)
+        for place in range(at, end - 1))
+
+
+def word_pattern(word: str, plain: frozenset[int], action: str | None
+                 ) -> tuple[str, str] | tuple[None, None] | None:
     """The paths a word may name as bash reads it, as a regular expression of the whole path and
     one of its last element, or None where it holds no glob, brace expansion or expansion
     (pattern_words; dispatch://INFRA-1545, round 38). Its quotes and backslashes are gone as
     CallScanner reads it. A `*` is any run of characters in one path element and a `?` any one, a
-    `[…]` its class and a `{a,b}` either word, written unquoted (globs_in); an expansion, `$x`,
-    `${x}`, `$(…)`, backticks or a GitHub expression, is any text at all, `/` included. The root
-    is written as target_parts writes it, and the literal directory in front of the first of them
-    normalised, so a composite action's `$GITHUB_ACTION_PATH/../../scripts/x*` is
-    `.github/scripts/x*`."""
-    word, spans, cut, patterns = target_parts(word, action, globs_in(word, plain))
+    `[…]` its class, which matches no `/`, and a `{a,b}` any of the words its unquoted commas cut
+    it into, each written unquoted (globs_in); an expansion, `$x`, `${x}`, `$(…)`, backticks or a
+    GitHub expression, is any text at all, `/` included. The root is written as target_parts
+    writes it, and the literal directory in front of the first of them normalised, so a composite
+    action's `$GITHUB_ACTION_PATH/../../scripts/x*` is `.github/scripts/x*`. A `[…]` is read as
+    its class only where it is a plain set (plain_set) sharing no character with the word's other
+    patterns and expansions, but a `*` or a `?` it holds as a character of its own, and a `{…}`
+    only where each of its parts is literal text, holding no pattern and no expansion; a word
+    holding any other `[…]` or `{…}` is a pair of None, for which compiled_pattern returns None, a
+    pattern this check cannot read (UNREADABLE_PATTERN; round 40). Until round 40 such a class was
+    copied as written, or read as any one character where it held `[:`, and a part of a brace
+    holding a pattern as its literal text, so `./r38-fe[[:alpha:]]ch.sh` and
+    `.github/scripts/{x,r38-fe*}.sh`, which bash fills in with r38-fetch.sh, matched no file."""
+    normal, spans, cut, patterns = target_parts(word, action, globs_in(word, plain))
     if not spans:
         return None
+    # `plain` moved with the root target_parts writes in front of the rest of the word.
+    plain = frozenset(place + len(normal) - len(word) for place in plain)
+    word = normal
+    if any((word[start] == "[" and not plain_set(word, plain, start, end)) or any(
+            (begin, close) != (start, end) and begin < end and start < close
+            and (word[start] == "{" or close - begin > 1) for begin, close in spans)
+           for start, end in patterns if word[start] in "[{"):
+        return None, None
 
     def regex(start: int, end: int) -> str:
         out = ""
@@ -6372,12 +6419,17 @@ def word_pattern(word: str, plain: frozenset[int],
                 negate = inner[:1] in ("!", "^")
                 inner = inner[1:] if negate else inner
                 # `&`, `~` and `|` are literal in a bash class and set operations a later
-                # Python reads in a doubled pair, `[&&]`, which it warns of now (round 39).
-                out += ("[^/]" if "[:" in inner or not inner else
-                        "[" + ("^/" if negate else "")
+                # Python reads in a doubled pair, `[&&]`, which it warns of now (round 39). A
+                # lookahead in front of the class leaves out the `/` rather than a `^/` in it, so
+                # a `-` written first in a negated set is that character, not a range from `/`
+                # (round 40).
+                out += ("(?!/)[" + ("^" if negate else "")
                         + re.sub(r"([\\\[&~|])", r"\\\1", inner) + "]")
-            elif "," in text and "{" not in text[1:-1]:
-                out += "(?:" + "|".join(re.escape(part) for part in text[1:-1].split(",")) + ")"
+            elif "{" not in text[1:-1] and (commas := [place for place in range(*span)
+                                                       if place in plain and word[place] == ","]):
+                cuts = [span[0], *commas, span[1] - 1]
+                out += "(?:" + "|".join(re.escape(word[begin + 1:close])
+                                        for begin, close in zip(cuts, cuts[1:])) + ")"
             else:
                 out += ".*"
             at = span[1]
@@ -6389,11 +6441,15 @@ def word_pattern(word: str, plain: frozenset[int],
     return re.escape(prefix) + regex(slash + 1, len(word)), regex(cut + 1, len(word))
 
 
-def compiled_pattern(regex: str) -> re.Pattern[str] | None:
+def compiled_pattern(regex: str | None) -> re.Pattern[str] | None:
     """A regular expression of word_pattern, or of a literal path escaped, compiled, or None
     where Python cannot compile it, as where word_pattern copies a `[…]` range that runs
     backwards, `[z-c]`, which bash accepts, or compiles it only with a warning that a later Python
-    reads it otherwise, as a class's `--` (UNREADABLE_PATTERN; dispatch://INFRA-1545, round 39)."""
+    reads it otherwise, as a class's `--` (UNREADABLE_PATTERN; dispatch://INFRA-1545, round 39),
+    or where word_pattern writes none, for a bracket expression that is no plain set (plain_set)
+    or a brace expansion with a part that is no literal text (round 40)."""
+    if regex is None:
+        return None
     with warnings.catch_warnings():
         warnings.simplefilter("error", FutureWarning)
         try:
@@ -6404,9 +6460,22 @@ def compiled_pattern(regex: str) -> re.Pattern[str] | None:
 
 def holds_github(word: str, plain: frozenset[int]) -> bool:
     """Whether a word's literal text holds `.github/` as a path element of its own, outside its
-    expansions and its patterns (pattern_words; dispatch://INFRA-1545, round 38)."""
-    spans = expansions_in(word) + globs_in(word, plain)
-    return any((match.start() == 0 or word[match.start() - 1] == "/")
+    expansions and its patterns (pattern_words; dispatch://INFRA-1545, round 38), a brace
+    expansion's parts included, which bash writes into the word: first in the word, after a `/`,
+    or first in a part of a `{…}`, after its `{` or a comma written unquoted (round 40). Until
+    round 40 a brace was a pattern like any other here, so `flock /tmp/l
+    {.github/scripts/r38-fe*,x}`, which bash runs as `flock /tmp/l .github/scripts/r38-fetch.sh
+    x`, was read as holding no `.github/`."""
+    globs = globs_in(word, plain)
+    braces = [(start, end) for start, end in globs if word[start] == "{"]
+    spans = expansions_in(word) + [span for span in globs if span not in braces]
+
+    def starts_element(at: int) -> bool:
+        return at == 0 or word[at - 1] == "/" or any(
+            start < at < end and (at - 1 == start or (at - 1 in plain and word[at - 1] == ","))
+            for start, end in braces)
+
+    return any(starts_element(match.start())
                and not any(start < match.end() and match.start() < end for start, end in spans)
                for match in re.finditer(r"\.github/", word))
 
@@ -6492,20 +6561,26 @@ def pattern_words(text: str, first_line: int, action: str | None, elsewhere: boo
         unread_named read it, and one that is all expansion as unnamed_target reads it.
       - Anywhere else but an argument of `echo` or `printf` and the places where this tree writes
         a file of unread_files (unread_place), the word is read as a whole path where its literal
-        text holds `.github/` (holds_github): `flock /tmp/l .github/scripts/x.s[h]`, `xargs`,
-        `find -exec`, `taskset` and every other program that runs its argument included, a set
-        with no end, which is why the word is read and not the program. A word naming no such
-        file passes, `ls .github/workflows/*.yaml`, and so does one with no literal `.github/`,
-        `ls packages/*/package.json` or `rm -rf "$RUNNER_TEMP"/*`. A redirect's file is such a
-        word too, `bash /dev/stdin < .github/scripts/x.s?`.
+        text, a brace's parts included (round 40), holds `.github/` (holds_github): `flock /tmp/l
+        .github/scripts/x.s[h]`, `xargs`, `find -exec`, `taskset` and every other program that
+        runs its argument included, a set with no end, which is why the word is read and not the
+        program. A word naming no such file passes, `ls .github/workflows/*.yaml`, and so does one
+        with no literal `.github/`, `ls packages/*/package.json` or `rm -rf "$RUNNER_TEMP"/*`. A
+        redirect's file is such a word too, `bash /dev/stdin < .github/scripts/x.s?`.
     In both, a variable the same text sets once to a literal value (literal_values) is read as
     that value (substituted), so `d=.github/scripts` and then `flock /tmp/l "$d"/x.s[h]` or `cp
     "$d"/x.p? "$RUNNER_TEMP/zz"` is refused, which a reader of the text as written can see.
-    And in both, a word whose pattern Python cannot compile (compiled_pattern), such as a `[…]`
-    range that runs backwards, `[z-c]`, which bash accepts, is refused with the reason
-    UNREADABLE_PATTERN whatever it could name, since this check cannot tell what that is (round
-    39); until then `ls .github/scripts/[z-c]*.sh` and `.github/scripts/x-[z-c].sh` stopped the
-    check with a traceback.
+    And in both, a word whose pattern this check cannot turn into a match is refused with the
+    reason UNREADABLE_PATTERN whatever it could name, since this check cannot tell what that is:
+    one Python cannot compile (compiled_pattern), such as a `[…]` range that runs backwards,
+    `[z-c]`, which bash accepts (round 39), and one holding a bracket expression other than a
+    plain set (plain_set), such as `[[:alpha:]]`, `[]t]` or `[!]]`, or a brace expansion with a
+    part that is no literal text, such as `{x,r38-fe*}`, neither of which word_pattern translates
+    (round 40). Until round 39 `ls .github/scripts/[z-c]*.sh` and `.github/scripts/x-[z-c].sh`
+    stopped the check with a traceback, and until round 40 `cd .github/scripts &&
+    ./r38-fe[[:alpha:]]ch.sh`, `flock /tmp/l .github/scripts/r38-fe[[:alpha:]]ch.sh` and `flock
+    /tmp/l .github/scripts/r38-fe{t*,}.sh`, which bash fills in with r38-fetch.sh, passed under a
+    key below its retries.
     A file a word names literally, which SCRIPT_CALL or unread_named reads by its name, is left to
     that reading, which charges a call or refuses it by name. A `cd` or a `pushd` in the text, or
     a working directory the step runs in (`elsewhere`), moves where a literal path is read from
@@ -7143,7 +7218,8 @@ for path, name, (who, loops, found, called), owner in body_reads:
         if not any(earlier.startswith(named_at) for earlier in problems):
             problem(path, line, f"{who} " + UNNAMED_RUN.format(does=does, why=why,
                                                                cure=REASON_CURES[why])
-                    + f" (dispatch://INFRA-1545, round {38 if why == PATTERN_RUN else 39}).")
+                    + " (dispatch://INFRA-1545, "
+                    + ("round 38" if why == PATTERN_RUN else "rounds 39 and 40") + ").")
     for command, word in variable_calls(loops) if owed else ():
         entry = next((entry for entry in DECLARED_CALLS
                       if name == "-" and (entry.path, entry.word) == (path, word)), None)
