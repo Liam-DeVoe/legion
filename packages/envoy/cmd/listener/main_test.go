@@ -20,6 +20,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
@@ -530,7 +531,11 @@ func TestPublishHandlerReturnsWithinDeadline(t *testing.T) {
 	}
 	originalConfig := info.Config
 	unboundConfig := originalConfig
-	unboundConfig.Subjects = []string{"notifications.bound.>"}
+	// The binding of GitHub's subjects lost in a narrowing the client's keeper leaves
+	// (bustest.NarrowedSubjects).
+	unboundConfig.Subjects = bustest.NarrowedSubjects(t, originalConfig.Subjects, func(subject string) bool {
+		return subject == "notifications.github.>"
+	})
 	if _, err := client.JS().UpdateStream(&unboundConfig); err != nil {
 		t.Fatalf("remove publish subject binding: %v", err)
 	}

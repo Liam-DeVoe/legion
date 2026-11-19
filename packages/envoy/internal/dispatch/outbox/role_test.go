@@ -393,7 +393,8 @@ func (m *markers) await(t *testing.T, client *bus.Client, subject string) {
 // ends. A forward to any other holder is then stored nowhere, so nothing acknowledges it and
 // nothing else answers one: that is the shape a role forward goes unanswered in, and the batch
 // that sent it waits roleForwardAckTimeout. The holder's own subscription is handed the forward
-// all the same, over core NATS.
+// all the same, over core NATS. The narrowing is one the rig client's keeper leaves, however long
+// the test runs (bustest.NarrowedSubjects).
 func (r *roleRig) narrowAgentCapture(t *testing.T, holders ...string) func() {
 	t.Helper()
 	js, err := r.conn.JetStream()
@@ -405,7 +406,7 @@ func (r *roleRig) narrowAgentCapture(t *testing.T, holders ...string) func() {
 		t.Fatalf("read the stream: %v", err)
 	}
 	capturing, narrowed := info.Config, info.Config
-	narrowed.Subjects = slices.DeleteFunc(slices.Clone(capturing.Subjects), func(subject string) bool {
+	narrowed.Subjects = bustest.NarrowedSubjects(t, capturing.Subjects, func(subject string) bool {
 		return subject == contracts.AgentTopicPrefix+">"
 	})
 	for _, holder := range holders {

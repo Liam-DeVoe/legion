@@ -1,8 +1,9 @@
 // Package bustest holds the deployed stream the start tests of envoy-listener and envoy-dispatch
 // both begin from, the check each makes of what a start left of it, the drift table each start
-// corrects and the fill loop the full-stream tests begin from. The bus's own tests cannot import
-// it (it imports the bus) and keep their own copies: the fixture deployedClusterStream, the drift
-// table in internal/bus/stream_replicas_test.go and the fill loops in that file and in
+// corrects, the fill loop the full-stream tests begin from and the narrowing a test makes when it
+// takes a subject out of the stream. The bus's own tests cannot import it (it imports the bus) and
+// keep their own copies: the fixture deployedClusterStream, the drift table in
+// internal/bus/stream_replicas_test.go and the fill loops in that file and in
 // internal/bus/publish_not_stored_test.go. Every test outside package bus takes them from here.
 package bustest
 
@@ -178,4 +179,53 @@ func FillStream(t testing.TB, client *bus.Client, most int) {
 		}
 		return
 	}
+}
+
+// unstoredToken is the token NarrowedSubjects puts in place of each wildcard of a subject it takes
+// out of the stream. No test publishes on a subject that holds it.
+const unstoredToken = "unstored"
+
+// NarrowedSubjects is subjects with each one drop matches taken out of the stream's reach: in its
+// place stands the same subject with each wildcard made the token "unstored", which overlaps it and
+// which no test publishes on. A stream given the list stores nothing a dropped subject captured,
+// and every keeper of the stream leaves the list as it is.
+//
+// A test that takes a subject out with nothing in its place has it put back while it runs. Every
+// client that owns the stream (bus.ConnectOwningStream) keeps it, every 30 s from that client's
+// start, and adds back each subject of its binary's that no subject of the stream overlaps
+// (bus.keptSubjects); a subject that overlaps it is left alone. So the narrowing held only while
+// the test's work from the client's start to the publish the narrowing is for took less than that
+// period, and a loaded runner can take longer: TestABackedOffEventHoldsBackOnlyItsDestination
+// failed on a dev box when 30 s passed between its client's start and the outbox's first publish,
+// and the keeper put the agent subjects back a second before the outbox published the event the
+// test had refused.
+//
+// It fails the test when drop matches no subject, or matches one with no wildcard, which no other
+// subject overlaps.
+func NarrowedSubjects(t testing.TB, subjects []string, drop func(subject string) bool) []string {
+	t.Helper()
+	narrowed := slices.Clone(subjects)
+	dropped := 0
+	for i, subject := range narrowed {
+		if !drop(subject) {
+			continue
+		}
+		tokens := strings.Split(subject, ".")
+		wildcards := 0
+		for j, token := range tokens {
+			if token == "*" || token == ">" {
+				tokens[j] = unstoredToken
+				wildcards++
+			}
+		}
+		if wildcards == 0 {
+			t.Fatalf("take %s out of the stream: it has no wildcard, so no subject overlaps it and a keeper puts it back", subject)
+		}
+		narrowed[i] = strings.Join(tokens, ".")
+		dropped++
+	}
+	if dropped == 0 {
+		t.Fatalf("take a subject out of the stream's %v: none is one to take out", subjects)
+	}
+	return narrowed
 }

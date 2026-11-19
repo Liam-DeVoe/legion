@@ -18,6 +18,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -164,7 +165,9 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 	}
 	capturing := info.Config
 	notAgents := info.Config
-	notAgents.Subjects = slices.DeleteFunc(slices.Clone(capturing.Subjects), func(subject string) bool {
+	// Narrowed so the client's keeper leaves it, however long the setup below takes
+	// (bustest.NarrowedSubjects).
+	notAgents.Subjects = bustest.NarrowedSubjects(t, capturing.Subjects, func(subject string) bool {
 		return subject == contracts.AgentTopicPrefix+">"
 	})
 	if _, err := js.UpdateStream(&notAgents); err != nil {
@@ -383,16 +386,13 @@ func newSessionOrderRig(t *testing.T) sessionOrderRig {
 }
 
 // refuse has the stream capture no subject under prefix, so NATS answers a publish there with no
-// responders.
+// responders, in a narrowing the client's keeper leaves (bustest.NarrowedSubjects).
 func (r sessionOrderRig) refuse(t *testing.T, prefix string) {
 	t.Helper()
 	narrowed := r.capturing
-	narrowed.Subjects = slices.DeleteFunc(slices.Clone(r.capturing.Subjects), func(subject string) bool {
+	narrowed.Subjects = bustest.NarrowedSubjects(t, r.capturing.Subjects, func(subject string) bool {
 		return strings.HasPrefix(subject, prefix)
 	})
-	if len(narrowed.Subjects) == len(r.capturing.Subjects) {
-		t.Fatalf("no stream subject is under %q: %v", prefix, r.capturing.Subjects)
-	}
 	if _, err := r.js.UpdateStream(&narrowed); err != nil {
 		t.Fatalf("stop the stream capturing %s: %v", prefix, err)
 	}

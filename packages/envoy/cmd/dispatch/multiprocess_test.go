@@ -50,6 +50,7 @@ import (
 	"github.com/reearth/ygo/encoding"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -2391,9 +2392,7 @@ func requireCommentsPublished(t *testing.T, pair *dispatchPair, holder *testSess
 // the test ends. A forward to any other session is then stored nowhere, so nothing acknowledges
 // it and the batch that sent it waits out its window, which is the shape a forward goes
 // unanswered in; the session's own core subscription is handed it all the same. The processes'
-// keepers leave the narrowed list alone: a keeper puts back only a subject of this binary's that
-// no subject the stream holds overlaps (bus.keptSubjects), and a holder's agent subject overlaps
-// notifications.agent.>.
+// keepers leave the narrowed list alone (bustest.NarrowedSubjects).
 func narrowAgentCapture(t *testing.T, js natsgo.JetStreamContext, holders ...string) func() {
 	t.Helper()
 	info, err := js.StreamInfo(bus.Stream)
@@ -2401,7 +2400,7 @@ func narrowAgentCapture(t *testing.T, js natsgo.JetStreamContext, holders ...str
 		t.Fatalf("read the notification stream: %v", err)
 	}
 	capturing, narrowed := info.Config, info.Config
-	narrowed.Subjects = slices.DeleteFunc(slices.Clone(capturing.Subjects), func(subject string) bool {
+	narrowed.Subjects = bustest.NarrowedSubjects(t, capturing.Subjects, func(subject string) bool {
 		return subject == contracts.AgentTopicPrefix+">"
 	})
 	for _, holder := range holders {

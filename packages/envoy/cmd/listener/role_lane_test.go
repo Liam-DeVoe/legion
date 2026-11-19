@@ -17,6 +17,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
@@ -468,7 +469,8 @@ func TestRoleLaneForwardTheStreamDoesNotStoreIsDeliveryFailed(t *testing.T) {
 		t.Fatalf("read the stream: %v", err)
 	}
 	config := info.Config
-	config.Subjects = slices.DeleteFunc(slices.Clone(config.Subjects), func(subject string) bool {
+	// Taken out in a narrowing the listeners' keepers leave (bustest.NarrowedSubjects).
+	config.Subjects = bustest.NarrowedSubjects(t, config.Subjects, func(subject string) bool {
 		return strings.HasPrefix(subject, contracts.AgentTopicPrefix)
 	})
 	if _, err := client.JS().UpdateStream(&config); err != nil {

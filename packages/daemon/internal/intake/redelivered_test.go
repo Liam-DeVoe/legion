@@ -59,6 +59,13 @@ const (
 	redeliveredSecret   = "redelivered-webhook-secret"
 	redeliveredClientID = "Iv1.redelivered"
 	githubSubjects      = "notifications.github.>"
+	// unstoredGitHub takes githubSubjects' place in the stream while the test refuses GitHub's
+	// deliveries: a subject inside it that nothing publishes on. The listener keeps the stream
+	// every 30 s from its start, and puts back a subject of its own only where no subject of the
+	// stream overlaps it (Envoy's bus.keptSubjects), so this narrowing holds however long the test
+	// takes, where githubSubjects taken out with nothing in its place would be back once 30 s
+	// had passed since the listener started.
+	unstoredGitHub = "notifications.github.unstored"
 )
 
 // redeliveredRepositories records an issue on acme/widgets at main, as the daemon would once
@@ -126,12 +133,15 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 	})
 
 	// The stream stops capturing GitHub's subjects: the listener reconciled it when it started,
-	// so its subjects are the listener's own, and every one but GitHub's stays.
+	// so its subjects are the listener's own, and every one but GitHub's stays, which gives way
+	// to unstoredGitHub.
 	captured := streamSubjects(t, stream)
 	if !slices.Contains(captured, githubSubjects) {
 		t.Fatalf("the stream the listener reconciled captures %v, want %s among them", captured, githubSubjects)
 	}
-	setStreamSubjects(t, js, stream, slices.DeleteFunc(slices.Clone(captured), func(subject string) bool { return subject == githubSubjects }))
+	narrowed := slices.Clone(captured)
+	narrowed[slices.Index(narrowed, githubSubjects)] = unstoredGitHub
+	setStreamSubjects(t, js, stream, narrowed)
 	t.Logf("1. the stream ENVOY_NOTIFICATIONS captures %v: no %s", streamSubjects(t, stream), githubSubjects)
 
 	key, pemText := redeliveredAppKey(t)
