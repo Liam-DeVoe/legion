@@ -4247,7 +4247,7 @@ jobs:
               - '.github/private-names.toml'
               # test-lib.sh, which the harness sources for check/is/summary (:69), and the
               # frozen script it runs every case through beside the binary, symlinked into each
-              # fixture (:218,429,475,569). That script is the subject of
+              # fixture (:218,427,473,567). That script is the subject of
               # check_private_names_test above, which gates another job's step: this job reads
               # it as the engine it compares against.
               - '.github/scripts/test-lib.sh'

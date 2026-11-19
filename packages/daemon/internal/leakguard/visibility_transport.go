@@ -350,25 +350,25 @@ func curlAnswer(status int, stdout, stderr, slug string) (Visibility, error) {
 		if httpStatus == 0 && slices.Contains(curlTransportExits, status) {
 			return "", &transportError{program: "curl", said: fmt.Sprintf("exit %d: %s", status, said(body, stderr))}
 		}
-		return "", fmt.Errorf("curl's read of repos/%s exited %d: %s", slug, status, said(body, stderr))
+		return "", fmt.Errorf("curl's read of repos/%s exited %d: %s", shownText(slug), status, said(body, stderr))
 	}
 	if limited := rateLimitFrom(stdout); limited != nil {
 		return "", limited
 	}
 	if httpStatus != http.StatusOK {
-		return "", fmt.Errorf("curl's read of repos/%s answered the status %d: %s", slug, httpStatus, said(body, stderr))
+		return "", fmt.Errorf("curl's read of repos/%s answered the status %d: %s", shownText(slug), httpStatus, said(body, stderr))
 	}
 	var answer struct {
 		Visibility string `json:"visibility"`
 	}
 	if err := json.Unmarshal([]byte(body), &answer); err != nil {
-		return "", fmt.Errorf("curl's read of repos/%s answered a body that is not JSON: %v", slug, err)
+		return "", fmt.Errorf("curl's read of repos/%s answered a body that is not JSON: %v", shownText(slug), err)
 	}
 	switch visibility := Visibility(strings.ToLower(strings.TrimSpace(answer.Visibility))); visibility {
 	case Public, Private, Internal:
 		return visibility, nil
 	default:
-		return "", fmt.Errorf("curl's read of repos/%s answered no visibility GitHub reports", slug)
+		return "", fmt.Errorf("curl's read of repos/%s answered no visibility GitHub reports", shownText(slug))
 	}
 }
 

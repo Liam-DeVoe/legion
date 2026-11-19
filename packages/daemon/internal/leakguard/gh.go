@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -203,7 +204,7 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 			records = append(records, record)
 		}
 	}
-	return answer, rules.pass(ctx, whatGhCall, records)
+	return answer, rules.Check(ctx, whatGhCall, records...)
 }
 
 // ghArgRecords is the records of args, a gh call's argv: one of each argument, and none that
@@ -408,7 +409,8 @@ func jsonBody(record Record, graphQL bool) []Record {
 // JSON document, and false where it is not: no JSON at all, a document with more after it, or
 // two documents. A string is one record, an object's names and values alike, labelled
 // "<record>, JSON <path>" and a name "<record>, JSON <path> (name)", the path written as jq
-// writes it (`.body`, `.comments[0].body`, `."a b"`, and `.` for the document itself).
+// writes it (`.body`, `.comments[0].body`, `."a b"`, and `.` for the document itself) within the
+// bounds jsonLabel keeps. An empty string makes no record: it holds no text a rule can match.
 //
 // A body is read one string at a time because GitHub stores it one string at a time: a review's
 // body and each of its comments' bodies are texts of their own, shown apart, and a rule that
@@ -436,16 +438,21 @@ func jsonFields(record Record, graphQL bool) ([]Record, bool) {
 	// number still, and not an error that sends the document to the raw read.
 	decoder.UseNumber()
 	var fields []Record
-	// open are the arrays and objects the next token stands inside, the outermost first.
+	// open are the arrays and objects the next token stands inside, the outermost first, and path
+	// the steps from the document to the innermost of them, one for each but the document itself.
+	// A label is rendered from path when its string is read (jsonLabel), so that no string's
+	// label costs the length of the path it stands at.
 	var open []jsonOpen
+	var path []string
 read:
 	for {
 		token, err := decoder.Token()
 		if err != nil {
 			return nil, false
 		}
-		// at is the path of the value token is or opens.
-		at := ""
+		// at is the path of the value token is or opens: path and, inside an array or an object,
+		// the step to that value.
+		at := path
 		if n := len(open); n > 0 {
 			inner := &open[n-1]
 			switch {
@@ -454,27 +461,37 @@ read:
 				if len(open) == 0 {
 					break read
 				}
+				path = path[:len(path)-1]
 				continue
 			case inner.array:
-				at = inner.path + "[" + strconv.Itoa(inner.next) + "]"
+				at = append(path, "["+strconv.Itoa(inner.next)+"]")
 				inner.next++
 			case inner.member == "":
 				// The decoder hands an object nothing but a string where a name stands.
 				name, _ := token.(string)
-				inner.member = inner.path + jqMember(name)
-				fields = append(fields, Record{Label: jsonLabel(record.Label, inner.member) + " (name)", Text: name})
+				inner.member = jqMember(name)
+				if name != "" {
+					fields = append(fields, Record{Label: jsonLabel(record.Label, append(path, inner.member)) + " (name)", Text: name})
+				}
 				continue
 			default:
-				at, inner.member = inner.member, ""
+				at = append(path, inner.member)
+				inner.member = ""
 			}
 		}
 		switch value := token.(type) {
 		case json.Delim:
-			open = append(open, jsonOpen{path: at, array: value == '['})
+			if len(open) > 0 {
+				path = at
+			}
+			open = append(open, jsonOpen{array: value == '['})
 			continue
 		case string:
+			if value == "" {
+				break
+			}
 			field := Record{Label: jsonLabel(record.Label, at), Text: value}
-			if graphQL && at == "."+graphQLQuery {
+			if graphQL && len(at) == 1 && at[0] == "."+graphQLQuery {
 				fields = append(fields, graphQLRecords(field)...)
 			} else {
 				fields = append(fields, field)
@@ -491,43 +508,76 @@ read:
 	return fields, true
 }
 
-// jsonOpen is an array or an object of a JSON document being read (jsonFields): its own path, ""
-// for the document itself; for an array, the index of its next element; and for an object, the
-// path of the member whose value comes next, "" where a name comes next.
+// jsonOpen is an array or an object of a JSON document being read (jsonFields): for an array,
+// the index of its next element; and for an object, the step to the member whose value comes
+// next (jqMember), "" where a name comes next.
 type jsonOpen struct {
-	path   string
 	array  bool
 	next   int
 	member string
 }
 
-// jsonLabel is the label of the string at path of the document record labels.
-func jsonLabel(record, path string) string {
-	if path == "" {
-		path = "."
+// The bounds of a JSON path in a label (jsonLabel), so that a label stays short whatever the
+// document is: a body can nest thousands of objects, and a label holding the whole path would
+// cost each string of such a body the length of its path, which for the whole body grows with the
+// square of its depth. A path of more than maxPathSteps steps is shown as its first
+// pathStepsShownBefore steps, "…", and its last pathStepsShownAfter; and a step is shown to
+// maxStepShown bytes (jqMember).
+const (
+	maxPathSteps         = 8
+	pathStepsShownBefore = 2
+	pathStepsShownAfter  = 5
+	maxStepShown         = 64
+)
+
+// jsonLabel is the label of the string at path, its steps from the document, of the document
+// record labels, within the bounds above.
+func jsonLabel(record string, path []string) string {
+	var label strings.Builder
+	label.WriteString(record)
+	label.WriteString(", JSON ")
+	if len(path) == 0 {
+		label.WriteString(".")
+		return label.String()
 	}
-	return record + ", JSON " + path
+	if len(path) > maxPathSteps {
+		for _, step := range path[:pathStepsShownBefore] {
+			label.WriteString(step)
+		}
+		label.WriteString("…")
+		path = path[len(path)-pathStepsShownAfter:]
+	}
+	for _, step := range path {
+		label.WriteString(step)
+	}
+	return label.String()
 }
 
 // jqMember is the step of a jq path to the member name: `.name` for a name jq writes bare, a
 // letter or an underscore and then letters, digits and underscores, and `."name"` quoted as JSON
 // quotes it for every other, so that a name holding a newline or a quote cannot break the label
-// it stands in.
+// it stands in. A step longer than maxStepShown bytes is cut there, on a rune boundary, and "…"
+// marks the cut: a name can be a whole body long, and its step is in the label of every string
+// beneath it.
 func jqMember(name string) string {
 	bare := name != ""
 	for i, c := range name {
 		letter := c == '_' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
 		bare = bare && (letter || i > 0 && '0' <= c && c <= '9')
 	}
-	if bare {
-		return "." + name
+	step := "." + name
+	if !bare {
+		var quoted strings.Builder
+		encoder := json.NewEncoder(&quoted)
+		encoder.SetEscapeHTML(false)
+		// A string always encodes: the error is a writer's, and a Builder's write never fails.
+		_ = encoder.Encode(name)
+		step = "." + strings.TrimSuffix(quoted.String(), "\n")
 	}
-	var quoted strings.Builder
-	encoder := json.NewEncoder(&quoted)
-	encoder.SetEscapeHTML(false)
-	// A string always encodes: the error is a writer's, and a Builder's write never fails.
-	_ = encoder.Encode(name)
-	return "." + strings.TrimSuffix(quoted.String(), "\n")
+	if len(step) > maxStepShown {
+		step = step[:runeBack(step, maxStepShown, 0)] + "…"
+	}
+	return step
 }
 
 // maxGhFile is the most this package reads from one file a gh call would send, and from the
@@ -733,35 +783,27 @@ func ghFileArgs(args []string) ([]GhFile, string) {
 	return files, stdin
 }
 
-// readGhFile is the text of one file a gh call would send. A file that cannot be opened, cannot
-// be read, or is longer than maxGhFile is a setup failure naming the option that named it and the
-// path as it was written: a guard that could not read what the call publishes has cleared
-// nothing, and a call it cleared would be the hole this closes. The error under it is reduced to
-// what went wrong (withoutPath), since the message names the path already.
+// readGhFile is the text of one file a gh call would send, read to maxGhFile (readBounded). A
+// file that cannot be opened, cannot be read, or is longer than maxGhFile is a setup failure
+// naming the option that named it and the path as it was written, each as shownText shows it: a
+// guard that could not read what the call publishes has cleared nothing, and a call it cleared
+// would be the hole this closes. The error under it is what went wrong alone, since the message
+// names the path already.
 func readGhFile(named GhFile) (string, error) {
-	failed := func(why string, err error) error {
-		return &SetupFailure{
-			What: whatGhCall,
-			Why:  "the file " + named.Option + " names, " + named.Path + ", " + why,
-			Err:  withoutPath(err),
-		}
+	text, err := readBounded(named.Path, maxGhFile)
+	var failed *boundedReadError
+	if !errors.As(err, &failed) {
+		return string(text), err
 	}
-	file, err := os.Open(named.Path)
-	if err != nil {
-		return "", failed("could not be opened", err)
+	why := failed.phrase
+	if failed.err == nil {
+		why += ", which is more text than GitHub takes through it"
 	}
-	defer file.Close()
-	// One byte past the bound, so a file at the bound reads whole and a longer one is known to
-	// be longer without reading it. The stat is not asked for: a named pipe and a character
-	// device report a size of zero and would read on past it.
-	text, err := io.ReadAll(io.LimitReader(file, maxGhFile+1))
-	if err != nil {
-		return "", failed("could not be read", err)
+	return "", &SetupFailure{
+		What: whatGhCall,
+		Why:  "the file " + shownText(named.Option) + " names, " + shownText(named.Path) + ", " + why,
+		Err:  failed.err,
 	}
-	if len(text) > maxGhFile {
-		return "", failed(fmt.Sprintf("is longer than %d bytes, which is more text than GitHub takes through it", maxGhFile), nil)
-	}
-	return string(text), nil
 }
 
 // askAgain buffers the caller's standard input to a regular file and asks the check again, with

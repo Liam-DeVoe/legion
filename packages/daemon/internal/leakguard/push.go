@@ -96,15 +96,16 @@ type PushRequest struct {
 }
 
 // PushName is what a refusal and a setup failure of a push call the write: "the push to origin",
-// and "the push" where the caller has no remote's name. It is exported because a caller that
-// reports a failure of its own before the guard runs — `legion leak-check pre-push` reading
-// git's update lines — must name the write in the same words the guard would, and two copies of
-// one sentence are two that drift apart.
+// the remote as git named it to the hook and as shownText shows it, and "the push" where the
+// caller has no remote's name. It is exported because a caller that reports a failure of its own
+// before the guard runs — `legion leak-check pre-push` reading git's update lines — must name the
+// write in the same words the guard would, and two copies of one sentence are two that drift
+// apart.
 func PushName(remote string) string {
 	if remote == "" {
 		return "the push"
 	}
-	return "the push to " + remote
+	return "the push to " + shownText(remote)
 }
 
 // Push checks a push before it is made. The shared check runs in its pre-push shape — the update
@@ -151,7 +152,7 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	if err != nil {
 		return &SetupFailure{What: what, Why: "the push's commits could not be read", Err: err}
 	}
-	return rules.pass(ctx, what, records)
+	return rules.Check(ctx, what, records...)
 }
 
 // pushRecords is everything a push would publish, as records: one per ref name, and for each

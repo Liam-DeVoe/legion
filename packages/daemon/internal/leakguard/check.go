@@ -82,21 +82,22 @@ func (g *Guard) Resolve() (string, error) {
 	pointer := filepath.Join(config, pointerFile)
 	content, err := os.ReadFile(pointer)
 	if err != nil {
-		return "", fmt.Errorf("%s names none, %s is on no PATH entry, and the pointer file %s could not be read: %w", CheckVar, checkName, pointer, err)
+		return "", fmt.Errorf("%s names none, %s is on no PATH entry, and the pointer file %s could not be read: %w", CheckVar, checkName, shownText(pointer), withoutPath(err))
 	}
 	named := strings.TrimSpace(string(content))
 	if named == "" {
-		return "", fmt.Errorf("the pointer file %s names no check", pointer)
+		return "", fmt.Errorf("the pointer file %s names no check", shownText(pointer))
 	}
-	return found(named, "the pointer file "+pointer)
+	return found(named, "the pointer file "+shownText(pointer))
 }
 
 // found is path, once a file is there: a name taken from a variable, an option or a pointer file
 // is somebody's word for where the check is, and a stale one is better reported as the missing
-// check it is than as a child process that would not start.
+// check it is than as a child process that would not start. The report names the path as
+// shownText shows it, and once: the error under it is what went wrong alone (withoutPath).
 func found(path, source string) (string, error) {
 	if _, err := os.Stat(path); err != nil {
-		return "", fmt.Errorf("%s names %s, which is not there: %w", source, path, err)
+		return "", fmt.Errorf("%s names %s, which is not there: %w", source, shownText(path), withoutPath(err))
 	}
 	return path, nil
 }

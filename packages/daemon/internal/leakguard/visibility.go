@@ -413,13 +413,13 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 		if unserved := g.unservedOwner(status, printed, slug); unserved != nil {
 			return "", unserved
 		}
-		return "", fmt.Errorf("gh api repos/%s exited %d: %s", slug, status, strings.TrimSpace(printed))
+		return "", fmt.Errorf("gh api repos/%s exited %d: %s", shownText(slug), status, strings.TrimSpace(printed))
 	}
 	switch visibility := Visibility(strings.ToLower(strings.TrimSpace(visibilityBody(printed)))); visibility {
 	case Public, Private, Internal:
 		return visibility, nil
 	default:
-		return "", fmt.Errorf("gh api repos/%s answered no visibility GitHub reports", slug)
+		return "", fmt.Errorf("gh api repos/%s answered no visibility GitHub reports", shownText(slug))
 	}
 }
 
@@ -484,7 +484,7 @@ type unservedOwnerError struct {
 }
 
 func (e *unservedOwnerError) Error() string {
-	return fmt.Sprintf("gh api repos/%s exited 2: %s", e.slug, ownerNotServedLine(e.owner, e.ownersDir))
+	return fmt.Sprintf("gh api repos/%s exited 2: %s", shownText(e.slug), ownerNotServedLine(e.owner, e.ownersDir))
 }
 
 // graphQLVisibility reads slug's visibility from GitHub's GraphQL API through gh, as the same
@@ -552,7 +552,7 @@ func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error)
 		whole = errors.Is(err, io.EOF)
 	}
 	if !whole {
-		return "", fmt.Errorf("gh api graphql for %s exited %d without one whole GraphQL answer: %s", slug, status, said(body, stderr))
+		return "", fmt.Errorf("gh api graphql for %s exited %d without one whole GraphQL answer: %s", shownText(slug), status, said(body, stderr))
 	}
 	httpStatus, headers := responseHeaders(printed)
 	if len(answer.Errors) > 0 {
@@ -568,25 +568,25 @@ func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error)
 		if limitedOnly {
 			return "", &rateLimitError{}
 		}
-		return "", fmt.Errorf("GraphQL answered %s with %s", slug, strings.Join(errs, "; "))
+		return "", fmt.Errorf("GraphQL answered %s with %s", shownText(slug), strings.Join(errs, "; "))
 	}
 	if limited, _ := githubrest.Limit(gitHubResponse(httpStatus, headers), []byte(answer.Message)); limited {
 		return "", &rateLimitError{}
 	}
 	switch {
 	case httpStatus == 0:
-		return "", fmt.Errorf("gh api graphql for %s printed no status line this reads: %s", slug, said(body, stderr))
+		return "", fmt.Errorf("gh api graphql for %s printed no status line this reads: %s", shownText(slug), said(body, stderr))
 	case httpStatus != 200:
-		return "", fmt.Errorf("gh api graphql for %s answered the status %d: %s", slug, httpStatus, said(body, stderr))
+		return "", fmt.Errorf("gh api graphql for %s answered the status %d: %s", shownText(slug), httpStatus, said(body, stderr))
 	}
 	if status != 0 {
-		return "", fmt.Errorf("gh api graphql for %s exited %d: %s", slug, status, said(body, stderr))
+		return "", fmt.Errorf("gh api graphql for %s exited %d: %s", shownText(slug), status, said(body, stderr))
 	}
 	if answer.Data == nil || answer.Data.Repository == nil {
-		return "", fmt.Errorf("GraphQL answered no repository for %s: %s", slug, said(body, stderr))
+		return "", fmt.Errorf("GraphQL answered no repository for %s: %s", shownText(slug), said(body, stderr))
 	}
 	if answered := answer.Data.Repository.NameWithOwner; !strings.EqualFold(answered, slug) {
-		return "", fmt.Errorf("GraphQL answered for the repository %q, not %s", answered, slug)
+		return "", fmt.Errorf("GraphQL answered for the repository %q, not %s", answered, shownText(slug))
 	}
 	switch answer.Data.Repository.Visibility {
 	case "PUBLIC":
@@ -596,7 +596,7 @@ func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error)
 	case "INTERNAL":
 		return Internal, nil
 	default:
-		return "", fmt.Errorf("GraphQL answered %q as the visibility of %s, which is none GitHub defines", answer.Data.Repository.Visibility, slug)
+		return "", fmt.Errorf("GraphQL answered %q as the visibility of %s, which is none GitHub defines", answer.Data.Repository.Visibility, shownText(slug))
 	}
 }
 
@@ -719,7 +719,7 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 		return "", procgroup.Said(err, printed)
 	}
 	if status != 0 {
-		return "", fmt.Errorf("git ls-remote of %s exited %d: %s", slug, status, strings.TrimSpace(printed))
+		return "", fmt.Errorf("git ls-remote of %s exited %d: %s", shownText(slug), status, strings.TrimSpace(printed))
 	}
 	return Public, nil
 }

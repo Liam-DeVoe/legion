@@ -3567,6 +3567,8 @@ A gh call has these records:
 
 - Each JSON string of a request body (`--input <file>` or `--input -`) that is exactly one JSON document, labelled `<record>, JSON <path>`, where `<record>` is the body's own label.
   An object's name is a record too, labelled `<record>, JSON <path> (name)`.
+  A path of more than 8 steps is shown as its first 2 steps, `…` and its last 5, and a step longer than 64 bytes is cut there, with `…`, so a deep body's labels stay short.
+  An empty string is no record, since no rule can match it.
   A body that is not exactly one JSON document is read as one record.
 
 - Each string literal of a GraphQL query, labelled `<record>, GraphQL string <k>`, where `<record>` is the label of the record that holds the query.
@@ -3586,6 +3588,9 @@ Under that line it shows one line for each finding, indented two spaces:
 <record>: <description>: matched "<match>" on line <n>: "<line>"
 ```
 
+`<record>` is the record's label.
+A character that does not print, and `\`, stands in it as Go writes it in a quoted string, so a newline in a field's name or a path cannot break the report apart either.
+A label longer than 200 bytes is shown as its first 60 bytes, `…` and its last 140.
 `<description>` is the description the deployment's rule gives.
 `<match>` and `<line>` are Go-quoted, so a newline or a control character cannot break the report apart.
 The match is cut at 200 bytes.
@@ -3593,7 +3598,7 @@ The line is a window of at most 120 bytes on each side of the match shown.
 `…` marks each cut.
 A path rule's finding stands on no line, and reads `<record>: <description>: matched the path`.
 A report shows at most 40 lines, and then `… and <k> more matches not shown`.
-The report prints each record as it was written, with no masking.
+The report masks nothing it shows.
 It shows the text because the agent that would make the write wrote it, so nothing in it is hidden from that agent.
 This repository's public CI never prints the guard's report.
 
@@ -3619,6 +3624,7 @@ The boot's line above says it once, in the daemon's log.
 `legion gh` logs such a call with the visibility source `no-rules` (`packages/daemon/cmd/legion/gh_reads.go`).
 Where `LEGION_PRIVATE_NAME_RULES_FILE` names a file the guard cannot use (missing, unreadable, longer than 256 KiB, or refused above), the guard refuses the write as a setup failure:
 `LEAK CHECK SETUP ERROR: <the write>: the private-name rule file <path>, which LEGION_PRIVATE_NAME_RULES_FILE names, <why>`.
+`<path>` is shown as the report shows a label, and so is every path, repository and option a setup failure of the guard names.
 A deployment that named rules meant them to run, and a guard that ran none in their place would pass what they refuse.
 
 **The operator-launched controller.**

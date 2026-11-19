@@ -10,10 +10,11 @@ import (
 
 // The fixture's private-name rules. The guard runs the rule file a deployment names, and no
 // Legion binary carries one, so the tests of the guard and of everything that drives it name this
-// file instead, through LEGION_PRIVATE_NAME_RULES_FILE (WriteRules) or as compiled rules handed to
-// the guard. Every name in it is an invented word, which names nothing of any deployment's, and
-// every description holds no colon, so that a report line reads as record, description and
-// whatever the report adds after them.
+// file instead, through LEGION_PRIVATE_NAME_RULES_FILE (WriteRules) or as rules compiled
+// (leakguard.LoadRules) and run alone (leakguard.RuleSet.Check), as the daemon's branch create
+// runs the set it compiled at boot. Every name in it is an invented word, which names nothing of
+// any deployment's, and every description holds no colon, so that a report line reads as record,
+// description and whatever the report adds after them.
 
 // RulesHost is a Tailscale MagicDNS host of invented words, a machine of the fixture's invented
 // tailnet, which the host rule refuses. It is spelled in two pieces so that a source file holding

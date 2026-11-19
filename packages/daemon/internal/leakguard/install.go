@@ -431,9 +431,9 @@ func firstLine(printed string) string {
 // missing check, which is the right answer on a machine that writes to public repositories with
 // no check.
 //
-// With a pin it answers a *SetupFailure, naming the pin and what the install holds, where the
-// check is absent, where the install records no tag, and where it records another tag: a role
-// whose check is not the pin's runs no agent.
+// With a pin it answers a *SetupFailure, naming the pin and what the install holds, each as
+// shownText shows it, where the check is absent, where the install records no tag, and where it
+// records another tag: a role whose check is not the pin's runs no agent.
 func Installed(env []string, dir string) (string, error) {
 	pin := value(env, TagVariable)
 	if pin == "" {
@@ -447,13 +447,13 @@ func Installed(env []string, dir string) (string, error) {
 	switch {
 	case !there:
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the pod's launcher installed no check at %s", TagVariable, pin, check)}
+			Why: fmt.Sprintf("%s=%s, and the pod's launcher installed no check at %s", TagVariable, shownText(pin), shownText(check))}
 	case tag == "":
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the install at %s records no tag (%s)", TagVariable, pin, dir, tagFile)}
+			Why: fmt.Sprintf("%s=%s, and the install at %s records no tag (%s)", TagVariable, shownText(pin), shownText(dir), tagFile)}
 	case tag != pin:
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the install at %s is of %s", TagVariable, pin, dir, tag)}
+			Why: fmt.Sprintf("%s=%s, and the install at %s is of %s", TagVariable, shownText(pin), shownText(dir), shownText(tag))}
 	}
 	return check, nil
 }

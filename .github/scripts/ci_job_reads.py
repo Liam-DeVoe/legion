@@ -2386,7 +2386,7 @@ GATES = [
          "LEGION_PRIVATE_NAME_RULES_FILE (:55,92) and reads each rule's description out of (:160)"),
         (f"{SCRIPTS}/check-private-names.sh",
          "the frozen script every case of check-private-names-port.test.sh runs beside the "
-         "engine, symlinked into each fixture (:218,429,475,569)"),
+         "engine, symlinked into each fixture (:218,427,473,567)"),
     ) + setup_go(PRIVATE_NAMES_PORT_JOB, f"{DAEMON}/go.mod")),
 
     # What is left of the test job once the daemon's Go suite and the private-name port harness

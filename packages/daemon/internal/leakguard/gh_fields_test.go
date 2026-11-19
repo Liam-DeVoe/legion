@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -41,7 +42,7 @@ func cleared(t *testing.T, err error) {
 // joined form of a write whose fields the guard reads apart.
 func refusedWhole(t *testing.T, text string) {
 	t.Helper()
-	if err := fixtureRules(t).pass(bound(t), "the joined text", []Record{{Label: "the joined text", Text: text}}); err == nil {
+	if err := fixtureRules(t).Check(bound(t), "the joined text", Record{Label: "the joined text", Text: text}); err == nil {
 		t.Fatalf("the rules clear %q read whole, so a pass of its fields proves nothing", text)
 	}
 }
@@ -160,6 +161,57 @@ func TestGhJSONReadsOneFieldAtATime(t *testing.T) {
 		err := ghFieldCall(t, GhRequest{Args: []string{"api", endpoint, "--input", "-"}, Stdin: strings.NewReader(escaped), Files: []GhFile{}})
 		reports(t, refusal(t, err).Lines, "the gh call's standard input, JSON .body: "+leakguardtest.PairClass)
 	})
+}
+
+// A JSON body nested thousands of objects deep is read one string at a time under a label of
+// bounded length: a chain of 9,999 objects whose innermost value names the fixture's pair is
+// refused, the report naming the value by the path's first two steps, "…" and its last five. The
+// records the document is read as hold under 2 MB of labels altogether, one for each of its 9,999
+// names and one for the value, where labels holding each whole path would hold about 100 MB.
+func TestGhJSONReadsOneFieldOfADeepDocumentUnderABoundedLabel(t *testing.T) {
+	const depth = 9999
+	document := strings.Repeat(`{"a":`, depth) + `"` + leakguardtest.PairName + " " + leakguardtest.PairWord + `"` + strings.Repeat("}", depth)
+	const record = "the gh call's standard input"
+	label := record + ", JSON .a.a…" + strings.Repeat(".a", 5)
+	lines := refusal(t, ghFieldCall(t, GhRequest{Args: []string{"api", "repos/invented-org/invented-repo/issues", "--input", "-"}, Stdin: strings.NewReader(document)})).Lines
+	reports(t, lines, label+": "+leakguardtest.PairClass)
+	if len(lines) > 0 {
+		if shown, _, _ := strings.Cut(lines[0], ": "+leakguardtest.PairClass); len(shown) >= 400 {
+			t.Errorf("the report line's label is %d bytes, want under 400", len(shown))
+		}
+	}
+	fields, ok := jsonFields(Record{Label: record, Text: document}, false)
+	if !ok {
+		t.Fatal("the document was read as no one JSON document")
+	}
+	if len(fields) != depth+1 {
+		t.Errorf("the document is %d records, want %d: one for each name and one for the value", len(fields), depth+1)
+	}
+	total := 0
+	for _, field := range fields {
+		total += len(field.Label)
+	}
+	if total >= 2<<20 {
+		t.Errorf("the records' labels total %d bytes, want under 2 MB", total)
+	}
+}
+
+// An empty string holds no text a rule can match, and makes no record, as a name or as a value;
+// the value of a member whose name is empty is read all the same, at the step `.""`. A name past
+// 64 bytes is shown to 64 in the label of each string beneath it, and "…" marks the cut.
+func TestGhJSONMakesNoRecordOfAnEmptyStringAndCutsALongName(t *testing.T) {
+	long := strings.Repeat("n", 100)
+	fields, ok := jsonFields(Record{Label: "the body", Text: `{"title":"","":"a value","list":["",""],"` + long + `":"a long name's value"}`}, false)
+	want := []Record{
+		{Label: "the body, JSON .title (name)", Text: "title"},
+		{Label: `the body, JSON .""`, Text: "a value"},
+		{Label: "the body, JSON .list (name)", Text: "list"},
+		{Label: "the body, JSON ." + long[:63] + "… (name)", Text: long},
+		{Label: "the body, JSON ." + long[:63] + "…", Text: "a long name's value"},
+	}
+	if !ok || !slices.Equal(fields, want) {
+		t.Errorf("jsonFields = %+v, %t; want %+v", fields, ok, want)
+	}
 }
 
 // The argv is read one argument at a time, and a field's value apart from every other: the

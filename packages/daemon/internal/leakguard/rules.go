@@ -14,7 +14,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"unicode/utf8"
 
 	"github.com/spf13/viper"
@@ -59,9 +58,10 @@ const (
 	maxLinesShown   = 40
 )
 
-// RuleSet is a compiled rule file: one detector every record of a write is scanned with. A set is
-// shared by every write of a process that reads the same content (LoadRules): the detector keeps
-// nothing of a scan, since Detect of a fragment answers its findings and holds none of them.
+// RuleSet is a compiled rule file: one detector every record of a write is scanned with. One set
+// can serve any number of writes, as the one the daemon compiles at boot serves each of its
+// branch creates (RuleSet.Check): the detector keeps nothing of a scan, since Detect of a fragment
+// answers its findings and holds none of them.
 type RuleSet struct {
 	detector *detect.Detector
 	sha256   string
@@ -76,12 +76,6 @@ func (r *RuleSet) Count() int {
 func (r *RuleSet) SHA256() string {
 	return r.sha256
 }
-
-// loaded are the rule sets this process compiled, by the sha256 of their content. A guard reads
-// the rule file at each write (Guard.rules), so a file changed under a running process is read as
-// it is now; the content it holds is compiled once. Only a set that compiled is kept, so a file
-// that was refused is read and refused again at the next write rather than remembered.
-var loaded sync.Map
 
 // LoadRules compiles content, a gitleaks rule file, into a rule set. It refuses what would
 // otherwise lose a rule without a word:
@@ -102,22 +96,15 @@ var loaded sync.Map
 //     would otherwise end the process that read it.
 //
 // It asks for no rule of any id: the file is the deployment's, and what it holds is the whole of
-// what the guard detects.
+// what the guard detects. Each call compiles content, and nothing is kept between calls: a role's
+// process makes one write, which reads its rule file once (Guard.rules), and the daemon compiles
+// its file once, at boot, so no process compiles one content twice.
 func LoadRules(content []byte) (*RuleSet, error) {
 	if len(content) > MaxRulesFile {
 		return nil, fmt.Errorf("the rules are longer than %d bytes", MaxRulesFile)
 	}
 	sum := sha256.Sum256(content)
-	key := hex.EncodeToString(sum[:])
-	if set, ok := loaded.Load(key); ok {
-		return set.(*RuleSet), nil
-	}
-	set, err := compileRules(content, key)
-	if err != nil {
-		return nil, err
-	}
-	kept, _ := loaded.LoadOrStore(key, set)
-	return kept.(*RuleSet), nil
+	return compileRules(content, hex.EncodeToString(sum[:]))
 }
 
 // compileRules is LoadRules' compile of content, whose sha256 is sum.
@@ -172,26 +159,57 @@ func compileRules(content []byte, sum string) (set *RuleSet, err error) {
 
 // ReadRulesContent is the rule file at path, its bytes as they stand, which LoadRules compiles:
 // the one read of a rule file, the guard's (Guard.rules) and the daemon's at boot
-// (internal/daemon's readPrivateNameRulesFile) alike. A file that cannot be opened or read, and
-// one longer than MaxRulesFile, is an error whose message is a phrase that follows the file's
-// name — "could not be opened: <why>", "could not be read: <why>", "is longer than 262144
-// bytes" — so that each caller names the file, and what named it, in its own words.
+// (internal/daemon's readPrivateNameRulesFile) alike, bounded by MaxRulesFile (readBounded), so
+// that a longer file is refused rather than compiled short. Its error is readBounded's phrase —
+// "could not be opened: <why>", "could not be read: <why>", "is longer than 262144 bytes" — so
+// that each caller names the file, and what named it, in its own words.
 func ReadRulesContent(path string) ([]byte, error) {
+	return readBounded(path, MaxRulesFile)
+}
+
+// readBounded is the file at path, its bytes as they stand, where it holds at most bound bytes:
+// the one read of a file this package holds whole in memory, a rule file (ReadRulesContent) and a
+// file a gh call would send (readGhFile). A file that cannot be opened or read, and one longer
+// than bound, is a *boundedReadError whose message is a phrase that follows the file's name —
+// "could not be opened: <why>", "could not be read: <why>", "is longer than <bound> bytes" — and
+// whose error underneath is what went wrong alone (withoutPath), since the caller names the path.
+//
+// It reads one byte past the bound, so a file at the bound reads whole and a longer one is known
+// to be longer without reading it. The stat is not asked for: a named pipe and a character device
+// report a size of zero and would read on past it.
+func readBounded(path string, bound int) ([]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("could not be opened: %w", withoutPath(err))
+		return nil, &boundedReadError{phrase: "could not be opened", err: withoutPath(err)}
 	}
 	defer file.Close()
-	// One byte past the bound, so a file at the bound reads whole and a longer one is known to be
-	// longer without reading it, never cut at the bound and compiled short.
-	content, err := io.ReadAll(io.LimitReader(file, MaxRulesFile+1))
+	content, err := io.ReadAll(io.LimitReader(file, int64(bound)+1))
 	if err != nil {
-		return nil, fmt.Errorf("could not be read: %w", withoutPath(err))
+		return nil, &boundedReadError{phrase: "could not be read", err: withoutPath(err)}
 	}
-	if len(content) > MaxRulesFile {
-		return nil, fmt.Errorf("is longer than %d bytes", MaxRulesFile)
+	if len(content) > bound {
+		return nil, &boundedReadError{phrase: fmt.Sprintf("is longer than %d bytes", bound)}
 	}
 	return content, nil
+}
+
+// boundedReadError is readBounded's refusal of a file: phrase, which follows the file's name, and
+// the error underneath it, nil for a file longer than the bound. Its message is the phrase, then
+// that error after a colon.
+type boundedReadError struct {
+	phrase string
+	err    error
+}
+
+func (e *boundedReadError) Error() string {
+	if e.err == nil {
+		return e.phrase
+	}
+	return e.phrase + ": " + e.err.Error()
+}
+
+func (e *boundedReadError) Unwrap() error {
+	return e.err
 }
 
 // withoutPath is err reduced to what went wrong where it is a *fs.PathError, whose own message
@@ -204,8 +222,15 @@ func withoutPath(err error) error {
 	return err
 }
 
-// pass is the rule pass over records, reported as a refusal of what.
-func (r *RuleSet) pass(ctx context.Context, what string, records []Record) error {
+// Check is the rule pass over records and nothing else: no shared check, no visibility read, and
+// no read of any environment. It answers nil where no rule matches, a *Refusal of what, the write
+// in the caller's words, whose report is RuleSet.scan's, and a *SetupFailure of what where the
+// pass could not finish. It is the last step of every write of the guard's that runs a rule
+// (Push, GhCall, Text), and the whole of the check of a write with no repository behind it: the
+// daemon's branch create (internal/ghbranch's Create), which holds a ref name and no checkout at
+// all, and runs the set the daemon compiled at boot, so that the create depends on no rule file
+// its process's environment may name.
+func (r *RuleSet) Check(ctx context.Context, what string, records ...Record) error {
 	lines, err := r.scan(ctx, records)
 	if err != nil {
 		return &SetupFailure{What: what, Why: "the private-name rules did not finish", Err: err}
@@ -220,12 +245,13 @@ func (r *RuleSet) pass(ctx context.Context, what string, records []Record) error
 //
 //	<record>: <class>: matched "<match>" on line <n>: "<line>"
 //
-// naming the record by its label as it was written, the class by the description the deployment's
-// rule gives it, and then the text that matched and the line of the record it stands on. Both are
-// quoted (strconv.Quote), so that a newline or a control character in them cannot break a report
-// apart, and both are cut to the bounds above on a rune boundary, each cut marked "…" inside the
-// quotes. <n> counts from the record's first line in its file (Record.FirstLine). A path rule's
-// finding stands on no line, and is "<record>: <class>: matched the path".
+// naming the record by its label, on one line and bounded (shownText), the class by the
+// description the deployment's rule gives it, and then the text that matched and the line of the
+// record it stands on. Both are quoted (strconv.Quote), so that a newline or a control character
+// in them cannot break a report apart, and both are cut to the bounds above on a rune boundary,
+// each cut marked "…" inside the quotes. <n> counts from the record's first line in its file
+// (Record.FirstLine). A path rule's finding stands on no line, and is "<record>: <class>: matched
+// the path".
 //
 // The report shows the text because the agent that would make the write wrote it: there is
 // nothing in it to hide from the agent the refusal is shown to, and this repository's public CI
@@ -394,12 +420,12 @@ func (r *RuleSet) place(text *recordText, finding *report.Finding) placed {
 	return placed{finding: finding, line: text.lineOf(at), at: at, found: true}
 }
 
-// reportLine is the line of record's report that p writes (RuleSet.scan). The line shown is the
-// match's own line, from at most maxContextShown bytes before the match to at most
-// maxContextShown bytes after the part of it shown, so that a match as long as its line shows a
-// bounded line too.
+// reportLine is the line of record's report that p writes (RuleSet.scan). The record is named by
+// its label as shownText shows it. The line shown is the match's own line, from at most
+// maxContextShown bytes before the match to at most maxContextShown bytes after the part of it
+// shown, so that a match as long as its line shows a bounded line too.
 func (t *recordText) reportLine(record Record, p placed) string {
-	head := record.Label + ": " + p.finding.Description + ": matched "
+	head := shownText(record.Label) + ": " + p.finding.Description + ": matched "
 	if p.line < 0 {
 		return head + "the path"
 	}
@@ -426,6 +452,73 @@ func (t *recordText) reportLine(record Record, p placed) string {
 		line += "…"
 	}
 	return head + strconv.Quote(match) + " on line " + strconv.Itoa(max(record.FirstLine, 1)+p.line) + ": " + strconv.Quote(line)
+}
+
+// The bounds of a text of the caller's as a report or a setup failure shows it (shownText): a text
+// whose shown form is longer than maxTextShown bytes is shown as its first textShownBefore bytes
+// and its last textShownAfter, with "…" between.
+const (
+	maxTextShown    = 200
+	textShownBefore = 60
+	textShownAfter  = 140
+)
+
+// shownText is text the caller wrote — a record's label, a path, a repository slug, an option —
+// as a report line or a setup failure prints it: on one line, and bounded. Every rune
+// strconv.IsPrint rejects, every byte that is no UTF-8, and `\`, are written as strconv.Quote
+// writes them, without the quotes around them (shownRune), so that a newline in a field's name or
+// in a path cannot break the line it stands on, and a `\` of the text reads apart from an escape
+// written here. Every other rune, `"` among them, stands as it was written, so that a text of
+// printable runes within the bound prints exactly as it was written. A text whose shown form is
+// longer than maxTextShown bytes is cut to its first textShownBefore and its last textShownAfter
+// bytes of that form, each cut between two runes, with "…" between: a label holds a path, or a
+// field's name, of any length the caller wrote, and the line it stands on is read in a terminal
+// and in a log. The text is read no further than the bound needs.
+func shownText(text string) string {
+	width, head := 0, 0
+	for i := 0; i < len(text); {
+		_, size := utf8.DecodeRuneInString(text[i:])
+		width += len(shownRune(text[i : i+size]))
+		if width > maxTextShown {
+			tail, kept := len(text), 0
+			for tail > head {
+				_, size := utf8.DecodeLastRuneInString(text[head:tail])
+				if kept += len(shownRune(text[tail-size : tail])); kept > textShownAfter {
+					break
+				}
+				tail -= size
+			}
+			return shownRunes(text[:head]) + "…" + shownRunes(text[tail:])
+		}
+		i += size
+		if width <= textShownBefore {
+			head = i
+		}
+	}
+	return shownRunes(text)
+}
+
+// shownRunes is text with each of its runes written as shownRune writes it.
+func shownRunes(text string) string {
+	var shown strings.Builder
+	for i := 0; i < len(text); {
+		_, size := utf8.DecodeRuneInString(text[i:])
+		shown.WriteString(shownRune(text[i : i+size]))
+		i += size
+	}
+	return shown.String()
+}
+
+// shownRune is one rune of a text, or one byte of it that is no UTF-8, as shownText writes it:
+// as strconv.Quote writes it, without the quotes, where it is `\`, a byte that is no UTF-8 or a
+// rune strconv.IsPrint rejects, and as it stands otherwise.
+func shownRune(unit string) string {
+	r, size := utf8.DecodeRuneInString(unit)
+	if r != '\\' && (r != utf8.RuneError || size > 1) && strconv.IsPrint(r) {
+		return unit
+	}
+	quoted := strconv.Quote(unit)
+	return quoted[1 : len(quoted)-1]
 }
 
 // runeBack is the offset i of s moved back to the start of the rune it falls inside, and no

@@ -25,14 +25,14 @@ import (
 // answer (a *githubrest.Answer, its status and body).
 //
 // The ref name passes the deployment's private-name rules before anything is sent: rules, the
-// rule set the daemon compiled from the deployment's rule file at boot, run as
-// leakguard.Options.Rules (leakguard.Guard.Rules). A name they match, and a rule pass that could
-// not be made to run, are each an error, and the base is not even read. Nil rules are a deployment
-// that names no rule file, and no private-name rule runs: no guard is built at all, so the create
-// depends on nothing but what its caller hands it, and never on a rule file its process's
-// environment may point at. The check lives here rather than in the daemon that calls Create so
-// that the package's contract holds for every caller: a create of this package publishes no ref
-// name the rules it is handed refuse.
+// rule set the daemon compiled from the deployment's rule file at boot, run alone
+// (leakguard.RuleSet.Check). A name they match, and a rule pass that could not be made to run, are
+// each an error, and the base is not even read. Nil rules are a deployment that names no rule
+// file, and no private-name rule runs. Either way the create reads no environment, so it depends
+// on nothing but what its caller hands it, and never on a rule file its process's environment may
+// point at. The check lives here rather than in the daemon that calls Create so that the
+// package's contract holds for every caller: a create of this package publishes no ref name the
+// rules it is handed refuse.
 //
 // The rule pass alone runs, and no shared public leak check: a ref name is a branch name of the
 // daemon's own making, which can carry one of the deployment's private names and none of what the
@@ -41,7 +41,7 @@ import (
 func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, branch, base string, rules *leakguard.RuleSet) error {
 	ref := "refs/heads/" + branch
 	if rules != nil {
-		if err := leakguard.New(leakguard.Options{Rules: rules}).Rules(ctx, leakguard.RefRecord(ref)); err != nil {
+		if err := rules.Check(ctx, "the write", leakguard.RefRecord(ref)); err != nil {
 			return fmt.Errorf("create a branch of %s: %w", repo, err)
 		}
 	}

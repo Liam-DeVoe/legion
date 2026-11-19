@@ -118,9 +118,8 @@ func setupFailure(t *testing.T, err error) *SetupFailure {
 }
 
 // Every entry point runs its own shape of the shared check and refuses what that check refuses,
-// and every one of them refuses a record of its own that names something private. Rules is the
-// one that runs no check at all: it refuses and passes under a stand-in that refuses everything,
-// which is how this says that the daemon's branch create reaches no check.
+// and every one of them refuses a record of its own that names something private. A write with no
+// repository behind it runs no entry point and no check (TestARuleSetChecksRecordsWithNoGuard).
 func TestEachEntryPointRefusesWhatTheCheckRefusesAndWhatTheRulesMatch(t *testing.T) {
 	cleanPush := PushRequest{
 		Dir:     t.TempDir(),
@@ -135,8 +134,6 @@ func TestEachEntryPointRefusesWhatTheCheckRefusesAndWhatTheRulesMatch(t *testing
 		// checked runs the entry point against guard, with a record that names something
 		// private when named.
 		checked func(ctx context.Context, guard *Guard, named bool) error
-		// readsCheck is whether the entry point runs the shared check at all.
-		readsCheck bool
 	}{
 		{
 			name: "Push",
@@ -147,7 +144,6 @@ func TestEachEntryPointRefusesWhatTheCheckRefusesAndWhatTheRulesMatch(t *testing
 				}
 				return guard.Push(ctx, request)
 			},
-			readsCheck: true,
 		},
 		{
 			name: "GhCall",
@@ -159,7 +155,6 @@ func TestEachEntryPointRefusesWhatTheCheckRefusesAndWhatTheRulesMatch(t *testing
 				_, err := guard.GhCall(ctx, GhRequest{Args: args, Repo: "invented-org/invented-repo"})
 				return err
 			},
-			readsCheck: true,
 		},
 		{
 			name: "Text",
@@ -169,17 +164,6 @@ func TestEachEntryPointRefusesWhatTheCheckRefusesAndWhatTheRulesMatch(t *testing
 					text = "a clean title\n\na body naming " + leakguardtest.RulesHost + "\n"
 				}
 				return guard.Text(ctx, TextRequest{Repo: "invented-org/invented-repo", Text: text})
-			},
-			readsCheck: true,
-		},
-		{
-			name: "Rules",
-			checked: func(ctx context.Context, guard *Guard, named bool) error {
-				ref := "legion/INVENTED-1"
-				if named {
-					ref = "legion/" + leakguardtest.RulesHost
-				}
-				return guard.Rules(ctx, RefRecord(ref))
 			},
 		},
 	} {
@@ -198,12 +182,6 @@ func TestEachEntryPointRefusesWhatTheCheckRefusesAndWhatTheRulesMatch(t *testing
 			}
 			byCheck := guardWith(t, leakguardtest.Write(t, t.TempDir(), refuses), Public)
 			err := entry.checked(ctx, byCheck, false)
-			if !entry.readsCheck {
-				if err != nil {
-					t.Fatalf("a clean write reached the shared check: %v", err)
-				}
-				return
-			}
 			if refused := refusal(t, err); refused.By != bySharedCheck {
 				t.Errorf("a write the check refused was refused by %q, want the shared check", refused.By)
 			}
@@ -437,4 +415,72 @@ func TestTheSharedChecksFailuresAreSetupFailures(t *testing.T) {
 			t.Errorf("the message is %q, want the shared check's own setup-error line", failed.Error())
 		}
 	})
+}
+
+// A setup failure shows each text a caller wrote that it names — the path of a file a gh call
+// sends, the path of the rule file, a destination's slug, a push's remote — on its one line and
+// bounded, as a report shows a label (shownText): a newline is written as Go writes it in a
+// quoted string, and a slug of a kilobyte is shown as its first 60 bytes and its last 140.
+func TestASetupFailureShowsWhatTheCallerWroteOnOneBoundedLine(t *testing.T) {
+	dir := t.TempDir()
+	passing := func(t *testing.T) string { return leakguardtest.Write(t, t.TempDir(), passes) }
+	long := strings.Repeat("r", 1024)
+	for _, tc := range []struct {
+		name  string
+		write func(t *testing.T) error
+		says  string
+	}{
+		{
+			name: "the path of a file a gh call sends",
+			write: func(t *testing.T) error {
+				_, err := guardWith(t, passing(t), Public).GhCall(bound(t), GhRequest{
+					Args: []string{"pr", "create", "--body-file", filepath.Join(dir, "body\nnotes.md")},
+					Repo: "invented-org/invented-repo",
+				})
+				return err
+			},
+			says: "the file --body-file names, " + dir + `/body\nnotes.md, could not be opened: no such file or directory`,
+		},
+		{
+			name: "the path of the rule file",
+			write: func(t *testing.T) error {
+				guard := New(Options{
+					Check:      passing(t),
+					Visibility: answers(Public, nil),
+					Env:        append(fixtureenv.Isolated(t.TempDir()), RulesFileVar+"="+filepath.Join(dir, "rules\nfile.toml")),
+				})
+				return guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
+			},
+			says: "the private-name rule file " + dir + `/rules\nfile.toml, which ` + RulesFileVar + " names, could not be opened",
+		},
+		{
+			name: "a slug",
+			write: func(t *testing.T) error {
+				return guardWith(t, passing(t), Public).Text(bound(t), TextRequest{Repo: "invented-org/a\nb", Text: "a clean title\n"})
+			},
+			says: `the destination invented-org/a\nb is no repository GitHub serves`,
+		},
+		{
+			name: "a slug of a kilobyte",
+			write: func(t *testing.T) error {
+				return guardWith(t, passing(t), Public).Text(bound(t), TextRequest{Repo: "invented-org/" + long, Text: "a clean title\n"})
+			},
+			says: "the destination invented-org/" + long[:47] + "…" + long[:140] + " is no repository GitHub serves",
+		},
+		{
+			name: "a push's remote",
+			write: func(t *testing.T) error {
+				guard := New(Options{Visibility: answers(Public, nil), Env: append(fixtureenv.Isolated(t.TempDir()), "PATH="+t.TempDir())})
+				return guard.Push(bound(t), PushRequest{Dir: t.TempDir(), Remote: "a\nremote", URL: "https://github.com/invented-org/invented-repo.git"})
+			},
+			says: `LEAK CHECK SETUP ERROR: the push to a\nremote: ` + whyNoCheck,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			failed := setupFailure(t, tc.write(t))
+			if message := failed.Error(); strings.Contains(message, "\n") || !strings.Contains(message, tc.says) {
+				t.Errorf("the setup failure is %q, want one line holding %q", message, tc.says)
+			}
+		})
+	}
 }

@@ -1080,6 +1080,39 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 	}
 }
 
+// The git gh runs makes pushes of its own (`gh repo create --source=. --push`), and git runs the
+// pre-push hook for each, `legion leak-check pre-push`, under the environment gh was handed. So
+// gh keeps every variable of its caller's that the hook's guard reads, each with its value: the
+// shared check (PUBLIC_LEAK_CHECK), the deployment's rule file (LEGION_PRIVATE_NAME_RULES_FILE),
+// without which the hook would run the shared check alone and none of the role's private-name
+// rules, and the git wrapper's loop guard (WRAPPED_GIT_AT). The stand-in gh prints each as it
+// reads it, and "unset" for one it was not handed.
+func TestLegionGhHandsGhThePrePushHooksVariables(t *testing.T) {
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := filepath.Join(t.TempDir(), "gh")
+	script := ghStandInPrefix(help) + "printf '%s|%s|%s\\n' " +
+		"\"${" + leakguard.CheckVar + "-unset}\" \"${" + leakguard.RulesFileVar + "-unset}\" \"${" + wrappedGitAt + "-unset}\"\n"
+	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	check := leakguardtest.Write(t, t.TempDir(), ghCheckPasses)
+	rules := leakguardtest.WriteRules(t, t.TempDir())
+	const chain = "0:/usr/bin/git"
+	env := map[string]string{
+		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root, "XDG_STATE_HOME": t.TempDir(),
+		leakguard.CheckVar: check, leakguard.RulesFileVar: rules, wrappedGitAt: chain,
+	}
+	args := []string{"pr", "create", "-R", "acme/widgets", "--title", "a clean title", "--body", "a clean body"}
+	code, stdout, stderr := legionGhIn(t, t.TempDir(), env, "", args...)
+	if want := check + "|" + rules + "|" + chain + "\n"; code != 0 || stdout != want {
+		t.Errorf("legion gh %q = exit %d, stdout %q, stderr %q; want exit 0 and gh handed %q", args, code, stdout, stderr, want)
+	}
+}
+
 // `legion gh` never runs itself as the real gh. A LEGION_GH_PATH that is not an absolute path,
 // which exec would look up on PATH, whose first gh is the wrapper, is refused, exit 2, before
 // anything runs, and so is one that is the wrapper first on PATH, or another script of the

@@ -77,11 +77,10 @@ func TestANamedRuleFileRefusesAFixtureName(t *testing.T) {
 	}
 }
 
-// A deployment that names no rule file runs no private-name rule: the same three writes pass, and
-// so does the branch create's rule pass. The shared check runs for each of them, as it does
-// today; the visibility seam is never asked, and the push's commits are never read (the stand-in
-// git on PATH, which would be asked for the commit the push names, never runs). An empty pointer
-// names no file either.
+// A deployment that names no rule file runs no private-name rule: the same three writes pass. The
+// shared check runs for each of them, as it does today; the visibility seam is never asked, and the
+// push's commits are never read (the stand-in git on PATH, which would be asked for the commit the
+// push names, never runs). An empty pointer names no file either.
 func TestNoRuleFileRunsNoPrivateNameRule(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -109,9 +108,6 @@ func TestNoRuleFileRunsNoPrivateNameRule(t *testing.T) {
 			answer, err := guard.GhCall(bound(t), GhRequest{Args: []string{"pr", "comment", "1", "--body", leakguardtest.RulesHost}, Repo: "invented-org/invented-repo"})
 			if err != nil || !answer.NoRules || answer.CheckedOnly {
 				t.Errorf("GhCall = %+v, %v; want it passed, saying no rule is named", answer, err)
-			}
-			if err := guard.Rules(bound(t), RefRecord("legion/"+leakguardtest.RulesHost)); err != nil {
-				t.Errorf("the rule pass with no rule file named: %v", err)
 			}
 			if got, want := countLines(t, checked), len(writes)+1; got != want {
 				t.Errorf("the shared check ran %d times, want %d: once for each write that runs it", got, want)
@@ -213,73 +209,20 @@ func TestARuleFileTheGuardCannotReadRefusesTheWrite(t *testing.T) {
 	}
 }
 
-// The rules a caller hands in Options.Rules run with no pointer in the environment, which is the
-// daemon's branch create: it compiles the deployment's file at boot and hands the set in. They win
-// over a pointer the environment holds, here one to a file that is not there.
-func TestTheRulesFromOptionsNeedNoEnvironment(t *testing.T) {
+// A rule set checks records with no guard at all, as the daemon's branch create runs the set it
+// compiled at boot (internal/ghbranch's Create): a clean ref name passes, and one naming the
+// fixture's host is refused by the rules, one line naming the class. It reads no environment: a
+// pointer the environment holds, here one to a file that is not there, over which a guard would
+// refuse the write, changes nothing.
+func TestARuleSetChecksRecordsWithNoGuard(t *testing.T) {
+	t.Setenv(RulesFileVar, filepath.Join(t.TempDir(), "absent.toml"))
 	rules := fixtureRules(t)
-	absent := RulesFileVar + "=" + filepath.Join(t.TempDir(), "absent.toml")
-	for _, tc := range []struct {
-		name string
-		env  []string
-	}{
-		{name: "no pointer", env: fixtureenv.Isolated(t.TempDir())},
-		{name: "a pointer to a missing file", env: append(fixtureenv.Isolated(t.TempDir()), absent)},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			guard := New(Options{
-				Check:      leakguardtest.Write(t, t.TempDir(), passes),
-				Visibility: answers(Public, nil),
-				Env:        tc.env,
-				Rules:      rules,
-			})
-			for _, refused := range []*Refusal{
-				refusal(t, guard.Rules(bound(t), RefRecord("legion/"+leakguardtest.RulesHost))),
-				refusal(t, guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a title naming " + leakguardtest.RulesHost + "\n"})),
-			} {
-				if refused.By != byRules || len(refused.Lines) != 1 || !namesClass(refused.Lines[0], leakguardtest.RulesHostClass) {
-					t.Errorf("refused by %q with %q, want the rules naming %q", refused.By, refused.Lines, leakguardtest.RulesHostClass)
-				}
-			}
-		})
+	if err := rules.Check(bound(t), "the write", RefRecord("refs/heads/legion/INVENTED-1")); err != nil {
+		t.Errorf("a clean ref name: %v", err)
 	}
-}
-
-// A rule file's content is compiled once per process: two loads of the same content, and a read
-// of a file holding it, answer the one set, which counts the fixture's four rules and names the
-// content's sha256. Other content is another set.
-func TestTheRulesAreCompiledOncePerContent(t *testing.T) {
-	first, err := LoadRules([]byte(leakguardtest.Rules))
-	if err != nil {
-		t.Fatal(err)
-	}
-	again, err := LoadRules([]byte(leakguardtest.Rules))
-	if err != nil {
-		t.Fatal(err)
-	}
-	content, err := ReadRulesContent(leakguardtest.WriteRules(t, t.TempDir()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	read, err := LoadRules(content)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if again != first || read != first {
-		t.Error("the same content was compiled more than once")
-	}
-	if first.Count() != 4 {
-		t.Errorf("the fixture counts %d rules, want 4", first.Count())
-	}
-	if want := hexSHA256(leakguardtest.Rules); first.SHA256() != want {
-		t.Errorf("the set's sha256 is %s, want %s", first.SHA256(), want)
-	}
-	other, err := LoadRules([]byte(leakguardtest.Rules + "# one more line\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if other == first || other.SHA256() == first.SHA256() {
-		t.Error("other content answered the fixture's set")
+	refused := refusal(t, rules.Check(bound(t), "the write", RefRecord("refs/heads/legion/"+leakguardtest.RulesHost)))
+	if refused.By != byRules || refused.What != "the write" || len(refused.Lines) != 1 || !namesClass(refused.Lines[0], leakguardtest.RulesHostClass) {
+		t.Errorf("the write was refused as %q by %q with %q, want the write refused by the rules naming %q", refused.What, refused.By, refused.Lines, leakguardtest.RulesHostClass)
 	}
 }
 
