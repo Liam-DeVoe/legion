@@ -439,6 +439,8 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       });
       await page.keyboard.type(`@${OFF_ISSUE_PERSON}`);
       await searched;
+      // The rule is read from a list that is open: with no list there are no rows to read.
+      await expect(list).toBeVisible();
       await expect(list.getByTestId("ref-picker-loading")).toHaveCount(0);
       expect((await pickerRows(list)).filter((row) => row.startsWith("People:"))).toEqual([]);
       await clearLine();
