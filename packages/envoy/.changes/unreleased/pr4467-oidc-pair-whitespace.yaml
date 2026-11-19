@@ -1,0 +1,7 @@
+kind: Fixed
+custom:
+  Issue: pr4467
+body: |-
+  `gcp:Dispatch` refuses an `oidcAudience` or `oidcIssuer` with whitespace around it. Dispatch trims
+  both variables before it reads them, so a blank `oidcAudience` used to render the OIDC pair while
+  Dispatch read half of it and refused to boot, leaving the pod in a crash loop.

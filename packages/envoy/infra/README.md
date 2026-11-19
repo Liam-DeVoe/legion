@@ -1098,7 +1098,9 @@ ServiceAccount token: `DISPATCH_OIDC_AUDIENCE` is the audience such a token must
 (`https://container.googleapis.com/v1/projects/<project>/locations/<region>/clusters/<hostname>`,
 the `serviceAccountIssuer` output) unless `oidcIssuer` names another cluster's. Dispatch refuses
 to boot holding one of the pair alone, so the component renders both or neither, and an
-`oidcIssuer` with no `oidcAudience` is refused. The secrets broker's judge needs this: it reads
+`oidcIssuer` with no `oidcAudience` is refused. Dispatch trims both variables before it reads them,
+so an `oidcAudience` or `oidcIssuer` with whitespace around it is refused too: a blank one would
+render the pair and leave Dispatch half of it. The secrets broker's judge needs this: it reads
 Dispatch with its own pod's token. Turning it on opens Dispatch to every workload that can get a
 token for that audience under that issuer — such a caller reaches every one of Dispatch's
 `authAny` routes as a service actor, the writes among them (an issue's create and status, a
@@ -1210,7 +1212,8 @@ negative `signingKeyGenerations` entry, which names no resource, or a repeated o
 render the same key twice and which the server refuses at its boot, missing inputs, and nkey
 seeds in its own name and in plain inputs before it registers a resource; it
 refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, an
-`oidcIssuer` with no `oidcAudience`, an `agentAuth` that is neither `token` nor `oidc`, `oidc`
+`oidcIssuer` with no `oidcAudience`, an `oidcAudience` or `oidcIssuer` with whitespace around it,
+an `agentAuth` that is neither `token` nor `oidc`, `oidc`
 with no `oidcAudience`, an `outsideOrigin` that breaks the rule the paragraph on it
 above states, a `signInOutside` without the sign-in inputs, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the

@@ -109,7 +109,9 @@ func TestConstructOutputsNoAgentTokenUnderAgentAuthOIDC(t *testing.T) {
 
 // agentAuth oidc with no oidcAudience would leave no agent credential but a personal token, so it
 // is refused by name before anything registers; a value that is neither token nor oidc is
-// refused naming the two. Control: oidc with oidcAudience resolves.
+// refused naming the two. An oidcAudience or oidcIssuer with whitespace around it is refused in
+// either mode, since Dispatch trims the variable it renders as: a blank one would render the pair
+// and leave Dispatch half of it. Control: oidc with oidcAudience resolves.
 func TestDispatchRefusesAgentAuthItCannotRender(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -122,6 +124,20 @@ func TestDispatchRefusesAgentAuthItCannotRender(t *testing.T) {
 			"oidcAudience is required when oidcIssuer is set"},
 		{"another value", func(a *gcp.DispatchArgs) { a.AgentAuth = "OIDC" }, `agentAuth "OIDC" must be token or oidc`},
 		{"a value with spaces", func(a *gcp.DispatchArgs) { a.AgentAuth = " oidc" }, `agentAuth " oidc" must be token or oidc`},
+		{"oidc with a blank audience", func(a *gcp.DispatchArgs) { a.OidcAudience = "  " },
+			"oidcAudience must have no whitespace around it: Dispatch trims DISPATCH_OIDC_AUDIENCE before reading it"},
+		{"oidc with an audience padded", func(a *gcp.DispatchArgs) { a.OidcAudience = " " + a.OidcAudience + "\n" },
+			"oidcAudience must have no whitespace around it: Dispatch trims DISPATCH_OIDC_AUDIENCE before reading it"},
+		{"oidc with a blank issuer", func(a *gcp.DispatchArgs) { a.OidcIssuer = "\t" },
+			"oidcIssuer must have no whitespace around it: Dispatch trims DISPATCH_OIDC_ISSUER before reading it"},
+		{"token with a blank audience", func(a *gcp.DispatchArgs) { a.AgentAuth, a.OidcAudience = "", "  " },
+			"oidcAudience must have no whitespace around it: Dispatch trims DISPATCH_OIDC_AUDIENCE before reading it"},
+		{"token with an issuer and a blank audience", func(a *gcp.DispatchArgs) {
+			a.AgentAuth, a.OidcAudience, a.OidcIssuer = "token", " ", dispatchOidcIssuer
+		},
+			"oidcAudience must have no whitespace around it: Dispatch trims DISPATCH_OIDC_AUDIENCE before reading it"},
+		{"token with an audience and a blank issuer", func(a *gcp.DispatchArgs) { a.AgentAuth, a.OidcIssuer = "", "  " },
+			"oidcIssuer must have no whitespace around it: Dispatch trims DISPATCH_OIDC_ISSUER before reading it"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			args := dispatchOIDCAgentArgs()

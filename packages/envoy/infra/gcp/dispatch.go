@@ -1217,6 +1217,19 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 			return dispatchSettings{}, errors.New("agentSecretsUrl must carry no user, password, query or fragment: it is rendered as a plain environment variable (not echoed)")
 		}
 	}
+	// Dispatch trims DISPATCH_OIDC_ISSUER and DISPATCH_OIDC_AUDIENCE before it reads them
+	// (oidc.ConfigFromEnv), so a value with whitespace around it renders as one value and is read
+	// as another: a blank one renders the pair while Dispatch reads half of it and refuses to boot,
+	// and a padded one is not the audience a projected token is requested for. Either is refused
+	// here, so every check below judges the value Dispatch reads.
+	for _, in := range []struct{ input, variable, value string }{
+		{"oidcAudience", "DISPATCH_OIDC_AUDIENCE", args.OidcAudience},
+		{"oidcIssuer", "DISPATCH_OIDC_ISSUER", args.OidcIssuer},
+	} {
+		if in.value != strings.TrimSpace(in.value) {
+			return dispatchSettings{}, fmt.Errorf("%s must have no whitespace around it: Dispatch trims %s before reading it, so the value rendered would not be the one it reads, and a blank one leaves it half the OIDC pair, which it refuses to boot with", in.input, in.variable)
+		}
+	}
 	// The service-account verifier is one required input and one override, not a group: the
 	// audience turns it on and the issuer defaults to the cluster's own, so an issuer sent
 	// without an audience would configure nothing and is refused rather than dropped. Dispatch
