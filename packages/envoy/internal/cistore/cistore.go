@@ -679,8 +679,8 @@ func (s *Store) WatchErr() error {
 	return s.watcher.Err()
 }
 
-// ReadErr is the cache watcher's reads that have not read the bucket past a barrier for its stale
-// bound, or nil (kvwatch.Watcher.ReadErr).
+// ReadErr is the cache watcher's reads that have waited past a barrier for its stale bound with
+// none completing, or nil (kvwatch.Watcher.ReadErr).
 func (s *Store) ReadErr() error {
 	return s.watcher.ReadErr()
 }

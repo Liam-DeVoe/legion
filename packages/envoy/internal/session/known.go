@@ -659,11 +659,13 @@ func (s *KnownSessions) Opened() bool {
 	return watcher != nil && watcher.Servable() == nil
 }
 
-// ReadErr is the store's reads that have not read its bucket past a barrier for the stale bound
-// (kvwatch.Watcher.ReadErr, which names the store's watcher and bucket), or nil: before the store
-// opens its bucket, before the bound, and once a read completes. The store is none of the
-// listener's caches, so the self-health monitor never restarts a listener over it, and /healthz
-// answers this degraded, with the fields of a healthy answer, rather than unhealthy.
+// ReadErr is the store's watcher's kvwatch.Watcher.ReadErr: its reads have waited for their
+// consumer to pass a barrier for the stale bound with none completing, counted from when the first
+// of them began that wait, and the error names the store's watcher and bucket. It is nil before the
+// store opens its bucket, before the bound, and once a read completes; a read whose scan timed out,
+// or whose stream could not be confirmed, starts no count. The store is none of the listener's
+// caches, so the self-health monitor never restarts a listener over it, and /healthz answers this
+// degraded, with the fields of a healthy answer, rather than unhealthy.
 func (s *KnownSessions) ReadErr() error {
 	if watcher := s.watch(); watcher != nil {
 		return watcher.ReadErr()

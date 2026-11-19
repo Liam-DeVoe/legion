@@ -810,9 +810,9 @@ func (r *SessionRegistry) WatchErr() error {
 	return r.watcher.Err()
 }
 
-// ReadErr is the cache watcher's reads that have not read the bucket past a barrier for its stale
-// bound, or nil (kvwatch.Watcher.ReadErr): Ping reads the bucket's stream and the terminal error
-// only, so without this a copy whose every read fails so would ping healthy.
+// ReadErr is the cache watcher's reads that have waited past a barrier for its stale bound with
+// none completing, or nil (kvwatch.Watcher.ReadErr): Ping reads the bucket's stream and the
+// terminal error only, so without this a copy whose every read fails so would ping healthy.
 func (r *SessionRegistry) ReadErr() error {
 	return r.watcher.ReadErr()
 }

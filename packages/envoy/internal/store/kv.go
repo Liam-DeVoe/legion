@@ -220,10 +220,10 @@ func (r *Registry) WatchErr() error {
 	return r.roleWatcher.Err()
 }
 
-// ReadErr is the interest watcher's reads that have not read the bucket past a barrier for its
-// stale bound, else the role claim watcher's, or nil (kvwatch.Watcher.ReadErr). Each names its own
-// watcher and bucket, so /healthz, which reports both under the interest cache, says which bucket
-// the reads failed on: "role claims (KV bucket envoy_roles)" for the role claim watcher.
+// ReadErr is the interest watcher's reads that have waited past a barrier for its stale bound with
+// none completing, else the role claim watcher's, or nil (kvwatch.Watcher.ReadErr). Each names its
+// own watcher and bucket, so /healthz, which reports both under the interest cache, says which
+// bucket the reads failed on: "role claims (KV bucket envoy_roles)" for the role claim watcher.
 func (r *Registry) ReadErr() error {
 	if err := r.watcher.ReadErr(); err != nil {
 		return err

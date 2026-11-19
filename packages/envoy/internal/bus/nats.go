@@ -1747,10 +1747,17 @@ var ErrInvalidKey error = refusal("not a key nats.go accepts")
 // every call through a KeyValue that names a key refuses it before sending anything
 // (KeyValue.check; GetRevision and HeldFromLeader test for it themselves), so no store writes,
 // deletes or reads a record under it. A registration naming it is refused as any other refused
-// key is, and a /v1 route given it as a session id or a role answers 400, as it answers every key
-// NATS refuses that is not too long (cmd/listener's writeNATSError;
-// TestV1RoutesAnswerAKeyNATSWouldRefuseWith4xx). A record a watch or a scan of a bucket delivers
-// under it is dropped before a cache or a visitor sees it (kvwatch's Watcher.consume and drainScan,
+// key is. A /v1 route that reads or writes it as a session's or a role's KV key answers 400, as it
+// answers every key NATS refuses that is not too long (cmd/listener's writeNATSError;
+// TestV1RoutesAnswerAKeyNATSWouldRefuseWith4xx), but for a send: POST /v1/messages/send to it is
+// the 404 of a session neither the session bucket nor the known-session store holds, as a send to
+// any refused key is, because session.SessionRegistry.Refresh answers a refused key as
+// nats.ErrKeyNotFound. The Legion agent routes (/v1/legion/agents/sessions/<id>) take it as any
+// other session id: their store writes `session.<id>`, `role.<token>.<id>` and `issue.<key>.<id>`
+// in legion_agents (legionagents.Store), none of which is this key, in a bucket no kvwatch watcher
+// reads, so no barrier is ever written there. A GET of one never recorded is their 404, "unknown
+// legion agent", and a PUT records it. A record a watch or a scan of a bucket delivers under this
+// key is dropped before a cache or a visitor sees it (kvwatch's Watcher.consume and drainScan,
 // which ScanExistingKeys and ScanFilteredKeys read through), and StoredKeys lists no key under it.
 var ErrReservedKey error = refusal("a key kvwatch reserves for its read barrier")
 

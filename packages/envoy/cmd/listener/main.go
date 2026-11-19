@@ -108,8 +108,8 @@ type kvCache interface {
 	// (kvwatch.Watcher.Disconnected).
 	Disconnected()
 	Ping() error
-	// ReadErr reports a copy whose reads have not read its bucket past a barrier for longer than
-	// its stale bound (kvwatch.Watcher.ReadErr): /healthz answers it unhealthy.
+	// ReadErr reports a copy whose reads have waited past a barrier for longer than its stale
+	// bound with none completing (kvwatch.Watcher.ReadErr): /healthz answers it unhealthy.
 	ReadErr() error
 	StopWatch()
 	EndWatch(context.Context)
@@ -517,17 +517,24 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // once the durable consumer binds, which during a rolling deploy waits out the task being replaced
 // while /v1 already serves; 200 "healthy" with the durable consumer's lag once every dependency
 // answers; 503 "unhealthy" when NATS is unavailable, the durable subscription is inactive, a
-// cache's watcher has stopped, a cache's reads have not read its bucket past a barrier for longer
-// than its stale bound, 2 minutes or half its stream's MaxAge when that is shorter (the error
-// "<cache> KV read unavailable: …", kvwatch.Watcher.ReadErr), the durable consumer is gone, a bus
-// check did not answer within healthzBudget, or the durable consumer is "not bound to this
-// listener's subscription" because it was recreated server-side and now delivers elsewhere; and
-// 200 "degraded" for a transient KV failure the self-health monitor and the NATS reconnect retry,
-// for a KV watch rebuild stalled past bus.RepairGrace (below), and for the known-session store's
-// reads past their own stale bound (below), which are never unhealthy. A role lane client that is
-// not connected or holds no valid subscription is 503 "role lane subscription inactive", since no
-// role message is forwarded then. A listener that mounts no GitHub webhook route keeps no CI cache,
-// and its answer carries "ci_cache": "not_applicable".
+// cache's watcher has stopped, a cache's reads have waited for their consumer to pass a barrier
+// for longer than its stale bound with none completing (the error "<cache> KV read unavailable:
+// …", kvwatch.Watcher.ReadErr, below), the durable consumer is gone, a bus check did not answer
+// within healthzBudget, or the durable consumer is "not bound to this listener's subscription"
+// because it was recreated server-side and now delivers elsewhere; and 200 "degraded" for a
+// transient KV failure the self-health monitor and the NATS reconnect retry, for a KV watch
+// rebuild stalled past bus.RepairGrace (below), and for the known-session store's reads past their
+// own stale bound (below), which are never unhealthy. A role lane client that is not connected or
+// holds no valid subscription is 503 "role lane subscription inactive", since no role message is
+// forwarded then. A listener that mounts no GitHub webhook route keeps no CI cache, and its answer
+// carries "ci_cache": "not_applicable".
+//
+// ReadErr counts from when the first of those reads began its wait, after its scan, a wait still
+// under way included, and holds it to the stale bound: 2 minutes, or half the stream's MaxAge when
+// that is shorter. Only a read that completes ends the count. A read whose scan timed out, or whose
+// stream could not be confirmed, is read again and neither starts the count nor adds to it, and a
+// wait whose read a new watch replaced, or whose watcher ended, counts no more
+// (TestAWaitItsGenerationEndedIsNoWaitToReadErr).
 //
 // A rewatch of the KV caches that keeps failing after a reconnect ends no watcher and clears no
 // cache, so every other check still passes while the caches follow buckets they no longer watch
@@ -597,8 +604,8 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // below the copy, not its freshness.
 //
 // The known-session store's reads are judged after the role claim checks. A store whose reads have
-// not read its bucket past a barrier for longer than its stale bound
-// (session.KnownSessions.ReadErr) is 200 "degraded" with the error "known session KV read
+// waited past a barrier for longer than its stale bound with none completing, counted as a cache's
+// are (session.KnownSessions.ReadErr), is 200 "degraded" with the error "known session KV read
 // unavailable: …", keeping every other field. Degraded and never unhealthy: the store is none of
 // the listener's caches (listenerDeps.known), so neither the self-health monitor nor a readiness
 // probe is to act on it, and until a read completes the store answers no record
@@ -636,10 +643,10 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 				return
 			}
 		}
-		// A copy whose reads have not read its bucket past a barrier for its stale bound is one
-		// the routes already refuse (kvwatch.Watcher.Servable), and nothing but a bucket that takes
-		// the barrier and a consumer that reaches it repairs it, so it is unhealthy, not degraded:
-		// the watcher behind it still runs, and its Ping answers.
+		// A copy whose reads have waited past a barrier for its stale bound with none completing
+		// is one the routes already refuse (kvwatch.Watcher.Servable), and nothing but a bucket
+		// that takes the barrier and a consumer that reaches it repairs it, so it is unhealthy,
+		// not degraded: the watcher behind it still runs, and its Ping answers.
 		for _, c := range d.caches {
 			if err := c.cache.ReadErr(); err != nil {
 				writeDependencyHealth(w, c.name+" KV read", err, true)

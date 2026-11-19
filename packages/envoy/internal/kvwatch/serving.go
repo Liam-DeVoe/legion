@@ -50,15 +50,17 @@ func (w *Watcher) servable() error {
 // bucket has read its own consumer past a barrier (settling), so none completed.
 var ErrUnverified = errors.New("kvwatch: no read could read its bucket past a barrier")
 
-// ReadErr reports reads that have not read the bucket past a barrier for the stale bound (2
-// minutes, or half the stream's MaxAge when that is shorter), measured from when the first of them
-// began waiting: an unbroken run of reads whose wait failed (readAgainUnverified), or, before any
-// has failed, the one still waiting. From then on the copy is refused (Servable) because those
-// reads do not complete, and only a bucket that takes the barrier and a consumer that reaches it
-// repair it. It names the watcher and its bucket, how long the reads have waited and the run's
-// last error, and is nil before the bound and once a read completes. A cache that answers for two
-// watchers (store.Registry) reports either one's under that one's own name. A watcher whose reads
-// fail so keeps running, so Err stays nil; the listener's /healthz reports this instead.
+// ReadErr reports reads that have waited past a barrier for the stale bound with none completing
+// (2 minutes, or half the stream's MaxAge when that is shorter), measured from when the first of
+// them began waiting: an unbroken run of reads whose wait failed (readAgainUnverified), or, before
+// any has failed, the one still waiting. A read whose scan timed out, or whose stream could not be
+// confirmed (readAgainLater), neither starts the run nor adds to it. From then on the copy is
+// refused (Servable) because those reads do not complete, and only a bucket that takes the barrier
+// and a consumer that reaches it repair it. It names the watcher and its bucket, how long the reads
+// have waited and the run's last error, and is nil before the bound and once a read completes. A
+// cache that answers for two watchers (store.Registry) reports either one's under that one's own
+// name. A watcher whose reads fail so keeps running, so Err stays nil; the listener's /healthz
+// reports this instead.
 func (w *Watcher) ReadErr() error {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
