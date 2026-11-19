@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The three answer states an ask moves between, the values of its node's answer_state
@@ -43,11 +46,13 @@ type Change struct {
 	// Who made the change and At when, which every tuple it appends carries.
 	Who model.Actor
 	At  time.Time
-	// Event is the event that caused the change, which each tuple carries as its source_event.
-	// A caller whose event is appended after the change - every request, since the ask's parts
-	// and its event payload read the row this writes - sets Held instead: the change's facts are
-	// added there, and the caller hands it to graphstore.Caused once the event exists, in the same
-	// transaction.
+	// Event is the event that caused the change, which each tuple carries as its source_event:
+	// an event's id, graphstore.LatestEvent for an event the write phase appends right before
+	// the change's statements, or graphstore.NoEvent. A caller whose event is appended after the
+	// change - every request whose event payload or thread logins read the row this writes -
+	// sets Held instead: the change's planned facts are put there (Settled.Held), and the caller
+	// hands them to graphstore.QueueCaused once it has queued the event, or to graphstore.Caused
+	// once the event exists where nothing queues, in the same transaction.
 	Event int64
 	Held  *graphstore.Uncaused
 }
@@ -99,70 +104,192 @@ func Recorded(state string, answer *model.AskAnswer, resolution *model.AskResolu
 // that backfill, which reads the row this writes. A marked row's node is the one its foreign key
 // names, so it always exists.
 //
-// It locks the ask's row first, which every caller holds already but the approval carry, and
-// answers the ask's id and its answer state - State, Answer and Resolution - as the row now holds
-// them; the rest of the row is the caller's.
+// Settle runs the write at once, for a transaction that queues no write phase: it locks the ask's
+// row first, refuses a change whose From the row no longer holds (ErrStateMoved) before it writes
+// anything, plans the change as PlanSettle does, and runs its statements (Settled.Queue) as a
+// batch of their own. A transaction that queues its writes plans the change in its read phase
+// (PlanSettle) and queues Settled.Queue where it makes the write instead. It answers the ask's id
+// and its answer state - State, Answer and Resolution - as the row now holds them; the rest of
+// the row is the caller's.
 func Settle(ctx context.Context, tx pgx.Tx, askID string, change Change) (model.Ask, error) {
-	held, err := readHeldAnswer(ctx, tx, askID)
+	held, err := readHeldAnswer(ctx, tx, askID, true)
 	if err != nil {
 		return model.Ask{}, err
 	}
 	if change.From != "" && held.state != change.From {
 		return model.Ask{}, fmt.Errorf("settle ask %s from %s: it is %s: %w", askID, change.From, held.state, ErrStateMoved)
 	}
-	if held.marked {
-		nodes, tuples, err := answerFacts(askID, change, held)
-		if err != nil {
-			return model.Ask{}, err
-		}
-		if change.Held != nil {
-			written, err := graphstore.WriteUncaused(ctx, tx, nodes, tuples)
-			if err != nil {
-				return model.Ask{}, fmt.Errorf("state the answer of ask %s: %w", askID, err)
-			}
-			change.Held.Nodes = append(change.Held.Nodes, written.Nodes...)
-			change.Held.Tuples = append(change.Held.Tuples, written.Tuples...)
-		} else if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
-			return model.Ask{}, fmt.Errorf("state the answer of ask %s: %w", askID, err)
-		}
-	}
-	answer, err := encodeAnswer(change.Answer)
+	settled, err := planSettle(askID, change, held)
 	if err != nil {
 		return model.Ask{}, err
 	}
-	var resolution any
+	if err := store.RunWrite(ctx, tx, settled.Queue); err != nil {
+		return model.Ask{}, err
+	}
+	return settled.Ask, nil
+}
+
+// RowQueryer is the pgx surface PlanSettle reads through: a pgx.Tx, or a pool.
+type RowQueryer interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// Settled is one change of an ask's answer state as PlanSettle planned it, decided before anything
+// is written, which Queue writes.
+type Settled struct {
+	// Ask is the ask's id and its answer state - State, Answer and Resolution - as the row stands
+	// once Queue's update has run; the rest of the row is the caller's.
+	Ask model.Ask
+	// Held is what the change states on the ask's node, planned for its cause
+	// (graphstore.PlanUncaused), the zero write for a row that names no node. Queue writes its
+	// nodes at the sentinel; its facts are appended under the change's cause by Queue itself where
+	// the change names that cause (Change.Event), and where the change holds them for an event the
+	// caller appends later (Change.Held), by the caller's graphstore.QueueCaused once that event is
+	// queued, in the same write phase.
+	Held       graphstore.Uncaused
+	askID      string
+	change     Change
+	answer     any
+	resolution any
+	// leaves is the row and the node as the change leaves them once written, which a later change
+	// of the same ask in the same transaction is planned from (PlanSettleAfter).
+	leaves heldAnswer
+}
+
+// PlanSettle plans change on the ask askID, as Settle writes it, for a transaction that queues
+// its writes: it reads the ask's row and what its node holds of the answer, and decides the facts
+// and the row the change leaves (Settled), writing nothing. It takes no row lock: the caller holds
+// the owner lock every writer of the ask's owner takes first (store.LockOwner), under which no
+// other transaction moves the row. What it reads is the stored row and node, so a transaction that
+// has already queued a settle of the same ask plans the next one from that settle instead
+// (PlanSettleAfter), and the state the change answers from (Change.From) is held to the row by
+// Queue's update, which runs after every write queued before it. Where the change holds its facts
+// for a later event (Change.Held), the planned write is put there (assigned, never added to
+// another: each planned node write carries a mark of its own), and the caller hands it to
+// graphstore.QueueCaused after that event.
+func PlanSettle(ctx context.Context, q RowQueryer, askID string, change Change) (Settled, error) {
+	held, err := readHeldAnswer(ctx, q, askID, false)
+	if err != nil {
+		return Settled{}, err
+	}
+	return planSettle(askID, change, held)
+}
+
+// PlanSettleAfter plans change on the ask earlier settled, as earlier leaves the row and the node
+// once written, for a transaction that has queued earlier and not yet run it: the reopen's restore
+// of an approval request its follow then answers, a settlement's retraction of an ask whose block
+// returns. It reads nothing: what the second change keeps of the answer and the resolution, and
+// what it retracts on the node, is what the first leaves, which no read of the tables answers
+// before the write phase has run.
+func PlanSettleAfter(earlier Settled, change Change) (Settled, error) {
+	return planSettle(earlier.askID, change, earlier.leaves)
+}
+
+// planSettle is PlanSettle over held, the row and the node as they were read, or as an earlier
+// change of this transaction leaves them.
+func planSettle(askID string, change Change, held heldAnswer) (Settled, error) {
+	settled := Settled{
+		Ask:    model.Ask{ID: askID, State: change.State, Answer: change.Answer, Resolution: change.Resolution},
+		askID:  askID,
+		change: change,
+	}
+	if change.KeepAnswer {
+		settled.Ask.Answer = held.answer
+	}
+	if change.KeepResolution {
+		settled.Ask.Resolution = held.resolution
+	}
+	var tuples []graphstore.Tuple
+	if held.marked {
+		var nodes []graphstore.Node
+		var err error
+		if nodes, tuples, err = answerFacts(askID, change, held); err != nil {
+			return Settled{}, err
+		}
+		settled.Held = graphstore.PlanUncaused(nodes, tuples)
+	}
+	settled.leaves = leftBy(held, settled.Ask, tuples)
+	if change.Held != nil {
+		*change.Held = settled.Held
+	}
+	var err error
+	if settled.answer, err = encodeAnswer(change.Answer); err != nil {
+		return Settled{}, err
+	}
 	if change.Resolution != nil {
 		encoded, err := json.Marshal(change.Resolution)
 		if err != nil {
-			return model.Ask{}, fmt.Errorf("encode the resolution of ask %s: %w", askID, err)
+			return Settled{}, fmt.Errorf("encode the resolution of ask %s: %w", askID, err)
 		}
-		resolution = encoded
+		settled.resolution = encoded
 	}
-	settled := model.Ask{ID: askID}
-	var storedAnswer, storedResolution []byte
-	if err := tx.QueryRow(ctx, `
+	return settled, nil
+}
+
+// leftBy is held, the row and the node before a change, as the change leaves them: the row's
+// state, answer and resolution as ask, the row the change writes, holds them, and the node's
+// values and relations with each of tuples, the facts the change states, applied in order - an
+// asserted value replacing the one its kind held and a retracted one taking it away, an asserted
+// far end joining its relation and a retracted one leaving it.
+func leftBy(held heldAnswer, ask model.Ask, tuples []graphstore.Tuple) heldAnswer {
+	left := heldAnswer{
+		marked: held.marked, state: ask.State, answer: ask.Answer, resolution: ask.Resolution,
+		values:    make(map[string]string, len(held.values)),
+		relations: make(map[string][]string, len(held.relations)),
+	}
+	maps.Copy(left.values, held.values)
+	for kind, ends := range held.relations {
+		left.relations[kind] = slices.Clone(ends)
+	}
+	for _, tuple := range tuples {
+		if tuple.ToKind == graphstore.KindValue {
+			if tuple.Asserted {
+				left.values[tuple.Kind] = tuple.ToID
+			} else {
+				delete(left.values, tuple.Kind)
+			}
+			continue
+		}
+		ends := slices.DeleteFunc(left.relations[tuple.Kind], func(end string) bool { return end == tuple.ToID })
+		if tuple.Asserted {
+			ends = append(ends, tuple.ToID)
+		}
+		left.relations[tuple.Kind] = ends
+	}
+	return left
+}
+
+// Queue puts the change's statements on b (store.WriteBatch), in Settle's order: the node write
+// of what it states on the ask's node, then, where the change names its cause rather than holding
+// its facts for a later event, those facts under that cause, then the asks row. The row's update
+// names the state the change answers from where it names one (Change.From), and a row no longer
+// in it is refused with ErrStateMoved as the batch reads the update's result, which stops the
+// write phase there.
+func (s Settled) Queue(b *store.WriteBatch) error {
+	if err := graphstore.QueueNodes(b, s.Held); err != nil {
+		return fmt.Errorf("state the answer of ask %s: %w", s.askID, err)
+	}
+	if s.change.Held == nil {
+		if err := graphstore.QueueCaused(b, s.Held, s.change.Event); err != nil {
+			return fmt.Errorf("state the answer of ask %s: %w", s.askID, err)
+		}
+	}
+	b.Queue("write the answer state of ask "+s.askID, `
 		update asks
 		set state = $2,
 		    answer = case when $3 then answer else $4::jsonb end,
 		    resolution = case when $5 then resolution else $6::jsonb end
-		where id = $1::uuid
-		returning state, answer, resolution
-	`, askID, change.State, change.KeepAnswer, answer, change.KeepResolution, resolution).Scan(&settled.State, &storedAnswer, &storedResolution); err != nil {
-		return model.Ask{}, fmt.Errorf("write the answer state of ask %s: %w", askID, err)
-	}
-	if len(storedAnswer) > 0 {
-		settled.Answer = &model.AskAnswer{}
-		if err := json.Unmarshal(storedAnswer, settled.Answer); err != nil {
-			return model.Ask{}, fmt.Errorf("decode the answer of ask %s: %w", askID, err)
+		where id = $1::uuid and ($7::text = '' or state = $7::text)
+	`, s.askID, s.change.State, s.change.KeepAnswer, s.answer, s.change.KeepResolution, s.resolution, s.change.From).Exec(func(tag pgconn.CommandTag) error {
+		if tag.RowsAffected() == 1 {
+			return nil
 		}
-	}
-	if len(storedResolution) > 0 {
-		settled.Resolution = &model.AskResolution{}
-		if err := json.Unmarshal(storedResolution, settled.Resolution); err != nil {
-			return model.Ask{}, fmt.Errorf("decode the resolution of ask %s: %w", askID, err)
+		if s.change.From != "" {
+			return fmt.Errorf("settle ask %s from %s: %w", s.askID, s.change.From, ErrStateMoved)
 		}
-	}
-	return settled, nil
+		return fmt.Errorf("settle ask %s: no such ask", s.askID)
+	})
+	return nil
 }
 
 // encodeAnswer is the asks.answer value of answer, nil for none. An answer that selects nothing
@@ -183,23 +310,30 @@ func encodeAnswer(answer *model.AskAnswer) (any, error) {
 }
 
 // heldAnswer is what Settle reads before it writes: whether the asks row names its node, the
-// state the row holds, and what the node holds now of the answer - each value by its kind, and
-// each far end of answered_by and decided_by.
+// state, the answer and the resolution the row holds, and what the node holds now of the answer -
+// each value by its kind, and each far end of answered_by and decided_by.
 type heldAnswer struct {
-	marked    bool
-	state     string
-	values    map[string]string
-	relations map[string][]string
+	marked     bool
+	state      string
+	answer     *model.AskAnswer
+	resolution *model.AskResolution
+	values     map[string]string
+	relations  map[string][]string
 }
 
 // readHeldAnswer reads, in one statement, the ask's row - locked as an update of its answer
-// state would lock it - and what its node holds of the answer: the newest value of each value
-// kind while it asserts, and every current far end of the two relations.
-func readHeldAnswer(ctx context.Context, tx pgx.Tx, askID string) (heldAnswer, error) {
+// state would lock it, where lock says so (Settle, which runs at once) - and what its node holds
+// of the answer: the newest value of each value kind while it asserts, and every current far end
+// of the two relations.
+func readHeldAnswer(ctx context.Context, q RowQueryer, askID string, lock bool) (heldAnswer, error) {
 	held := heldAnswer{values: map[string]string{}, relations: map[string][]string{}}
-	var values, relations []byte
-	err := tx.QueryRow(ctx, `
-		select k.node_kind is not null, k.state,
+	var values, relations, storedAnswer, storedResolution []byte
+	locking := ""
+	if lock {
+		locking = "for no key update of k"
+	}
+	err := q.QueryRow(ctx, `
+		select k.node_kind is not null, k.state, k.answer, k.resolution,
 		       coalesce((select jsonb_object_agg(v.kind, v.to_id) from (
 		           select distinct on (t.kind) t.kind, t.to_id, t.asserted
 		           from graph_tuples t
@@ -212,13 +346,26 @@ func readHeldAnswer(ctx context.Context, tx pgx.Tx, askID string) (heldAnswer, e
 		         where r.asserted), '[]')
 		from asks k
 		where k.id = $1::uuid
-		for no key update of k
-	`, askID, graphstore.KindAsk, graphstore.KindValue, answerValueKinds[:], answerRelationKinds[:]).Scan(&held.marked, &held.state, &values, &relations)
+		`+locking+`
+	`, askID, graphstore.KindAsk, graphstore.KindValue, answerValueKinds[:], answerRelationKinds[:]).Scan(
+		&held.marked, &held.state, &storedAnswer, &storedResolution, &values, &relations)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return heldAnswer{}, fmt.Errorf("settle ask %s: no such ask", askID)
 	}
 	if err != nil {
 		return heldAnswer{}, fmt.Errorf("read what ask %s holds of its answer: %w", askID, err)
+	}
+	if len(storedAnswer) > 0 {
+		held.answer = &model.AskAnswer{}
+		if err := json.Unmarshal(storedAnswer, held.answer); err != nil {
+			return heldAnswer{}, fmt.Errorf("decode the answer of ask %s: %w", askID, err)
+		}
+	}
+	if len(storedResolution) > 0 {
+		held.resolution = &model.AskResolution{}
+		if err := json.Unmarshal(storedResolution, held.resolution); err != nil {
+			return heldAnswer{}, fmt.Errorf("decode the resolution of ask %s: %w", askID, err)
+		}
 	}
 	if err := json.Unmarshal(values, &held.values); err != nil {
 		return heldAnswer{}, fmt.Errorf("read the answer values of ask %s: %w", askID, err)

@@ -43,8 +43,9 @@ import (
 //     artifact.version and what the index stated, the block.invalid that flags the block, and the
 //     reason on the ask's node under the version's event (stateInvalidReasons);
 //   - a settlement that versions a decision a session wrote into the live document: the block
-//     index's nodes and rows, the decision's tie rows, and then the node of the session that wrote
-//     it (refs.IndexDecisionNodes), all before the artifact.version and its facts;
+//     index's nodes with the node of the session that wrote it in one statement (the typed-node
+//     pass planned into the block index, refs.PlanBlocks), its rows, and the decision's tie rows,
+//     all before the artifact.version and its facts;
 //   - a settlement whose version holds again the text a person approved, while an approval request
 //     of the document is open: the block index, the request moved to the new version and its
 //     ask.edited, then the carry's answer of the request (answerApprovalAsk) - the approver's
@@ -277,26 +278,27 @@ func (r *docsWriterRig) settledInvalidAsk() docsWriter {
 }
 
 // settledDecision is a settlement that versions a decision block a new session wrote into the live
-// document. The block index writes the block's node and its row and reconciles the document's
-// block_refs rows, the decision's tie among them, and the typed-node pass then writes the node of
-// the session that introduced the decision (refs.IndexDecisionNodes, through graphstore's
-// AuthorFacts), before the artifact.version and what both stated under it. The session is new, so
-// its node is held as a row another transaction inserted and has not committed.
+// document. The version's block index plans the typed-node pass with it (refs.PlanBlocks): its one
+// node write writes the blocks' nodes and the node of the session that introduced the decision
+// (through graphstore's AuthorFacts), in one statement in ascending (kind, id), then the block
+// rows, then the document's block_refs rows, the decision's tie among them, before the
+// artifact.version and what the pass stated under it. The session is new, so its node is held as
+// a row another transaction inserted and has not committed, in that same node statement.
 func (r *docsWriterRig) settledDecision() docsWriter {
 	return docsWriter{
-		name: "IndexDecisionNodes",
+		name: "the typed-node pass in the block index",
 		steps: []docsStep{
 			r.ownerStep(), settlementFenceStep(), docsBlockNodesStep(),
+			{
+				name: "the decision's author's node", order: docsNodeStep, fenced: true,
+				hold: holdDocsNewNode, at: docsNodeStatement,
+				takes: []docsTableLock{{"graph_nodes", docsRowExclusiveMode}},
+			},
 			docsBlockRowsAt("insert into document_blocks ("),
 			{
 				name: "the decision's tie rows", order: docsProjectionStep, names: "the block nodes", fenced: true,
 				hold: holdDocsTableWrites("block_refs"), at: "delete from block_refs",
 				takes: []docsTableLock{{"block_refs", docsRowExclusiveMode}},
-			},
-			{
-				name: "the decision's author's node", order: docsNodeStep, fenced: true,
-				hold: holdDocsNewNode, at: docsNodeStatement,
-				takes: []docsTableLock{{"graph_nodes", docsRowExclusiveMode}},
 			},
 			docsEventAppendStep(),
 			docsCausedTuplesStep("the tuple append", "", holdDocsTableWrites("graph_tuples")),

@@ -666,7 +666,7 @@ var readingParents = `
 // or a reading's. A document that still owes its block index (document_block_versions.version
 // null) holds no row yet for a block its latest version added, while that version's typed-node
 // pass already wrote the block's node: a decision or a reading written above the deferral bound
-// (refs.IndexDecisionNodes), the one writer of a block node that writes no row beside it. The
+// (refs.PlanDecisionNodes), the one writer of a block node that writes no row beside it. The
 // block-index reconciliation writes the row, so such a node is owed its row and no difference
 // until then; a node of any other supertag in such a document is a difference still, since no
 // writer leaves one without its row. A ref_key holds no '#', so a block node's document is the
@@ -944,9 +944,10 @@ func commentPeople(authors string) string {
 
 // storedAuthors are who wrote the decisions and the readings of every document, and every ask the
 // store names an author of, as (kind, id, at): each a person or a session, whose node the writer
-// writes beside the tie that names it (refs.IndexDecisionNodes and graphstore.AskFacts, through
-// graphstore.AuthorFacts). A decision's author is the far end of its decided_by, which its
-// block_refs row projects, and that row is what is read for it. A reading's author is the far end
+// writes beside the tie that names it (refs.PlanBlocks, refs.PlanDecisionNodes and
+// graphstore.AskFacts, through graphstore.AuthorFacts). A decision's author is the far end of its
+// decided_by, which its block_refs row projects, and that row is what is read for it. A reading's
+// author is the far end
 // of its authored_by, which no table projects (the tuple table), so the
 // row read for it is the tuple itself, the authored_by each live reading's node states now, as
 // graph_edges' tuple arm would answer it. An ask's author is read the same way, off the
@@ -1550,10 +1551,10 @@ func sidesOf(held projection) kindSides {
 
 // presentNodes is the kind's node side bound to every state but gone: a node the store holds gone
 // is no node a row may project, and the row side holds it to that separately. Any other state is
-// a node a row projects, so a state a later release adds, such as dispatch://INFRA-1950's
-// proposed, settled and overtaken (R8 of dispatch://INFRA-1149), reads here as live does. It
-// answers (kind, id, digest, state): the kind's nodes answer (id, digest), each is given the kind
-// here, and its state beside its digest, which nodeDifferences names a node with.
+// a node a row projects, so a state a later release adds, such as proposed, settled and
+// overtaken (R8 of this change), reads here as live does. It answers (kind, id, digest, state):
+// the kind's nodes answer (id, digest), each is given the kind here, and its state beside its
+// digest, which nodeDifferences names a node with.
 func presentNodes(held projection) string {
 	return `select present.kind, node.id, node.digest, present.state from (` + held.nodes + `) node (id, digest)
 		join graph_nodes present on present.kind = '` + held.nodeKind + `' and present.id = node.id

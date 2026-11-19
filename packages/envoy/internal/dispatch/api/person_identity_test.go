@@ -37,7 +37,7 @@ type identityRow struct {
 }
 
 // TestAPersonAndTheirProvedSessionAreOneNodeAndSeeOnlyTheirOwn is the identity half of
-// dispatch://INFRA-1149's c-person-graph, the rows its shell driver cannot present: a session
+// the check c-person-graph, the rows its shell driver cannot present: a session
 // the server proved a person's, which needs the secrets broker's DPoP-bound token, and a role
 // that person's session held, which needs a claim store this pod's fake Envoy does not have.
 // Here the session is proved through the server's own broker-token path, with an ES256 key the
@@ -85,7 +85,7 @@ func TestAPersonAndTheirProvedSessionAreOneNodeAndSeeOnlyTheirOwn(t *testing.T) 
 	// thing a session wrote stays that session's, so the comment is on no person's page
 	// (personNodesTied), and alice holds no node another person may see yet. Her page then
 	// answers another person exactly what a login nobody holds answers, byte for byte, so it
-	// tells nobody that she exists or wrote anything (R15 of dispatch://INFRA-1149, which an
+	// tells nobody that she exists or wrote anything (R15 of this change, which an
 	// earlier reading of this test answered 200); it answers alice herself 200.
 	early := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/people/"+brokerTestPerson+"/nodes", nil, identityTwin)
 	nobody := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/people/a-login-nobody-holds/nodes", nil, identityTwin)

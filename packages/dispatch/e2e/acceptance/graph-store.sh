@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drives the people and the agents of the node and tuple store end to end against a running
-# server (dispatch://INFRA-1149's c-person-graph). It writes comments, a message and an ask
+# server (the check c-person-graph). It writes comments, a message and an ask
 # through the real HTTP API, has the server deliver them to sessions and to a role, adds one
 # comment that no session receives, one delivery attempt that fails and one the listener queues
 # for a session that is not running, and then reads the store back and checks each tuple: what

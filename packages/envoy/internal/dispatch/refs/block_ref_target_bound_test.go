@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// TestAMentionWhoseFarEndIsPastTheBoundLeavesOutItsTuple is dispatch://INFRA-1149's R2 at the bound
+// TestAMentionWhoseFarEndIsPastTheBoundLeavesOutItsTuple is this change's R2 at the bound
 // for a version's block index. A block's address is one end of a mention's tuple and the target is
 // the other: graph_tuples' read and repeat indexes key both ends whole, so a block address of
 // 1,024 bytes beside a reference target of text.MaxTargetBytes (2,048) is a key of about 3 KiB,

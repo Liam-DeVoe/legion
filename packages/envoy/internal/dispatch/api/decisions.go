@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The server's half of the Decisions view: the Decisions read, Keep, and each person's last read
@@ -811,9 +812,12 @@ func (s *server) keepDecisionHeading(ctx context.Context, tx pgx.Tx, actor model
 // another Keep named is retracted, and the node holds one. The row's changed_version is the
 // version that last changed the decision's text (readDecisionNode).
 //
-// It writes as the store's writers do: the issue's owner row first, then the person's node (one
-// the store already holds moves nothing), the projection row, the decision.kept event, and last
-// the tuples, under that event (graphstore.WriteUncaused, graphstore.Caused).
+// It writes as the store's writers do: the issue's owner lock first, under which it reads the
+// node's current keepers, and then one write-phase batch (store.RunWrite), so the transaction holds
+// its id only for that batch: the person's node (one the store already holds moves nothing), the
+// projection row, the decision.kept event, and last the tuples, under that event
+// (graphstore.QueueNodes, graphstore.QueueCaused over graphstore.LatestEvent). The event's
+// changed_version is the one the row is written with, which no statement of the batch reads back.
 func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Actor, document model.Artifact, decision model.Decision) (model.DecisionKeep, model.Event, error) {
 	own := issueOwner(*document.IssueKey)
 	if err := s.deps.Events.LockOwners(ctx, tx, own.event("", actor, nil)); err != nil {
@@ -846,31 +850,32 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 			ToKind: graphstore.KindValue, ToID: decision.TextSHA256, At: at, Who: actor, Asserted: true,
 		},
 	)
-	held, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{graphstore.PersonNode(login, actor, at, graphstore.NoEvent)}, tuples)
-	if err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
-	}
+	held := graphstore.PlanUncaused([]graphstore.Node{graphstore.PersonNode(login, actor, at, graphstore.NoEvent)}, tuples)
 	keep := model.DecisionKeep{ArtifactID: document.ID}
-	if err := tx.QueryRow(ctx, `
-		insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by, kept_at)
-		values ($1::uuid, $2, $3, $4, $5, $6)
-		on conflict (artifact_id, block_id) do update
-			set text_sha256 = excluded.text_sha256, changed_version = excluded.changed_version,
-				kept_by = excluded.kept_by, kept_at = excluded.kept_at
-		returning block_id, text_sha256, changed_version, kept_by, kept_at
-	`, document.ID, decision.BlockID, decision.TextSHA256, decision.ChangedVersion, login, at).
-		Scan(&keep.BlockID, &keep.TextSHA256, &keep.ChangedVersion, &keep.KeptBy, &keep.KeptAt); err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
-	}
-	event, err := s.appendEvent(ctx, tx, own.event("decision.kept", actor, map[string]any{
-		"artifact_id":     document.ID,
-		"block_id":        decision.BlockID,
-		"changed_version": keep.ChangedVersion,
-	}))
-	if err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
-	}
-	if err := graphstore.Caused(ctx, tx, held, event.ID); err != nil {
+	var event model.Event
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		if err := graphstore.QueueNodes(b, held); err != nil {
+			return err
+		}
+		b.Queue("", `
+			insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by, kept_at)
+			values ($1::uuid, $2, $3, $4, $5, $6)
+			on conflict (artifact_id, block_id) do update
+				set text_sha256 = excluded.text_sha256, changed_version = excluded.changed_version,
+					kept_by = excluded.kept_by, kept_at = excluded.kept_at
+			returning block_id, text_sha256, changed_version, kept_by, kept_at
+		`, document.ID, decision.BlockID, decision.TextSHA256, decision.ChangedVersion, login, at).QueryRow(func(row pgx.Row) error {
+			return row.Scan(&keep.BlockID, &keep.TextSHA256, &keep.ChangedVersion, &keep.KeptBy, &keep.KeptAt)
+		})
+		if err := s.deps.Events.QueueAppend(b, own.event("decision.kept", actor, map[string]any{
+			"artifact_id":     document.ID,
+			"block_id":        decision.BlockID,
+			"changed_version": decision.ChangedVersion,
+		}), func(written model.Event) { event = written }); err != nil {
+			return err
+		}
+		return graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+	}); err != nil {
 		return model.DecisionKeep{}, model.Event{}, err
 	}
 	return keep, event, nil

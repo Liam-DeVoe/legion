@@ -465,7 +465,7 @@ func Node(ctx context.Context, q Queryer, who model.Actor, kind, id string, byRe
 	return node.GraphNode, found, nil
 }
 
-// TargetNames is the words each of targets is named by where a reader is shown a reference to it
+// TargetNames is the words each of targets is named by where who is shown a reference to it
 // rather than its own text: an issue's title, a document's name, an ask's question, a comment's
 // or a message's body, a component's title and a block's text, each cut to the bound an edge's
 // excerpt is cut to (resolvedNode.name), which is what GET /api/v1/references already shows
@@ -473,11 +473,12 @@ func Node(ctx context.Context, q Queryer, who model.Actor, kind, id string, byRe
 // them (TargetOf), so an artifact's id is its ref_key.
 //
 // One entry per target that resolves for who: a target with no entry is one nothing addresses
-// now — its node was deleted, its kind is one this build cannot address (resolveNodes), or it is
-// reserved for an author who is not who, which answers as an address nobody holds does (Node) —
-// which is what a caller draws as a reference whose target is gone. Each kind is read in one
-// statement whatever the number of targets, so a batch costs a statement per kind, not per
-// target.
+// now — its node was deleted, or its kind is one this build cannot address (resolveNodes) — or
+// one who may not see, which each kind's loader leaves out as it leaves out a node that does not
+// exist (visibility.go), a target reserved for an author who is not who among them, which answers
+// as an address nobody holds does (Node). A caller draws either as a reference whose target is
+// gone. Each kind is read in one statement whatever the number of targets, so a batch costs a
+// statement per kind, not per target.
 func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[Target]string, error) {
 	rows := make([]edgeRow, len(targets))
 	for index, target := range targets {

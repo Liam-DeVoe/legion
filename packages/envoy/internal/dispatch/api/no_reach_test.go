@@ -816,7 +816,9 @@ type crossProject struct {
 	issue, comment, ask   string
 	artifact, slug, block string
 	// message is an issue message, and document a project document, with its slug and one of
-	// its blocks: the objects a route of the project's own documents and messages reads.
+	// its blocks: the objects a route of the project's own documents and messages reads. The
+	// message is also the id the cross-project probe sends a route that names a message
+	// (crossProjectPath), so that route is sent another project's id of its own kind.
 	message, document, documentSlug, documentBlock string
 	// priority is the id of a priority. A priority belongs to no project, so no project's key
 	// addresses it, and only the probe that reads each object at its own address reads it.
@@ -903,8 +905,10 @@ func firstBlockOf(t *testing.T, handler http.Handler, artifactID string) string 
 	return blocks[0].ID
 }
 
-// crossProjectPath is the route's path with another project's key and this project's object, or
-// false for a route that addresses no object of a project under a key at all.
+// crossProjectPath is the route's path with another project's key and this project's object of
+// the route's own kind - a message to a route whose path names a message, an ask to an ask's, a
+// comment otherwise - or false for a route that addresses no object of a project under a key at
+// all.
 func crossProjectPath(route apiRoute, owned crossProject) (string, bool) {
 	pattern := route.Pattern
 	if !strings.Contains(pattern, "{key}") {
@@ -917,7 +921,10 @@ func crossProjectPath(route apiRoute, owned crossProject) (string, bool) {
 		pattern = strings.ReplaceAll(pattern, "{slug}", owned.slug)
 	case strings.Contains(pattern, "{id}"):
 		identifier = owned.comment
-		if strings.Contains(pattern, "/asks/") {
+		switch {
+		case strings.Contains(pattern, "/messages/{id}"):
+			identifier = owned.message
+		case strings.Contains(pattern, "/asks/"):
 			identifier = owned.ask
 		}
 		pattern = strings.ReplaceAll(pattern, "{id}", identifier)

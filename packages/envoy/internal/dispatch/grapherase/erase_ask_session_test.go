@@ -55,9 +55,9 @@ func TestTheCensusHoldsTheSessionsOfAnErasedAskToTheirNodes(t *testing.T) {
 			t.Fatalf("write the follower row of %s: %v", session, err)
 		}
 	}
-	payload, err := events.AskEventPayload(ctx, database.Pool, ask, model.ReferenceChanges{})
-	if err != nil {
-		t.Fatalf("build the ask.opened payload: %v", err)
+	payload := model.NewAskEventPayload(ask, model.ReferenceChanges{})
+	if payload.ThreadLogins, err = events.ThreadLogins(ctx, database.Pool, ask.ID); err != nil {
+		t.Fatalf("read the ask's thread logins: %v", err)
 	}
 	opened, err := json.Marshal(payload)
 	if err != nil {

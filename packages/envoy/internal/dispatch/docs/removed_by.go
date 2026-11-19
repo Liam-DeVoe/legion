@@ -3,6 +3,8 @@ package docs
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -10,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // dropper is who makes a write that may take an ask block out of its document: whether the write
@@ -47,7 +50,7 @@ func personOf(actor model.Actor) string {
 }
 
 // heldRemoval is one answered ask a person's own write took the block of out of its document,
-// held for the event that records the version the write leaves (withRemovals).
+// held for the event that records the version the write leaves (removalsOf).
 type heldRemoval struct {
 	person string
 	actor  model.Actor
@@ -58,7 +61,7 @@ type heldRemoval struct {
 // loses (lost; after is the tree the write leaves). A write that is not a person's own is refused
 // for them (refuseDroppedAnsweredAsks). A person's own write is taken, and holds each as that
 // person's removal on the transaction's ledger, which the version the write leaves states on the
-// ask's node (withRemovals). standing narrows the removals to the asks whose block the document's
+// ask's node (removalsOf). standing narrows the removals to the asks whose block the document's
 // block index holds as an ask block, for a write that replaces the document whole and so has no
 // tree of its own to say what the document held before it.
 func answerDroppedAnsweredAsks(ctx context.Context, q Queryer, artifactID string, after *pmdoc.Node, lost func(blockID string) bool, by dropper, standing bool) error {
@@ -104,23 +107,28 @@ func answerDroppedAnsweredAsks(ctx context.Context, q Queryer, artifactID string
 	return nil
 }
 
-// withRemovals is blocks, what a version of artifactID's index stated, with the removals a
-// person's own write of this transaction held for that document (answerDroppedAnsweredAsks): the
-// person's node, written now, and one asserted removed_by from each ask's node to it, both
-// appended under the event that records the version, which the caller hands blocks to
-// (graphstore.Caused). The removals are taken off the ledger, so a second version of the same
-// transaction states none of them again.
-func withRemovals(ctx context.Context, tx pgx.Tx, artifactID string, blocks graphstore.Uncaused) (graphstore.Uncaused, error) {
+// removalsOf is what a version of artifactID states of the removals a person's own write of this
+// transaction held for that document (answerDroppedAnsweredAsks): the person's node, and one
+// asserted removed_by from each ask's node to it, planned for the event that records the version
+// (graphstore.PlanUncaused) and written nowhere here. The version's index pass plans it into its
+// own stated write (refs.PlanBlocks, refs.PlanDecisionNodes, beside), so that write's node write
+// writes the person's node beside the block nodes, under the one mark, and the caller's
+// graphstore.QueueCaused appends the removed_by tuples, with what the index stated, under the
+// version's event; a version no index pass plans queues it on its own (queueRemovals). The
+// removals are taken off the ledger, so a second version of the same transaction states none of
+// them again. It is the zero write where the transaction holds no removal of the document.
+func removalsOf(ctx context.Context, artifactID string) graphstore.Uncaused {
 	ledger := ledgerFrom(ctx)
 	if ledger == nil || len(ledger.removals[artifactID]) == 0 {
-		return blocks, nil
+		return graphstore.Uncaused{}
 	}
 	held := ledger.removals[artifactID]
 	delete(ledger.removals, artifactID)
 	var nodes []graphstore.Node
 	var tuples []graphstore.Tuple
 	people := map[string]bool{}
-	for ask, removal := range held {
+	for _, ask := range slices.Sorted(maps.Keys(held)) {
+		removal := held[ask]
 		if !people[removal.person] {
 			people[removal.person] = true
 			nodes = append(nodes, graphstore.PersonNode(removal.person, removal.actor, removal.at, graphstore.NoEvent))
@@ -131,11 +139,21 @@ func withRemovals(ctx context.Context, tx pgx.Tx, artifactID string, blocks grap
 			At: removal.at, Who: removal.actor, SourceEvent: graphstore.NoEvent, Asserted: true,
 		})
 	}
-	written, err := graphstore.WriteUncaused(ctx, tx, nodes, tuples)
-	if err != nil {
+	return graphstore.PlanUncaused(nodes, tuples)
+}
+
+// queueRemovals is removalsOf for a version no index pass plans - one with no rendering
+// (indexDocument) - which carries the removals on its own: their node write, the person's node, is
+// queued here through write, after the version's insert, and the write planned is answered for
+// the caller's event as an index pass's would be, which appends the removed_by tuples under it
+// (graphstore.QueueCaused).
+func queueRemovals(ctx context.Context, tx pgx.Tx, artifactID string) (graphstore.Uncaused, error) {
+	removals := removalsOf(ctx, artifactID)
+	if len(removals.Nodes) == 0 && len(removals.Tuples) == 0 {
+		return graphstore.Uncaused{}, nil
+	}
+	if err := write(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, removals) }); err != nil {
 		return graphstore.Uncaused{}, fmt.Errorf("state the removals of the answered asks of %s: %w", artifactID, err)
 	}
-	blocks.Nodes = append(blocks.Nodes, written.Nodes...)
-	blocks.Tuples = append(blocks.Tuples, written.Tuples...)
-	return blocks, nil
+	return removals, nil
 }

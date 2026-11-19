@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -90,7 +92,7 @@ var personNodesTied = `
 	)`
 
 // personPageShownQuery is whether the page of the person $1 names answers anyone but that person
-// (R15 of dispatch://INFRA-1149): the store holds the person, not gone, and visible to the reader
+// (R15 of this change): the store holds the person, not gone, and visible to the reader
 // whose acting credential is bound at $2 (refs.VisibilityArg), and the person is tied to at least
 // one node, not gone, that the reader may see (personNodesTied). Each tied node is held to the
 // predicate of its own kind, read off the one row the store holds of it (refs.VisibleRow), and a
@@ -164,6 +166,12 @@ var personNodesQuery = personNodesTied + `, items as (
 // at all where they hold nothing: a person who has written nothing and been reached by nothing
 // opens their own page from the signed-in login, and telling them they are who they signed in as
 // tells them nothing new.
+//
+// The decision and the list run in one read-only transaction at repeatable read, as
+// schemanodes.Read's reads do, so the list reads the snapshot the decision read: a write that
+// commits between the two - one that moves the person's only visible node gone, or reserves it
+// for its author - is read by neither, and the reader is answered the page as it stood when the
+// route decided, never 200 with no rows for a person the route decided holds a node they may see.
 func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -178,8 +186,15 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	// The acting credential is marshalled once and bound by both reads: it is one value for
 	// the request, and the two statements name the same reader.
 	seen := refs.VisibilityArg(caller)
+	tx, err := s.deps.Store.Pool.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The transaction reads only, so its end is a rollback whatever happened.
+	defer tx.Rollback(r.Context())
 	var shown bool
-	if err := s.deps.Store.Pool.QueryRow(r.Context(), personPageShownQuery, login, seen, personPageKinds).Scan(&shown); err != nil {
+	if err := tx.QueryRow(r.Context(), personPageShownQuery, login, seen, personPageKinds).Scan(&shown); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -193,7 +208,12 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, personNodes{Person: login, Rows: []personNode{}, Limit: limit, Offset: offset})
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), personNodesQuery, login, seen, limit, offset)
+	// The test seam: a case commits a write here, between the decision and the list (server
+	// betweenPersonPageReads). Nothing but a test sets it.
+	if s.betweenPersonPageReads != nil {
+		s.betweenPersonPageReads()
+	}
+	rows, err := tx.Query(r.Context(), personNodesQuery, login, seen, limit, offset)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

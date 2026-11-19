@@ -57,7 +57,7 @@ func failingSendListener(t *testing.T, sessions ...string) string {
 // (recordAnsweredDelivery): the node under the event that records the answer, and, where this
 // flip is what makes the attempt a delivery, the delivered_to tuple of what it carried - a
 // comment, the one thing this child gives a node, and nothing for a message, which
-// dispatch://INFRA-1152 owns.
+// the child that moves the inbox, the messages and the read state owns.
 //
 // Without that record the flip left the census holding the store to a node nobody wrote, with
 // no later write that could ever close it.

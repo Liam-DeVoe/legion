@@ -91,7 +91,7 @@ func TestTheRestoreTakesBackOnlyWhatNoPersonRemoved(t *testing.T) {
 	dropAs("q-scoped", &scoped, "q-agent", "q-marked")
 	dropAs("q-agent", nil, "q-marked")
 	issue.replaceAsPerson(issue.spec, spec())
-	marked := removalsOf(t, issue, asked["q-marked"])
+	marked := heldRemovalsOf(t, issue, asked["q-marked"])
 	if len(marked) != 1 || !marked[0].Asserted || marked[0].ToID != "alice" {
 		t.Fatalf("the person's own drop of q-marked left the removals %+v, want one asserted to alice", marked)
 	}
@@ -158,7 +158,7 @@ func TestTheRestoreTakesBackOnlyWhatNoPersonRemoved(t *testing.T) {
 	}
 
 	for id, person := range map[string]string{"q-person": "carol", "q-scoped": "dave", "q-marked": "alice"} {
-		held := removalsOf(t, issue, asked[id])
+		held := heldRemovalsOf(t, issue, asked[id])
 		if len(held) != 1 || !held[0].Asserted || held[0].ToKind != graphstore.KindPerson || held[0].ToID != person {
 			t.Errorf("ask %s holds the removals %+v, want one asserted to %s", id, held, person)
 			continue
@@ -167,7 +167,7 @@ func TestTheRestoreTakesBackOnlyWhatNoPersonRemoved(t *testing.T) {
 			t.Errorf("the removal of ask %s carries the event %d, want %d, the event of the version that dropped it", id, held[0].SourceEvent, event)
 		}
 	}
-	if held := removalsOf(t, issue, asked["q-agent"]); len(held) != 0 {
+	if held := heldRemovalsOf(t, issue, asked["q-agent"]); len(held) != 0 {
 		t.Errorf("ask q-agent holds the removals %+v, want none: a session with no act dropped it", held)
 	}
 	latest := issue.latest(issue.spec)
@@ -208,8 +208,8 @@ func TestTheRestoreTakesBackOnlyWhatNoPersonRemoved(t *testing.T) {
 	}
 }
 
-// removalsOf is every removed_by tuple of ask's node, in the order they were appended.
-func removalsOf(t *testing.T, issue *restoreIssue, ask string) []graphstore.Tuple {
+// heldRemovalsOf is every removed_by tuple of ask's node, in the order they were appended.
+func heldRemovalsOf(t *testing.T, issue *restoreIssue, ask string) []graphstore.Tuple {
 	t.Helper()
 	held, err := graphstore.History(context.Background(), issue.database.Pool, graphstore.KindAsk, ask, graphstore.TupleRemovedBy)
 	if err != nil {
@@ -253,7 +253,7 @@ func TestAnAnswerersOwnLaterDropOfHerAnsweredAskStays(t *testing.T) {
 	if len(result.Declined) != 1 || result.Declined[0] != (DeclinedAsk{Ask: ask, Person: "alice", Version: dropped}) {
 		t.Fatalf("the restore declined %+v, want the ask %s to alice at version %d", result.Declined, ask, dropped)
 	}
-	if held := removalsOf(t, issue, ask); len(held) != 1 || !held[0].Asserted || held[0].ToID != "alice" || held[0].SourceEvent != event {
+	if held := heldRemovalsOf(t, issue, ask); len(held) != 1 || !held[0].Asserted || held[0].ToID != "alice" || held[0].SourceEvent != event {
 		t.Fatalf("the ask %s holds the removals %+v, want one asserted to alice under the event %d", ask, held, event)
 	}
 	if spec := issue.latest(issue.spec); strings.Contains(spec, "#q-own ") {

@@ -19,7 +19,7 @@ import (
 // and for the scan to return once the record has queued behind none.
 const recordLockWait = 30 * time.Second
 
-// TestRecordBatchTakesAPrefixOfTheStoreLockOrder is the outbox half of dispatch://INFRA-1149's
+// TestRecordBatchTakesAPrefixOfTheStoreLockOrder is the outbox half of the check
 // c-lock-order: recordBatch is a store write path that takes fewer steps than the store's lock
 // order lists, a subset of the steps, in the order. The order's invariants are the ones written on
 // api/inbox_read.go's markInboxReadThreads: the owner row first, a node's row before the projection
@@ -142,6 +142,7 @@ func TestRecordBatchTakesAPrefixOfTheStoreLockOrder(t *testing.T) {
 	// the order's steps, in the order, with no owner row among them, and passed.
 	t.Logf("the batch was recorded while %s were still held: recordBatch took %q, a subset of the store's lock order with no owner row, in the order", owner.name, names)
 	owner.release()
+	storetest.RequireNoMarkedCause(t, database, "recordBatch")
 }
 
 // recordHold is one transaction the lock-order test holds rows in, named as a failure names it.

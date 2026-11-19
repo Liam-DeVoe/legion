@@ -8,21 +8,24 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// TestAPersonsRemovalOfAnAnsweredAskTakesTheStoreLockOrder drives withRemovals, the writer of a
-// person's removal of an answered ask's block (graphstore.TupleRemovedBy), along the edit path that
-// reaches it, with the machinery of TestEveryDocsStoreWriterTakesTheStoreLockOrder: the path's
-// steps are checked against the order written on api/inbox_read.go's markInboxReadThreads
-// (requireTheDocsOrderAdmits), and each is held in turn while the path's backend is read at the
-// statement it waits at and at the table locks it holds (requireEachDocsStepIsWaitedAtInTurn).
+// TestAPersonsRemovalOfAnAnsweredAskTakesTheStoreLockOrder drives the write of a person's removal
+// of an answered ask's block (graphstore.TupleRemovedBy, planned by removalsOf into the version's
+// block index), along the edit path that reaches it, with the machinery of
+// TestEveryDocsStoreWriterTakesTheStoreLockOrder: the path's steps are checked against the order
+// written on api/inbox_read.go's markInboxReadThreads (requireTheDocsOrderAdmits), and each is held
+// in turn while the path's backend is read at the statement it waits at and at the table locks it
+// holds (requireEachDocsStepIsWaitedAtInTurn).
 //
 // The path is a person's edit that deletes the block of an answered ask, versioned in the same
-// transaction as POST /api/v1/artifacts/{id}/edits versions it: under the issue's owner row, the
+// transaction as POST /api/v1/artifacts/{id}/edits versions it: under the issue's owner lock, the
 // version's insert takes the document's fence row, its block index writes the gone block's node and
-// takes the document's block rows and tie rows out, and then the person's node is written at the
-// sentinel (withRemovals); the artifact.version event follows, and what the index stated and the
-// removed_by tuple are appended under it in one statement (graphstore.Caused).
+// the person's node in its one node statement (the removals ride in the index's plan, refs'
+// beside), and takes the document's block rows and tie rows out; the artifact.version event
+// follows, and what the index stated and the removed_by tuple are appended under it in one
+// statement (graphstore.QueueCaused).
 func TestAPersonsRemovalOfAnAnsweredAskTakesTheStoreLockOrder(t *testing.T) {
 	ctx := context.Background()
 	rig := newDocsWriterRig(t)
@@ -34,12 +37,12 @@ func TestAPersonsRemovalOfAnAnsweredAskTakesTheStoreLockOrder(t *testing.T) {
 // personsRemoval is a person's edit that deletes the block of an answered ask of the rig's asked
 // document. Each run first writes the block as a session's edit with its version, settles it,
 // which opens its ask, and answers the ask; the run's person is new to it, so the person's node is
-// held as a row another transaction inserted and has not committed. The fence row is there from
-// the document's first version, so it is held as a row; the block statement's node, rows and the
-// event and the tuples are held as their tables.
+// held as a row another transaction inserted and has not committed, in the block index's node
+// statement. The fence row is there from the document's first version, so it is held as a row; the
+// block statement's node, rows and the event and the tuples are held as their tables.
 func (r *docsWriterRig) personsRemoval() docsWriter {
 	return docsWriter{
-		name: "withRemovals after a person's edit",
+		name: "removalsOf after a person's edit",
 		steps: []docsStep{
 			r.ownerStep(),
 			{
@@ -47,6 +50,11 @@ func (r *docsWriterRig) personsRemoval() docsWriter {
 				takes: []docsTableLock{{"document_block_versions", docsRowExclusiveMode}},
 			},
 			docsBlockNodesStep(),
+			{
+				name: "the person's node", order: docsNodeStep, fenced: true,
+				hold: holdDocsNewNode, at: docsNodeStatement,
+				takes: []docsTableLock{{"graph_nodes", docsRowExclusiveMode}},
+			},
 			{
 				name: "the block rows", order: docsProjectionStep, names: "the block nodes", fenced: true,
 				hold: holdDocsTableWrites("document_blocks"), at: "delete from document_blocks",
@@ -56,11 +64,6 @@ func (r *docsWriterRig) personsRemoval() docsWriter {
 				name: "the tie rows", order: docsProjectionStep, names: "the block nodes", fenced: true,
 				hold: holdDocsTableWrites("block_refs"), at: "delete from block_refs",
 				takes: []docsTableLock{{"block_refs", docsRowExclusiveMode}},
-			},
-			{
-				name: "the person's node", order: docsNodeStep,
-				hold: holdDocsNewNode, at: docsNodeStatement,
-				takes: []docsTableLock{{"graph_nodes", docsRowExclusiveMode}},
 			},
 			docsEventAppendStep(),
 			{
@@ -92,8 +95,9 @@ func (r *docsWriterRig) personsRemoval() docsWriter {
 }
 
 // removeAsPerson deletes block from the asked document as person's edit and versions it in the
-// same transaction, as POST /api/v1/artifacts/{id}/edits does, and answers nil where the ask of
-// the block then holds one asserted removed_by to that person.
+// same transaction, as POST /api/v1/artifacts/{id}/edits does, queueing the version's event and
+// what the version stated under it as that route does, and answers nil where the ask of the block
+// then holds one asserted removed_by to that person.
 func (r *docsWriterRig) removeAsPerson(ctx context.Context, person model.Actor, block string) error {
 	tx, err := r.service.store.Pool.Begin(ctx)
 	if err != nil {
@@ -110,15 +114,16 @@ func (r *docsWriterRig) removeAsPerson(ctx context.Context, person model.Actor, 
 		return fmt.Errorf("version the delete of %s (wrote %v): %w", block, written.Wrote, err)
 	}
 	issue := "CORE-1"
-	appended, err := r.service.events.Append(ctx, tx, model.Event{
-		IssueKey: &issue, Type: "artifact.version", Actor: person,
-		Payload: map[string]any{"artifact_id": r.asked, "version": map[string]any{"number": written.Version.Number}},
-	})
-	if err != nil {
-		return err
-	}
-	event := appended.ID
-	if err := graphstore.Caused(ctx, tx, written.Blocks, event); err != nil {
+	var event int64
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		if err := r.service.events.QueueAppend(b, model.Event{
+			IssueKey: &issue, Type: "artifact.version", Actor: person,
+			Payload: map[string]any{"artifact_id": r.asked, "version": map[string]any{"number": written.Version.Number}},
+		}, func(appended model.Event) { event = appended.ID }); err != nil {
+			return err
+		}
+		return graphstore.QueueCaused(b, written.Blocks, graphstore.LatestEvent)
+	}); err != nil {
 		return err
 	}
 	if err := ledger.Commit(ctx); err != nil {

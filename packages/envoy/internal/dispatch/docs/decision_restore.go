@@ -418,7 +418,7 @@ func (s *Service) restoreIssueDecisions(ctx context.Context, tx pgx.Tx, issue st
 		if err != nil {
 			return result, err
 		}
-		collectEvent(ctx, retirement.Event)
+		eventSink(ctx)(retirement.Event)
 		if retirement.SupersededApproval != nil {
 			result.Superseded = append(result.Superseded, DecisionSupersededApproval{
 				Document: r.decisions.address, Approval: *retirement.SupersededApproval,
@@ -1931,7 +1931,7 @@ func (r *issueRestore) writeVersion(ctx context.Context, document issueDocument,
 	if err := graphstore.Caused(ctx, r.tx, written.Blocks, event.ID); err != nil {
 		return graphstore.NoEvent, err
 	}
-	collectEvent(ctx, event)
+	eventSink(ctx)(event)
 	return event.ID, nil
 }
 

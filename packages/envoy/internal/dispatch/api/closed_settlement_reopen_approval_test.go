@@ -18,13 +18,13 @@ import (
 
 // A close withdraws the spec's approval request and a reopen restores it with the turn it had, so
 // a person who was asked to approve the spec is asked again after the reopen, as before the close
-// (restoreIssueAsksTx). The settlements the closed period and the reopen leave owed write no
-// version: the close's withdrawal and the reopen's restoration change no byte of a document,
-// and neither is a change the request's agent made to the text it
-// handed the person. So after both have run, the request still waits on the person, the spec
-// still reads awaiting approval from the person, and the request is still in the person's Inbox.
-// The browser suite drives the same path (e2e/close-withdraws-asks.e2e.ts, whose "Waiting on you
-// (3)" counts this request).
+// (prepareRestoration, recordRestoredAsksTx). The settlements the closed period and the reopen
+// leave owed write no version: the close's withdrawal and the reopen's restoration change no byte
+// of a document, and neither is a change the request's agent made to the text it handed the
+// person. So after both have run, the request still waits on the person, the spec still reads
+// awaiting approval from the person, and the request is still in the person's Inbox. The browser
+// suite drives the same path (e2e/close-withdraws-asks.e2e.ts, whose "Waiting on you (3)" counts
+// this request).
 func TestAReopenedIssuesApprovalRequestStillWaitsOnThePersonOnceItsDocumentsSettle(t *testing.T) {
 	f := newCloseAsksFixtureSettlingAfter(t, time.Hour)
 	ctx := context.Background()

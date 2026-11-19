@@ -161,17 +161,21 @@ var readsWithoutAViewer = map[string]string{
 	"AskPartIDs":           nodeDetail,
 	"BlockChanges":         nodeDetail,
 	"BlockEmbeddingStates": nodeDetail,
+	"BlockIndexing.Cited":  serverWork + " - a version write reads the blocks that cite the blocks its index changes, to count what it moves",
 	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
 	"BlockTextAt":          nodeDetail,
-	"BlockTexts": nodeDetail + " - the texts of many blocks in one read, each a block its caller has already " +
-		"resolved for the reader through TargetNames, which binds the block's predicate",
+	"BlockTexts": "it reads the text of each block GET /api/v1/reference-targets has already named through TargetNames, " +
+		"which binds each block's predicate, as CurrentBlockText and CurrentItemBlockText read one, and answers nothing of any other node",
 	"CanonicalRepo":        noNode,
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
 	"CurrentBlockText":     nodeDetail,
 	"CurrentItemBlockText": nodeDetail,
+	"DecisionFacts":        serverWork + " - a version write's read phase reads what the store and the asks rows hold of the version's decisions, readings and ask blocks",
 	"DocumentIsCited":      noNode,
 	"DocumentsOwedWindows": serverWork,
 	"DriftedExcerpts":      serverWork,
+	"ExcerptsMoved":        serverWork + " - a write's read phase works out which of its document's excerpts the update it queues moves",
+	"HeldTargets":          serverWork + " - a write's read phase reads the edges of the source its reconciliation replaces",
 	"IssueAncestors": "every caller is a rule of a write - a reparent's cycle refusal, an issue event's ancestors, the near-copy " +
 		"gate's exclusion, a block pointer's ancestor rule and the scope a result's check resolves in - and a rule that " +
 		"skipped an issue it may not see would let a cycle through that issue or route an event short of its root",
@@ -180,13 +184,24 @@ var readsWithoutAViewer = map[string]string{
 	"ItemsOwedWindows": serverWork,
 	"ListOwed":         serverWork,
 	"NewReader":        serverWork + " - the index-time resolver acts for no person, and every edge it lets a write store is held to the predicates of both its ends when it is read",
+	"NewReaderInScope": serverWork + " - the index-time resolver of a source whose row is only queued acts for no person, as NewReader's does",
 	"NextExcerptRetry": serverWork,
 	"OwedItemBlocks":   serverWork,
-	"QueueAskPartIDs":  nodeDetail,
-	"RecordExcerpts":   serverWork,
-	"RemovedBlockNode": nodeDetail,
-	"ScopeSources":     serverWork,
-	"SourceText":       serverWork,
+	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +
+		"resolver reads for no person",
+	"PlanBlocks":         serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
+	"PlanDecisionNodes":  serverWork + " - a deferred version write's read phase plans its typed-node pass against what the store holds of the document",
+	"PlanItemIfOwed":     serverWork + " - a write's read phase plans the index an item it writes beside is owed",
+	"PlanOpenedAskTies":  serverWork + " - a settlement's read phase plans the ties of the ask blocks it opened against the document's block index",
+	"PlanReplace":        serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
+	"QueueAskPartIDs":    nodeDetail,
+	"ReadBlockIndex":     serverWork + " - a version write's read phase reads the document's block index it plans against",
+	"ReadIndexedVersion": serverWork + " - a version write's read phase reads the document's address and the version's writer",
+	"ReadItemIndex":      serverWork + " - a write's read phase reads the item's block index it plans against",
+	"RecordExcerpts":     serverWork,
+	"RemovedBlockNode":   nodeDetail,
+	"ScopeSources":       serverWork,
+	"SourceText":         serverWork,
 }
 
 // SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, as
@@ -302,16 +317,16 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		})
 	}
 	for _, kind := range nodeKinds {
+		record("TargetNames", "TargetNames of kind "+kind, func() error {
+			_, err := TargetNames(ctx, recorder, who, []Target{{Kind: kind, ID: "no-such-node"}})
+			return err
+		})
 		record("Node", "Node of kind "+kind, func() error {
 			_, _, err := Node(ctx, recorder, who, kind, "no-such-node", true)
 			return err
 		})
 		record("BacklinkCounts", "BacklinkCounts of kind "+kind, func() error {
 			_, err := BacklinkCounts(ctx, recorder, who, kind, []string{"no-such-node"}, nil)
-			return err
-		})
-		record("TargetNames", "TargetNames of kind "+kind, func() error {
-			_, err := TargetNames(ctx, recorder, who, []Target{{Kind: kind, ID: "no-such-node"}})
 			return err
 		})
 		// The batched half queues its statement rather than issuing it on a queryer: the
@@ -372,16 +387,17 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			return err
 		})
 	}
-	// ResolvePrefixes reads each kind of short id in a statement of its own, a pinned block's
-	// included, so each is recorded alone; a message is resolved within its issue alone.
+	// ResolvePrefixes reads one statement per kind of item it is asked, a pinned block's
+	// included, each asked on its own. A message id is resolved within an issue alone, so its
+	// scope names one.
 	for _, asked := range []ShortID{
-		{Kind: "ask"}, {Kind: "comment", Scope: Scope{IssueKey: "CORE-1"}}, {Kind: "message", Scope: Scope{IssueKey: "CORE-1"}},
-		{Kind: "artifact"}, {Kind: "block", Scope: Scope{Document: "CORE-1/spec"}},
-		{Kind: "block", Scope: Scope{Document: "CORE-1/spec", Version: 1}},
+		{Kind: "ask", Prefix: "00000000"}, {Kind: "comment", Scope: Scope{IssueKey: "CORE-1"}, Prefix: "00000000"},
+		{Kind: "message", Scope: Scope{IssueKey: "CORE-1"}, Prefix: "00000000"}, {Kind: "artifact", Prefix: "00000000"},
+		{Kind: "block", Scope: Scope{Document: "CORE-1/spec"}, Prefix: "00000000"},
+		{Kind: "block", Scope: Scope{Document: "CORE-1/spec", Version: 1}, Prefix: "00000000"},
 	} {
-		asked.Prefix = "00000000"
 		record("ResolvePrefixes", fmt.Sprintf("ResolvePrefixes of kind %s in %+v", asked.Kind, asked.Scope), func() error {
-			_, _, err := ResolvePrefixes(ctx, recorder, who, []ShortID{asked})
+			_, _, err := ResolvePrefixes(ctx, recorder, &who, []ShortID{asked})
 			return err
 		})
 	}
@@ -455,8 +471,8 @@ func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) str
 // storeReads is every exported function of this package that reads the store, read out of the
 // package's own source rather than kept as a list: one that takes the Queryer it reads on, or
 // the *pgx.Batch it queues its statement in. viewing is those that take a model.Actor beside it,
-// the reads of the graph for a viewer, and without is the rest. A method is named by its
-// receiver's type and its own name.
+// or a *model.Actor where nil is no person (ResolvePrefixes), the reads of the graph for a
+// viewer, and without is the rest. A method is named by its receiver's type and its own name.
 func storeReads(t *testing.T) (viewing, without []string) {
 	t.Helper()
 	files, err := filepath.Glob("*.go")
@@ -480,7 +496,7 @@ func storeReads(t *testing.T) (viewing, without []string) {
 			var viewer, queries bool
 			for _, parameter := range function.Type.Params.List {
 				switch types.ExprString(parameter.Type) {
-				case "model.Actor":
+				case "model.Actor", "*model.Actor":
 					viewer = true
 				case "Queryer", "*pgx.Batch":
 					queries = true
