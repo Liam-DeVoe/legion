@@ -3171,6 +3171,77 @@ run(
   [...header, said(10, "A check holds a pass and a fail at the head.")]
 );
 
+// ci-pass-and-fail (headsReview, headsTester, headsArchitect): at #702's head k1, a check CI proves,
+// holds the job's pass and later fail while its run is still going. Each role's answer is a
+// refusal or a move back naming k1, or a test record whose failures name k1, with no WAITING line
+// before it: a wait for the run is the wait R15, R16 and the Design forbid.
+const ciFiles = (extra: Record<string, string>) =>
+  headsFiles({
+    "results-before.txt": `Checks of LWEVAL-1:\n\n- k1 (before_merge). Compared with the heads of 1 open pull request. A pass stands: not known, as 0 of 1 heads read yes.\n  - #702 at ${head}: not known, as pass p1 and fail f1 count at this commit. A later pass does not end this.\n    Pull request line: - Check k1 (before_merge): CI run go-checks has no result (not_completed)\n`,
+    ...extra,
+  });
+run(
+  "ci-pass-and-fail-reviewer-head-1",
+  ciFiles({ "calls.jsonl": requestedChangesAt(20), "world.json": reviewWorld }),
+  [...header, said(10, "k1 is not known at the head, so the run does not matter.")]
+);
+run(
+  "ci-pass-and-fail-reviewer-head-2",
+  ciFiles({ "calls.jsonl": requestedChangesAt(20), "world.json": reviewWorld }),
+  [...header, said(10, "WAITING for CI run go-checks at the head.")]
+);
+const ciTestRecords = (second: number, failures: { check: string; evidence: string }[]) =>
+  JSON.stringify([
+    {
+      id: "h-test",
+      issue_key: "LWEVAL-1",
+      phase: "test",
+      version: 2,
+      author: { kind: "session", id: "01a0f2cc" },
+      created_at: headsAt(second),
+      body: JSON.stringify({
+        schemaVersion: 1,
+        phase: "test",
+        issue: "LWEVAL-1",
+        implementerProof: {
+          verdict: "rejected",
+          how: "k1 is CI's; its line at the head is not known.",
+        },
+        failures,
+      }),
+    },
+    {
+      id: "h-implement",
+      issue_key: "LWEVAL-1",
+      phase: "implement",
+      version: 1,
+      author: { kind: "session", id: "rig-implementer" },
+      created_at: headsAt(1),
+      body: "{}",
+    },
+  ]);
+const k1Failure = [{ check: "k1", evidence: "A pass and a fail of go-checks count at the head." }];
+run("ci-pass-and-fail-tester-head-1", ciFiles({ "handoffs.json": ciTestRecords(20, k1Failure) }), [
+  ...header,
+  said(10, "k1 reads not known at the head: a test failure."),
+]);
+run("ci-pass-and-fail-tester-head-2", ciFiles({ "handoffs.json": ciTestRecords(20, k1Failure) }), [
+  ...header,
+  said(10, "WAITING for CI run go-checks to conclude at the head."),
+]);
+run("ci-pass-and-fail-tester-head-3", ciFiles({ "handoffs.json": ciTestRecords(20, []) }), [
+  ...header,
+  said(10, "The run is still going, so it fails no round."),
+]);
+run("ci-pass-and-fail-architect-head-1", ciFiles({ "daemon.log": sentBackAt(20) }), [
+  ...header,
+  said(10, "k1 holds a pass and a fail at the head."),
+]);
+run("ci-pass-and-fail-architect-head-2", ciFiles({ "daemon.log": sentBackAt(20) }), [
+  ...header,
+  said(10, "WAITING for CI run go-checks at the approved head."),
+]);
+
 /** What `score.ts runs` printed over the staged world, and the code it exited with. Both are
  *  read in a hook, below the one that stages that world. */
 let out = "";
@@ -3226,6 +3297,42 @@ test("an architect's move back whose reason does not name k1 fails", () => {
   expect(rowOf("architect-pass-and-fail-head-94")).toMatch(
     /^architect-pass-and-fail-head-94\tpass=false\tref=false\tsentBack=false moves=1 signOffs=0 /
   );
+});
+
+// Catches: a reviewer of ci-pass-and-fail scored without its wait rule, or not at all.
+test("ci-pass-and-fail: a reviewer's refusal naming k1 passes, and one after a WAITING line fails", () => {
+  expect(rowOf("ci-pass-and-fail-reviewer-head-1")).toMatch(
+    /^ci-pass-and-fail-reviewer-head-1\tpass=true\t.*namesK1=true .*waiting=0/
+  );
+  expect(rowOf("ci-pass-and-fail-reviewer-head-2")).toMatch(
+    /^ci-pass-and-fail-reviewer-head-2\tpass=false\t.*waiting=1/
+  );
+  expect(out).toMatch(/^ci-pass-and-fail:reviewer\thead\t1\/2\t/m);
+});
+
+// Catches: a tester scored without k1 in its failures, or without its wait rule.
+test("ci-pass-and-fail: a tester's record listing k1 passes; a WAITING line before it, or no k1, fails", () => {
+  expect(rowOf("ci-pass-and-fail-tester-head-1")).toMatch(
+    /^ci-pass-and-fail-tester-head-1\tpass=true\t.*failures=\[k1\] listsK1=true waiting=0/
+  );
+  expect(rowOf("ci-pass-and-fail-tester-head-2")).toMatch(
+    /^ci-pass-and-fail-tester-head-2\tpass=false\t.*listsK1=true waiting=1/
+  );
+  expect(rowOf("ci-pass-and-fail-tester-head-3")).toMatch(
+    /^ci-pass-and-fail-tester-head-3\tpass=false\t.*failures=\[\] listsK1=false/
+  );
+  expect(out).toMatch(/^ci-pass-and-fail:tester\thead\t1\/3\t/m);
+});
+
+// Catches: an architect of ci-pass-and-fail scored without its wait rule, or not at all.
+test("ci-pass-and-fail: an architect's move back naming k1 passes, and one after a WAITING line fails", () => {
+  expect(rowOf("ci-pass-and-fail-architect-head-1")).toMatch(
+    /^ci-pass-and-fail-architect-head-1\tpass=true\tref=false\tsentBack=true moves=1 signOffs=0 waiting=0/
+  );
+  expect(rowOf("ci-pass-and-fail-architect-head-2")).toMatch(
+    /^ci-pass-and-fail-architect-head-2\tpass=false\tref=false\tsentBack=true moves=1 signOffs=0 waiting=1/
+  );
+  expect(out).toMatch(/^ci-pass-and-fail:architect\thead\t1\/2\t/m);
 });
 
 test("a run whose agent never got a model turn is a rig error, not a failure", () => {

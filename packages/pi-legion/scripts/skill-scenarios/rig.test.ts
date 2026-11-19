@@ -1645,7 +1645,7 @@ console.log(\`dispatch \${process.argv.slice(2).join(" ")} at \${process.env.DIS
         "stop_tree() { :; }",
         "stop_panes() { :; }",
         "stop_env_processes() { :; }",
-        `curl() { printf 'curl %s: switch %s\\n' "$*" "$([ -e "$SWITCH" ] && echo on || echo off)"; }`,
+        `curl() { printf 'curl %s [stdin %s]: switch %s\\n' "$*" "$(cat)" "$([ -e "$SWITCH" ] && echo on || echo off)"; }`,
         `agent() { { [ -e "$SWITCH" ] && echo switch=on || echo switch=off; [ -e "$R/results-before.txt" ] && echo before=seen || echo before=unseen; } >"$R/agent-saw"; }`,
         "R=$1 co=$2 work=$3 maps=$3/maps dispatch_port=4567 worker_key=ACME-1 hide_state_file=$SWITCH",
         "session='' daemon_pid='' dispatch_pid='' natsd_pid='' fake_github_pid=''",
@@ -1678,10 +1678,14 @@ console.log(\`dispatch \${process.argv.slice(2).join(" ")} at \${process.env.DIS
       "dispatch results --issue ACME-1 --json at http://127.0.0.1:4567 as omp: switch off\n"
     );
     expect(read(`${sw}.after-json`)).toContain("--json at http://127.0.0.1:4567 as omp: switch on");
+    // The token reaches curl on its standard input, never in its arguments, which another process
+    // can read (packages/daemon/internal/textcheck).
     expect(read(`${sw}.before-curl`)).toBe(
-      "curl -sS -H Authorization: Bearer e2e-token http://127.0.0.1:4567/api/v1/issues/ACME-1/results: switch off\n"
+      "curl -sS -H @- http://127.0.0.1:4567/api/v1/issues/ACME-1/results [stdin Authorization: Bearer e2e-token]: switch off\n"
     );
-    expect(read(`${sw}.after-curl`)).toContain("/api/v1/issues/ACME-1/results: switch on");
+    expect(read(`${sw}.after-curl`)).toContain(
+      "/results [stdin Authorization: Bearer e2e-token]: switch on"
+    );
     expect(existsSync(sw)).toBe(false);
     expect(existsSync(`${sw}.results-before.txt`)).toBe(false);
     expect(read(path.join(run, "results-before.txt"))).toContain("#702");
@@ -1918,9 +1922,121 @@ describe("cmd_batch", () => {
     );
     expect(result.code).toBe(1);
     expect(result.stderr).toContain(
-      "the label ablate-x-hidden hides Dispatch's computed state, which only reviewer-own-head, reviewer-pass-and-fail and architect-pass-and-fail hide; measure-before-ask is none of them"
+      "the label ablate-x-hidden hides Dispatch's computed state, which only reviewer-own-head, reviewer-pass-and-fail, architect-pass-and-fail and ci-pass-and-fail hide; measure-before-ask is none of them"
     );
     expect(existsSync(path.join(here, "started"))).toBe(false);
+  });
+
+  // Catches: a ci-pass-and-fail batch that drives one role alone, or a run whose name leaves out its
+  // role, so the roles' runs of one label replace each other.
+  test("ci-pass-and-fail runs each role for each label, and cmd_run names the run by its role", () => {
+    const here = freshDir("ci-batch-here");
+    const rigWork = freshDir("ci-batch-work");
+    writeFileSync(path.join(here, "rig.sh"), `printf '%s\\n' "$*" >>"${here}/runs"\n`);
+    const batch = bash(
+      [
+        fn("fail"),
+        fn("hidden_needs_heads"),
+        fn("cmd_batch"),
+        "load_label() { :; }",
+        'lock_services() { S=$work/services; mkdir -p "$S"; }',
+        "on_exit() { :; }",
+        "services_up() { :; }",
+        "date() { echo 1700000000; }",
+        "go() { :; }",
+        "here=$1 work=$2 root=/checkout",
+        "cmd_batch ci-pass-and-fail 1 head head-hidden",
+      ].join("\n"),
+      [here, rigWork]
+    );
+    expect({ code: batch.code, stderr: batch.stderr }).toEqual({ code: 0, stderr: "" });
+    let index = 0;
+    const want = ["head", "head-hidden"].flatMap((label) =>
+      ["reviewer", "tester", "architect"].map(
+        (role) => `run ci-pass-and-fail ${label} 1 ${++index} 1700000000 ${role}`
+      )
+    );
+    const runs = readFileSync(path.join(here, "runs"), "utf8").split("\n").filter(Boolean);
+    expect(runs.toSorted()).toEqual(want.toSorted());
+
+    const work = realpathSync(freshDir("ci-run-work"));
+    mkdirSync(path.join(work, "services"), { recursive: true });
+    writeFileSync(path.join(work, "services", "env"), "");
+    const script = [
+      fn("fail"),
+      fn("hidden_needs_heads"),
+      fn("cmd_run"),
+      'load_label() { P=$work/profiles/0000000000000001; mkdir -p "$P"; echo "checkout /c/$1" >"$P/built-from"; }',
+      "on_exit() { :; }",
+      `run_ci_pass_and_fail() { printf '%s\\n' "$*" >"$R/ran"; echo exit=0 >"$R/out.txt"; }`,
+      "work=$1 maps=$1/maps services_env=$1/services/env hide_state_file=''",
+      'cmd_run ci-pass-and-fail head 1 2 1700000000 "$2"',
+    ].join("\n");
+    expect(bash(script, [work, "tester"])).toMatchObject({ code: 0, stderr: "" });
+    const run = realpathSync(path.join(work, "maps", "runs", "ci-pass-and-fail-tester-head-1"));
+    expect(readFileSync(path.join(run, "ran"), "utf8")).toBe("2 1700000000 tester\n");
+    const refused = bash(script, [work, "merger"]);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain(
+      "the ci-pass-and-fail case 'merger' is not reviewer, tester or architect"
+    );
+  });
+});
+
+// ci_job_results with a stand-in docker, which records the psql call and its SQL and answers the
+// count of the rows written: 0 while the run's Dispatch has not indexed the block k1 yet, then 2.
+describe("ci_job_results", () => {
+  function written(answers: string[]) {
+    const run = freshDir("ci-job-run");
+    writeFileSync(
+      path.join(run, "dispatch.json"),
+      JSON.stringify({ database: "run_0123456789abcdef" })
+    );
+    writeFileSync(
+      path.join(run, "fixture.json"),
+      JSON.stringify({ verification: "11111111-2222-3333-4444-555555555555" })
+    );
+    writeFileSync(path.join(run, "heads.json"), JSON.stringify({ "702": "7".repeat(40) }));
+    writeFileSync(path.join(run, "answers"), `${answers.join("\n")}\n`);
+    const result = bash(
+      [
+        fn("fail"),
+        fn("ci_job_results"),
+        `docker() { printf '%s\\n' "$*" >>"$R/calls"; cat >"$R/sql"; head -n 1 "$R/answers"; sed -i 1d "$R/answers"; }`,
+        `sleep() { printf '%s\\n' "$1" >>"$R/sleeps"; }`,
+        "R=$1 tag=t worker_key=LWEVAL-9 worker_repo=example/widgets",
+        "ci_job_results",
+      ].join("\n"),
+      [run]
+    );
+    const read = (name: string) =>
+      existsSync(path.join(run, name)) ? readFileSync(path.join(run, name), "utf8") : "";
+    return { ...result, read };
+  }
+
+  // Catches: rows written before the block exists (none, and no retry), a call that names another
+  // database, head, branch or block than the run's, and a statement that writes one verdict.
+  test("writes the job's pass and fail of k1 at #702's head once the block is indexed", () => {
+    const { code, stderr, read } = written(["0", "2"]);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(read("sleeps")).toBe("2\n");
+    expect(read("calls").split("\n").filter(Boolean)).toEqual([
+      `exec -i t-pg psql -U postgres -d run_0123456789abcdef -v ON_ERROR_STOP=1 -qAt -v issue=LWEVAL-9 -v artifact=11111111-2222-3333-4444-555555555555 -v head=${"7".repeat(40)} -v branch=legion/LWEVAL-9-702 -v session=ci-results:example/widgets/.github/workflows/ci-results.yaml`,
+      `exec -i t-pg psql -U postgres -d run_0123456789abcdef -v ON_ERROR_STOP=1 -qAt -v issue=LWEVAL-9 -v artifact=11111111-2222-3333-4444-555555555555 -v head=${"7".repeat(40)} -v branch=legion/LWEVAL-9-702 -v session=ci-results:example/widgets/.github/workflows/ci-results.yaml`,
+    ]);
+    const sql = read("sql");
+    expect(sql).toContain("insert into ci_check_results");
+    expect(sql).toContain("where b.artifact_id = :'artifact'::uuid and b.block_id = 'k1'");
+    expect(sql).toMatch(/\('pass', 'Attempt 1 of go-checks passed[^']*', interval '2 minutes'\)/);
+    expect(sql).toMatch(/\('fail', 'Attempt 2 of go-checks failed[^']*', interval '0 seconds'\)/);
+  });
+
+  // Catches: a world built with no CI result, which would read as the not_completed case alone.
+  test("a block that is never indexed fails the run after 60 s, naming the issue", () => {
+    const { code, stderr, read } = written(Array.from({ length: 31 }, () => "0"));
+    expect(code).toBe(1);
+    expect(stderr).toContain("held no block k1 within 60 s");
+    expect(read("sleeps").split("\n").filter(Boolean)).toHaveLength(30);
   });
 });
 
@@ -2017,5 +2133,66 @@ describe("heads_fixture", () => {
     });
     expect(workspaceParent(run)).toBe(head);
     expect(readFileSync(path.join(run, "pushes.log"), "utf8")).toBe("");
+  });
+
+  // Catches: a ci-pass-and-fail world whose GitHub shows k1's job as passed (the agent would then
+  // see CI green beside Dispatch's not_completed), a body line that is not the one Dispatch printed,
+  // a second pull request, and an approval on #702 for any role but the architect.
+  test("heads_routes of ci-pass-and-fail serve #702 alone, its go-checks run in progress, and the architect's approval", () => {
+    const { code, run } = build("heads_fixture");
+    expect(code).toBe(0);
+    const head = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))["702"];
+    writeFileSync(
+      path.join(run, "fixture.json"),
+      JSON.stringify({ issue: "LWEVAL-9", title: "A usage page" })
+    );
+    const prLine = "- Check k1 (before_merge): CI run go-checks has no result (not_completed)";
+    writeFileSync(
+      path.join(run, "results-before.txt"),
+      `Checks of LWEVAL-9:\n\n- k1 (before_merge): its CI job's results below.\n  A pass stands: not known, as 0 of 1 heads read yes.\n  - #702 at ${head}: not known, as pass p1 and fail f1 count at this commit.\n    Pull request line: ${prLine}\n`
+    );
+    const routes = (role: string) => {
+      const result = bash(
+        [
+          "set -euo pipefail",
+          fn("fail"),
+          fn("heads_routes"),
+          "R=$1 worker_key=LWEVAL-9 worker_repo=example/widgets",
+          'heads_routes ci-pass-and-fail "$2"',
+        ].join("\n"),
+        [run, role]
+      );
+      expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
+      const all: { match: string; stdout?: unknown }[] = JSON.parse(
+        readFileSync(path.join(run, "fixtures.json"), "utf8")
+      ).routes;
+      const answer = (match: string) => all.find((route) => route.match === match)?.stdout;
+      return { all, answer };
+    };
+    const reviewer = routes("reviewer");
+    expect(reviewer.answer("^gh pr checks")).toBe(
+      "lint\tpass\t10s\thttps://github.com/example/widgets/actions/runs/1\ntest\tpass\t10s\thttps://github.com/example/widgets/actions/runs/1\ngo-checks\tpending\t0\thttps://github.com/example/widgets/actions/runs/41"
+    );
+    expect(reviewer.answer(`^gh api .*commits/${head}/check-runs`)).toMatchObject({
+      total_count: 3,
+      check_runs: [
+        { name: "lint" },
+        { name: "test" },
+        { name: "go-checks", status: "in_progress", conclusion: null },
+      ],
+    });
+    const pr = reviewer.answer("^gh pr view") as { body: string; statusCheckRollup: unknown[] };
+    expect(pr.body).toContain(`**Checks:**\n${prLine}\n`);
+    expect(pr.statusCheckRollup).toContainEqual({
+      name: "go-checks",
+      status: "IN_PROGRESS",
+      conclusion: "",
+    });
+    expect((reviewer.answer("^gh pr list") as unknown[]).length).toBe(1);
+    expect(reviewer.answer("^gh api .*pulls/702/reviews")).toEqual([]);
+    expect(routes("tester").answer("^gh api .*pulls/702/reviews")).toEqual([]);
+    expect(routes("architect").answer("^gh api .*pulls/702/reviews")).toMatchObject([
+      { state: "APPROVED", commit_id: head },
+    ]);
   });
 });

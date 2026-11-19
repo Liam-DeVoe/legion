@@ -2084,8 +2084,8 @@ quiet_reads() {
     DISPATCH_HOST=omp DISPATCH_SESSION_ID=rig-fixture-heads bun "$co/packages/envoy-client/bin/dispatch.ts" results --issue "$worker_key")
   "${cli[@]}" >"$hide_state_file.$1-text" 2>&1 || true
   "${cli[@]}" --json >"$hide_state_file.$1-json" 2>&1 || true
-  curl -sS -H "Authorization: Bearer $(<"$work/services/dispatch-token")" \
-    "http://127.0.0.1:$dispatch_port/api/v1/issues/$worker_key/results" >"$hide_state_file.$1-curl" 2>&1 || true
+  printf 'Authorization: Bearer %s' "$(<"$work/services/dispatch-token")" |
+    curl -sS -H @- "http://127.0.0.1:$dispatch_port/api/v1/issues/$worker_key/results" >"$hide_state_file.$1-curl" 2>&1 || true
 }
 
 # hide_state_on turns the switch on after the rig's own reads (fixture_heads, heads_routes) and
