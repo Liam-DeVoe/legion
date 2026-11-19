@@ -316,8 +316,10 @@ func knownJetStream(conn *nats.Conn) (nats.JetStreamContext, error) {
 // openKnownBucket makes one attempt to open the bucket on conn, creating it with the retention
 // and the copies the deployment asks for when it is not there.
 //
-// The attempt asks for the bucket with one request first, waiting knownBucketOpenWait, and only a
-// bucket the server says it does not hold goes through bus.EnsureKeyValue's create. That function
+// The attempt asks for the bucket with one request first, waiting knownBucketOpenWait or until ctx
+// ends, whichever comes first (bus.Bounded, as bus.OpenKeyValue waits), so the window of a
+// retry's attempt (retryRepair) bounds that request too; only a bucket the server says it does
+// not hold goes through bus.EnsureKeyValue's create. That function
 // sends a lookup the server leaves unanswered again until ctx ends or the start's hang guard
 // passes (its sentAgain), and reads a refusal only on a connection a bus.Client owns, so a user
 // whose grant does not carry the bucket would cost an attempt that whole wait rather than one
@@ -336,7 +338,7 @@ func openKnownBucket(ctx context.Context, conn *nats.Conn, replicas int) (bus.Ke
 	if err != nil {
 		return bus.KeyValue{}, err
 	}
-	if _, err := opening.KeyValue(bus.KnownSessionBucket); errors.Is(err, nats.ErrBucketNotFound) {
+	if _, _, err := bus.Bounded(ctx, func() (nats.KeyValue, error) { return opening.KeyValue(bus.KnownSessionBucket) }); errors.Is(err, nats.ErrBucketNotFound) {
 		if _, err := bus.EnsureKeyValue(ctx, conn, opening, &nats.KeyValueConfig{
 			Bucket:   bus.KnownSessionBucket,
 			TTL:      KnownSessionRetention,

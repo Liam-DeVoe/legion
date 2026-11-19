@@ -53,21 +53,24 @@ func lockFreeWithin(known *KnownSessions, wait time.Duration) bool {
 	return true
 }
 
-// The background retry's attempt lets repairMu go at its window even while its request gets no
+// The background retry's attempt lets repairMu go at its window even while its requests get no
 // answer: the proxy holds every byte (Freeze), as a connection mid-handshake answers nothing, and
 // the attempt, bounded at its window (repairAttemptWindow, here 300 ms), ends, so a reconnect
-// hook's move and the next attempt are not held behind it.
+// hook's move and the next attempt are not held behind it. The bucket lookup an attempt opens with
+// would otherwise wait its own 2 s (knownBucketOpenWait), so the row takes the lock again and again
+// for 3 s, longer than one such lookup: each take must come within 1 s.
 //
-// The control is the attempt bounded only by the store's stop: the lock stays held while the
-// proxy holds the bytes, and the row fails.
+// The control is the attempt bounded only by the store's stop: an attempt holds the lock for its
+// lookup's 2 s, and a take waits past 1 s.
 func TestTheRetrysAttemptLetsItsLockGoAtItsWindow(t *testing.T) {
 	known, proxy := openUnopenedStore(t, 300*time.Millisecond)
 	proxy.Freeze()
-	// An attempt made after the freeze holds the lock until its window ends, 300 ms; the wait
-	// below starts once one has begun, and 1 s bounds a row that fails.
-	time.Sleep(100 * time.Millisecond)
-	if !lockFreeWithin(known, time.Second) {
-		t.Fatal("repairMu was still held 1 s after an attempt began while the proxy held every byte: the retry's attempt waited for its request past its window")
+	for end := time.Now().Add(3 * time.Second); time.Now().Before(end); {
+		if !lockFreeWithin(known, time.Second) {
+			t.Fatal("repairMu was held for over 1 s while the proxy held every byte: the retry's attempt waited for its requests past its 300 ms window")
+		}
+		// The retry attempts every 10 ms: this pause lets the next attempt take the lock.
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
