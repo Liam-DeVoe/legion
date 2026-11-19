@@ -4267,7 +4267,7 @@ test("inside NoTooltips Add in the priority form keeps the focus on the add cont
         }
 
         answerReread(reads.answer());
-        await scope.findByRole("link", { name: "P1 Evals collecting data now" });
+        await scope.findByRole("link", { name: "#1 Evals collecting data now" });
         await settleReads();
         expect(add.isConnected).toBe(true);
         expect(add.hasAttribute("aria-disabled")).toBe(false);
@@ -4300,7 +4300,7 @@ test("inside NoTooltips the priority form's Add is refused while a Remove's writ
     try {
       const scope = within(view.container);
       const remove = await scope.findByRole("button", {
-        name: "Remove P2 Rocq and Lean speed work restarted from CORE-1",
+        name: "Remove #2 Rocq and Lean speed work restarted from CORE-1",
       });
       await user.click(scope.getByRole("button", { name: addPriorityControlName("CORE-1") }));
       const picker = await pickerOf(view);
@@ -5453,7 +5453,7 @@ function issueReads(advances: readonly string[]): IssueReads {
   return reads;
 }
 
-/** Has the priorities read name a third priority, `P3 Lean proofs checked`, after the
+/** Has the priorities read name a third priority, `#3 Lean proofs checked`, after the
  *  fixture's two. */
 function listThreePriorities(): void {
   const rows = priorities.priorities ?? [];
@@ -5481,9 +5481,9 @@ function listThreePriorities(): void {
 test("inside NoTooltips a priority's Remove pressed by Enter keeps the focus until the issue is read, then hands it to the next priority's Remove", async () => {
   const user = userEvent.setup();
   listThreePriorities();
-  const evals = "Remove P1 Evals collecting data now from CORE-1";
-  const rocq = "Remove P2 Rocq and Lean speed work restarted from CORE-1";
-  const lean = "Remove P3 Lean proofs checked from CORE-1";
+  const evals = "Remove #1 Evals collecting data now from CORE-1";
+  const rocq = "Remove #2 Rocq and Lean speed work restarted from CORE-1";
+  const lean = "Remove #3 Lean proofs checked from CORE-1";
   for (const surface of ["inside", "outside"] as const) {
     for (const write of ["lands", "fails"] as const) {
       const unemulate = emulateChromiumFocusFixup();
@@ -5603,7 +5603,7 @@ test("inside NoTooltips a priority's Remove leaves a focus the reader moved else
     try {
       const scope = within(view.container);
       const remove = await scope.findByRole("button", {
-        name: "Remove P1 Evals collecting data now from CORE-1",
+        name: "Remove #1 Evals collecting data now from CORE-1",
       });
       remove.focus();
       await user.keyboard("{Enter}");
@@ -5636,8 +5636,8 @@ test("inside NoTooltips a priority's Remove leaves a focus the reader moved else
 test("inside NoTooltips the Remove of a middle priority hands its focus to the entry after it", async () => {
   const user = userEvent.setup();
   listThreePriorities();
-  const rocq = "Remove P2 Rocq and Lean speed work restarted from CORE-1";
-  const lean = "Remove P3 Lean proofs checked from CORE-1";
+  const rocq = "Remove #2 Rocq and Lean speed work restarted from CORE-1";
+  const lean = "Remove #3 Lean proofs checked from CORE-1";
   for (const surface of ["inside", "outside"] as const) {
     const unemulate = emulateChromiumFocusFixup();
     const reads = issueReads(["evals-now", "rocq-lean", "lean-proofs"]);
@@ -5684,7 +5684,7 @@ test("inside NoTooltips a priority's Remove draws its cross as an inline svg and
     );
     try {
       const remove = await within(view.container).findByRole("button", {
-        name: "Remove P2 Rocq and Lean speed work restarted from CORE-1",
+        name: "Remove #2 Rocq and Lean speed work restarted from CORE-1",
       });
       const crosses = [...remove.querySelectorAll("svg")];
       if (surface === "inside") {

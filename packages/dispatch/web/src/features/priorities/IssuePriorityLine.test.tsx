@@ -36,7 +36,7 @@ function priority(id: string, title: string): PriorityRow {
   };
 }
 
-/** The read's answer, in rank order: the line's order ("P2") is a row's place in this list. */
+/** The read's answer, in rank order: the line's order ("#2") is a row's place in this list. */
 const body: Priorities = {
   priorities: [
     priority("evals-now", "Evals collecting data now"),
@@ -86,13 +86,13 @@ test("the line names the priority an issue advances, by its order and title, and
   const view = renderLine([{ id: "rocq-lean", inherited: false }]);
   try {
     const link = await view.q.findByRole("link", {
-      name: "P2 Rocq and Lean speed work restarted",
+      name: "#2 Rocq and Lean speed work restarted",
     });
     expect(link).toHaveAttribute("href", "/priorities/rocq-lean");
     expect(view.q.getByTestId("issue-advances")).toHaveTextContent("Advances");
     // The issue's own relation is the issue's to retract, so the entry carries the remove.
     view.q.getByRole("button", {
-      name: "Remove P2 Rocq and Lean speed work restarted from CORE-9",
+      name: "Remove #2 Rocq and Lean speed work restarted from CORE-9",
     });
     expect(view.q.queryByText("inherited")).toBeNull();
   } finally {
@@ -103,12 +103,12 @@ test("the line names the priority an issue advances, by its order and title, and
 test("a priority an issue inherits says so on the same line, and is not the child's to remove", async () => {
   const view = renderLine([{ id: "oss-verify", inherited: true }]);
   try {
-    const link = await view.q.findByRole("link", { name: "P3 OSS Verify: curl, TLS and Rustls" });
+    const link = await view.q.findByRole("link", { name: "#3 OSS Verify: curl, TLS and Rustls" });
     expect(link).toHaveAttribute("href", "/priorities/oss-verify");
     view.q.getByText("inherited");
     expect(
       view.q.queryByRole("button", {
-        name: "Remove P3 OSS Verify: curl, TLS and Rustls from CORE-9",
+        name: "Remove #3 OSS Verify: curl, TLS and Rustls from CORE-9",
       })
     ).toBeNull();
   } finally {
@@ -144,8 +144,8 @@ test("the control adds a priority, writing the issue's own set as advances", asy
         .map((option) => option.textContent)
     ).toEqual([
       "Choose a priority",
-      "P2 Rocq and Lean speed work restarted",
-      "P3 OSS Verify: curl, TLS and Rustls",
+      "#2 Rocq and Lean speed work restarted",
+      "#3 OSS Verify: curl, TLS and Rustls",
     ]);
     await user.selectOptions(picker, "rocq-lean");
     await user.click(view.q.getByRole("button", { name: "Add" }));
@@ -170,7 +170,7 @@ test("a remove writes the issue's own set without that priority, and leaves an i
   ]);
   try {
     await user.click(
-      await view.q.findByRole("button", { name: "Remove P1 Evals collecting data now from CORE-9" })
+      await view.q.findByRole("button", { name: "Remove #1 Evals collecting data now from CORE-9" })
     );
     await waitFor(() => expect(view.patchIssue).toHaveBeenCalledTimes(1));
     expect(view.patchIssue).toHaveBeenCalledWith(
@@ -198,7 +198,7 @@ test("a remove carries the revision it was read at, and a stale one's refusal is
   );
   try {
     await user.click(
-      await view.q.findByRole("button", { name: "Remove P1 Evals collecting data now from CORE-9" })
+      await view.q.findByRole("button", { name: "Remove #1 Evals collecting data now from CORE-9" })
     );
     await waitFor(() => expect(view.patchIssue).toHaveBeenCalledTimes(1));
     expect(view.patchIssue).toHaveBeenCalledWith(
@@ -216,10 +216,10 @@ test("a remove carries the revision it was read at, and a stale one's refusal is
 test("a closed issue reads its priorities and writes none of them", async () => {
   const view = renderLine([{ id: "rocq-lean", inherited: false }], true);
   try {
-    await view.q.findByRole("link", { name: "P2 Rocq and Lean speed work restarted" });
+    await view.q.findByRole("link", { name: "#2 Rocq and Lean speed work restarted" });
     expect(
       view.q.getByRole("button", {
-        name: "Remove P2 Rocq and Lean speed work restarted from CORE-9",
+        name: "Remove #2 Rocq and Lean speed work restarted from CORE-9",
       })
     ).toBeDisabled();
     expect(view.q.getByRole("button", { name: "Add a priority to CORE-9" })).toBeDisabled();

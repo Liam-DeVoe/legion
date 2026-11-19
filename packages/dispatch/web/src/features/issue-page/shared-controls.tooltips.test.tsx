@@ -1468,8 +1468,8 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   [
     mountNamed("IssuePriorityLine, its own priority and an inherited one"),
     [
-      "P2 Rocq and Lean speed work restarted",
-      "P1 Evals collecting data now",
+      "#2 Rocq and Lean speed work restarted",
+      "#1 Evals collecting data now",
       "Add a priority to CORE-1",
     ],
   ],
@@ -1477,7 +1477,7 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   [
     mountNamed("IssuePriorityLine, in a row of Details"),
     [
-      "P2 Rocq and Lean speed work restarted",
+      "#2 Rocq and Lean speed work restarted",
       "Add a priority to CORE-1",
       "Add a priority to CORE-2",
     ],
@@ -2953,15 +2953,15 @@ test("inside NoTooltips the words come from the page's word list and carry their
     (view) => {
       expectMarks(view.container, [
         [PROPERTY_LABELS.advances, "page-chrome"],
-        ["P2 Rocq and Lean speed work restarted", "author-text"],
-        ["P1 Evals collecting data now", "author-text"],
+        ["#2 Rocq and Lean speed work restarted", "author-text"],
+        ["#1 Evals collecting data now", "author-text"],
         [CONTROL_LABELS.advances_inherited, "page-chrome"],
         ["+", "page-chrome"],
       ]);
       // The Remove draws its cross as a shape, with no text to find it by, so it is read by its
       // name.
       const remove = within(view.container).getByRole("button", {
-        name: "Remove P2 Rocq and Lean speed work restarted from CORE-1",
+        name: "Remove #2 Rocq and Lean speed work restarted from CORE-1",
       });
       expect(markOf(remove)).toBe("page-chrome");
     }
@@ -2970,7 +2970,7 @@ test("inside NoTooltips the words come from the page's word list and carry their
     // A row of Details draws the label, so the line draws none of its own.
     expectMarks(view.container, [
       [CONTROL_LABELS.add_priority, "page-chrome"],
-      ["P2 Rocq and Lean speed work restarted", "author-text"],
+      ["#2 Rocq and Lean speed work restarted", "author-text"],
     ]);
     expect(within(view.container).queryAllByText(PROPERTY_LABELS.advances)).toEqual([]);
   });

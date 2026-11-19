@@ -1322,7 +1322,7 @@ test("picker keeps a pick on screen: the priority on a table of the Priorities v
     const shown = await watchShown(page, `Priority of ${issue.key}`);
     const held = await holdIssuePatches(page, issue.key);
     const reads = logReads(page, listRead("advances", "none"));
-    await page.goto("/priorities");
+    await page.goto("/priorities?tab=none");
     const table = page.getByRole("region", { name: "In flight under no priority" });
     const picker = table.getByRole("combobox", { name: `Priority of ${issue.key}` });
     await expect(picker).toHaveValue("3");

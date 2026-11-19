@@ -28,6 +28,12 @@ test("questionLine keeps inline code without its backticks", () => {
   expect(questionLine("Should `retries` stay at ``3``?")).toBe("Should retries stay at 3?");
 });
 
+test("questionLine reads a backslash-escaped punctuation mark as the mark alone", () => {
+  expect(questionLine("1\\. Verify Linux")).toBe("1. Verify Linux");
+  // Escaped, a star is a star and not emphasis; inside code the backslash is the code's own.
+  expect(questionLine("Ship \\*all\\* of `a\\.b`")).toBe("Ship *all* of a\\.b");
+});
+
 test("questionLine takes the first line that holds anything", () => {
   expect(questionLine("\n   \n# The question\n\nAnd the detail below it.\n")).toBe("The question");
 });

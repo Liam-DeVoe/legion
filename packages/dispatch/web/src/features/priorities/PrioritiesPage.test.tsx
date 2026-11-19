@@ -1,9 +1,9 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the drag of a row onto another below is a drag and a drop, which user-event has no form for
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 import { api } from "../../api/client";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
 import { PrioritiesPage } from "./PrioritiesPage";
@@ -121,9 +121,16 @@ function answerListing(issues: readonly IssueSummary[]) {
       );
 }
 
-/** The page as a signed-in person sees it, with the reads it makes answered from `answer`; a
- *  reader who is not a person, and so may not write a priority, where `writer` is false. */
-function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
+/** The address the page is at, and how it got there, which a tab writes with replace. */
+function Address() {
+  const location = useLocation();
+  return <output data-testid="address">{`${useNavigationType()} ${location.search}`}</output>;
+}
+
+/** The page as a signed-in person sees it at `at`, with the reads it makes answered from
+ *  `answer`; a reader who is not a person, and so may not write a priority, where `writer` is
+ *  false. */
+function page(answer: Priorities, issues: IssueSummary[] = [], writer = true, at = "/priorities") {
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(answer);
   const listing = spyOn(api, "listIssues").mockImplementation(answerListing(issues));
   const state = spyOn(api, "getMyState").mockResolvedValue({});
@@ -146,9 +153,10 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["whoami"], whoami);
   const view = render(
-    <MemoryRouter initialEntries={["/priorities"]}>
+    <MemoryRouter initialEntries={[at]}>
       <QueryClientProvider client={client}>
         <PrioritiesPage />
+        <Address />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -192,7 +200,8 @@ const FIFTEEN = body({
   ],
 });
 
-test("the page draws the priorities table above both fault lists", async () => {
+test("the page opens on the priorities, and each fault is a tab of its own the address keeps", async () => {
+  const user = userEvent.setup();
   page(
     body({
       ...FIFTEEN,
@@ -201,55 +210,92 @@ test("the page draws the priorities table above both fault lists", async () => {
     }),
     [issue("CORE-1"), issue("CORE-9", ["linkage-closure"], { status: "backlog" })]
   );
-  const priorities = await screen.findByRole("table", { name: "Priorities table" });
+  await screen.findByRole("table", { name: "Priorities table" });
+  // The heading alone heads the page: no line under it, and no heading over any table.
+  expect(screen.getAllByRole("heading").map((heading) => heading.textContent)).toEqual([
+    "Priorities",
+  ]);
+  expect(screen.queryByText(/read now|their owner drags/)).toBeNull();
+  // Three tabs, each counting what it holds, the priorities chosen while the address names none.
+  const tabs = screen.getAllByRole("tab");
+  expect(tabs.map((tab) => tab.getAttribute("aria-label"))).toEqual([
+    "Priorities 3",
+    "In flight under no priority 1",
+    "In backlog or icebox 1",
+  ]);
+  expect(tabs.map((tab) => tab.getAttribute("aria-selected"))).toEqual(["true", "false", "false"]);
+  // Only the chosen tab draws its table, so that table is the last thing on the page.
+  expect(screen.getAllByRole("table").map((table) => table.getAttribute("aria-label"))).toEqual([
+    "Priorities table",
+  ]);
+
+  // A fault's tab says what the fault is in one line, with its count and where it falls, over
+  // the table of its own rows and no other's. The address names the tab, in place of the last.
+  await user.click(screen.getByRole("tab", { name: "In flight under no priority 1" }));
   const faults = await screen.findByRole("table", {
     name: "Issues in flight under no priority table",
   });
+  expect(screen.getByTestId("address").textContent).toBe("REPLACE ?tab=none");
+  expect(screen.queryByRole("table", { name: "Priorities table" })).toBeNull();
+  expect(screen.getByText("Issues being worked that advance no priority.")).toBeDefined();
+  expect(screen.getByText("1 issue · CORE 1")).toBeDefined();
+  expect(await within(faults).findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
+  expect(within(faults).queryByRole("row", { name: "CORE-9 Work CORE-9" })).toBeNull();
+
+  await user.click(screen.getByRole("tab", { name: "In backlog or icebox 1" }));
   const parked = await screen.findByRole("table", {
     name: "Priority issues in backlog or icebox table",
   });
-  const headings = screen.getAllByRole("heading").map((heading) => heading.textContent);
-  expect(headings).toEqual([
-    "Priorities",
-    "In flight under no priority",
-    "Priority work in backlog or icebox",
-  ]);
-  // The priorities come first, which is what the page's own name says it is about.
-  expect(priorities.compareDocumentPosition(faults) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
-    Node.DOCUMENT_POSITION_FOLLOWING
-  );
-  expect(faults.compareDocumentPosition(parked) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
-    Node.DOCUMENT_POSITION_FOLLOWING
-  );
-  // Each fault stands under its rule in plain words, with its count and where it falls.
-  expect(screen.getByText(/advances no priority, its own or one it inherits/)).toBeDefined();
-  expect(screen.getByText(/stands in the backlog or the icebox/)).toBeDefined();
-  expect(screen.getByText(/1 issue · CORE 1/)).toBeDefined();
-  expect(screen.getByText(/1 issue · Linkage closure eval 1/)).toBeDefined();
-  // Each list holds its own fault's rows and no other's.
-  expect(await within(faults).findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
-  expect(within(faults).queryByRole("row", { name: "CORE-9 Work CORE-9" })).toBeNull();
+  expect(screen.getByTestId("address").textContent).toBe("REPLACE ?tab=parked");
+  expect(screen.getAllByRole("table")).toEqual([parked]);
+  expect(
+    screen.getByText("Issues under a priority that stand in the backlog or the icebox.")
+  ).toBeDefined();
+  expect(screen.getByText("1 issue · Linkage closure eval 1")).toBeDefined();
   expect(await within(parked).findByRole("row", { name: "CORE-9 Work CORE-9" })).toBeDefined();
   expect(within(parked).queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull();
+
+  await user.click(screen.getByRole("tab", { name: "Priorities 3" }));
+  expect(await screen.findByRole("table", { name: "Priorities table" })).toBeDefined();
+  expect(screen.getByTestId("address").textContent).toBe("REPLACE ?tab=order");
+});
+
+test("an address naming a fault's tab opens on it", async () => {
+  page(
+    FIFTEEN,
+    [issue("CORE-9", ["linkage-closure"], { status: "backlog" })],
+    true,
+    "/priorities?tab=parked"
+  );
+  expect(
+    await screen.findByRole("table", { name: "Priority issues in backlog or icebox table" })
+  ).toBeDefined();
+  expect(screen.getByRole("tab", { name: "In backlog or icebox 0" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  expect(screen.queryByRole("table", { name: "Priorities table" })).toBeNull();
 });
 
 test("each fault table asks the issue listing for its statuses, and the parked one for the move", async () => {
   const user = userEvent.setup();
-  const { listing } = page(FIFTEEN, [
-    issue("CORE-1"),
-    issue("OPS-12", [], { status: "needs_review" }),
-    issue("CORE-9", ["linkage-closure"], {
-      status: "backlog",
-      moved_at: "2026-11-09T12:00:00Z",
-      moved_by: { kind: "user", id: "bob" },
-    }),
-    issue("OPS-4", ["legion-first", "oss-verify"], { status: "icebox" }),
-  ]);
+  const { listing } = page(
+    FIFTEEN,
+    [
+      issue("CORE-1"),
+      issue("OPS-12", [], { status: "needs_review" }),
+      issue("CORE-9", ["linkage-closure"], {
+        status: "backlog",
+        moved_at: "2026-11-09T12:00:00Z",
+        moved_by: { kind: "user", id: "bob" },
+      }),
+      issue("OPS-4", ["legion-first", "oss-verify"], { status: "icebox" }),
+    ],
+    true,
+    "/priorities?tab=none"
+  );
   const faults = await screen.findByRole("table", {
     name: "Issues in flight under no priority table",
-  });
-  const parked = await screen.findByRole("table", {
-    name: "Priority issues in backlog or icebox table",
   });
   // The narrowing is the server's: the no-priority list names the statuses work is done in, and
   // the parked list backlog and icebox with the move into them. Neither reads a closed issue.
@@ -258,19 +304,6 @@ test("each fault table asks the issue listing for its statuses, and the parked o
     status: ["in_progress", "testing", "needs_review", "retro"],
     open: true,
   });
-  expect(listing).toHaveBeenCalledWith({
-    advances: ["any"],
-    status: ["backlog", "icebox"],
-    moved: true,
-    open: true,
-  });
-  // A fault read names its statuses every time it is made: no read of every closed issue goes
-  // out beside it.
-  const faultReads = listing.mock.calls.filter(([options]) =>
-    ["none", "any"].includes(options?.advances?.[0] ?? "")
-  );
-  expect(faultReads.length).toBeGreaterThan(0);
-  expect(faultReads.every(([options]) => options?.status !== undefined)).toBe(true);
 
   const cellsOf = async (table: HTMLElement, name: string) => {
     const headers = within(table)
@@ -300,6 +333,30 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   expect(faultHeaders.some((text) => text.startsWith("Advances"))).toBe(false);
   expect(faultHeaders.some((text) => text.startsWith("Moved there"))).toBe(false);
   expect(faultHeaders.some((text) => text.startsWith("Reason"))).toBe(false);
+
+  // Nor does the list under no priority offer the parked columns among those a reader may show.
+  await user.click(
+    within(screen.getByRole("region", { name: "In flight under no priority" })).getByRole(
+      "button",
+      { name: "Columns" }
+    )
+  );
+  const menu = screen.getByRole("dialog", { name: "Columns" });
+  expect(within(menu).getByRole("checkbox", { name: "Project" })).toBeChecked();
+  for (const name of ["Advances", "Moved there", "Reason"])
+    expect(within(menu).queryByRole("checkbox", { name })).toBeNull();
+  await user.keyboard("{Escape}");
+
+  await user.click(screen.getByRole("tab", { name: "In backlog or icebox 0" }));
+  const parked = await screen.findByRole("table", {
+    name: "Priority issues in backlog or icebox table",
+  });
+  expect(listing).toHaveBeenCalledWith({
+    advances: ["any"],
+    status: ["backlog", "icebox"],
+    moved: true,
+    open: true,
+  });
 
   // The parked list names the project, each priority advanced by its title, linking to it, and
   // when the work was moved there and by whom. A row answered with no move draws an empty Moved
@@ -335,17 +392,13 @@ test("each fault table asks the issue listing for its statuses, and the parked o
     );
   }
 
-  // Nor does the list under no priority offer the parked columns among those a reader may show.
-  await user.click(
-    within(screen.getByRole("region", { name: "In flight under no priority" })).getByRole(
-      "button",
-      { name: "Columns" }
-    )
+  // A fault read names its statuses every time it is made: no read of every closed issue goes
+  // out beside it.
+  const faultReads = listing.mock.calls.filter(([options]) =>
+    ["none", "any"].includes(options?.advances?.[0] ?? "")
   );
-  const menu = screen.getByRole("dialog", { name: "Columns" });
-  expect(within(menu).getByRole("checkbox", { name: "Project" })).toBeChecked();
-  for (const name of ["Advances", "Moved there", "Reason"])
-    expect(within(menu).queryByRole("checkbox", { name })).toBeNull();
+  expect(faultReads.length).toBeGreaterThan(0);
+  expect(faultReads.every(([options]) => options?.status !== undefined)).toBe(true);
 });
 
 test("with no priority the page says so, and offers a writer the way to add the first", async () => {
@@ -368,7 +421,7 @@ test("with no priority a reader who may not write one is shown only the sentence
 
 test("a row counts the work in flight, waiting, parked and closed in the last 7 days", async () => {
   page(FIFTEEN);
-  const row = await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  const row = await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   const cells = within(row)
     .getAllByRole("cell")
     .map((cell) => cell.textContent);
@@ -377,7 +430,7 @@ test("a row counts the work in flight, waiting, parked and closed in the last 7 
   expect(cells.slice(3, 7)).toEqual(["7", "12", "0", "22"]);
   // The newest event is read as a time, whose words follow the clock.
   expect(within(row).getByRole("time").getAttribute("datetime")).toBe("2026-11-11T10:00:00Z");
-  const second = screen.getByRole("row", { name: "P2 Linkage closure eval" });
+  const second = screen.getByRole("row", { name: "#2 Linkage closure eval" });
   expect(
     within(second)
       .getAllByRole("cell")
@@ -389,14 +442,14 @@ test("a row counts the work in flight, waiting, parked and closed in the last 7 
 test("the first line of a description shows on a closed row and the whole of it when it opens", async () => {
   const user = userEvent.setup();
   page(FIFTEEN, [issue("CORE-1", ["legion-first"]), issue("CORE-2")]);
-  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   expect(screen.getByText("The first line.")).toBeDefined();
-  await user.click(screen.getByRole("button", { name: "Open P1 Legion works reliably first" }));
+  await user.click(screen.getByRole("button", { name: "Open #1 Legion works reliably first" }));
   // Open, the row reads the whole description rendered, and a click on its text opens its source.
-  const rendered = await screen.findByRole("group", { name: "Description of P1" });
+  const rendered = await screen.findByRole("group", { name: "Description of #1" });
   expect(await within(rendered).findByText(/The rest of it/)).toBeDefined();
   await user.click(within(rendered).getByText(/The rest of it/));
-  const whole = await screen.findByRole("textbox", { name: "Description of P1" });
+  const whole = await screen.findByRole("textbox", { name: "Description of #1" });
   expect((whole as HTMLTextAreaElement).value).toBe(
     "The first line.\nThe rest of it, which the row shows when it is open."
   );
@@ -405,8 +458,8 @@ test("the first line of a description shows on a closed row and the whole of it 
 test("opening a row lists the work advancing that priority, over every project", async () => {
   const user = userEvent.setup();
   const { listing } = page(FIFTEEN, [issue("CORE-1", ["legion-first"]), issue("OPS-3")]);
-  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
-  await user.click(screen.getByRole("button", { name: "Open P1 Legion works reliably first" }));
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
+  await user.click(screen.getByRole("button", { name: "Open #1 Legion works reliably first" }));
   const work = await screen.findByRole("region", {
     name: "Work advancing Legion works reliably first",
   });
@@ -419,7 +472,7 @@ test("opening a row lists the work advancing that priority, over every project",
 test("a person who may write adds a priority", async () => {
   const user = userEvent.setup();
   const { create } = page(FIFTEEN);
-  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   await user.click(screen.getByRole("button", { name: "New priority" }));
   await user.type(
     screen.getByRole("textbox", { name: "Title of the new priority" }),
@@ -430,55 +483,62 @@ test("a person who may write adds a priority", async () => {
   expect(create.mock.calls[0]?.[0]).toEqual({ title: "Spend ruthlessly" });
 });
 
-test("a title is renamed where it is read, with no edit mode and no Save button", async () => {
-  const user = userEvent.setup();
-  const { patch } = page(FIFTEEN);
-  const field = await screen.findByRole("textbox", { name: "Title of P2" });
-  await user.clear(field);
-  await user.type(field, "Linkage closure, restarted");
-  await user.tab();
-  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
-  expect(patch.mock.calls[0]?.slice(0, 2)).toEqual([
-    "linkage-closure",
-    { title: "Linkage closure, restarted" },
-  ]);
-  expect(screen.queryByRole("button", { name: /^Save/ })).toBeNull();
+test("a title is a link to the priority's own page, where it is renamed, and no field", async () => {
+  page(FIFTEEN);
+  const row = await screen.findByRole("row", { name: "#2 Linkage closure eval" });
+  expect(within(row).getByRole("link", { name: "Linkage closure eval" }).getAttribute("href")).toBe(
+    "/priorities/linkage-closure"
+  );
+  expect(within(row).queryByRole("textbox")).toBeNull();
+  expect(screen.getByRole("columnheader", { name: /^#/ })).toBeDefined();
+  // A long owner is cut to two lines in the row, and its whole text is the cell's tooltip.
+  expect(within(row).getByTitle("BET controller").className).toContain("line-clamp-2");
 });
 
 test("a description is written on the open row: the empty block is the prompt that opens it", async () => {
   const user = userEvent.setup();
   const { patch } = page(FIFTEEN);
-  await screen.findByRole("row", { name: "P3 OSS Verify" });
-  await user.click(screen.getByRole("button", { name: "Open P3 OSS Verify" }));
-  const rendered = await screen.findByRole("group", { name: "Description of P3" });
+  await screen.findByRole("row", { name: "#3 OSS Verify" });
+  await user.click(screen.getByRole("button", { name: "Open #3 OSS Verify" }));
+  const rendered = await screen.findByRole("group", { name: "Description of #3" });
   const prompt = within(rendered).getByText(/No description is written\./);
   expect(prompt.textContent).toBe("No description is written. Click here to write one.");
   await user.click(prompt);
-  const field = await screen.findByRole("textbox", { name: "Description of P3" });
+  const field = await screen.findByRole("textbox", { name: "Description of #3" });
   await user.type(field, "What it is.");
   await user.tab();
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   expect(patch.mock.calls[0]?.slice(0, 2)).toEqual(["oss-verify", { description: "What it is." }]);
   // Left, the description reads rendered again, with what was written.
-  const back = await screen.findByRole("group", { name: "Description of P3" });
+  const back = await screen.findByRole("group", { name: "Description of #3" });
   expect(await within(back).findByText("What it is.")).toBeDefined();
 });
 
 test("dragging a row onto another writes the place it landed", async () => {
   const { patch } = page(FIFTEEN);
-  const third = await screen.findByRole("row", { name: "P3 OSS Verify" });
-  const first = screen.getByRole("row", { name: "P1 Legion works reliably first" });
+  const third = await screen.findByRole("row", { name: "#3 OSS Verify" });
+  const first = screen.getByRole("row", { name: "#1 Legion works reliably first" });
+  const handle = within(third).getByRole("button", {
+    name: "Move #3 OSS Verify: drag it, or press the up and down arrows",
+  });
   // user-event has no form for a drag: it drives pointer events, and the order is moved by the
-  // HTML drag-and-drop events the handle listens for.
-  fireEvent.dragStart(
-    within(third).getByRole("button", {
-      name: "Move P3 OSS Verify: drag it, or press the up and down arrows",
-    })
-  );
-  // user-event has no form for a drag.
-  fireEvent.dragOver(first);
-  // user-event has no form for a drop.
-  fireEvent.drop(first);
+  // HTML drag-and-drop events the handle listens for. The drag carries the id it moves, since
+  // Firefox starts no drag that carries nothing, and says it is a move.
+  const setData = mock(() => {});
+  const start = createEvent.dragStart(handle, { dataTransfer: { setData } }) as DragEvent;
+  fireEvent(handle, start);
+  expect(setData).toHaveBeenCalledWith("text/plain", "oss-verify");
+  expect(start.dataTransfer?.effectAllowed).toBe("move");
+  // user-event has no form for a drag over a row either; the row it is over takes a move.
+  const over = createEvent.dragOver(first, { dataTransfer: {} }) as DragEvent;
+  fireEvent(first, over);
+  expect(over.dataTransfer?.dropEffect).toBe("move");
+  expect(over.defaultPrevented).toBe(true);
+  // user-event has no form for a drop, which the row takes for itself rather than letting the
+  // browser open the id it carries.
+  const drop = createEvent.drop(first, { dataTransfer: {} });
+  fireEvent(first, drop);
+  expect(drop.defaultPrevented).toBe(true);
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   // Dragged up, it lands above the row it was dropped on.
   expect(patch.mock.calls[0]?.slice(0, 2)).toEqual([
@@ -490,10 +550,10 @@ test("dragging a row onto another writes the place it landed", async () => {
 test("the keyboard moves a priority one place, as the drag does", async () => {
   const user = userEvent.setup();
   const { patch } = page(FIFTEEN);
-  const first = await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  const first = await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   within(first)
     .getByRole("button", {
-      name: "Move P1 Legion works reliably first: drag it, or press the up and down arrows",
+      name: "Move #1 Legion works reliably first: drag it, or press the up and down arrows",
     })
     .focus();
   await user.keyboard("{ArrowDown}");
@@ -507,17 +567,17 @@ test("the keyboard moves a priority one place, as the drag does", async () => {
 test("the table's own view is in the address under its prefix", async () => {
   const user = userEvent.setup();
   page(FIFTEEN);
-  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   await user.type(screen.getByRole("searchbox", { name: "Search priorities" }), "linkage");
   await waitFor(() =>
-    expect(screen.queryByRole("row", { name: "P1 Legion works reliably first" })).toBeNull()
+    expect(screen.queryByRole("row", { name: "#1 Legion works reliably first" })).toBeNull()
   );
-  expect(screen.getByRole("row", { name: "P2 Linkage closure eval" })).toBeDefined();
+  expect(screen.getByRole("row", { name: "#2 Linkage closure eval" })).toBeDefined();
 });
 
 test("the page carries no estimate, no forecast, no percentage and no written status", async () => {
   page(FIFTEEN);
-  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   const text = document.body.textContent ?? "";
   expect(/\d+%/.test(text)).toBe(false);
   expect(/estimate|forecast|on track|at risk/i.test(text)).toBe(false);
@@ -525,7 +585,7 @@ test("the page carries no estimate, no forecast, no percentage and no written st
 
 test("the priorities table counts its rows as priorities, as the agreed page reads", async () => {
   page(FIFTEEN);
-  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   // dispatch://INFRA-2947/artifact/priorities-round10-png reads "15 of 15 priorities" under the
   // table: a priority is no issue, and a reader counting the rows is told what they count.
   expect(screen.getByText("3 of 3 priorities")).toBeDefined();
@@ -533,13 +593,18 @@ test("the priorities table counts its rows as priorities, as the agreed page rea
 });
 
 test("a fault row tells no reader that an issue nobody claims is claimed", async () => {
-  page(FIFTEEN, [
-    issue("CORE-1", [], { assignee: "alice" }),
-    issue("CORE-2", [], {
-      assignee: "alice",
-      claim: { actor: { kind: "user", id: "bob" }, at: "2026-11-10T00:00:00Z" },
-    }),
-  ]);
+  page(
+    FIFTEEN,
+    [
+      issue("CORE-1", [], { assignee: "alice" }),
+      issue("CORE-2", [], {
+        assignee: "alice",
+        claim: { actor: { kind: "user", id: "bob" }, at: "2026-11-10T00:00:00Z" },
+      }),
+    ],
+    true,
+    "/priorities?tab=none"
+  );
   const faults = await screen.findByRole("table", {
     name: "Issues in flight under no priority table",
   });
@@ -571,7 +636,7 @@ test("a grouped table counts each group in the plural its rows are called by", a
     }),
     [issue("CORE-1"), issue("CORE-2")]
   );
-  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   const groupBy = (region: string) =>
     within(screen.getByRole("region", { name: region })).getByRole("combobox", {
       name: /^Group by/,
@@ -583,6 +648,7 @@ test("a grouped table counts each group in the plural its rows are called by", a
   expect(
     await screen.findByRole("button", { name: "Collapse INFRA controller, 2 priorities" })
   ).toBeDefined();
+  await user.click(screen.getByRole("tab", { name: "In flight under no priority 2" }));
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   await user.selectOptions(groupBy("In flight under no priority"), "status");
   expect(
