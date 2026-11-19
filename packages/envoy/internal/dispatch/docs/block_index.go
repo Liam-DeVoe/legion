@@ -88,8 +88,9 @@ type BlockIndexTick struct {
 	// tick reads, Marked how many documents an artifact.version, artifact.created or issue.created
 	// event among them named that it marked owed a block index, Comments how many comments a
 	// comment.created or comment.answered event among them named whose rows it gave their nodes,
-	// and AnotherBuild whether a live server process of another build served, which the tick
-	// reports and which decides nothing (readEventsAfterCursor).
+	// and AnotherBuild whether a live server process of another build served, which decides
+	// nothing of which events the tick reads and makes it owe the object pass
+	// (readEventsAfterCursor).
 	Events       int
 	Marked       int
 	Comments     int
@@ -216,8 +217,8 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		// comments= the documents it marked owed and the comments it gave their nodes from those
 		// events, object_nodes= and orphans_gone= the rows the object pass gave their nodes and the
 		// orphaned document nodes it stated gone, and another_build= whether a live server process
-		// of another build served, which the tick reports and which decides nothing
-		// (readEventsAfterCursor).
+		// of another build served, which decides nothing of which events the tick reads and makes
+		// it owe the object pass (readEventsAfterCursor).
 		slog.Info("dispatch: block index", "documents", tick.Documents, "items", tick.Items,
 			"item_blocks", tick.ItemBlocks, "texts", tick.Texts, "windows", tick.Windows,
 			"retired", tick.Retired, "events", tick.Events, "marked", tick.Marked,
@@ -1061,7 +1062,7 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 // stored state has no block to show, so its latest version's markdown is indexed with no blocks.
 //
 // A pair the index inserts takes the version's created_at, and the source_seq of the event that
-// recorded the version (stampVersionEvent).
+// recorded the version (stampVersionEvent), queued in the step that appends the pass's facts.
 //
 // The transaction reads, extracts and plans the whole index before its first write (queueWrites),
 // so it holds a transaction id only for the index's statements and the commit. Its re-read of the
@@ -1142,10 +1143,16 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	if err != nil {
 		return false, false, err
 	}
-	if err := write(queued, tx, func(b *store.WriteBatch) error { return graphstore.QueueCaused(b, stated, eventID) }); err != nil {
-		return false, false, err
-	}
-	if err := stampVersionEvent(queued, tx, document.id, version, versionAt, eventID); err != nil {
+	// The stamp goes in the step that appends the pass's facts under the same event: a block_refs
+	// row's source_seq is the legacy_source_seq of the tuple it projects (graphstore.UncausedTuple's
+	// LegacyFromCause), so the row learns it beside the store write that states it.
+	if err := write(queued, tx, func(b *store.WriteBatch) error {
+		if err := graphstore.QueueCaused(b, stated, eventID); err != nil {
+			return err
+		}
+		stampVersionEvent(b, document.id, version, versionAt, eventID)
+		return nil
+	}); err != nil {
 		return false, false, err
 	}
 	if err := ledger.runQueue(ctx, nil); err != nil {
@@ -1192,26 +1199,24 @@ func versionEventID(ctx context.Context, tx pgx.Tx, owner artifactOwner, artifac
 	return eventID, nil
 }
 
-// stampVersionEvent gives the edges a re-index of version inserted the source_seq of eventID,
-// the event that recorded that version (versionEventID). A version write stamps its own edges
-// once it appends its event (refs.QueueStamp); this is that stamp for a version a build without
-// the block index wrote. It stamps only what the re-index inserted - the block pairs it created
-// at this version, and the document's references it dated versionAt - so an edge rebuild-refs
-// inserted keeps no source_seq. With no such event the edges keep none. The event is read where
-// it is called; the stamps go through write.
-func stampVersionEvent(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, eventID int64) error {
+// stampVersionEvent queues on b the stamp that gives the edges a re-index of version inserted the
+// source_seq of eventID, the event that recorded that version (versionEventID). A version write
+// stamps its own edges once it appends its event (refs.QueueStamp); this is that stamp for a
+// version a build without the block index wrote. It stamps only what the re-index inserted - the
+// block pairs it created at this version, and the document's references it dated versionAt - so
+// an edge rebuild-refs inserted keeps no source_seq. With no such event the edges keep none and
+// nothing is queued. The event is read where it is called, and b is the step that appends the
+// pass's facts under it (indexOwedDocument).
+func stampVersionEvent(b *store.WriteBatch, artifactID string, version int, versionAt time.Time, eventID int64) {
 	if eventID == graphstore.NoEvent {
-		return nil
+		return
 	}
-	return write(ctx, tx, func(b *store.WriteBatch) error {
-		b.Queue(fmt.Sprintf("stamp the block mentions of version %d of %s", version, artifactID), `
-			update block_refs set source_seq = $3
-			where artifact_id = $1 and created_version = $2 and source_seq is null
-		`, artifactID, version, eventID)
-		b.Queue(fmt.Sprintf("stamp the references of version %d of %s", version, artifactID), `
-			update refs set source_seq = $3
-			where from_kind = 'artifact' and from_id = $1 and source_seq is null and created_at = $2
-		`, artifactID, versionAt, eventID)
-		return nil
-	})
+	b.Queue(fmt.Sprintf("stamp the block mentions of version %d of %s", version, artifactID), `
+		update block_refs set source_seq = $3
+		where artifact_id = $1 and created_version = $2 and source_seq is null
+	`, artifactID, version, eventID)
+	b.Queue(fmt.Sprintf("stamp the references of version %d of %s", version, artifactID), `
+		update refs set source_seq = $3
+		where from_kind = 'artifact' and from_id = $1 and source_seq is null and created_at = $2
+	`, artifactID, versionAt, eventID)
 }
