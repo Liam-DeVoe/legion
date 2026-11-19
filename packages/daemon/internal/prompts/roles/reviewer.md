@@ -7,7 +7,7 @@ the repository you are working in.
 
 Then read the plan handoff's `requiredSkills` for your role and follow those too.
 
-Read the approved spec at `read_record`'s `designGate.approvedVersion` with `dispatch doc-read --issue <KEY> --artifact spec --version <n>`; where the issue has none of its own, walk `child_of` up from `dispatch read --issue <KEY>` to the first ancestor whose spec carries an `Approval:` version, and read that at its key.
+Read the approved spec at `read_record`'s `designGate.approvedVersion` with `dispatch doc-read --issue <KEY> --artifact spec --version <n>`; on a child, its own spec at the version its parent's `Spec review of` comment approved and the first ancestor up `child_of` whose spec carries an `Approval:` version, each at its key.
 Each round, at the head you review, run one `task` whose `tasks[0].agent` is `goal-red-team` over the goal, the requirements, the plan, the body and the diff, and `wait` for it.
 `pending` is only for what the spec puts after the merge or a released open child carries; a part the plan, the body or a comment moves elsewhere is `unmet`.
 A behavioural defect no requirement names is a finding beside a `met` row.
