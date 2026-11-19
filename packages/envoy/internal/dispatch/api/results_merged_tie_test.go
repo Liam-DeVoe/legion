@@ -232,7 +232,7 @@ func TestAChildsMergedHeadOnTheParentsTabIsReadThroughOnceAWindow(t *testing.T) 
 		map[string]any{"project": "RMTE", "title": "Child", "parent": parent.Key, "force": true}, "alice"))
 	recorded := decodeBody[recordedResult](t, recordResult(t, handler, child.Key, resultBody("k1", "pass", headCommit, nil)))
 	fake.answers(mergedPullAt(98, child.Key+" the work", ""))
-	served.commitPulls = delivery.CommitPullReads{}
+	rewindCommitPullReads(t, served)
 	spent := fake.asks("acme/widgets")
 
 	for read := 1; read <= 3; read++ {
@@ -263,7 +263,7 @@ func TestAMergedHeadOfTheChecksOwnIssueIsReadThroughOnceAWindow(t *testing.T) {
 	}
 	recorded := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil)))
 	fake.answers(mergedPullAt(83, issue.Key+" the work", ""))
-	served.commitPulls = delivery.CommitPullReads{}
+	rewindCommitPullReads(t, served)
 	spent := fake.asks("acme/widgets")
 
 	for _, read := range []string{"first", "second"} {
@@ -398,7 +398,7 @@ func TestALinkWrittenToAMergedPullRequestIsFollowedByTheNextPass(t *testing.T) {
 				"state":"open","merged":false,"updated_at":"2026-11-05T07:15:08Z",
 				"head":{"ref":"feature/no-key","sha":%q,"repo":{"full_name":%q}},"base":{"ref":"main"}}`, repo, sha, repo) + "]"
 		})
-		served.commitPulls = delivery.CommitPullReads{}
+		rewindCommitPullReads(t, served)
 		spent := fake.asks("acme/widgets")
 		standsAt(t, readResults(t, handler, issue.Key), "k1", recorded.Result.ID,
 			"a result at the head of a linked pull request Dispatch stored no row for", model.CommitAtBasis, false)

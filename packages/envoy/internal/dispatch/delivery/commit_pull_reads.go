@@ -1,8 +1,15 @@
 package delivery
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // commit_pull_reads.go bounds how often one commit's pull requests are read through
@@ -10,7 +17,9 @@ import (
 // repository and a commit's place on one of its branches is believed, this one how long an
 // answer about the pull requests of a commit stands before GitHub is asked again. Its one
 // caller is the results read (api/results_comparison.go, comparisonReader.readThroughHead), which
-// keeps a memo for the span of one request and no policy.
+// keeps a memo for the span of one request and no policy. The bound holds across processes:
+// each process keeps the moment in its memory (CommitPullReads), and the database holds the claim
+// every process shares (commit_pull_reads, ClaimAcrossProcesses).
 
 // CommitPullReadStaleAfter is how long one commit's read-through stands before another read may
 // run for that commit. Each read costs one GET /repos/{owner}/{repo}/commits/{sha}/pulls, and
@@ -40,7 +49,9 @@ const CommitPullSettledFor = time.Hour
 // again, held across reads so a commit costs at most one read-through per span rather than one
 // per read of the results. Its zero value is an empty cache, and the server holds one for the
 // process (api.server.commitPulls), as it holds one Branches: the answer is a commit's, not a
-// request's, and every goroutine reading results shares it.
+// request's, and every goroutine reading results shares it. It is the process's first gate: a
+// moment it holds refuses with no statement. The bound across processes is the claim in the
+// database (ClaimAcrossProcesses, SettleAcrossProcesses), which the memory only spares asking.
 //
 // Only the read-time read-through records here, and the one a recorded result makes
 // (api/results.go's readThroughPullRequests) must not: a result recorded while no pull request
@@ -49,7 +60,8 @@ const CommitPullSettledFor = time.Hour
 // is the whole of what dispatch://INFRA-1240 repairs.
 //
 // One decision, one lock: Claim tests the moment held and records the next one together, so no
-// caller can hold the two apart and two reads that ask at once cannot both be granted. One
+// caller can hold the two apart and two reads of one process that ask at once cannot both be
+// granted; the claim in the database does the same for two processes, in one statement. One
 // entry per repository-and-commit pair carries both bounds, which differ only in their span:
 // Claim records CommitPullReadStaleAfter past the read it grants, and Settle CommitPullSettledFor
 // past GitHub's answer that the pull request's head is elsewhere, which is the longer answer and
@@ -126,4 +138,87 @@ func (c *CommitPullReads) Settle(repoFull, sha string, now time.Time) {
 		c.notBefore = map[commitPullKey]time.Time{}
 	}
 	c.notBefore[commitPullKey{repo: repoFull, sha: sha}] = now.Add(CommitPullSettledFor)
+}
+
+// hold records until as the moment before which this process does not claim repoFull and sha
+// again: the moment another process holds in the database, or now, which refuses nothing.
+func (c *CommitPullReads) hold(repoFull, sha string, until time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.notBefore == nil {
+		c.notBefore = map[commitPullKey]time.Time{}
+	}
+	c.notBefore[commitPullKey{repo: repoFull, sha: sha}] = until
+}
+
+// ClaimAcrossProcesses is Claim for every process that serves the results read. It asks this
+// process's memory first (Claim), which refuses with no statement, and then the claim that every
+// process shares (commit_pull_reads, claimCommitPullReadSQL). So N processes read one commit
+// through at most once a CommitPullReadStaleAfter, as one process does, and each process sends
+// the claim at most once a span for each commit. A claim the database refuses keeps the moment
+// the database holds in this process's memory, so the process asks again once that moment has
+// passed. A claim that fails grants nothing and leaves the pair free in this process's memory,
+// so the next read asks again; the read then answers from the stored rows, as a read that asks
+// GitHub nothing does.
+//
+// The moments are each process's clock, as the memory's are, so two processes whose clocks
+// differ by d can read one commit through twice in one span that is d shorter.
+func (c *CommitPullReads) ClaimAcrossProcesses(ctx context.Context, pool *store.Pool, repoFull, sha string, now time.Time) (bool, error) {
+	if !c.Claim(repoFull, sha, now) {
+		return false, nil
+	}
+	var granted bool
+	var notBefore time.Time
+	err := pool.QueryRow(ctx, claimCommitPullReadSQL, repoFull, sha, now, now.Add(CommitPullReadStaleAfter)).Scan(&granted, &notBefore)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// Another process inserted the pair after this statement's snapshot was taken, and its
+		// moment refused this claim: it claimed the pair a moment ago.
+		c.hold(repoFull, sha, now.Add(CommitPullReadStaleAfter))
+		return false, nil
+	case err != nil:
+		c.hold(repoFull, sha, now)
+		return false, fmt.Errorf("claim the read of the pull requests of %s at %s: %w", repoFull, sha, err)
+	case !granted:
+		c.hold(repoFull, sha, notBefore)
+	}
+	return granted, nil
+}
+
+// claimCommitPullReadSQL is the claim of one repository and commit that every process shares:
+// $1 the repository, $2 the commit, $3 now and $4 the moment a granted claim records. The
+// insert moves the moment only where the moment held has passed, so of two processes that ask
+// at once one is granted: the second waits on the row the first wrote, for that one statement,
+// and reads its moment. It answers one row, true and the new moment where it granted the claim,
+// and false and the moment held where it refused it; no row where another process inserted the
+// pair after this statement's snapshot. The same statement deletes every other row whose
+// moment has passed, which refuses nothing (commit_pull_reads_not_before), so the table holds
+// about one row for each commit asked about in the last CommitPullSettledFor.
+const claimCommitPullReadSQL = `
+	with swept as (
+		delete from commit_pull_reads
+		where not_before < $3 and (repo, sha) <> ($1::text, $2::text)
+	), granted as (
+		insert into commit_pull_reads as held (repo, sha, not_before) values ($1, $2, $4)
+		on conflict (repo, sha) do update set not_before = excluded.not_before
+		where held.not_before <= $3
+		returning held.not_before
+	)
+	select true, not_before from granted
+	union all
+	select false, held.not_before from commit_pull_reads held
+	where held.repo = $1 and held.sha = $2 and not exists (select from granted)`
+
+// SettleAcrossProcesses is Settle for every process: it records CommitPullSettledFor past now in
+// this process's memory and in the claim every process shares, where it keeps the later of that
+// moment and the one held.
+func (c *CommitPullReads) SettleAcrossProcesses(ctx context.Context, pool *store.Pool, repoFull, sha string, now time.Time) error {
+	c.Settle(repoFull, sha, now)
+	if _, err := pool.Exec(ctx, `
+		insert into commit_pull_reads as held (repo, sha, not_before) values ($1, $2, $3)
+		on conflict (repo, sha) do update set not_before = greatest(held.not_before, excluded.not_before)`,
+		repoFull, sha, now.Add(CommitPullSettledFor)); err != nil {
+		return fmt.Errorf("settle the read of the pull requests of %s at %s: %w", repoFull, sha, err)
+	}
+	return nil
 }

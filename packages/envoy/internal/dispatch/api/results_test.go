@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -1983,6 +1984,10 @@ type commitPullsFake struct {
 	// 200, a page of commits. No function is one empty page. commitPages counts those reads.
 	commits     func(repo, number string) (int, string)
 	commitPages int
+	// app and upstream are the App key and the GitHub that readThroughGitHub's server reads, so a
+	// second server on the same database reads the same GitHub (secondReadThroughServer).
+	app      *auth.AppConfig
+	upstream string
 }
 
 // pullAnswers sets what GET /repos/{owner}/{repo}/pulls/{number} answers from now on.
@@ -2274,11 +2279,51 @@ func readThroughGitHub(t *testing.T, repos ...string) (http.Handler, *store.Stor
 	mux.HandleFunc("POST /graphql", fake.serveFactsQuery(t, installed))
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", fake.serveCommits)
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
+	fake.app, fake.upstream = &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}, upstream
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
+		app:           fake.app,
 		githubAPIBase: upstream,
 	})
 	return handler, database, served, fake
+}
+
+// rewindCommitPullReads is what the clock does on its own between two refetches once
+// delivery.CommitPullReadStaleAfter has passed, without the test waiting for it: the server's
+// memory of each read-through it claimed is empty again, and the claims every process shares
+// (commit_pull_reads) hold no moment, so the next read reads each result's commit through again.
+func rewindCommitPullReads(t *testing.T, served *server) {
+	t.Helper()
+	served.commitPulls = delivery.CommitPullReads{}
+	if _, err := served.deps.Store.Pool.Exec(context.Background(), `delete from commit_pull_reads`); err != nil {
+		t.Fatalf("rewind the claims of the reads of commits: %v", err)
+	}
+}
+
+// endSettledSpan is what the clock does to a settled commit once delivery.CommitPullSettledFor
+// has passed, without the test waiting an hour: the settle is stamped again from that much
+// earlier, in the server's memory and in the claim every process shares, so its span has just
+// run out.
+func endSettledSpan(t *testing.T, served *server, repo, sha string) {
+	t.Helper()
+	ago := time.Now().Add(-delivery.CommitPullSettledFor)
+	served.commitPulls.Settle(repo, sha, ago)
+	if _, err := served.deps.Store.Pool.Exec(context.Background(),
+		`update commit_pull_reads set not_before = $3 where repo = $1 and sha = $2`, repo, sha, ago.Add(delivery.CommitPullSettledFor)); err != nil {
+		t.Fatalf("end the settled span of %s at %s: %v", repo, sha, err)
+	}
+}
+
+// secondReadThroughServer is a second envoy-dispatch process beside readThroughGitHub's server:
+// a server of its own, on a pool of its own to the same database (storetest.SecondProcess), with
+// the same App key and the same GitHub, which fake counts the asks of.
+func secondReadThroughServer(t *testing.T, database *store.Store, fake *commitPullsFake) (http.Handler, *server) {
+	t.Helper()
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{
+		store:         storetest.SecondProcess(t, database),
+		app:           fake.app,
+		githubAPIBase: fake.upstream,
+	})
+	return handler, served
 }
 
 // INFRA-1240 at the surface a reviewer reads. A `before_merge` result is recorded at a commit
@@ -2314,7 +2359,7 @@ func TestAResultStandsAtItsCommitOnceAPullRequestOpensThere(t *testing.T) {
 	// delivery.CommitPullReadStaleAfter, so the cache is rewound to its zero value, an empty one:
 	// what the clock does on its own between a reviewer's refetches, without the test waiting for
 	// it.
-	served.commitPulls = delivery.CommitPullReads{}
+	rewindCommitPullReads(t, served)
 
 	read := readResults(t, handler, issue.Key)
 	stands := standsAt(t, read, "k1", recorded.Result.ID,
@@ -2434,7 +2479,7 @@ func TestASupersededResultsCommitIsAskedOfGitHubOnceAndNotAgainWithinTheSpan(t *
 			"head":{"ref":"legion/x","sha":%q,"repo":{"full_name":%q}},"base":{"ref":"main"}}]`,
 			issue.Key+" the work", repo, newHeadCommit, repo)
 	})
-	served.commitPulls = delivery.CommitPullReads{}
+	rewindCommitPullReads(t, served)
 	if !served.commitPulls.Claim("acme/widgets", newHeadCommit, time.Now()) {
 		t.Fatal("SETUP: a claim of the newest result's commit was refused in an empty cache")
 	}
@@ -2524,12 +2569,13 @@ func TestAPullRequestOpenedAtASettledCommitIsSeenOnceTheSpanEnds(t *testing.T) {
 		t.Fatalf("the read inside the span asked GitHub %d times, want none", asked)
 	}
 
-	// 4. Past the span. The cache's moments are its only clock, and the public way to move one
-	// is to stamp the pair again from an earlier moment: a settling made
-	// delivery.CommitPullSettledFor ago is one whose span has just run out, which is what the
-	// clock does on its own between a reviewer's refetches, without the test waiting an hour for
-	// it — as the sibling tests rewind the whole cache to its zero value for the shorter span.
-	served.commitPulls.Settle("acme/widgets", headCommit, time.Now().Add(-delivery.CommitPullSettledFor))
+	// 4. Past the span. The moments are the only clock, and the way to move one is to stamp the
+	// pair again from an earlier moment, in the server's memory and in the claim every process
+	// shares (endSettledSpan): a settling made delivery.CommitPullSettledFor ago is one whose span
+	// has just run out, which is what the clock does on its own between a reviewer's refetches,
+	// without the test waiting an hour for it — as the sibling tests rewind every claim for the
+	// shorter span (rewindCommitPullReads).
+	endSettledSpan(t, served, "acme/widgets", headCommit)
 	spent = fake.asks("acme/widgets")
 	standsAt(t, readResults(t, handler, issue.Key), "k1", recorded.Result.ID,
 		"the read past the settled span, where a pull request has opened at the commit",
@@ -2681,7 +2727,7 @@ func TestAResultsReadComparesWithAPullRequestOwedARead(t *testing.T) {
 		return openPullAt(97, issue.Key)(repo, sha)
 	})
 	fake.refusesCommitPulls(newHeadCommit, http.StatusForbidden)
-	served.commitPulls = delivery.CommitPullReads{}
+	rewindCommitPullReads(t, served)
 
 	t.Run("learned_while_owed", func(t *testing.T) {
 		check := checkOf(t, readResults(t, handler, issue.Key), "k1")
@@ -2722,7 +2768,7 @@ func TestAResultsReadComparesWithThePullRequestItLearnsInTheSameAnswer(t *testin
 	recordResult(t, handler, issue.Key, resultBody("k1", "pass", newHeadCommit, nil))
 	recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil))
 	fake.answers(func(repo, _ string) string { return openPullAt(97, issue.Key)(repo, newHeadCommit) })
-	served.commitPulls = delivery.CommitPullReads{}
+	rewindCommitPullReads(t, served)
 
 	check := checkOf(t, readResults(t, handler, issue.Key), "k1")
 	t.Logf("compared_with=%v compared_nothing=%q pass_stands=%s",
@@ -2755,7 +2801,7 @@ func TestAResultsReadComparesWithAPullRequestWhoseCommitsAnswer500(t *testing.T)
 		}
 		return http.StatusOK, `[]`
 	})
-	served.commitPulls = delivery.CommitPullReads{}
+	rewindCommitPullReads(t, served)
 	spent := fake.commitPagesRead()
 
 	check := checkOf(t, readResults(t, handler, issue.Key), "k1")
@@ -2790,7 +2836,7 @@ func TestAChildsOpenHeadOnTheParentsTabIsReadThroughOnceAWindow(t *testing.T) {
 	// GitHub names that pull request again, so a call that was spent shows as an ask; and the
 	// cache, rewound to its zero value, holds no read off.
 	fake.answers(openPullAt(98, child.Key))
-	served.commitPulls = delivery.CommitPullReads{}
+	rewindCommitPullReads(t, served)
 	spent := fake.asks("acme/widgets")
 
 	for _, read := range []string{"first", "second"} {
@@ -2827,7 +2873,7 @@ func TestEveryResultOfAnIssueAtAPullRequestsHeadStandsAtIt(t *testing.T) {
 		}
 		return `[]`
 	})
-	served.commitPulls = delivery.CommitPullReads{}
+	rewindCommitPullReads(t, served)
 
 	read := readResults(t, handler, issue.Key)
 	standsAt(t, read, "k3", sibling.Result.ID,
@@ -2863,7 +2909,7 @@ func TestAParentsResultsStandAtItsHeadThoughAChildRecordedOnTheSameCheck(t *test
 		}
 		return `[]`
 	})
-	served.commitPulls = delivery.CommitPullReads{}
+	rewindCommitPullReads(t, served)
 	spent := fake.asks("acme/widgets")
 
 	read := readResults(t, handler, parent.Key)
@@ -2887,7 +2933,7 @@ func TestACheckWithOneResultAtAPullRequestsHeadStandsAtIt(t *testing.T) {
 
 	recorded := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k3", "pass", headCommit, nil)))
 	fake.answers(openPullAt(91, issue.Key))
-	served.commitPulls = delivery.CommitPullReads{}
+	rewindCommitPullReads(t, served)
 
 	standsAt(t, readResults(t, handler, issue.Key), "k3", recorded.Result.ID,
 		"one result at the head of a pull request opened after it was recorded",
@@ -2912,7 +2958,7 @@ func TestAClosedPullRequestsHeadDoesNotHoldOffTheReadThrough(t *testing.T) {
 
 	// The new pull request, opened from that same head.
 	fake.answers(openPullAt(91, issue.Key))
-	served.commitPulls = delivery.CommitPullReads{}
+	rewindCommitPullReads(t, served)
 
 	standsAt(t, readResults(t, handler, issue.Key), "k1", recorded.Result.ID,
 		"a result at the head of a pull request opened after a closed one", model.CommitAtBasis, false)
@@ -2934,7 +2980,7 @@ func TestResultsReadAtACommitComparesEveryCheckWithThatCommit(t *testing.T) {
 	// GitHub would name a pull request for either commit and nothing holds a read-through off,
 	// so a read that asked would show as an ask.
 	fake.answers(openPullAt(93, issue.Key))
-	served.commitPulls = delivery.CommitPullReads{}
+	rewindCommitPullReads(t, served)
 	spent := fake.asks("acme/widgets")
 
 	read := readResultsAt(t, handler, issue.Key, mergeCommit)

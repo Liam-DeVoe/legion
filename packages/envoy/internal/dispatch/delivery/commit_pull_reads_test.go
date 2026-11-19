@@ -2,8 +2,12 @@ package delivery
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // One claim per pair per CommitPullReadStaleAfter, and the decision and the record are one step:
@@ -100,5 +104,123 @@ func TestASettledCommitIsRefusedUntilItsSpanEndsAndTheSweepKeepsItUntilThen(t *t
 	}
 	if _, held := reads.notBefore[commitPullKey{repo: "acme/widgets", sha: "ghi"}]; held {
 		t.Fatal("the sweep kept a settled pair whose span had passed, want it dropped with the rest")
+	}
+}
+
+// Two processes on one database read one commit through once a span between them. Each keeps the
+// moment in its memory, and the claim in the database (commit_pull_reads) holds it for both: the
+// second process's claim inside the span is refused, so it reads nothing, and its claim at the
+// span's end is granted, since it keeps the moment the database holds and not a span past its own
+// refused claim. A settle in one process holds the commit off in the other for
+// CommitPullSettledFor. Two processes that claim one commit at one moment are granted once. A
+// claim that each process keeps in its memory alone grants the second process inside the span; a
+// settle kept in one process alone grants the other process after the short span; a process that
+// keeps its own refused claim is refused at the span's end.
+func TestTwoProcessesReadACommitThroughOnceASpanBetweenThem(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	second := storetest.SecondProcess(t, &store.Store{Pool: pool}).Pool
+	start := time.Date(2026, 11, 19, 17, 40, 0, 0, time.UTC)
+	claim := func(t *testing.T, reads *CommitPullReads, on *store.Pool, sha string, at time.Time) bool {
+		t.Helper()
+		granted, err := reads.ClaimAcrossProcesses(ctx, on, "acme/widgets", sha, at)
+		if err != nil {
+			t.Fatalf("claim %s at %s: %v", sha, at, err)
+		}
+		return granted
+	}
+
+	t.Run("one_claim_a_span", func(t *testing.T) {
+		var first, other CommitPullReads
+		if !claim(t, &first, pool, "abc", start) {
+			t.Fatal("the first process's first claim was refused, want it granted")
+		}
+		if claim(t, &other, second, "abc", start.Add(time.Minute)) {
+			t.Fatal("the second process's claim one minute into the span was granted, want it refused: the first process read the commit through")
+		}
+		if !claim(t, &other, second, "abc", start.Add(CommitPullReadStaleAfter)) {
+			t.Fatal("the second process's claim at the span's end was refused, want it granted: it keeps the moment the database holds")
+		}
+		if claim(t, &first, pool, "abc", start.Add(CommitPullReadStaleAfter+time.Second)) {
+			t.Fatal("the first process's claim just after the second process read the commit through was granted, want it refused")
+		}
+	})
+	t.Run("a_settle_holds_every_process", func(t *testing.T) {
+		var first, other CommitPullReads
+		if !claim(t, &first, pool, "def", start) {
+			t.Fatal("the first process's first claim was refused, want it granted")
+		}
+		if err := first.SettleAcrossProcesses(ctx, pool, "acme/widgets", "def", start); err != nil {
+			t.Fatal(err)
+		}
+		if claim(t, &other, second, "def", start.Add(CommitPullSettledFor-time.Second)) {
+			t.Fatal("the second process's claim inside the settled span was granted, want it refused: GitHub put the pull request's head elsewhere")
+		}
+		if !claim(t, &other, second, "def", start.Add(CommitPullSettledFor)) {
+			t.Fatal("the second process's claim at the settled span's end was refused, want it granted")
+		}
+	})
+	t.Run("two_claims_at_once", func(t *testing.T) {
+		var first, other CommitPullReads
+		for number := range 40 {
+			sha := fmt.Sprintf("%040x", 1000+number)
+			var wait sync.WaitGroup
+			var granted [2]bool
+			var failed [2]error
+			for i, process := range []struct {
+				reads *CommitPullReads
+				pool  *store.Pool
+			}{{&first, pool}, {&other, second}} {
+				wait.Go(func() {
+					granted[i], failed[i] = process.reads.ClaimAcrossProcesses(ctx, process.pool, "acme/widgets", sha, start)
+				})
+			}
+			wait.Wait()
+			if failed[0] != nil || failed[1] != nil {
+				t.Fatalf("two processes claimed %s at one moment: %v", sha, failed)
+			}
+			if granted[0] == granted[1] {
+				t.Fatalf("two processes claimed %s at one moment and were granted %v, want exactly one granted", sha, granted)
+			}
+		}
+	})
+}
+
+// A claim in the database deletes each other row whose moment has passed, so the table holds
+// about one row for each commit asked about in the last CommitPullSettledFor and not every commit
+// ever asked about. A row whose moment has not passed stays, and so does the row of the claim
+// itself.
+func TestAClaimInTheDatabaseDeletesTheRowsNoMomentHolds(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	start := time.Date(2026, 11, 19, 17, 40, 0, 0, time.UTC)
+	var reads CommitPullReads
+	for _, sha := range []string{"old", "settled", "fresh"} {
+		if granted, err := reads.ClaimAcrossProcesses(ctx, pool, "acme/widgets", sha, start); err != nil || !granted {
+			t.Fatalf("claim %s: granted %v, error %v; want it granted", sha, granted, err)
+		}
+	}
+	if err := reads.SettleAcrossProcesses(ctx, pool, "acme/widgets", "settled", start); err != nil {
+		t.Fatal(err)
+	}
+	later := start.Add(CommitPullReadStaleAfter + time.Minute)
+	if granted, err := reads.ClaimAcrossProcesses(ctx, pool, "acme/widgets", "fresh", later); err != nil || !granted {
+		t.Fatalf("claim fresh one span later: granted %v, error %v; want it granted", granted, err)
+	}
+	rows, err := pool.Query(ctx, `select sha from commit_pull_reads order by sha`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var held []string
+	for rows.Next() {
+		var sha string
+		if err := rows.Scan(&sha); err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, sha)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(held) != "[fresh settled]" {
+		t.Fatalf("the table holds %v after a claim one span later, want [fresh settled]: the row of old, whose moment passed, deleted", held)
 	}
 }

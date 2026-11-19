@@ -9,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -146,7 +145,7 @@ func TestAResultsReadStoresEveryPullRequestGitHubNamesAtAResultsCommit(t *testin
 	}
 
 	fake.answers(sameHeadAnswer(issue.Key, 41, 42, 43, 44))
-	served.commitPulls = delivery.CommitPullReads{}
+	rewindCommitPullReads(t, served)
 	spent := fake.asks("acme/tools")
 	read := readResults(t, handler, issue.Key)
 	asked := fake.asks("acme/tools") - spent

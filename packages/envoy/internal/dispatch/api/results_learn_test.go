@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -60,7 +59,7 @@ func TestAReadThroughWhoseOwnWriteOwesAReadComparesAtTheNextRead(t *testing.T) {
 				}
 				return openPull(99, issue.Key, repo, headCommit)
 			})
-			served.commitPulls = delivery.CommitPullReads{}
+			rewindCommitPullReads(t, served)
 
 			spent := fake.asks("acme/widgets")
 			first := checkOf(t, readResults(t, handler, issue.Key), "k1")
@@ -132,7 +131,7 @@ func TestAPullRequestThatTheSameReadLearnsIsNotKnownInThatAnswer(t *testing.T) {
 				}
 				return http.StatusOK, fmt.Sprintf(`[{"commit":{"message":%q}}]`, fmt.Sprintf(tc.message, key))
 			})
-			served.commitPulls = delivery.CommitPullReads{}
+			rewindCommitPullReads(t, served)
 
 			spent := fake.asks("acme/widgets")
 			read := readResults(t, handler, key)

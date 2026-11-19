@@ -562,8 +562,10 @@ type server struct {
 	// pull requests of a commit it could answer for no other way (delivery.CommitPullReads,
 	// comparisonReader.readThroughHead), held across requests so one commit costs at most one such
 	// read per delivery.CommitPullReadStaleAfter however often the tab refetches, and one per
-	// delivery.CommitPullSettledFor once GitHub has put that pull request's head elsewhere. The
-	// policy is delivery's; the server holds the one cache the process shares.
+	// delivery.CommitPullSettledFor once GitHub has put that pull request's head elsewhere. It is
+	// this process's memory of the claim every process shares in the database (commit_pull_reads),
+	// which bounds the reads of every process together. The policy is delivery's; the server holds
+	// the one cache the process shares.
 	commitPulls delivery.CommitPullReads
 }
 

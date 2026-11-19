@@ -2784,6 +2784,14 @@ It creates `pull_request_reads_owed_repo_number` on `(lower(repo), number)`, par
 It creates `pull_request_texts_messages_not_read` on `pull_request_texts (lower(repo))` where `commit_messages is null`, for the read of the pull requests of one repository whose answer is not known (`delivery.PullRequestsNotKnown`).
 Each column is nullable with no default, and each index reads its table once; the release before names neither column; its census answers `0`.
 
+Migration `20261119173616_commit_pull_reads` creates `commit_pull_reads`, the claim of the read-through of one commit that every process shares: the repository under its canonical name, the 40-hex commit, and `not_before`, the moment before which no process reads GitHub again for that commit's pull requests.
+The results read claims a commit first in its own process's memory (`delivery.CommitPullReads`), which refuses with no statement, and then in this table, with one insert that, on conflict, moves `not_before` only where it has passed, so two processes that ask at once are granted once (`CommitPullReads.ClaimAcrossProcesses`).
+A granted claim records five minutes past the read (`delivery.CommitPullReadStaleAfter`), and GitHub's answer that the pull request's head is another commit records an hour past it (`delivery.CommitPullSettledFor`, `CommitPullReads.SettleAcrossProcesses`); a process the table refused keeps the moment the table holds and asks again at it.
+The same statement deletes every other row whose moment has passed (`commit_pull_reads_not_before`), so the table holds about one row for each commit asked about in the last hour.
+Each statement locks the rows it writes for that statement alone, and nothing else reads or writes the table.
+The moments are each process's clock, as its memory's are, so two processes whose clocks differ by a few seconds can read one commit through twice in a span that much shorter.
+A new table: nothing existing is read, locked or rewritten, the release before neither reads nor writes it and keeps its own memory alone while both serve, and its census answers `0`.
+
 Migration `20261102122400_default_branch_commits` creates `default_branch_commits`, what Dispatch's GitHub App answered about one commit of one repository: whether the repository's default branch carries it.
 It cached the answer the results read asked for while that one question decided an `after_merge` and a `default_branch` check alike, a yes kept for good and a no re-read after five minutes.
 `20261107234701_branch_commits` below took that answer over, keyed by the branch as well and seeded by a merge with its own merge commit on the base branch, and `20261110004829_drop_default_branch_commits` drops this table.
@@ -4899,7 +4907,7 @@ Each item below names a path with its method and identity, then its purpose.
   - Without that read it would stand at no basis for ever:
     the read-through the record itself makes runs once, while no pull request carries the commit, and the GitHub intake writes no head row for a pull request whose `pull_request` events never reached Dispatch, such as one of a repository the webhook App is not installed on (`delivery.Intake.Run`).
 
-  - One repository and commit costs at most one such read every `delivery.CommitPullReadStaleAfter` (five minutes), however often the Verification tab refetches.
+  - One repository and commit costs at most one such read every `delivery.CommitPullReadStaleAfter` (five minutes), however often the Verification tab refetches and however many processes serve it: each process claims the commit in its memory and then in `commit_pull_reads`, which every process shares (`20261119173616_commit_pull_reads`, Database migrations above).
 
   - Eligibility for that read is the repository and commit's, never one result's:
     it is skipped only where a read has already been told of a pull request whose head is another commit, which answers about this commit for now and holds the pair off for `delivery.CommitPullSettledFor` (one hour, `delivery.CommitPullReads`), after which it is read through again, since a pull request opened later can have its head at that commit.

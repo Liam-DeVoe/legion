@@ -90,7 +90,7 @@ import (
 // commit: two questions, with two answers, that one key for both would collapse into whichever
 // was asked first. Across reads, a repository's default branch, a commit's place on a branch
 // and the last read-through of a commit's pull requests are held by delivery (server.branches,
-// branch_commits and server.commitPulls).
+// branch_commits, server.commitPulls and commit_pull_reads).
 type comparisonReader struct {
 	server *server
 	// at is the one commit the reader named, and noCommitNamed where it named none.
@@ -879,13 +879,16 @@ func (c *comparisonReader) measuredBranches(
 // never by the result that is being answered:
 //
 //   - One commit is read through at most once every delivery.CommitPullReadStaleAfter, however
-//     many reads ask: server.commitPulls.Claim tests that bound and records the read together,
-//     so two reads that ask at once spend one call. A commit that a stored row heads costs that
-//     one call in each span while its results are read.
+//     many reads ask and however many processes serve them:
+//     server.commitPulls.ClaimAcrossProcesses tests that bound and records the read together,
+//     first in this process's memory and then in the claim every process shares
+//     (commit_pull_reads), so two reads that ask at once spend one call. A commit that a stored
+//     row heads costs that one call in each span while its results are read.
 //   - Or a read within the last delivery.CommitPullSettledFor has asked GitHub about that
 //     repository and commit and been told of a pull request whose head is another commit
-//     (delivery.CommitPullReads.Settle, which that read records and Claim refuses from). GitHub
-//     has answered about this commit for now — its answer put the pull request's head past it —
+//     (delivery.CommitPullReads.SettleAcrossProcesses, which that read records and the claim
+//     refuses from). GitHub has answered about this commit for now — its answer put the pull
+//     request's head past it —
 //     so the answer is believed for that span and nothing a read inside it can learn repairs the
 //     result. It is a span and not for ever because a pull request opened later can have its
 //     head at that commit, which the next read after the span sees. GitHub naming no pull
@@ -912,7 +915,13 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 	}
 	repo, _ := c.repositoryOf(ctx, result.CheckIssueKey)
 	now := time.Now()
-	if !c.server.commitPulls.Claim(*repo, result.CommitSHA, now) {
+	claimed, err := c.server.commitPulls.ClaimAcrossProcesses(ctx, c.server.deps.Store.Pool, *repo, result.CommitSHA, now)
+	if err != nil {
+		slog.Info("dispatch: the claim of a read of a result's commit was not taken, so the read asks GitHub nothing",
+			"repo", *repo, "commit", result.CommitSHA, "error", err)
+		return
+	}
+	if !claimed {
 		return
 	}
 	written, atHead, err := delivery.ReadThroughCommitPulls(
@@ -923,7 +932,10 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 		return
 	}
 	if written > 0 && !atHead {
-		c.server.commitPulls.Settle(*repo, result.CommitSHA, now)
+		if err := c.server.commitPulls.SettleAcrossProcesses(ctx, c.server.deps.Store.Pool, *repo, result.CommitSHA, now); err != nil {
+			slog.Info("dispatch: the settle of a read of a result's commit was not recorded, so a later read asks GitHub again",
+				"repo", *repo, "commit", result.CommitSHA, "error", err)
+		}
 	}
 }
 
