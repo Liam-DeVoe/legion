@@ -609,7 +609,7 @@
         {
           "word": "release",
           "line": 45,
-          "sentence": "Release it with the rest: `legion({ op: \"release_children\", issues: [\"LEGION-41\", \"LEGION-42\"] })`."
+          "sentence": "Release it with the rest: `legion({ op: \"release_children\", issues: [\"\u003cKEY\u003e\", \"\u003cKEY\u003e\"] })`."
         },
         {
           "word": "release",

@@ -40,8 +40,8 @@ const (
 // of: 16,384 blocks is about the most paragraphs the 65,536 elements one upload may make allow.
 var alternatingBlocks = []int{4_096, 16_384}
 
-// Parse and Render finish in time linear in the text on the shapes that cost quadratic time
-// before LEGION-465: the work of each at its full size (parseFullTarget/renderFullTarget, above)
+// Parse and Render finish in time linear in the text on the shapes that once cost them quadratic
+// time: the work of each at its full size (parseFullTarget/renderFullTarget, above)
 // grows less than growthBound times over its work at a growthScale-th of it (growsLinearly,
 // below). The work is the user CPU time of the thread that parses or renders (cputest.Growth), not
 // wall time and not the process's CPU time: a wait for a core is not in it, nor the kernel's work

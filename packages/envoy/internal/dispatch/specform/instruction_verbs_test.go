@@ -25,7 +25,9 @@ import (
 // each word that opens an instruction sentence of them (openerVerb). Run with no flag, it fails
 // when the list is not what the evidence gives, and, where the clone holds the source commit,
 // when the evidence is not what the commit and the kept procedures give, so an edit of either file
-// by hand fails. The command is the list's header.
+// by hand fails. The command is the list's header. The program writes every Dispatch key of a
+// sentence as `<KEY>` (dispatchKeyForm), the skills' own word for a key, before it reads the
+// sentence's opener and nouns, so the evidence names no issue; the test fails when it names one.
 var (
 	writeVerbs  = flag.Bool("write-verbs", false, "write instruction-verbs.txt and its evidence from -verbs-commit and -verbs-live")
 	verbsCommit = flag.String("verbs-commit", "", "the commit whose skills/*/SKILL.md the list of verbs is read from")
@@ -118,6 +120,8 @@ func openerVerb(raw []string) (string, bool) {
 var (
 	listMarker = regexp.MustCompile(`^\s*(?:[-*+]|\d+[.)]|#+|>)\s+`)
 	fence      = regexp.MustCompile("^\\s*(```|~~~)")
+	// dispatchKeyForm is a Dispatch issue key: its project's capitals, a hyphen, then its number.
+	dispatchKeyForm = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*\b`)
 )
 
 // markdownSentences is each sentence of a Markdown file, with the line it starts on: the lines of
@@ -220,6 +224,7 @@ func readVerbSources(t *testing.T, commit string) verbEvidence {
 		source.Sentences = len(sentences)
 		for _, sentence := range sentences {
 			sentence.Word = path
+			sentence.Sentence = dispatchKeyForm.ReplaceAllString(sentence.Sentence, "<KEY>")
 			every = append(every, sentence)
 			if verb, ok := sentenceVerb(sentence.Sentence); ok {
 				source.Openers = append(source.Openers, verbOpening{Word: verb, Line: sentence.Line, Sentence: sentence.Sentence})
@@ -328,6 +333,10 @@ func TestTheVerbListIsItsProgramsOutput(t *testing.T) {
 	var evidence verbEvidence
 	if err := json.Unmarshal(raw, &evidence); err != nil {
 		t.Fatal(err)
+	}
+	// The evidence names no Dispatch issue: its program writes each key as `<KEY>`.
+	if keys := dispatchKeyForm.FindAll(raw, -1); len(keys) > 0 {
+		t.Errorf("%s holds %d Dispatch keys (%s): regenerate it with %s", verbsEvidenceFile, len(keys), bytes.Join(keys, []byte(", ")), evidence.Command)
 	}
 	// The list is what the evidence gives: each opener's sentence opens with its verb, and the
 	// list is those verbs.
