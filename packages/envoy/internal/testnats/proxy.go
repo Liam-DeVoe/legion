@@ -53,19 +53,15 @@ func ProxyRate(bytesPerSecond int) ProxyOption {
 }
 
 // StartProxy relays to the NATS server at target, a client URL such as Start returns, on a port of
-// its own at target's host, until the test ends: a server of this package's own address
-// (NewHost), so the proxy answers on no address another server of the process had. URL is
-// the same server through the proxy.
+// its own at target's host (Listen), until the test ends. URL is the same server through the
+// proxy.
 func StartProxy(t testing.TB, target string, options ...ProxyOption) *Proxy {
 	t.Helper()
 	server, err := url.Parse(target)
 	if err != nil || server.Host == "" {
 		t.Fatalf("read the NATS URL %q the proxy relays to: %v", target, err)
 	}
-	listener, err := net.Listen("tcp", net.JoinHostPort(server.Hostname(), "0"))
-	if err != nil {
-		t.Fatalf("listen for the NATS proxy: %v", err)
-	}
+	listener := Listen(t, target)
 	proxied := *server
 	proxied.Host = listener.Addr().String()
 	p := &Proxy{

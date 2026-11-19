@@ -4,6 +4,7 @@ package testnats
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -83,12 +84,40 @@ func TestStartImageConfigWaitsForAnAnonymousServerToAdmitAClient(t *testing.T) {
 	}
 }
 
-// A container's ports are published on a loopback address of its own, as every server this package
-// starts listens on one (NewHost): its client and monitoring endpoints name that address, never
-// 127.0.0.1, and a dial to 127.0.0.1 at the published client port never reaches the container.
-// Two containers have two addresses. Control: the published address answers with the server's
-// INFO, so the same read would see the container at 127.0.0.1 if Docker published it there.
+// Where the Docker daemon is this machine, a container's ports are published on a loopback address
+// of its own, as every server this package starts listens on one (NewHost): its client and
+// monitoring endpoints name that address, never 127.0.0.1, and a dial to 127.0.0.1 at the
+// published client port never reaches the container, judged by the server_id its INFO names. Two
+// containers have two addresses. Control: the published address answers with an INFO naming a
+// server_id, so the same read would see the container at 127.0.0.1 if Docker published it there.
 func TestAContainersPortsArePublishedOnAnAddressOfItsOwn(t *testing.T) {
+	if host, err := imageHost(t.Context()); err != nil || host == "" {
+		t.Skipf("the Docker daemon is not this machine (%v), so Docker publishes on its own default", err)
+	}
+	// serverID is the server_id of the INFO a dial to address reads first, or the dial's error.
+	serverID := func(address string) (string, error) {
+		conn, err := net.DialTimeout("tcp", address, 5*time.Second)
+		if err != nil {
+			return "", err
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+		line, err := bufio.NewReader(conn).ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		info, found := strings.CutPrefix(line, "INFO ")
+		if !found {
+			return "", fmt.Errorf("%s answered %q, not an INFO", address, line)
+		}
+		var fields struct {
+			ID string `json:"server_id"`
+		}
+		if err := json.Unmarshal([]byte(info), &fields); err != nil || fields.ID == "" {
+			return "", fmt.Errorf("%s's INFO names no server_id: %q, %v", address, info, err)
+		}
+		return fields.ID, nil
+	}
 	hosts := map[string]bool{}
 	for i := range 2 {
 		ctr, uri := StartImageConfig(t, HubImage, "", nil, true)
@@ -104,21 +133,12 @@ func TestAContainersPortsArePublishedOnAnAddressOfItsOwn(t *testing.T) {
 			t.Fatalf("container %d publishes its client port on %s and its monitoring port on %s, want one address of its own (others: %v)", i, host, monitor.Hostname(), hosts)
 		}
 		hosts[client.Hostname()] = true
-		info := func(address string) (string, error) {
-			conn, err := net.DialTimeout("tcp", address, 5*time.Second)
-			if err != nil {
-				return "", err
-			}
-			defer conn.Close()
-			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-			return bufio.NewReader(conn).ReadString('\n')
+		own, err := serverID(client.Host)
+		if err != nil {
+			t.Fatalf("control: %v", err)
 		}
-		own, err := info(client.Host)
-		if err != nil || !strings.HasPrefix(own, "INFO ") {
-			t.Fatalf("control: the published address %s answered %q, %v, want the server's INFO", client.Host, own, err)
-		}
-		if stray, err := info(net.JoinHostPort("127.0.0.1", client.Port())); err == nil && stray == own {
-			t.Fatalf("a dial to 127.0.0.1:%s reached container %d", client.Port(), i)
+		if stray, err := serverID(net.JoinHostPort("127.0.0.1", client.Port())); err == nil && stray == own {
+			t.Fatalf("a dial to 127.0.0.1:%s reached container %d (server_id %s)", client.Port(), i, own)
 		}
 	}
 }

@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net"
+	"net/url"
 	"runtime"
+	"strings"
 	"sync"
+	"testing"
 )
 
 // NewHost is the loopback address a new NATS server of this process listens on, with every
@@ -60,4 +63,36 @@ func hostOf(address string) string {
 		return ""
 	}
 	return host
+}
+
+// Listen is a TCP listener for a relay, a proxy or a tap a test puts in front of the server at
+// target, a client URL (nats://user:pass@host:port, as Start returns) or a host:port: on a port of
+// its own at target's host, the server's own address (NewHost), and never on 127.0.0.1 unless the
+// server is there. A relay on 127.0.0.1 is the way back in that a server's own address closes: a
+// client of a relay an earlier test closed keeps dialing 127.0.0.1 at that relay's port, and once
+// the kernel gives the port to a later relay on 127.0.0.1 the client reaches the later relay's
+// server. The listener is closed when the test ends; a caller may close it sooner.
+func Listen(t testing.TB, target string) net.Listener {
+	t.Helper()
+	address := target
+	if strings.Contains(target, "://") {
+		parsed, err := url.Parse(target)
+		if err != nil || parsed.Host == "" {
+			t.Fatalf("testnats: read the URL %q a listener goes in front of: %v", target, err)
+			return nil
+		}
+		address = parsed.Host
+	}
+	host := hostOf(address)
+	if host == "" {
+		t.Fatalf("testnats: %q names no host:port to put a listener in front of", target)
+		return nil
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	if err != nil {
+		t.Fatalf("testnats: listen in front of %s: %v", address, err)
+		return nil
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	return listener
 }

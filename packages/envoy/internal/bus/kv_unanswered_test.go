@@ -82,11 +82,7 @@ func startUnansweredRelayOn(t *testing.T, target, subject string) *unansweredRel
 		t.Fatalf("read the NATS URL %q the relay relays to: %v", target, err)
 		return nil
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen for the relay: %v", err)
-		return nil
-	}
+	listener := testnats.Listen(t, target)
 	relayed := *server
 	relayed.Host = listener.Addr().String()
 	relay := &unansweredRelay{

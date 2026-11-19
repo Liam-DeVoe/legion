@@ -204,10 +204,7 @@ type proxiedConn struct {
 
 func newHalfOpenProxy(t *testing.T, upstream string) *halfOpenProxy {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("proxy listen: %v", err)
-	}
+	ln := testnats.Listen(t, upstream)
 	p := &halfOpenProxy{ln: ln, upstream: upstream, open: map[*proxiedConn]struct{}{}}
 	t.Cleanup(func() {
 		_ = ln.Close()
