@@ -200,10 +200,16 @@ func writeBranchAnswer(t *testing.T, database *store.Store, repo, branch, sha st
 	}
 }
 
+// longFirstWord is one word of 110 characters, past the 80 a pull-request body line carries of a
+// reading or of a check's words (checkResultReadingRunes), so no word ends inside that budget.
+var longFirstWord = strings.Repeat("results_branch_newest_", 5)
+
 // The pull-request body line carries the reading the role recorded, because that is the record
 // a reader of the pull request cannot see anywhere else: the check's own words are on the
 // issue, and a pass and a fail would carry them alike. A reading over the budget is cut at a
-// word boundary and marked, a short one prints whole, and a result with no reading says so.
+// word boundary and marked, a short one prints whole, and a result with no reading says so. A
+// first word longer than the budget is never cut in two: the line keeps it whole, marked as cut
+// only where more words follow it.
 func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESL", "Line", "A spec\n")
@@ -224,6 +230,16 @@ func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 			name:     "a reading under the budget prints whole",
 			observed: "Every one of the twenty runs printed its listing.",
 			want:     "Every one of the twenty runs printed its listing.",
+		},
+		{
+			name:     "a first word over the budget is kept whole and marked when more words follow it",
+			observed: longFirstWord + " passed 20 of 20 runs.",
+			want:     longFirstWord + "…",
+		},
+		{
+			name:     "a first word over the budget that is the whole reading prints whole",
+			observed: longFirstWord,
+			want:     longFirstWord,
 		},
 		{
 			name:     "a result with no reading says so",
@@ -3146,6 +3162,31 @@ func TestCIResultIsTheRunOfTheHighestID(t *testing.T) {
 	check = checkOf(t, readResults(t, handler, issue.Key), "c1")
 	assertCI(t, check, ciCheckRun, model.CIStateFail, "failure", ciVerdictLineOf("c1", ciCheckRun, "fail", headCommit))
 	assertDerived(t, check, 34, ciCheckRun, "failure", "fail", headCommit)
+}
+
+// The pull-request body line of a check CI proves cuts the check's words as a recorded line cuts
+// a reading (TestThePullRequestLineCarriesTheReading): a first word longer than the budget is
+// kept whole, marked as cut where more words follow it, and printed whole where it is all the
+// check says.
+func TestTheCILineKeepsALongFirstWordWhole(t *testing.T) {
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	issue := issueInRepository(t, handler, "RESCW", "acme/widgets", "Long first word")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
+		":::check{#c1 "+ciCheckKept+"}\n"+longFirstWord+" builds at the head.\n:::\n\n"+
+			":::check{#c2 "+ciCheckKept+"}\n"+longFirstWord+"\n:::\n")
+	writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
+	fake.set(headCommit, completedRun(41, ciCheckRun, "success"))
+
+	read := readResults(t, handler, issue.Key)
+	for _, row := range []struct{ name, blockID, words string }{
+		{"more words follow the word", "c1", longFirstWord + "…"},
+		{"the word is all the check says", "c2", longFirstWord},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			line := fmt.Sprintf("- Check %s (before_merge): pass at %s, from CI run %s. %s", row.blockID, headCommit, ciCheckRun, row.words)
+			assertCI(t, checkOf(t, read, row.blockID), ciCheckRun, model.CIStatePass, "success", line)
+		})
+	}
 }
 
 // A ci_check name written with spaces around it is either refused at the write or answered by

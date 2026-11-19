@@ -46,7 +46,8 @@ const (
 )
 
 // checkResultReadingRunes is how much of the role's reading the pull-request body line carries,
-// and how much of the check's own words the line of a derived result carries (ciVerdictLine).
+// and how much of the check's own words the line of a derived result carries (ciVerdictLine),
+// cut at a word (cutWords). A first word longer than this is carried whole, past it.
 const checkResultReadingRunes = 80
 
 // checkResultColumns is the column list every check_results read scans, in scanCheckResult's
@@ -980,8 +981,9 @@ func blockContent(node *pmdoc.Node) string {
 // every reader of the pull request can read on the issue and which a pass and a fail would
 // carry alike: the line's whole purpose is to say what was seen. A reading longer than the
 // budget is cut at a word boundary and marked with an ellipsis, so a reader can tell a cut
-// line from a short one; a result with no reading says so, since a line that simply stopped
-// after the role would read as a reading nobody recorded.
+// line from a short one; a first word longer than the budget is kept whole rather than cut in
+// two (cutWords). A result with no reading says so, since a line that simply stopped after the
+// role would read as a reading nobody recorded.
 func checkResultLine(check resolvedCheck, result model.CheckResult) string {
 	line := fmt.Sprintf("- Check %s (%s): %s at %s, recorded by %s.",
 		check.BlockID, check.Attributes.When, result.Verdict, result.CommitSHA, result.Role)
@@ -993,7 +995,9 @@ func checkResultLine(check resolvedCheck, result model.CheckResult) string {
 }
 
 // cutWords is s cut at a word boundary to checkResultReadingRunes, with an ellipsis where it was
-// cut, so a reader can tell a cut line from a short one (text.HeadWords).
+// cut, so a reader can tell a cut line from a short one (text.HeadWords). A first word longer
+// than the budget is kept whole, since no boundary falls inside the budget, and is marked only
+// where more words follow it.
 func cutWords(s string) string {
 	head, cut := text.HeadWords(s, checkResultReadingRunes)
 	if cut {
