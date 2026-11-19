@@ -2069,3 +2069,136 @@ test("a date picked in a date box is the reader's press, so the box's removal wa
     }
   }
 });
+
+/** A control of `kind`: a `<select>`, a `<textarea>`, a content-editable `<div>`, else an
+ *  `<input>` of that type. */
+function controlOf(kind: string): HTMLElement {
+  if (kind === "select" || kind === "textarea") return document.createElement(kind);
+  if (kind === "content-editable") {
+    const editable = document.createElement("div");
+    editable.contentEditable = "true";
+    return editable;
+  }
+  const input = document.createElement("input");
+  input.type = kind;
+  return input;
+}
+
+/** Puts `control` last in the Filter panel of (bk), where the date box stands, after its Status
+ *  trigger and its Author box, beside the page's main content, and gives it the focus. */
+function focusInFilterPanel(control: HTMLElement): void {
+  mainOf("Search");
+  const panel = document.createElement("div");
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute(PANEL_ATTRIBUTE, "");
+  buttonIn(panel, "Status");
+  const author = document.createElement("input");
+  author.setAttribute("aria-label", "Author");
+  panel.append(author);
+  control.setAttribute("aria-label", "Value");
+  panel.append(control);
+  document.body.append(panel);
+  control.focus();
+}
+
+/** The name of the element holding the focus: its `aria-label`, else its text. */
+function focusedName(): string | null {
+  const focused = document.activeElement;
+  return focused?.getAttribute("aria-label") ?? focused?.textContent ?? null;
+}
+
+// (bl) Every control that fires its `change` at the reader's pick, as the date box of (bk) does,
+// makes that change a press of theirs (`isPress`): a `<select>`, a checkbox, a radio, a file,
+// range or color input, and each date and time box, which takes typed text all the same. So in
+// the Filter panel of (bk), the control's removal in the task of its `change` is a loss the reader
+// caused: the focus walks back to the Author box before it, as in (bk), and does not pass over it
+// to the Status trigger.
+test("a change on a control that fires it at the reader's pick is their press, so the control's removal walks back to the control before it", async () => {
+  const kinds = [
+    "select",
+    "checkbox",
+    "radio",
+    "file",
+    "range",
+    "color",
+    "date",
+    "time",
+    "datetime-local",
+    "month",
+    "week",
+  ];
+  // Where the focus went for each kind, with Chromium's `focusout` and with none.
+  const landed: Record<string, string | null> = {};
+  const walkedBack: Record<string, string> = {};
+  for (const kind of kinds) {
+    for (const withFocusout of [true, false]) {
+      const named = `${kind}, ${withFocusout ? "with" : "without"} a focusout`;
+      await withRescue(async () => {
+        const control = controlOf(kind);
+        focusInFilterPanel(control);
+        control.dispatchEvent(new Event("input", { bubbles: true }));
+        control.dispatchEvent(new Event("change", { bubbles: true }));
+        if (withFocusout) lose(control);
+        else control.remove();
+        await settled();
+        landed[named] = focusedName();
+      });
+      walkedBack[named] = "Author";
+    }
+  }
+  expect(landed).toEqual(walkedBack);
+});
+
+// (bm) A `change` on a field whose value is typed text alone - an `<input>` of type text, search,
+// email, url, tel, password or number, a `<textarea>`, a content-editable element - is the
+// field's commit on blur, which Chromium fires as an update takes the focused field away, and no
+// press of the reader's (`isPress`), as in (bi). So in the Filter panel of (bk), the field's
+// removal in the task of that `change` is a loss the reader did not cause: the focus passes over
+// the Author box, which takes typed text, and lands on the Status trigger, in no row, and nothing
+// scrolls.
+test("a change on a field whose value is typed text is no press, so the field's removal takes the uncaused path", async () => {
+  const kinds = [
+    "text",
+    "search",
+    "email",
+    "url",
+    "tel",
+    "password",
+    "number",
+    "textarea",
+    "content-editable",
+  ];
+  // Where the loss landed for each kind, with Chromium's `focusout` and with none: the element
+  // holding the focus, whether it is in a row or takes typed text, and whether anything scrolled.
+  const landed: Record<string, object> = {};
+  const quiet: Record<string, object> = {};
+  for (const kind of kinds) {
+    for (const withFocusout of [true, false]) {
+      const named = `${kind}, ${withFocusout ? "with" : "without"} a focusout`;
+      const scrolls = spyOn(Element.prototype, "scrollIntoView");
+      try {
+        await withRescue(async () => {
+          const field = controlOf(kind);
+          focusInFilterPanel(field);
+          field.dispatchEvent(new Event("input", { bubbles: true }));
+          // The field's commit on blur, which Chromium fires as the update takes it away.
+          field.dispatchEvent(new Event("change", { bubbles: true }));
+          if (withFocusout) lose(field);
+          else field.remove();
+          await settled();
+          const focused = document.activeElement as HTMLElement;
+          landed[named] = {
+            focus: focusedName(),
+            inRow: inRow(focused),
+            scrolled: scrolls.mock.calls.length > 0,
+            takesText: takesText(focused),
+          };
+        });
+      } finally {
+        scrolls.mockRestore();
+      }
+      quiet[named] = { focus: "Status", inRow: false, scrolled: false, takesText: false };
+    }
+  }
+  expect(landed).toEqual(quiet);
+});

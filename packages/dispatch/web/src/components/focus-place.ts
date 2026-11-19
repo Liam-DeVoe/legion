@@ -1,6 +1,6 @@
 import { type FocusEvent, type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 
-import { PANEL_ATTRIBUTE, takesText } from "../features/shell/keymap";
+import { commitsOnBlur, PANEL_ATTRIBUTE, takesText } from "../features/shell/keymap";
 import { focusOnDocument } from "../features/shell/roving";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { CONTROL } from "./control-names";
@@ -384,14 +384,18 @@ function pressedBy(event: Event): number | string | null {
  *  Ctrl+Enter or Meta+Enter that sends. A character or editing key there - a printable key, one
  *  held with AltGr or Option, Space, Backspace, Delete, the arrows, Home and End, Enter in a
  *  `<textarea>` or a content-editable element, which inserts a line - only edits the field. A
- *  `change` is one on a control that takes no typed text - a `<select>`'s pick, a checkbox or a
- *  radio, which Playwright and assistive tech make without a key or a pointer - and none on a
- *  field that takes typed text, where it is the field's commit on blur, which Chromium fires as
- *  an update takes the focused field away. */
+ *  `change` is one where the control fires it at the reader's pick, which Playwright and
+ *  assistive tech make without a key or a pointer: a `<select>`, a checkbox, a radio, a file,
+ *  range or color input, and a date, time, datetime-local, month or week box, which fires it from
+ *  its picker or with the key that completes the value, though it takes typed text. A `change` is
+ *  none on a field whose value is typed text alone (`commitsOnBlur`) - an `<input>` of type text,
+ *  search, email, url, tel, password or number, a `<textarea>`, a content-editable element -
+ *  where it is the field's commit on blur, which Chromium fires as an update takes the focused
+ *  field away. */
 function isPress(event: Event): event is Event & { readonly target: Element } {
   const { target } = event;
   if (!(target instanceof Element)) return false;
-  if (event.type === "change") return !takesText(target);
+  if (event.type === "change") return !commitsOnBlur(target);
   if (!(event instanceof KeyboardEvent) || !takesText(target)) return true;
   const { key } = event;
   return (
