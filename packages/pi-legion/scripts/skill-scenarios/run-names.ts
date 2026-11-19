@@ -164,7 +164,8 @@ export function entryKind(
 }
 
 /** What a run is: its scenario, case, label and number, the name a person reads it by, and where
- * its record says it ran (undefined for a run read from its name, whose pane names that). */
+ * and in which batch its record says it ran (each undefined for a run read from its name, whose
+ * pane names where it ran and which recorded no batch). */
 export interface RunIdentity {
   readonly scenario: string;
   readonly case: string;
@@ -172,6 +173,7 @@ export interface RunIdentity {
   readonly n: number;
   readonly name: string;
   readonly ran: string | undefined;
+  readonly batch: string | undefined;
   /** Whether the identity was read from the run's record (`recordFile`), or, for a run recorded
    * before the names left the world, from its directory's name. */
   readonly recorded: boolean;
@@ -182,7 +184,9 @@ export interface RunIdentity {
  * longest scenario of SCENARIOS it starts with, then, for a cased scenario, the longest of its
  * cases (`nochange-block` before `nochange`), and the rest before the number is the label. Why
  * it gives none, for a name of no such shape. */
-function identityOfName(name: string): Omit<RunIdentity, "ran" | "recorded" | "mode"> | string {
+function identityOfName(
+  name: string
+): Omit<RunIdentity, "ran" | "batch" | "recorded" | "mode"> | string {
   const scenario = Object.keys(SCENARIOS)
     .filter((one) => name.startsWith(`${one}-`))
     .sort((a, b) => b.length - a.length)[0];
@@ -228,6 +232,7 @@ export function runIdentity(runDir: string): RunIdentity | string {
       n: record.n,
       name: record.name,
       ran: record.ran,
+      batch: record.batch,
       recorded: true,
       mode: record.mode,
     };
@@ -237,7 +242,7 @@ export function runIdentity(runDir: string): RunIdentity | string {
   const named = identityOfName(base);
   return typeof named === "string"
     ? named
-    : { ...named, ran: undefined, recorded: false, mode: undefined };
+    : { ...named, ran: undefined, batch: undefined, recorded: false, mode: undefined };
 }
 
 /** `runIdentity`, or a throw naming why the run has none. */

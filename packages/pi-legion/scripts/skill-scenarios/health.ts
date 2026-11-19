@@ -200,18 +200,28 @@
  *      the architect's ruling of 2026-11-19T05:18Z), so from that call on the world's capability
  *      rows are not production's. None of round 25's 69 agents sent one. It is read right after
  *      rule 5;
+ *  23. system git configuration: every run given of the run's batch (its record's `batch`,
+ *      run-names.ts's RunRecord) records the same system git configuration in its
+ *      services-from as the run (`systemGitconfig`): rig.sh's services_from line
+ *      `system-gitconfig`, the file the panes' git reads and its digest, or `none`. A batch's
+ *      runs share one pod, whose file every run's world shows as the pod holds it (rig.sh's
+ *      world_paths), so two runs of one batch that record two ran their agents' git on two
+ *      system configurations, and the batch's arms in two worlds. A run with no record, or whose
+ *      services-from holds no such line (one recorded before 2026-11-19), is compared with no
+ *      other. It is read right after rule 14;
  * Rules 6, 8 to 13, 17 and 21 read every transcript of the run (`<run>/sessions/**\/*.jsonl`: each
  * agent's and each subagent's) through score.ts's readers. The run's own directory is the one its
  * record names (run-names.ts's `ran`; for a run recorded before the names left the world, the one
  * its pane file names, `SKILL_SCENARIO_RUN`), which the transcripts' paths are written under, and
  * the directory health was given, which differ for a run read from an archive or a copy. A run's
  * scenario, case and label are its record's (run-names.ts's `runIdentity`), and a run recorded
- * before the names left the world has them in its directory's name. Rule 9 reads the runs it is
- * given together, so a batch's runs are judged in one call: given one run, it sees no other run's
- * writes and flags nothing, and rule 10 sees no other label's checkout but those the run's
- * namespace.txt covers and the built-from of each run given names, while the other rules read
- * each run alone. No rule reads the pod as it stands now: the work directory, the judge's TMPDIR,
- * HOME, PATH and working directory decide no verdict.
+ * before the names left the world has them in its directory's name. Rules 9 and 23 read the runs
+ * they are given together, so a batch's runs are judged in one call: given one run, neither sees
+ * another run's writes or system git configuration and neither flags anything, and rule 10 sees
+ * no other label's checkout but those the run's namespace.txt covers and the built-from of each
+ * run given names, while the other rules read each run alone. No rule reads the pod as it stands
+ * now: the work directory, the judge's TMPDIR, HOME, PATH and working directory decide no
+ * verdict.
  *
  * Prints one line per run judged, `<run>  healthy` or `<run>  unhealthy: <reason>`, naming the
  * first rule the run fails with the evidence it failed on; then, for each rule, `health: <rule>:
@@ -1436,8 +1446,13 @@ function otherRunReach(run: Run): string | undefined {
  * mounts): what the namespace hides behind an empty tmpfs (`cover`), the credentials it hides the
  * same way (`credentials`), what it shows again (`rw`, `ro`), the run's own directory first
  * (`own`: world_paths prints it before every other path it shows, and private_world binds it
- * first), and what of those it hides again behind an empty read-only tmpfs (`hide`). It is not
- * gh-call.ts's `World`, the run's world.json. */
+ * first), and what of those it hides again behind an empty read-only tmpfs (`hide`). A `ro` line
+ * can name a file, the system git configuration, which the world shows as the host holds it and
+ * mounts nothing onto: a name of it is that path, shown. A run recorded before 2026-11-19 can
+ * hold an `empty` line for that file instead (an empty file bound over it), which no rule reads,
+ * then as now: its path lies under no cover and is shown by no other line, so a name of it is
+ * that path, as the run was judged when it was recorded. It is not gh-call.ts's `World`, the
+ * run's world.json. */
 interface RunNamespace {
   readonly own: string;
   readonly covers: readonly string[];
@@ -4104,6 +4119,52 @@ export function serviceProvenance(run: Pick<Run, "dir" | "label">): string | und
     : `service provenance: <run>/${PROVENANCE} names no ${missing} of the ${run.label} label's own checkout (${checkout})`;
 }
 
+/** The service of a run's provenance that names the system git configuration its panes' git
+ * reads (rig.sh's services_from): its `<from>` the file that git names, `none` for none, and its
+ * digest, `none` where the host has no such file. */
+const SYSTEM_GITCONFIG = "system-gitconfig";
+
+/** The system git configuration the provenance of the run `dir` records, `<file> at <digest>`;
+ * undefined for a run that records none: one recorded before 2026-11-19, or one with no
+ * provenance, which rule 15 names. */
+function systemGitconfigOf(dir: string): string | undefined {
+  const file = path.join(dir, PROVENANCE);
+  if (!existsSync(file)) return undefined;
+  const words = readFileSync(file, "utf8")
+    .split("\n")
+    .find((line) => line.startsWith(`${SYSTEM_GITCONFIG} shared `))
+    ?.split(" ");
+  return words === undefined || words.length < 4
+    ? undefined
+    : `${words.slice(2, -1).join(" ")} at ${words.at(-1)}`;
+}
+
+/** The batch the record of the run `dir` names; undefined for a run with no record. */
+function batchOf(dir: string): string | undefined {
+  const identity = runIdentity(dir);
+  return typeof identity === "string" ? undefined : identity.batch;
+}
+
+/** Rule 23: the first other run of `runs` in the run's batch whose provenance records another
+ * system git configuration than the run's, as a reason. A batch's runs share one pod, whose file
+ * every run's world shows as the pod holds it, so two of them recorded two only where the
+ * batch's agents' git did not read one world. */
+export function systemGitconfig(
+  run: Pick<Run, "dir">,
+  runs: readonly Pick<Run, "dir">[]
+): string | undefined {
+  const batch = batchOf(run.dir);
+  const own = systemGitconfigOf(run.dir);
+  if (batch === undefined || own === undefined) return undefined;
+  for (const other of runs) {
+    if (other.dir === run.dir || batchOf(other.dir) !== batch) continue;
+    const theirs = systemGitconfigOf(other.dir);
+    if (theirs !== undefined && theirs !== own)
+      return `system git configuration: <run>/${PROVENANCE} records ${own}, and ${path.basename(other.dir)} of its batch ${batch} records ${theirs}, so the batch's agents' git did not read one pod's system configuration`;
+  }
+  return undefined;
+}
+
 /** How often rig.sh relaunched an agent of `runs` at its boot, one line per label in byte order:
  * `health: boot relaunches, <label>: <n> in <r> of <m> runs`, each relaunch an agent's first
  * attempt rig.sh kept under <run>/boot-1/<role>/ (its boot_agent), <r> the runs that hold one and
@@ -4308,6 +4369,9 @@ const RULES: readonly {
   // Rule 14, read next: an agent that died at its boot explains every rule after it (no
   // completion taken, a half that never started).
   { name: "claim boot", judge: claimBoot },
+  // Rule 23, read right after it: the system git configuration a batch's runs record, which no
+  // rule after it reads.
+  { name: "system git configuration", judge: systemGitconfig },
   {
     name: "completions",
     judge: (run) =>

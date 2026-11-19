@@ -40,9 +40,12 @@
 #                                                  its label's own, its Dispatch server among
 #                                                  them, came from its label's checkout
 #                                                  (<run>/services-from against its built-from,
-#                                                  services_from); no agent's claim boot was
-#                                                  refused but a first attempt's before its first
-#                                                  turn, which the rig relaunched (boot_agent);
+#                                                  services_from), and the runs given of one
+#                                                  batch record one system git configuration
+#                                                  there (its `system-gitconfig` line); no
+#                                                  agent's claim boot was refused but a first
+#                                                  attempt's before its first turn, which the rig
+#                                                  relaunched (boot_agent);
 #                                                  every completion names its role and none was
 #                                                  refused in a way its label's daemon would not
 #                                                  refuse it, and its world took the completions
@@ -1189,18 +1192,25 @@ pane_var() {
   [ ! -f "$2" ] || sed -n "s/^$1=//p" "$2" | tail -n 1
 }
 
-# system_gitconfig PATH prints the system configuration file of the git PATH resolves, when that
-# file holds anything, and nothing otherwise. git names it to an editor (`git config --system
-# --edit`, here `echo`) whether or not it is there, under `env -i` as a pane's git runs. A pod's git
-# reads none: the worker image has no /etc/gitconfig, so `git config -l --show-scope` prints no
-# `system` line there. A host's can hold lines, and a GitHub runner's does (safe.directory=* and
-# four filter.lfs keys, CI's git 2.56.1 at 427b02d4), which the agents' git would print as a pod's
-# own. So the run's world shows it empty (world_paths' `empty`), with no variable a pod's pane has
-# not got (GIT_CONFIG_NOSYSTEM, GIT_CONFIG_SYSTEM).
+# system_gitconfig PATH prints the system configuration file of the git PATH resolves, as that git
+# names it to an editor (`git config --system --edit`, here `echo`) whether or not it is there,
+# under `env -i` as a pane's git runs, and nothing where that git names none. It is the file the
+# agents' git reads as its `system` scope, and the run's world shows it as the host holds it, with
+# no mount (world_paths' `ro` line for it), and the run's provenance records its digest
+# (services_from's `system-gitconfig`): the rig runs in the deployment's own pod, so the host's
+# file is the one that deployment's panes read, for any deployment and any image. A rule of the
+# rig's own about it held for one image only: the world showed the file empty (an `empty` kind, an
+# empty file bound over it) because the worker image had no /etc/gitconfig, and INFRA's image of
+# 2026-11-19 (worker-infra@sha256:c2b4e9b7…) carries one, `core.packedGitWindowSize = 32m` and
+# `core.packedGitLimit = 256m`, which that pod's own git lists as its `system` scope. So the world
+# hid two lines a production pane reads, and a gVisor pod refuses a mount onto a file (`mount
+# point is not a directory`), so that pod refused every run. On a host that is no deployment's pod
+# the file is that host's, not production's (a GitHub runner's holds safe.directory=* and four
+# filter.lfs keys, CI's git 2.56.1 at 427b02d4): a limit of a run off the pod, which the README's
+# world section names. No variable a pod's pane has not got stands in for the file either
+# (GIT_CONFIG_NOSYSTEM, GIT_CONFIG_SYSTEM).
 system_gitconfig() {
-  local file
-  file=$(env -i PATH="$1" GIT_EDITOR=echo git config --system --edit 2>/dev/null) || return 0
-  [ ! -s "$file" ] || printf '%s\n' "$file"
+  env -i PATH="$1" GIT_EDITOR=echo git config --system --edit 2>/dev/null || true
 }
 
 # world_paths R WORK I PANE [PIN_DIR [CO]] prints the world of the run R, one `<kind> <path>` a
@@ -1216,18 +1226,22 @@ system_gitconfig() {
 #                directory and every rw and ro path, is one the run reached out of its world;
 #   credentials  hidden the same way: any path a run names under one is a reach for a credential;
 #   rw, ro       shown again at its own path, writable or read-only, where it exists; a path that
-#                is a link, or lies under one, is shown at what it resolves to as well;
-#   empty        a file shown empty and read-only, an empty file bound over it: the system git
-#                configuration the pane's git reads, where the host's holds anything
-#                (system_gitconfig).
-# Anything a cover hides that no rw or ro line shows again is out of the run's world, and /tmp is
-# the run's own $R/tmp (private_world's last bind). Every path shown is a mount the agent's
-# /proc/self/mountinfo names, at its own path and from its own path, so no path shown names the
-# rig or the run's scenario, case or label (launch's guard refuses one that does): no label's
-# checkout is shown, and not this script's own directory either, whose path names the rig. CO,
-# the label's checkout, is given by cmd_world alone, for a run recorded before the names left the
-# world, whose world showed that checkout, this script's directory and the zod its gh stand-in
-# imported there.
+#                is a link, or lies under one, is shown at what it resolves to as well. A
+#                directory is bound back (private_world). The one file, the system git
+#                configuration the pane's git reads where the host has one (system_gitconfig), is
+#                shown through no mount of its own, as the host holds it: it lies under no cover
+#                (/etc on a pod), it is the system's and not the agent's user's, so that user
+#                cannot write it, and a gVisor pod takes no mount onto a file.
+# A run recorded before 2026-11-19 can hold one more kind, `empty`: the system git configuration
+# shown empty and read-only, an empty file bound over it. health.ts reads such a run as it was
+# recorded. Anything a cover hides that no rw or ro line shows again is out of the run's world,
+# and /tmp is the run's own $R/tmp (private_world's last bind). Every directory shown is a mount
+# the agent's /proc/self/mountinfo names, at its own path and from its own path, so no path shown
+# names the rig or the run's scenario, case or label (launch's guard refuses one that does): no
+# label's checkout is shown, and not this script's own directory either, whose path names the rig.
+# CO, the label's checkout, is given by cmd_world alone, for a run recorded before the names left
+# the world, whose world showed that checkout, this script's directory and the zod its gh
+# stand-in imported there.
 world_paths() {
   local R=$1 work=$2 I=$3 pane=$4 pin_dir=${5:-} co=${6:-} workspaces=/legion/workspaces dir file entry kind real
   # Hidden. The scratch root the caller's TMPDIR names: on a Legion pod every role of the issue
@@ -1300,8 +1314,10 @@ world_paths() {
     entry=$(pane_var PUBLIC_LEAK_CHECK "$pane")
     if [ "$entry" = "$R/lib/public-leak-check.sh" ] && [ -f "$R/lib/leak-check" ]; then entry=$(<"$R/lib/leak-check"); fi
     [ -z "$entry" ] || printf 'ro %s\n' "$(dirname -- "$entry")"
+    # The system git configuration the pane's git reads (system_gitconfig), where the host has
+    # one, shown as the host holds it and mounted by nothing (the `rw, ro` kinds above say why).
     entry=$(system_gitconfig "$(pane_var PATH "$pane")")
-    [ -z "$entry" ] || printf 'empty %s\n' "$entry"
+    [ -z "$entry" ] || [ ! -e "$entry" ] || printf 'ro %s\n' "$entry"
   } | while read -r kind entry; do
     # A shown path that is a link, or lies under one, is shown at what it resolves to as well, read
     # here before anything is covered: a link the cover leaves visible resolves there once its
@@ -1317,7 +1333,8 @@ world_paths() {
 # -p --fork --mount-proc`, with /proc mounted afresh, so the run sees its own processes alone),
 # under `env -i` with namespace_path alone, with this user's uid and gid, the run directory and its
 # cwd as its arguments, then the agent's command. It reads $R/namespace.txt (world_paths) and:
-#   1. mounts a tmpfs on /dev/shm, its holder, and binds each rw and ro path there, $R first;
+#   1. mounts a tmpfs on /dev/shm, its holder, and binds each rw and ro directory there, $R first
+#      (a file shown, the system git configuration, is left where it is: world_paths);
 #   2. covers each cover and credentials path with an empty tmpfs;
 #   3. binds each held path back onto its own path, read-only unless it is rw, $R first. A path a
 #      link the covers left visible still resolves elsewhere is left as it is: world_paths declared
@@ -1326,7 +1343,7 @@ world_paths() {
 #      exists` once its target is covered;
 #   4. binds $R/tmp onto /tmp, and the held paths under /tmp again, since that bind hides them,
 #      then covers each hide directory with an empty read-only tmpfs, which $R's bind had shown
-#      again, and binds an empty file of the holder over each empty one, read-only;
+#      again;
 #   5. drops the holder for an empty /dev/shm of the run's own, marks $R/namespace-ready, and
 #      starts the command in a second user namespace that maps it back to this user's uid and gid.
 # The order is the record: covering first and binding $R onto itself afterwards binds the new
@@ -1354,23 +1371,19 @@ while read -r i kind p; do
   case $p/ in /tmp/*) back "$i" "$kind" "$p" || exit 1 ;; esac
 done </dev/shm/held
 while read -r kind p; do
-  case $kind in
-    hide) [ ! -d "$p" ] || mount -t tmpfs -o ro tmpfs "$p" || exit 1 ;;
-    empty) : >/dev/shm/empty && mount --bind /dev/shm/empty "$p" && mount -o remount,bind,ro "$p" || exit 1 ;;
-  esac
+  case $kind in hide) [ ! -d "$p" ] || mount -t tmpfs -o ro tmpfs "$p" || exit 1 ;; esac
 done </dev/shm/plan
 umount -l /dev/shm && mount -t tmpfs tmpfs /dev/shm && : >"$R/namespace-ready" && cd "$cwd" || exit 1
 exec unshare -U --map-user="$uid" --map-group="$gid" "$@"
 '
 
 # namespace_probe makes, under the same unshare, `env -i` and flags as launch.sh, a namespace that
-# mounts a tmpfs, binds a directory of it and remounts that read-only, binds an empty file of it
-# read-only over the system git configuration of its caller's git where that holds anything
-# (system_gitconfig), and maps this user back: each step private_world takes. It prints nothing
-# and succeeds where the host allows that, and prints the host's refusal and fails where it does
-# not (a GitHub runner answers `unshare: write failed /proc/self/uid_map: Operation not
-# permitted`, and a gVisor pod refuses a mount onto a file: `mount point is not a directory`). The
-# unshare is the one on this script's PATH, as launch.sh's is.
+# mounts a tmpfs, binds a directory of it and remounts that read-only, and maps this user back:
+# each step private_world takes. It prints nothing and succeeds where the host allows that, and
+# prints the host's refusal and fails where it does not (a GitHub runner answers
+# `unshare: write failed /proc/self/uid_map: Operation not permitted`). private_world mounts
+# nothing onto a file, which a gVisor pod refuses (`mount point is not a directory`), so the probe
+# mounts none either. The unshare is the one on this script's PATH, as launch.sh's is.
 namespace_probe() {
   local unshare out
   unshare=$(command -v unshare) || {
@@ -1378,7 +1391,7 @@ namespace_probe() {
     return 1
   }
   # shellcheck disable=SC2016 # expanded by the namespace's sh, not here
-  out=$(env -i PATH="$namespace_path" "$unshare" -Urm -p --fork --mount-proc sh -c 'mount -t tmpfs tmpfs /dev/shm && mkdir /dev/shm/held && mount --bind /dev/shm/held /dev/shm/held && mount -o remount,bind,ro /dev/shm/held && { [ -z "$3" ] || { : >/dev/shm/empty && mount --bind /dev/shm/empty "$3" && mount -o remount,bind,ro "$3"; }; } && exec unshare -U --map-user="$1" --map-group="$2" true' - "$(id -u)" "$(id -g)" "$(system_gitconfig "$PATH")" 2>&1) && return 0
+  out=$(env -i PATH="$namespace_path" "$unshare" -Urm -p --fork --mount-proc sh -c 'mount -t tmpfs tmpfs /dev/shm && mkdir /dev/shm/held && mount --bind /dev/shm/held /dev/shm/held && mount -o remount,bind,ro /dev/shm/held && exec unshare -U --map-user="$1" --map-group="$2" true' - "$(id -u)" "$(id -g)" 2>&1) && return 0
   printf '%s\n' "${out:-$unshare exited $? and printed nothing}"
   return 1
 }
@@ -1857,21 +1870,27 @@ file_digest() {
 #   pin     its Oh My Pi, the version that checkout pins (.omp-pin), <from> being the pin;
 #   shared  a service production shares across versions, or this rig's own instrument, <from>
 #           being where it comes from: each program of this directory a run runs, by name in
-#           byte order, then NATS, Postgres and the push guard's check. The programs are read off
-#           this script's own text and their imports (run-programs.ts, which says which): every
-#           one this script's functions name as $here/<name>.ts or $here/<name>.go, each module
-#           of the directory one of them imports, and every Go program of the directory, which
-#           daemon-pane.ts hands to `go run`. No list names them, so a program this script
-#           starts to run is recorded with no edit here; the list this kept by hand left out
-#           daemon-pane.ts (label_facts, worker_boot), score.ts (reviewer_wake),
-#           completion-answers.ts (skip_reason) and judge.ts (judge_ts), and every module of
-#           the directory those import but github-routes.ts.
+#           byte order, then NATS, Postgres, the push guard's check and the system git
+#           configuration. The programs are read off this script's own text and their imports
+#           (run-programs.ts, which says which): every one this script's functions name as
+#           $here/<name>.ts or $here/<name>.go, each module of the directory one of them imports,
+#           and every Go program of the directory, which daemon-pane.ts hands to `go run`. No
+#           list names them, so a program this script starts to run is recorded with no edit
+#           here; the list this kept by hand left out daemon-pane.ts (label_facts, worker_boot),
+#           score.ts (reviewer_wake), completion-answers.ts (skip_reason) and judge.ts
+#           (judge_ts), and every module of the directory those import but github-routes.ts. The
+#           system git configuration (`system-gitconfig`) is the file the git of this PATH names
+#           (system_gitconfig), the PATH every pane of the batch's runs extends, which each run's
+#           world shows as the host holds it (world_paths): <from> is `none` where that git names
+#           none, and <digest> is `none` where the host has no such file. A batch's runs share
+#           one pod, so each label's provenance records the same one, and health.ts flags a batch
+#           whose runs do not (its rule 23).
 # <digest> is file_digest of the binary or program file a run starts (`missing` where that file is
 # not there), or `-` where it starts none. The README's skill-scenarios section
 # (packages/pi-envoy/scripts/README.md) holds the table of every service, with the reason each
 # shared one is shared.
 services_from() {
-  local listener=$1 dispatch=$2 pane=$3 omp programs program
+  local listener=$1 dispatch=$2 pane=$3 omp programs program gitconfig
   omp=$(pinned_omp "$pin") || exit 1
   programs=$(bun "$here/run-programs.ts" "$here/rig.sh") ||
     fail "services_from: the programs a run of $here/rig.sh runs could not be read (above), so no run's provenance can name them"
@@ -1897,6 +1916,14 @@ services_from() {
     printf 'leak-check shared %s %s\n' "$PUBLIC_LEAK_CHECK" "$(file_digest "$PUBLIC_LEAK_CHECK")"
   else
     printf 'leak-check shared none -\n'
+  fi
+  gitconfig=$(system_gitconfig "$PATH")
+  if [ -z "$gitconfig" ]; then
+    printf 'system-gitconfig shared none none\n'
+  elif [ -f "$gitconfig" ]; then
+    printf 'system-gitconfig shared %s %s\n' "$gitconfig" "$(file_digest "$gitconfig")"
+  else
+    printf 'system-gitconfig shared %s none\n' "$gitconfig"
   fi
 }
 

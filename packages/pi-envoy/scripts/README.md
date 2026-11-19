@@ -442,14 +442,22 @@ nor leave a file in `/tmp` for another run. A run recorded before this world is 
 world it had (its own `namespace.txt`, or, with none, a world that showed its checkout, the rig's
 directory and the services).
 
-A pod's git reads no system configuration: the worker image has no `/etc/gitconfig`. A host's
-can hold one, and a GitHub runner's does (`safe.directory=*` and four `filter.lfs` keys). So where
-the system file of the pane's git holds anything (`git config --system --edit` names it), the
-world declares it `empty` and the namespace binds an empty read-only file over it. The agent's
-`git config -l --show-scope` then prints no `system` line, as a pod's prints none. No variable
-does it: a pod's pane has no `GIT_CONFIG_NOSYSTEM`. A host that has such a file and refuses a
-mount onto a file (a gVisor pod: `mount point is not a directory`) refuses every run, and the
-probe below names that refusal.
+The world shows the system configuration of the pane's git (the file `git config --system --edit`
+names) as the host holds it, at its own path and read-only (`world_paths` declares it `ro`), with
+no mount onto it, and no file where the host has none; each run's `services-from` records its
+digest, or `none` (`system-gitconfig`, below). The rig runs in the deployment's own pod, so that
+file is the one the production pane reads, for any deployment and any image. INFRA's worker image
+of 2026-11-19, for one (`worker-infra@sha256:c2b4e9b7…`, that pod's 11:51Z update, read that day),
+carries `/etc/gitconfig`, 57 bytes, sha256 `0c8ac2d6411b87ec…`, holding
+`core.packedGitWindowSize = 32m` and `core.packedGitLimit = 256m`, which that pod's git lists as
+`system core.packedgitwindowsize=32m` and `system core.packedgitlimit=256m`. The world used to
+declare the file `empty` and bind an empty read-only file over it, on the premise that the worker
+image had no `/etc/gitconfig`: that hid those two lines from the agents, and a gVisor pod refuses
+a mount onto a file (`mount point is not a directory`), so the probe below refused that pod and
+every run on it. A run off a deployment's pod shows that host's system configuration, which is
+then not production's (a GitHub runner's holds `safe.directory=*` and four `filter.lfs` keys):
+that is a limit of running off the pod. `rig.sh health` calls unhealthy the runs of one batch
+that record two system configurations, since a batch's runs share one pod.
 
 Nothing the rig composes for an agent names its run's scenario, case or label, or a name the rig
 once gave its world: before an agent starts, `launch` runs `run-names.ts guard`, which reads every
@@ -549,9 +557,9 @@ a pod's order (the credential lines, `core.warnAmbiguousRefs`, `branch.main.*`; 
 `core.ignorecase` and `core.precomposeunicode` that `jj git clone` wrote) and the pane carries the
 five `GIT_CONFIG_COUNT` pairs a pod's runtime gives every role process (`rig.sh`'s `git_pairs`), so
 `git config -l --show-scope` prints a pod's list and `remote.origin.vcs`, which `rig.test.ts`'s
-"the issue workspace's remote" holds line for line. That row reads the `system` scope in the
-agent's namespace, where it is a pod's (none); on a host that makes no namespace (a GitHub runner),
-where no agent starts, it reads the host's own file and says so in its name. The clone and the
+"the issue workspace's remote" holds line for line. That row holds the `system` scope to the host's
+own file's lines, read in the agent's namespace where the host makes one, and outside it on a host
+that makes none (a GitHub runner), where no agent starts; its name says which. The clone and the
 workspace get the rest a pod's provisioning writes too: `.jj/legion-created`, the `.codegraph/`
 line of the clone's `.git/info/exclude`, and the repository's jj configuration (`trunk()` and
 `git.abandon-unreachable-commits = false`). jj 0.45 keeps that configuration under the
@@ -654,7 +662,7 @@ scenario and case (today, threads-closed code-defect's reviewer: "the implemente
 reviewer nothing"), read from that table.
 
 `rig.sh health [--tmp-snapshot <file>] [--repo <git dir>]... <run dir>...` says whether each run's world could take what
-its agents did, and whether the run stayed inside its own world. It reads twenty-one things: the
+its agents did, and whether the run stayed inside its own world. It reads twenty-three things: the
 run finished: its boot record, `<run>/booted`, decides each role its scenario boots
 (`completion-answers.ts`'s `ANSWERS` `boots`) once, in that order, the first a `boot` of the first
 role and each other a `boot <role>` or a `skip <role> <reason>` whose reason
@@ -667,7 +675,10 @@ carries its `services-from`, and every service of its label's own (scope `label`
 checkout its `built-from` names, the listener, the Dispatch server, the daemon facts and the
 worker pane among them (below); no agent's claim boot was
 refused but a first attempt's before its first turn, which the rig relaunched (a run refused on
-both attempts is unhealthy, naming both, and so is one refused after a turn); every completion
+both attempts is unhealthy, naming both, and so is one refused after a turn); the runs given of
+one batch (each run's record's `batch`) record one system git configuration in their
+`services-from` (`system-gitconfig`), since a batch's runs share one pod (a run with no record, or
+one recorded before that line, is compared with none); every completion
 line names a role the scenario boots, and every completion the daemon stand-in refused was
 answered as `completion-answers.ts`'s `ANSWERS` table allows for the run's scenario and that
 role: an answer a daemon of either shape gives it, or one the daemon of the run's own label gives
@@ -914,6 +925,7 @@ and the rig's own instrument, stays shared, and the table says why.
 | NATS | a container pinned by digest, or `SKILL_SCENARIOS_NATS_URL` | the same | shared: production runs one NATS for every version |
 | Postgres | a container pinned by digest, or `SKILL_SCENARIOS_POSTGRES_URL` | the same | shared: production's one database server |
 | Leak guard | the caller's `git` and `jj` wrappers and `PUBLIC_LEAK_CHECK` | the same | shared: a pod's own tooling, outside any release of the plugins |
+| Git's system configuration (`system-gitconfig`) | the world showed it empty, an empty file bound over the host's, on the premise that the worker image had none | the host's own file, the one the git of the batch's PATH names, shown as the host holds it, with no mount; its digest recorded, or `none` | shared: the pod's image's, one file for every version, which the production pane reads |
 | Process plumbing (`scripts/e2e/lib/rig.sh`, `held-port.py`) | the rig's checkout | the same | shared: the harness, no service a run speaks to |
 
 Each binary is built once per checkout and kept from one batch to the next: `go build -o` relinks
@@ -930,10 +942,14 @@ module of the directory one of those imports, exports from or imports dynamicall
 (`Bun.Transpiler`'s scan, which skips an import of types alone), and every Go program of the
 directory but a test, which `daemon-pane.ts` hands to `go run`. The list kept by hand before left
 out `daemon-pane.ts`, `score.ts`, `completion-answers.ts` and `judge.ts`, which runs run, and every
-module but `github-routes.ts`. `rig.sh health` calls a run
+module but `github-routes.ts`. The line `system-gitconfig shared <file> <digest>` names the
+system configuration file of the git the batch's PATH resolves, the PATH every pane extends, and
+its digest: `<file>` is `none` where that git names none, and `<digest>` is `none` where the host
+has no such file. `rig.sh health` calls a run
 unhealthy that has no `services-from`, whose `built-from` names no checkout, that names a service
 of scope `label` from any other checkout, or that does not name its listener, Dispatch server,
-daemon facts and worker pane as its label's.
+daemon facts and worker pane as its label's, and calls unhealthy each run of a batch whose
+`system-gitconfig` line differs from another run's of that batch.
 
 A daemon stand-in reads every fact of its label's daemon at its boot, and `worker_boot` gives it
 30 s to listen. Read there by `go run` of `daemon-pane.go`, each fact compiled the daemon module
@@ -1790,10 +1806,11 @@ Stated limits, each known and kept so:
   document of two operations — is refused as a call the world does not model, where GitHub runs
   it. A field the vendored schema holds no type of is not judged, and GitHub's other validator
   refusals (a selection on a scalar, a variable declared and not used) are not modelled.
-- On a host whose git has a system configuration file, the run's namespace shows that file empty,
-  where a pod has none: `git config --system -l` exits 0 and prints nothing there, and a pod's git
-  answers `fatal: unable to read config file '/etc/gitconfig': No such file or directory` (exit
-  128). `git config -l --show-scope` prints the same lines as a pod's.
+- Off a deployment's pod, the agents' git reads that host's system configuration, which the world
+  shows as the host holds it: a developer machine's or a runner's file, not production's (a GitHub
+  runner's holds `safe.directory=*` and four `filter.lfs` keys). On a deployment's pod it is that
+  deployment's own; a run off the pod has no other to show, and its `services-from` records which
+  file it was by digest.
 - The issue workspace's clone holds one key no production clone does, `remote.origin.vcs=ghapp`,
   and the pane's PATH a helper no pod's does, `<run>/bin/git-remote-ghapp`: the transport that takes
   origin's fetches and pushes to the run's remote. It takes a call of origin by its name alone; a
@@ -1858,7 +1875,12 @@ The checks:
   listed, and one that tests a call's own text for what the world did with the call is an
   instance.
 - An agent's world. A record that `rig.sh` copies into the top of a run's directory, whose writer
-  prints the rig's own directory, is an instance.
+  prints the rig's own directory, is an instance. So is each `mount --bind` of `rig.sh` whose
+  source is content the rig made, bound over a path of the agent's world: the agent reads there
+  what the rig declared, where production's pane reads the host's own file, as the empty file once
+  bound over the system git configuration on the premise that the worker image had none. A bind
+  into the holder (`/dev/shm`), a held path bound back at its own path, and the run's own
+  `<run>/tmp` bound onto `/tmp` are no finding.
 - A stand-in's declaration of a behaviour it does not model. Every program of the rig (each
   stand-in it runs among them: `daemon-standin.ts`, `standin-record.ts`, `gh-standin.ts`,
   `github-standin.ts`, `daemon-pane.ts` and `daemon-pane.go`) is read for `not modelled` in a
@@ -1899,6 +1921,8 @@ What it does not check:
   under another name is not followed. `rig.test.ts`'s row that judges one archived run under two
   environments is what runs the readers.
 - A record written straight into a run's directory. Only a `cp <file> "$R/<name>"` is read.
+- Content the rig gives a path of the agent's world by other means than a bind (a variable such as
+  `GIT_CONFIG_SYSTEM`, a file written over the host's). Only `mount --bind` is read.
 - A text test whose pattern or subject is built far off. A pattern is read off the line or a
   top-level const of its file, and a subject off the line or one assignment in the same
   definition.

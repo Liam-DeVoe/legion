@@ -454,7 +454,9 @@ test("each run's provenance names the GitHub stand-in and its routes, shared, fr
       "bash",
       "-c",
       [
-        ...["given_services", "safe_url", "file_digest", "services_from"].map(fn),
+        ...["given_services", "safe_url", "file_digest", "system_gitconfig", "services_from"].map(
+          fn
+        ),
         "pinned_omp() { echo /x/omp; }",
         `here=${import.meta.dir} co=/co pin=omp@pin I=/w/installs/0a1b2c3d4e5f profile=legion`,
         "nats_url=nats://127.0.0.1:4222 pg_url=postgres://127.0.0.1:5432/postgres",

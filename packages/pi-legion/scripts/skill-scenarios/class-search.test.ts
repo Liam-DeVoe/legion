@@ -472,6 +472,12 @@ const PLANTED: readonly [check: string, file: string, line: string][] = [
     `${RIG}/rig.sh`,
     `  cp "$(label_provenance "\${P##*/}")" "$R/provenance"`,
   ],
+  // The bind world_paths' `empty` kind made until 2026-11-19 (private_world's `empty)` case).
+  [
+    "an agent's world: a path the namespace fills with the rig's own content",
+    `${RIG}/rig.sh`,
+    '    empty) : >/dev/shm/empty && mount --bind /dev/shm/empty "$p" && mount -o remount,bind,ro "$p" || exit 1 ;;',
+  ],
   [
     "readers: a reader reads the run's archive and its recorded provenance alone",
     `${RIG}/health.ts`,

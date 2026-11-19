@@ -1226,6 +1226,33 @@ const runRecords: Check = {
   run: rigRecords,
 };
 
+/** Each `mount --bind <source> <target>` of a line, each word as the line writes it. */
+const BIND = /\bmount --bind ("[^"]*"|\S+) ("[^"]*"|\S+)/g;
+const worldContent = grepCheck({
+  name: "an agent's world: a path the namespace fills with the rig's own content",
+  class:
+    "A world path whose content the rig declares by a premise about the image, not by the host's own file.",
+  files: () => [rig("rig.sh")],
+  pattern: /\bmount --bind /,
+  reading:
+    "grep rig.sh for each `mount --bind <source> <target>` a run's namespace or its probe makes (private_world, namespace_probe)",
+  rule: "a bind onto the holder (a target under /dev/shm, which the agent's world drops), a bind of the holder's copy of a path back onto that path (a source `/dev/shm/$<n>`), and the run's own <run>/tmp bound onto /tmp (the README's world section) are true statements; a bind of any other source is an instance: the agent reads there what the rig made, where production's pane reads the host's own file, as it read an empty file bound over the system git configuration because the worker image had none, until INFRA's image carried one",
+  verdict: ({ text }) => {
+    const word = (written: string) => written.replace(/^"|"$/g, "");
+    for (const [, source = "", target = ""] of text.matchAll(BIND)) {
+      if (word(target).startsWith("/dev/shm/") || /^\/dev\/shm\/\$\w+$/.test(word(source)))
+        continue;
+      if (word(source) === "$R/tmp" && word(target) === "/tmp") continue;
+      return instance(
+        `binds ${source} over ${target}: content the rig made, at a path of the agent's world`
+      );
+    }
+    return holds(
+      "each bind holds a path in the holder, binds the holder's copy back at its own path, or binds the run's own /tmp"
+    );
+  },
+});
+
 // The readers.
 
 /** The readers, and every module of the rig's directory they import, transitively. */
@@ -1905,6 +1932,7 @@ export const CHECKS: readonly Check[] = [
   remoteHelperKey,
   printedCredential,
   runRecords,
+  worldContent,
   readersArchive,
   readersText,
   notModelled,

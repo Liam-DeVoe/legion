@@ -9,6 +9,7 @@ import {
   readFileSync,
   readlinkSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -126,7 +127,9 @@ function quotedAssignment(name: string): string {
   return found[0];
 }
 /** What rig.sh's namespace_probe prints and its status, under `env`: the probe every run's start
- * makes (require_namespace), in the same form launch.sh starts the agent in. */
+ * makes (require_namespace), in the same form launch.sh starts the agent in, beside the reader of
+ * its caller git's system configuration (system_gitconfig), so a probe that read that file would
+ * read it here as rig.sh's does. */
 function namespaceProbe(env: Record<string, string>) {
   const result = spawnChecked(
     [
@@ -4840,6 +4843,92 @@ describe("health", () => {
     expect(refusal(elsewhere.stderr, old)).toBe(unrecorded(old));
   });
 
+  // A run recorded before 2026-11-19 holds an `empty` line for its system git configuration
+  // (world_paths' old kind: an empty file bound over the host's), and a run since holds a `ro`
+  // line for the host's own file, which nothing mounts. Catches: health reading either as a path
+  // the world hides, so a read of /etc/gitconfig, which every agent's git makes, reads as a reach
+  // out of the world; and health refusing a run for a kind its rules do not read.
+  test("a read of the system git configuration is in the run's world, whether the run recorded the old `empty` line or a `ro` one", () => {
+    const steps: Step[] = [
+      { tool: "read", args: { path: "/etc/gitconfig" } },
+      { tool: "bash", args: { command: "cat /etc/gitconfig && git config -l --show-scope" } },
+    ];
+    /** A run whose world holds `line` for /etc/gitconfig and no other line for it. */
+    const recorded = (name: string, line: string) => {
+      const { dir } = worldRun(name, { steps });
+      const file = path.join(dir, "namespace.txt");
+      const kept = readFileSync(file, "utf8")
+        .split("\n")
+        .filter((one) => one !== "" && !one.endsWith(" /etc/gitconfig"));
+      writeFileSync(file, [...kept, line, ""].join("\n"));
+      return dir;
+    };
+    const runs = [
+      recorded("threads-closed-text-fixes-head-45", "empty /etc/gitconfig"),
+      recorded("threads-closed-text-fixes-head-46", "ro /etc/gitconfig"),
+    ];
+    const { code, stdout } = health(...runs);
+    expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
+      "threads-closed-text-fixes-head-45  healthy",
+      "threads-closed-text-fixes-head-46  healthy",
+    ]);
+    expect(stdout).toContain("health: outside its world: 0 of 2 runs\n");
+    expect(code).toBe(0);
+  });
+
+  // Both arms of a batch run in one pod, whose system git configuration every run's world shows
+  // as the pod holds it (rig.sh's world_paths) and every run records (services_from's
+  // `system-gitconfig`). Catches: a batch whose runs record two read as healthy, though their
+  // agents' git did not read one world; and two runs compared that are of two batches, or a run
+  // compared that records none (one recorded before 2026-11-19).
+  test("runs of one batch that record two system git configurations are unhealthy, and runs of two batches are not compared", () => {
+    const sha = (digit: string) => `sha256:${digit.repeat(64)}`;
+    /** A run of `batch` with the id `id`, its record beside it, whose provenance records the
+     * system git configuration /etc/gitconfig at `digest`, or none where that is undefined. */
+    const recorded = (n: number, id: string, batch: string, digest?: string) => {
+      const name = `threads-closed-text-fixes-head-${n}`;
+      const named = worldRun(name, {}).dir;
+      const dir = path.join(path.dirname(named), id);
+      renameSync(named, dir);
+      writeFileSync(
+        `${dir}.json`,
+        JSON.stringify({
+          run: id,
+          scenario: "threads-closed",
+          case: "text-fixes",
+          label: "head",
+          n,
+          name,
+          batch,
+          ran: dir,
+        })
+      );
+      if (digest !== undefined)
+        appendFileSync(
+          path.join(dir, "services-from"),
+          `system-gitconfig shared /etc/gitconfig ${digest}\n`
+        );
+      return dir;
+    };
+    const runs = [
+      recorded(47, "0123456789a1", "legion-00000000-1", sha("a")),
+      recorded(48, "0123456789a2", "legion-00000000-1", sha("b")),
+      recorded(49, "0123456789a3", "legion-00000000-2", sha("a")),
+      recorded(50, "0123456789a4", "legion-00000000-2"),
+    ];
+    const { code, stdout } = health(...runs);
+    const differ = (other: string, digest: string, theirs: string) =>
+      `system git configuration: <run>/services-from records /etc/gitconfig at ${digest}, and ${other} of its batch legion-00000000-1 records /etc/gitconfig at ${theirs}, so the batch's agents' git did not read one pod's system configuration`;
+    expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
+      `0123456789a1  unhealthy: ${differ("0123456789a2", sha("a"), sha("b"))}  (threads-closed-text-fixes-head-47)`,
+      `0123456789a2  unhealthy: ${differ("0123456789a1", sha("b"), sha("a"))}  (threads-closed-text-fixes-head-48)`,
+      "0123456789a3  healthy  (threads-closed-text-fixes-head-49)",
+      "0123456789a4  healthy  (threads-closed-text-fixes-head-50)",
+    ]);
+    expect(stdout).toContain("health: system git configuration: 2 of 4 runs\n");
+    expect(code).toBe(1);
+  });
+
   // Each launch mounts a tmpfs of its own on /dev/shm (rig.sh's private_world), so two runs in
   // namespaces that write and read one name there each reach their own; two runs from before the
   // namespace shared the machine's. Catches: `mounted` reading /tmp alone, so the later run in a
@@ -7891,17 +7980,18 @@ describe("the issue workspace's remote", () => {
       [R, cwd, freshDir("namespace-work"), freshDir("namespace-install"), ...vars, ...argv]
     );
   }
-  /** Which system scope the rows read the agent's git by: the namespace's, which shows the host
-   * git's system file empty as a pod's git reads none (world_paths' `empty`), where the host makes
-   * the namespace; the host's own file where it does not (a GitHub runner), which the agent's git
-   * there would read, since no agent starts without the namespace. */
+  /** Which system scope the rows read the agent's git by: the namespace's, where the host makes
+   * one, which shows the host git's system file as the host holds it, as a pod's world shows the
+   * pod's (world_paths); the host's own file where it makes none (a GitHub runner), which the
+   * agent's git there would read, since no agent starts without the namespace. */
   const SYSTEM_SCOPE = withoutNamespace
     ? "the host's system file, since this host makes no namespace"
-    : "the agent's namespace, which shows no system file";
-  /** The system scope's lines the agent's git reads under R's pane, as SYSTEM_SCOPE says: none in
-   * the namespace, as a pod's; the host's file's, each `system\t<key>=<value>`, outside it. */
+    : "the agent's namespace, which shows the host's system file";
+  /** The system scope's lines the agent's git reads under R's pane, in the namespace and outside
+   * it alike: the host's own file's, each `system\t<key>=<value>`, and none where the host has
+   * none. On a deployment's pod they are production's: INFRA's worker image of 2026-11-19 lists
+   * `system\tcore.packedgitwindowsize=32m` and `system\tcore.packedgitlimit=256m`. */
   function systemScope(R: string): string[] {
-    if (!withoutNamespace) return [];
     const read = spawnChecked(["git", "config", "--show-scope", "--system", "--list"], {
       env: { PATH: paneOf(R).PATH },
     });
@@ -7974,13 +8064,15 @@ describe("the issue workspace's remote", () => {
   // pairs (GIT_CONFIG_COUNT=0, as it was), a key out of production's order or twice, and a key
   // the world's transport needs in a scope the agent reads (protocol.ext.allow,
   // url.*.insteadOf). The tester compares by scope, key and count with one residual; this holds
-  // the values and the order too. And a system scope the agent's git reads that a pod's does not:
-  // a GitHub runner's /etc/gitconfig (safe.directory=*, filter.lfs.*, CI at 427b02d4), which the
-  // namespace shows empty (world_paths' `empty`); and the two lines git 2.48 and later write for
-  // jj's relative worktree, core.repositoryformatversion=1 and extensions.relativeworktrees=true
-  // (fixture_workspace's repair). The local and command scopes are held to production's lines
-  // everywhere; the system scope to production's, none, in the namespace, and to the host's file
-  // on a host that makes none, which the row's name says.
+  // the values and the order too. And a system scope the agent's git reads that is not the
+  // host's own: the empty file world_paths' old `empty` kind bound over the host's, which hid the
+  // two lines of INFRA's worker image of 2026-11-19 (core.packedgitwindowsize=32m and
+  // core.packedgitlimit=256m) where its panes read them; and the two lines git 2.48 and later
+  // write for jj's relative worktree, core.repositoryformatversion=1 and
+  // extensions.relativeworktrees=true (fixture_workspace's repair). The local and command scopes
+  // are held to production's lines everywhere, and the system scope to the host's own file's,
+  // in the namespace and on a host that makes none (a GitHub runner, whose file is that runner's
+  // and no pod's), which the row's name says.
   test(`git config -l --show-scope is a production clone's, key for key, but remote.origin.vcs, its system scope read in ${SYSTEM_SCOPE}`, () => {
     const R = world("remote-config");
     const fetch = PRODUCTION_CONFIG.indexOf(
@@ -8070,29 +8162,33 @@ describe("the issue workspace's remote", () => {
   });
 
   /** A directory holding a `git` that names FILE as its system configuration, as `git config
-   * --system --edit` names /etc/gitconfig to its editor, and runs the real git for every other
-   * call. */
-  function systemGit(file: string): string {
+   * --system --edit` names /etc/gitconfig to its editor, or names none and fails where FILE is
+   * undefined, and runs the real git for every other call. */
+  function systemGit(file: string | undefined): string {
     const bin = freshDir("system-git");
     writeFileSync(
       path.join(bin, "git"),
-      `#!/bin/sh\n[ "$*" != "config --system --edit" ] || exec $GIT_EDITOR '${file}'\nexec /usr/bin/git "$@"\n`,
+      `#!/bin/sh\n[ "$*" != "config --system --edit" ] || ${file === undefined ? "exit 1" : `exec $GIT_EDITOR '${file}'`}\nexec /usr/bin/git "$@"\n`,
       { mode: 0o755 }
     );
     return bin;
   }
+  /** Two lines of a system configuration, those INFRA's worker image carries in /etc/gitconfig
+   * (2026-11-19), as that file writes them. */
+  const SYSTEM_TEXT = "[core]\n\tpackedGitWindowSize = 32m\n\tpackedGitLimit = 256m\n";
 
-  // Catches: a run's world that shows the agent's git a system configuration no pod's git reads:
-  // the host's /etc/gitconfig, which a GitHub runner's holds (safe.directory=* and filter.lfs.*,
-  // CI at 427b02d4) and a pod's worker image has none of; and a world that declares a file that
-  // holds nothing, which a host refusing a mount onto a file (a gVisor pod) would refuse for no
-  // line its git reads.
-  test("world_paths declares the pane git's system configuration empty where it holds anything, and nothing otherwise", () => {
+  // Catches: a run's world that declares the pane git's system configuration other than as the
+  // host holds it: shown empty (world_paths' old `empty` kind, an empty file bound over it), which
+  // hid the two lines INFRA's worker image of 2026-11-19 carries where its panes read them; a
+  // file holding nothing left out, which the host's git reads as it is; and a file the host has
+  // not got declared.
+  test("world_paths shows the pane git's system configuration read-only where the host has the file, and declares none where it has none", () => {
     const R = freshDir("system-gitconfig-world");
     const file = path.join(R, "gitconfig");
     writeFileSync(path.join(R, "pane.env"), `PATH=${systemGit(file)}:${childEnv.PATH}\n`);
-    const declared = (text: string) => {
-      writeFileSync(file, text);
+    const declared = (text: string | undefined) => {
+      if (text === undefined) rmSync(file, { force: true });
+      else writeFileSync(file, text);
       const shown = bash(
         [
           fn("pane_var"),
@@ -8103,86 +8199,100 @@ describe("the issue workspace's remote", () => {
         [R, freshDir("system-gitconfig-work"), freshDir("system-gitconfig-install")]
       );
       expect({ code: shown.code, stderr: shown.stderr }).toEqual({ code: 0, stderr: "" });
-      return shown.stdout.split("\n").filter((line) => line.startsWith("empty "));
+      return shown.stdout
+        .split("\n")
+        .filter((line) => line.endsWith(` ${file}`) || line.startsWith("empty "));
     };
-    expect(declared("[safe]\n\tdirectory = *\n")).toEqual([`empty ${file}`]);
-    expect(declared("")).toEqual([]);
+    expect(declared(SYSTEM_TEXT)).toEqual([`ro ${file}`]);
+    expect(declared("")).toEqual([`ro ${file}`]);
+    expect(declared(undefined)).toEqual([]);
   });
 
-  /** The host's refusal of a mount onto a file, private_world's own bind of an empty file of a
-   * tmpfs, made in a namespace of the same unshare, its first line with the path given as FILE;
-   * undefined where the host takes it. */
-  function fileMountRefusal(file: string): string | undefined {
-    const probe = path.join(freshDir("file-mount"), "file");
-    writeFileSync(probe, "");
-    const bare = spawnChecked(
-      [
-        "unshare",
-        "-Urm",
-        "sh",
-        "-c",
-        'mount -t tmpfs tmpfs /dev/shm && : >/dev/shm/empty && mount --bind /dev/shm/empty "$1"',
-        "-",
-        probe,
-      ],
-      { env: { PATH: childEnv.PATH } }
-    );
-    if (bare.exitCode === 0) return undefined;
-    return (bare.stderr.toString().split("\n")[0] ?? "").replaceAll(probe, file);
-  }
-
-  // Catches: a namespace that shows the agent's git the file world_paths declares empty as the
-  // host holds it, or writable; and one that starts the agent on a host that refuses a mount onto
-  // a file (a gVisor pod: `mount point is not a directory`), where the agent's git would read the
-  // host's lines: such a host refuses the run with mount's own refusal. Which of the two the host
-  // does is read of a bare mount onto a file first (fileMountRefusal).
+  // Catches: a namespace that shows the agent's git another system configuration than the
+  // host's: its file hidden, shown empty (world_paths' old `empty` kind) or bound over by
+  // anything, which hid INFRA's two lines from the agents of a pod whose panes read them; and a
+  // namespace that mounts onto the file at all, which a gVisor pod refuses (`mount point is not a
+  // directory`), so that pod refused every run.
   test.skipIf(withoutNamespace)(
-    "the namespace shows that file empty and read-only, or refuses the run where the host takes no mount onto a file",
+    "the namespace shows that file as the host holds it, with no mount onto it, and the agent's git reads the host's system scope",
     () => {
       const R = freshDir("system-gitconfig-run");
       const file = path.join(R, "gitconfig");
-      const text = "[safe]\n\tdirectory = *\n";
-      writeFileSync(file, text);
-      const refusal = fileMountRefusal(file);
+      writeFileSync(file, SYSTEM_TEXT);
       const ran = namespaced(R, { PATH: `${systemGit(file)}:${childEnv.PATH}` }, R, [
         "sh",
         "-c",
-        'cat "$1"; if echo x >>"$1"; then echo written; fi',
+        'cat "$1" && awk -v file="$1" \'$5 == file\' /proc/self/mountinfo',
         "-",
         file,
       ]);
-      if (refusal === undefined)
-        expect({ code: ran.code, stdout: ran.stdout }).toEqual({ code: 0, stdout: "" });
-      else
-        expect({ refused: ran.code !== 0, stderr: ran.stderr }).toEqual({
-          refused: true,
-          stderr: expect.stringContaining(refusal),
-        });
-      expect(readFileSync(file, "utf8")).toBe(text);
+      expect({ code: ran.code, stdout: ran.stdout }).toEqual({ code: 0, stdout: SYSTEM_TEXT });
+      expect(readFileSync(file, "utf8")).toBe(SYSTEM_TEXT);
+      // The host's own git, whose system file is the host's (/etc/gitconfig on a pod), read
+      // outside any namespace and inside one.
+      const scope = ["git", "config", "--show-scope", "--system", "--list"];
+      const host = spawnChecked(scope, { env: { PATH: childEnv.PATH } });
+      const agent = freshDir("system-gitconfig-scope");
+      const inside = namespaced(agent, { PATH: childEnv.PATH }, agent, scope);
+      expect({ code: inside.code, stdout: inside.stdout }).toEqual({
+        code: host.exitCode,
+        stdout: host.stdout.toString(),
+      });
     }
   );
 
-  // Catches: a probe that passes a host every run's namespace then fails on: one that refuses a
-  // mount onto a file (a gVisor pod) where its caller's git reads a system configuration, which
-  // private_world binds an empty file over (world_paths' `empty`); and a probe that binds over
-  // one that holds nothing, which such a host would refuse for no line its git reads.
-  test.skipIf(withoutNamespace)(
-    "namespace_probe makes the bind over its caller git's system configuration where that holds anything, and prints the host's refusal of it",
-    () => {
-      const dir = freshDir("system-gitconfig-probe");
-      const file = path.join(dir, "gitconfig");
-      const PATH = `${systemGit(file)}:${childEnv.PATH}`;
-      writeFileSync(file, "");
-      expect(namespaceProbe({ PATH })).toEqual({ code: 0, stdout: "" });
-      writeFileSync(file, "[safe]\n\tdirectory = *\n");
-      const refusal = fileMountRefusal(file);
-      expect(namespaceProbe({ PATH })).toEqual(
-        refusal === undefined
-          ? { code: 0, stdout: "" }
-          : { code: 1, stdout: expect.stringContaining(refusal) }
-      );
+  // Catches: a probe that refuses a host every run's namespace starts on: one that mounts onto
+  // its caller git's system configuration where the host has one, which a gVisor pod refuses
+  // (`mount point is not a directory`) and private_world never mounts, so that pod's every row of
+  // the namespace skipped and `rig.sh batch` and `run` refused every launch. A host that refuses
+  // the namespace itself (a GitHub runner) refuses it whatever the file holds.
+  test("namespace_probe answers the same whatever its caller git's system configuration holds", () => {
+    const dir = freshDir("system-gitconfig-probe");
+    const file = path.join(dir, "gitconfig");
+    const none = namespaceProbe({ PATH: `${systemGit(undefined)}:${childEnv.PATH}` });
+    for (const text of ["", SYSTEM_TEXT]) {
+      writeFileSync(file, text);
+      expect(namespaceProbe({ PATH: `${systemGit(file)}:${childEnv.PATH}` })).toEqual(none);
+      expect(readFileSync(file, "utf8")).toBe(text);
     }
-  );
+  });
+
+  // Catches: a run's provenance that does not record the system git configuration its world
+  // shows the agents' git, so a batch whose arms read two could not be told from one that read
+  // one (health.ts's rule 23); a digest recorded for a file the host has not got; and a file
+  // recorded where the git names none.
+  test("each run's provenance records its system git configuration's digest, and none where the host has none", () => {
+    const dir = freshDir("system-gitconfig-provenance");
+    const file = path.join(dir, "gitconfig");
+    const recorded = (bin: string) => {
+      const result = bash(
+        [
+          ...["fail", "given_services", "safe_url", "file_digest", "system_gitconfig"].map(fn),
+          fn("services_from"),
+          "pinned_omp() { echo /x/omp; }",
+          `here=${import.meta.dir} co=/co pin=omp@pin I=/w/installs/0a1b2c3d4e5f profile=legion`,
+          "nats_url=nats://127.0.0.1:4222 pg_url=postgres://127.0.0.1:5432/postgres",
+          "services_from /l /d /p",
+        ].join("\n"),
+        [],
+        {
+          PATH: `${bin}:${childEnv.PATH}`,
+          SKILL_SCENARIOS_POSTGRES_URL: "postgres://127.0.0.1:5432/postgres",
+          SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:4222",
+          PUBLIC_LEAK_CHECK: undefined,
+        }
+      );
+      expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
+      return result.stdout.split("\n").filter((line) => line.startsWith("system-gitconfig "));
+    };
+    const named = systemGit(file);
+    writeFileSync(file, SYSTEM_TEXT);
+    const digest = new Bun.CryptoHasher("sha256").update(SYSTEM_TEXT).digest("hex");
+    expect(recorded(named)).toEqual([`system-gitconfig shared ${file} sha256:${digest}`]);
+    rmSync(file);
+    expect(recorded(named)).toEqual([`system-gitconfig shared ${file} none`]);
+    expect(recorded(systemGit(undefined))).toEqual(["system-gitconfig shared none none"]);
+  });
 
   // Catches: a workspace missing what a pod's provisioning writes beside the clone and the
   // worktree (packages/daemon/internal/workspace): the record of when it made the workspace
@@ -10529,6 +10639,7 @@ docker() {
       "label_contract",
       "file_digest",
       "read_nats_image",
+      "system_gitconfig",
       "services_from",
       "label_services",
       "label_provenance",
@@ -10906,7 +11017,8 @@ export const LegionStateResponse = {
   function provenanceOf(here: string) {
     const result = bash(
       [
-        ...["fail", "given_services", "safe_url", "file_digest", "services_from"].map(fn),
+        ...["fail", "given_services", "safe_url", "file_digest", "system_gitconfig"].map(fn),
+        fn("services_from"),
         "pinned_omp() { echo /x/omp; }",
         `here=${here} co=/co pin=omp@pin I=/w/installs/0a1b2c3d4e5f profile=legion`,
         "nats_url=nats://127.0.0.1:4222 pg_url=postgres://127.0.0.1:5432/postgres",
