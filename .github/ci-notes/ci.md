@@ -623,11 +623,12 @@ module, and the guard step compiles that package's whole test closure, which
 reaches testdata and goldens across the module.
 Of packages/daemon the job reads the .go files its own file_copy_test.go walks,
 the .go files the supervise pins type-check from source - internal/supervise and
-every package of this module it imports - and the committed copies its text checks
-hold to the texts they copy; and its credential-argument check reads every text file
-of the repository, so `**` below selects the job for every change but one under
-docs/plans or docs/superpowers. The patterns after it name what the other checks
-read, which `**` covers too, so that each read keeps its reason here.
+every package of this module it imports - the prompt below, the committed copies
+its text checks hold to the texts they copy, and the store's migrations; and its
+credential-argument check reads every text file of the repository, so `**` below
+selects the job for every change but one under docs/plans or docs/superpowers. The
+patterns after it name what the other checks read, which `**` covers too, so that
+each read keeps its reason here.
 
 credential_argument_test.go's credentialTextFiles lists every file git tracks or would
 track, but docs/plans and docs/superpowers, which are dated history, and its
@@ -637,8 +638,8 @@ TestNoTextGivesACredentialAsACommandArgument reads each of them.
 
 The seven copies of shipped texts that readExtract (waiting_line_texts_test.go)
 reads to hold them to the texts themselves: the waiting line's four, the two way
-backs' (way_back_doc_test.go:70) and the troubleshooting page's refusal table's
-(troubleshooting_refusals_doc_test.go:36), each committed beside the package whose
+backs' (way_back_doc_test.go:110) and the troubleshooting page's refusal table's
+(troubleshooting_refusals_doc_test.go:41), each committed beside the package whose
 own check reads it. They are .txt files, which the module's `**/*.go` above does
 not match.
 
