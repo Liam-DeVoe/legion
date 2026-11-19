@@ -201,16 +201,26 @@ check "report stopped that sampler" "$(is "$status" 0)"
 echo "case: the free kB it reads of a path is df's available kB of that path"
 # The reading the written fall stands in for, measured: disk_watch.py's own free_kb of the watched
 # directory lies between two reads of `df -k --output=avail` of it, one just before and one just
-# after, however other writers moved free space between them.
-df_before=$(df -k --output=avail "$watched" | tail -n 1 | tr -d ' ')
-reading=$(env -i PATH="$work/bin" HOME="$work" python3 -B -I -c \
-  'import sys; sys.path.insert(0, sys.argv[1]); import disk_watch; print(disk_watch.free_kb(sys.argv[2]))' \
-  "$script_dir" "$watched")
-df_after=$(df -k --output=avail "$watched" | tail -n 1 | tr -d ' ')
-low=$df_before high=$df_after
-[ "$low" -le "$high" ] || { low=$df_after high=$df_before; }
-check "disk_watch.py read $reading kB, within df's $df_before kB before it and $df_after kB after" \
-  "$([ "$reading" -ge "$low" ] && [ "$reading" -le "$high" ] && echo true || echo false)"
+# after. Free space under other writers does not move one way between two reads (a reading above
+# both was seen, at a fix's 6th run of 20), so up to five such brackets are taken, and one must
+# hold its reading. A reader of another number (the total, the blocks root may still use, bytes)
+# is outside every one.
+bracketed=false
+for attempt in 1 2 3 4 5; do
+  df_before=$(df -k --output=avail "$watched" | tail -n 1 | tr -d ' ')
+  reading=$(env -i PATH="$work/bin" HOME="$work" python3 -B -I -c \
+    'import sys; sys.path.insert(0, sys.argv[1]); import disk_watch; print(disk_watch.free_kb(sys.argv[2]))' \
+    "$script_dir" "$watched")
+  df_after=$(df -k --output=avail "$watched" | tail -n 1 | tr -d ' ')
+  low=$df_before high=$df_after
+  [ "$low" -le "$high" ] || { low=$df_after high=$df_before; }
+  if [ "$reading" -ge "$low" ] && [ "$reading" -le "$high" ]; then
+    bracketed=true
+    break
+  fi
+done
+check "disk_watch.py read $reading kB, within df's $df_before kB before it and $df_after kB after (bracket $attempt of at most 5)" \
+  "$bracketed"
 
 echo "case: the sampler writes the machine to a series file beside the state"
 series="$state.series"
