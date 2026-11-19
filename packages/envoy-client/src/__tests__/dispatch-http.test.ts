@@ -2047,7 +2047,8 @@ describe("the User-Agent", () => {
       secret: () => "secret",
     };
     // A read, then a write whose first attempt fails in transport, so the write asks `/healthz`
-    // whether Dispatch runs its keyed layer and then asks again under its key.
+    // whether Dispatch runs its keyed layer and then asks again under its key, which Dispatch's
+    // answer carries back as it does for every keyed write.
     forgetKeyedLayerMemory();
     const requests: RecordedRequest[] = [];
     let posts = 0;
@@ -2058,7 +2059,9 @@ describe("the User-Agent", () => {
       if (init?.method !== "POST") return jsonResponse([]);
       posts += 1;
       if (posts === 1) throw new TypeError("fetch failed");
-      return jsonResponse({ id: "message-1" }, 201);
+      const answer = jsonResponse({ id: "message-1" }, 201);
+      answer.headers.set("Idempotency-Key", new Headers(init.headers).get("idempotency-key") ?? "");
+      return answer;
     }) as typeof fetch;
     const client = new DispatchClient("http://user-agent.test", credential, fetchImpl, {
       writeRetry: { ...DISPATCH_WRITE_RETRY, pause: async () => {} },
@@ -2076,9 +2079,11 @@ describe("the User-Agent", () => {
       ["/healthz", "example-program/1.2.3"],
       ["/api/v1/issues/DSP-1/messages", "example-program/1.2.3"],
     ]);
+    // The credential's other headers still go out where it presents; the `/healthz` probe
+    // presents none (`#probeKeyedLayer`), and names the program all the same.
     expect(
       requests.map((request) => new Headers(request.init.headers).get("authorization"))
-    ).toEqual(Array(4).fill("Bearer secret"));
+    ).toEqual(["Bearer secret", "Bearer secret", null, "Bearer secret"]);
   });
 
   test("a client made with no program named sends envoy-client's own name and version", async () => {

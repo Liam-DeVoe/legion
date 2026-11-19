@@ -208,6 +208,9 @@ describe("the words a dispatch write that may have landed prints", () => {
     json: { ask: { id: ASK, issue_key: "DSP-1" }, replies: [], edits: [], followers: [] },
   };
 
+  // A dropped connection may follow a write Dispatch read whole, so the upload names its request
+  // and quotes the failure in the client's line for it, the advice for a moved URL with it, and
+  // its last words are the unsettled-write words and what to do before a retry.
   test("a keyed upload whose every attempt the connection drops may or may not have taken effect", async () => {
     const dispatch = await dispatchOn(true, () => "drop");
 
@@ -215,13 +218,13 @@ describe("the words a dispatch write that may have landed prints", () => {
 
     expect(dispatch.requests).toEqual([UPLOAD, UPLOAD, UPLOAD]);
     expect(text).toStartWith(
-      `POST ${dispatch.url}/api/v1/issues/DSP-1/artifacts got no answer on the network (`
+      `POST ${dispatch.url}/api/v1/issues/DSP-1/artifacts failed on its last attempt (Dispatch at ` +
+        `${dispatch.url} is unreachable: `
     );
-    expect(text).toContain(
-      "(the last of 3 attempts), and an attempt of the write may have reached Dispatch, so it may " +
-        `or may not have taken effect${READ_IT_BACK} ${MOVED_HINT}`
+    expect(text).toEndWith(
+      `. ${MOVED_HINT}) (the last of 3 attempts), and an attempt of the write may have reached ` +
+        `Dispatch, so it may or may not have taken effect${READ_IT_BACK}`
     );
-    expect(text).not.toContain("unreachable");
   });
 
   test("a keyed upload Dispatch answers 500 on every attempt may or may not have taken effect", async () => {
@@ -316,13 +319,13 @@ describe("the words a dispatch write that may have landed prints", () => {
 
     expect(dispatch.requests).toEqual([ASK_READ, FOLLOW]);
     expect(text).toStartWith(
-      `PUT ${dispatch.url}/api/v1/asks/${ASK}/followers/session-1 got no answer on the network (`
+      `PUT ${dispatch.url}/api/v1/asks/${ASK}/followers/session-1 failed on its last attempt ` +
+        `(Dispatch at ${dispatch.url} is unreachable: `
     );
     expect(text).toEndWith(
-      "(its only attempt), and an attempt of the write may have reached Dispatch, so it may or " +
-        `may not have taken effect${CHECK_FIRST} ${MOVED_HINT}`
+      `. ${MOVED_HINT}) (its only attempt), and an attempt of the write may have reached ` +
+        `Dispatch, so it may or may not have taken effect${CHECK_FIRST}`
     );
-    expect(text).not.toContain("unreachable");
   });
 
   test("an unkeyed PUT Dispatch answers 500 may or may not have taken effect", async () => {

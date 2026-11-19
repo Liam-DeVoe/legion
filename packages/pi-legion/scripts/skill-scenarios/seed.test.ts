@@ -88,12 +88,16 @@ interface Call {
   body: Record<string, unknown> | undefined;
 }
 
-/** The scratch Dispatch seed.ts talks to, held in memory: just the routes seed.ts calls. */
+/** The scratch Dispatch seed.ts talks to, held in memory: just the routes seed.ts calls. What it
+ * calls through e2e/api.ts is that driver's /api/v2 routes, answered in their shapes: a list is one
+ * page, `{items, total, limit, offset}`, an object is flat. What it calls with its own fetch (an
+ * artifact's blocks, a result, the handoffs) is /api/v1. */
 class FakeDispatch {
   calls: Call[] = [];
   issues = new Map<string, { key: string; title: string; spec_artifact: string }>();
   asks: FakeAsk[] = [];
-  messages: { message: Record<string, unknown>; replies: Record<string, unknown>[] }[] = [];
+  /** Each root message, its replies beside its own fields, as `GET …/messages` lists it. */
+  messages: Record<string, unknown>[] = [];
   comments: Record<string, unknown>[] = [];
   artifacts: FakeArtifact[] = [];
   handoffs: {
@@ -151,13 +155,29 @@ class FakeDispatch {
     this.calls.push({ method, path: url.pathname, who, body });
     const route = `${method} ${url.pathname}`;
     const json = (value: unknown, status = 200) => Response.json(value, { status });
+    /** `rows` as one page of a v2 list: the rows at the query's `offset`, at most its `limit`
+     * (50 when it names none), and how many there are. */
+    const page = (rows: unknown[]) => {
+      const offset = Number(url.searchParams.get("offset") ?? 0);
+      const limit = Number(url.searchParams.get("limit") ?? 50);
+      return json({ items: rows.slice(offset, offset + limit), total: rows.length, limit, offset });
+    };
+    const missing = (code: string) => json({ code }, 404);
     const actor = (): Actor =>
       who === "agent" ? (body?.actor as Actor) : { kind: "user", id: `${who}@example.invalid` };
     const strip = <T extends { markdown: string }>({ markdown: _markdown, ...rest }: T) => rest;
+    /** An artifact as /api/v2 answers one: its latest version's number and its count of versions,
+     * never the versions themselves, and its text only where `include=text` asks for it. */
+    const artifactOf = ({ markdown, versions, askBlocks: _askBlocks, ...rest }: FakeArtifact) => ({
+      ...rest,
+      latest_version: versions.at(-1)?.number ?? null,
+      version_count: versions.length,
+      ...(url.searchParams.getAll("include").includes("text") ? { markdown } : {}),
+    });
     // Each route: its method and path pattern, and what it answers for the path's captures.
     const routes: [RegExp, (id: string, second: string) => Response][] = [
       [
-        /^POST \/api\/v1\/issues$/,
+        /^POST \/api\/v2\/issues$/,
         () => {
           const key = `LWEVAL-${this.issues.size + 2}`;
           const spec = this.issue(key, body?.title);
@@ -172,7 +192,7 @@ class FakeDispatch {
         },
       ],
       [
-        /^POST \/api\/v1\/issues\/([^/]+)\/messages$/,
+        /^POST \/api\/v2\/issues\/([^/]+)\/messages$/,
         (issue) => {
           const message = {
             id: this.id("msg"),
@@ -181,12 +201,12 @@ class FakeDispatch {
             body: body?.body,
             created_at: new Date().toISOString(),
           };
-          this.messages.push({ message, replies: [] });
+          this.messages.push({ ...message, replies: [] });
           return json(message, 201);
         },
       ],
       [
-        /^POST \/api\/v1\/issues\/([^/]+)\/asks$/,
+        /^POST \/api\/v2\/issues\/([^/]+)\/asks$/,
         (issue) => {
           const ask: FakeAsk = {
             id: this.id("ask"),
@@ -206,10 +226,11 @@ class FakeDispatch {
         },
       ],
       [
-        /^POST \/api\/v1\/asks\/([^/]+)\/answer$/,
+        /^PUT \/api\/v2\/asks\/([^/]+)\/state$/,
         (id) => {
           const ask = this.asks.find((a) => a.id === id);
-          if (ask === undefined) return json({ error: "not found" }, 404);
+          if (ask === undefined) return missing("ASK_NOT_FOUND");
+          if (body?.state !== "answered") return json({ code: "INVALID_STATE" }, 400);
           if (body?.expected_edited_at !== ask.edited_at) return json({ code: "ASK_EDITED" }, 409);
           ask.state = "answered";
           ask.answer = {
@@ -222,7 +243,7 @@ class FakeDispatch {
         },
       ],
       [
-        /^GET \/api\/v1\/issues\/([^/]+)\/asks$/,
+        /^GET \/api\/v2\/issues\/([^/]+)\/asks$/,
         (issue) => {
           const reads = (this.asksReads.get(issue) ?? 0) + 1;
           this.asksReads.set(issue, reads);
@@ -245,12 +266,8 @@ class FakeDispatch {
                 block_id: block.block_id,
               });
           }
-          return json(this.asks.filter((a) => a.issue_key === issue));
+          return page(this.asks.filter((a) => a.issue_key === issue));
         },
-      ],
-      [
-        /^GET \/api\/v1\/asks\/([^/]+)$/,
-        (id) => json({ ask: this.asks.find((a) => a.id === id), replies: [] }),
       ],
       [
         /^GET \/api\/v1\/artifacts\/([^/]+)\/blocks$/,
@@ -263,45 +280,52 @@ class FakeDispatch {
         },
       ],
       [
-        /^GET \/api\/v1\/issues\/([^/]+)\/messages$/,
-        (issue) => json(this.messages.filter((m) => m.message.issue_key === issue)),
+        /^GET \/api\/v2\/issues\/([^/]+)\/messages$/,
+        (issue) => page(this.messages.filter((m) => m.issue_key === issue)),
       ],
       [
-        /^GET \/api\/v1\/issues\/([^/]+)\/comments$/,
-        (issue) => json(this.comments.filter((c) => c.issue_key === issue)),
+        /^GET \/api\/v2\/issues\/([^/]+)\/comments$/,
+        (issue) => page(this.comments.filter((c) => c.issue_key === issue)),
       ],
       [
-        /^GET \/api\/v1\/issues\/([^/]+)$/,
+        /^GET \/api\/v2\/issues\/([^/]+)$/,
         (issue) =>
           json({
             key: issue,
-            artifacts: this.artifacts.filter((a) => a.issue_key === issue).map(strip),
+            artifacts: this.artifacts.filter((a) => a.issue_key === issue).map(artifactOf),
           }),
       ],
       [
-        /^GET \/api\/v1\/artifacts\/([^/]+)\/text$/,
-        (id) => {
-          const artifact = this.artifacts.find((a) => a.id === id);
-          return json({ markdown: artifact?.markdown, version: artifact?.versions.length ?? null });
-        },
-      ],
-      [
-        /^GET \/api\/v1\/artifacts\/([^/]+)\/versions\/(\d+)$/,
+        /^GET \/api\/v2\/artifacts\/([^/]+)\/versions\/(\d+)$/,
         (id, number) => {
-          const artifact = this.artifacts.find((a) => a.id === id);
-          return json(artifact?.versions.find((v) => v.number === Number(number)));
+          const version = this.artifacts
+            .find((a) => a.id === id)
+            ?.versions.find((v) => v.number === Number(number));
+          return version === undefined ? missing("VERSION_NOT_FOUND") : json(version);
         },
       ],
       [
-        /^GET \/api\/v1\/artifacts\/([^/]+)$/,
+        /^GET \/api\/v2\/artifacts\/([^/]+)\/versions$/,
         (id) => {
           const artifact = this.artifacts.find((a) => a.id === id);
-          return json({ ...artifact, versions: artifact?.versions.map(strip) });
+          return artifact === undefined
+            ? missing("ARTIFACT_NOT_FOUND")
+            : page(artifact.versions.map(strip));
         },
       ],
       [
-        /^POST \/api\/v1\/issues\/([^/]+)\/handoffs\/([^/]+)$/,
-        (issue, phase) => {
+        /^GET \/api\/v2\/artifacts\/([^/]+)$/,
+        (id) => {
+          const artifact = this.artifacts.find((a) => a.id === id);
+          return artifact === undefined
+            ? missing("ARTIFACT_NOT_FOUND")
+            : json(artifactOf(artifact));
+        },
+      ],
+      [
+        /^POST \/api\/v2\/issues\/([^/]+)\/handoffs$/,
+        (issue) => {
+          const phase = String(body?.phase);
           const record = {
             id: this.id("handoff"),
             issue_key: issue,
@@ -335,7 +359,7 @@ class FakeDispatch {
         },
       ],
       [
-        /^POST \/api\/v1\/issues\/([^/]+)\/artifacts$/,
+        /^POST \/api\/v2\/issues\/([^/]+)\/artifacts$/,
         (issue) => {
           const name = String(body?.name ?? "");
           const artifact: FakeArtifact = {
@@ -349,7 +373,7 @@ class FakeDispatch {
             versions: [],
           };
           this.artifacts.push(artifact);
-          return json(strip(artifact), 201);
+          return json(artifactOf(artifact), 201);
         },
       ],
       [
@@ -503,10 +527,10 @@ function source(oldSpec?: string): string {
   if (oldSpec !== undefined) writeFileSync(path.join(dir, "old-spec.md"), oldSpec);
   return dir;
 }
+/** Every call that writes, in the order it was made: each but a GET. */
+const written = () => dispatch.calls.filter((call) => call.method !== "GET");
 const writes = () =>
-  dispatch.calls
-    .filter((call) => call.method === "POST")
-    .map((call) => `${call.who} ${call.path.replace(/[^/]+-\d+/g, "<id>")}`);
+  written().map((call) => `${call.who} ${call.method} ${call.path.replace(/[^/]+-\d+/g, "<id>")}`);
 
 describe("spec-writing", () => {
   // Catches: a seeding that posts the source out of time order, posts a person's words as the
@@ -516,15 +540,15 @@ describe("spec-writing", () => {
     const file = path.join(dir, "fixture.json");
     await seed.specWriting(file, source());
     expect(writes()).toEqual([
-      "alice /api/v1/issues",
-      "alice /api/v1/issues/<id>/messages",
-      "agent /api/v1/issues/<id>/asks",
-      "alice /api/v1/issues/<id>/messages",
-      "alice /api/v1/asks/<id>/answer",
-      "alice /api/v1/issues/<id>/messages",
-      "alice /api/v1/issues/<id>/messages",
+      "alice POST /api/v2/issues",
+      "alice POST /api/v2/issues/<id>/messages",
+      "agent POST /api/v2/issues/<id>/asks",
+      "alice POST /api/v2/issues/<id>/messages",
+      "alice PUT /api/v2/asks/<id>/state",
+      "alice POST /api/v2/issues/<id>/messages",
+      "alice POST /api/v2/issues/<id>/messages",
     ]);
-    const posts = dispatch.calls.filter((call) => call.method === "POST");
+    const posts = written();
     expect(posts[0]?.body).toEqual({
       project: "LWEVAL",
       force: true,
@@ -547,6 +571,7 @@ describe("spec-writing", () => {
       selected: ["Shorten"],
       text: "The wait is the cost.",
       expected_edited_at: null,
+      state: "answered",
     });
   });
 
@@ -626,11 +651,11 @@ describe("spec-writing", () => {
       dispatch.calls.length = 0;
       await seed.specWriting(path.join(freshDir("seed"), "fixture.json"), src);
       expect(writes(), ask).toEqual([
-        "alice /api/v1/issues",
-        "agent /api/v1/issues/<id>/asks",
-        "alice /api/v1/issues/<id>/messages",
-        "alice /api/v1/issues/<id>/messages",
-        "alice /api/v1/asks/<id>/answer",
+        "alice POST /api/v2/issues",
+        "agent POST /api/v2/issues/<id>/asks",
+        "alice POST /api/v2/issues/<id>/messages",
+        "alice POST /api/v2/issues/<id>/messages",
+        "alice PUT /api/v2/asks/<id>/state",
       ]);
     }
   });
@@ -655,7 +680,7 @@ describe("spec-rewrite", () => {
   test("creates the issue with the source's old-spec.md as its spec", async () => {
     const dir = freshDir("seed");
     await seed.specRewrite(path.join(dir, "fixture.json"), source("## Summary\n\nThe old spec.\n"));
-    const created = dispatch.calls.find((call) => call.path === "/api/v1/issues");
+    const created = dispatch.calls.find((call) => call.path === "/api/v2/issues");
     expect(created?.body?.spec).toBe("## Summary\n\nThe old spec.\n");
   });
 
@@ -723,7 +748,7 @@ describe("spec-rewrite", () => {
     expect(message).toContain(path.join(src, "asks.json"));
     expect(message).toContain('"Which colour?"');
     expect(message).toContain("block wait");
-    expect(writes().filter((write) => write.endsWith("/answer"))).toEqual([]);
+    expect(writes().filter((write) => write.endsWith("/state"))).toEqual([]);
   });
 });
 
@@ -797,15 +822,16 @@ describe("answer", () => {
       `${JSON.stringify({ ask: "agent-open", selected: ["Yes"], text: "Yes, do it." })}\n`
     );
     await seed.answer(fixture(dir, spec), answers);
-    expect(dispatch.calls.filter((call) => call.method === "POST")).toEqual([
+    expect(written()).toEqual([
       {
-        method: "POST",
-        path: "/api/v1/asks/agent-open/answer",
+        method: "PUT",
+        path: "/api/v2/asks/agent-open/state",
         who: "alice",
         body: {
           selected: ["Yes"],
           text: "Yes, do it.",
           expected_edited_at: "2026-10-24T10:05:00Z",
+          state: "answered",
         },
       },
     ]);
@@ -845,12 +871,16 @@ describe("approve", () => {
     );
     const dir = runDir();
     await seed.approve(fixture(dir, spec));
-    expect(dispatch.calls.filter((call) => call.method === "POST")).toEqual([
+    expect(written()).toEqual([
       {
-        method: "POST",
-        path: "/api/v1/asks/approval-spec/answer",
+        method: "PUT",
+        path: "/api/v2/asks/approval-spec/state",
         who: "alice",
-        body: { selected: ["Approve"], expected_edited_at: "2026-10-24T11:00:00Z" },
+        body: {
+          selected: ["Approve"],
+          expected_edited_at: "2026-10-24T11:00:00Z",
+          state: "answered",
+        },
       },
     ]);
   });
@@ -903,12 +933,9 @@ describe("capture-spec", () => {
       created_at: at,
     });
     dispatch.messages.push(
+      { ...message("m-alice", alice, "Make it faster.", "2026-10-24T09:00:00Z"), replies: [] },
       {
-        message: message("m-alice", alice, "Make it faster.", "2026-10-24T09:00:00Z"),
-        replies: [],
-      },
-      {
-        message: message("m-run", runSession, "I wrote a spec.", "2026-10-24T10:40:00Z"),
+        ...message("m-run", runSession, "I wrote a spec.", "2026-10-24T10:40:00Z"),
         replies: [message("m-reply", runSession, "And a plan.", "2026-10-24T10:50:00Z")],
       }
     );
@@ -1012,10 +1039,7 @@ describe("capture-spec", () => {
       body: id,
       created_at,
     });
-    dispatch.messages.push({
-      message: at("m-later", "2026-10-24T10:40:00.000002Z"),
-      replies: [],
-    });
+    dispatch.messages.push({ ...at("m-later", "2026-10-24T10:40:00.000002Z"), replies: [] });
     dispatch.comments.push({ ...at("c-earlier", "2026-10-24T10:40:00.000001Z"), ask_id: null });
     const dir = runDir();
     await seed.captureSpec(fixture(dir, spec), dir);
@@ -1039,12 +1063,16 @@ describe("tester-proof", () => {
   test("files the run's own greet() issue, forced past the duplicate check", async () => {
     const file = path.join(freshDir("seed"), "fixture.json");
     await seed.testerProofIssue(file);
-    const posts = dispatch.calls.filter((call) => call.method === "POST");
-    expect(`${posts[0]?.who} ${posts[0]?.path}`).toBe("agent /api/v1/issues");
+    const posts = written();
+    expect(`${posts[0]?.who} ${posts[0]?.method} ${posts[0]?.path}`).toBe(
+      "agent POST /api/v2/issues"
+    );
     expect(posts[0]?.body).toMatchObject({ project: "LWEVAL", force: true });
     expect(String(posts[0]?.body?.spec)).toContain(":::requirement{#r1}");
     expect(String(posts[0]?.body?.spec)).not.toContain("## Acceptance");
-    expect(`${posts[1]?.who} ${posts[1]?.path}`).toBe("agent /api/v1/issues/LWEVAL-2/artifacts");
+    expect(`${posts[1]?.who} ${posts[1]?.method} ${posts[1]?.path}`).toBe(
+      "agent POST /api/v2/issues/LWEVAL-2/artifacts"
+    );
     expect(String(posts[1]?.body?.content)).toContain(':::check{#k1 surface="cli"');
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ issue: "LWEVAL-2" });
   });

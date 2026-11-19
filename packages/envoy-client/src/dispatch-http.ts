@@ -99,7 +99,7 @@ import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/cont
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { version as envoyClientVersion } from "../package.json" with { type: "json" };
 import { credentialDeadline, type RequestCredential } from "./bearer";
-import { messageFor, reachedNothing } from "./errors";
+import { reachedNothing } from "./errors";
 import { bodyForText, excerpt, redirectOrigin, SentTokens } from "./excerpt";
 import { type WriteEvent, type WriteState, writeStep } from "./write-outcome";
 
@@ -198,8 +198,7 @@ export class DispatchGatewayError extends DispatchServiceError {
  * answered from what Dispatch stored, never written twice; a PUT or a DELETE carries none. Where
  * the call saw Dispatch's keyed layer judge the write (`keyed`), the message says Dispatch finishes
  * an attempt it received, and that a resend is a new command's, under a new key, so the write is
- * to be read back first. Where `last` is a transport failure (`DispatchUnreachableError`), its
- * advice for a moved URL is the message's last sentence (`hint`).
+ * to be read back first.
  */
 export class DispatchWriteUnsettledError extends Error {
   override readonly name = "DispatchWriteUnsettledError";
@@ -209,11 +208,6 @@ export class DispatchWriteUnsettledError extends Error {
    * what to do, joins that account to this in place of the rest (`unsettledWithAccount`).
    */
   readonly answer: string;
-  /**
-   * What to do when the configured URL moved, which a transport failure carries
-   * (`DispatchUnreachableError`): the message's last sentence.
-   */
-  readonly hint: string | undefined;
 
   constructor(
     readonly last: Error,
@@ -253,17 +247,15 @@ export class DispatchWriteUnsettledError extends Error {
       answer = unanswered ?? last.message;
       why = "an attempt of the write may have reached Dispatch";
     }
-    const hint = last instanceof DispatchUnreachableError ? last.hint : undefined;
     const tried = attempts === 1 ? "its only attempt" : `the last of ${attempts} attempts`;
     const next = keyed
       ? ". Dispatch finishes an attempt it received whatever this command does, so read the " +
         "write back before you send it again: a new command sends it under a new key."
       : ": check whether it did before retrying it.";
-    const moved = hint === undefined ? "" : ` ${hint}`;
-    const unsettled = `so it may or may not have taken effect${next}${moved}`;
-    super(`${answer} (${tried}), and ${why}, ${unsettled}`, { cause: last });
+    super(`${answer} (${tried}), and ${why}, so it may or may not have taken effect${next}`, {
+      cause: last,
+    });
     this.answer = answer;
-    this.hint = hint;
   }
 }
 
@@ -342,31 +334,21 @@ export class DispatchNoRouteError extends DispatchServiceError {
   }
 }
 
-/** What to do when a request got no answer because the configured Dispatch URL moved. */
-const MOVED_URL_HINT =
-  "If the Dispatch URL changed, restart this agent process so it picks up the new configuration.";
-
 /**
  * A request that got no answer from Dispatch at the transport, named by the Dispatch URL as
- * `urlForText` names it and the failure's class (`DispatchClient`'s `#fetch`), with `hint` what to
- * do when the configured URL moved. A read throws it as it stands. `reachedNothing` says the
- * failure sent nothing to any server (a refused connection, a name that did not resolve): a write
- * attempt that failed so cannot have landed, where one that failed otherwise (a reset after
- * Dispatch read the request) may have, since Dispatch runs a keyed write it received to its end.
- * Such a write's `DispatchWriteUnsettledError` names the request and `failure` first, and the hint
- * after its own words.
+ * `urlForText` names it and the failure's class (`DispatchClient`'s `#fetch`), with the advice for
+ * a moved URL. A read throws it as it stands; a write it ends after the request went out quotes it
+ * (`noAnswer`). `reachedNothing` says the failure sent nothing to any server (a refused
+ * connection, a name that did not resolve): a write attempt that failed so cannot have landed,
+ * where one that failed otherwise (a reset after Dispatch read the request) may have, since
+ * Dispatch runs a keyed write it received to its end.
  */
 export class DispatchUnreachableError extends Error {
-  readonly hint = MOVED_URL_HINT;
-
   constructor(
-    /** The Dispatch URL as `urlForText` names it. */
-    shown: string,
-    /** The failure's class (`errorClass`), never the runtime's message. */
-    readonly failure: string,
+    message: string,
     readonly reachedNothing: boolean
   ) {
-    super(`Dispatch at ${shown} is unreachable: ${failure}. ${MOVED_URL_HINT}`);
+    super(message);
   }
 }
 
@@ -708,14 +690,14 @@ class WriteAttemptSilent extends Error {
 }
 
 /**
- * The first clause of the `DispatchWriteUnsettledError` of a write whose last attempt got no
- * answer on the network: the request, and the failure as this client names it, by its class for a
- * transport failure (`DispatchUnreachableError`, whose hint the error keeps for its last sentence)
- * rather than in the line that calls the server unreachable.
+ * The first clause of the `DispatchWriteUnsettledError` of a write whose last attempt failed on
+ * the network after it went out, a keyed write's (`#endWrite`) and a PUT's or a DELETE's
+ * (`#sendOnce`) alike: the request, and the failure's own message, which for a transport failure
+ * (`DispatchUnreachableError`) names the server, the failure's class and the advice for a moved
+ * URL.
  */
 function noAnswer(request: string, failure: Error): string {
-  const named = failure instanceof DispatchUnreachableError ? failure.failure : messageFor(failure);
-  return `${request} got no answer on the network (${named})`;
+  return `${request} failed on its last attempt (${failure.message})`;
 }
 
 /** What a write's attempts have shown, apart from its table state (`WriteState`): what the
@@ -1132,7 +1114,10 @@ export class DispatchClient {
           // keeps whether the failure reached nothing at all (`reachedNothing`), which the write
           // loop reads before the runtime's error is dropped.
           if (error instanceof TypeError) {
-            throw new DispatchUnreachableError(shown, errorClass(error), reachedNothing(error));
+            throw new DispatchUnreachableError(
+              `Dispatch at ${shown} is unreachable: ${errorClass(error)}. If the Dispatch URL changed, restart this agent process so it picks up the new configuration.`,
+              reachedNothing(error)
+            );
           }
           throw error;
         }
@@ -2706,7 +2691,7 @@ export class DispatchClient {
    * definite in either state. In `nothing-sent` that reading is what the write throws. In
    * `may-have-landed` the write is `DispatchWriteUnsettledError` carrying its key, with that
    * reading as `last`, and, for a write that ended with no answer, what ended it: a transport
-   * failure named by its class (`noAnswer`), whose advice for a moved URL ends the message.
+   * failure in its own message (`noAnswer`).
    */
   async #endWrite(
     method: string,

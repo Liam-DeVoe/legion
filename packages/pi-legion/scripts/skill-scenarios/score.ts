@@ -48,7 +48,8 @@ import {
   toolResults,
 } from "./transcript";
 
-/** `GET /api/v1/issues/{key}/asks`: every ask on the issue, whatever its state. */
+/** `GET /api/v2/issues/{key}/asks`, every page's `items`: every ask on the issue, whatever its
+ *  state. */
 const IssueAsks = z.array(
   z.looseObject({
     question: z.string(),
@@ -64,15 +65,16 @@ const BrainstormCapture = z.looseObject({
   issue: z.string().nullable(),
   asks: z.array(z.looseObject({})),
 });
-/** `GET /api/v1/issues/{key}/events`, every page `seed.ts capture` read, joined: a bare array. */
+/** `GET /api/v2/issues/{key}/events`, every page's `items` `seed.ts capture` read, joined: a bare
+ *  array. */
 const IssueEvents = z.array(
   z.looseObject({
     type: z.string(),
     actor: z.looseObject({ kind: z.string(), id: z.string().nullish() }).nullish(),
   })
 );
-/** `GET /api/v1/issues/{key}/messages/{id}`: the message and its replies. */
-const MessageRead = z.looseObject({ message: z.looseObject({ body: z.string() }) });
+/** `GET /api/v2/messages/{id}`: the message, its replies beside its own fields. */
+const MessageRead = z.looseObject({ body: z.string() });
 /** One line gh-standin.ts or the `bun` stand-in records: when the call started, its exit, and (a
  * gh call that edited the pull request's body) the body the stand-in kept and serves from then on. */
 const Call = z.looseObject({
@@ -304,7 +306,7 @@ function askRow(
  * ask that shares at least four distinctive words (terms) with the message, offers at least two
  * options, and matches no POINTER phrase. */
 function askOnMessage(runDir: string, run: string, label: string): Row {
-  const wanted = terms(json(path.join(runDir, "message.json"), MessageRead).message.body);
+  const wanted = terms(json(path.join(runDir, "message.json"), MessageRead).body);
   return askRow(runDir, run, "ask-on-message", label, (all, options) => {
     const carried = [...terms(all)].filter((word) => wanted.has(word));
     const pointer = POINTER.exec(all)?.[0];

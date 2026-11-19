@@ -76,16 +76,15 @@ export function writeMayHaveLanded(error: unknown): boolean {
  * A write that may or may not have taken effect (`DispatchWriteUnsettledError`) told with
  * `clauses`, the caller's account of what its call did and what to do, in place of the client's
  * own words on it: an account that knows what the call wrote says that once, as `refusalWithCode`
- * lets one replace a gateway's advice. What the write got leads, and the hint a transport failure
- * carries for a server that may have moved follows as a sentence of its own.
+ * lets one replace a gateway's advice. What the write got leads: a transport failure's, quoted
+ * whole, carries its own advice for a server that may have moved.
  */
 export function unsettledWithAccount(
   error: DispatchWriteUnsettledError,
   ...clauses: string[]
 ): Error {
   const account = clauses.filter((clause) => clause !== "").join("; ");
-  const hint = error.hint === undefined ? "" : `. ${error.hint}`;
-  return new Error(`${error.answer}; ${account}${hint}`, { cause: error });
+  return new Error(`${error.answer}; ${account}`, { cause: error });
 }
 
 /**

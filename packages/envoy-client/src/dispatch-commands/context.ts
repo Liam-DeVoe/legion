@@ -294,9 +294,9 @@ export type DispatchCommand = (context: CommandContext) => Promise<DispatchToolR
  * The context every command starts from, built from the checked call. The client names the
  * configured server in a transport error (`DispatchClient`: its URL by `urlForText`, the failure
  * by `errorClass`), since a session whose Dispatch moved reads that message and nothing else; a
- * write the failure leaves unsettled says so first and gives the advice for a moved URL after
- * (`DispatchUnreachableError`'s `hint`). Every link is built on a clean base or printed as its
- * reference (`linkBaseOf`). The client's requests go to the URL as configured.
+ * write the failure leaves unsettled names its request and quotes that message whole. Every link
+ * is built on a clean base or printed as its reference (`linkBaseOf`). The client's requests go to
+ * the URL as configured.
  */
 export function sessionContext(
   input: ExecuteDispatchToolInput,

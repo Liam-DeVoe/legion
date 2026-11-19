@@ -623,12 +623,13 @@ describe("executeDispatchTool", () => {
       `This Dispatch (${notPrinted}) has no answers route yet: its build is older than the answers route.`
     );
     expect(offline).toContain(`Dispatch at ${notPrinted} is unreachable: ENOTFOUND.`);
-    // The write's request may have reached Dispatch, so it says that rather than "unreachable".
+    // The write's request may have reached Dispatch, so it says the write may or may not have
+    // taken effect, quoting the failure.
     expect(offlineWrite).toBe(
-      `POST ${notPrinted} got no answer on the network (ENOTFOUND) (its only attempt), and an ` +
-        "attempt of the write may have reached Dispatch, so it may or may not have taken effect: " +
-        "check whether it did before retrying it. If the Dispatch URL changed, restart this agent " +
-        "process so it picks up the new configuration."
+      `POST ${notPrinted} failed on its last attempt (Dispatch at ${notPrinted} is unreachable: ` +
+        "ENOTFOUND. If the Dispatch URL changed, restart this agent process so it picks up the " +
+        "new configuration.) (its only attempt), and an attempt of the write may have reached " +
+        "Dispatch, so it may or may not have taken effect: check whether it did before retrying it."
     );
     expect(summary).toEndWith(" · dispatch://LEGION-1/ask/ask-1\n\nWaiting on agent (0):");
     for (const text of [read, answers, offline, offlineWrite, summary]) {
@@ -5348,9 +5349,10 @@ describe("executeDispatchTool", () => {
   // the call's deadline and ends it; a transport failure is asked again under the write's key
   // until its five attempts run out. A timeout, and a reset after the request went out, leave the
   // write unsettled, and the reason's post and the close's PATCH each say what that means for
-  // their call in place of the client's words on it, so the message says it once; the client's
-  // advice for a moved URL then ends it. A refused connection sent nothing, so the write is told
-  // Dispatch is unreachable, and the account follows as a sentence of its own.
+  // their call in place of the client's words on it, so the message says it once; what the write
+  // got leads, a reset quoting the client's line for it, whose advice for a moved URL it keeps. A
+  // refused connection sent nothing, so the write is told Dispatch is unreachable, and the account
+  // follows as a sentence of its own.
   const unanswered = [
     [
       (): Response => {
@@ -5376,8 +5378,9 @@ describe("executeDispatchTool", () => {
         throw Object.assign(new TypeError("fetch failed"), { code: "ECONNRESET" });
       },
       (request: string, clause: string, _sentence: string) =>
-        `${request} got no answer on the network (ECONNRESET)${clause}. If the Dispatch URL ` +
-        "changed, restart this agent process so it picks up the new configuration.",
+        `${request} failed on its last attempt (Dispatch at http://dispatch.test is unreachable: ` +
+        "ECONNRESET. If the Dispatch URL changed, restart this agent process so it picks up the " +
+        `new configuration.)${clause}`,
       5,
     ],
   ] as const;
@@ -5438,14 +5441,14 @@ describe("executeDispatchTool", () => {
         (): Response => {
           throw new Error(refused);
         },
-        `${post} got no answer on the network (${refused})${unknown}`,
+        `${post} failed on its last attempt (${refused})${unknown}`,
         5,
       ],
       [
         (): Response => {
           throw new Error(reset);
         },
-        `${post} got no answer on the network (${reset})${unknown}`,
+        `${post} failed on its last attempt (${reset})${unknown}`,
         5,
       ],
       [
@@ -12112,9 +12115,10 @@ describe("executeDispatchTool", () => {
     expect(posts).toEqual([]);
   });
 
-  // A failure whose own message ends its sentence, as the command fetch's line for a server it
-  // cannot reach does, is quoted with no second stop before the advice that follows it. The round
-  // trip writes nothing, so that line is a read's, with none of a write's words.
+  // A failure whose own message ends its sentence, as the client's line for a server it cannot
+  // reach does (the failure named by its class, `errorClass`), is quoted with no second stop
+  // before the advice that follows it. The round trip writes nothing, so that line is a read's,
+  // with none of a write's words.
   test("refuses the upload when the round trip gets no answer, ending each sentence once", async () => {
     const posts: string[] = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -12150,8 +12154,8 @@ describe("executeDispatchTool", () => {
     expect((failure as Error).message).toBe(
       "Dispatch could not say how it would store this text, so nothing was uploaded: POST " +
         "/api/v1/markdown/round-trip failed with Dispatch at http://dispatch.test is unreachable: " +
-        "fetch failed. If the Dispatch URL changed, restart this agent process so it picks up the " +
-        "new configuration. Send the upload again once that call is answered."
+        "TypeError (message withheld). If the Dispatch URL changed, restart this agent process so " +
+        "it picks up the new configuration. Send the upload again once that call is answered."
     );
     expect(posts).toEqual([]);
   });

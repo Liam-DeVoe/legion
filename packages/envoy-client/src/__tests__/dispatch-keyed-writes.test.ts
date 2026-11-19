@@ -705,7 +705,8 @@ describe("DispatchClient's writes", () => {
   // c2 (the review of c5ed36708c): a connection reset after Dispatch read the whole request may
   // follow a write Dispatch received, and its keyed layer runs that write to its end whatever the
   // client does, so a reset on every attempt may have landed: unsettled, never "unreachable". The
-  // message names the request and the failure's class first, and the advice for a moved URL last.
+  // message names the request and quotes the failure as the client names it, the advice for a
+  // moved URL with it.
   test("a connection reset on every attempt leaves the write unsettled", async () => {
     const { fetchImpl, sent } = scripted(Array.from({ length: 5 }, () => reset()));
 
@@ -715,12 +716,12 @@ describe("DispatchClient's writes", () => {
     expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
     expect((error as DispatchWriteUnsettledError).last).toBeInstanceOf(DispatchUnreachableError);
     expect(error.message).toBe(
-      "POST http://dispatch.test/api/v1/issues/DSP-1/comments got no answer on the network " +
-        "(ECONNRESET) (the last of 5 attempts), and an attempt of the write may have reached " +
-        "Dispatch, so it may or may not have taken effect. Dispatch finishes an attempt it " +
-        "received whatever this command does, so read the write back before you send it again: a " +
-        "new command sends it under a new key. If the Dispatch URL changed, restart this agent " +
-        "process so it picks up the new configuration."
+      "POST http://dispatch.test/api/v1/issues/DSP-1/comments failed on its last attempt " +
+        "(Dispatch at http://dispatch.test is unreachable: ECONNRESET. If the Dispatch URL " +
+        "changed, restart this agent process so it picks up the new configuration.) (the last of " +
+        "5 attempts), and an attempt of the write may have reached Dispatch, so it may or may not " +
+        "have taken effect. Dispatch finishes an attempt it received whatever this command does, " +
+        "so read the write back before you send it again: a new command sends it under a new key."
     );
   });
 
@@ -741,7 +742,8 @@ describe("DispatchClient's writes", () => {
     expect(transport).toBeInstanceOf(DispatchWriteUnsettledError);
     expect((transport as DispatchWriteUnsettledError).key).toBeUndefined();
     expect(transport.message).toBe(
-      `${put} got no answer on the network (TypeError (message withheld)) ${checkFirst} ${moved}`
+      `${put} failed on its last attempt (Dispatch at http://dispatch.test is unreachable: ` +
+        `TypeError (message withheld). ${moved}) ${checkFirst}`
     );
     expect(dropped.probes).toEqual([]);
 

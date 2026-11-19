@@ -486,7 +486,8 @@ describe("sending pictures", () => {
   });
 
   // A gateway's 502 can come after Dispatch stored the upload, so it is no refusal either, even
-  // where the write is not asked again (no keyed layer is known here).
+  // where the write is not asked again (no keyed layer is known here): the upload is unsettled,
+  // and what it got is the gateway's page, as for the 429 above.
   test("an upload a gateway answered 502 is not said to have failed", async () => {
     const server = dispatch((pathname, init) =>
       pathname === "/api/v1/issues/DSP-41/artifacts" && init.method === "POST"
@@ -503,7 +504,7 @@ describe("sending pictures", () => {
     );
 
     expect(failure.message).toBe(
-      `images: ${shot} may or may not have been uploaded: HTTP_502: POST ` +
+      `images: ${shot} may or may not have been uploaded: POST ` +
         "http://dispatch.test/api/v1/issues/DSP-41/artifacts answered 502 with a body that is not " +
         `Dispatch's error JSON ("502 Bad Gateway"), which looks like a proxy or gateway page ` +
         `rather than Dispatch's own answer${checkFirst}`
@@ -513,25 +514,23 @@ describe("sending pictures", () => {
 
   // Dispatch's own 5xx can come after it stored the upload, and a transport failure may have
   // reached it: each says once that the upload may or may not have landed, and what to check. A
-  // transport failure ends with the advice for a Dispatch URL that moved.
+  // transport failure is quoted in the client's line for it, its advice for a moved URL with it.
   test("an upload Dispatch answered 500, or that failed in transport, says once that it may have landed", async () => {
     // No keyed layer is known, so each upload is asked once.
     forgetKeyedLayerMemory();
     const shot = file("failed.png", PNG);
-    for (const [answer, got, moved] of [
+    for (const [answer, got] of [
       [
         (): Response => json({ code: "INTERNAL", error: "the upload failed" }, 500),
         "INTERNAL: the upload failed",
-        "",
       ],
       [
         (): Response => {
           throw new TypeError("Unable to connect. Is the computer able to access the url?");
         },
-        "POST http://dispatch.test/api/v1/issues/DSP-41/artifacts got no answer on the network " +
-          "(Unable to connect. Is the computer able to access the url?)",
-        " If the Dispatch URL changed, restart this agent process so it picks up the new " +
-          "configuration.",
+        "POST http://dispatch.test/api/v1/issues/DSP-41/artifacts failed on its last attempt " +
+          "(Dispatch at http://dispatch.test is unreachable: TypeError (message withheld). If the " +
+          "Dispatch URL changed, restart this agent process so it picks up the new configuration.)",
       ],
     ] as const) {
       const server = dispatch((pathname, init) =>
@@ -549,7 +548,7 @@ describe("sending pictures", () => {
       );
 
       expect(failure.message).toBe(
-        `images: ${shot} may or may not have been uploaded: ${got}${checkFirst}${moved}`
+        `images: ${shot} may or may not have been uploaded: ${got}${checkFirst}`
       );
       expect(server.posted).toEqual([]);
     }

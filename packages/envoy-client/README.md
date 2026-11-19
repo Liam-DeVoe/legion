@@ -773,13 +773,13 @@ before running it again - a new command is a new key. `key` is the key every att
 is the message's first clause, which a caller with its own account of the write, such as
 `dispatch issue-update`'s close path, joins that account to in place of the rest. A write that
 ends with no answer at all names the request: its last attempt failed on the network after it went
-out ("got no answer on the network (<the failure's class>)"), was cut off for silence ("made no
-progress for 20 s, so it was cut off"), or the call's deadline ended it while an attempt was out
-or after one that may have reached Dispatch ("had no definitive answer when its deadline ended
-it"). The client throws a transport failure as a `DispatchUnreachableError`, naming the configured
-URL and the failure's class, never the runtime's message: a read prints it as it stands
-("Dispatch at <url> is unreachable: …"), and an unsettled write ends with its advice for a moved
-URL (`hint`). A PUT or a DELETE, which goes once and carries no key, is unsettled the same way, with
+out ("failed on its last attempt (<the failure>)"), was cut off for silence ("made no progress for
+20 s, so it was cut off"), or the call's deadline ended it while an attempt was out or after one
+that may have reached Dispatch ("had no definitive answer when its deadline ended it"). The client
+throws a transport failure as a `DispatchUnreachableError`, naming the configured URL and the
+failure's class, never the runtime's message, and the advice for a moved URL ("Dispatch at <url>
+is unreachable: …"): a read prints it as it stands, and an unsettled write quotes it whole as its
+failure. A PUT or a DELETE, which goes once and carries no key, is unsettled the same way, with
 one attempt and no `key`, when its transport fails after it went out, the call's deadline ends it
 in flight or Dispatch answers its own 5xx; a gateway's 5xx to it stays a `DispatchGatewayError`,
 whose advice already says the write may or may not have reached Dispatch, and its caller's

@@ -2993,7 +2993,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
   test("register_gate's document lookup names pi-legion and its release to Dispatch", async () => {
     const pane = await bootPane({ role: "architect", issue: "REPO-42", sessionId: "ses_gate_ua" });
     process.env.DISPATCH_URL = "http://dispatch.named.test";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = fixtureSecret("dsp");
     const sent: { readonly path: string; readonly userAgent: string | null }[] = [];
     const paneFetch = globalThis.fetch;
     globalThis.fetch = (async (input, init) => {

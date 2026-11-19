@@ -79,14 +79,8 @@
 //                                          artifacts.json in <run dir>)
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type {
-  Actor,
-  ArtifactBlock,
-  Ask,
-  AskOption,
-  Handoff,
-  HandoffSummary,
-} from "@legion/contracts";
+import type { ArtifactBlock, Handoff, HandoffSummary } from "@legion/contracts";
+import type { Actor, AskOption, AskV2 } from "@legion/contracts/dispatch-api-v2";
 import { z } from "zod";
 import {
   answerAsk,
@@ -99,12 +93,12 @@ import {
   createMessage,
   createProject,
   e2eAgentToken,
-  getArtifact,
   getArtifactText,
   getArtifactVersion,
   getIssue,
   getIssueEvents,
   getMessage,
+  listArtifactVersions,
   listComments,
   listIssueAsks,
   listIssueMessages,
@@ -121,8 +115,6 @@ const AskgateFixture = z.object({
   comment: z.string(),
   comment_ref: z.string(),
 });
-/** The most events one `GET /api/v1/issues/{key}/events` page holds. */
-const EVENT_PAGE = 200;
 
 /** What `spec-writing` and `spec-rewrite` write, and every later spec mode reads. */
 const SpecFixture = z.object({ issue: z.string(), spec_artifact: z.string() });
@@ -213,7 +205,7 @@ function sourceEntries(file: string): { kind: string; at: bigint; body: string }
 /** The asks Dispatch opened for the ask blocks of the spec `spec` of `issue`, once its settlement
  * opened one for every block: the spec's blocks of type `ask` (`GET …/blocks`, as the agent bearer),
  * then the issue's asks, read again until each such block has its ask. */
-async function specBlockAsks(issue: string, spec: string): Promise<Ask[]> {
+async function specBlockAsks(issue: string, spec: string): Promise<AskV2[]> {
   const response = await fetch(
     new URL(`/api/v1/artifacts/${encodeURIComponent(spec)}/blocks`, baseUrl),
     {
@@ -232,7 +224,7 @@ async function specBlockAsks(issue: string, spec: string): Promise<Ask[]> {
   for (;;) {
     const asks = await listIssueAsks(issue, { as: "agent" });
     const opened = blocks.map((block) => asks.find((ask) => ask.block_id === block.id));
-    if (opened.every((ask) => ask !== undefined)) return opened as Ask[];
+    if (opened.every((ask) => ask !== undefined)) return opened as AskV2[];
     if (Date.now() > deadline) {
       const missing = blocks.filter((_, index) => opened[index] === undefined);
       throw new Error(
@@ -304,7 +296,7 @@ async function seedSpecIssue(file: string, source: string, spec?: string): Promi
     const answer = ask.answer;
     if (ask.kind !== "question" || ask.state !== "answered" || answer === null) continue;
     if (inSpec.has(ask.id)) continue;
-    let opened: Ask | undefined;
+    let opened: AskV2 | undefined;
     steps.push({
       at: time(ask.created_at, asksFile),
       write: async () => {
@@ -366,7 +358,7 @@ function loadSpecFixture(file: string): SpecFixture & { seeded: Set<string> } {
 }
 
 /** The spec's open approval request among `asks`: the open approval ask on the primary spec. */
-function openSpecApproval(asks: Ask[], fixture: SpecFixture): Ask | undefined {
+function openSpecApproval(asks: AskV2[], fixture: SpecFixture): AskV2 | undefined {
   return asks.find(
     (ask) =>
       ask.kind === "approval" &&
@@ -477,15 +469,15 @@ export async function captureSpec(file: string, runDir: string): Promise<void> {
   const json = (name: string, value: unknown) => out(name, `${JSON.stringify(value)}\n`);
 
   out("spec.md", (await getArtifactText(fixture.spec_artifact, reader)).markdown);
-  const spec = await getArtifact(fixture.spec_artifact, reader);
+  const versions = await listArtifactVersions(fixture.spec_artifact, reader);
   mkdirSync(path.join(runDir, "spec-versions"), { recursive: true });
-  for (const version of spec.versions ?? []) {
-    const text = await getArtifactVersion(spec.id, version.number, reader);
+  for (const version of versions) {
+    const text = await getArtifactVersion(fixture.spec_artifact, version.number, reader);
     out(path.join("spec-versions", `${version.number}.md`), text.markdown);
   }
   json(
     "spec-versions.json",
-    (spec.versions ?? []).map((version) => ({
+    versions.map((version) => ({
       version: version.number,
       created_at: version.created_at,
       authors: version.authors,
@@ -532,7 +524,7 @@ export async function captureSpec(file: string, runDir: string): Promise<void> {
     add(ask.id, "ask", ask.author, lines.join("\n"), ask.created_at);
   }
   for (const thread of await listIssueMessages(fixture.issue, reader)) {
-    for (const message of [thread.message, ...(thread.replies ?? [])]) {
+    for (const message of [thread, ...(thread.replies ?? [])]) {
       add(message.id, "message", message.author, message.body, message.created_at);
     }
   }
@@ -562,7 +554,7 @@ export async function captureSpec(file: string, runDir: string): Promise<void> {
     );
   }
   console.log(
-    `captured ${fixture.issue}: ${(spec.versions ?? []).length} spec versions, ${asks.length} asks, ${texts.length} texts, ${documents.length} documents`
+    `captured ${fixture.issue}: ${versions.length} spec versions, ${asks.length} asks, ${texts.length} texts, ${documents.length} documents`
   );
 }
 
@@ -794,16 +786,12 @@ async function measureBeforeAsk(file: string): Promise<void> {
 }
 
 async function capture(file: string, runDir: string): Promise<void> {
-  // The event log is read page by page to its end, as the agent bearer the run's session holds.
+  // The event log is read whole, every page of it, as the agent bearer the run's session holds.
   const { issue, message } = Fixture.parse(JSON.parse(readFileSync(file, "utf8")));
   const reader = { as: "agent" } as const;
-  const events = await getIssueEvents(issue, { limit: EVENT_PAGE }, reader);
-  for (let page = events; page.length === EVENT_PAGE; ) {
-    page = await getIssueEvents(issue, { after: page.at(-1)?.seq, limit: EVENT_PAGE }, reader);
-    events.push(...page);
-  }
+  const events = await getIssueEvents(issue, {}, reader);
   const records = {
-    message: await getMessage(issue, message, reader),
+    message: await getMessage(message, reader),
     asks: await listIssueAsks(issue, reader),
     events,
   };

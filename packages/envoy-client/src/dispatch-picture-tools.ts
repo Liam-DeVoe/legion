@@ -143,19 +143,18 @@ export async function textWithPictures(
       }
       // An upload that may have landed says so once, in this line's words: what it got leads, in
       // place of the client's own words on such a write, and this line says what to do before a
-      // retry, which uploads the picture again. A transport failure's advice for a moved URL ends
-      // it.
+      // retry, which uploads the picture again. A transport failure's advice for a moved URL is
+      // among what it got.
       const got =
         error instanceof DispatchWriteUnsettledError
           ? error.answer
           : error instanceof DispatchGatewayError
             ? `${error.code}: ${error.answer}`
             : messageFor(error).replace(/\.$/, "");
-      const hint = error instanceof DispatchWriteUnsettledError ? error.hint : undefined;
       throw new Error(
         `images: ${picture.path} may or may not have been uploaded: ${got}. Nothing was ` +
           `posted${earlier}: check whether the picture was uploaded before you run the call ` +
-          `again, which uploads it again.${hint === undefined ? "" : ` ${hint}`}`
+          "again, which uploads it again."
       );
     }
     const address = `dispatch://${owner}/artifact/${uploaded.artifact.slug}@v${uploaded.version.number}`;

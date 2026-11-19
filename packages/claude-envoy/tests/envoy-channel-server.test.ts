@@ -708,7 +708,7 @@ test("names itself to Dispatch as claude-envoy and its release", async () => {
       },
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
-    process.env["DISPATCH_TOKEN"] = "reply-token"
+    process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
     const delivery = createChannelDelivery({
       identity: new SessionIdentity("ses_claude", process.cwd()),
       notifier: new FakeNotifier(),
@@ -743,7 +743,7 @@ test("the Codex server names itself to Dispatch as codex-envoy and its release",
       },
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
-    process.env["DISPATCH_TOKEN"] = "reply-token"
+    process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
     const configFile = sessionConfigFile("codex", process.env)
     const active = activeDispatchSettings(
       sessionDispatchSettings(configFile, process.env, { cwd: process.cwd() }).dispatch,

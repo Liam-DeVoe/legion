@@ -1848,7 +1848,8 @@
           "path": "/api/v1/issues/DSP-1/steps",
           "headers": {
             "Accept": "application/json",
-            "Authorization": "Bearer secret"
+            "Authorization": "Bearer secret",
+            "User-Agent": "dispatch-client/0.1.0"
           },
           "body": null
         }
