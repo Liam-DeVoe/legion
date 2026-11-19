@@ -16,6 +16,8 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -120,12 +122,14 @@ func bootHeartbeat(t *testing.T, writes *registryWrites, cfg config.Config) (ans
 	return *beat.Answering
 }
 
-// answersEnvironment is a daemon environment for `answers`: a gh of the test's own, and a home of
-// the test's own, so the boot's backfill reads no session of the host's.
+// answersEnvironment is a daemon environment for `answers`: a gh of the test's own, a shared public
+// leak check of the test's own, which a tmux daemon's boot resolves for the answer loop's gh tool,
+// and a home of the test's own, so the boot's backfill reads no session of the host's.
 func answersEnvironment(t *testing.T) []string {
 	t.Helper()
 	gh := binary(t, t.TempDir(), "gh")
-	return []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "LEGION_GH_PATH=" + gh}
+	check := leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes)
+	return []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "LEGION_GH_PATH=" + gh, leakguard.CheckVar + "=" + check}
 }
 
 // A daemon with `answers` writes each registration to its own Envoy listener's agent registry with

@@ -79,14 +79,17 @@ type Recorder interface {
 // the clock.
 //
 // The last two are the leak guard's, which every call passes before gh is handed anything
-// (Answer.leakGuard). LeakCheck is the shared public leak check this daemon resolved on its own
-// machine, the guard's Check seam: "" is the ordinary case, where every call resolves the check
-// for itself in Environ, the three places the check itself names (leakguard's Resolve, as
-// runtime/tmux's resolveLeakCheck resolves a pane's). Environ is the environment the guard's own
-// children — the check, and the gh read of a repository's visibility — start from, the daemon's
-// own (os.Environ() form); nil is this process's own, read at each call. It is the daemon's and
-// not the call's: a call's environment carries two directories on its PATH and nothing else,
-// which is no environment a shell script can run in, and resolves no check at all (Answer.guardEnv).
+// (Answer.leakGuard). LeakCheck is the shared public leak check the guard runs, its Check seam,
+// which the daemon fills: under kubernetes the copy it installed at boot (InstallLeakCheck), and
+// under tmux the machine's own check, resolved again for each answer as a pane's is for each
+// launch (MachineLeakCheck). "" leaves the guard to resolve one in Environ at every call, in the
+// three places the check itself names (leakguard's Resolve), none of which a Kubernetes daemon's
+// environment holds: every call is then refused with the setup failure naming the missing check.
+// Environ is the environment the guard's own children — the check, and the gh read of a
+// repository's visibility — start from, the daemon's own (os.Environ() form); nil is this
+// process's own, read at each call. It is the daemon's and not the call's: a call's environment
+// carries two directories on its PATH and nothing else, which is no environment a shell script can
+// run in, and resolves no check at all (Answer.guardEnv).
 type Host struct {
 	GH         string
 	Git        string

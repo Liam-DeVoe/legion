@@ -149,7 +149,7 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 		return bootReads{}, err
 	}
 	if cfg.Answers != nil {
-		if r.answers, err = readAnswersBoot(*cfg.Answers, r.tmux, lookup); err != nil {
+		if r.answers, err = readAnswersBoot(*cfg.Answers, cfg.Runtime.Name, r.tmux, lookup); err != nil {
 			return bootReads{}, err
 		}
 	}
@@ -157,26 +157,33 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 }
 
 // answersReads is what the answer loop needs that readBoot reads: gh, the real gh on the daemon's
-// own host its gh tool runs, under either runtime (answersGH); and conversationDSN, the URL of the
+// own host its gh tool runs, under either runtime (answersGH); where the shared public leak check
+// that tool's guard runs comes from (answersLeakCheck): leakCheck, the machine's check a tmux
+// daemon resolved, or leakCheckTag, the pin a Kubernetes daemon installs one at
+// (installAnswersLeakCheck), exactly one of them set; and conversationDSN, the URL of the
 // database the conversations live in: answers.conversation_store.dsn_file's under
 // runtime.kubernetes.session_store postgres, runtime.tmux.session_dsn_file's under
 // runtime.tmux.session_store postgres ("" under any other store). It is the one place the loop
 // gets that URL from, whichever key named its file.
 type answersReads struct {
-	gh              string
-	conversationDSN string
+	gh                      string
+	leakCheck, leakCheckTag string
+	conversationDSN         string
 }
 
-// readAnswersBoot is the answer loop's share of readBoot, tmux what readTmux read (the zero value
-// under kubernetes): its tools, the tmux daemon's own (nil under tmux with no repository), and its
-// session database's URL, which under runtime.tmux.session_store postgres is the conversation
-// store's (config.ConversationStore.DSNFile names the same file). No provider's key is read: the
-// loop reads it for every model call (config.AnswerCredential), so neither boot nor `legion config
-// check` runs an api_key_command.
-func readAnswersBoot(answers config.Answers, tmux tmuxReads, lookup func(string) (string, bool)) (answersReads, error) {
+// readAnswersBoot is the answer loop's share of readBoot under runtimeName, tmux what readTmux
+// read (the zero value under kubernetes): its tools, the tmux daemon's own (nil under tmux with no
+// repository), and its session database's URL, which under runtime.tmux.session_store postgres is
+// the conversation store's (config.ConversationStore.DSNFile names the same file). No provider's
+// key is read: the loop reads it for every model call (config.AnswerCredential), so neither boot
+// nor `legion config check` runs an api_key_command.
+func readAnswersBoot(answers config.Answers, runtimeName string, tmux tmuxReads, lookup func(string) (string, bool)) (answersReads, error) {
 	var r answersReads
 	var err error
 	if r.gh, err = answersGH(lookup, tmux.tools); err != nil {
+		return answersReads{}, err
+	}
+	if r.leakCheck, r.leakCheckTag, err = answersLeakCheck(runtimeName, lookup); err != nil {
 		return answersReads{}, err
 	}
 	switch file := answers.ConversationStore.DSNFile; {

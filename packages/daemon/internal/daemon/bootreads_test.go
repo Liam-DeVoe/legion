@@ -3,10 +3,13 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 // conversationsDSN is the conversation store's URL a test's answers.conversation_store.dsn_file
@@ -38,8 +41,9 @@ func dsnFileOf(t *testing.T, contents string) string {
 // A Kubernetes daemon runs no host gh of its own, so without `answers` it boots on a host with
 // none; with `answers` it resolves the real gh the answer loop's gh tool runs at boot, as a tmux
 // daemon resolves its own, and refuses to start, naming gh and its override, when there is none.
-// The gh it resolves, LEGION_GH_PATH's here, and the conversation store's URL are boot's reads,
-// and neither boot nor `legion config check` runs the provider's key command.
+// The gh it resolves, LEGION_GH_PATH's here, the shared public leak check's pin and the
+// conversation store's URL are boot's reads, and neither boot nor `legion config check` runs the
+// provider's key command.
 func TestAKubernetesDaemonWithAnswersRefusesToStartWithoutGH(t *testing.T) {
 	noGH := []string{"PATH=" + t.TempDir()}
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
@@ -56,7 +60,7 @@ func TestAKubernetesDaemonWithAnswersRefusesToStartWithoutGH(t *testing.T) {
 	}
 
 	gh := binary(t, t.TempDir(), "gh")
-	withGH := environLookup(append(noGH, "LEGION_GH_PATH="+gh))
+	withGH := environLookup(append(noGH, "LEGION_GH_PATH="+gh, leakguard.TagVariable+"="+leakCheckTag))
 	reads, err := readBoot(cfg, withGH, os.Getenv, true, quietLogger())
 	if err != nil {
 		t.Fatalf("readBoot with answers and LEGION_GH_PATH: %v", err)
@@ -74,7 +78,8 @@ func TestAKubernetesDaemonWithAnswersRefusesToStartWithoutGH(t *testing.T) {
 
 // A tmux daemon with `answers` and no repository, whose own tools boot does not resolve, still
 // resolves gh for the loop, the first gh on PATH, and refuses to start without one; with a
-// repository the loop's gh is the one boot resolved for the daemon's own tools.
+// repository the loop's gh is the one boot resolved for the daemon's own tools. The machine's
+// shared public leak check is on the same PATH.
 func TestATmuxDaemonWithAnswersResolvesGHWithOrWithoutARepository(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "ran")
 	cfg := testConfig(t)
@@ -85,6 +90,7 @@ func TestATmuxDaemonWithAnswersResolvesGHWithOrWithoutARepository(t *testing.T) 
 	}
 	onPath := t.TempDir()
 	gh := binary(t, onPath, "gh")
+	leakguardtest.Write(t, onPath, leakguardtest.Passes)
 	reads, err := readBoot(cfg, environLookup([]string{"PATH=" + onPath}), os.Getenv, false, quietLogger())
 	if err != nil {
 		t.Fatalf("readBoot with answers and gh on PATH: %v", err)
@@ -112,7 +118,7 @@ func TestATmuxDaemonWithAnswersResolvesGHWithOrWithoutARepository(t *testing.T) 
 // what the file holds.
 func TestBootRefusesAConversationStoreFileWithNoURL(t *testing.T) {
 	gh := binary(t, t.TempDir(), "gh")
-	withGH := environLookup([]string{"PATH=" + t.TempDir(), "LEGION_GH_PATH=" + gh})
+	withGH := environLookup([]string{"PATH=" + t.TempDir(), "LEGION_GH_PATH=" + gh, leakguard.TagVariable + "=" + leakCheckTag})
 	missing := filepath.Join(t.TempDir(), "absent")
 	notAURL := dsnFileOf(t, "host=conversations.internal.example password=fixture-keyword-password\n")
 	blank := dsnFileOf(t, "\n")
@@ -139,6 +145,7 @@ func TestBootRefusesAConversationStoreFileWithNoURL(t *testing.T) {
 func TestATmuxSessionDatabaseIsTheAnswerLoopsConversationStore(t *testing.T) {
 	onPath := t.TempDir()
 	binary(t, onPath, "gh")
+	leakguardtest.Write(t, onPath, leakguardtest.Passes)
 	lookup := environLookup([]string{"PATH=" + onPath})
 	file := dsnFileOf(t, conversationsDSN+"\n")
 	cfg := testConfig(t)
@@ -183,5 +190,89 @@ func TestBootRefusesATmuxSessionDSNFileWithNoURL(t *testing.T) {
 				t.Fatalf("readBoot = %v, want a refusal starting %q that carries nothing the file holds", err, tc.want)
 			}
 		})
+	}
+}
+
+// A tmux daemon with `answers` resolves at boot, beside its gh, the shared public leak check the
+// answer loop's gh tool runs before every call, in the three places it resolves a pane's:
+// PUBLIC_LEAK_CHECK, then public-leak-check.sh on PATH, then the pointer file under the
+// configuration home. With none of the three it refuses to start, naming the check and each place
+// it looked.
+func TestATmuxDaemonWithAnswersRefusesToStartWithoutALeakCheck(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Answers = answersConfig(filepath.Join(t.TempDir(), "ran"), "")
+	onPath, home := t.TempDir(), t.TempDir()
+	binary(t, onPath, "gh")
+	noCheck := []string{"PATH=" + onPath, "HOME=" + home}
+	pointer := filepath.Join(home, ".config", "public-leak-check", "path")
+	want := "answers needs the shared public leak check on the daemon's host, which the answer loop's gh tool runs before every call, and none was found: " +
+		"PUBLIC_LEAK_CHECK names none, public-leak-check.sh is on no PATH entry, and the pointer file " + pointer + " could not be read: open " + pointer +
+		": no such file or directory: install it with the check's own installer, or set PUBLIC_LEAK_CHECK to its path"
+	if _, err := readBoot(cfg, environLookup(noCheck), os.Getenv, false, quietLogger()); err == nil || err.Error() != want {
+		t.Fatalf("readBoot with answers and no leak check = %v, want %q", err, want)
+	}
+
+	named := leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes)
+	checkDir := t.TempDir()
+	onCheckPath := leakguardtest.Write(t, checkDir, leakguardtest.Passes)
+	pointed := leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes)
+	if err := os.MkdirAll(filepath.Dir(pointer), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pointer, []byte(pointed+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		env  []string
+		want string
+	}{
+		{"PUBLIC_LEAK_CHECK", append(slices.Clone(noCheck), leakguard.CheckVar+"="+named), named},
+		{"public-leak-check.sh on PATH", []string{"PATH=" + onPath + string(filepath.ListSeparator) + checkDir, "HOME=" + home}, onCheckPath},
+		{"the pointer file", noCheck, pointed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reads, err := readBoot(cfg, environLookup(tc.env), os.Getenv, false, quietLogger())
+			if err != nil || reads.answers.leakCheck != tc.want || reads.answers.leakCheckTag != "" {
+				t.Fatalf("readBoot = check %q, pin %q, %v; want the check %s and no pin", reads.answers.leakCheck, reads.answers.leakCheckTag, err, tc.want)
+			}
+		})
+	}
+}
+
+// A Kubernetes daemon with `answers` reads at boot, beside its gh, the pin it installs the shared
+// public leak check at for the answer loop's gh tool: its environment's LEGION_LEAK_CHECK_TAG,
+// which the worker image sets. Without it, or with a pin not of the published shape, it refuses to
+// start, naming the check and the variable, and so does `legion config check`; a check on the
+// daemon's host is none of a Kubernetes daemon's.
+func TestAKubernetesDaemonWithAnswersRefusesToStartWithoutTheCheckPin(t *testing.T) {
+	gh := binary(t, t.TempDir(), "gh")
+	machine := leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes)
+	noPin := []string{"PATH=" + t.TempDir(), "LEGION_GH_PATH=" + gh, leakguard.CheckVar + "=" + machine}
+	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+	cfg.Answers = answersConfig(filepath.Join(t.TempDir(), "ran"), dsnFileOf(t, conversationsDSN+"\n"))
+	const needs = "answers needs the shared public leak check, which the answer loop's gh tool runs before every call, " +
+		"and a Kubernetes daemon installs it at the tag LEGION_LEAK_CHECK_TAG names"
+	for _, tc := range []struct {
+		name string
+		env  []string
+		want string
+	}{
+		{"no pin", noPin, needs + ", which the daemon's environment does not set: run the daemon from the worker image, " +
+			"which sets it to the image's pin, or set it to the tag runtime.kubernetes.image pins (its ARG LEAK_CHECK_TAG)"},
+		{"a pin of another shape", append(slices.Clone(noPin), leakguard.TagVariable+"=v18"), needs + `, which is "v18", not of the published shape leak-check-v<n>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := prepare(cfg, quietLogger(), overrides{environ: tc.env}); err == nil || err.Error() != tc.want {
+				t.Fatalf("prepare = %v, want %q", err, tc.want)
+			}
+			if _, _, err := CheckStart(cfg, environLookup(tc.env)); err == nil || err.Error() != tc.want {
+				t.Fatalf("CheckStart = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	reads, err := readBoot(cfg, environLookup(append(slices.Clone(noPin), leakguard.TagVariable+"="+leakCheckTag)), os.Getenv, true, quietLogger())
+	if err != nil || reads.answers.leakCheckTag != leakCheckTag || reads.answers.leakCheck != "" {
+		t.Fatalf("readBoot = pin %q, check %q, %v; want the pin %s and no check of the host's", reads.answers.leakCheckTag, reads.answers.leakCheck, err, leakCheckTag)
 	}
 }

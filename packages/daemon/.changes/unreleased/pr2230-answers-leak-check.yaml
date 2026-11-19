@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+  The answer loop's `gh` tool runs the shared public leak check before every call, and the
+  daemon now hands it that check. A Kubernetes daemon's environment holds no check, since the
+  worker image carries only its pin, so every call of the tool was refused with the setup error
+  naming the missing check and gh never ran. With `answers` set, a Kubernetes daemon now reads the
+  check at its own environment's `LEGION_LEAK_CHECK_TAG`, through the reader it pushes every pod's
+  launcher the check from, and installs it at boot under `<state_dir>/leak-check/` with the
+  launcher's own installer. Every boot installs again, so a re-pin is installed at the next boot. A
+  tmux daemon resolves the machine's own check as it does a pane's, and again for each answer.
+
+  Boot now refuses to start with `answers` set and no check, as it refuses one with no `gh`, and
+  so do `legion config check` and `legion probe-boot`: under tmux when none of
+  `PUBLIC_LEAK_CHECK`, `public-leak-check.sh` on `PATH` and the pointer file under the
+  configuration home names one, and under Kubernetes when `LEGION_LEAK_CHECK_TAG` is unset or not
+  of the shape `leak-check-v<n>`. A Kubernetes daemon whose read or install of the check fails
+  refuses to start with the cause sentence a pod's start is refused with.
+time: 2026-11-19T14:27:57.000000000Z
+custom:
+    Issue: pr2230

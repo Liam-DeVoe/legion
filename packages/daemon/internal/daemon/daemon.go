@@ -572,11 +572,18 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 		log.Info("legion workflow boot stage", "stage", "admission")
 		workflow.attach(s)
-		if err := workflow.attachAnswers(cfg, plan, s, st); err != nil {
+		// The answer loop's gh tool runs the shared public leak check, which a Kubernetes daemon
+		// installs here, its read of the check bounded by the reader and its install by the
+		// installer, neither by the boot budget the waits above may have spent.
+		if err := workflow.attachAnswers(ctx, cfg, plan, s, st); err != nil {
 			s.stop()
 			listener.Close()
 			workflow.stop()
 			st.Close()
+			if ctx.Err() != nil {
+				log.Info("legion daemon stopped before its answer loop's gh tool had its shared public leak check", "project", cfg.Project)
+				return nil
+			}
 			return err
 		}
 		// Both waited out whatever they waited out on ctx, which the boot budget does not bound:

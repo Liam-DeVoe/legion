@@ -98,6 +98,7 @@ It carries:
   The daemon and the image pins move together, and a rollback of one is a rollback of the other:
   an older daemon pushes nothing, and a new image's shim then refuses every start.
   A tag of that repository is not protected, so a tag that is force-moved is served from the daemon's earlier copy until the daemon restarts.
+  With `answers` set, the daemon installs and runs a copy itself, at its own environment's pin, under `<state_dir>/leak-check/` ([The `gh` tool, a security decision](#the-gh-tool-a-security-decision)).
   A tmux pane installs nothing, because no pin is set there and such a machine carries the check through the check's own installer.
   The daemon resolves that machine's check once per launch and tells the pane where it is (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
   What a role sees when a write is refused is a command that wrote nothing and one of two lines on standard error:
@@ -1522,9 +1523,11 @@ a key the block does not model is refused by name.
 Each store refuses the `conversation_store` key it does not use, as `runtime.kubernetes`' session keys do.
 Under `runtime: tmux` the block names no `conversation_store` at all, and one is refused:
 the daemon reads each conversation where its panes keep it ([The conversation stores](#the-conversation-stores)).
-With `answers` set, either runtime resolves at boot the real `gh` the loop's tool runs, `LEGION_GH_PATH` or else the first `gh` on `PATH`, never a script (a tmux daemon reuses the one it resolves for its panes), and refuses to start without one;
-a Kubernetes daemon runs no other tool of its host, since its pods run the image's.
+With `answers` set, either runtime resolves at boot the real `gh` the loop's tool runs, `LEGION_GH_PATH` or else the first `gh` on `PATH`, never a script (a tmux daemon reuses the one it resolves for its panes), and refuses to start without one.
 A daemon running in the worker image, whose first `gh` on `PATH` is Legion's wrapper script, sets `LEGION_GH_PATH=/usr/local/bin/gh`, the image's real gh.
+Beside that `gh`, boot needs the shared public leak check the loop's tool runs before every call ([The `gh` tool, a security decision](#the-gh-tool-a-security-decision)), and refuses to start without one, naming the check and where it looked:
+a tmux daemon resolves the machine's check as it resolves a pane's (`PUBLIC_LEAK_CHECK`, then `public-leak-check.sh` on `PATH`, then the pointer file under the configuration home), and a Kubernetes daemon reads the tag it installs the check at, its own environment's `LEGION_LEAK_CHECK_TAG`, which the worker image sets.
+A Kubernetes daemon runs no other tool of its host but that check, which it installs and runs itself, since its pods run the image's.
 `legion config check` and `legion probe-boot` make the same refusals.
 `legion state --json` shows the block under `settings.answers`:
 each provider's `base_url` and `api_key_source` (which key names it), the prices and the settled bounds, never a key, a key's command or file, or the conversation store's connection.
@@ -1708,6 +1711,15 @@ So the tool runs only what is safe there, and decides before anything runs:
   the whole argv, the destination the call was routed to and those files are read, and a call the check refuses, or one whose check could not be made to run, is refused with the guard's own message as the tool's result, gh never started, the refusal recorded in `answer_tool_calls` and one `answers: gh call refused by the leak guard` line logged with the issue, the role, the repository and the reason.
   The guard's own children — the check, and its `gh` read of a repository's visibility
   — run in the daemon's environment rather than the call's, with the real gh and the routed owner's `GH_CONFIG_DIR` in front of it and no token of the daemon's own, so that read is the agent's App and never the `legion gh` wrapper, which would call a guard of its own.
+
+- **The check the guard runs.**
+  The daemon hands the guard its check rather than leaving it to resolve one, since a Kubernetes daemon's environment holds none of the three places a check is resolved from (`ghtool.Host.LeakCheck`).
+  Under `runtime: kubernetes` it is a copy the daemon installs and runs itself, which boot refuses to start without ([Worker image](#worker-image)):
+  it reads the check at its own environment's `LEGION_LEAK_CHECK_TAG` through the reader every pod's launcher is pushed the check from, so one read of a tag serves both, installs it under `<state_dir>/leak-check/` with the launcher's own installer (`leakguard.InstallServed`: the unpack into a staging directory, the tag recorded, one `--help` run, the rename over what the directory held), and logs `answers: installed the shared public leak check the gh tool's leak guard runs` with the tag and the path.
+  A read or an install that fails refuses the boot with the cause sentence a pod's start is refused with, `the shared public leak check could not be installed: …`.
+  Every boot installs again over what the last one left, so a re-pin, which moves the image's pin and with it the daemon's environment, is the next boot's install of the new tag, logged as `answers: the install of <new tag> replaced the install of <old tag> at <dir>`.
+  Under `runtime: tmux` it is the machine's own check, resolved again for each answer in the daemon's environment as it is for each launch of a pane, since an operator's machine installs, moves and republishes it while the daemon runs.
+  An answer that finds none logs `answers: no shared public leak check on this machine, …`, and every call of that answer is refused with the setup error naming the missing check.
 
 ### The conversation stores
 

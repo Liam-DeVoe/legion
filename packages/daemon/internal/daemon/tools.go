@@ -12,8 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/ghtool"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // daemonTools are the binaries Legion itself runs on the host, or hands a pane: the git and jj of
@@ -99,6 +102,49 @@ func answersGH(lookupEnv func(string) (string, bool), resolved map[string]string
 		return "", fmt.Errorf("answers needs gh on the daemon's host, which the answer loop's gh tool runs, and none was found: set %s to an absolute executable path, or put gh on PATH", toolEnv("gh"))
 	}
 	return gh, nil
+}
+
+// answersLeakCheck is where the shared public leak check comes from that the answer loop's gh tool
+// runs before every call (ghtool.Host.LeakCheck), which a daemon with `answers` reads at boot
+// beside its gh (answersGH). Under tmux it is the machine's own check, resolved in the daemon's
+// environment as a pane's is (ghtool.MachineLeakCheck), and resolved again for each answer
+// (ghTools.hostFor). Under kubernetes it is the tag the daemon installs the check at once its
+// GitHub App can read it (installAnswersLeakCheck): its environment's LEGION_LEAK_CHECK_TAG, the
+// pin the worker image sets for every container it runs, a pod's launcher's and the daemon's
+// alike, since a Kubernetes daemon's environment holds none of the three places a check is
+// resolved from. Boot is refused, naming the check and where it looked, when neither gives one.
+func answersLeakCheck(runtimeName string, lookupEnv func(string) (string, bool)) (check, tag string, err error) {
+	if runtimeName == "kubernetes" {
+		const needs = "answers needs the shared public leak check, which the answer loop's gh tool runs before every call, " +
+			"and a Kubernetes daemon installs it at the tag " + leakguard.TagVariable + " names"
+		tag, _ = lookupEnv(leakguard.TagVariable)
+		switch {
+		case tag == "":
+			return "", "", errors.New(needs + ", which the daemon's environment does not set: run the daemon from the worker image, " +
+				"which sets it to the image's pin, or set it to the tag runtime.kubernetes.image pins (its ARG LEAK_CHECK_TAG)")
+		case !shimwire.ValidLeakCheckTag(tag):
+			return "", "", fmt.Errorf("%s, which is %q, not of the published shape leak-check-v<n>", needs, tag)
+		}
+		return "", tag, nil
+	}
+	if check, err = ghtool.MachineLeakCheck(leakCheckEnviron(lookupEnv)); err != nil {
+		return "", "", fmt.Errorf("answers needs the shared public leak check on the daemon's host, which the answer loop's gh tool runs before every call, "+
+			"and none was found: %w: install it with the check's own installer, or set %s to its path", err, leakguard.CheckVar)
+	}
+	return check, "", nil
+}
+
+// leakCheckEnviron is the daemon's environment as the shared check is resolved from it: the four
+// names leakguard's Resolve reads (the variable naming the check, PATH, and the two that place the
+// configuration home), and never nil, which the guard would read as this process's environment.
+func leakCheckEnviron(lookupEnv func(string) (string, bool)) []string {
+	env := []string{}
+	for _, name := range []string{leakguard.CheckVar, "PATH", "XDG_CONFIG_HOME", "HOME"} {
+		if value, ok := lookupEnv(name); ok {
+			env = append(env, name+"="+value)
+		}
+	}
+	return env
 }
 
 // RefuseScriptGH refuses gh, the first gh on PATH, when it is a script, a file whose first two
