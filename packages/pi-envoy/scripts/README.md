@@ -668,6 +668,9 @@ with `-t` or `--show-token`, alone or among joined short flags (`-at`), or `gh a
 off the command's raw text as the tester's reader reads it (a `-t` after `;`, `&`, `|` or on a
 later line is another command's), which the run's line names ahead of the world's refusal of the
 call (`credential printed`, a residual of *Which of the world's answers are pinned*, below); no
+claim of the run sent a `claims/ready` after its boot's, by the daemon stand-in's own log,
+`<run>/daemon.log`, the call and the claim named (`capability report`, a residual of the same
+section: the stand-in keeps a capability report's rows as the session sent them); no
 call reaches a host other than the loopback, the hosts
 its pane's URLs name and the model gateway its profile's `models.yml` names, but a GET or a HEAD
 with no body, or a `git ls-remote` (which reads refs alone; a fetch, a clone and a push stay off the
@@ -945,15 +948,30 @@ with nothing for a daemon of `ff2a10ef`'s shape. The rule that a review the revi
 decides the round only where its Legion footer names the session the reviewer's claim records,
 and waits while that claim records none, is main's since #4328, read by `byReviewer`'s return and
 `func (e *Engine) reviewersClaim(` in `review.go`; `ff2a10ef` is read by its `byReviewer`, which
-lets the login decide while the reviewer's row names no claim, and by `claimSession`. The stand-in
-takes the run's reviews by it (`daemon-standin.ts`'s `takenForRound`), each by the body the gh
-stand-in answered it with; a review the world held before the run is history it takes as it
-stands, and the head a footer names is not read. The three completion
-refusals (`HANDOFF_SESSION_MISMATCH`, `HANDOFF_ALREADY_RECORDED`, `HANDOFF_NOT_NEW`) have one
+lets the login decide while the reviewer's row names no claim, and by `claimSession`. The rule
+that such a review decides only where the `head` its footer names is the pull request's head, 40
+lowercase hexadecimal characters compared exactly, and is recorded against that head, is main's
+since #2539, read by the footer's decoder in `intake/facts.go` (the `legionFooter` struct of a
+`session` and a `head` string beside a raw `entry`, a decoding error costing the whole footer),
+`LegionHead`'s `fullCommitSHA` and the two cases of `refusesRound` and `reviewHead` in
+`review.go`; `ff2a10ef` is read by its footer decoder, which reads `session` alone, and by the
+decision it records on the review's `commit_id`. The stand-in takes the run's reviews by both
+(`daemon-standin.ts`'s `takenForRound`), each by the body the gh stand-in answered it with
+(`made.body`): from that body's last footer it reads the session and the head the label's
+decoder reads, and a footer that names no head, a prefix, the head in capitals or another head
+decides nothing and leaves the record in `reviewing`. A review is judged at the first read that
+finds it, and a taken one stays taken whatever the head comes to, as the engine keeps the
+decision it recorded; a review the world held before the run is history it takes as it stands.
+The footer's `entry`, which moves the commit a later round's task names as `Last reviewed commit:
+<sha>`, is not read: no scenario gives a reviewer a later round's task (the class search's
+declared-unreachable entry). The three completion refusals (`HANDOFF_SESSION_MISMATCH`,
+`HANDOFF_ALREADY_RECORDED`, `HANDOFF_NOT_NEW`) and the completion route's verdict rule
+(`TESTER_VERDICT_REQUIRED` for a tester's verdict other than `pass` or `fail`,
+`VERDICT_ROLE_FORBIDDEN` for any other role's, each in the words `handoff.go` holds) have one
 shape: every daemon the rig runs names them. A source of neither shape, or of both, refuses the
 batch at `label_facts` and every stand-in's boot, naming each marker and its file. A marker that
 is not found is never read as an older daemon that lacks the behaviour. Both labels of a batch
-are now main `7ce89a9b` or after, so each reads as main's shape of all five; the `ff2a10ef` shape
+are now main `7ce89a9b` or after, so each reads as main's shape of all six; the `ff2a10ef` shape
 of each is read by the rows below alone.
 
 The rig's tests hold both shapes of each file to sources they write themselves, so they need no
@@ -1011,7 +1029,7 @@ measurement each, named where the answer is described: a reply to a reply filed 
 one App's update of another's review, GitHub's 404 body for an endpoint it does not serve, and
 the merge state of an approved, green head on a merge-queue base. A few are stated as
 unmeasured: GitHub's 404 for another App's read of a pending review by id, and the
-rule-violation lines of a refused push beyond the three measured. Four differences are named
+rule-violation lines of a refused push beyond the three measured. Five differences are named
 residuals rather than defects, each an answer the world cannot give as production gives it:
 
 - `remote.origin.vcs`, the key that carries the world's remote. No production clone has it. The
@@ -1026,6 +1044,16 @@ residuals rather than defects, each an answer the world cannot give as productio
   which production gives `gh pr diff` on #2827. The world's pull request is small, as #4326 is, so
   its diff reads are held to #4326's readings with the state difference named
   (`PINNED_GH_STATE`), and no scenario reaches the refusal.
+- The daemon's normalising of a session's capability report (`capabilities.Normalize`: the live
+  table's order, a name it does not know dropped, an unreported row marked open, and
+  `cleanDetail`'s redaction of credentials and control characters and its 1024-byte cut), which
+  the daemon stand-in does not model (the architect's ruling of 2026-11-19T05:18Z). Round 25's 69
+  agents each sent only the boot's `claims/ready`. A second is reachable only by an agent idle at
+  a 5 s tick 30 s or more after its registration (`packages/pi-legion/extensions/legion.ts:705-712`,
+  `capability-schedule.ts`), and the redaction is code no marker reads. A run whose claim sends one
+  is unhealthy from that call on (`rig.sh health`'s rule 22, `capability report`, naming the line
+  and the claim), since the world's capability rows are not production's after it. If a batch
+  loses a run to it, that count buys the model.
 
 **A read with no pin, and an answer this section and the sections below do not name, is not
 claimed to answer as production does.**
@@ -1304,8 +1332,12 @@ first write saw no row of its own completed round. It holds:
   role's that a move of the record starts.
 - `pullRequest` as gh answers the world's pull request at that read: its number, the head its
   branch is at on the run's remote, its state, its merge state as the run's review threads leave
-  it, and the decision of the review that last decided the round; and `mergeWait` while an
-  approval of the head waits in `reviewing` on a merge state the issue may not advance on.
+  it, and the decision of the review that last decided the round, of the reviews the label's
+  engine takes: a person's on its `commit_id`, and the review App's reviewer's own only where the
+  `head` its body's Legion footer names is the pull request's head, which that decision then
+  stands on (the shapes of *Where each service of a run comes from*, above); and `mergeWait`
+  while an approval of the head waits in `reviewing` on a merge state the issue may not advance
+  on.
 - `designGate` and `gatedSteps` as the run's Dispatch holds the issue's spec at that read: its
   document, its latest version and the version a person approved. The seed approves the spec
   (`seed.ts`'s `testerProofIssue`: the issue is its tree's root, whose work waits behind that
@@ -1326,7 +1358,9 @@ with its base (`DIRTY`, `mergeable` `CONFLICTING`) sends the issue from `testing
 `accepting`, `retro` or `merging` back to `implementing`, approved or not, raising the
 implementer's `pass` and no pair and no round, as main's engine moves a conflict (the stand-in
 left a `DIRTY` head in `reviewing` before); and a completion the stand-in takes is written on
-its role's row. Each move into a phase that shows another status
+its role's row. A completion's verdict is held to the route's rule first: a tester's that is not
+`pass` or `fail` is refused 400 `TESTER_VERDICT_REQUIRED`, any other role's 400
+`VERDICT_ROLE_FORBIDDEN`, and nothing is written. Each move into a phase that shows another status
 writes that status to the run's own Dispatch before the request that made the move is answered,
 as the daemon's outbox runs a `dispatch_status` row: under the daemon's own session,
 `legion-daemon:<PROJECT>` (the session the seeds write each status as), and only while
@@ -1655,9 +1689,11 @@ carry the caller's `PUBLIC_LEAK_CHECK` as a pane does (`leak-check-env.ts`), so 
 For each check it prints the class, the reading it makes, its rule, the count of its hits, and each
 hit: `<file>:<line>` (or the world, route or read it names), its text cut, and its verdict,
 `INSTANCE` or `true` with the reason. Then it prints the findings outside the residuals, the
-residuals found with each one's ruling, the residuals no hit matches any more (stale), and the 46
-entries of the hand search of `f853f11b`. It exits 0 when no check has an instance outside the
-residuals and no residual is stale, 1 when one has or one is, and 2 when a check cannot run.
+residuals found with each one's ruling, the residuals no hit matches any more (stale), the
+declared-unreachable entries found with each one's reason, those no declaration matches any more
+(stale), and the 46 entries of the hand search of `f853f11b`. It exits 0 when no check has an
+instance that neither a residual nor an unreachable entry covers and no entry of either is stale,
+1 when one has or one is, and 2 when a check cannot run.
 
 The checks:
 
@@ -1686,12 +1722,23 @@ The checks:
   instance.
 - An agent's world. A record that `rig.sh` copies into the top of a run's directory, whose writer
   prints the rig's own directory, is an instance.
+- A stand-in's declaration of a behaviour it does not model. Every program of the rig (each
+  stand-in it runs among them: `daemon-standin.ts`, `standin-record.ts`, `gh-standin.ts`,
+  `github-standin.ts`, `daemon-pane.ts` and `daemon-pane.go`) is read for `not modelled` in a
+  comment, its words across the comment's lines read as one, with the sentence that holds it and
+  the `Unreachable:` sentence after it, which gives why no scenario's world reaches the behaviour
+  (the architect's ruling of 2026-11-19T04:50Z). Each declaration is an instance, which a
+  residual covers where one was ruled, and an unreachable entry where the worlds show no
+  scenario reaches it; a declaration neither covers is a finding at its file and line.
 - The hand search's greps, each with the rule its hits are judged by.
 
-`class-search.json` holds the residuals and the map of the hand search. Each residual names the
-check that finds it, the pattern of the hit it covers, the date of the architect's ruling, and
-this README's words for it. Each of the hand search's 46 entries names the checks that run it,
-the rows that hold it, or why no mechanical search can.
+`class-search.json` holds the residuals, the declared-unreachable entries and the map of the hand
+search. Each residual names the check that finds it, the pattern of the hit it covers, the date of
+the architect's ruling, and this README's words for it. Each unreachable entry names the check,
+the pattern of the declaration it covers, which holds the declaration's `Unreachable:` sentence,
+and the reason, read from what the worlds serve: a run's boots, the `legion` tool, the record's
+moves, the gh stand-in's head and a run's project. Each of the hand search's 46 entries names the
+checks that run it, the rows that hold it, or why no mechanical search can.
 
 What it does not check:
 

@@ -1397,6 +1397,67 @@ const readersText: Check = {
   run: readerTexts,
 };
 
+// The stand-ins' declarations of what they do not model.
+
+/** A stand-in's declaration that it does not model something, its words split across a
+ * comment's lines read as one. */
+const NOT_MODELLED = /\bnot\s+modell?ed\b/gi;
+/** The declarations of `file` that something is not modelled: each comment block of it (its
+ * consecutive comment lines, `comment`) read as one text, its comment markers cut, and each match
+ * of NOT_MODELLED in it, at the line it starts on, with the sentence that holds it and the
+ * sentence after it where that one gives why no scenario reaches the behaviour (`Unreachable:`),
+ * as the declaration writes them. A sentence ends at a full stop before white space or at the
+ * block's end. */
+export function notModelledIn(tree: Tree, file: string): { line: number; text: string }[] {
+  const lines = tree.lines(file);
+  const found: { line: number; text: string }[] = [];
+  for (let start = 0; start < lines.length; ) {
+    if (!comment(file, lines[start] ?? "")) {
+      start += 1;
+      continue;
+    }
+    let end = start;
+    while (end < lines.length && comment(file, lines[end] ?? "")) end += 1;
+    const offsets: number[] = [];
+    let text = "";
+    for (let at = start; at < end; at++) {
+      offsets.push(text.length);
+      text += `${(lines[at] ?? "").replace(/^\s*(?:\/\*\*?|\*\/|\*|\/\/|#)?\s?/, "")} `;
+    }
+    for (const match of text.matchAll(NOT_MODELLED)) {
+      const at = match.index;
+      let opened = 0;
+      for (const stop of text.slice(0, at).matchAll(/\.\s/g)) opened = stop.index + 2;
+      const stops = [...text.slice(at).matchAll(/\.\s/g)].map((stop) => at + stop.index + 1);
+      const first = stops[0] ?? text.length;
+      const next = text.slice(first).trimStart();
+      const closed = next.startsWith("Unreachable:") ? (stops[1] ?? text.length) : first;
+      let line = start;
+      while (line + 1 < end && (offsets[line + 1 - start] ?? Infinity) <= at) line += 1;
+      found.push({ line: line + 1, text: text.slice(opened, closed).replace(/\s+/g, " ").trim() });
+    }
+    start = end;
+  }
+  return found;
+}
+
+const notModelled: Check = {
+  name: "stand-ins: a behaviour a stand-in declares not modelled",
+  class:
+    "A stand-in that answers otherwise than production where it declares a behaviour not modelled, with no ruling that a scenario cannot reach it or that it is a residual.",
+  reading:
+    "every program of the rig (each stand-in it runs among them: daemon-standin.ts, standin-record.ts, gh-standin.ts, github-standin.ts, daemon-pane.ts and daemon-pane.go, and every other non-test .ts and .go of its directory but the search's own) for `not modelled` in a comment, its words across the comment's lines read as one, each with its sentence and the `Unreachable:` sentence after it",
+  rule: "every declaration is an instance: class-search.json's residuals cover each one ruled a residual, and its `unreachable` entries each one no scenario's world reaches, each by the text the declaration writes; a declaration neither covers is a finding, and an entry no declaration matches is stale",
+  run: (tree) =>
+    programs(tree, /\.(ts|go)$/).flatMap((file) =>
+      notModelledIn(tree, file).map(({ line, text }) => ({
+        at: `${file}:${line}`,
+        text,
+        ...instance("declares a behaviour of production not modelled"),
+      }))
+    ),
+};
+
 // The hand search's greps, each with its rule.
 
 const greps: Check[] = [
@@ -1656,11 +1717,12 @@ export const CHECKS: readonly Check[] = [
   runRecords,
   readersArchive,
   readersText,
+  notModelled,
   ...greps,
 ];
 
 // ---------------------------------------------------------------------------------------------
-// The data: the residuals and the hand search's map.
+// The data: the residuals, the declarations no scenario reaches, and the hand search's map.
 
 const Residual = z.strictObject({
   name: z.string(),
@@ -1671,6 +1733,16 @@ const Residual = z.strictObject({
   source: z.string(),
 });
 export type Residual = z.infer<typeof Residual>;
+/** A declaration of a behaviour not modelled that no scenario's world reaches: the check that
+ * finds it, the pattern of the hit it covers (which holds the `Unreachable:` sentence the
+ * declaration writes beside it), and why, shown by what the worlds serve. */
+const Unreachable = z.strictObject({
+  name: z.string(),
+  check: z.string(),
+  at: z.string(),
+  reason: z.string(),
+});
+export type Unreachable = z.infer<typeof Unreachable>;
 const Search = z.strictObject({
   entry: z.number(),
   finding: z.string(),
@@ -1678,16 +1750,24 @@ const Search = z.strictObject({
   held: z.string().optional(),
   notMechanical: z.string().optional(),
 });
-const Data = z.strictObject({ residuals: z.array(Residual), searches: z.array(Search) });
+const Data = z.strictObject({
+  residuals: z.array(Residual),
+  unreachable: z.array(Unreachable),
+  searches: z.array(Search),
+});
 export type Data = z.infer<typeof Data>;
-/** The data file, checked: each residual names a check, and each entry of the hand search names a
- * check, a row that holds it, or why no mechanical search can, and nothing else. */
+/** The data file, checked: each residual and each unreachable entry names a check, and each entry
+ * of the hand search names a check, a row that holds it, or why no mechanical search can, and
+ * nothing else. */
 export function readData(text: string): Data {
   const data = Data.parse(JSON.parse(text));
   const names = new Set(CHECKS.map(({ name }) => name));
   for (const residual of data.residuals)
     if (!names.has(residual.check))
       throw new Error(`residual ${residual.name} names no check: ${residual.check}`);
+  for (const entry of data.unreachable)
+    if (!names.has(entry.check))
+      throw new Error(`unreachable entry ${entry.name} names no check: ${entry.check}`);
   for (const search of data.searches) {
     const given = [search.check ?? search.held, search.notMechanical].filter(
       (one) => one !== undefined
@@ -1703,27 +1783,33 @@ export function readData(text: string): Data {
   return data;
 }
 
-/** What the search found: each check's hits, each instance as a finding or as the residual that
- * covers it, and each residual no instance is of any more. */
+/** What the search found: each check's hits, each instance as a finding, as the residual that
+ * covers it or as the unreachable entry that does, and each residual and each unreachable entry no
+ * instance is of any more. */
 export interface Result {
   readonly checks: { check: Check; hits: Hit[] }[];
   readonly findings: { check: Check; hit: Hit }[];
   readonly residuals: { residual: Residual; hits: Hit[] }[];
   readonly stale: Residual[];
+  readonly unreachable: { entry: Unreachable; hits: Hit[] }[];
+  readonly staleUnreachable: Unreachable[];
 }
 export function judged(
   checks: { check: Check; hits: Hit[] }[],
-  residuals: readonly Residual[]
+  residuals: readonly Residual[],
+  unreachable: readonly Unreachable[] = []
 ): Result {
   const covered = residuals.map((residual) => ({ residual, hits: [] as Hit[] }));
+  const declared = unreachable.map((entry) => ({ entry, hits: [] as Hit[] }));
+  const covers = (one: { check: string; at: string }, check: Check, hit: Hit) =>
+    one.check === check.name && new RegExp(one.at).test(`${hit.at} ${hit.text}`);
   const findings: Result["findings"] = [];
   for (const { check, hits } of checks)
     for (const hit of hits) {
       if (hit.verdict !== "instance") continue;
-      const by = covered.find(
-        ({ residual }) =>
-          residual.check === check.name && new RegExp(residual.at).test(`${hit.at} ${hit.text}`)
-      );
+      const by =
+        covered.find(({ residual }) => covers(residual, check, hit)) ??
+        declared.find(({ entry }) => covers(entry, check, hit));
       if (by === undefined) findings.push({ check, hit });
       else by.hits.push(hit);
     }
@@ -1732,6 +1818,8 @@ export function judged(
     findings,
     residuals: covered.filter(({ hits }) => hits.length > 0),
     stale: covered.filter(({ hits }) => hits.length === 0).map(({ residual }) => residual),
+    unreachable: declared.filter(({ hits }) => hits.length > 0),
+    staleUnreachable: declared.filter(({ hits }) => hits.length === 0).map(({ entry }) => entry),
   };
 }
 
@@ -1766,6 +1854,19 @@ export function report(result: Result, data: Data, head: string): string {
   }
   out.push("", `== stale residuals (declared, and no instance found): ${result.stale.length}`);
   for (const residual of result.stale) out.push(`  ${residual.name} (${residual.check})`);
+  out.push(
+    "",
+    `== declared unreachable found: ${result.unreachable.length} of ${data.unreachable.length}`
+  );
+  for (const { entry, hits } of result.unreachable) {
+    out.push(`  ${entry.name} (${entry.check}): ${entry.reason}`);
+    for (const hit of hits) out.push(`    ${hit.at}  ${cut(hit.text, 90)}`);
+  }
+  out.push(
+    "",
+    `== stale unreachable entries (declared, and no declaration found): ${result.staleUnreachable.length}`
+  );
+  for (const entry of result.staleUnreachable) out.push(`  ${entry.name} (${entry.check})`);
   out.push("", `== the hand search of f853f11b: ${data.searches.length} entries`);
   for (const search of data.searches) {
     const mapped = [
@@ -1777,7 +1878,7 @@ export function report(result: Result, data: Data, head: string): string {
   }
   out.push(
     "",
-    `result: ${result.findings.length} findings outside the residuals, ${result.residuals.length} residuals found, ${result.stale.length} stale`
+    `result: ${result.findings.length} findings outside the residuals, ${result.residuals.length} residuals found, ${result.unreachable.length} declared unreachable found, ${result.stale.length + result.staleUnreachable.length} stale`
   );
   return `${out.join("\n")}\n`;
 }
@@ -1808,9 +1909,14 @@ if (import.meta.main) {
     const head = Bun.spawnSync(["git", "-C", CHECKOUT, "rev-parse", "HEAD"])
       .stdout.toString()
       .trim();
-    const result = judged(await search(tree, worlds), data.residuals);
+    const result = judged(await search(tree, worlds), data.residuals, data.unreachable);
     process.stdout.write(report(result, data, head === "" ? CHECKOUT : `${CHECKOUT} at ${head}`));
-    process.exitCode = result.findings.length === 0 && result.stale.length === 0 ? 0 : 1;
+    process.exitCode =
+      result.findings.length === 0 &&
+      result.stale.length === 0 &&
+      result.staleUnreachable.length === 0
+        ? 0
+        : 1;
   } catch (error) {
     console.error(`class-search: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 2;

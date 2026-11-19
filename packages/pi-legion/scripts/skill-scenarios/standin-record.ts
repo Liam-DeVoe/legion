@@ -43,7 +43,10 @@ const NAMESPACE = "legion";
 const CONTAINER = "roles";
 /** A DNS label's length, which the daemon cuts a longer Sandbox name to with a hash of its own
  * (packages/daemon/internal/runtime/sandbox/names.go's `dnsName`): not modelled, so a longer name
- * is refused (`sandboxName`). */
+ * is refused (`sandboxName`). Unreachable: a run's project is its world repository's letters and
+ * 12 of a digest (rig.sh's run_project: `fernbrookwidgets` and 12, 28 characters) and its issue
+ * the first its own Dispatch files (`WID-1` in each of round 25's runs), so the pod's name,
+ * `legion-<project>-<issue>`, is 41 characters, and 63 needs an issue key of 27. */
 const MAX_NAME = 63;
 
 /** A session's capability report as the daemon keeps it (`api.CapabilityReportViewOf`): when it

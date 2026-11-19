@@ -69,18 +69,27 @@
  *     writes the completion's commit and record on the row (`row.HandoffCommit`,
  *     `row.HandoffRecord`; `completed`). It read the [completed] roles alone, and took a
  *     threads-closed reviewer's first late completion, which production refuses.
- *     Every rig half is a worker the daemon started, so the refusal of a role the daemon never
- *     started is not modelled;
+ *     The refusal of a role the daemon never started on the issue (`leftItsPhase`'s `RoleRun`)
+ *     is not modelled. Unreachable: a completion reaches this stand-in only on a grant its
+ *     booted agent's claim minted, the claim `claims/register` gave that agent for the role this
+ *     stand-in was started in, and rig.sh's worker_boot starts a stand-in for each agent it boots.
  *   - an older engine (`refused`, main `ff2a10ef`'s among them) has no `leftItsPhase` and refuses
  *     every late completion 409 HANDOFF_NOT_CURRENT_PHASE (`if RoleFor(issue.Phase) !=
  *     fact.Role`).
  * A completion the engine takes that names the record its role's row last named is refused 409
  * HANDOFF_NOT_NEW (`LAST_HANDOFF`). HANDOFF_SESSION_MISMATCH, HANDOFF_ALREADY_RECORDED and
  * HANDOFF_NOT_NEW are every daemon's the rig runs, and a label whose source names one nowhere is
- * refused before it boots (daemon-pane.ts's `labelShapes`). The route's rules on a completion's
- * own fields are not modelled: a tester's verdict (TESTER_VERDICT_REQUIRED), a verdict from any
- * other role (VERDICT_ROLE_FORBIDDEN), an implementer's or a merger's commit (MISSING_FIELD) and
- * a `wakeAt` (CHECK_WAKE_UNEXPECTED).
+ * refused before it boots (daemon-pane.ts's `labelShapes`). The route's rule on a completion's
+ * verdict is every daemon's the rig runs too (`VERDICT_REFUSALS`, held to the label's source the
+ * same way): a tester's verdict other than `pass` or `fail` is refused 400
+ * TESTER_VERDICT_REQUIRED, and any other role's verdict 400 VERDICT_ROLE_FORBIDDEN, before the
+ * fact. Its rules on an implementer's or a merger's commit (MISSING_FIELD) and on a `wakeAt`
+ * (CHECK_WAKE_UNEXPECTED) are not modelled. Unreachable: the `legion` tool sends the commit the
+ * workspace stands on, or the one its record names, with every implementer's completion
+ * (pi-shared's `findHandoffReport`), no scenario boots a merger (rig.sh's worker_boots), and the
+ * tool refuses a phase completion's `wake_at` before it sends one (legion-phase-ops.ts's
+ * `completeHandoff`), a check report being the only completion that carries one, and the record
+ * this serves holding no production check to report on.
  * The phase a completion is of (`phase.Of`) is the served phase when the role works it and
  * otherwise the role's own, its first (below): the implementer's would be retro once the issue
  * stands in merging, where no run of this rig stands. The route's entry fence (`entryFence`:
@@ -88,9 +97,11 @@
  * a phase entry its role's row has moved past, decided by `behindEntryClause` on the head the
  * record names) is not modelled: it compares two entries, the one the claim serves and the one
  * the role's row names, and those differ only once the issue has entered the role's phase again
- * while its worker was on the earlier entry. No run of this rig enters a phase again: the issue
- * leaves `reviewing` at most once and stays where it moved (`servedPhase`), and every other
- * phase stands still, so a rig half's completion is always of the entry its row names.
+ * while its worker was on the earlier entry. Unreachable: no run of this rig enters a phase
+ * again. This stand-in's one forward move is the round's, out of `reviewing` (`servedPhase`);
+ * every other move it makes (`enter`) goes back, a conflict's to `implementing` and a worker's to
+ * a phase before the one it works (`backwardRefusal`), and no scenario boots a role after the
+ * reviewer (rig.sh's runners), so a rig half's completion is always of the entry its row names.
  * The NOT_CURRENT_PHASE code and message are the daemon's own, read from its code at boot
  * (`NOT_CURRENT_PHASE`), because the skill has the worker quote them to its architect. The real
  * daemon's earlier fence, the 409 `HANDOFF_NO_RUN` of a completion it can attribute to
@@ -116,7 +127,10 @@
  * read the phase it moved to, and it posts its sentence on the run's Dispatch (`enter`); it
  * answered `{}` for any `to` and moved nothing, a success the daemon gives no move it refuses,
  * and then took a reason the daemon refuses and posted nothing. The tree's linger
- * (`TREE_LINGERING`) is not modelled, since no tree of the rig leaves the workflow.
+ * (`TREE_LINGERING`) is not modelled. Unreachable: a tree lingers only once it has left the
+ * workflow, done or closed, and no move of this stand-in reaches either (`enter`'s moves are the
+ * round's, a conflict's and a worker's back), nor does any scenario boot the merger whose merge
+ * would (rig.sh's worker_boots).
  *
  * The state document's record of the issue is production's (standin-record.ts, which says what
  * each member is): the tree's architect and a row for each role the world's history ran and
@@ -210,6 +224,7 @@ import {
   RECORD_PHASES,
   serves,
   standinFacts,
+  VERDICT_REFUSALS,
 } from "./daemon-pane";
 import { worldOf } from "./gh-call";
 import {
@@ -466,14 +481,16 @@ const startedAt = new Date().toISOString();
  * The review decides the round and the completion does not, so this moves on what the run's
  * world reports and never on a completion (`roundOutcome`, read at each state read): the head is
  * the tip of the run's own remote, the decision is the last `APPROVED` or `CHANGES_REQUESTED`
- * among the reviews the world held when the run began and those the run left, and GitHub's merge
+ * the engine takes among the reviews the world held when the run began and those the run left
+ * (`takenForRound`), and GitHub's merge
  * state for the head is the one its base's rules leave it in with those reviews, the head's
  * checks and the run's review threads (gh-threads.ts's `mergeStateOf`, which the gh stand-in
  * answers `mergeStateStatus` with): a base that requires an approval holds it `BLOCKED` until one
  * stands, and one that requires conversation resolution until the last thread is resolved. It
  * does what `reviewRound` does with them:
- *   - a change request ends the round rejected whatever head it names and whether or not the
- *     reviewer has completed, and the issue goes back to `implementing` (`TriggerReviewRejected`).
+ *   - a change request the engine takes ends the round rejected whether or not the reviewer has
+ *     completed, and the issue goes back to `implementing` (`TriggerReviewRejected`): a person's
+ *     whatever head it names, and the review App's only at the head its footer names, below.
  *     reviewer-text-findings' defect case reaches it, in `reviewing`;
  *   - an approval of the head (`classify.ApprovalStands`) ends the round approved when GitHub
  *     reports the head `CLEAN`, `UNSTABLE` or `HAS_HOOKS` (`record.MergeState.Mergeable`), and the
@@ -485,20 +502,36 @@ const startedAt = new Date().toISOString();
  *   - an approval of another head is set aside (`classify.ApprovalSetAside`, the round
  *     `stuckApprovedOtherCode`), which is what a push while the record is `reviewing` leaves, and
  *     the issue stays in `reviewing` until a review of the new head decides the round;
- *   - a review the review App submitted decides nothing where it is not the reviewer's own
- *     (`takenForRound`): main's engine since #4328 takes one only where its Legion footer names
- *     the session the reviewer's claim records, and waits while that claim records none.
+ *   - a review the review App submitted decides nothing where it is not the reviewer's own:
+ *     main's engine since #4328 takes one only where its Legion footer names the session the
+ *     reviewer's claim records, and waits while that claim records none; and since #2539 only
+ *     where that footer names the pull request's head, 40 lowercase hexadecimal characters
+ *     compared exactly, which is the head its decision stands on (`takenForRound`). One whose
+ *     footer names no head, or another, leaves the issue in `reviewing`.
  * Once the record has moved on its round it stays where it moved to: a push in `accepting` lands
  * outside any round (`review.go`'s `issue.Phase != phase.Reviewing`, `review_test.go`'s "the
  * approval of the head, then a push"), and only a conflict moves it on. A reviewer's completion
  * after its decision is a late one, answered as the run's label's engine answers it (`handle`'s
  * `handoff/complete`).
  *
+ * Not modelled: the `entry` a review's footer names, by which the reviewer's own deciding review
+ * of the entry its row stands at moves the commit that review read (review.go's
+ * `reviewedCommitStays`, `record.PhaseRow.ReviewedHead`), the commit the task of the reviewer's
+ * next round names as `Last reviewed commit: <sha>` (review_round.go's `namingTheReviewRound`).
+ * Unreachable: no scenario enters `reviewing` a second time, so none is given a later round's
+ * task. This stand-in leaves `reviewing` at most once and never comes back to it (above), no
+ * scenario boots an agent after its reviewer (rig.sh's runners), and the one reviewer task any
+ * scenario gives is rig.sh's own, a first round's (`review-round "$co" '' 1` in
+ * run_reviewer_text_findings: `Last reviewed commit: none. Review entry: 1.`), written before the
+ * stand-in boots.
+ *
  * The check runs of a head move nothing of their own, as they are none of `reviewRound`'s but for
  * the report of a stuck round (`classify.ChecksConcludedOnHead`): a check the base requires holds
  * the merge state `BLOCKED` until it passes, and the record moves on that state. Not modelled: a
- * push on its way (`classify.CodeOnItsWay`), since the run's remote takes each push whole and its
- * tip is never a head the pull request is still waiting for. */
+ * push on its way (`classify.CodeOnItsWay`). Unreachable: the run's remote takes each push whole,
+ * and the gh stand-in answers the pull request's head as that remote's tip at each call
+ * (gh-standin.ts's `current`), the head this reads, so no head the world serves is one the pull
+ * request is still waiting for. */
 let servedPhase = PHASE;
 
 /** The routes of the run's world and the merge state it reports for each head (rig.sh's
@@ -525,14 +558,13 @@ const MERGEABLE = ["CLEAN", "UNSTABLE", "HAS_HOOKS"];
  * and `mergeStateOf`), and the review that last decided the round, the last whose state decides
  * one (gh-threads.ts's DECIDES, `classify`'s `DecidesRound`: a COMMENT and a pending review
  * decide nothing, and leave the decision before them standing) among the reviews the world held
- * and those the run left (gh-threads.ts's `submittedReviews`) that the engine takes as who wrote
- * them goes (`takenForRound`), its head written whole where the review names the pull request's
- * head by a prefix. That is the round's decision, which main's
- * record holds (`api.PullRequestView`'s `reviewDecision`, "the latest review round's decision"),
- * and not GitHub's review decision, which counts each reviewer's approvals against the base's
- * rule (gh-threads.ts's `reviewDecisionOf`). `round` is whether the world holds a round to read
- * at all: a run with no remote or no fixtures.json has none, and its pull request is the one its
- * world.json names, open, with no merge state read. */
+ * and those the run left (gh-threads.ts's `submittedReviews`) that the engine takes
+ * (`takenForRound`), with the head it is recorded against. That is the round's decision, which
+ * main's record holds (`api.PullRequestView`'s `reviewDecision`, "the latest review round's
+ * decision"), and not GitHub's review decision, which counts each reviewer's approvals against
+ * the base's rule (gh-threads.ts's `reviewDecisionOf`). `round` is whether the world holds a round
+ * to read at all: a run with no remote or no fixtures.json has none, and its pull request is the
+ * one its world.json names, open, with no merge state read. */
 function worldPull(): { pull: PullRequestFacts; round: boolean } {
   const tip = Bun.spawnSync([
     "git",
@@ -550,9 +582,14 @@ function worldPull(): { pull: PullRequestFacts; round: boolean } {
   const record = `${runDir}/${CALLS}`;
   const calls = existsSync(record) ? recordedCalls(record) : [];
   const at = { routes, world };
-  const named = submittedReviews(at, calls).findLast(
-    (review) => DECIDES.includes(review.state) && takenForRound(review)
-  );
+  let decision: PullRequestFacts["decision"];
+  for (const [index, review] of submittedReviews(at, calls).entries()) {
+    if (!DECIDES.includes(review.state)) continue;
+    const taken = TAKEN.get(index) ?? takenForRound(review, head);
+    if (taken === undefined) continue;
+    TAKEN.set(index, taken);
+    decision = { state: review.state, head: taken };
+  }
   const threads = threadState(at, calls);
   const held = heldPullRequest(routes).state;
   return {
@@ -561,67 +598,94 @@ function worldPull(): { pull: PullRequestFacts; round: boolean } {
       head,
       state: typeof held === "string" ? held : "OPEN",
       mergeState: mergeStateOf(at, threads, mergeStates, head, calls),
-      decision:
-        named === undefined
-          ? undefined
-          : {
-              state: named.state,
-              head: named.head.length >= 7 && head.startsWith(named.head) ? head : named.head,
-            },
+      decision,
     },
     round: true,
   };
 }
 
-/** Whether the label's engine takes `review` for the round, as who wrote it goes (review.go's
- * `DecidesRound` and `byReviewer`, `SHAPES.decidesBySession`). A review the run made through a
- * pane of the review App is the reviewer's own only where its Legion footer names the session the
- * reviewer's claim records (`footerSession`): main's engine since #4328 reads that claim's
- * session, which the reviewer's agent records at its registration (`register`), and takes no such
- * review while it records none, so one submitted before the registration waits and is judged
- * again at the next read (`RefusedWhileNoSession`); main `ff2a10ef`'s reads the session off the
- * claim the reviewer's row names, which only the reviewer's taken completion writes there
- * (`completed`), and lets the login decide alone until then. A review of any other App's pane is
- * its writer's and decides as one, and a review the world held before the run is the history the
- * world says the daemon took. Not modelled: the head its footer names (`refusesRound`), which the
- * record reads off the review's `commit_id` instead. */
-function takenForRound(review: SubmittedReview): boolean {
-  if (review.made?.app !== "review") return true;
+/** Each review the engine has taken, by its place among the pull request's reviews
+ * (gh-threads.ts's `submittedReviews`, which lists the world's own and then the run's in the order
+ * the run made them, so a review keeps its place), with the head its decision is recorded against.
+ * The engine judges a review once, at the head the record holds when its webhook delivers it, and
+ * keeps the decision it records (`record.ReviewDecision`) whatever the head comes to: an approval
+ * a later push leaves on another head is set aside, not undone. So a review is judged at the
+ * first read that finds it, the stand-in's delivery of it, and once taken stays taken; one the
+ * engine refuses is judged again at the next read, as the daemon's read of the pull request's
+ * reviews judges a review refused at the head the record held, or while the reviewer's claim
+ * recorded no session, again (`RefusedAtThisHead`, `RefusedWhileNoSession`). */
+const TAKEN = new Map<number, string>();
+
+/** The head the label's engine records `review`'s decision against, where it takes `review` for
+ * the round at a read of the pull request at `head`, and undefined where it takes none
+ * (review.go's `RefusesRound`, `reviewHead`). A review the world held before the run is the
+ * history the world says the daemon took, and a review of any other App's pane is its writer's,
+ * a person's, which decides as one; each stands on its `commit_id`, written whole where it names
+ * the pull request's head by a prefix. A review the run made through a pane of the review App is:
+ *   - the reviewer's own only where its Legion footer names the session the reviewer's claim
+ *     records (`byReviewer`, `SHAPES.decidesBySession`): main's engine since #4328 reads that
+ *     claim's session, which the reviewer's agent records at its registration (`register`), and
+ *     takes no such review while it records none, so one submitted before the registration waits
+ *     (`RefusedWhileNoSession`); main `ff2a10ef`'s reads the session off the claim the reviewer's
+ *     row names, which only the reviewer's taken completion writes there (`completed`), and lets
+ *     the login decide alone until then;
+ *   - taken only where the head its footer names is `head`, compared exactly, and recorded against
+ *     that head (`refusesRound`, `SHAPES.decidesByFooterHead`, main's since #2539): a footer that
+ *     names no head, a head of anything but 40 lowercase hexadecimal characters, or another head
+ *     is refused at this head, and its `commit_id`, which GitHub moves with the pull request,
+ *     decides nothing. Main `ff2a10ef`'s engine reads no head off the footer and records the
+ *     review against its `commit_id`, as a person's. */
+function takenForRound(review: SubmittedReview, head: string): string | undefined {
+  const named = review.head.length >= 7 && head.startsWith(review.head) ? head : review.head;
+  if (review.made?.app !== "review") return named;
+  const footer = legionFooter(review.made.body);
   const recorded = CLAIMS.get("reviewer")?.session ?? "";
-  const named = footerSession(review.made.body);
-  if (SHAPES.decidesBySession) return recorded !== "" && named === recorded;
   const held = completed("reviewer") ? recorded : "";
-  return held === "" || named === held;
+  const byReviewer = SHAPES.decidesBySession
+    ? recorded !== "" && footer.session === recorded
+    : held === "" || footer.session === held;
+  if (!byReviewer) return undefined;
+  if (!SHAPES.decidesByFooterHead) return named;
+  return footer.head === head ? footer.head : undefined;
 }
-/** The session the last Legion footer of a review's `body` names, as the daemon reads it
- * (intake's `lastLegionFooter` and `LegionSession`): the JSON object between the last
- * `<!-- legion:` and the `-->` after it, "" where the body has none, no `-->` closes it, or what
- * it holds is no JSON object whose `session` and `head` are strings or null where it names them
- * (Go's decoder refuses the whole footer then). Keys are matched as Go matches a field, without
- * case. */
-function footerSession(body: string): string {
+/** The fields of a review's Legion footer the label's decoder reads as strings (intake's
+ * `legionFooter`): main's since #2539 decodes `session` and `head`, beside an `entry` it keeps
+ * raw, which refuses no footer; main `ff2a10ef`'s decodes `session` alone. */
+const FOOTER_STRINGS = SHAPES.decidesByFooterHead ? ["session", "head"] : ["session"];
+/** The session and the head the last Legion footer of a review's `body` names, as the label's
+ * daemon reads them (intake's `lastLegionFooter`, `LegionSession` and `LegionHead`): the JSON
+ * object between the last `<!-- legion:` and the `-->` after it, read into the fields its decoder
+ * declares (`FOOTER_STRINGS`). Both are "" where the body has none, no `-->` closes it, or what it
+ * holds is no JSON object whose declared fields are strings or null where it names them (Go's
+ * decoder refuses the whole footer then). Keys are matched as Go matches a field, without case.
+ * The head is the footer's text as it stands: `takenForRound` compares it with the remote's tip,
+ * a whole commit in git's 40 lowercase hexadecimal characters, so a prefix, capitals or a branch
+ * name it holds match no head, as intake's `fullCommitSHA` reads them as no commit at all. */
+function legionFooter(body: string): { session: string; head: string } {
+  const none = { session: "", head: "" };
   const marker = "<!-- legion:";
   const at = body.lastIndexOf(marker);
-  if (at < 0) return "";
+  if (at < 0) return none;
   const rest = body.slice(at + marker.length);
   const end = rest.indexOf("-->");
-  if (end < 0) return "";
+  if (end < 0) return none;
   let footer: unknown;
   try {
     footer = JSON.parse(rest.slice(0, end));
   } catch {
-    return "";
+    return none;
   }
-  if (footer === null) return "";
-  if (typeof footer !== "object" || Array.isArray(footer)) return "";
-  let session = "";
+  if (footer === null) return none;
+  if (typeof footer !== "object" || Array.isArray(footer)) return none;
+  const read = { session: "", head: "" };
   for (const [key, value] of Object.entries(footer)) {
     const field = key.toLowerCase();
     if (field !== "session" && field !== "head") continue;
-    if (value !== null && typeof value !== "string") return "";
-    if (field === "session" && value !== null) session = value;
+    if (!FOOTER_STRINGS.includes(field)) continue;
+    if (value !== null && typeof value !== "string") return none;
+    if (value !== null) read[field] = value;
   }
-  return session;
+  return read;
 }
 
 /** The phase the review round moves the issue to on the pull request `pull` (`worldPull`), or
@@ -1558,9 +1622,13 @@ let pluginContract = (() => {
 
 /** A `claims/ready` as far as the record reads it: the capability report a session sends on one
  * of its own (`claim.CapabilityReport`). The daemon's own normalising of the rows (the live
- * table's order, a name it does not know dropped, a live row not reported marked open:
- * `capabilities.Normalize`) is not modelled: a row is `ok` or open as the session reported it,
- * an open one with the daemon's own words where it gave none (`capabilities.NewRow`). */
+ * table's order, a name it does not know dropped, a live row not reported marked open, each
+ * detail cleaned of credentials and control characters and cut: `capabilities.Normalize`,
+ * `cleanDetail`) is not modelled: a row is `ok` or open as the session reported it, an open one
+ * with the daemon's own words where it gave none (`capabilities.NewRow`). A residual of the
+ * class search (the architect's ruling of 2026-11-19T05:18Z): no agent of round 25 sent a report
+ * past its boot's, and a run that sends one is unhealthy from that call on (health.ts's
+ * `capabilityReport`). */
 const ReadyReport = z.looseObject({
   capabilities: z
     .looseObject({
@@ -1742,9 +1810,11 @@ async function handoffRecord(
  * claim with its secret, is refused `InvalidSecret`, as is every other route that reads the
  * secret. Not modelled: a report under the boot token on a failed claim, which the daemon hands
  * to the failed machine and refuses with the machine's own sentence for a request in a failed
- * claim. Only the Claude bridge reports under a boot token, no rig agent runs one, and a run
- * whose claim failed is unhealthy whatever comes after (health.ts's `failedClaim`), so this
- * answers it with its own sentence and names no daemon's. */
+ * claim. Unreachable: only the Claude bridge reports under a boot token, and every agent a
+ * scenario boots is Oh My Pi with the label's pi-legion plugin, whose report names the claim and
+ * its secret (packages/pi-legion/src/turn-outcome.ts); a run whose claim failed is unhealthy
+ * whatever comes after (health.ts's `failedClaim`), so this answers such a report with its own
+ * sentence and names no daemon's. */
 function turnOutcome(body: unknown): Response {
   const parsed = LegionTurnOutcomeRequest.safeParse(body);
   if (!parsed.success) return json(400, { error: parsed.error.message });
@@ -1887,6 +1957,26 @@ async function handle(
       // generation 1, so the route attributes its completion to a run; nor is the entry fence
       // (the module doc says why).
       const phase = served();
+      // The route's rule on the verdict, before the fact (handoff.go's `answerCompletion`): a
+      // tester reports `pass` or `fail`, and no other role reports one, each refused 400 in the
+      // words every daemon the rig runs gives (daemon-pane.ts's VERDICT_REFUSALS, held to the
+      // label's source at boot). The `legion` tool sends whatever verdict the agent names, and
+      // the reviewer's prompt names this refusal (prompts/go/reviewer.md), so either is an agent's
+      // own call; this took both.
+      const { verdict } = parsed.data;
+      const verdictRefusal =
+        role === "tester"
+          ? verdict === "pass" || verdict === "fail"
+            ? undefined
+            : VERDICT_REFUSALS.tester
+          : verdict === ""
+            ? undefined
+            : VERDICT_REFUSALS.other;
+      if (verdictRefusal !== undefined)
+        return {
+          phase,
+          response: failure(400, verdictRefusal.code, verdictRefusal.message),
+        };
       const { handoffId, handoffVersion, commit } = parsed.data;
       const namesRecord = handoffId !== undefined || handoffVersion !== undefined;
       // The route (packages/daemon/internal/api/handoff.go), as the label's daemon has it

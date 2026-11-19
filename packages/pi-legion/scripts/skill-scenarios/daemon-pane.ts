@@ -753,6 +753,15 @@ export interface LabelShapes {
    * the session off the claim the reviewer's row names, which only the reviewer's completion
    * writes there, and lets the login decide alone while the row names none. */
   readonly decidesBySession: boolean;
+  /** A review the review App submitted decides the round only where the head its Legion footer
+   * names, 40 lowercase hexadecimal characters, is the pull request's head, compared exactly, and
+   * its decision is recorded against that head: a footer that names no head, or another, decides
+   * nothing (review.go's `refusesRound` and `reviewHead`, intake's `LegionHead` and
+   * `fullCommitSHA`, main's since #2539, a4c0ff994a). Its footer is decoded as a JSON object whose
+   * `session` and `head` are strings, beside an `entry` kept raw (intake's `legionFooter`). False
+   * for main `ff2a10ef`'s engine, which records a review's decision against its `commit_id` and
+   * decodes the footer's `session` alone. */
+  readonly decidesByFooterHead: boolean;
 }
 
 const EFFECTS = "daemon/internal/workflow/effects.go";
@@ -764,6 +773,26 @@ const COMPLETION_REFUSALS = [
   ["HANDOFF_ALREADY_RECORDED", "daemon/internal/api/handoff.go"],
   ["HANDOFF_NOT_NEW", "daemon/internal/workflow/engine.go"],
 ] as const;
+/** The completion route's refusals of a completion's verdict, in the words every daemon the rig
+ * runs gives them (handoff.go's `answerCompletion`, this checkout's and main `ff2a10ef`'s alike):
+ * a tester's that is neither `pass` nor `fail`, and one any other role reports. The daemon
+ * stand-in answers by them; `labelShapes` holds a label's source to them (`VERDICT_RULE`). */
+export const VERDICT_REFUSALS = {
+  tester: { code: "TESTER_VERDICT_REQUIRED", message: "tester verdict must be pass or fail" },
+  other: { code: "VERDICT_ROLE_FORBIDDEN", message: "only a tester may report a verdict" },
+} as const;
+/** The route's verdict rule as every daemon the rig runs has it: each condition, then its 400 in
+ * the words `VERDICT_REFUSALS` restates. */
+const VERDICT_RULE: readonly Marker[] = [
+  {
+    file: "daemon/internal/api/handoff.go",
+    text: `if grant.Role == claim.RoleTester && req.Verdict != "pass" && req.Verdict != "fail" {\n\t\twriteFailure(w, http.StatusBadRequest, "${VERDICT_REFUSALS.tester.code}", "${VERDICT_REFUSALS.tester.message}")`,
+  },
+  {
+    file: "daemon/internal/api/handoff.go",
+    text: `if grant.Role != claim.RoleTester && req.Verdict != "" {\n\t\twriteFailure(w, http.StatusBadRequest, "${VERDICT_REFUSALS.other.code}", "${VERDICT_REFUSALS.other.message}")`,
+  },
+];
 /** The workflow's status write as main `ff2a10ef`'s daemon has it, with no message to post: what
  * that older daemon has in the place of each sentence a move posts on the issue, and so of the
  * refusal of a backward move's reason that sentence would carry. */
@@ -827,19 +856,78 @@ const BY_ROW_SESSION: readonly Marker[] = [
   },
   { file: REVIEW, text: "func (e *Engine) claimSession(" },
 ];
+/** The file the daemon's intake reads a review's Legion footer in. */
+const FACTS = "daemon/internal/intake/facts.go";
+/** Where every daemon the rig runs finds a review's Legion footer: the JSON object between the
+ * last `<!-- legion:` of its body and the first `-->` after it. */
+const FOOTER_FOUND: readonly Marker[] = [
+  { file: FACTS, text: 'const legionFooterMarker = "<!-- legion:"' },
+  { file: FACTS, text: "at := strings.LastIndex(r.Body, legionFooterMarker)" },
+  { file: FACTS, text: 'end := strings.Index(rest, "-->")' },
+];
+/** The head a review of the review App decides on, as main's engine since #2539 reads it: the
+ * footer decoded whole into `session` and `head` strings and a raw `entry`, a decoding error
+ * costing the whole footer; its head a commit only at 40 lowercase hexadecimal characters; a
+ * review App review that names no head, or another than the pull request's, refused; and the
+ * decision of a review App review recorded against that head, a person's against its
+ * `commit_id`. */
+const BY_FOOTER_HEAD: readonly Marker[] = [
+  ...FOOTER_FOUND,
+  {
+    file: FACTS,
+    text: 'type legionFooter struct {\n\tSession string          `json:"session"`\n\tHead    string          `json:"head"`\n\tEntry   json.RawMessage `json:"entry"`\n}',
+  },
+  {
+    file: FACTS,
+    text: "var footer legionFooter\n\tif err := json.Unmarshal([]byte(rest[:end]), &footer); err != nil {\n\t\treturn legionFooter{}\n\t}",
+  },
+  {
+    file: FACTS,
+    text: 'head := r.lastLegionFooter().Head\n\tif !fullCommitSHA(head) {\n\t\treturn ""\n\t}',
+  },
+  { file: FACTS, text: "\tif len(s) != 40 {\n\t\treturn false\n\t}" },
+  { file: FACTS, text: "if (c < '0' || c > '9') && (c < 'a' || c > 'f') {" },
+  { file: REVIEW, text: 'switch head := review.LegionHead(); {\n\tcase head == "":' },
+  { file: REVIEW, text: "\tcase head != pr.HeadSHA:" },
+  {
+    file: REVIEW,
+    text: "reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: e.reviewHead(fact)}",
+  },
+  {
+    file: REVIEW,
+    text: "if e.byReviewApp(review.Author) {\n\t\treturn review.LegionHead()\n\t}\n\treturn review.CommitID",
+  },
+];
+/** The same as main `ff2a10ef`'s engine has it: the footer's `session` decoded alone, and every
+ * review's decision recorded against its `commit_id`, which no footer's head refuses. */
+const BY_COMMIT_ID: readonly Marker[] = [
+  ...FOOTER_FOUND,
+  {
+    file: FACTS,
+    text: 'var footer struct {\n\t\tSession string `json:"session"`\n\t}\n\tif err := json.Unmarshal([]byte(rest[:end]), &footer); err != nil {',
+  },
+  {
+    file: REVIEW,
+    text: "reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: fact.CommitID}",
+  },
+];
 
 /** What the daemon source of `checkout` posts, refuses, publishes, ends a reviewer's task with and
  * takes a review of the review App for, each read as one of two shapes: main's since the change
- * that brought it, by its own marker, or main `ff2a10ef`'s, which predates all five changes, by
+ * that brought it, by its own marker, or main `ff2a10ef`'s, which predates all six changes, by
  * the code it has in their place (`STATUS_WITHOUT_MESSAGE`, `OUTBOX_WITHOUT_HOLDERS`,
- * `ROW_AS_QUEUED`, `BY_ROW_SESSION`). The completion refusals have one shape, every daemon the rig
- * runs holding them. Throws, naming each marker and its file, for a source of no shape or of both
- * (`sourceShape`), which refuses the batch at rig.sh's label_facts and a stand-in's boot. */
+ * `ROW_AS_QUEUED`, `BY_ROW_SESSION`, `BY_COMMIT_ID`). The completion refusals and the route's
+ * verdict rule have one shape, every daemon the rig runs holding them. Throws, naming each marker
+ * and its file, for a source of no shape or of both (`sourceShape`), which refuses the batch at
+ * rig.sh's label_facts and a stand-in's boot. */
 export function labelShapes(checkout: string): LabelShapes {
   for (const [code, file] of COMPLETION_REFUSALS)
     sourceShape(checkout, `the completion refusal ${code}`, [
       { name: "every daemon the rig runs", markers: [{ file, text: `"${code}"` }], value: true },
     ]);
+  sourceShape(checkout, "the completion route's verdict rule", [
+    { name: "every daemon the rig runs", markers: VERDICT_RULE, value: true },
+  ]);
   const older = {
     name: "main ff2a10ef's daemon, whose status write posts no message",
     markers: [STATUS_WITHOUT_MESSAGE],
@@ -889,6 +977,14 @@ export function labelShapes(checkout: string): LabelShapes {
       {
         name: "main ff2a10ef's daemon, which reads the session off the reviewer's row",
         markers: BY_ROW_SESSION,
+        value: false,
+      },
+    ]),
+    decidesByFooterHead: sourceShape(checkout, "the head a review of the review App decides on", [
+      { name: "main's daemon since #2539", markers: BY_FOOTER_HEAD, value: true },
+      {
+        name: "main ff2a10ef's daemon, which records a review's decision against its commit_id",
+        markers: BY_COMMIT_ID,
         value: false,
       },
     ]),

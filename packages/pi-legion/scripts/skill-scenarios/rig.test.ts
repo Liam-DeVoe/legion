@@ -3789,6 +3789,38 @@ describe("health", () => {
     expect(stdout).toContain("health: failed claim: 1 of 2 runs\n");
   });
 
+  // Catches: a run whose claim sent a capability report after its boot's ready read as healthy.
+  // The daemon normalises a report's rows and cleans each detail (`capabilities.Normalize`), which
+  // the stand-in does not model (the class search's residual of 2026-11-19T05:18Z), so from that
+  // call on the world's capability rows are not production's. Each stand-in's part of the log is
+  // one claim's: a boot ready refused and sent again is still the boot's, and the next agent's own
+  // boot ready, after its stand-in's opening line, is that agent's first.
+  test("a run whose claim sent a claims/ready after its boot's is unhealthy", () => {
+    const ready = (status: number, role: string, minute: number) => ({
+      at: `2026-11-13T18:0${minute}:00.000Z`,
+      method: "POST",
+      path: "/legion/v1/claims/ready",
+      status,
+      role,
+      sessionId: `ses-${role}`,
+    });
+    const reported = run("threads-closed-code-defect-head-14", [
+      [ready(403, "implementer", 0), ready(204, "implementer", 1)],
+      [ready(204, "reviewer", 2), ready(204, "reviewer", 3)],
+    ]);
+    const booted = run("threads-closed-code-defect-head-15", [
+      [ready(403, "implementer", 0), ready(204, "implementer", 1)],
+      [ready(204, "reviewer", 2)],
+    ]);
+    const { code, stdout } = health(reported, booted);
+    expect(code).toBe(1);
+    expect(verdict(stdout, reported)).toBe(
+      "threads-closed-code-defect-head-14  unhealthy: capability report: daemon.log:6 is a claims/ready of the reviewer's claim (session ses-reviewer) at 2026-11-13T18:03:00.000Z, after its boot's, so from that call on the world's capability rows are not production's (the daemon normalises a report's rows, which the stand-in does not)"
+    );
+    expect(verdict(stdout, booted)).toBe("threads-closed-code-defect-head-15  healthy");
+    expect(stdout).toContain("health: capability report: 1 of 2 runs\n");
+  });
+
   // Catches: a code outside the run's own entry read as allowed because some entry allows it. The
   // run is built from an older daemon, whose answers are read for it.
   test.skipIf(withoutGo)("a refusal whose code is outside the run's entry is unhealthy", () => {

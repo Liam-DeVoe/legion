@@ -376,7 +376,10 @@ async function standin(
     z.looseObject({ settings: z.record(z.string(), z.unknown()) }).parse(await body()).settings;
   /** `POST /legion/v1/handoff/complete` on a grant minted for it, naming a handoff record when
    * `handoff` and naming none otherwise, which is the completion of a worker that has written
-   * no record; `extra` is any key a label's own contract sends beside them. */
+   * no record, with the verdict the role's `legion` tool sends where the agent names none of its
+   * own: `pass` for the tester and none for every other role, since the daemon refuses a verdict
+   * of any other (VERDICT_ROLE_FORBIDDEN); `extra` is any key a label's own contract sends beside
+   * them. */
   const complete = async (handoff: boolean, extra: Record<string, unknown> = {}) => {
     const minted = await (
       await fetch(`${url}/legion/v1/grants`, {
@@ -395,7 +398,7 @@ async function standin(
       body: JSON.stringify({
         grantId: grant.grantId,
         summary: "the round is in",
-        verdict: "pass",
+        verdict: role === "tester" ? "pass" : "",
         ...(handoff ? { handoffId: "h-review", handoffVersion: 1 } : {}),
         ...extra,
       }),
@@ -517,7 +520,8 @@ function pullRequest(dir: string, state = "CLEAN") {
       return git(work, "rev-parse", "HEAD");
     },
     approve: (commit = head, as?: { role: string; body: string }) => review("APPROVE", commit, as),
-    requestChanges: (commit = head) => review("REQUEST_CHANGES", commit),
+    requestChanges: (commit = head, as?: { role: string; body: string }) =>
+      review("REQUEST_CHANGES", commit, as),
   };
 }
 
@@ -559,6 +563,122 @@ test.skipIf(skip)(
   },
   600_000
 );
+
+/** A Legion footer naming `session` and, where it is given, `head`, as a reviewer writes one. */
+const footerOf = (session: string, head?: string) =>
+  `the round's review\n\n<!-- legion: {"session":"${session}","phase":"review"${head === undefined ? "" : `,"head":"${head}"`},"entry":"1"} -->`;
+
+// Catches: a stand-in that takes a review of the review App for the round on its `commit_id`.
+// Main's engine since #2539 (review.go's `refusesRound`, intake's `LegionHead`) takes one only
+// where the head its Legion footer names is the pull request's head, 40 lowercase hexadecimal
+// characters compared exactly, and records its decision against that head (`reviewHead`): an
+// approval or a request for changes whose footer names no head, a prefix, the head in capitals or
+// another head decides nothing and leaves the record in `reviewing`, and one whose footer names
+// the head decides whatever `commit_id` GitHub gives it. A person's review is held to no footer
+// (the rows above).
+test.skipIf(skip)(
+  "a review of the review App decides the round only where its footer names the pull request's head",
+  async () => {
+    const daemon = await standin("reviewer");
+    try {
+      const pull = pullRequest(daemon.dir);
+      await boots(daemon.post, AGENT);
+      const as = (body: string) => ({ role: "reviewer", body });
+      pull.requestChanges(pull.head, as(footerOf(AGENT, "0".repeat(40))));
+      expect(await daemon.phase()).toBe("reviewing");
+      for (const named of [
+        undefined,
+        pull.head.slice(0, 12),
+        pull.head.toUpperCase(),
+        "0".repeat(40),
+        `${pull.head} `,
+      ]) {
+        pull.approve(pull.head, as(footerOf(AGENT, named)));
+        expect([named, await daemon.phase()]).toEqual([named, "reviewing"]);
+      }
+      pull.approve("0".repeat(40), as(footerOf(AGENT, pull.head)));
+      expect((await served(daemon.body)).issue).toMatchObject({
+        phase: "accepting",
+        pullRequest: { head: pull.head, reviewDecision: "approved" },
+      });
+    } finally {
+      daemon.stop();
+    }
+    const rejected = await standin("reviewer");
+    try {
+      const pull = pullRequest(rejected.dir);
+      await boots(rejected.post, AGENT);
+      pull.requestChanges("0".repeat(40), {
+        role: "reviewer",
+        body: footerOf(AGENT, pull.head),
+      });
+      expect(await rejected.phase()).toBe("implementing");
+    } finally {
+      rejected.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that judges a review of the review App again at every read, so a push
+// after the approval its footer's head decided undoes the approval. The engine judges a review
+// once, at the head the record holds when it is delivered, and keeps the decision it recorded
+// (`record.ReviewDecision`): the push sets the approval aside (`classify.ApprovalSetAside`), the
+// record still reads it, and only an approval of the new head ends the round.
+test.skipIf(skip)(
+  "an approval its footer's head decided stays the round's decision after a push",
+  async () => {
+    const daemon = await standin("reviewer");
+    try {
+      const pull = pullRequest(daemon.dir, "BLOCKED");
+      await boots(daemon.post, AGENT);
+      pull.approve(pull.head, { role: "reviewer", body: footerOf(AGENT, pull.head) });
+      expect((await served(daemon.body)).issue).toMatchObject({
+        phase: "reviewing",
+        pullRequest: { head: pull.head, reviewDecision: "approved" },
+      });
+      const fixed = pull.push();
+      expect((await served(daemon.body)).issue).toMatchObject({
+        phase: "reviewing",
+        pullRequest: { head: fixed, reviewDecision: "approved" },
+      });
+      pull.approve(fixed, { role: "reviewer", body: footerOf(AGENT, fixed) });
+      expect(await daemon.phase()).toBe("accepting");
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// The reason daemon-standin.ts's declaration of the footer's `entry` stays "not modelled": no
+// scenario gives a reviewer a later round's task, the one task that names the commit the entry
+// moves (`Last reviewed commit: <sha>`). Read off rig.sh itself: each runner's boots, in the order
+// it makes them, boot no agent after its reviewer, so no run's record re-enters `reviewing` through
+// an implementer's and a tester's rounds after the review; and the one reviewer task the rig writes
+// names the first round (`review-round "$co" '' 1`: no commit, entry 1). Catches: a runner that
+// boots an agent after its reviewer, or a second round's task, left beside a declaration that
+// says no scenario reaches either.
+test("no scenario gives a reviewer a later round's task, so the footer's entry moves nothing a run reads", () => {
+  const script = readFileSync(path.join(import.meta.dir, "rig.sh"), "utf8");
+  const booted = new Map<string, string[]>();
+  let runner = "";
+  for (const line of script.split("\n")) {
+    const opened = /^(run_\w+)\(\) \{/.exec(line);
+    if (opened?.[1] !== undefined) runner = opened[1];
+    if (line === "}") runner = "";
+    const boot = /^\s*worker_boot "[^"]*" "\$project" (\w+)/.exec(line);
+    if (boot?.[1] !== undefined) booted.set(runner, [...(booted.get(runner) ?? []), boot[1]]);
+  }
+  expect(booted.has("")).toBe(false);
+  const reviewers = [...booted].filter(([, roles]) => roles.includes("reviewer"));
+  expect(reviewers.length).toBeGreaterThan(0);
+  for (const [name, roles] of reviewers)
+    expect([name, roles.indexOf("reviewer")]).toEqual([name, roles.length - 1]);
+  expect(
+    [...script.matchAll(/daemon-pane\.ts" review-round (.*)\)/g)].map(([, args]) => args)
+  ).toEqual([`"$co" '' 1`]);
+});
 
 // Catches: a stand-in that moves the issue to `accepting` on the reviewer's completion. Main's
 // engine ends the round on the review, not the completion (review.go's `reviewRound`,
@@ -2754,9 +2874,11 @@ test.skipIf(skip)(
 // set as much as one taken here), or answers the seeded completion sent again as a new one (its
 // fact is one the workflow was handed: HANDOFF_ALREADY_RECORDED); and one that refuses a record
 // the daemon's own session wrote in the words for another worker's, where the daemon says the
-// record was carried from before handoffs moved to the Dispatch issue. The seeded review record
-// here is one the completing session wrote itself, which is the one case the route's session
-// check lets through.
+// record was carried from before handoffs moved to the Dispatch issue. The seeded records here
+// are ones the completing session wrote itself, which is the one case the route's session check
+// lets through. Another fact naming the same record is the tester's alone: a verdict is the one
+// field a role may report otherwise of one handoff, and only the tester reports one
+// (VERDICT_ROLE_FORBIDDEN, the row below).
 test.skipIf(skip)(
   "the record a role's row last named is no new handoff, and a completion the workflow was handed is not handed again",
   async () => {
@@ -2779,16 +2901,6 @@ test.skipIf(skip)(
             "the reviewer completion of phase reviewing (pass 0 through it) naming handoff record seed-review (review version 1) was already received; this call changed nothing",
         },
       ]);
-      // The same record under another verdict is another fact, of a record that is not new.
-      const stale = await reviewer.complete(true, named);
-      expect([stale.status, await stale.json()]).toEqual([
-        409,
-        {
-          code: "HANDOFF_NOT_NEW",
-          error:
-            "the reviewer named handoff record seed-review for its previous phase of LWEVAL-1; write this phase's handoff with `dispatch handoff-write --issue LWEVAL-1 --phase review --body-file <file>` before completing",
-        },
-      ]);
       const carried = await reviewer.complete(true, {
         handoffId: "daemon-review",
         handoffVersion: 3,
@@ -2801,12 +2913,85 @@ test.skipIf(skip)(
             "handoff record daemon-review (review version 3) was written by the daemon's own session legion-daemon:LWEVAL, as a record carried from before handoffs moved to the Dispatch issue is, not by this claim's session 01a0f2cc: read it with `dispatch handoff-read --issue LWEVAL-1 --phase review`, write it again with `dispatch handoff-write --issue LWEVAL-1 --phase review --body-file <file>` from this session, then complete naming the new record; this completion changed nothing",
         },
       ]);
-      // None of the three wrote the row.
+      // Neither wrote the row.
       expect((await served(reviewer.body)).issue.workers.reviewer).toMatchObject({
         handoffRecord: seededRecord("review"),
       });
     } finally {
       reviewer.stop();
+    }
+    const tester = await standin("tester", "", undefined, {
+      seeds: ["plan", "implement", "test"],
+      records: ownRecord("seed-test", "test", 1),
+    });
+    try {
+      const named = { handoffId: "seed-test", handoffVersion: 1 };
+      // The seeded completion, sent again: the tester's of `testing`, with its passing verdict.
+      const again = await tester.complete(true, named);
+      expect([again.status, await again.json()]).toEqual([
+        409,
+        {
+          code: "HANDOFF_ALREADY_RECORDED",
+          error:
+            "the tester completion of phase testing (pass 0 through it) naming handoff record seed-test (test version 1) was already received; this call changed nothing",
+        },
+      ]);
+      // The same record under another verdict is another fact, of a record that is not new.
+      const stale = await tester.complete(true, { ...named, verdict: "fail" });
+      expect([stale.status, await stale.json()]).toEqual([
+        409,
+        {
+          code: "HANDOFF_NOT_NEW",
+          error:
+            "the tester named handoff record seed-test for its previous phase of LWEVAL-1; write this phase's handoff with `dispatch handoff-write --issue LWEVAL-1 --phase test --body-file <file>` before completing",
+        },
+      ]);
+      expect((await served(tester.body)).issue.workers.tester).toMatchObject({
+        handoffRecord: seededRecord("test"),
+      });
+    } finally {
+      tester.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that takes a completion's verdict from any role, and a tester's completion
+// with none. The daemon's completion route refuses, before the fact and so writing nothing, a
+// verdict from any role but the tester (400 VERDICT_ROLE_FORBIDDEN), which the reviewer's prompt
+// names and the `legion` tool sends whenever the agent names one, and a tester's that is neither
+// `pass` nor `fail` (400 TESTER_VERDICT_REQUIRED), each in every daemon's words
+// (daemon-pane.ts's VERDICT_REFUSALS). The same completions without the fault are taken.
+test.skipIf(skip)(
+  "a completion's verdict is the tester's alone, and the tester's is pass or fail",
+  async () => {
+    const reviewer = await standin("reviewer");
+    try {
+      const refused = await reviewer.complete(true, { verdict: "pass" });
+      expect([refused.status, await refused.json()]).toEqual([
+        400,
+        { code: "VERDICT_ROLE_FORBIDDEN", error: "only a tester may report a verdict" },
+      ]);
+      expect("handoffRecord" in ((await served(reviewer.body)).issue.workers.reviewer ?? {})).toBe(
+        false
+      );
+      expect((await reviewer.complete(true)).status).toBe(200);
+    } finally {
+      reviewer.stop();
+    }
+    const tester = await standin("tester");
+    try {
+      for (const verdict of ["", "pending"]) {
+        const refused = await tester.complete(true, { verdict });
+        expect([verdict, refused.status, await refused.json()]).toEqual([
+          verdict,
+          400,
+          { code: "TESTER_VERDICT_REQUIRED", error: "tester verdict must be pass or fail" },
+        ]);
+      }
+      expect((await tester.complete(true, { verdict: "fail" })).status).toBe(200);
+    } finally {
+      tester.stop();
     }
   },
   600_000

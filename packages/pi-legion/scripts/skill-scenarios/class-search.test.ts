@@ -68,7 +68,7 @@ test("the class search finds no instance outside its residuals at this checkout,
     stderr: "",
   });
   expect(stdout).toContain(
-    "result: 0 findings outside the residuals, 5 residuals found, 0 stale\n"
+    "result: 0 findings outside the residuals, 6 residuals found, 8 declared unreachable found, 0 stale\n"
   );
   for (const check of CHECKS) expect(stdout).toContain(`== ${check.name}\n`);
 }, 900_000);
@@ -181,7 +181,8 @@ describe("the worlds the class search builds, under a leak-check git", () => {
 });
 
 // Catches: a data file whose hand search drops an entry of the 46, maps one to no check and no
-// row, or names a check the search has not got; and a residual with no ruling.
+// row, or names a check the search has not got; a residual with no ruling; and an unreachable
+// entry with no reason or naming a check the search has not got.
 test("the data file maps each of the hand search's 46 entries, and gives each residual its ruling", () => {
   const data = readData(readFileSync(DATA, "utf8"));
   expect(data.searches.map(({ entry }) => entry)).toEqual(
@@ -190,14 +191,93 @@ test("the data file maps each of the hand search's 46 entries, and gives each re
   expect(data.residuals.map(({ ruled, words }) => ruled !== "" && words !== "")).toEqual(
     data.residuals.map(() => true)
   );
+  expect(data.unreachable.map(({ reason }) => reason !== "")).toEqual(
+    data.unreachable.map(() => true)
+  );
   expect(() =>
-    readData(JSON.stringify({ residuals: [], searches: [{ entry: 1, finding: "x" }] }))
+    readData(
+      JSON.stringify({ residuals: [], unreachable: [], searches: [{ entry: 1, finding: "x" }] })
+    )
   ).toThrow("hand search entry 1 names neither a check or a row that holds it");
   expect(() =>
     readData(
-      JSON.stringify({ residuals: [], searches: [{ entry: 1, finding: "x", check: ["none"] }] })
+      JSON.stringify({
+        residuals: [],
+        unreachable: [],
+        searches: [{ entry: 1, finding: "x", check: ["none"] }],
+      })
     )
   ).toThrow("hand search entry 1 names no check: none");
+  expect(() =>
+    readData(
+      JSON.stringify({
+        residuals: [],
+        unreachable: [{ name: "x", check: "none", at: "x", reason: "x" }],
+        searches: [],
+      })
+    )
+  ).toThrow("unreachable entry x names no check: none");
+});
+
+/** The check of the stand-ins' declarations of what they do not model. */
+const NOT_MODELLED = "stand-ins: a behaviour a stand-in declares not modelled";
+
+// Catches: a search that misses a stand-in's declaration of a behaviour it does not model, which
+// it answers otherwise than production with no ruling that it is a residual and no showing that
+// no scenario reaches it (the architect's ruling of 2026-11-19T04:50Z). At this checkout every
+// declaration is covered, by the residual it was ruled or by the entry that says why no world
+// reaches it, the `Unreachable:` sentence beside it included; a new declaration is a finding
+// naming its file and line; and an entry no declaration matches is stale, which fails the search.
+test("every stand-in's declaration of a behaviour not modelled is a residual or declared unreachable", async () => {
+  const data = readData(readFileSync(DATA, "utf8"));
+  const check = checkNamed(NOT_MODELLED);
+  const worlds = new Worlds(tree, []);
+  try {
+    const here = judged(
+      [{ check, hits: await check.run(tree, worlds) }],
+      data.residuals,
+      data.unreachable
+    );
+    expect(here.findings.map(({ hit }) => hit.at)).toEqual([]);
+    expect([here.stale, here.staleUnreachable]).toEqual([
+      data.residuals.filter((residual) => residual.check !== NOT_MODELLED),
+      [],
+    ]);
+    expect(here.unreachable.map(({ entry }) => entry.name)).toEqual(
+      data.unreachable.map(({ name }) => name)
+    );
+    const { tree: planted, at } = planting(
+      `${RIG}/gh-standin.ts`,
+      "// A planted behaviour of GitHub's is not\n// modelled here."
+    );
+    const found = judged(
+      [{ check, hits: await check.run(planted, worlds) }],
+      data.residuals,
+      data.unreachable
+    );
+    expect(found.findings.map(({ hit }) => [hit.at, hit.text])).toEqual([
+      [at, "A planted behaviour of GitHub's is not modelled here."],
+    ]);
+    expect(report(found, data, "head")).toContain(
+      `== findings outside the residuals: 1\n  ${NOT_MODELLED}: ${at}  A planted behaviour of GitHub's is not modelled here.\n`
+    );
+    const stale = {
+      name: "a planted entry",
+      check: NOT_MODELLED,
+      at: "planted\\.ts:",
+      reason: "x",
+    };
+    const gone = judged([{ check, hits: await check.run(tree, worlds) }], data.residuals, [
+      ...data.unreachable,
+      stale,
+    ]);
+    expect(gone.staleUnreachable).toEqual([stale]);
+    expect(report(gone, data, "head")).toContain(
+      `== stale unreachable entries (declared, and no declaration found): 1\n  a planted entry (${NOT_MODELLED})\n`
+    );
+  } finally {
+    worlds.done();
+  }
 });
 
 // Catches: a residual whose instance is gone left declared, which would read as a ruling on a
@@ -412,6 +492,7 @@ const PLANTED: readonly [check: string, file: string, line: string][] = [
     `${RIG}/planted.test.ts`,
     'await sql("CREATE DATABASE planted");',
   ],
+  [NOT_MODELLED, `${RIG}/daemon-pane.go`, "// The planted rule is not modelled."],
 ];
 
 // Catches, for each check that greps: a pattern that misses its class, and a rule that calls an

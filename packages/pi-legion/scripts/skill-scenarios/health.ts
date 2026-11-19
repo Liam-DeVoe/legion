@@ -192,6 +192,14 @@
  *      answers both with the token, which no stand-in reads, so the world refuses both (rule 7
  *      would name that refusal); the run is the agent printing its credential, a finding the
  *      tester reports (the architect's ruling of 2026-11-18). It is read right before rule 20;
+ *  22. capability report: no claim of the run sent a `claims/ready` after its boot's
+ *      (`capabilityReport`), read off <run>/daemon.log: each stand-in's part of it, after its
+ *      opening line, serves one claim, whose first `claims/ready` answered 204 is its boot's. A
+ *      later one is a session's capability report, whose rows the daemon normalises and the
+ *      stand-in keeps as sent (daemon-standin.ts's `ReadyReport`, a residual of the class search,
+ *      the architect's ruling of 2026-11-19T05:18Z), so from that call on the world's capability
+ *      rows are not production's. None of round 25's 69 agents sent one. It is read right after
+ *      rule 5;
  * Rules 6, 8 to 13, 17 and 21 read every transcript of the run (`<run>/sessions/**\/*.jsonl`: each
  * agent's and each subagent's) through score.ts's readers. The run's own directory is the one its
  * record names (run-names.ts's `ran`; for a run recorded before the names left the world, the one
@@ -240,6 +248,7 @@ import {
   answerOf,
   BOOTED,
   DAEMON_LOG,
+  DaemonLine,
   daemonLines,
   exited,
   LABELS,
@@ -3924,6 +3933,40 @@ function failedClaim(run: Run): string | undefined {
     : `failed claim: the stand-in answered the ${failed.role}'s turn outcome at ${failed.at} with failed, so the daemon would have failed that claim`;
 }
 
+/** The route a session sends its capability report on, and the boot's ready before it. */
+const READY_PATH = "/legion/v1/claims/ready";
+/** Rule 22: the first `claims/ready` of <run>/daemon.log that a claim sent after its boot's, as a
+ * reason naming the line and the claim. Each daemon stand-in of the run opens its own part of the
+ * log (its opening line, run-records.ts's `Opened`) and serves one claim, its role's; that
+ * claim's boot ready is its first `claims/ready` the stand-in answered 204, the ones refused
+ * before it its retries. A later one is a session's capability report (pi-legion's
+ * capability-schedule.ts), whose rows the stand-in keeps as the session sent them, where the
+ * daemon normalises them (`capabilities.Normalize`, a residual of the class search: the
+ * architect's ruling of 2026-11-19T05:18Z), so from that call on the world's capability rows are
+ * not production's. */
+function capabilityReport(run: Run): string | undefined {
+  const file = path.join(run.dir, DAEMON_LOG);
+  if (!existsSync(file)) return undefined;
+  const booted = new Set<string>();
+  for (const [index, text] of readFileSync(file, "utf8").split("\n").entries()) {
+    if (text.trim() === "") continue;
+    const value: unknown = JSON.parse(text);
+    if (Opened.safeParse(value).success) {
+      booted.clear();
+      continue;
+    }
+    const line = DaemonLine.safeParse(value).data;
+    if (line?.path !== READY_PATH) continue;
+    const role = line.role ?? "unnamed role";
+    if (booted.has(role)) {
+      const session = typeof line.sessionId === "string" ? ` (session ${line.sessionId})` : "";
+      return `capability report: ${DAEMON_LOG}:${index + 1} is a claims/ready of the ${role}'s claim${session} at ${line.at}, after its boot's, so from that call on the world's capability rows are not production's (the daemon normalises a report's rows, which the stand-in does not)`;
+    }
+    if (line.status === 204) booted.add(role);
+  }
+  return undefined;
+}
+
 /** Where rig.sh keeps the first attempt of an agent it relaunched (its `boot_agent`):
  * <run>/boot-1/<role>/, holding that attempt's out.txt, its sessions/ and the daemon stand-in's
  * lines of it (daemon.log), while the second attempt's record stands where any agent's does. */
@@ -4288,6 +4331,8 @@ const RULES: readonly {
   },
   { name: "routes", judge: unservedRoute },
   { name: "failed claim", judge: failedClaim },
+  // Rule 22, read right after its sibling: what the run's daemon took from a claim after its boot.
+  { name: "capability report", judge: capabilityReport },
   { name: "push guard", judge: guardRefusal },
   // Rule 21, read right before rules 20 and 7, which would name the world's refusal of the same
   // call: a call that prints the run's GitHub token is the agent printing its credential.

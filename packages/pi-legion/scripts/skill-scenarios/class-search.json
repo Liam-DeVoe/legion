@@ -39,6 +39,64 @@
       "ruled": "2026-11-18T22:14Z",
       "words": "GitHub's `406 PullRequest.diff too_large` for a pull request whose diff is over 20,000 lines, which production gives `gh pr diff` on #2827. The world's pull request is small, as #4326 is, so its diff reads are held to #4326's readings with the state difference named (`PINNED_GH_STATE`), and no scenario reaches the refusal.",
       "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\""
+    },
+    {
+      "name": "a capability report's normalising",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ .*`capabilities\\.Normalize`, `cleanDetail`\\) is not modelled",
+      "ruled": "2026-11-19T05:18Z",
+      "words": "The daemon's normalising of a session's capability report (`capabilities.Normalize`: the live table's order, unknown names dropped, unreported rows marked open, `cleanDetail`'s credential redaction and 1024-byte cut), which the stand-in does not model. Round 25's 69 agents each sent only the boot's `claims/ready`; a second is reachable only by an agent idle at a 5 s tick 30 s or more after registration (packages/pi-legion/extensions/legion.ts, capability-schedule.ts), and the redaction is code no marker reads. A run that sends one is unhealthy (`rig.sh health`'s rule 22, `capability report`); if a batch loses a run to it, that count buys the model.",
+      "source": "packages/pi-envoy/scripts/README.md, \"The issue record a `read_record` answers\"; health.ts's rule 22"
+    }
+  ],
+  "unreachable": [
+    {
+      "name": "a late completion of a role the daemon never started",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ .*`leftItsPhase`'s `RoleRun`\\) is not modelled\\. Unreachable: ",
+      "reason": "every completion reaches the stand-in on a grant of the claim its booted agent registered for the stand-in's own role, and rig.sh's worker_boot starts one stand-in for each agent it boots"
+    },
+    {
+      "name": "MISSING_FIELD and CHECK_WAKE_UNEXPECTED",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ .*\\(MISSING_FIELD\\) and on a `wakeAt` \\(CHECK_WAKE_UNEXPECTED\\) are not modelled\\. Unreachable: ",
+      "reason": "the legion tool sends a commit with every implementer completion (pi-shared's findHandoffReport), no scenario boots a merger (rig.sh's worker_boots), and the tool refuses a phase completion's wake_at before it sends it (legion-phase-ops.ts's completeHandoff)"
+    },
+    {
+      "name": "the completion route's entry fence",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ .*\\(`entryFence`: .* is not modelled: .* Unreachable: no run of this rig enters a phase again\\.",
+      "reason": "the stand-in's one forward move is the round's out of reviewing, every other move goes back, and no scenario boots an agent after its reviewer (daemon-standin.test.ts's row \"no scenario gives a reviewer a later round's task\")"
+    },
+    {
+      "name": "TREE_LINGERING",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ .*\\(`TREE_LINGERING`\\) is not modelled\\. Unreachable: ",
+      "reason": "no move of the stand-in takes a tree out of the workflow, and no scenario boots a merger (rig.sh's worker_boots)"
+    },
+    {
+      "name": "the footer's entry and the reviewed commit it moves",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ Not modelled: the `entry` a review's footer names.* Unreachable: no scenario enters `reviewing` a second time",
+      "reason": "no scenario gives a reviewer a later round's task: no runner boots an agent after its reviewer, and the one reviewer task is rig.sh's own `review-round \"$co\" '' 1` (the architect's ruling of 2026-11-19; daemon-standin.test.ts's row \"no scenario gives a reviewer a later round's task\")"
+    },
+    {
+      "name": "a push on its way",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ Not modelled: a push on its way \\(`classify\\.CodeOnItsWay`\\)\\. Unreachable: ",
+      "reason": "the gh stand-in answers the pull request's head as the run's remote's tip at each call, the head the daemon stand-in reads"
+    },
+    {
+      "name": "a boot-token turn outcome on a failed claim",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ Not modelled: a report under the boot token on a failed claim.* Unreachable: ",
+      "reason": "only the Claude bridge reports under a boot token, and every agent a scenario boots is Oh My Pi with pi-legion, whose report names the claim and its secret (packages/pi-legion/src/turn-outcome.ts)"
+    },
+    {
+      "name": "a Sandbox name past a DNS label",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "standin-record\\.ts:\\d+ .*`dnsName`\\): not modelled, so a longer name is refused \\(`sandboxName`\\)\\. Unreachable: ",
+      "reason": "a run's pod is legion-<28-character project>-WID-1, 41 characters (rig.sh's run_project; every round 25 run's issue is WID-1)"
     }
   ],
   "searches": [
