@@ -337,11 +337,13 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	if moved {
 		return settleOutcome{}
 	}
-	// The pool every read and write of this settlement goes through, opened once here, before the
-	// warm-up: the warm-up's load reads the stored document through it (loadTxSource), and so
-	// does each pass's transaction, so no settlement takes a connection admission counts for
-	// requests. A settlement that cannot open it writes nothing and stops short, rather than
-	// reading on through the request pool.
+	// The pool every pass of this settlement reads and writes through (settlementPass), opened once
+	// here, before the warm-up, so no settlement takes a connection admission counts for requests.
+	// The warm-up's load of the room is not one of those reads: ygo loads a room through its
+	// persistence adapter with no caller's context (servicePersistenceAdapter.LoadDoc), so the load
+	// reads the pool that owns loads (onLoadDocument, loadTxSource's fallback), as every room load
+	// does, under its own bound (coldReadTimeout). A settlement that cannot open this pool writes
+	// nothing and stops short, rather than reading on through the request pool.
 	settlements, err := s.store.Pool.Settlements()
 	if err != nil {
 		return settle.stoppedShort(fmt.Errorf("open the settlements pool: %w", err))

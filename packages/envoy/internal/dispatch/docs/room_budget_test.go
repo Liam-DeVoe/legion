@@ -2,13 +2,19 @@ package docs
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/reearth/ygo/crdt"
+	"github.com/reearth/ygo/provider/websocket"
+
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -23,10 +29,10 @@ import (
 // still resident when this ends and the count is the documents written, not the budget.
 //
 // The document a browser has open is never one of them, however long ago it was written: the
-// budget's close is ygo's unforced CloseRoom, which refuses a room with a peer, and the service
-// does not even list such a room (its state holds the connection from the moment the browser is
-// authorized). Here that document is the one written first, so an eviction by age alone would take
-// it before any other.
+// budget's close is unforced (ygo's CloseRoomWithin without force), which refuses a room with a
+// peer, and the service does not even list such a room (its state holds the connection from the
+// moment the browser is authorized). Here that document is the one written first, so an eviction
+// by age alone would take it before any other.
 func TestTheRoomBudgetClosesTheLeastRecentlyUsedPeerlessRooms(t *testing.T) {
 	const budget = 8
 	// Wide enough that nothing is closed while the writes run, so the rooms the trim below
@@ -275,6 +281,137 @@ func TestTheTrimKeepsTheRoomCapsHeadroomFreeOfPeerlessRooms(t *testing.T) {
 	})
 }
 
+// The budget counts a room as closed only where its own close unloaded it. ygo's idle sweep takes
+// no close gate, and a close by name answers nil where the sweep took the room out of ygo's map
+// while the close was flushing it (sjawhar/ygo v1.55.1-sami.2, provider/websocket/inject.go:666-681),
+// so the budget's close holds the room in a Server.Apply of its own, under which the sweep evicts
+// nothing (closeBudgetRoom). Here that close is held there (budgetCloseHeld) until ygo's sweep has
+// evicted a room left idle after this one: the sweep takes the rooms past their idle timeout oldest
+// first (sweepIdleRooms, idle_sweep.go:107-129), so it tried this room before that one, and left
+// it. Let go, the close unloads the room once, and the budget and the service's own close count
+// (RoomCounters.RoomCloses) each count that close once and nothing for the room the sweep unloaded
+// meanwhile, which a close made after it finds gone.
+func TestTheBudgetCountsOnlyTheRoomsItsOwnCloseUnloaded(t *testing.T) {
+	service, database := newIdleSweptRoomBudgetService(t, nil)
+	unloads := countUnloads(service)
+	ids := createDocuments(t, database, 2)
+	closing, swept := ids[0], ids[1]
+
+	live, release := holdBudgetClose(t, service, closing)
+	// Used once the close holds the other room, so idle since after it.
+	warmRoom(t, service, swept)
+	waitFor(t, roomWait(t), "ygo's idle sweep to unload the room left idle after the one the budget's close holds", func() bool {
+		return unloads(swept) == 1
+	})
+	if service.srv.GetDoc(closing) != live || unloads(closing) != 0 {
+		t.Fatalf("ygo's idle sweep unloaded %s (%d unloads) while the budget's close held it, want the room left to that close", closing, unloads(closing))
+	}
+	release()
+
+	if got := unloads(closing); got != 1 {
+		t.Fatalf("%s was unloaded %d times, want once, by the budget's close", closing, got)
+	}
+	if service.srv.GetDoc(closing) != nil {
+		t.Fatalf("%s is still resident once the budget's close returned", closing)
+	}
+	if got := service.RoomsClosedToBudget(); got != 1 {
+		t.Fatalf("the budget counts %d rooms closed, want 1: the room its close unloaded, and not the one ygo's idle sweep unloaded", got)
+	}
+	service.closeRoomOverBudget(swept)
+	if got := service.RoomsClosedToBudget(); got != 1 {
+		t.Fatalf("the budget counts %d rooms closed once it tried the room ygo's idle sweep had unloaded, want still 1", got)
+	}
+	for room, want := range map[string]int64{closing: 1, swept: 0} {
+		counters, err := service.RoomCounters(room)
+		if err != nil {
+			t.Fatalf("read the room counters of %s: %v", room, err)
+		}
+		if counters.RoomCloses != want {
+			t.Errorf("the service counts %d closes of %s, want %d", counters.RoomCloses, room, want)
+		}
+	}
+}
+
+// No unload of a peerless room takes a place of the request pool's work outside admission
+// (admission.Outside, the share cmd/dispatch hands the service as Deps.Outside). ygo's idle sweep
+// unloads a room on its own goroutine under the background context (idle_sweep.go:49-61, 222-226),
+// and the budget's close runs on the trim's goroutines and carries no place either
+// (closeBudgetRoom); a socket's admission reads are the service's one taker of a place
+// (socket_admission.go). Here the test holds every place, and an idle unload and a budget close each
+// run to their end all the same: at each unload, and inside the close, the places held are the
+// test's own, and once both have ended nothing has waited for a place or been refused one. With the
+// share full a place taken on either way could not be held, so it would show as work that waited
+// behind the test's holds (MaxQueued) and was refused at the share's wait (Refused).
+func TestNoUnloadOfAPeerlessRoomTakesAPlaceOutsideAdmission(t *testing.T) {
+	outside := admission.New(admission.DefaultLimits()).Outside()
+	service, database := newIdleSweptRoomBudgetService(t, outside)
+	ids := createDocuments(t, database, 2)
+	swept, closed := ids[0], ids[1]
+
+	// The places held at each moment read, on the goroutine of whatever unloaded the room. The
+	// count of unloads wraps this, so an unload is counted once both of its readings are taken.
+	var mu sync.Mutex
+	var held []int
+	sample := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		held = append(held, outside.Stats().InUse)
+	}
+	unload := service.srv.OnUnloadDocument
+	service.srv.OnUnloadDocument = func(ctx context.Context, room string) {
+		sample()
+		unload(ctx, room)
+		sample()
+	}
+	unloads := countUnloads(service)
+	for range admission.OutsideLimit {
+		if err := outside.Take(context.Background(), admission.HeartbeatCheck); err != nil {
+			t.Fatalf("take a place outside admission: %v", err)
+		}
+	}
+	defer func() {
+		for range admission.OutsideLimit {
+			outside.Release()
+		}
+	}()
+	before := outside.Stats()
+
+	warmRoom(t, service, swept)
+	waitFor(t, roomWait(t), "ygo's idle sweep to unload the peerless room", func() bool {
+		return unloads(swept) == 1
+	})
+	_, release := holdBudgetClose(t, service, closed)
+	sample()
+	release()
+	if got := unloads(closed); got != 1 {
+		t.Fatalf("%s was unloaded %d times by the budget's close, want once", closed, got)
+	}
+	if got := service.RoomsClosedToBudget(); got != 1 {
+		t.Fatalf("the budget counts %d rooms closed, want the 1 its close unloaded", got)
+	}
+
+	after := outside.Stats()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(held) != 5 {
+		t.Fatalf("the places were read %d times, want 5: on each side of each of the two unloads, and inside the close", len(held))
+	}
+	for at, inUse := range held {
+		if inUse != admission.OutsideLimit {
+			t.Errorf("reading %d: %d places held during the unloads, want the test's own %d", at, inUse, admission.OutsideLimit)
+		}
+	}
+	if after.InUse != admission.OutsideLimit {
+		t.Errorf("%d places held once both unloads ended, want the test's own %d", after.InUse, admission.OutsideLimit)
+	}
+	if after.MaxQueued != before.MaxQueued {
+		t.Errorf("at most %d waited for a place, %d before the unloads, want no unload to have waited for one", after.MaxQueued, before.MaxQueued)
+	}
+	if after.Refused != before.Refused {
+		t.Errorf("the places refused %+v by the end, %+v before the unloads, want no unload to have asked for one", after.Refused, before.Refused)
+	}
+}
+
 // newRoomBudgetService is a document service whose budget of resident peerless rooms holds rooms
 // of this package's test documents, and whose rooms idle out no sooner than production's
 // roomIdleTimeout, so a test sees the budget's closes and nothing else. The budget is bytes
@@ -382,4 +519,112 @@ func roomOwesSettlement(service *Service, room string) bool {
 	}
 	defer service.unlockState(room, state)
 	return owesSettlementLocked(state, service.isSettleTimerArmed(state.settle))
+}
+
+// newIdleSweptRoomBudgetService is a document service whose rooms ygo's idle sweep evicts a second
+// after their last use (Deps.RoomIdleTimeout; ygo sweeps every second at that timeout), with the
+// test hooks' counters on, outside as the request pool's places outside admission (nil for none),
+// settlements an hour out and no trim of the budget's own: a budget close here is the test's own
+// call (closeRoomOverBudget), so the closes a test sees are its own and the sweep's.
+func newIdleSweptRoomBudgetService(t *testing.T, outside *admission.Outside) (*Service, *store.Store) {
+	t.Helper()
+	database := storetest.Open(t)
+	deps := testServiceDeps(database)
+	deps.Settle = time.Hour
+	deps.RoomIdleTimeout = time.Second
+	deps.TestHooks = true
+	deps.Outside = outside
+	service := New(deps)
+	service.peerlessRoomBytes.Store(0)
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown document service: %v", err)
+		}
+	})
+	return service, database
+}
+
+// countUnloads counts, by name, the rooms ygo unloads, whichever way it unloads them
+// (OnUnloadDocument), each once the service's own unload hook has returned, and answers the count of
+// one room. It wraps the hook, so it is called before any room loads.
+func countUnloads(service *Service) func(room string) int {
+	var mu sync.Mutex
+	counts := make(map[string]int)
+	unload := service.srv.OnUnloadDocument
+	service.srv.OnUnloadDocument = func(ctx context.Context, room string) {
+		unload(ctx, room)
+		mu.Lock()
+		defer mu.Unlock()
+		counts[room]++
+	}
+	return func(room string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return counts[room]
+	}
+}
+
+// holdBudgetClose loads room and starts the budget's close of it (closeRoomOverBudget) on a
+// goroutine, which it holds once the close holds the room in its own Server.Apply, before it
+// closes it (budgetCloseHeld). The room is loaded by an Apply of the test's own that stays inside
+// it until the close holds it in turn, so ygo's idle sweep takes nothing from the room before the
+// close does: it answers once that Apply has left, with the room's instance and a release that lets
+// the close go on and waits for it to return.
+func holdBudgetClose(t *testing.T, service *Service, room string) (*crdt.Doc, func()) {
+	t.Helper()
+	inside, leave, left := make(chan *crdt.Doc, 1), make(chan struct{}), make(chan error, 1)
+	go func() {
+		err := service.srv.Apply(context.Background(), room, func(doc *crdt.Doc, _ func(func(*crdt.Transaction))) {
+			inside <- doc
+			<-leave
+		})
+		if errors.Is(err, websocket.ErrNoChanges) {
+			err = nil
+		}
+		left <- err
+	}()
+	var live *crdt.Doc
+	select {
+	case live = <-inside:
+	case err := <-left:
+		t.Fatalf("load the room of document %s: %v", room, err)
+	case <-time.After(roomWait(t)):
+		t.Fatalf("the room of document %s did not load within %v", room, roomWait(t))
+	}
+	held, release := make(chan struct{}), make(chan struct{})
+	var holding sync.Once
+	service.budgetCloseHeld = func(closing string) {
+		if closing == room {
+			holding.Do(func() { close(held) })
+			<-release
+		}
+	}
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		service.closeRoomOverBudget(room)
+	}()
+	select {
+	case <-held:
+	case <-closed:
+		close(leave)
+		t.Fatalf("the budget's close of %s returned without holding the room", room)
+	case <-time.After(roomWait(t)):
+		close(leave)
+		t.Fatalf("the budget's close of %s did not hold the room within %v", room, roomWait(t))
+	}
+	close(leave)
+	if err := <-left; err != nil {
+		t.Fatalf("the test's own Apply on %s: %v", room, err)
+	}
+	return live, func() {
+		t.Helper()
+		close(release)
+		select {
+		case <-closed:
+		case <-time.After(roomWait(t)):
+			t.Fatalf("the budget's close of %s did not return within %v once let go", room, roomWait(t))
+		}
+		service.budgetCloseHeld = nil
+	}
 }

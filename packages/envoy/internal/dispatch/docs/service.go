@@ -384,6 +384,10 @@ type Service struct {
 	// afterRoomClosePinned runs once that close holds the room it checked in a Server.Apply, before
 	// it closes it (closeRoomInstance). Nil outside tests.
 	afterRoomClosePinned func(room string)
+	// budgetCloseHeld runs once the budget's close of a peerless room holds the instance it checked
+	// in a Server.Apply, before it closes it (closeBudgetRoom). Nil outside tests; tests use it to
+	// hold that close while ygo's idle sweep passes over the room.
+	budgetCloseHeld func(room string)
 	// afterRoomClosed runs once a forced close has closed the room and before the service settles
 	// the room's record (closeReservedRoom, and evictRoom and evictFailed through forgetEvicted,
 	// evictFailed's with the close gate still held): the window in which a browser's connect, the
@@ -1037,10 +1041,10 @@ func New(deps Deps) *Service {
 	// durable before a successor can load. No other close retires a room under a caller either:
 	// ygo's CloseRoom answers ErrRoomInUse while an Apply, a relay Inject or a browser's join is
 	// inside the room (reearth/ygo#342), so the service's closes of an issue's rooms
-	// (setRoomIssueOpen, closeRefusedAppendRoom), of a room with an editor at Shutdown, of a room
-	// it evicts (evictRoom) and of the rooms over that budget wait for those callers to leave
-	// (roomServer.closeWhenFree), and its close of a room whose stored history was replaced under
-	// it runs inside its own Apply on the room (roomServer.closeInstance, ygo's CloseRoomWithin).
+	// (setRoomIssueOpen, closeRefusedAppendRoom), of a room with an editor at Shutdown and of a room
+	// it evicts (evictRoom) wait for those callers to leave (roomServer.closeWhenFree), and its
+	// closes of a room whose stored history was replaced under it and of a room over that budget
+	// run inside its own Apply on the room (roomServer.closeInstance, ygo's CloseRoomWithin).
 	// A write's commit into a room therefore reaches that room's own persistence worker.
 	srv.RoomIdleTimeout = deps.RoomIdleTimeout
 	if srv.RoomIdleTimeout <= 0 {
@@ -2290,7 +2294,7 @@ func (s *Service) closeRoomInstance(ctx context.Context, room string, live *crdt
 		if s.afterRoomClosePinned != nil {
 			s.afterRoomClosePinned(room)
 		}
-		closed, closeErr = s.srv.closeInstance(room, live)
+		closed, closeErr = s.srv.closeInstance(room, live, true)
 	})
 	if err != nil && !errors.Is(err, websocket.ErrNoChanges) {
 		return false, err

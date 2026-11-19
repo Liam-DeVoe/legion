@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -229,6 +231,143 @@ func TestTheSettlementALastBrowserLeavingRunsIsHeldToItsDeadline(t *testing.T) {
 	}
 	if latest := latestVersionNumber(t, service, artifactID); latest != versions {
 		t.Fatalf("latest version = %d, want %d: no settlement past its deadline commits", latest, versions)
+	}
+}
+
+// A document whose settlement is still owed can lose its room to ygo's idle sweep, which reads
+// nothing of the service's settlements: it evicts a room with no peer, no caller inside it and the
+// idle stamp it found (sjawhar/ygo v1.55.1-sami.2, provider/websocket/idle_sweep.go:159-197), and an
+// armed settlement is a timer, which holds no Apply in the room. The settlement then loads the room
+// again itself and settles it. Its warm-up in settleRoomWithin is a Server.Apply made under the
+// deadline its timer runs it to (settleRoom, settleTimeout), which the room's load is handed; the
+// load reads the store on the pool that owns loads (store.Pool.Rooms: onLoadDocument, and
+// servicePersistenceAdapter.LoadDoc, whose read names no pool of its caller's), and the
+// settlement's own passes then read and write on the settlements pool; neither takes a request-pool
+// connection. Here the room idles out a second after the edit while the settle delay is an hour, so
+// the sweep comes first, and nothing else closes a room (the default budget holds thousands of
+// these); the settlement is then run as its timer runs it (SettleNow).
+func TestAnOwedSettlementLoadsTheRoomTheIdleSweepUnloadedAndSettles(t *testing.T) {
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "# First")
+	deps := testServiceDeps(database)
+	deps.Settle = time.Hour
+	// ygo sweeps every second at this timeout; no room is loaded yet.
+	deps.RoomIdleTimeout = time.Second
+	service := New(deps)
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown document service: %v", err)
+		}
+	})
+	settlements, err := service.store.Pool.Settlements()
+	if err != nil {
+		t.Fatalf("open the settlements pool: %v", err)
+	}
+	unloads := countUnloads(service)
+
+	// What the owed settlement does, read on its own goroutine once measuring is set: the loads of
+	// the room, the deadline the first ran under, and the connections each pool handed out from the
+	// first settlement's start to the end of its warm-up. A retry after it, were the sweep to take
+	// the room again mid-settlement, changes none of the first's figures.
+	var measuring atomic.Bool
+	var seen struct {
+		sync.Mutex
+		loads                      int
+		deadline, started          time.Time
+		bounded, warmed, resident  bool
+		roomsAt, requestsAt        uint64
+		roomsTook, requestsTook    uint64
+		settlementsAt, settlements int64
+	}
+	load := service.srv.OnLoadDocument
+	service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {
+		if measuring.Load() && room == artifactID {
+			seen.Lock()
+			if seen.loads++; seen.loads == 1 {
+				seen.deadline, seen.bounded = ctx.Deadline()
+			}
+			seen.Unlock()
+		}
+		return load(ctx, room, doc)
+	}
+	service.beforeSettleStart = func(room string) {
+		if measuring.Load() && room == artifactID {
+			seen.Lock()
+			if seen.started.IsZero() {
+				seen.started = time.Now()
+				seen.roomsAt = poolAcquires(service, store.RoomsPool)
+				seen.requestsAt = poolAcquires(service, store.RequestsPool)
+			}
+			seen.Unlock()
+		}
+	}
+	service.afterSettleWarm = func(room string) {
+		if measuring.Load() && room == artifactID {
+			seen.Lock()
+			if !seen.warmed {
+				seen.warmed = true
+				seen.resident = service.srv.GetDoc(room) != nil
+				seen.roomsTook = poolAcquires(service, store.RoomsPool) - seen.roomsAt
+				seen.requestsTook = poolAcquires(service, store.RequestsPool) - seen.requestsAt
+				seen.settlementsAt = settlements.Stat().AcquireCount()
+			}
+			seen.Unlock()
+		}
+	}
+
+	seedServiceText(t, service, artifactID, "before")
+	settleCurrentGeneration(t, service, artifactID)
+	// The edit, once stored, arms the document's settlement, which the settle delay of an hour
+	// keeps armed while the room idles out.
+	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
+	awaitRoomAppends(t, service, artifactID, "become durable", service.waitForDurableAppends)
+	waitFor(t, roomWait(t), "the stored edit to arm the document's settlement", func() bool {
+		return settlementUnderway(service, artifactID)
+	})
+	versions := latestVersionNumber(t, service, artifactID)
+	before := unloads(artifactID)
+	waitFor(t, roomWait(t), "ygo's idle sweep to unload the room of the document whose settlement is owed", func() bool {
+		return unloads(artifactID) > before && !slices.Contains(service.srv.Rooms(), artifactID)
+	})
+	if !settlementUnderway(service, artifactID) {
+		t.Fatal("the document's settlement is no longer armed once ygo's idle sweep unloaded its room, want it still owed: nothing has run it")
+	}
+	owes, err := settlementPending(context.Background(), service.store.Pool, artifactID)
+	if err != nil {
+		t.Fatalf("read the document's pending settlement: %v", err)
+	}
+	if !owes {
+		t.Fatal("the document's pending-settlement row is gone once its room was unloaded, want it kept: the settlement is owed")
+	}
+
+	measuring.Store(true)
+	service.SettleNow(artifactID)
+	waitForDocumentVersion(t, service.store, artifactID, versions+1)
+	requireLatestVersionMarkdown(t, service, artifactID, "after\n")
+
+	seen.Lock()
+	defer seen.Unlock()
+	seen.settlements = settlements.Stat().AcquireCount() - seen.settlementsAt
+	t.Logf("the settlement's start to its warm-up took %d rooms-pool and %d request-pool connections; its passes took %d settlements-pool connections", seen.roomsTook, seen.requestsTook, seen.settlements)
+	if !seen.warmed || !seen.resident {
+		t.Fatalf("the settlement warmed the room = %v, with the room resident after its warm-up = %v; want the settlement to have loaded the room itself", seen.warmed, seen.resident)
+	}
+	if seen.loads == 0 {
+		t.Fatal("the room was not loaded for the settlement, want its warm-up to have loaded it")
+	}
+	if seen.roomsTook == 0 {
+		t.Error("the settlement's warm-up took no rooms-pool connection, want the room's load to read the store on the pool that owns loads")
+	}
+	if seen.requestsTook != 0 {
+		t.Errorf("the settlement's start and warm-up took %d request-pool connection(s), want none", seen.requestsTook)
+	}
+	if seen.settlements == 0 {
+		t.Error("the settlement took no settlements-pool connection once it had warmed the room, want its passes to read and write on that pool")
+	}
+	// The timer's deadline is set as settleRoom starts, just before settleRoomWithin's start
+	// read the clock.
+	if latest := seen.started.Add(service.settleTimeout); !seen.bounded || seen.deadline.After(latest) || seen.deadline.Before(latest.Add(-time.Second)) {
+		t.Errorf("the room's load for the settlement was handed deadline %v (bounded %v), want the settlement's own, within a second before %v (its start plus settleTimeout, %v)", seen.deadline, seen.bounded, latest, service.settleTimeout)
 	}
 }
 

@@ -15,7 +15,8 @@ import (
 // to the room's persistence, and holds off new repairs until the room is closed. Its Apply shadows
 // ygo's too, so every Apply the service makes notes the room it ran on as used (used,
 // Service.noteRoomUsed): ygo stamps the room idle there, and the service's own budget of resident
-// peerless rooms counts from the same moment (peerlessRoomBudget).
+// peerless rooms counts from the same moment (peerlessRoomBudget). The one Apply that does not is
+// the budget's own close (Service.closeBudgetRoom), which is no use of the room.
 //
 // A settlement writes its repairs while it holds the document's advisory lock, and ygo hands a
 // commit's update to the room's persistence inside the commit. Were the room's persistence worker
@@ -32,8 +33,8 @@ import (
 // ygo closes no room a caller is inside - a Server.Apply, a relay Inject, or a browser's join
 // before its peer registers - and answers websocket.ErrRoomInUse instead (sjawhar/ygo
 // v1.55.1-sami.2, reearth/ygo#342). So a close from outside the room waits for those callers to
-// leave (closeWhenFree), and the one close the service makes from inside its own Apply on the
-// room (closeInstance) is ygo's CloseRoomWithin.
+// leave (closeWhenFree), and the closes the service makes from inside its own Apply on the room
+// (closeInstance) are ygo's CloseRoomWithin.
 type roomServer struct {
 	*websocket.Server
 	// used runs after every Apply on a room returns, with that room's name. Nil in a roomServer
@@ -156,15 +157,18 @@ func (r *roomServer) closeHeld(room string, attempt func() error) error {
 	return err
 }
 
-// closeInstance closes room through ygo's CloseRoomWithin only while room holds doc, answering
-// whether it closed it. Its caller runs it inside its own Server.Apply on room (closeRoomInstance),
-// which ygo's CloseRoom would refuse as a caller inside the room, so it is that Apply's close; it
-// is refused, with websocket.ErrRoomInUse, while any other caller is inside the room. It holds the
-// close gate as CloseRoom does, so no other close the service makes, and no repair, comes between
-// its check of the instance and ygo's lookup of the room by name. That Apply keeps ygo's idle sweep,
-// the one retirement that takes no gate, off the room for the same span, so the room the check
-// found is the room ygo closes.
-func (r *roomServer) closeInstance(room string, doc *crdt.Doc) (bool, error) {
+// closeInstance closes room through ygo's CloseRoomWithin, with force or without it, only while room
+// holds doc, answering whether it closed it. Its callers run it inside their own Server.Apply on
+// room, which ygo's CloseRoom would refuse as a caller inside the room, so it is that Apply's close:
+// a close of a room whose stored history was replaced (closeRoomInstance), forced, and the budget's
+// close of a peerless room (Service.closeBudgetRoom), which a browser on the room refuses
+// (websocket.ErrRoomHasPeers). It is refused, with websocket.ErrRoomInUse, while any other caller is
+// inside the room. It holds the close gate as CloseRoom does, so no other close the service makes,
+// and no repair, comes between its check of the instance and ygo's lookup of the room by name. That
+// Apply keeps ygo's idle sweep, the one retirement that takes no gate, off the room for the same
+// span, so the room the check found is the room ygo closes, and a nil from ygo is this close's own
+// unload.
+func (r *roomServer) closeInstance(room string, doc *crdt.Doc, force bool) (bool, error) {
 	gate := r.acquireGate(room)
 	defer r.releaseGate(room, gate)
 	gate.Lock()
@@ -172,7 +176,7 @@ func (r *roomServer) closeInstance(room string, doc *crdt.Doc) (bool, error) {
 	if r.GetDoc(room) != doc {
 		return false, nil
 	}
-	if err := r.closeHeld(room, func() error { return r.Server.CloseRoomWithin(room, doc, true) }); err != nil {
+	if err := r.closeHeld(room, func() error { return r.Server.CloseRoomWithin(room, doc, force) }); err != nil {
 		if errors.Is(err, websocket.ErrRoomNotFound) {
 			return false, nil
 		}
