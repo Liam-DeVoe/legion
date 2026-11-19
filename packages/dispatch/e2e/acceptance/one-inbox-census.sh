@@ -290,7 +290,7 @@ mkdir -p "$work/home"
 # server now booted, so each is that build's own: the first half the release before's, the second
 # this build's. HALF names the arm's rows apart.
 seed_half() {
-  local half="$1" issue closed ask answer comment reply message dm broadcast answer_at
+  local half="$1" issue closed ask answer comment reply message dm dm_message read_mark broadcast answer_at
   issue="$(expect 201 POST "/api/v1/issues" \
     "{\"project\":\"$project\",\"title\":\"$(printf %s "$half" | tr a-z A-Z) seeding $RANDOM\",\"body\":\"The $half half of the census corpus.\"}" \
     "$half: the issue" | jq -r .key)" || return 0
@@ -344,9 +344,17 @@ seed_half() {
       "{\"body\":\"A reply in the message thread ($half).\",\"in_reply_to\":\"$message\"}" \
       "$half: the reply in the message thread" >/dev/null || true
   fi
-  dm="$(expect 201 POST "/api/v1/agents/census-$half/messages" \
+  dm_message="$(expect 201 POST "/api/v1/agents/census-$half/messages" \
     "{\"body\":\"A $half direct message.\",\"delivery\":\"btw\"}" \
-    "$half: the direct message" | jq -r .id)" || true
+    "$half: the direct message")" || true
+  dm="$(jq -r '.id // empty' <<<"$dm_message" 2>/dev/null)" || true
+  # The Clear and the read mark of this session's conversation, below, stand at the direct
+  # message's own moment, which the store's clock gave it and which is strictly before the
+  # session's reply to it. A mark at or after that reply's created_at makes its reply_read row dead,
+  # and the route that moves the mark deletes it (pruneAgentReplies, api/state.go), so a mark read
+  # off the wall clock left a half with no user_agent_reply_read row whenever the reply fell in an
+  # earlier second than the mark.
+  read_mark="$(jq -r '.created_at // empty' <<<"$dm_message" 2>/dev/null)" || true
   if [[ -n "${dm:-}" && "$dm" != null ]]; then
     if settled_attempt "message_deliveries" "message_id = '$dm'"; then
       agent_reply="$(expect_agent 201 POST "/api/v1/messages/$dm/reply" \
@@ -371,7 +379,7 @@ seed_half() {
 
   # The read-state arms: a Clear and a read mark of a session's conversation, a snooze, a dismissal.
   expect 200 PUT "/api/v1/me/agents/census-$half/state" \
-    "{\"cleared_before\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"read_through\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" \
+    "{\"cleared_before\":\"${read_mark:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}\",\"read_through\":\"${read_mark:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}\"}" \
     "$half: the Clear and the read mark" >/dev/null || true
   if [[ -n "${ask:-}" && "$ask" != null ]]; then
     expect 200 PUT "/api/v1/me/asks/$ask/snooze" \
