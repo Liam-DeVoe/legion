@@ -396,11 +396,6 @@ jobs:
       # The dashboard's and the proof editor's fast checks: no `full-ci` term, only the
       # dispatched one above, so they come back on every push.
       dispatch_ui: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.dispatch_ui }}
-      # The browser suite, ungated: a pull request that changes what it reads runs it, because
-      # the dispatch-browser job below then runs the cheap `pull-request` lane, the two projects
-      # a pull request is held to. The `full-ci` label no longer decides whether this suite runs,
-      # only which lane it runs: that job's `lane:` input reads the label, and the comment there
-      # says what each event gets.
       dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.dispatch_browser }}
       claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
       # The nine slow suites, whose runner time dwarfs every other job's. The merge queue runs
@@ -2657,13 +2652,8 @@ jobs:
               - 'scripts/third-party-notices.ts'
               # The workflow that holds every browser step, which this job reads as its own
               # definition - the place every other job of this file gives to its own
-              # ci-job-<id>.yaml, so a change to it selects this job alone. An unlabelled pull
-              # request runs the pull-request lane, the two projects a change is held to; a pull
-              # request carrying `full-ci`, the merge group and a dispatch run the full lane,
-              # every project and the two-process job, which is the lane the nightly
-              # (.github/workflows/dispatch-browser-nightly.yaml) calls. So a worker can put the
-              # whole suite on a pull request with the label, and the group is where a change to
-              # that file meets it before main anyway. The nightly itself is not in this list:
+              # ci-job-<id>.yaml, so a change to it selects this job alone.
+              # The nightly itself is not in this list:
               # no step of this suite reads it, which rule 9's second direction refuses, since
               # four shard machines and the merge job would start over a change no row sees. It
               # is a read of the ci_filters gate instead, so a change to it re-runs this check,
@@ -5368,15 +5358,6 @@ jobs:
   # lanes, the containerised visual review, and the merge job that joins the shard and alone
   # reports into one and posts this job's ci-ok report.
   #
-  # Two lanes, and which run pays for which. A pull request without the label `full-ci` runs
-  # `pull-request`, the two projects a change is held to (chromium and iphone), so such a run
-  # proves those two rows and no more - it is not the run that proves the suite before main.
-  # Every other run - the merge group, a workflow_dispatch and a pull request carrying `full-ci`
-  # - runs `full`: every project, the three `-alone` ones and the two-process job. So the merge
-  # group is where a change meets the whole suite before it lands, and the nightly
-  # (.github/workflows/dispatch-browser-nightly.yaml, which calls the same file with the full
-  # lane, from main) runs it again on main's tip.
-  #
   # One input decides that: the called workflow reads `lane` for the projects each job runs, so
   # nothing here chooses them a second time. It picks no browser to install any more: the shard
   # and alone jobs run in the image this repository builds, which carries all three engines
@@ -5406,10 +5387,6 @@ jobs:
       checks: write
     uses: ./.github/workflows/dispatch-browser.yaml
     with:
-      # An unlabelled pull request gets the two-project `pull-request` lane; a pull request
-      # carrying `full-ci`, and every other event, gets the full lane. That is what lets a worker
-      # recheck a slow-suite failure on a pull request: the label picks the lane, while the
-      # `dispatch_browser` output above runs the suite either way.
       lane: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'full' || 'pull-request' }}
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
@@ -5702,8 +5679,7 @@ jobs:
   # (packages/dispatch/e2e/cross-build.multiprocess.e2e.ts), which runs twice: the browser suite's
   # two-process mode with Dispatch B run from the previous build's envoy-dispatch and web dist, then
   # from the first-rollout build's, and each direction's page served by one build against the other
-  # build's server. Playwright installs as it does for dispatch-browser-multiprocess, and the rows
-  # get a database of their own, since they truncate it. In a merge-group run the called file's
+  # build's server. In a merge-group run the called file's
   # dispatch-two-builds-same job also runs the Go suite with this tree's own build as the previous
   # build, beside this job and not after it (that job's comment says why).
   dispatch-two-builds:

@@ -1705,9 +1705,6 @@ A request no handler answers is errored and recorded with its method and path; t
 last `afterEach` fails the test with what was recorded, and its one `afterAll` fails the file,
 both at the end of `setup.ts` with the act check, so a read the page swallowed in a
 `catch`, and a write still retrying after a file's last test, are reported all the same.
-The module answers six routes with the API's empty shape: the five the application shell reads on
-every page (`/auth/whoami` as a 401 with no identity, `/api/v1/agents`, `/api/v1/me/replies`,
-`/api/v1/credential-requests`, `/api/v1/me/agents/state`), and `/api/v1/projects`.
 The project list is read by the sidebar wherever it is drawn (`features/sidebar/Sidebar.tsx:91`,
 with no `enabled` guard) and by the issue header for every root issue, to learn which design steps
 are gated (`features/issue/IssueHeader.tsx:292`); removing its answer fails 36 rows, every one a
@@ -2092,18 +2089,6 @@ against servers a person started (`DISPATCH_E2E_REUSE_SERVERS=1`),
 
 Every browser row of the suite runs in `.github/workflows/dispatch-browser.yaml`, which
 `.github/workflows/ci.yaml`'s `dispatch-browser` job calls with one of two lanes.
-A pull request without the label `full-ci` runs the `pull-request` lane: the projects `chromium`
-and `iphone`, split over four
-shard machines, each leg running `--shard=N/4` with four workers.
-A merge group, a pull request carrying `full-ci`, a `workflow_dispatch` and the nightly
-(`.github/workflows/dispatch-browser-nightly.yaml`)
-run the `full` lane: all eight parallel projects over those same four shards, the three `-alone`
-projects each on a machine of its own at one worker, and the two-process job.
-Each shard leg exports the worker count and the pgvector digest on the browser step's own command
-line rather than in an `env:`, for the reason that step's comment gives: a name outside
-`.github/scripts/ci_filter_coverage.py`'s `ENV_ALLOWED`, in the job's `env:` or in one of its
-steps', drops `e2e/run-server.sh`'s `go build` out of `.github/scripts/check-ci-filters.sh`'s
-reduction.
 The `merge` job of that workflow joins every leg's blob report into one report, publishes the
 run's rows, its flake rate and the legs that did not succeed, and is the one job of the workflow
 that reports ci-ok, so a run gets one verdict and not seven.
@@ -2113,10 +2098,6 @@ lint: Biome checks the whole tree once, in the `lint` job.
 A role does not run the whole suite in an issue pod — two CPUs do not carry it — it runs the files
 it is working on.
 
-One shard leg by hand is that leg's own command without CI's blob reporter and its memory and CPU
-samplers, run from `packages/dispatch` with a Postgres provider the stacks above name:
-`DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin bunx playwright test --config e2e/playwright.config.ts --project=chromium --project=iphone --shard=1/4 --workers 4`.
-The `full` lane's leg names all eight parallel projects in place of those two.
 A local run retries nothing; CI retries a failed row once
 (`retries: process.env.CI ? 1 : 0` in `e2e/playwright.config.ts`), except in the three `-alone`
 projects and the two-process project, which set `retries: 0` of their own: a row whose claim is a
@@ -2138,12 +2119,7 @@ comment, and `bun e2e/tools/check-slow-rows.ts <playwright report.json> --dir e2
 holds the two together: it exits 1 on a row at or above 2,000 ms that no such
 comment covers, and on a comment whose every row came in well under that. Run it
 over a one-worker report of the files you changed, since four workers inflate a
-row by the contention of its neighbours rather than by its own work. A marker is
-earned by a row that reached three quarters of the threshold, not only by one
-that crossed it: rows of `coverage.e2e.ts`, `plan-tab.e2e.ts` and
-`verification.e2e.ts` sit between 1.5 and 2.7 seconds, where the machine
-decides which side of the bar they land, and without that band such a row fails
-the check bare on a slow run and marked on a fast one. A row's own cost is what
+row by the contention of its neighbours rather than by its own work. A row's own cost is what
 it proves: most of a short row is the floor every row pays, measured in an issue
 pod at a fresh Chromium context (0.25 s), the cold parse of the dashboard bundle
 that context cannot cache (0.40 s) and the dashboard's boot reads before its
@@ -2887,7 +2863,6 @@ reads while another writes it, and a fixed absolute path is somebody else's
 file on a shared box. `e2e/artifacts.e2e.ts` writes the note and the diagram it
 uploads that way; the tree holds no `e2e/fixtures/` directory.
 
-`e2e/tools/` holds two tools, and no third.
 `check-slow-rows.ts` is the row-length check the `SLOW(>=2s)` paragraph above describes.
 A per-row inventory is no longer a tool's: it comes from the merged JSON report of the
 `dispatch-browser` lane, which the `merge` job of `.github/workflows/dispatch-browser.yaml` writes
@@ -3517,9 +3492,7 @@ read by neither and carries the reason, a redirect, a live socket, a page anothe
 and `e2e/__tests__/review-routes.test.ts` is what keeps that list honest: it holds every entry
 to a route of the router through `e2e/two-builds-routes.ts` and refuses a router route that no
 entry reviews or excludes with a reason, so a page `web/src/app.tsx` adds is reviewed or
-written off, never silently unreviewed. `toHaveScreenshot` detects a change against a file
-somebody committed; it binds no element to the swatch `web/src/theme/classes.ts` names for it,
-which is why `e2e/theme.e2e.ts` keeps one computed-colour row on the pull-request lane.
+written off, never silently unreviewed.
 
 Both projects run inside the pinned Playwright image and nowhere else, because a baseline a
 person takes and a baseline CI compares must be the same rendering, and a host's browser build,

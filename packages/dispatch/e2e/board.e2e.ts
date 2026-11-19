@@ -96,7 +96,7 @@ async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?:
   await page.mouse.down();
   await page.mouse.move(sourceBox.x + sourceBox.width / 2 + 10, sourceBox.y + sourceBox.height / 2);
   await target.scrollIntoViewIfNeeded();
-  // The scroll above waited for the target to be visible and still, so its box is there.
+  // The scroll above waited for the target to be stable and laid out, so its box is there.
   const targetBox = await target.boundingBox();
   if (targetBox === null) {
     throw new Error("drag target is not visible");

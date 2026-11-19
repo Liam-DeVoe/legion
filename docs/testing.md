@@ -163,6 +163,151 @@ itself, whose tests import its sources by relative path.
   own volume, which Legion's runtime does for every role (`/legion/scratch/cache`). With
   `XDG_CACHE_HOME` unset in a pod, that cache is no longer a tool's cache but the pod's death.
 
+## Where a Dispatch test belongs
+
+Dispatch (`packages/dispatch`) is tested in four layers. A test goes in the lowest layer that can
+decide what it claims: each layer above costs more for each row and proves less about the code
+under it. Each `web/src/` and `e2e/` path below is under `packages/dispatch`.
+
+- **Unit and component**: `bun run test:web` over `web/src`, with happy-dom, Testing Library,
+  `@testing-library/user-event`, `@testing-library/jest-dom` and MSW
+  (`web/src/__tests__/network.ts`). It owns rendering, state, the keyboard, the error paths, what
+  the client sends and what it does with an answer. `bun run test:harness` over `e2e/__tests__`
+  tests the browser harness and the suite's own tools, and drives no browser.
+
+- **Contract**: `packages/contracts/schemas/dispatch-openapi.json` and
+  `packages/contracts/src/dispatch-api.generated.ts`, which `bun run gen:api` in
+  `packages/contracts` generates from the Go route table,
+  `packages/envoy/internal/dispatch/api/routes_table.go`. The web client and the end-to-end client
+  take their types from it. It owns the shape of every request and every response: a route change
+  that the client does not follow fails `bun run typecheck`, and
+  `e2e/__tests__/stub-recordings.test.ts` holds every committed recording to that schema. So no
+  browser row proves a response shape.
+
+- **Browser against a stubbed API**: the `stub` and `stub-phone` projects, in files named
+  `*.stub.e2e.ts`, run by `bun run e2e:stub`. A real engine reads a recorded API, with no server,
+  no database and no sign-in.
+
+- **Browser against the real stack**: `bun run e2e`, with the real Go server and Postgres, one
+  stack for each Playwright worker. A spec takes its `test` from `e2e/test.ts`, whose automatic
+  fixture resets the worker's database and signs the default context in before each row.
+
+Two rules set the edges of those layers:
+
+- A rule that the Go server and the browser both implement, such as how a markdown document is
+  read, is one row of a fixture table that both suites read:
+  `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/*.md` and the `fixtures.json` beside it.
+  Add the shape there, not a row on each surface.
+
+- A row that drives no browser is no browser row. A command-line row goes to the tests of the
+  client package, a row about the Go reader to the Go tests, a server timing to a Go benchmark.
+  `e2e/__tests__/no-browser-rows.test.ts` fails a browser row that drives no browser, unless
+  `exemptions` in `e2e/no-browser-rows.ts` names the row with its reason.
+
+When a row may be added to the browser suite:
+
+- Only when no lower layer can decide its claim: the claim needs a real engine (ProseMirror and
+  Milkdown, Mermaid in a worker, `contenteditable`, the highlight API, forced colours, a phone's
+  layout or touch), or it follows one path through the real server that no unit test and no Go
+  test can join. A row that asserts only what a component draws from an answer is a unit test.
+
+- A new browser row is a stubbed row, unless its claim is one that only the real stack can decide
+  (the next list).
+
+- A project selects its rows by tag and by its own `grep` and `grepInvert` in
+  `e2e/playwright.config.ts` (`@phone`, `@phone-only`, `@webkit`, `@firefox`; `tagged` in
+  `e2e/configurations.ts`). A new row that a project must not run is kept out by that project's
+  grep. It is not selected there and then skipped by a `test.skip` whose condition names the
+  project. A `test.skip` is right only where its condition is about the run's environment, such as
+  a server that reads no fake broker (`e2e/fake-broker-helpers.ts`).
+
+- A row joins the pull-request lane only with the `@pr` tag, and a real-stack row carries that tag
+  only when a pull request must see its failure first, with a `// @pr: ` line above it that says
+  why. Every stubbed row carries the tag. `e2e/__tests__/pull-request-lane.test.ts` holds the lane
+  to at most 330 rows, at most 150 of them outside the stubbed projects. A row without the tag runs
+  in the full lane: the merge queue, a pull request with the `full-ci` label, and the nightly run.
+
+- A row that fails and then passes on its retry is flaky, and the `merge` job of
+  `.github/workflows/dispatch-browser.yaml` names each one in the run's summary. A row that the
+  scheduled run of `.github/workflows/dispatch-browser-nightly.yaml` names, flaky in two runs of 14
+  days or held in the quarantine longer than 14 days, is a defect: it goes to the controller, and
+  the controller files the issue that owns it. The row's entry in `e2e/quarantine.ts` names that
+  issue and the date the row was added. A quarantined row leaves the pull-request lane and the
+  merge queue, and it keeps running in the scheduled run, where it gates nothing.
+  `e2e/__tests__/quarantine.test.ts` holds the file to at most 10 rows, each with its issue and
+  its date.
+
+What a stubbed row may assert, and what only a real-stack row may:
+
+- A stubbed row asserts what the browser does with a fixed answer: a layout, a width, a computed
+  colour, focus and roving, a chord, an address, an accessibility scan, what the page draws from
+  the answer, and a rule that the page applies itself, which the row proves by asserting that the
+  page sent no request.
+
+- Only a real-stack row asserts what the server decides. A row stays on the real stack when it
+  reads something that the server computes, enforces, refuses or ranks; when it writes and then
+  reads its own write, because a recording answers the second read with the state from before the
+  write, so the row would pass and prove nothing; when it needs a frame that the server sends (a
+  delivery, a turn that streams, the live document); or when it reads a clock that the server
+  keeps moving. `packages/dispatch/AGENTS.md`, "The stubbed layer", says how a row moves and how its
+  recording is made and checked.
+
+The clock of a unit test:
+
+- A unit test never waits on the real clock. It uses no `Bun.sleep`, no awaited `setTimeout` and
+  no wait timed by `performance.now()`, and it asserts no `Date.now()` difference. A row that waits
+  for a product timer installs the fake clock (`onFakeClock` from `web/src/__tests__/fake-clock.ts`,
+  or `jest.useFakeTimers()`) and moves it with `tick` or `jump` from that file. It restores the real
+  clock with `realClock` in its `finally` or in its file's `afterEach`, because a fake clock left
+  behind stops the timers of every row after it. The row moves the clock by the delay that the
+  product's module exports, not by a literal copy of it, so a change of that delay changes the test
+  too. Under the fake clock, user-event comes from `userOnFakeClock` in `web/src/__tests__/user.ts`.
+
+- A row sets no deadline of its own. The deadline of each test is the `--timeout 60000` of
+  `package.json`'s `test:web` and `test:harness` scripts, and `web/src/__tests__/setup.ts` says how
+  it was sized. On Bun 1.4.4, the pin, that deadline fires under a held clock too: a row that held
+  the clock and awaited a promise that nothing resolved ended at 3.04 s under `--timeout 3000`.
+
+- A harness test in `e2e/__tests__` that waits on a real process or a real socket keeps a bounded
+  real wait, because only real time moves that peer (`local-instance-support.test.ts`,
+  `round-robin-proxy.test.ts`).
+
+- Testing Library's `waitFor` and `findBy*` move a fake clock only when they find a global `jest`
+  (`jestFakeTimersAreEnabled` in `@testing-library/dom`), and Bun's `jest` is a module binding of
+  `bun:test`, not a global. The preload `web/src/__tests__/setup.ts` sets that global. Without it,
+  every such wait under `jest.useFakeTimers()` polls a clock that nothing moves.
+  `web/src/__tests__/testing-library-fake-timers.test.tsx` holds the line in place. So a web test
+  runs through `bun run test:web <file>`, which loads the preloads, and never through a bare
+  `bun test <file>`.
+
+Pages under `docs/solutions/` that describe what this layout replaced. They stay as history, and
+no page there is edited:
+
+- These seven describe the wrapper runner `e2e/run.ts`, its lanes, `DISPATCH_E2E_LANES` and
+  `DISPATCH_E2E_WORKERS`. Playwright's own `globalSetup` and `globalTeardown` now start one stack
+  for each worker, `--workers <n>` sets the count, and the run is
+  `bunx playwright test --config e2e/playwright.config.ts`. Each page carries a dated update that
+  says so:
+  `legion/a-port-held-in-an-issue-pod-is-a-sibling-roles-harness-move-your-run-with-the-five-port-variables-and-your-own-database-and-never-stop-the-holder-LEGION-695.md`,
+  `testing/a-browser-harness-in-an-issue-pod-lives-on-the-issue-volume-INFRA-43.md`,
+  `testing/dispatch-playwright-harness-from-a-legion-pane-the-harness-owns-its-envoy-own-your-ports-database-and-paths.md`,
+  `testing/playwright-gets-os-chosen-ports-from-a-wrapper-that-starts-the-servers-before-it-runs-INFRA-253.md`,
+  `testing/playwright-project-swallows-the-spec-files-written-after-it-so-name-files-first-INFRA-527.md`,
+  `testing/run-one-whole-playwright-project-at-a-time-in-an-issue-pod-and-re-run-a-shared-cpu-failure-alone-INFRA-521.md`
+  and
+  `testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md`.
+
+- `envoy/an-execfile-timeout-sends-sigterm-and-waits-so-a-child-that-keeps-waiting-is-unbounded-race-the-call-and-kill-it-with-sigkill.md`
+  says that on Bun 1.3.14 a per-test deadline does not fire under a held clock. On Bun 1.4.4 it
+  does (above).
+
+- `legion/worker-pane-shell-gotchas.md` names a `bunfig.toml` preload. The preloads are now flags
+  of `package.json`'s `test:web` script, and `bunfig.toml` holds none.
+
+- A page that names the `dispatch` job of `.github/workflows/ci.yaml` names a job that no longer
+  exists. Its unit steps are the `dispatch-ui` job, and its browser rows are the
+  `dispatch-browser` job, which calls `.github/workflows/dispatch-browser.yaml`.
+
 ## A Dispatch unit test runs in random order
 
 `packages/dispatch/bunfig.toml` sets `[test] randomize = true`. Bun reads that file only from the
