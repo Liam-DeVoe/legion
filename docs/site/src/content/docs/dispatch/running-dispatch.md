@@ -233,7 +233,7 @@ account, which nothing then records.
 Every block below that reads the broker's database reaches it with `psql`, which takes libpq's
 URL, while `BROKER_DATABASE_URL` is the broker's own, pgx's: a deployment sets `pool_max_conns`
 on it to size the broker's pool, and libpq refuses a URI parameter it does not know
-(`invalid URI query parameter`), so `psql "$BROKER_DATABASE_URL"` reads nothing and the sweep
+(`invalid URI query parameter`), so `psql "$BROKER_DATABASE_URL"` reads nothing and the reset
 below would print `UNKNOWN: the broker database could not be read` for a reason that has nothing
 to do with the broker. So make a libpq URL once, from the broker's own, and use it where a block
 names `$BROKER_PSQL_URL`:
@@ -272,199 +272,195 @@ The account's next sign-in trade at the broker then goes through
 Reset or restore Dispatch's database and the broker's together, never one alone, or replaced
 accounts keep live broker credentials: to reset, drop both, create both empty, and let each server
 migrate its own; to restore, restore both from backups taken at one moment. A Dispatch database
-made again starts every address's session generation over at 1, and one restored from a backup to
-an earlier point holds the lower generations it held then, while a broker database kept holds the
+made again starts every address's session generation over, and one restored from a backup to an
+earlier point holds the lower generations it held then, while a broker database kept holds the
 generations its revokes recorded since. The broker then refuses every approve at such an address
 `403 APPROVER_REPLACED`, as checked before a replacement, and answers every revocation there
-`superseded`, ending nothing, so the accounts those revocations name keep their broker
-credentials, until the address's generation reaches the one the broker recorded. A broker
-database made again beside a Dispatch database kept has forgotten every refusal and every
-replacement Dispatch already paid, and is recovered like a broker database restored alone, with
-`-infinity` for the backup's moment (below).
+`superseded`, ending nothing. A broker database made again beside a Dispatch database kept has
+forgotten every refusal and every replacement Dispatch already paid, and is recovered like a
+broker database restored alone, with `-infinity` for the backup's moment (below).
 
 `envoy_dispatch_broker_revocations_superseded_total` counts each answer `superseded` the broker
 gives a revocation still owed, which Dispatch leaves owed, so the owed gauges above show it too,
 and logs at ERROR with the address, the replaced account's `sub`, both generations the broker
 compared and the address's generation at Dispatch now; the loop tries it again after its retry
-window, and the broker answers the same until the recovery below. Alert on the counter being above
-zero (`envoy_dispatch_broker_revocations_superseded_total > 0`), not on its `rate()`: it writes no
-sample until its first count, and any count is a broken pair. While the two databases agree,
-Dispatch's loop never hears that answer for a row still owed. It means Dispatch's session
-generation for the address is below the one the broker recorded (a Dispatch database recreated or
-restored alone, or a generation written by hand at either), and the broker ended nothing: the
-replaced account's broker credentials are still live, reading secrets the broker serves without
-asking Dispatch.
+window. Alert on the counter being above zero (`envoy_dispatch_broker_revocations_superseded_total
+> 0`), not on its `rate()`: it writes no sample until its first count, and any count is a broken
+pair. While the two databases agree, Dispatch's loop never hears that answer for a row still owed.
+It means the broker applied a later replacement at the address than the one the row names: a
+Dispatch database recreated or restored alone, or a generation written by hand at either. Outside
+a reset, run the reset below. After one, the reset has already ended every credential the row
+would end, so settle it with `envoy-dispatch clear-broker-revocation '<address>'
+'<subject>:<generation>'`, naming it as the command's list prints it.
 
-The counter finds only an address that owes a revocation. An address whose generation at
-Dispatch is below the broker's with nothing owed has every approve refused `APPROVER_REPLACED`,
-and nothing counts it. So first sweep every address. This reads the generation the broker
-recorded for each address on the broker's database, compares it with Dispatch's on Dispatch's
-database, and lists every address below the broker's, owed or not; it writes nothing. The
-broker's rows reach Dispatch's `psql` through a file its own `\copy` reads, never as an argument:
-the kernel refuses a single argument longer than 128 KiB (`E2BIG`), which about 1,800 addresses
-reach. They are copied as CSV, the form `psql --csv` writes, so an address holding a comma, a
-quote or a backslash arrives as it left. The here-document is unquoted, since `\copy` takes the
-rest of its line as written and expands no psql variable, so the shell puts the file's name in;
-nothing else in the block is the shell's to expand. It prints `UNKNOWN` when it read no
-generation at the broker, which is no all-clear:
+### After a Dispatch database restored or made again alone
+
+Reset every credential a person holds, at Dispatch and at the broker, rather than mend the
+addresses one by one. A restored database disagrees with the broker in ways no read of one
+address finds: a replacement the broker never applied, because it was still owed when the
+database was lost, leaves the broker's record of the address where it was; an address first
+signed in after the backup has no row to compare; and a refusal at the broker can be the stale
+side as well as Dispatch's row. The reset ends all of it, and costs every person one sign-in and
+every agent a new personal token. Four steps, in order:
+
+1. End every browser session and revoke every personal token, on Dispatch's database.
+2. End every person's credential at the broker.
+3. Clear a refusal at the broker only where the Workspace directory names the refused account as
+   the address's holder.
+4. Start Dispatch again.
+
+Stop every Dispatch process before the first step (scale its Deployment to zero), as the move
+between the pool and a domain below does, so no sign-in and no token mint runs while the steps
+do; the broker keeps serving.
+
+**End every browser session and revoke every personal token.** A cookie carries its address and a
+generation, and Dispatch admits it while the generation is its address's in `user_sessions`, so
+raising every row ends every cookie. The block raises every row, in one transaction, to a number
+above every generation the lost history can have issued: the greatest of the microseconds since
+the epoch at the raise, the broker's greatest recorded generation plus one, and the highest row
+and floor Dispatch holds plus one. It writes that number first as the deployment's floor
+(`session_generation_floors`, the row `*`, migration `20261119183355`), where every session row
+made later starts, so an address the restored database has never seen also starts above every
+cookie of the lost history; then it raises the rows; then it revokes every personal token, each
+of which a restored database may have brought back from an account that no longer holds its
+address. The time term is what keeps a second restore from undoing the first reset: restored to
+before it, the database loses both the floor and the raised rows, and the cookies issued under
+the first reset's number would match a raise to that same number again; a reset run later takes a
+later time, so its number is above the first one's, as long as the database's clock has not been
+set back by more than the time between the two. The broker's term keeps the number at or above
+every generation the broker recorded, so it refuses no approve `APPROVER_REPLACED` for it. The
+number is about 1.8 × 10¹⁵, inside a JSON number's exact range. The block reads the broker's
+generation first, and prints `UNKNOWN` and changes nothing when it cannot:
 
 ```sh
 (
 set -o pipefail
-rows=$(mktemp) || exit 1
-trap 'rm -f "$rows"' EXIT
-psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At --csv -c "select person, session_generation from person_replacement_generations order by person" > "$rows" || { echo 'UNKNOWN: the broker database could not be read'; exit 1; }
-if [ ! -s "$rows" ]; then echo 'UNKNOWN: the broker database holds no recorded generation, so nothing was compared'; exit 1; fi
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
-create temp table broker_generations (person text, session_generation bigint);
-\copy broker_generations from '$rows' with (format csv)
-select b.person, b.session_generation as broker_generation, greatest(coalesce(u.generation, 0), coalesce(f.generation, 0)) as dispatch_generation from broker_generations b left join user_sessions u on u.login = b.person left join session_generation_floors f on f.login = b.person where greatest(coalesce(u.generation, 0), coalesce(f.generation, 0)) < b.session_generation order by b.person;
+greatest=$(psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At <<'SQL'
+select coalesce(max(session_generation), 0) from person_replacement_generations;
+SQL
+) || { echo 'UNKNOWN: the broker database could not be read, so nothing was reset'; exit 1; }
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v broker_greatest="$greatest" <<'SQL'
+begin;
+lock table session_generation_floors, user_sessions, agent_tokens in exclusive mode;
+create temp table reset_generation on commit drop as select greatest((extract(epoch from clock_timestamp()) * 1000000)::bigint, :'broker_greatest'::bigint + 1, coalesce((select max(generation) from user_sessions), 0) + 1, coalesce((select max(generation) from session_generation_floors), 0) + 1) as generation;
+insert into session_generation_floors (login, generation) select '*', generation from reset_generation on conflict (login) do update set generation = excluded.generation where excluded.generation > session_generation_floors.generation;
+update user_sessions set generation = r.generation from reset_generation r where user_sessions.generation < r.generation;
+update agent_tokens set revoked_at = now() where revoked_at is null;
+select generation from reset_generation;
+commit;
 SQL
 )
 ```
 
-An address with no session row is listed at `0`, and so is one whose floor is below the broker's:
-the floor is the generation its first session row starts at (`session_generation_floors`,
-migration `20261119060414`), which the raise below writes, so an address the recovery has already
-handled is not listed again.
+It prints the number it raised to. Run again, it raises again, past the first number.
 
-Then take each address it lists, all of the address's revocations in one pass. Read, on the
-broker's database, the generation it recorded for the address:
+**End every person's credential at the broker.** The broker serves a person's sign-in on a
+machine, a machine login a person approved and an approval-page session without asking Dispatch,
+so the reset ends each there: a sign-in and a machine login with the calls Dispatch's machine-login
+page makes, and a page session with the broker's own `envoy-broker end-sessions`. A service's
+machine login, the Legion daemon's, is not a person's and is left. The calls take the broker's
+URL and a token of Dispatch's own ServiceAccount, kept off every command line as the machine-login
+block below keeps it. Each call that fails prints `NOT REVOKED <id>` or `NOT ENDED <login>`, and
+the last step reads the broker's database again:
 
 ```sh
-psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -v person='<address>' <<'SQL'
-select session_generation from person_replacement_generations where person = :'person';
-SQL
+(
+umask 077
+set -o pipefail
+header=$(mktemp) || exit 1
+trap 'rm -f "$header"' EXIT
+broker_url='<the URL in DISPATCH_AGENT_SECRETS_URL>'
+token=$(kubectl -n '<the namespace Dispatch runs in>' create token '<the ServiceAccount Dispatch runs as>' --audience '<the audience in BROKER_K8S_OIDC_AUDIENCE>' --duration 1h) || { echo 'no token was minted'; exit 1; }
+printf 'Authorization: Bearer %s\n' "$token" >"$header"
+signins() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select id, person from person_signins where revoked_at is null order by id"; }
+logins() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select c.id, r.approver from launcher_credentials c join credential_requests r on r.id = c.record_id and r.kind = 'launcher_credential' where c.service is null and c.revoked_at is null order by c.id"; }
+pages() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -c "select distinct login from browser_sessions where expires_at > now() order by login"; }
+signins | while read -r id person; do
+  curl -sS --fail-with-body -w '\n' -X POST -H @"$header" -d "{\"person\":\"$person\"}" "$broker_url/v1/person-signins/$id/revoke" || echo "NOT REVOKED $id"
+done
+logins | while read -r id approver; do
+  curl -sS --fail-with-body -w '\n' -X POST -H @"$header" -d "{\"approver\":\"$approver\"}" "$broker_url/v1/launcher-credentials/$id/revoke-by-approver" || echo "NOT REVOKED $id"
+done
+pages | while read -r login; do
+  kubectl -n '<the namespace the broker runs in>' exec deploy/broker -- envoy-broker end-sessions "$login" || echo "NOT ENDED $login"
+done
+if left=$( { signins && logins && pages; } ); then
+  if [ -z "$left" ]; then echo 'no person credential is live at the broker'; else printf 'STILL LIVE:\n%s\n' "$left"; false; fi
+else
+  echo 'UNKNOWN: the broker database could not be read, so what is left is unknown'; false
+fi
+)
 ```
 
-and every account it refuses there, by `sub`:
+Only `no person credential is live at the broker` means done. `STILL LIVE` lists each sign-in and
+machine login by id and person, and each login with a page session, that no call ended; the lines
+above give the broker's answer for each: for `ACCOUNT_TOKEN_EXPIRED` mint another token, for any
+other answer fix what it names, and run the block again. `UNKNOWN` says nothing about the broker:
+run it again once `$BROKER_PSQL_URL` connects. Each machine logs in again
+(`agent-secrets machine login`, approved by its person) and each person signs in again on the
+approval page and with `agent-secrets login`.
+
+**Clear a refusal only for the directory's holder.** The broker refuses each account a
+revocation named, under each address, and a restored Dispatch cannot tell which of those refusals
+are right: a take-back the lost database still owed leaves the broker refusing the account Google
+gives the address now. Only the identity provider settles it, so read, for each address the broker
+refuses any account at, which account holds the address in the Workspace directory, whose user
+`id` is the Google `sub` an ID token carries ("equivalent to the ID exposed in the Directory API",
+Google's token types page), with a token holding
+`https://www.googleapis.com/auth/admin.directory.user.readonly`. The directory's answer counts only
+when it names the address itself as `primaryEmail`, since `users.get` answers an alias too; any
+other answer, and every non-200, counts as no account. The directory answers `404` for an address
+that is no account of the organization: someone from outside the domain
+([People from outside the domain](#people-from-outside-the-domain)) and a deleted Workspace user
+alike. Where it names a refused account, clear that one refusal, with the broker clear above;
+every other refusal stays. The token goes in a file curl reads the header from, never in the
+command's arguments, which every user of the box reads from `/proc/<pid>/cmdline` while it runs:
 
 ```sh
-psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -v person='<address>' <<'SQL'
-select subject from replaced_person_subjects where person = :'person' order by subject;
-SQL
-```
-
-and every account that still holds a live credential there and is not one it refuses, by `sub`: a
-sign-in of the person on a machine, a session of theirs on the broker's approval page, or a
-machine login of their own machines that the account approved. These are the accounts the broker
-would go on serving secrets to, each one Dispatch no longer knows of after a restore:
-
-```sh
-psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -v person='<address>' -v issuer='https://accounts.google.com' <<'SQL'
-select distinct a.subject from (select subject from person_signins where person = :'person' and revoked_at is null and issuer = :'issuer' and subject is not null union select subject from browser_sessions where login = :'person' and issuer = :'issuer' and subject is not null union select c.approver_subject from launcher_credentials c join credential_requests r on r.id = c.record_id and r.kind = 'launcher_credential' where r.approver = :'person' and c.service is null and c.revoked_at is null and c.approver_issuer = :'issuer' and c.approver_subject is not null) a(subject) where not exists (select 1 from replaced_person_subjects p where p.person = :'person' and p.issuer = :'issuer' and p.subject = a.subject) order by a.subject;
-SQL
-```
-
-On Dispatch's database, read the account the address records, and list every revocation it owes:
-
-```sh
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -At -v email='<address>' <<'SQL'
-select sub from people where email = :'email';
-SQL
-envoy-dispatch clear-broker-revocation '<address>'
-```
-
-Raise the address's session generation on Dispatch's database past every generation the lost
-history can have issued: the generation the broker recorded plus a million. Raising to exactly
-the broker's number would end fewer sessions than it reads as. A cookie carries its address and a
-generation, and a sign-in is admitted while the two match, so the cookies the replacement the
-broker's number came from issued — each carrying that very number, one its holder's sign-out
-ended included — would all match again on a database restored to before it, and every later step
-of the generation would revive the next lot in turn. A million is past every generation the lost
-history can have reached, short of an address whose generation moved a million times after the
-broker's last replacement, and the broker takes it as readily as its own number, since both are
-at or above the one it recorded. The second statement writes the same number as the address's
-floor, the generation its session row starts at: an address with no session row has nothing to
-raise, and no row can be made by hand (`user_sessions_login_fkey` needs a `people` row, which
-only a sign-in makes), so without the floor its first sign-in would start at 1, below the
-broker's, with every approve there refused `APPROVER_REPLACED` and nothing counting it. Each
-statement takes the greater of what it finds and the new number, so running the block again
-raises nothing:
-
-```sh
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v email='<address>' -v broker_generation='<the generation the broker recorded>' <<'SQL'
-update user_sessions set generation = greatest(generation, :'broker_generation'::bigint + 1000000) where login = :'email';
-insert into session_generation_floors (login, generation) values (:'email', :'broker_generation'::bigint + 1000000) on conflict (login) do update set generation = excluded.generation where excluded.generation > session_generation_floors.generation;
-SQL
-```
-
-Then decide which Google account holds the address now. Where the broker refuses no account the
-address records, Dispatch's record of it stands. Where the broker refuses the account `people`
-records, the two disagree and only the identity provider settles it, since the broker's refusal
-is as likely to be the stale side as Dispatch's row: a take-back whose revocation the lost
-database still owed leaves the broker refusing the account that holds the address now. So read
-which account holds the address in the Workspace directory, whose user `id` is the Google `sub`
-an ID token carries, with a token holding
-`https://www.googleapis.com/auth/admin.directory.user.readonly`. The token goes in a file curl
-reads the header from, never in the command's arguments, which every user of the box reads from
-`/proc/<pid>/cmdline` while it runs, as the machine-login sweep below does with its own token:
-
-```sh
+(
+umask 077
+set -o pipefail
 header=$(mktemp) || exit 1
 trap 'rm -f "$header"' EXIT
 printf 'Authorization: Bearer %s\n' "$DIRECTORY_TOKEN" >"$header"
-curl -sS --fail-with-body -H @"$header" "https://admin.googleapis.com/admin/directory/v1/users/<address>?projection=basic&viewType=admin_view" | jq -r '.id'
-```
-
-The directory answers `404` for an address that is no account of the organization (someone from
-outside the domain, [People from outside the domain](#people-from-outside-the-domain)). Ask that
-person to sign in, read the account the address records again, and take the branch below for what
-it then records: a sign-in by another account records that replacement itself, and one by the
-same account shows the broker's refusal is the stale side.
-
-**The account the address records holds it** — the broker refuses no account the address records,
-or the directory names the account it records. Then every account the live read listed holds
-credentials it should not, and the broker's refusal of the address's own account, if there is
-one, is the stale side. Do not revoke the address's personal tokens: they are the holder's.
-Settle every revocation the address owes whose `sub` the broker already refuses, which the broker
-applied after the backup, with `envoy-dispatch clear-broker-revocation`; and record a revocation
-of every other account — each the live read listed, and each other revocation the address owes,
-a row carrying no session generation included — with the written-back recovery above, which names
-the account the address records as the holder at the raised generation. The loop pays each: the
-broker ends that account's credentials, and, since a revoke names the holder, deletes its record
-of the holder, which lifts the refusal of the address's own account.
-
-If that records nothing at all, because the live read listed no account and the address owes
-nothing, and the broker still refuses the account the address records, lift that refusal with the
-broker clear above, which ends nothing.
-
-**Another account holds it** — the directory names an account the address does not record. Then
-Dispatch's row is stale: the database was restored to before the broker applied a later
-replacement of the account it records. Record no revocation of the address yet: each would name
-the stale account as its holder, and the broker would stop refusing the account the address was
-taken from. Instead, in one pass, revoke the address's personal tokens, which the restore may
-have brought back, and settle every revocation the list above printed with a session generation of
-its own, naming each as the list printed it. Leave the one the list prints `session generation
-none` owed: the broker refuses such a revoke on every call
-(`400 SESSION_GENERATION_REQUIRED`), so nothing applied it, and settling it would tell the broker
-nothing and lose the record that it is owed:
-
-```sh
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v email='<address>' <<'SQL'
-update agent_tokens set revoked_at = now() where canonical_login(owner) = :'email' and revoked_at is null;
+psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -c "select distinct person from replaced_person_subjects order by person" | while read -r person; do
+  answer=$(curl -sS --fail-with-body -H @"$header" "https://admin.googleapis.com/admin/directory/v1/users/$person?projection=basic&viewType=admin_view") || { echo "NO ACCOUNT $person: the directory answered no holder"; continue; }
+  id=$(printf '%s' "$answer" | jq -r '.id') && email=$(printf '%s' "$answer" | jq -r '.primaryEmail' | tr '[:upper:]' '[:lower:]') || { echo "NO ACCOUNT $person: the directory's answer did not parse"; continue; }
+  if [ "$email" != "$person" ]; then echo "NO ACCOUNT $person: the directory names $email"; continue; fi
+  echo "HOLDER $person $id"
+  psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -v person="$person" -v issuer='https://accounts.google.com' -v subject="$id" <<'SQL'
+begin;
+select set_config('broker.replaced_subject_delete', jsonb_build_array(pg_current_xact_id()::text, :'person', :'issuer', :'subject')::text, true);
+delete from replaced_person_subjects where person = :'person' and issuer = :'issuer' and subject = :'subject';
+commit;
 SQL
-envoy-dispatch clear-broker-revocation '<address>' '<subject>:<the generation the list printed>'...
+done
+)
 ```
 
-Then leave the address to its holder's next sign-in: that sign-in replaces the stale account at a
-generation the broker applies, which ends the stale account's credentials at the broker and lifts
-the holder's own refusal. After it, run the live read again and record a revocation of each
-account it lists that is not the account the address records then, and record again any
-revocation still owed that carries no session generation, both with the written-back recovery
-above.
+`HOLDER` names each address whose holder the directory gave; the delete after it deletes nothing
+where the broker did not refuse that account. `NO ACCOUNT` leaves the address's refusals as they
+are. For an address the directory answered `404` for, the holder is whoever signs in to Dispatch as
+that address once it is back: Google gives an ID token for an address to the account that holds it
+alone. Once that person has signed in, read the account the address records
+(`select sub from people where email = '<address>'`); if the broker refuses that `sub` at the
+address, clear it with the broker clear above.
 
-`api.TestARestoredStaleHolderStaysRefusedAtTheBroker` runs the sweep, the reads and both branches
-from this page against Dispatch's database and a real broker's,
-`api.TestTheSweepListsEveryAddressBelowTheBrokers` the sweep alone,
-`api.TestAnAddressWithNoSessionRowStartsAtTheBrokersGeneration` the raise at an address with no
-session row, and `store.TestADispatchGenerationBelowTheBrokersIsRaisedToIt` the raise and the
-record-again.
+**Start Dispatch again.** Each person signs in again. A sign-in by an account other than the one
+the restored `people` row records is a replacement Dispatch records as any other: it ends the
+recorded account's sessions, revokes its tokens, and owes the broker its revocation, at the raised
+generation, which the broker applies. The directory's holder can sign in and approve; an account
+the broker refuses that the directory did not name stays refused.
+
+`api.TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal` runs these blocks from this
+page against Dispatch's database and a real broker's, over the histories a lone restore leaves:
+a replacement the broker never applied, an address recorded with no account, and a take-back the
+lost database still owed. `store.TestTheResetEndsEveryCookieAndToken` runs the first block alone,
+over a second restore from before a first reset.
 
 The other way round, when it is **the broker's database that was restored alone**, nothing above
 finds it: every revocation Dispatch paid before the restore is settled at Dispatch, so the loop
-claims none, the owed gauges and the superseded counter read zero, and the sweep lists no
-address, since Dispatch's generations are at or above the restored broker's. The broker, though,
+claims none, and the owed gauges and the superseded counter read zero. The broker, though,
 holds again every sign-in on a machine, machine login and approval-page session of the accounts
 those revocations named, and no record refusing them: each reads the secrets the broker serves
 without asking Dispatch. Dispatch refuses them itself from the replacing commit
@@ -476,11 +472,15 @@ comes from the backup's own record, on another server's clock and often rounded 
 written as the backup's end rather than its snapshot point, while `done_at` is Dispatch's
 database's `now()`. A revocation the broker applied just after the snapshot, settled at Dispatch
 a few seconds before the moment as written, would otherwise be left out, and that account keeps
-its credentials at the broker with no gauge showing it. Telling the broker of a revocation it
-already holds costs one call and ends nothing: it answers the account already replaced, raises
-no generation and names the same holder. So the margin only has to cover the skew, and an hour
-covers a rounded moment too; widen it where the two clocks are further apart than that, or where
-the backup's moment is less exact.
+its credentials at the broker with no gauge showing it. A revocation the restored broker still
+holds is told again too, and that is no free call: the block records it again at the address's
+session generation now and names the account `people` records now as the holder, so the broker
+applies it as a replacement at that generation. It ends again whatever the replaced account
+holds, which a restored broker may have brought back; it raises the generation the broker
+recorded for the address to Dispatch's, where it was lower; and, since a revoke names the holder,
+it lifts any refusal of the address's account now. So the margin only has to cover the skew, and
+an hour covers a rounded moment too; widen it where the two clocks are further apart than that, or
+where the backup's moment is less exact.
 
 A broker database **made again**, rather than restored, has no such moment: it has forgotten
 every refusal and every replacement. Give the block `-infinity`, so it records again every
@@ -506,11 +506,12 @@ SQL
 
 The loop then pays each, and the broker ends those accounts' credentials and refuses them again
 (`api.TestABrokerRestoredAloneIsRecoveredByTellingItAgainWhatWasSettledSince` runs this block
-against a real broker restored behind Dispatch). It recovers nothing the broker's backup already
-holds, and nothing of an address whose account changed at Google while the broker was down: for
-that, sweep as above once the broker is back. A revocation an operator settled by hand with
-`clear-broker-revocation` is recorded again too, which is right — the broker was never told —
-unless the account it names holds the address again, which the statement leaves out.
+against a real broker restored behind Dispatch, a take-back among its addresses). It recovers
+nothing the broker's backup already holds. A revocation still owed when the broker comes back,
+one Dispatch recorded while it was down, is the loop's own and is paid as any other. A
+revocation an operator settled by hand with `clear-broker-revocation` is recorded again too, which
+is right — the broker was never told — unless the account it names holds the address again, which
+the statement leaves out.
 
 A revocation an earlier head of this branch recorded holds no session generation, and the broker
 refuses a revoke without one (`400 SESSION_GENERATION_REQUIRED`), so the loop's ERROR line for it

@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -10,8 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
-	"github.com/sjawhar/envoy/internal/dispatch/auth"
 )
 
 // operatorDoc is a file that gives one of the operator's blocks, in a psql heredoc after the line
@@ -94,152 +91,6 @@ func runOperatorBlock(t *testing.T, pool *Pool, statements []string, email, subj
 var recordAgainDocs = []operatorDoc{
 	{"README.md", "- **A revocation settled by itself**"},
 	{dispatchRunbook, "A revocation settled without the broker"},
-}
-
-// raiseGenerationLead starts the runbook's paragraph whose block raises an address's session
-// generation past every generation the lost history can have issued, the one the broker recorded
-// plus a million, and writes that number as the address's floor, after the broker answered a
-// revocation superseded.
-const raiseGenerationLead = "Raise the address's session generation on Dispatch's database past every generation the lost"
-
-// TestADispatchGenerationBelowTheBrokersIsRaisedToIt: the broker answered a revocation superseded,
-// since the address's session generation at Dispatch is below the one the broker recorded, and
-// Dispatch's loop left it owed at its own, lower, generation, which the broker would answer the same
-// again. The runbook's raise, run here from the runbook with the broker's generation, raises the
-// address's generation to it, which the guard on user_sessions lets through as it only rises, and a
-// raise to a value below the one Dispatch holds changes nothing; its second statement writes the
-// same number as the address's floor, where the generation of a session row made later starts, and
-// a later raise to a lower number leaves the floor where it is. The record-again block then makes
-// the revocation owed at the raised generation, the one the broker applies.
-//
-// Control, in the test: before the recovery the revocation is owed at the lower generation.
-func TestADispatchGenerationBelowTheBrokersIsRaisedToIt(t *testing.T) {
-	ctx := context.Background()
-	database := migratedEmptyStore(t)
-	revocations := NewBrokerRevocations(database.Pool)
-	const email = "behind@example.com"
-	signInAll(t, brokerPeople(database), email, "member-1", "member-2")
-	held := sessionGenerationOf(t, database.Pool, email)
-	if owing, err := revocations.Owing(ctx, email); err != nil || len(owing) != 1 || owing[0].SessionGeneration == nil || *owing[0].SessionGeneration != held {
-		t.Fatalf("control: before the recovery, %s owes %s, %v; want member-1's alone, at its own generation %d", email, owedText(owing...), err, held)
-	}
-	block := sqlBlockAfter(t, dispatchRunbook, raiseGenerationLead)
-	if len(block) != 2 || !strings.HasPrefix(block[0], "update user_sessions set generation = ") ||
-		!strings.HasPrefix(block[1], "insert into session_generation_floors ") {
-		t.Fatalf("the runbook gives %q after %q, want the raise of user_sessions.generation and the write of the address's floor", block, raiseGenerationLead)
-	}
-	names := strings.NewReplacer(":'email'", "@email", ":'broker_generation'", "@broker_generation")
-	broker := held + 5
-	raised := broker + restoreRaiseMargin
-	for _, generation := range []int64{broker, held} {
-		for _, statement := range block {
-			if _, err := database.Pool.Exec(ctx, names.Replace(statement), pgx.NamedArgs{"email": email, "broker_generation": generation}); err != nil {
-				t.Fatalf("the runbook's raise to %d, %q: %v", generation, statement, err)
-			}
-		}
-		if got := sessionGenerationOf(t, database.Pool, email); got != raised {
-			t.Fatalf("after the runbook's raise to %d, %s's session generation is %d, want %d: the broker's plus the margin, never lowered", generation, email, got, raised)
-		}
-		var floor int64
-		if err := database.Pool.QueryRow(ctx, `select generation from session_generation_floors where login = $1`, email).Scan(&floor); err != nil || floor != raised {
-			t.Fatalf("after the runbook's raise to %d, %s's floor is %d, %v; want %d: the broker's plus the margin, never lowered", generation, email, floor, err, raised)
-		}
-	}
-	runOperatorBlock(t, database.Pool, operatorBlock(t, recordAgainDocs, "update broker_revocations set generation = generation + 1"), email, "member-1")
-	owing, err := revocations.Owing(ctx, email)
-	if err != nil || len(owing) != 1 || owing[0].Subject != "member-1" || owing[0].SessionGeneration == nil || *owing[0].SessionGeneration != raised {
-		t.Fatalf("after the recording-again, %s owes %s, %v; want member-1's alone, at session generation %d", email, owedText(owing...), err, raised)
-	}
-}
-
-// restoreRaiseMargin is what the runbook's raise adds to the generation the broker recorded, so
-// that no cookie the lost history issued matches again
-// (TestTheRestoreRaiseEndsACookieIssuedAfterTheBackup).
-const restoreRaiseMargin = 1000000
-
-// TestTheRestoreRaiseEndsACookieIssuedAfterTheBackup: the generation the broker recorded for an
-// address is the one the replacement it last applied left, which is the generation every cookie
-// that replacement's sign-in issued carries. A Dispatch database restored to before it holds a
-// lower one, and a cookie is admitted while its generation is the address's
-// (identity.CookieIdentity.Login reads equality alone), so a raise to exactly the broker's number
-// would make each of those cookies match again, one its holder's sign-out had already ended
-// included. The runbook's raise adds a million, past every generation the lost history can have
-// issued, which the broker takes as readily as its own number.
-//
-// Control, in the test: before the raise, the restored row matches no such cookie, so the raise is
-// what could revive it; a raise to exactly the broker's generation does.
-func TestTheRestoreRaiseEndsACookieIssuedAfterTheBackup(t *testing.T) {
-	ctx := context.Background()
-	database := migratedEmptyStore(t)
-	sessions := NewPgSessionStore(database.Pool)
-	const email = "restored-cookie@example.com"
-	signInAll(t, brokerPeople(database), email, "account-a")
-	backup := sessionGenerationOf(t, database.Pool, email)
-	// After the backup: account-b replaces account-a, which the broker applies at the generation
-	// that leaves; account-b signs in with a cookie of that generation and then signs out.
-	signInAll(t, brokerPeople(database), email, "account-b")
-	brokerGeneration, err := sessions.EnsureSession(ctx, email)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie := auth.IssueSessionCookie(email, brokerGeneration, testSigningKey, true)
-	if err := sessions.RevokeSessions(ctx, email); err != nil {
-		t.Fatal(err)
-	}
-	matches := func(t *testing.T) (int64, bool) {
-		t.Helper()
-		request := httptest.NewRequest("GET", "https://dispatch.example/", nil)
-		request.Header.Set("Cookie", strings.SplitN(cookie, ";", 2)[0])
-		session, ok := auth.SessionFromRequest(request, testSigningKey)
-		if !ok {
-			t.Fatal("the cookie account-b was issued does not verify")
-		}
-		current, found, err := sessions.CurrentSessionGeneration(ctx, email)
-		if err != nil || !found {
-			t.Fatalf("read %s's generation: %v, %t", email, err, found)
-		}
-		return current, current == session.Generation
-	}
-	// restore puts the address's generation back to the backup's, as restoring the database does.
-	// The guard refuses a lowering, so it runs with that trigger off.
-	restore := func(t *testing.T) {
-		t.Helper()
-		tx, err := database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback(ctx)
-		for _, step := range []struct {
-			statement string
-			args      []any
-		}{
-			{`alter table user_sessions disable trigger user_sessions_binding_columns`, nil},
-			{`update user_sessions set generation = $2 where login = $1`, []any{email, backup}},
-			{`alter table user_sessions enable trigger user_sessions_binding_columns`, nil},
-		} {
-			if _, err := tx.Exec(ctx, step.statement, step.args...); err != nil {
-				t.Fatalf("%s: %v", step.statement, err)
-			}
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
-	raise := sqlBlockAfter(t, dispatchRunbook, raiseGenerationLead)
-	names := strings.NewReplacer(":'email'", "@email", ":'broker_generation'", "@broker_generation")
-
-	restore(t)
-	if current, ok := matches(t); ok {
-		t.Fatalf("control: the restored row already reads %d, which account-b's signed-out cookie matches; the test would show nothing", current)
-	}
-	for _, statement := range raise {
-		if _, err := database.Pool.Exec(ctx, names.Replace(statement), pgx.NamedArgs{"email": email, "broker_generation": brokerGeneration}); err != nil {
-			t.Fatalf("the runbook's raise, %q: %v", statement, err)
-		}
-	}
-	if current, ok := matches(t); ok {
-		t.Errorf("after the runbook's raise the address reads generation %d, which account-b's signed-out cookie matches; want no cookie of the lost history matching", current)
-	}
 }
 
 // TestARevocationSettledByItselfIsPaidOnceRecordedAgain: a statement that settles an owed

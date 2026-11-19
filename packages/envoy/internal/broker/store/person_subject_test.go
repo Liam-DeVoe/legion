@@ -133,9 +133,12 @@ var operatorClearDocs = []string{
 	"../../dispatch/store/README.md",
 }
 
-// operatorClearBlock is the one block of statements both operatorClearDocs give in the heredoc
+// operatorClearBlock is the one block of statements both operatorClearDocs give in every heredoc
 // that deletes from replaced_person_subjects, a statement a line, each line trimmed, since a list
-// item indents its code block.
+// item indents its code block. The runbook gives it twice: as the operator's clear of one refusal,
+// and inside the loop of its reset after a lone Dispatch restore, which clears the refusal of the
+// account the Workspace directory names; every such heredoc must be that same block, so a fix to
+// the clear reaches both.
 func operatorClearBlock(t *testing.T) []string {
 	t.Helper()
 	var block []string
@@ -164,8 +167,13 @@ func operatorClearBlock(t *testing.T) []string {
 				heredoc = append(heredoc, line)
 			}
 		}
-		if len(found) != 1 {
-			t.Fatalf("%s gives %d blocks deleting from replaced_person_subjects, want the one clear", path, len(found))
+		if len(found) == 0 {
+			t.Fatalf("%s gives no block deleting from replaced_person_subjects, want the clear", path)
+		}
+		for _, other := range found[1:] {
+			if strings.Join(other, "\n") != strings.Join(found[0], "\n") {
+				t.Fatalf("%s gives two blocks deleting from replaced_person_subjects that differ, %q and %q; every one must be the clear", path, found[0], other)
+			}
 		}
 		if block != nil && strings.Join(found[0], "\n") != strings.Join(block, "\n") {
 			t.Fatalf("%s gives the clear as %q, and %s as %q: the two must say the same", path, found[0], operatorClearDocs[0], block)
@@ -187,9 +195,9 @@ func psqlVariables(block []string, person, issuer, subject string) []string {
 	return sent
 }
 
-// brokerGenerationLead starts the runbook's paragraph whose first block reads the session
-// generation the broker recorded for an address.
-const brokerGenerationLead = "Then take each address it lists, all of the address's revocations in one pass."
+// brokerGenerationLead starts the runbook's step of the reset after a lone Dispatch restore whose
+// first block reads the greatest session generation the broker recorded, for every address.
+const brokerGenerationLead = "**End every browser session and revoke every personal token.**"
 
 // heredocAfter is the first psql heredoc path gives after the line starting with lead, a statement
 // a line, each line trimmed.
@@ -219,34 +227,49 @@ func heredocAfter(t *testing.T, path, lead string) []string {
 }
 
 // TestTheRunbookReadsTheBrokersRecordedGeneration: the query Dispatch's runbook gives an operator to
-// read the session generation the broker recorded for an address, run here from the runbook as psql
-// sends it, answers the greatest generation a revoke applied there: after revokes at 5 and at 7, 7.
+// read the session generation the broker recorded, run here from the runbook as psql sends it,
+// answers the greatest generation a revoke applied at any address: after revokes at 5 and 7 at one
+// address and at 3 at another, 7. On an empty table it answers 0, not nothing, so the reset's raise
+// still has a number to compare with.
 func TestTheRunbookReadsTheBrokersRecordedGeneration(t *testing.T) {
 	st := storetest.Open(t)
 	ctx := context.Background()
-	const person = "recorded@example.com"
+	block := heredocAfter(t, operatorClearDocs[0], brokerGenerationLead)
+	if len(block) != 1 || !strings.HasPrefix(block[0], "select coalesce(max(session_generation), 0) from person_replacement_generations") {
+		t.Fatalf("the runbook gives %q after %q, want the one read of person_replacement_generations", block, brokerGenerationLead)
+	}
+	read := func() int64 {
+		t.Helper()
+		var got int64
+		if err := st.Pool.QueryRow(ctx, strings.TrimSuffix(block[0], ";")).Scan(&got); err != nil {
+			t.Fatalf("the runbook's read of the broker's recorded generation: %v", err)
+		}
+		return got
+	}
+	if got := read(); got != 0 {
+		t.Fatalf("on an empty table the runbook's read answered %d, want 0", got)
+	}
 	for _, revoke := range []struct {
-		subject, holder string
-		generation      int64
-	}{{"109recorded", "209recorded", 5}, {"209recorded", "109recorded", 7}} {
+		person, subject, holder string
+		generation              int64
+	}{
+		{"recorded@example.com", "109recorded", "209recorded", 5},
+		{"recorded@example.com", "209recorded", "109recorded", 7},
+		{"other@example.com", "109other", "209other", 3},
+	} {
 		tx, err := st.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.RecordReplacedSubjectTx(ctx, tx, person, signInIssuer, revoke.subject, revoke.holder, revoke.generation); err != nil {
+		if _, err := store.RecordReplacedSubjectTx(ctx, tx, revoke.person, signInIssuer, revoke.subject, revoke.holder, revoke.generation); err != nil {
 			t.Fatalf("the revoke at %d: %v", revoke.generation, err)
 		}
 		if err := tx.Commit(ctx); err != nil {
 			t.Fatal(err)
 		}
 	}
-	block := heredocAfter(t, operatorClearDocs[0], brokerGenerationLead)
-	if len(block) != 1 || !strings.HasPrefix(block[0], "select session_generation from person_replacement_generations ") {
-		t.Fatalf("the runbook gives %q after %q, want the one read of person_replacement_generations", block, brokerGenerationLead)
-	}
-	var got int64
-	if err := st.Pool.QueryRow(ctx, strings.TrimSuffix(psqlVariables(block, person, "", "")[0], ";")).Scan(&got); err != nil || got != 7 {
-		t.Fatalf("the runbook's read of %s's recorded generation answered %d, %v; want 7", person, got, err)
+	if got := read(); got != 7 {
+		t.Fatalf("the runbook's read of the broker's recorded generation answered %d; want 7", got)
 	}
 }
 

@@ -430,7 +430,7 @@ var bindingEffects = []bindingEffect{
 		nil,
 		`insert into people (email, sub) values ('p@x.example', 'account-a')`,
 		1, noSessionRow, `alter table people disable trigger people_first_account_ends_sessions`},
-	{"a session row made where the address has a floor starts at it (the runbook's recovery, then EnsureSession)",
+	{"a session row made where the address has a floor starts at it (a floor written by hand, then EnsureSession)",
 		[]string{`insert into people (email) values ('p@x.example')`, bindingFloor},
 		`insert into user_sessions (login) values ('p@x.example') on conflict (login) do nothing`,
 		9, 0, `alter table user_sessions disable trigger user_sessions_start_at_floor`},
@@ -438,6 +438,14 @@ var bindingEffects = []bindingEffect{
 		[]string{bindingFloor},
 		`insert into people (email, sub) values ('p@x.example', 'account-a')`,
 		9, 1, `alter table user_sessions disable trigger user_sessions_start_at_floor`},
+	{"a session row made where the deployment has a floor starts at it (the reset after a lone restore, then a first sign-in)",
+		[]string{`insert into session_generation_floors (login, generation) values ('*', 12)`},
+		`insert into people (email, sub) values ('p@x.example', 'account-a')`,
+		12, 1, `alter table user_sessions disable trigger user_sessions_start_at_floor`},
+	{"the greater of the address's floor and the deployment's decides where a new session row starts",
+		[]string{`insert into session_generation_floors (login, generation) values ('*', 12)`, bindingFloor},
+		`insert into people (email, sub) values ('p@x.example', 'account-a')`,
+		12, 1, `alter table user_sessions disable trigger user_sessions_start_at_floor`},
 }
 
 // TestEveryBindingColumnMovesOnlyAsItsWritersMoveIt holds the census above: each refused

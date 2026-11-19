@@ -450,8 +450,9 @@ so Dispatch leaves that revocation owed, logs it at ERROR and counts it
 
 Reset or restore the broker's database and Dispatch's together, never one alone, for the reason
 [the Dispatch runbook](/legion/dispatch/running-dispatch/#signing-people-in) gives, which also
-gives the recovery when one was: for Dispatch's database alone, a sweep of every address whose
-session generation is below the broker's, then a per-address pass; for the broker's database
+gives the recovery when one was: for Dispatch's database alone, a reset that ends every
+person's browser sessions, personal tokens and credentials at the broker, then lifts a refusal at
+the broker only for the account the Workspace directory names as an address's holder; for the broker's database
 alone, telling the broker again every revocation Dispatch settled at or after the broker's
 backup less an hour, which nothing else finds — the broker holds those replaced accounts'
 credentials live again, and Dispatch, which settled each, owes nothing and raises no alarm. A
