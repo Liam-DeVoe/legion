@@ -9,12 +9,8 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
-	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -46,30 +42,6 @@ func writeLink(t *testing.T, ctx context.Context, pool *store.Pool, issueKey, ur
 		t.Fatalf("commit the link of %s to %s: %v", issueKey, url, err)
 	}
 }
-
-// holdHeadWrite holds the first statement that writes a head row (upsertHeadRow) once armed, so
-// a test can act between a head write's read of GitHub and its write.
-type holdHeadWrite struct {
-	armed   atomic.Bool
-	reached chan struct{}
-	release chan struct{}
-}
-
-func newHoldHeadWrite() *holdHeadWrite {
-	hold := &holdHeadWrite{reached: make(chan struct{}), release: make(chan struct{})}
-	hold.armed.Store(true)
-	return hold
-}
-
-func (h *holdHeadWrite) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if strings.Contains(data.SQL, "insert into pull_request_heads") && h.armed.CompareAndSwap(true, false) {
-		close(h.reached)
-		<-h.release
-	}
-	return ctx
-}
-
-func (*holdHeadWrite) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // A link that is written while a head write of its pull request is in flight is followed at the
 // next read, for each of the three writers of a head row. The pull request is merged, and its
@@ -134,13 +106,13 @@ func TestALinkWrittenWhileAHeadWriteIsInFlightIsFollowedByTheNextPass(t *testing
 					t.Fatalf("before the link's write, %s lists #%d = %v, %v; want %v", issue, number, listed, err, !added)
 				}
 
-				hold := newHoldHeadWrite()
-				traced := storetest.Traced(t, pool, hold, nil)
+				arrived, release := make(chan struct{}, 1), make(chan struct{})
+				traced := storetest.Traced(t, pool, pauseTracer{match: "insert into pull_request_heads", arrived: arrived, release: release}, nil)
 				done := make(chan error, 1)
 				go func() { done <- writer.write(ctx, traced, client, number, head, second) }()
-				waitOn(t, hold.reached, "the head write's statement")
+				waitOn(t, arrived, "the head write's statement")
 				writeLink(t, ctx, pool, issue, url, added)
-				close(hold.release)
+				close(release)
 				if err := <-done; err != nil {
 					t.Fatalf("the head write: %v", err)
 				}
