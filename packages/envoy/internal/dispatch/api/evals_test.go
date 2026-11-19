@@ -1065,3 +1065,14 @@ func showFigure(value *float64) string {
 	}
 	return fmt.Sprint(*value)
 }
+
+// mustJSON is value encoded as JSON, failing the test where it does not encode: the eval tests
+// compare two answers, or log one, by their encoded text.
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	return string(encoded)
+}

@@ -176,6 +176,7 @@ export type {
   Issue,
   IssueAskRow,
   IssueAskThreadRow,
+  IssueCheckResults,
   IssueChild,
   IssueClaim,
   IssueClaimEventPayload,
