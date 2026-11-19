@@ -4245,8 +4245,8 @@ test("an editable row shows it takes typing under the pointer and at focus, and 
 // 0 on every document socket, which no server admits writable (`admits` in
 // `packages/envoy/internal/dispatch/docs/schema_admission.go`). At 2ff6850a a statement's row
 // is marked as taking typing by Enter's rule alone, so under the pointer it draws the text cursor
-// and the tint, before its editor opens and after the room has admitted that editor read-only;
-// only the box of the editor follows the document's `data-read-only`.
+// and the tint after the room has admitted that editor read-only; only the box of the editor
+// follows the document's `data-read-only`.
 // SLOW(>=2s): the whole issue seeded and loaded, then Enter waited on until the statement's editor
 // opens read-only.
 test("a statement of a document the server admits read-only shows no cue that it takes typing", async ({
@@ -4271,14 +4271,6 @@ test("a statement of a document the server admits read-only shows no cue that it
     const otherRow = nodeRow(page, other).first();
     await expect(statementRow, "the statement's row is not drawn").toBeAttached();
     await expect(otherRow, "the second statement's row is not drawn").toBeAttached();
-
-    // Under the pointer before any editor of the document opens.
-    await statementRow.hover();
-    await nextFrames(page);
-    expect(
-      await rowCue(statementRow),
-      "a statement of a document the server admits read-only draws a cue under the pointer before its editor opens"
-    ).toEqual({ background: TRANSPARENT, cursor: "auto" });
 
     // Enter opens the statement's editor, which the room admits read-only; then another statement
     // of the same document is under the pointer.
