@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeAll, expect, test } from "bun:test";
 import { chmod, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import {
@@ -12,6 +12,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // AskGate on the real Oh My Pi: the loader resolves the gate's string-literal imports of the host's
 // own modules (pi-ai, the session context, the settings, the fallback chains) only inside the
@@ -44,16 +45,44 @@ const ask = (dispatch: string) =>
 /** One tool call of the scripted model turn. */
 type Block = { type: "tool_use"; name: string; input: Record<string, unknown> };
 
-/** The real `dispatch` CLI's entry, which a case runs from source through a shim. */
-const CLI_ENTRY = path.join(
+/**
+ * The real `dispatch` CLI as it ships: the bundle `build-dispatch-cli.sh` makes of `bin/dispatch.ts`
+ * (the one statement of its entry, target and format, which every host plugin builds it through),
+ * built once for this file into a directory the fixture makes and removes, which a case runs
+ * through a shim. Run from source instead, each call loaded the CLI's whole module graph from disk,
+ * about three times the bundle's CPU, and under a loaded machine that ran the gate's dry run past
+ * its reads' share of the deadline.
+ */
+const cliOut = temporaryDirectory("askgate-omp-cli");
+const cliBundle = path.join(cliOut, "dispatch.js");
+const CLI_BUILD = path.join(
   import.meta.dir,
   "..",
   "..",
   "..",
   "envoy-client",
-  "bin",
-  "dispatch.ts"
+  "scripts",
+  "build-dispatch-cli.sh"
 );
+// Registered below the fixture's reservation, so its `beforeAll` has made the directory.
+beforeAll(async () => {
+  if (omp === undefined) return;
+  const build = Bun.spawn([CLI_BUILD, cliOut], { stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(build.stdout).text(),
+    new Response(build.stderr).text(),
+    build.exited,
+  ]);
+  if (code !== 0) throw new Error(`build-dispatch-cli.sh exited ${code}:\n${stdout}${stderr}`);
+}, 120_000);
+
+/**
+ * The profile setting every deployment and installer writes, which AskGate needs (pi-envoy's
+ * README, "The time limit"): Oh My Pi's 30 s default for one `tool_call` handler holds the gate's
+ * deadline at 25 s and its dry run's reads at half of that, a configuration the gate warns about
+ * at its start, where a deployed session's gate has its full 90 s.
+ */
+const DEPLOYED_PROFILE = ["extensionHandlers:", "  toolCallTimeoutMs: 120000"] as const;
 /** Where the fake Dispatch takes a `dispatch ask` for DSP-1. */
 const ASKS = "/api/v1/issues/DSP-1/asks";
 
@@ -88,7 +117,7 @@ async function runSession(options: {
   await writeFile(
     dispatch,
     options.cli === "real"
-      ? `#!/bin/sh\nexec "${process.execPath}" "${CLI_ENTRY}" "$@"\n`
+      ? `#!/bin/sh\nexec "${process.execPath}" "${cliBundle}" "$@"\n`
       : [
           "#!/bin/sh",
           'case " $* " in',
@@ -147,7 +176,7 @@ async function runSession(options: {
       ...deliveryFor(url.pathname, body, id),
     });
   });
-  await writeStandinProfile(home, base, options.config ?? []);
+  await writeStandinProfile(home, base, [...DEPLOYED_PROFILE, ...(options.config ?? [])]);
 
   let settled = Promise.withResolvers<void>();
   const rpc = spawnRpc(
