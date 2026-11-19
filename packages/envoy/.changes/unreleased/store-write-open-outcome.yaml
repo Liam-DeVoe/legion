@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  `agent-secrets secret set`, `secret delete` and `secret restore` now say when the store's answer
+  leaves open whether the write landed. A write whose error is no definite refusal (a service
+  fault, an outage, a lost connection, or an AWS call the SDK retried) may follow a write the store
+  carried out. The form now says the outcome is open, names the `secret show` that reads what the
+  store holds, and asks the broker to reread the secret, as `secret retag` does. Before, it printed
+  the store's error alone and asked for no reread, so the broker went on serving what it had read
+  until its next reload.
+custom:
+    Issue: store-write-open-outcome
