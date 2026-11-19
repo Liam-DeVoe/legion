@@ -28,7 +28,8 @@ import (
 // control takes the row out after the boot, as a boot without that pass leaves the store: the
 // completion applies at once, with no wait for the planner's stream, and since the boot's row is
 // the one path a run no start counted is ended by, it ends no run of planning, and Dispatch holds
-// no record of it once the next step's start, written by the same fact, has reached it.
+// no record of it once every step record the same fact queued, the next step's start among them,
+// has left the outbox.
 func TestABootOpensTheRunTheReleaseBeforeStartedSoItsAgentsCompletionWaitsForItsStream(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -60,9 +61,18 @@ func TestABootOpensTheRunTheReleaseBeforeStartedSoItsAgentsCompletionWaitsForIts
 			planner.endTurn()
 			r.waitPhase(phase.Implementing)
 			if tc.noRow {
-				r.waitSteps("the start of implementing", func(got stepRecordsRead) error {
+				// The outbox deletes a row only after Dispatch took its write, so Dispatch can show
+				// implementing's start while the outbox still holds that start's row. The wait is for
+				// the outbox to hold no step record of the issue: then every record the fact queued
+				// has reached Dispatch, a record of planning's run too if the fact queued one. The
+				// read of planning comes after that wait, since a read before it can miss a record
+				// that reaches Dispatch between the read and the count.
+				r.waitSteps("every step record of the issue, implementing's start among them", func(got stepRecordsRead) error {
 					if found := got.find("step", 2, 1); found.ID == "" {
 						return errors.New("implementing has no record yet")
+					}
+					if queued := r.unfinishedRows(record.OutboxKindStepRecord); queued != 0 {
+						return fmt.Errorf("the outbox still holds %d step records of the issue", queued)
 					}
 					return nil
 				})
@@ -70,8 +80,8 @@ func TestABootOpensTheRunTheReleaseBeforeStartedSoItsAgentsCompletionWaitsForIts
 				if err != nil {
 					t.Fatalf("read the steps: %v", err)
 				}
-				if found := got.find("step", 1, 1); found.ID != "" || r.unfinishedRows(record.OutboxKindStepRecord) != 0 {
-					t.Fatalf("planning reads %+v with %d step rows unfinished, want no record of it: no row holds its run open", found, r.unfinishedRows(record.OutboxKindStepRecord))
+				if found := got.find("step", 1, 1); found.ID != "" {
+					t.Fatalf("planning reads %+v, want no record of it: no row holds its run open", found)
 				}
 				return
 			}
