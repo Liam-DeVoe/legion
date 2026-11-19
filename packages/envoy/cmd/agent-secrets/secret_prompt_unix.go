@@ -38,6 +38,36 @@ const splitMarkGapMillis = 1000
 // shorten maxPasteDrain.
 var maxPasteDrain = 10 * time.Second
 
+// promptNow is the clock the prompt reads its value deadline by: time.Now, which a test replaces to
+// put the deadline's passing at a moment of its choosing between two of the reader's steps.
+var promptNow = time.Now
+
+// waitBound is the rule every wait of the prompt that a deadline bounds keeps: its poll timeout is
+// wait (milliseconds, -1 for none) cut to the time left before until where that comes first,
+// rounded up a millisecond so the wait ends at until or after it, never before, and 0 once until
+// has passed; the zero until sets no moment. A caller counts it again at each attempt of its wait,
+// so an attempt tried again after a signal interrupted the last one (EINTR) still ends at until
+// rather than a whole bound later, and one interrupted once until has passed ends the wait.
+func waitBound(wait int, until time.Time) int {
+	if until.IsZero() {
+		return wait
+	}
+	ms := 0
+	if left := until.Sub(promptNow()); left > 0 {
+		ms = int(left.Milliseconds()) + 1
+	}
+	if wait < 0 || ms < wait {
+		return ms
+	}
+	return wait
+}
+
+// passed reports whether until, a moment waitBound bounds a wait by, has passed on the prompt's
+// clock; the zero time never passes.
+func passed(until time.Time) bool {
+	return !until.IsZero() && !promptNow().Before(until)
+}
+
 // The bracketed-paste sequences (xterm's mode 2004): the reader turns the mode on while it reads,
 // and a terminal that supports it then sends each paste between pasteStart and pasteEnd.
 var (
@@ -150,47 +180,60 @@ func readHiddenAtTerminal(fd int, deadline time.Time, prompt func(), onDiscard f
 	r := newPromptReader(saved, controlling, ignored)
 	buf := make([]byte, 512)
 	// entered is whether any byte of the entry has come; expired, whether the value deadline has
-	// passed with the entry under way.
+	// passed with the entry under way, which is then refused for it.
 	entered, expired := false, false
+	// refuse refuses the entry at the value deadline (errValueTimedOut), and, where the entry is
+	// still under way, says so at once (onDiscard). The notice says what ends the entry from here
+	// (valueDeadlineNotice), so it reads the reader's state after every byte read so far: inside
+	// an open paste a signal key is pasted text, and the interrupt key ends the process only where
+	// it has a signal to send. An entry whose line has ended needs no notice.
+	refuse := func(underWay bool) error {
+		expired, r.err = true, errValueTimedOut
+		if !underWay {
+			return nil
+		}
+		tty.notice = valueDeadlineNotice{inPaste: r.inPaste, interrupt: r.interruptKey()}
+		return tty.whenHeld(tty.noticeDiscard)
+	}
 	for {
 		// Outside a paste the read blocks until input; an open paste bounds each read at
 		// maxPasteDrain, so it is the quiet since the last input that gives a still-arriving
 		// paste up, not the time since it began. A create's value deadline bounds every read, in
-		// a paste or not, until it passes. With nothing of the entry come, the prompt then ends,
-		// errValueTimedOut. With the entry under way, a byte read, a paste or a paste mark open, or
-		// a stop's refusal waiting for Enter, it ends only as a stop's refused entry does: it says
-		// at once that the entry is refused (onDiscard), and reads on to the line's end, an open
-		// paste through its closing mark, so no part of the value, typed or pasted, is echoed or
-		// reaches the shell; the entry's refusal is then errValueTimedOut.
-		tty.wait = -1
+		// a paste or not, until it passes: the read is handed the deadline itself (tty.until), not
+		// the time left now, so a wait tried again after a signal interrupted it still ends there.
+		// With nothing of the entry come, the prompt then ends, errValueTimedOut. With the entry
+		// under way, a byte read, a paste or a paste mark open, or a stop's refusal waiting for
+		// Enter, it ends only as a stop's refused entry does: it says at once that the entry is
+		// refused (onDiscard), and reads on to the line's end, an open paste through its closing
+		// mark, so no part of the value, typed or pasted, is echoed or reaches the shell; the
+		// entry's refusal is then errValueTimedOut.
+		tty.wait, tty.until = -1, time.Time{}
 		if r.inPaste {
 			tty.wait = int(maxPasteDrain.Milliseconds())
 		}
-		if !deadline.IsZero() && !expired {
-			left := time.Until(deadline)
-			if left <= 0 {
-				if !entered && !r.inPaste && len(r.pending) == 0 && r.err == nil {
-					return nil, errValueTimedOut
-				}
-				// The notice says what ends the entry from here (valueDeadlineNotice): inside an
-				// open paste a signal key is pasted text, and the interrupt key ends the process
-				// only where it has a signal to send.
-				notice := valueDeadlineNotice{inPaste: r.inPaste, interrupt: r.interruptKey()}
-				expired, r.err, tty.notice = true, errValueTimedOut, notice
-				if err := tty.whenHeld(tty.noticeDiscard); err != nil {
-					return nil, err
-				}
-				continue
+		if !expired && tty.pastDeadline() {
+			if !entered && !r.inPaste && len(r.pending) == 0 && r.err == nil {
+				return nil, errValueTimedOut
 			}
-			if ms := int(left.Milliseconds()) + 1; tty.wait < 0 || ms < tty.wait {
-				tty.wait = ms
+			if err := refuse(true); err != nil {
+				return nil, err
 			}
+			continue
+		}
+		if !expired {
+			tty.until = deadline
 		}
 		began := time.Now()
 		n, err := tty.read(buf)
 		if err != nil {
 			return nil, err
 		}
+		// The one check of the deadline after a read, made before anything the read returned is
+		// acted on: a read that ends once the deadline has passed returned its input late,
+		// whatever that input holds, so the entry is refused as late, never as what its bytes
+		// would make it (more than one line, a control byte). The drain after the line makes the
+		// same check (drainAfterTheLine).
+		late := !expired && tty.pastDeadline()
 		if tty.stopped {
 			// The stop discarded unread bytes or paste marks, with no count of what
 			// was lost. Drain a fresh line instead of keeping a partial value.
@@ -201,8 +244,8 @@ func readHiddenAtTerminal(fd int, deadline time.Time, prompt func(), onDiscard f
 			tty.stopped = false
 		}
 		if n == 0 {
-			if !deadline.IsZero() && !expired && !time.Now().Before(deadline) {
-				continue // the deadline has passed: the check above decides how the read ends
+			if late {
+				continue // the check at the top decides how the read ends
 			}
 			if r.inPaste && time.Since(began) >= maxPasteDrain {
 				// The paste fell quiet for the whole bound without closing, so the signal
@@ -224,6 +267,14 @@ func readHiddenAtTerminal(fd int, deadline time.Time, prompt func(), onDiscard f
 		}
 		entered = true
 		done, sig := r.feed(buf[:n])
+		if late {
+			// The late bytes are fed all the same, so the prompt reads on through the line's end
+			// and an open paste's closing mark, and the notice names what ends the entry from
+			// after them.
+			if err := refuse(!done); err != nil {
+				return nil, err
+			}
+		}
 		if sig != 0 {
 			if err := tty.raise(sig); err != nil {
 				return nil, err
@@ -254,7 +305,8 @@ type promptTerminal struct {
 	current     *unix.Termios // the reader's own mode; nil until it has read the settings it restores
 	watch       *promptWatch
 	death       syscall.Signal
-	wait        int       // poll timeout in milliseconds; -1 until the line ends
+	wait        int       // each wait's bound in milliseconds, -1 for none: a quiet window or an open paste's bound
+	until       time.Time // the moment that also ends each wait (waitBound): the value deadline while it bounds the reads, or the zero time
 	deadline    time.Time // the value deadline (readHiddenAtTerminal's), or the zero time
 	stopped     bool
 	onDiscard   func(reason error)
@@ -366,7 +418,7 @@ func (t *promptTerminal) settle() error {
 		if err := t.waitForeground(); err != nil {
 			return err
 		}
-		if took, err := t.nextEvent(0); err != nil || !took {
+		if took, err := t.nextEvent(0, time.Time{}); err != nil || !took {
 			return err
 		}
 	}
@@ -381,7 +433,7 @@ func (t *promptTerminal) settle() error {
 func (t *promptTerminal) whileHeld(f func() error) (bool, error) {
 	t.watch.stopping.Lock()
 	defer t.watch.stopping.Unlock()
-	if pending, err := t.watch.ready(0); err != nil || pending {
+	if pending, err := t.watch.ready(0, time.Time{}); err != nil || pending {
 		return false, err
 	}
 	if held, err := t.holdsTerminal(); err != nil || !held {
@@ -480,21 +532,24 @@ func (t *promptTerminal) waitForeground() error {
 		} else if orphaned {
 			return errNoForeground
 		}
-		if !t.deadline.IsZero() && !time.Now().Before(t.deadline) {
+		if passed(t.deadline) {
 			return errValueTimedOut
 		}
 		// fg need not send SIGCONT to a job that bg already left running, so the
-		// wait rechecks every 50 ms; an event ends it at once.
-		if _, err := t.nextEvent(50); err != nil {
+		// wait rechecks every 50 ms; an event ends it at once. The deadline bounds each of those
+		// waits too (waitBound), so signals that keep interrupting one cannot hold it past the
+		// deadline, and the check above ends the wait there.
+		if _, err := t.nextEvent(50, t.deadline); err != nil {
 			return err
 		}
 	}
 }
 
-// nextEvent takes the watcher's next event, if one comes within timeout milliseconds, and records
-// it (signal). Every event the reader acts on comes through here.
-func (t *promptTerminal) nextEvent(timeout int) (bool, error) {
-	event, took, err := t.watch.next(timeout)
+// nextEvent takes the watcher's next event, if one comes within timeout milliseconds and before
+// until (the zero time for no moment), and records it (signal). Every event the reader acts on
+// comes through here.
+func (t *promptTerminal) nextEvent(timeout int, until time.Time) (bool, error) {
+	event, took, err := t.watch.next(timeout, until)
 	if err != nil || !took {
 		return false, err
 	}
@@ -521,7 +576,7 @@ func (t *promptTerminal) raise(sig syscall.Signal) error {
 		return fmt.Errorf("send %s: %w", sig, err)
 	}
 	for {
-		event, took, err := t.watch.next(-1)
+		event, took, err := t.watch.next(-1, time.Time{})
 		if err != nil {
 			return err
 		}
@@ -563,13 +618,25 @@ func (t *promptTerminal) read(buf []byte) (int, error) {
 				return 0, err
 			}
 		}
-		n, err := readTerminal(t.fd, t.watch.fd, buf, t.wait)
+		n, err := readTerminal(t.fd, t.watch.fd, buf, waitBound(t.wait, t.until))
 		event = n == -2
 		if event || errors.Is(err, unix.EINTR) || (n == -1 && err == nil) {
+			// A wait tried again counts its bound again (waitBound); one interrupted once t.until
+			// has passed ends with nothing read, and its caller's check of the deadline decides
+			// what follows. An event is taken first, at the top of this loop.
+			if !event && passed(t.until) {
+				return 0, nil
+			}
 			continue
 		}
 		return n, err
 	}
+}
+
+// pastDeadline reports whether the value deadline has passed on the prompt's clock: input a read
+// returns from then on came late.
+func (t *promptTerminal) pastDeadline() bool {
+	return passed(t.deadline)
 }
 
 // promptReader is the state of one read at the prompt, fed each read's bytes in turn.
@@ -762,6 +829,9 @@ func eraseWord(b []byte) []byte {
 // discarded. Anything but line endings, and a paste or paste mark still open when the drain ends, is
 // more than one line (r.more).
 func drainAfterTheLine(tty *promptTerminal, r *promptReader, buf []byte) error {
+	// The value deadline bounds none of the drain's waits: what follows the line is read through
+	// however late it comes, and readSecretValue refuses a value whose read ended past the deadline.
+	tty.until = time.Time{}
 	for {
 		switch {
 		case r.inPaste:
@@ -785,6 +855,12 @@ func drainAfterTheLine(tty *promptTerminal, r *promptReader, buf []byte) error {
 		}
 		if n == 0 {
 			break
+		}
+		// The read loop's one check after a read (readHiddenAtTerminal): input a read returns once
+		// the deadline has passed came late, whatever it holds, so the entry is refused as late.
+		// The drain reads on as before.
+		if tty.pastDeadline() {
+			r.err = errValueTimedOut
 		}
 		if _, sig := r.feed(buf[:n]); sig != 0 {
 			if err := tty.raise(sig); err != nil {
@@ -907,13 +983,22 @@ func (w *promptWatch) run() {
 	}
 }
 
+// pollWatch is the poll ready waits on the wake pipe with: unix.Poll, which a test replaces to
+// interrupt that wait (EINTR) as signals would.
+var pollWatch = unix.Poll
+
 // ready reports whether the watcher has an event the reader has not taken, waiting up to timeout
-// milliseconds for one.
-func (w *promptWatch) ready(timeout int) (bool, error) {
+// milliseconds for one, and never past until (waitBound, counted again at each attempt; the zero
+// time sets no moment): signals that keep interrupting the wait cannot hold it there, and one that
+// interrupts it once until has passed ends it with no event.
+func (w *promptWatch) ready(timeout int, until time.Time) (bool, error) {
 	fds := []unix.PollFd{{Fd: int32(w.fd), Events: unix.POLLIN}}
 	for {
-		n, err := unix.Poll(fds, timeout)
+		n, err := pollWatch(fds, waitBound(timeout, until))
 		if errors.Is(err, unix.EINTR) {
+			if passed(until) {
+				return false, nil
+			}
 			continue
 		}
 		return n > 0, err
@@ -922,8 +1007,8 @@ func (w *promptWatch) ready(timeout int) (bool, error) {
 
 // next takes the watcher's next event, if one comes within timeout milliseconds. A stop's event is
 // answered only once the stop is over, with its failure if it failed.
-func (w *promptWatch) next(timeout int) (promptSignal, bool, error) {
-	if ready, err := w.ready(timeout); err != nil || !ready {
+func (w *promptWatch) next(timeout int, until time.Time) (promptSignal, bool, error) {
+	if ready, err := w.ready(timeout, until); err != nil || !ready {
 		return promptSignal{}, false, err
 	}
 	var b [1]byte
@@ -955,7 +1040,7 @@ func (w *promptWatch) stop() promptSignal {
 		}
 	}
 	for {
-		event, took, err := w.next(0)
+		event, took, err := w.next(0, time.Time{})
 		if err != nil || !took {
 			break
 		}

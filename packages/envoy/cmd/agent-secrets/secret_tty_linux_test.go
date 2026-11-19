@@ -207,6 +207,212 @@ func TestPromptAtTheValueDeadlineMidEntryReadsTheEntryToItsEnd(t *testing.T) {
 	}
 }
 
+// stillPromptClock replaces the prompt's clock (promptNow) for the rest of t with one that stands
+// at start until the test moves it, through the function it answers: the test, not the machine's
+// load, then decides at which of the reader's steps the value deadline passes. Once the reader
+// runs, only its goroutine (a readTerminal or pollWatch the test wraps) may move the clock.
+func stillPromptClock(t *testing.T, start time.Time) func(time.Time) {
+	t.Helper()
+	restore := promptNow
+	now := start
+	promptNow = func() time.Time { return now }
+	t.Cleanup(func() { promptNow = restore })
+	return func(at time.Time) { now = at }
+}
+
+// awaitQueued waits until the terminal fd holds at least n bytes unread, so a write to its
+// controller has reached the reader's side before the reader polls for it; it reports through
+// t.Error, for it runs on the reader's goroutine.
+func awaitQueued(t *testing.T, fd, n int) {
+	for budget := time.Now().Add(promptJobWait); ; {
+		queued, err := unix.IoctlGetInt(fd, unix.TIOCINQ)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if queued >= n {
+			return
+		}
+		if time.Now().After(budget) {
+			t.Errorf("the terminal held %d of %d bytes written to it %s on", queued, n, promptJobWait)
+			return
+		}
+		_, _ = unix.Poll([]unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}, 50)
+	}
+}
+
+// pasteHeadThenRest runs readHidden at a fresh terminal with a value deadline of two seconds on a
+// clock that stands still (stillPromptClock), and types the head of a bracketed paste at the
+// prompt's first wait. atWait runs at each of the reader's waits once it has read the whole head,
+// on the reader's goroutine, with the wait's bound, the deadline, the clock's mover and a write to
+// the terminal that returns once the bytes are queued there; it answers whether it took the wait
+// in hand, and if so what the wait returns. The prompt's notice sets *noticed, where noticed is not
+// nil. pasteHeadThenRest answers what readHidden returned, and the reason of the notice it gave,
+// nil for none, once it has checked that nothing of the paste reached the shell.
+func pasteHeadThenRest(t *testing.T, atWait func(timeout int, deadline time.Time, move func(time.Time), write func(string)) (bool, int, error), noticed *bool) (promptRead, error) {
+	t.Helper()
+	controller, terminal := openPTY(t)
+	start := time.Now()
+	deadline := start.Add(2 * time.Second)
+	move := stillPromptClock(t, start)
+	real := readTerminal
+	t.Cleanup(func() { readTerminal = real })
+	const head = "\x1b[200~pastehead"
+	write := func(text string) {
+		if _, err := controller.Write([]byte(text)); err != nil {
+			t.Error(err)
+		}
+	}
+	// Only the reader's goroutine touches these until it answers.
+	headSent, read := false, 0
+	var notice error
+	readTerminal = func(fd, wake int, buf []byte, timeout int) (int, error) {
+		switch {
+		case !headSent:
+			headSent = true
+			write(head)
+		case read == len(head):
+			if took, n, err := atWait(timeout, deadline, move, func(text string) {
+				write(text)
+				awaitQueued(t, fd, len(text))
+			}); took {
+				return n, err
+			}
+		}
+		n, err := real(fd, wake, buf, timeout)
+		if n > 0 && read < len(head) {
+			read += n
+		}
+		return n, err
+	}
+	answer := make(chan promptRead, 1)
+	go func() {
+		line, err := readHidden(terminal, deadline, nil, func(reason error) {
+			notice = reason
+			if noticed != nil {
+				*noticed = true
+			}
+		})
+		answer <- promptRead{line, err}
+	}()
+	var got promptRead
+	select {
+	case got = <-answer:
+	case <-time.After(promptJobWait):
+		t.Fatalf("the prompt had not answered %s on", promptJobWait)
+	}
+	if n := unread(t, terminal); n != 0 || bytes.Contains(shown(t, controller), []byte("PASTE_")) {
+		t.Fatalf("the paste's rest reached the shell: %d bytes left unread, or it was echoed", n)
+	}
+	return got, notice
+}
+
+// TestPromptAtTheValueDeadlineAnInterruptedWaitStillEndsThere: a wait for input that a signal
+// interrupts (poll's EINTR) is tried again, and the retry still ends at the value deadline, so the
+// deadline is acted on there as it is when nothing interrupts the wait: a paste open at the
+// deadline is refused at once (onDiscard, naming the open paste), and its rest, which comes at the
+// prompt's next wait, is read through its closing mark, so none of it reaches the shell, and is
+// refused with the entry, errValueTimedOut. The signal interrupts the prompt's first wait after
+// the paste's head, a wait that begins before the deadline, and the deadline passes while it
+// waits: a retry that waited that wait's whole bound again read the rest as if it had come in
+// time, and refused the entry as more than one line, its deadline never acted on. The rest goes at
+// the first wait after the signal that can block (a bound other than zero). The clock stands still
+// until the interrupted wait moves it to the deadline, so no step of the machine's own decides
+// which wait the deadline falls in.
+func TestPromptAtTheValueDeadlineAnInterruptedWaitStillEndsThere(t *testing.T) {
+	const rest = "\recho PASTE_$((2+3))\r\x1b[201~"
+	interrupted, beganInTime, restSent, noticeFirst := false, false, false, false
+	var noticed bool
+	got, notice := pasteHeadThenRest(t, func(timeout int, deadline time.Time, move func(time.Time), write func(string)) (bool, int, error) {
+		switch {
+		case !interrupted:
+			interrupted, beganInTime = true, promptNow().Before(deadline)
+			move(deadline)
+			return true, 0, unix.EINTR
+		case !restSent && timeout != 0:
+			restSent, noticeFirst = true, noticed
+			write(rest)
+		}
+		return false, 0, nil
+	}, &noticed)
+	if !interrupted || !beganInTime {
+		t.Fatalf("readHidden = %q, %v; the signal interrupted no wait that began before the deadline (interrupted: %t, begun in time: %t), so this run says nothing of a retry", got.line, got.err, interrupted, beganInTime)
+	}
+	if got.line != nil || !errors.Is(got.err, errValueTimedOut) {
+		t.Fatalf("readHidden = %q, %v; want no line and errValueTimedOut, for a paste open when the deadline passed", got.line, got.err)
+	}
+	var said valueDeadlineNotice
+	if !restSent || !noticeFirst || !errors.As(notice, &said) || !said.inPaste {
+		t.Fatalf("the prompt's notice %#v (the paste's rest sent: %t, after the notice: %t); want a valueDeadlineNotice naming the open paste, given at the deadline, before the rest came", notice, restSent, noticeFirst)
+	}
+}
+
+// TestPromptRefusesInputReadPastTheValueDeadlineAsLate: input a read returns once the value
+// deadline has passed came late, whatever it holds. The paste's rest is queued at the terminal as
+// the deadline passes, while the prompt waits after the paste's head, and the read that returns it
+// closes the paste and the line at once: the entry is refused as late (errValueTimedOut), not as
+// the more than one line its bytes hold, and none of it reaches the shell. The clock stands still
+// until the wait moves it to the deadline, once the rest is queued, so that read ends past the
+// deadline however slowly this test runs.
+func TestPromptRefusesInputReadPastTheValueDeadlineAsLate(t *testing.T) {
+	const rest = "\recho PASTE_$((2+3))\r\x1b[201~"
+	queued := false
+	got, _ := pasteHeadThenRest(t, func(_ int, deadline time.Time, move func(time.Time), write func(string)) (bool, int, error) {
+		if !queued {
+			queued = true
+			write(rest)
+			move(deadline)
+		}
+		return false, 0, nil
+	}, nil)
+	if !queued {
+		t.Fatalf("readHidden = %q, %v before the paste's rest was queued", got.line, got.err)
+	}
+	if got.line != nil || !errors.Is(got.err, errValueTimedOut) {
+		t.Fatalf("readHidden = %q, %v; want no line and errValueTimedOut, for a paste whose rest was read past the deadline", got.line, got.err)
+	}
+}
+
+// TestPromptWatchWaitEndsAtItsDeadlineThoughSignalsKeepInterruptingIt: the watcher's wait for an
+// event (promptWatch.ready, which the wait for the foreground repeats every 50 ms) keeps the value
+// deadline across the signals that interrupt it, by the read's own rule (waitBound): each attempt
+// counts the time left again, none asks to wait past the deadline, and one interrupted once the
+// deadline has passed ends the wait with no event, where waitForeground's check of the deadline
+// ends the prompt. Every attempt here is interrupted (EINTR), and the clock moves 30 ms at each, as
+// a stream of signals would have it; an attempt that the rule would never reach ends the wait. The
+// wait must have been interrupted on both sides of the deadline, so a wait that polled something
+// else, or gave up at its first interruption, does not pass.
+func TestPromptWatchWaitEndsAtItsDeadlineThoughSignalsKeepInterruptingIt(t *testing.T) {
+	start := time.Now()
+	deadline := start.Add(100 * time.Millisecond)
+	move := stillPromptClock(t, start)
+	restore := pollWatch
+	t.Cleanup(func() { pollWatch = restore })
+	const enough = 100
+	now := start
+	var asked []int
+	pastDeadline := 0
+	pollWatch = func(_ []unix.PollFd, timeout int) (int, error) {
+		asked = append(asked, timeout)
+		if timeout < 0 || now.Add(time.Duration(timeout)*time.Millisecond).After(deadline.Add(time.Millisecond)) {
+			pastDeadline++
+		}
+		if len(asked) == enough {
+			return 0, nil
+		}
+		now = now.Add(30 * time.Millisecond)
+		move(now)
+		return 0, unix.EINTR
+	}
+	ready, err := (&promptWatch{fd: -1}).ready(50, deadline)
+	if len(asked) < 2 || now.Before(deadline) {
+		t.Fatalf("ready = %t, %v after %d interrupted attempts, the clock %s past its start; want attempts on both sides of the %s deadline", ready, err, len(asked), now.Sub(start), deadline.Sub(start))
+	}
+	if ready || err != nil || pastDeadline > 0 || len(asked) == enough {
+		t.Fatalf("ready = %t, %v after %d attempts, asking %v ms, %d of them to wait past the deadline; want no event and no error, and no attempt past the deadline", ready, err, len(asked), asked, pastDeadline)
+	}
+}
+
 // TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow: a value typed at the prompt inside the
 // create's window, whose drain then runs past it - a bracketed paste that opens after the line and
 // closes only once the window is over - is not stored: the prompt reads that paste through its

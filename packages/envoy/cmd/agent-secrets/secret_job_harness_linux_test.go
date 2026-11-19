@@ -437,10 +437,12 @@ func TestPromptJobHelper(t *testing.T) {
 	// input lasts until the deadline has passed, where it has not, and then ends with nothing read,
 	// as an entry, typed or pasted, that falls quiet across the deadline does. The helper decides
 	// that by the deadline, not by the wait's bound. It prints DEADLINE_PASSED then, and READING_ON
-	// at the reader's next wait, if it waits again; where the input itself came after the
-	// deadline, the reader is already reading on, and it prints both at once. With
-	// AGENT_SECRETS_JOB_ANNOUNCE_DEADLINE it prints DEADLINE_REACHED once the deadline has passed,
-	// so a test can send its input after it.
+	// at the reader's next wait, if it waits again: a read with a bound other than zero, so not
+	// that zero read tried again after a signal interrupted it, before the prompt has acted on the
+	// deadline, where input the test sends on READING_ON would come as if in time. Where the input
+	// itself came after the deadline, the reader is already reading on, and it prints both at once.
+	// With AGENT_SECRETS_JOB_ANNOUNCE_DEADLINE it prints DEADLINE_REACHED once the deadline has
+	// passed, so a test can send its input after it.
 	var window time.Duration
 	if d := os.Getenv("AGENT_SECRETS_JOB_DEADLINE"); d != "" {
 		var err error
@@ -505,7 +507,7 @@ func TestPromptJobHelper(t *testing.T) {
 				timeout = -1
 			}
 		}
-		if held && !readOn {
+		if held && !readOn && timeout != 0 {
 			readOn = true
 			fmt.Println("READING_ON")
 		}
