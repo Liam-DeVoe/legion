@@ -94,7 +94,8 @@ export function usePersonKeys(login: string | undefined): PersonKeys {
 }
 
 /** The keys that run `action` for the signed-in person: theirs, else the defaults, then the keys
- *  nobody changes. With no `KeymapProvider`, the defaults. */
+ *  nobody changes. A control draws its action's keys from it, so it shows the person's own. With
+ *  no `KeymapProvider`, the defaults. */
 export function useActionKeys(action: KeymapActionId): readonly string[] {
   const { personKeys } = useContext(KeymapPersonContext);
   return useMemo(() => keysOfAction(action, personKeys), [action, personKeys]);

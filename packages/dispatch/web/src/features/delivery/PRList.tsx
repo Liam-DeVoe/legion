@@ -173,7 +173,8 @@ const PR_LAYOUT_COLUMNS: LayoutColumns = {
  *  the arrows are the page's, which scrolls. They are registered in the page's `delivery` scope,
  *  which `DeliveryPage` pushes in both of its views, while this list is drawn - the List view
  *  alone - so no key of this table is answered on a page that does not draw it. The list selects
- *  nothing, so it names no select key. Home and End are the row's own, below: the core's keymap
+ *  nothing, so it names no select key. Its open shows the row's details, which is no link, so it
+ *  names no new-tab key either. Home and End are the row's own, below: the core's keymap
  *  names a next, a previous and an open, and has no slot for them. */
 const PR_TABLE_NAMES: DataTableNames = {
   groupAttribute: "data-pr-group",

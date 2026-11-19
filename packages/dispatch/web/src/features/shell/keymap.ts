@@ -44,20 +44,22 @@ export interface KeyBinding {
   /** Whether the binding applies right now; `false` neither fires nor shadows lower scopes. */
   when?: () => boolean;
   /** Fires while a control that takes typed text has focus - a `TEXTAREA`, a `SELECT`, a
-   *  contentEditable element, or a text-entry `INPUT` - and while the focus is anywhere inside an
-   *  open panel (`PANEL_ATTRIBUTE`). The key then reaches every such control, so a binding that
-   *  belongs to only some of them says which in its `when`: the document's `$mod+Alt+m` runs only
-   *  while its editor has focus and a selection, never from a comment composer or any other
-   *  field. */
+   *  contentEditable element, a text-entry `INPUT`, or an option list's trigger
+   *  (`aria-haspopup="listbox"`, `MultiSelect`'s), open or closed - and while the focus is
+   *  anywhere inside an open panel (`PANEL_ATTRIBUTE`). The key then reaches every such control,
+   *  so a binding that belongs to only some of them says which in its `when`: the document's
+   *  `$mod+Alt+m` runs only while its editor has focus and a selection, never from a comment
+   *  composer or any other field. */
   inEditable?: boolean;
   /** Whether `⌘K` offers this binding as an action. The default is `true` for a binding with one
    *  key or none that is not `inEditable`, and `false` otherwise. A row presses only its first
    *  key, and a binding with several keys may pick what it does by the key pressed (the arrows,
    *  `1`–`9`), so one whose keys all do the same thing says `true`. An `inEditable` binding's key
    *  is one that has to work while the reader types - Escape, `$mod+k`, the document's
-   *  `$mod+Alt+m` - and is a row only when it says `true`: Escape closes the palette, and `$mod+k`
-   *  is its own key. Keys that walk a list with the row in hand set `false`, as does a second key
-   *  for an action that already has a row; any other binding that sets it says why beside it. */
+   *  `$mod+Alt+m` and `Alt+Enter` - and is a row only when it says `true`: Escape closes the
+   *  palette, and `$mod+k` is its own key. Keys that walk a list with the row in hand set `false`,
+   *  as does a second key for an action that already has a row; any other binding that sets it
+   *  says why beside it. */
   palette?: boolean;
   /** Tried before every scope, the `dialog` scope included, and whatever the focus is on: the
    *  binding's `when` is its only guard. Only a press that completes one of its keys matches, so
@@ -268,6 +270,11 @@ export function comboOf(
   return [...modifiers.filter((part) => part !== undefined), key].join("+");
 }
 
+/** Whether `press` is a press of `combo`. Its Alt must equal the combo's, so on a layout that
+ *  types `[` or `]` with AltGr or Option (German and French among them) the press can carry Alt
+ *  and match no combo written without it, such as the issue page's `[` and `]`; the reader's page
+ *  of keys (`docs/site/src/content/docs/dispatch/keyboard.md`) says to give those two actions
+ *  other keys in Settings. */
 function matchesCombo(combo: KeyCombo, press: KeyPress, isMac: boolean): boolean {
   const sameCharacter =
     press.key.length === 1
@@ -404,9 +411,10 @@ export interface KeymapOptions {
 export interface Keymap {
   /**
    * The palette's rows: every enabled binding of the scopes beneath the innermost dialog whose
-   * `palette` is `true`, innermost scope first. Unset, `palette` is `false` for a binding with
-   * several keys or one that fires in an editable (`KeyBinding.palette`). A row runs its binding
-   * only if the binding is still registered and its `when()` still holds when the row is chosen.
+   * `palette` is `true` and that is not `beforeScopes`, innermost scope first. Unset, `palette`
+   * is `false` for a binding with several keys or one that fires in an editable
+   * (`KeyBinding.palette`). A row runs its binding only if the binding is still registered and
+   * its `when()` still holds when the row is chosen.
    * A binding several mounted lists register under one scope and id (the project row keys of
    * `/priorities`) is one row, which runs the registration that applies when it is chosen.
    */

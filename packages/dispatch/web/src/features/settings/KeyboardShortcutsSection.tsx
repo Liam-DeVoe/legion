@@ -163,12 +163,15 @@ function RecorderButton({
 
 /**
  * Settings' Keyboard shortcuts (R14): every action of the keymap, by its scope in the help's
- * order, whether or not its page is open, with its keys. The signed-in person changes a key, adds
- * one, removes one, and sets one action, or every action, back to its defaults; the keys are
- * kept in this browser (`keymap-keys.ts`) and every open tab of it takes them at once. A key that
- * keeps its own action (the digits, the arrows, Enter, Escape, Tab, Space) is drawn and never
- * changed. Each action says which global action its keys stop on a page, its defaults included
- * (the Agents page's `/` and `i`).
+ * order, whether or not its page is open, with its keys, narrowed by `Filter actions`. The
+ * signed-in person changes a key, adds one, removes one, and sets one action, or every action,
+ * back to its defaults; the keys are kept in this browser (`keymap-keys.ts`) and every open tab
+ * of it takes them at once. Each key is a recorder (`Change <key>`) beside its `Remove <key>`,
+ * each action that takes a key has `Add key`, a changed one `Reset` and a `Changed from …` note
+ * (`Added` for one that had no key), and the section has `Reset all`. A key that keeps its own
+ * action (the digits, the arrows, Enter, Escape, Tab, Space) is drawn and never changed, and an
+ * action whose every key keeps its own is marked `Fixed`. Each action says which global action
+ * its keys stop on a page, its defaults included (the Agents page's `/` and `i`).
  *
  * A recording takes every press (`preventDefault` and `stopPropagation`, so no page key fires:
  * the window's keymap skips a handled press): the next press, with or without Ctrl, Cmd, Alt or

@@ -66,6 +66,9 @@ export function IssueRow({
         highlight={changed ? selectedCardBg : undefined}
         row={row}
         trailing={
+          // Start next shows while the pointer is over its row and while the row or a control
+          // in it holds the focus (`group-focus-within`), so the row keys and Tab reach a
+          // control the reader can see (dispatch://INFRA-2160, R12).
           queue !== undefined && queue > 1 ? (
             <button
               className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 ${borderDefault} ${surfaceBg}`}

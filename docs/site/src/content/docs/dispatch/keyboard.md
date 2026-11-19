@@ -377,6 +377,8 @@ in to change a key.
 - **Add key** gives the action one more key.
 - **×** beside a key removes that key.
 - **Reset** puts one action back on its default keys, and **Reset all** puts every action back.
+- An action you changed shows the keys it had before (**Changed from**), or **Added** where it had
+  none.
 
 The new key is the next key you press, with or without `Ctrl`, `Alt` or `Shift`. Press a second key
 within one second to make a sequence, such as `g r`. `Escape`, `Tab` or a click elsewhere stops
@@ -390,8 +392,9 @@ Dispatch refuses a key, and names the action that has it, when:
 
 Dispatch also refuses the digits, the arrow keys, `Enter`, `Escape`, `Tab` and `Space`, alone or
 with `Shift`, which keep their own actions. It also refuses `Ctrl` with `L`, `N`, `Q`, `R`, `T`,
-`W` or `Tab`, which the browser keeps. An action whose keys all keep their own actions shows
-**Fixed**, and you cannot change it.
+`W` or `Tab`, which the browser keeps. It refuses one key given twice to an action, and two keys
+of one action where one is the first key of the other, such as `g` and `g i`. An action whose
+keys all keep their own actions shows **Fixed**, and you cannot change it.
 
 A global key that you give to a page's action runs that action on its page whenever the action can
 run. Where it cannot, the key runs the global action. The list shows a note under each of the two

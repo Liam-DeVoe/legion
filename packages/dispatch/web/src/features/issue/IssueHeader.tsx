@@ -213,9 +213,12 @@ export function IssueHeader({
     },
   });
   const drafts = useIssueDrafts(issue, updateIssue);
-  // Palette-only: closing and reopening an issue are too consequential for a single key, so they
-  // are reachable from `$mod+k` alone, through the same handlers and the same guards as the
-  // Close and Reopen buttons below. `IssuePage` pushes the `issue` scope these are offered under.
+  // No default key: closing and reopening an issue are too consequential for a single key, so
+  // they are rows of `$mod+k` until a person gives them a key, through the same handlers and the
+  // same guards as the Close and Reopen buttons below. The four Set priority rows have none
+  // either: the page's digits `0`–`3` set the priority (`issue.set-priority`), which is no row,
+  // since each digit writes its own priority. `IssuePage` pushes the `issue` scope these are
+  // offered under.
   useKeymap("issue", [
     {
       action: "issue.close",
@@ -510,8 +513,10 @@ export function IssueHeader({
           className="flex w-full min-w-0 flex-wrap items-center gap-2 md:w-auto"
           data-testid="issue-state-actions"
         >
-          {/* Disabled on a closed issue, whose way back is Reopen; held while a write is out,
-              so the focus a status pick hands back to it stays there. */}
+          {/* The status menu: on an open issue every open status, since Close issue is an open
+              issue's one way into Done; on a closed issue every status, its own Done among them,
+              and disabled, since its way back is Reopen. The current status is checked. Held
+              while a write is out, so the focus a status pick hands back to it stays there. */}
           <ChoiceMenu
             checked={pendingStatus ?? issue.status}
             choices={selectableStatuses.map((status) => ({

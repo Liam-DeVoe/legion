@@ -46,7 +46,7 @@ interface ChoiceMenuProps<V extends string> {
    *  its own is out, and a control disabled under the reader's focus drops it on the document. */
   readonly held?: boolean;
   /** The trigger's marks, by which the keys find it and press it (`data-inbox-snooze`,
-   *  `data-priority-menu`, `data-status-menu`). */
+   *  `data-inbox-bulk-snooze`, `data-priority-menu`, `data-status-menu`). */
   readonly marks: Readonly<Record<`data-${string}`, string>>;
   readonly triggerClassName: string;
   /** The keys that also press the trigger where its host binds them and draws them (the
@@ -106,7 +106,9 @@ function digitsText(choices: readonly MenuChoice<string>[]): string | undefined 
  * The focus goes back where it was before the menu opened. The trigger's click is where that is
  * read: a click with no pointer (`detail` 0) is a key's - the page's binding pressing the
  * trigger from a row, or Enter or Space on the trigger - and the focus is still where the key
- * was pressed; a pointer's click is on the trigger, which the focus goes back to.
+ * was pressed; a pointer's click is on the trigger, which the focus goes back to. It goes back to
+ * the trigger too where nothing had the focus as the key was pressed (`focusOnDocument()`, the
+ * Inbox's `b` pressed on the page), and where that element has left the page since.
  *
  * A press outside closes the menu in the document's capture phase, before any control under the
  * press can stop it, and hands the focus back there. The browser's own focus on a press is the
@@ -115,8 +117,9 @@ function digitsText(choices: readonly MenuChoice<string>[]): string | undefined 
  * focus leaves it on the document, and the menu hands it back again once the press is over.
  *
  * Each choice draws its digit, and a foot line names the menu's keys. The choices are 44 px high
- * at every width, the height of a tap. The panel is `AnchoredPanel`, so the menu stands over every
- * layer and its keys are its own (`PANEL_ATTRIBUTE`).
+ * at every width, the height of a tap, and drawn in the theme's colours (R10). The panel is
+ * `AnchoredPanel`, so the menu stands over every layer and its keys are its own
+ * (`PANEL_ATTRIBUTE`).
  */
 export function ChoiceMenu<V extends string>({
   checked,

@@ -136,7 +136,10 @@ interface SharedProps {
    *  itself is a part of the vocabulary rather than one of its controls, and carries nothing. */
   readonly control?: ControlName;
   /** The trigger is busy with what the last close committed: it stays focusable, and says so
-   *  rather than looking actionable and doing nothing. */
+   *  rather than looking actionable and doing nothing. It only sets `aria-disabled`, so the
+   *  trigger keeps its focus and its Tab stop and a press still opens the list, unless the host
+   *  refuses the open in `onOpenChange` (the Agents page's Issue list); a host whose write is out
+   *  drops the pick (`AssigneeControl`, `RepoControl`). */
   readonly ariaDisabled?: boolean;
   /** Shown under the list, e.g. a host's validation message for a rejected `onCreate`. */
   readonly error?: string | null;
@@ -208,11 +211,15 @@ interface SingleProps extends SharedProps {
    *  that key, and a letter or a digit opens it with that key in the text box (`TYPED_KEY`). Each
    *  is the trigger's own (`preventDefault`), so the page's keymap, which skips a handled key,
    *  never reads it; any other key, `?` among them, opens nothing and reaches the keymap, which
-   *  reads a list's trigger as editable and fires no single key of the page on it. A
-   *  host whose value is written the moment it is picked passes it (the assignee, the
-   *  repository, an ask's hand-on), so a key moves only the highlight and only Enter or a click
-   *  writes. Without it the closed trigger takes Enter, Space and a click, and every other key
-   *  stays the page's: `]` on the Version picker is the page's next tab. */
+   *  reads a list's trigger as editable and fires no single key of the page on it. A host whose
+   *  value is written the moment it is picked passes it (the assignee, the repository, an ask's
+   *  hand-on), so a key moves only the highlight and only Enter or a click writes. Those three
+   *  are this list rather than native selects (INFRA-2160's R6, and its departure D2): a select
+   *  cannot write nothing on Escape, since Chromium keeps the highlighted option when Escape
+   *  closes its open list, which the keyboard-step rule of the live header's selects
+   *  (`useKeySteps` in `agent-view/SessionSettings.tsx`) cannot change. Without `keysOnTrigger`
+   *  the closed trigger takes Enter, Space and a click, and every other key stays the page's:
+   *  `]` on the Version picker is the page's next tab. */
   readonly keysOnTrigger?: boolean;
   readonly mode: "single";
   /** Enables the `createLabel` row for a search that matches no option, which hands the typed

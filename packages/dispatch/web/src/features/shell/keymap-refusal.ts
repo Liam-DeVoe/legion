@@ -108,13 +108,17 @@ function refused(message: string, other?: KeymapActionId): KeyVerdict {
 
 /**
  * Whether `action` may take `keys` in place of the keys it has, with every other action on its
- * keys in `personKeys` or its defaults. Refused: a key that is no key; a key that keeps its own
- * action (`RESERVED_KEYS`, a digit) or that the browser keeps; any key for an action whose keys
- * all keep their own action, since its run reads the key pressed; a key another action of the
- * same surface, or of a surface drawn with it, has; and a key that is the first press of another
- * action's key, or whose first press is another action's key, in any scope. A key a global action
- * has, taken by a page's action, or the other way round, is accepted with the notice that the
- * global action does not work on that page, as the Agents page's `/` and `i` are today.
+ * keys in `personKeys` or its defaults: the check Settings runs on every key a person gives.
+ * Refused: a key that is no key; a key that keeps its own action (`RESERVED_KEYS`, a digit) or
+ * that the browser keeps; any key for an action whose keys all keep their own action, since its
+ * run reads the key pressed; a key listed twice, or two of the action's own keys of which one is
+ * the first press of the other (`g` beside `g i`, while `g i` beside `g a` passes); a key another
+ * action of the same surface, or of a surface drawn with it, has; and a key that is the first
+ * press of another action's key, or whose first press is another action's key, in any scope. A
+ * key a global action has, taken by a page's action, or the other way round, is accepted with
+ * the notice that the global action does not work on that page, as the Agents page's `/` and `i`
+ * are today. The notice says more than the registry does: where the page's action does not apply
+ * (its `when` is false), `resolve` in `keymap.ts` passes the key on to the global action.
  */
 export function refusalOf(
   action: KeymapActionId,

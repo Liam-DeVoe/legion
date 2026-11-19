@@ -5,7 +5,10 @@
  * command bar and Settings read one label for it, and its keys are the person's where they
  * changed them (`keymap-keys.ts`) and these defaults everywhere else.
  *
- * The keys are the defaults of the spec's table "The keys" (dispatch://INFRA-2160/spec, R13).
+ * The keys are the defaults of the spec's table "The keys" (dispatch://INFRA-2160/spec, R13). An
+ * action holds its keys here whether or not any component registers it now, so the refusal check
+ * (`keymap-refusal.ts`) reads every default key at once, and no person's key takes a key that a
+ * page not open would take.
  */
 
 /** A scope an action is listed under; `dialog` is no scope of its own here, since a dialog
@@ -217,6 +220,8 @@ export const KEYMAP_CATALOGUE = {
     palette: false,
     surface: "inbox",
   },
+  // Scrolling the open document is a key pressed with the row in hand, as `j` and `k` are, so
+  // none of the four scroll keys is a row either.
   "inbox.scroll-down": {
     scope: "inbox",
     id: "scroll-down",
@@ -851,6 +856,7 @@ export const KEYMAP_CATALOGUE = {
     palette: false,
     surface: "issue",
   },
+  // Expanding a turn opens no link, so the Conversation tab has no new-tab key.
   "issue.toggle-turn": {
     scope: "issue",
     id: "toggle-turn",
@@ -993,6 +999,7 @@ export const KEYMAP_CATALOGUE = {
   },
 
   // The Board: `project/IssueBoard.tsx`.
+  // Moving the cursor, by card or by column, is no row, for the Inbox's `j` and `k`'s reason.
   "board.next": {
     scope: "board",
     id: "next",

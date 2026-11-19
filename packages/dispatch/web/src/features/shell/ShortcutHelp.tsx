@@ -66,7 +66,8 @@ export const SCOPE_LABELS: Record<KeymapScope, string> = {
  * Registration order would do, except React runs child layout effects first, so a page that
  * mounts straight into its Board would list `board` above `project`.
  *
- * A scope left out here is drawn nowhere, which no type catches: `ShortcutHelp.test.tsx` holds
+ * A scope left out here is drawn nowhere, neither in `?` nor in Settings' Keyboard shortcuts,
+ * which lists its scopes in this order, and no type catches it: `ShortcutHelp.test.tsx` holds
  * this list to the scopes `SCOPE_LABELS` names.
  */
 export const SCOPE_ORDER: readonly KeymapScope[] = [
