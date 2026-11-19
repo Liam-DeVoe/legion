@@ -42,7 +42,8 @@ func TestEveryGETRouteHasAReadClass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
-	_, mux, _ := mount(ctx)
+	mux := http.NewServeMux()
+	mount(ctx, mux)
 
 	served := servedPatterns(t, mux)
 	classed := readclass.Patterns(mux)

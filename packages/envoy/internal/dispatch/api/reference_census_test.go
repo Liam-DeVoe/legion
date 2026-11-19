@@ -144,6 +144,14 @@ var referenceDispositions = map[string]referenceDisposition{
 	"issue_external_links.issue_key":            {ownColumn, "the linking issue (EXTERNAL_LINK_TAKEN names it only to who sees it)"},
 	"issue_links.issue_key":                     {ownColumn, "the waiting issue"},
 	"issue_links.target_key":                    {filteredReference, "the issue waited on, of any project: issueSummaryJoins and leaveOutHiddenIssueReferences in every issue answer; payloads by leaveOutHiddenReferences"},
+	"issue_role_holders.issue_key":              {ownColumn, "the issue whose roles the sessions hold (readIssueRoleHolders binds its project clause)"},
+	"issue_role_holders.session":                {sameOwnerColumn, "a session of the issue's own project: only that project's Legion daemon writes the set (putIssueRoleHolders), and its sessions act in that project"},
+	"legion_current.issue_key":                  {ownColumn, "an issue of the row's project, which the sampler records of its project alone"},
+	"legion_current.project":                    {ownColumn, "the board's project (legionProject reads it under the project clause)"},
+	"legion_observations.issue_key":             {ownColumn, "an issue of the row's project, which the sampler records of its project alone"},
+	"legion_observations.project":               {ownColumn, "the board's project (legionProject reads it under the project clause)"},
+	"legion_reads.project":                      {ownColumn, "the board's project (legionProject reads it under the project clause)"},
+	"legion_settings.project":                   {ownColumn, "the daemon setting's project (legionProject reads it under the project clause)"},
 	"issues.assignee":                           {filteredReference, "a person the writer sees: leaveOutHiddenIssueReferences, leaveOutHiddenSummaryReferences; payloads by leaveOutHiddenReferences"},
 	"issues.parent_key":                         {sameOwnerColumn, "a parent must be in the same project (validateIssueParent)"},
 	"issues.project_key":                        {ownColumn, "the issue's project"},
@@ -157,6 +165,8 @@ var referenceDispositions = map[string]referenceDisposition{
 	"messages.in_reply_to":                      {sameOwnerColumn, "a message of the same issue or conversation (messages.go)"},
 	"messages.issue_key":                        {ownColumn, "the message's issue"},
 	"messages.target":                           {filteredReference, "a `session:<id>` or `role:<name>` target, on an issue any session: leaveOutHiddenMessageSessions; on no issue a party of the conversation (MessageClause)"},
+	"near_copy_checks.issue_key":                {ownColumn, "the issue its create wrote, of the row's project, whose candidates are issues of that project too (duplicateGate)"},
+	"near_copy_checks.project_key":              {ownColumn, "the create's project (nearCopyChecksPageQuery and getNearCopyCheck bind its project clause)"},
 	"project_access.project_key":                {ownColumn, "the access list's project"},
 	"projects.default_assignee":                 {filteredReference, "a person the writer sees, read as an ask's waiting_on_person: leaveOutHiddenAskPersons"},
 	"pull_request_heads.issue_key":              {internalColumn, "the attribution pass's record, answered through delivery_pull_requests"},
@@ -513,7 +523,7 @@ func TestNoAnswerNamesAnObjectItsReaderCannotSee(t *testing.T) {
 			t.Errorf("%s: no GET row answered it a 2xx JSON body, so the census read nothing of what it sees", walker.caller)
 		}
 		// The event log and the issue's events, read whole: every event the walker may read, once
-		// the horizon is proven above every seeded event, so no event goes unread (readEventLogPage).
+		// the horizon is proven above every seeded event, so no event goes unread (awaitHorizonRead).
 		safeHorizon(t, fixture.server)
 		for _, target := range []string{"/api/v1/events/log?" + url.Values{"limit": {"1000"}}.Encode(),
 			"/api/v1/issues/" + walker.objects.issue + "/events"} {
@@ -600,7 +610,7 @@ func TestWithNoPrivateProjectAReferenceReadsAsToday(t *testing.T) {
 		"/api/v1/delivery/timeline",
 	}
 	// Both callers read the event log at a horizon proven above every seeded event, so a held
-	// horizon can neither shorten both reads alike nor make the two differ (readEventLogPage).
+	// horizon can neither shorten both reads alike nor make the two differ (awaitHorizonRead).
 	safeHorizon(t, fixture.server)
 	namesPrivate := false
 	for _, read := range reads {

@@ -59,7 +59,9 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 		with answered as (
 			`+answerEventsQuery(`e.created_at as at, 'answer' as kind, e.payload->>'id' as ask_id,
 			       e.payload->'answer' as answer, null::uuid as reply_id, null::text as body, e.id as event_id`,
-		`e.actor->>'id' = $1`, "$4")+`
+		// The canonical login on both halves: a row a build stored under a login before sign-in
+		// lower-cased it is the same person's (user_threads_login, as the replies half reads).
+		`user_threads_login(e.actor->>'id') = $1`, "$4")+`
 		), mine as (
 			select * from answered
 			union all

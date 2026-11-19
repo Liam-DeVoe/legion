@@ -229,7 +229,9 @@ test("the search catching up withdraws the row and leaves the line about the pre
     await waitFor(() => expect(screen.getByText("Open CORE-7")).toBeDefined());
 
     bar.search.mockResolvedValue(theMadeIssue());
-    await bar.queryClient.refetchQueries();
+    await act(async () => {
+      await bar.queryClient.refetchQueries();
+    });
 
     await waitFor(() => expect(screen.queryByText("Open CORE-7")).toBeNull());
     expect(screen.getByTestId("search-new-issue-said").textContent).toContain(

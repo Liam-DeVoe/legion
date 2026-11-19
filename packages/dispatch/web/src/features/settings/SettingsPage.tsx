@@ -23,6 +23,7 @@ import { credentialGrantsQuery } from "../credentials/grants";
 import { credentialPendingQuery } from "../credentials/pending";
 import { SignInsSection } from "../credentials/SignInsSection";
 import { DeliverySettingsForm } from "../delivery/DeliverySettingsForm";
+import { IssuePagePreference } from "../issue-page/IssuePagePreference";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentTokensSection } from "./AgentTokensSection";
@@ -38,6 +39,7 @@ import {
   settingsTableWrapper,
 } from "./classes";
 import { GroupsSection } from "./GroupsSection";
+import { LegionDaemonsSection } from "./LegionDaemonsSection";
 import { ProjectSelect } from "./ProjectSelect";
 import { ProjectsSection } from "./ProjectsSection";
 
@@ -218,9 +220,9 @@ export function SettingsPage(): ReactNode {
             Repositories → Projects
           </h2>
           <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-            An issue's repository is one of its project's mappings. An issue with none of its own or
-            on its parent chain takes its project's Default. External issues use these mappings
-            before falling back to the default project.
+            An issue's repository is any owner/name. An issue with none of its own or on its parent
+            chain takes its project's Default. External issues use these mappings before falling
+            back to the default project.
           </p>
 
           {mappings.isPending || projects.isPending ? (
@@ -376,6 +378,8 @@ export function SettingsPage(): ReactNode {
             <DeliverySettingsForm />
           </section>
         )}
+        <IssuePagePreference />
+        <LegionDaemonsSection />
       </div>
     </section>
   );

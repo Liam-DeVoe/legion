@@ -36,7 +36,7 @@ import (
 //     (liveSocketAge), or when the rotate test hook asks, so no socket holds one of the browser's
 //     connections indefinitely: the page reopens at once and resumes every subscription;
 //   - 1012 (service restart) when Dispatch shuts down (server.lifetime) or the disconnect test hook
-//     asks;
+//     asks, and as it opens once the shutdown waits for the open sockets (closeUnserved);
 //   - 1008 (policy violation) once its caller no longer resolves (whileCallerResolves);
 //   - 1013 (try again later) when the page falls liveSocketQueue of the hub's frames behind;
 //   - 1009 (message too big) for a frame over liveSocketReadLimit, which gorilla writes;
@@ -231,6 +231,22 @@ func (socket *liveSocket) close(code int, reason string) {
 	socket.endReads(liveSocketCloseWait)
 }
 
+// closeUnserved ends a socket that opened once Dispatch's shutdown was already waiting for the
+// open ones (liveSocketSet.wait), which it does not serve: it closes with 1012, as every open
+// socket does at shutdown, so the page reconnects to a server that is not stopping. It reads off
+// whatever the page sent until the page's close arrives or liveSocketCloseWait passes, so the
+// connection ends with a FIN behind the close frame rather than a reset that can overtake it.
+func (socket *liveSocket) closeUnserved() {
+	defer socket.cancel()
+	defer socket.conn.Close()
+	socket.close(gws.CloseServiceRestart, "")
+	for {
+		if _, _, err := socket.conn.NextReader(); err != nil {
+			return
+		}
+	}
+}
+
 // write sends the page each queued frame, the hub's queue ahead of the stream, and every heartbeat
 // a ping beside a heartbeat frame (a browser shows the page no ping), until the reader ends,
 // something closes the socket, or the socket reaches its age. No stream frame goes out ahead of a
@@ -362,7 +378,10 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	age := s.liveSocketAge()
 	socket := newLiveSocket(r.Context(), conn, actor)
 	socket.beforePick = s.liveWriterBeforePick
-	s.liveSockets.add(socket)
+	if !s.liveSockets.add(socket) {
+		socket.closeUnserved()
+		return
+	}
 	defer s.liveSockets.remove(socket)
 	defer conn.Close()
 	defer s.deliveryHub.Close(socket)
@@ -497,27 +516,47 @@ func (s *server) shutAllLiveSockets(code int, reason string) {
 	}
 }
 
-// liveSocketSet is every open GET /ws/live socket: the test hooks close them, and a test waits for
-// every socket's handler, and so every subscription it ran, to return before its database closes.
+// liveSocketSet is every open GET /ws/live socket: the test hooks close them, and the shutdown
+// (server.waitBackground) waits for every socket's handler, and so every subscription it ran, to
+// return before the database pool closes. http.Server.Shutdown counts no hijacked connection, so a
+// socket request in flight at the signal can reach serve, and its upgraded socket add, after that
+// wait has begun. The set takes no socket from then on: its count is a sync.WaitGroup, whose count
+// may not rise from zero beside its Wait, and a socket taken after the wait returned would serve on
+// while the pool closes.
 type liveSocketSet struct {
 	mu      sync.Mutex
 	open    map[*liveSocket]struct{}
 	serving sync.WaitGroup
+	// closed is set as wait begins. It is read and set under mu, the lock serve counts a handler
+	// under, so every Add either comes before the Wait or does not happen.
+	closed bool
 }
 
-// serve counts one socket handler until the func it answers runs (wait).
+// serve counts one socket handler until the func it answers runs (wait). Once wait has begun it
+// counts nothing and answers a func that does nothing, and add then refuses the handler's socket.
 func (set *liveSocketSet) serve() (done func()) {
+	set.mu.Lock()
+	defer set.mu.Unlock()
+	if set.closed {
+		return func() {}
+	}
 	set.serving.Add(1)
 	return set.serving.Done
 }
 
-func (set *liveSocketSet) add(socket *liveSocket) {
+// add takes socket among the open sockets, and answers false, taking nothing, once wait has
+// begun.
+func (set *liveSocketSet) add(socket *liveSocket) bool {
 	set.mu.Lock()
 	defer set.mu.Unlock()
+	if set.closed {
+		return false
+	}
 	if set.open == nil {
 		set.open = map[*liveSocket]struct{}{}
 	}
 	set.open[socket] = struct{}{}
+	return true
 }
 
 func (set *liveSocketSet) remove(socket *liveSocket) {
@@ -537,5 +576,10 @@ func (set *liveSocketSet) all() []*liveSocket {
 	return sockets
 }
 
-// wait returns once every socket's handler has returned.
-func (set *liveSocketSet) wait() { set.serving.Wait() }
+// wait closes the set to new sockets and returns once every socket's handler has returned.
+func (set *liveSocketSet) wait() {
+	set.mu.Lock()
+	set.closed = true
+	set.mu.Unlock()
+	set.serving.Wait()
+}

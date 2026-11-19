@@ -214,6 +214,10 @@ var censusQueries = map[string]func(censusObjects) url.Values{
 	"GET /api/v1/search/results":         func(o censusObjects) url.Values { return url.Values{"q": {"runbook"}} },
 	"GET /api/v1/projects/{key}/related": func(o censusObjects) url.Values { return url.Values{"title": {"Runbook steps"}} },
 	"GET /api/v1/related-checks":         func(o censusObjects) url.Values { return url.Values{"project": {o.project}} },
+	"GET /api/v1/near-copy-checks":       func(o censusObjects) url.Values { return url.Values{"project": {o.project}} },
+	"GET /api/v1/reference-targets": func(o censusObjects) url.Values {
+		return url.Values{"ref": {"dispatch://" + o.issue}}
+	},
 }
 
 // censusObjects are the objects of one project a walked read is filled with: its documents, an
@@ -227,6 +231,9 @@ type censusObjects struct {
 	session, conversationSlug      string
 	person, broadcast              string
 	priority, goingRun             string
+	// nearCopyCheck is the near-copy gate's row of the project's own create (advancing the
+	// priority), which GET /api/v1/near-copy-checks/{id} reads under the project's rule.
+	nearCopyCheck string
 }
 
 // wildcard matches one wildcard of a route pattern.
@@ -251,6 +258,7 @@ func (o censusObjects) fill(t *testing.T, pattern string, probe readProbe) strin
 			probeDocumentVersion: "1", probeBlock: o.block, probeAsk: o.ask, probeComment: o.comment,
 			probeMessage: o.message, probeHandoff: o.handoff, probeHandoffPhase: "plan", probeSession: o.session,
 			probePerson: o.person, probePriority: o.priority, probeBroadcast: o.broadcast, probeGoingRun: o.goingRun,
+			probeNearCopyCheck: o.nearCopyCheck,
 			// The repository seedDocumentObjects maps to the project.
 			probeRepositoryOwner: "acme", probeRepositoryName: strings.ToLower(o.project) + "-app",
 		}[object]
@@ -350,6 +358,11 @@ func seedFragmentCensus(t *testing.T, census *fragmentCensus) fragmentCensusFixt
 	})
 	seedSessionWork(t, seed)
 	fixture := fragmentCensusFixture{privateSeed: seed}
+	// Each project names a Legion daemon, so its board and its daemon setting read their rows.
+	for _, project := range []string{seedPublic, seedPrivate} {
+		seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+project+"/legion/daemon",
+			map[string]any{"state_url": "http://legion-" + strings.ToLower(project) + ".internal:8080"}, http.StatusOK)
+	}
 
 	priority := decodeBody[model.Priority](t, seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/priorities",
 		map[string]any{"title": "Ship the census"}, http.StatusCreated)).ID
@@ -389,6 +402,11 @@ func seedFragmentCensus(t *testing.T, census *fragmentCensus) fragmentCensusFixt
 		seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues", map[string]any{
 			"project": project, "title": "Advance " + project + "'s census", "advances": []string{priority}, "force": true,
 		}, http.StatusCreated)
+		if err := seed.database.Pool.QueryRow(context.Background(), `
+			select id::text from near_copy_checks where project_key = $1 order by created_at desc, id desc limit 1
+		`, project).Scan(&objects.nearCopyCheck); err != nil {
+			t.Fatalf("read the near-copy check of %s's create: %v", project, err)
+		}
 		objects.person = seedCarol
 		if project == seedPublic {
 			objects.person = seedAlice

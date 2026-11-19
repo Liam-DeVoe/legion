@@ -282,7 +282,9 @@ func SessionRecorded(ctx context.Context, tx pgx.Tx, session string, who model.A
 	}
 	write := Uncaused{Nodes: []Node{node}}
 	if event == NoEvent {
-		write.Tuples = BaseAttributeFacts(write.Nodes)
+		if write.Tuples, err = BaseAttributeFacts(write.Nodes); err != nil {
+			return Uncaused{}, err
+		}
 	}
 	return write, nil
 }

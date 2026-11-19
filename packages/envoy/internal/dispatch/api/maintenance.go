@@ -128,7 +128,7 @@ func LogUnprovisionedPrivateProjects(keys []string) {
 	for _, key := range keys {
 		slog.Error(fmt.Sprintf("dispatch: private project not provisioned: %s is private but DISPATCH_PRIVATE_PROJECTS does not name it; "+
 			"it stays private, and its visibility changes only by its owner's switch to public. "+
-			"Repair: put %s back on agent-infra's legion.PrivateProjects, or make it public with `envoy-dispatch project-visibility %s public` (its owner decides which)",
+			"Repair: put %s back on the infrastructure repository's private project list (shared/legion/privateprojects/lists.go), or make it public with `envoy-dispatch project-visibility %s public` (its owner decides which)",
 			key, key, key), "project", key)
 	}
 }

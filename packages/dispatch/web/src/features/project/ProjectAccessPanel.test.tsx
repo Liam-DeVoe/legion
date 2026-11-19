@@ -546,7 +546,7 @@ for (const [code, reason] of [
   ],
   [
     "PRIVATE_PROJECT_NOT_PROVISIONED",
-    "CORE is not one of the projects DISPATCH_PRIVATE_PROJECTS names; a deployment names a project there once it has provisioned that project's private namespace, stores and grants (agent-infra's legion.PrivateProjects)",
+    "CORE is not one of the projects DISPATCH_PRIVATE_PROJECTS names; a deployment names a project there once it has provisioned that project's private namespace, stores and grants (the infrastructure repository's privateprojects.Projects())",
   ],
   [
     "PRIVATE_PROJECTS_INCOMPLETE",

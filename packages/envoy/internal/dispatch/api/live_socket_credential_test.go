@@ -35,8 +35,8 @@ func TestALiveSocketClosesWhenItsTokensListChanges(t *testing.T) {
 	narrowedID, narrowed, scopes := mint("narrowed")
 	_, kept, _ := mint("kept")
 	url := liveURLOf(t, seed.handler)
-	narrowedSocket := dialLive(t, url, withBearer(narrowed))
-	keptSocket := dialLive(t, url, withBearer(kept))
+	narrowedSocket := seed.dialLive(t, url, withBearer(narrowed))
+	keptSocket := seed.dialLive(t, url, withBearer(kept))
 	subscribeEvents(t, narrowedSocket, "feed", nil)
 	subscribeEvents(t, keptSocket, "feed", nil)
 

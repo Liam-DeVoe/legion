@@ -194,7 +194,7 @@ func TestTheLiveSocketResolvesItsCallerOnceAtOpen(t *testing.T) {
 	url := liveURLOf(t, seed.handler)
 	for _, caller := range []privateCaller{callerAlice, callerCarolPrivToken, callerSharedToken, callerBob} {
 		verified, resolved := counted.verified.Load(), counted.resolved.Load()
-		dialLive(t, url, seed.liveHeader(t, caller))
+		seed.dialLive(t, url, seed.liveHeader(t, caller))
 		verified, resolved = counted.verified.Load()-verified, counted.resolved.Load()-resolved
 		// The shared token's verification compares the bearer in memory and sends nothing.
 		wantVerified := int64(1)

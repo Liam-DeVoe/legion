@@ -19,7 +19,7 @@ import (
 )
 
 // privateProjectsSetting reads DISPATCH_PRIVATE_PROJECTS: the comma-separated keys of the projects
-// this deployment has provisioned as private (agent-infra's legion.PrivateProjects), each entry
+// this deployment has provisioned as private (the infrastructure repository's privateprojects.Projects()), each entry
 // trimmed and empty ones dropped, deduplicated and sorted. An entry that is no project key is a
 // malformed setting and refuses the boot naming it, the old on/off value 1 included, so it is never
 // read as a list. Unset or empty is no project that can be made private.

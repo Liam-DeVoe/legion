@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -38,7 +39,7 @@ var typeMigrations = []string{
 const blockSchemaFile = "../../internal/dispatch/pmdoc/schema/blocks.json"
 
 // closedSupertags is the root's closed list of types, twenty-seven names
-// (dispatch://INFRA-1098/spec, R21; dispatch://INFRA-1149/spec, R6): `proposed` is a value of a
+// (R21 of the parent change's specification and R6 of this change's): `proposed` is a value of a
 // node's state and no type, and the role is the agent, so neither is a supertag. The store holds
 // one supertag node for each, and beyond them only an entry an approved document of this tree
 // creates (authorisedSupertags), so this list is written here as the test's own copy: a seed that
@@ -53,7 +54,8 @@ var closedSupertags = []string{
 // authorisedSupertags is every supertag the closed list does not name that an approved document
 // of this tree creates, each with the reference of the document that creates it. A bare
 // prohibition would refuse a correct store: the root's own c-derived requires the entries below
-// once dispatch://INFRA-1950 and dispatch://INFRA-1253 seed them, so a test that allowed the
+// once the child that moves lenses and lens kinds and the child that moves issues and their
+// documents seed them, so a test that allowed the
 // closed list alone would fail the build that requirement asks for. What the check is for is a
 // supertag nobody authorised, so an entry
 // beyond the closed list passes only where this list names its document, and the run prints
@@ -62,16 +64,17 @@ var closedSupertags = []string{
 // The reference is written here rather than read: these checks run where no Dispatch is
 // reachable, so a test that called one could not run at all.
 var authorisedSupertags = map[string]string{
-	"lens_kind":     "dispatch://INFRA-1950/spec R7",
-	"query":         "dispatch://INFRA-1253/spec",
-	"query version": "dispatch://INFRA-1253/spec",
+	"lens_kind":     "R7 of the specification of the child that moves lenses and lens kinds",
+	"query":         "the specification of the child that moves issues and their documents",
+	"query version": "the specification of the child that moves issues and their documents",
 }
 
 // TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt proves that a type is data: the seed
 // writes the closed list as nodes, a typed block type's attributes come from blocks.json field
 // for field, the schema the server serves and validates against is built from those nodes, and
 // nothing but a migration writes one. A type that exists only in the file, or only in the
-// store, fails here. A pointer is listed by its target's type as that type stands at each read.
+// store, fails here. A pointer is listed by its target's type as that type stands at each read,
+// and a pointer whose rows name its node by the targets its attribute node holds at that read.
 func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -628,14 +631,22 @@ func requireTheServedSchemaFollowsTheNodes(t *testing.T, ctx context.Context, po
 	}
 }
 
-// requireAPointerReadsItsTargetsTypeAtEachRead seeds one block pointer as its rows stand: a
-// plan_task's serves at a requirement, carrying in to_types the targets the attribute node
-// plan_task/serves holds, as the index copies them. It reads the link through the three readers
-// that list or count it - the edges in at its target (graph_edges' block_refs arm), the edges out
-// of its document (refs.Edges' own block_refs arm) and the target's backlink count - and then
-// retypes the target in document_blocks alone and reads again, with no document indexed again and
-// the pointer's rows as they were. block_ref_listed reads the target's type at each read, so the
-// link is hidden while the target is a callout and listed once it is a requirement again.
+// requireAPointerReadsItsTargetsTypeAtEachRead seeds two block pointers, each a plan_task's serves
+// at one requirement and each carrying in to_types the targets the attribute node plan_task/serves
+// holds, as the index copies them. The first is written as this build's block index writes it:
+// its blocks are nodes of the store, the serves relation is a tuple, and its rows name their
+// nodes. The second is written as a build before the store wrote it, its rows naming no node.
+// Each is read through the three readers that list or count it - the edges in at its target
+// (graph_edges), the edges out of its document (refs.Edges' own block_refs arm) and the target's
+// backlink count - with no document indexed again and the pointers' rows as they were.
+//
+// It retypes the target in document_blocks alone: block_ref_listed reads the target's type at
+// each read, so both links are hidden while the target is a callout and listed once it is a
+// requirement again. It then changes the targets of the attribute node, as the test's other
+// changes write a type node: every reader of a row that names its node reads those targets at
+// read time (block_pointer_targets), so the first link is hidden while the targets leave out
+// requirement and listed once they hold it again. The second reads the to_types its row carries,
+// which only an index of its document changes, so it stays listed throughout.
 func requireAPointerReadsItsTargetsTypeAtEachRead(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	var targets []string
@@ -653,71 +664,164 @@ func requireAPointerReadsItsTargetsTypeAtEachRead(t *testing.T, ctx context.Cont
 		insert into issues (key, project_key, number, title, created_by, rank)
 		values ('STP-1', 'STP', 1, 'Pointers', '{"kind":"user","id":"alice"}', 'U');
 	`); err != nil {
-		t.Fatalf("seed the pointer's project and issue: %v", err)
+		t.Fatalf("seed the pointers' project and issue: %v", err)
 	}
-	var document, refKey string
-	if err := pool.QueryRow(ctx, `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ('STP-1', 'STP', 'pointers', 'pointers.md', 'doc', false, '{"kind":"user","id":"alice"}')
-		returning id::text, ref_key
-	`).Scan(&document, &refKey); err != nil {
-		t.Fatalf("seed the pointer's document: %v", err)
-	}
-	task, requirement := refKey+"#t1", refKey+"#r1"
+	indexed := seedPointerDocument(t, ctx, pool, "pointers")
+	older := seedPointerDocument(t, ctx, pool, "older-pointers")
+	requirement := indexed.refKey + "#r1"
+	stamped := blockPointer{document: indexed.id, task: indexed.refKey + "#t1"}
+	unstamped := blockPointer{document: older.id, task: older.refKey + "#t2"}
+	writeStampedPointer(t, ctx, pool, indexed, targets)
 	if _, err := pool.Exec(ctx, `
 		insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
-		values ($1::uuid, 'r1', $2, 'requirement', md5('r1'), 'The requirement the task serves.', 1, now()),
-		       ($1::uuid, 't1', $3, 'plan_task', md5('t1'), 'The task that serves it.', 1, now())
-	`, document, requirement, task); err != nil {
-		t.Fatalf("seed the pointer's two blocks: %v", err)
+		values ($1::uuid, 't2', $2, 'plan_task', md5('t2'), 'The task an older build indexed.', 1, now());
+	`, older.id, unstamped.task); err != nil {
+		t.Fatalf("seed the older pointer's block: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
 		insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version, to_types)
-		values ($1::uuid, 't1', $2, 'block', $3, 'serves', 1, $4::text[])
-	`, document, task, requirement, targets); err != nil {
-		t.Fatalf("seed the pointer row: %v", err)
+		values ($1::uuid, 't2', $2, 'block', $3, 'serves', 1, $4::text[])
+	`, older.id, unstamped.task, requirement, targets); err != nil {
+		t.Fatalf("seed the older pointer's row: %v", err)
 	}
-	rows := pointerRows(t, ctx, pool, document)
+	rows := append(pointerRows(t, ctx, pool, stamped), pointerRows(t, ctx, pool, unstamped)...)
 
-	requirePointerListed(t, ctx, pool, "the target a requirement", document, task, requirement, true)
+	both := func(listed bool) map[blockPointer]bool {
+		return map[blockPointer]bool{stamped: listed, unstamped: listed}
+	}
+	requirePointersListed(t, ctx, pool, "the target a requirement", requirement, both(true))
 	retypeBlock(t, ctx, pool, requirement, "callout")
-	requirePointerListed(t, ctx, pool, "the target retyped to a callout", document, task, requirement, false)
+	requirePointersListed(t, ctx, pool, "the target retyped to a callout", requirement, both(false))
 	retypeBlock(t, ctx, pool, requirement, "requirement")
-	requirePointerListed(t, ctx, pool, "the target a requirement again", document, task, requirement, true)
-	if after := pointerRows(t, ctx, pool, document); !slices.Equal(after, rows) {
-		t.Errorf("the retype rewrote the pointer's rows, which it must not touch:\nbefore %v\nafter  %v", rows, after)
+	requirePointersListed(t, ctx, pool, "the target a requirement again", requirement, both(true))
+
+	setPointerTargets(t, ctx, pool, []string{"callout"})
+	requirePointersListed(t, ctx, pool, "plan_task/serves pointing at callouts alone", requirement,
+		map[blockPointer]bool{stamped: false, unstamped: true})
+	setPointerTargets(t, ctx, pool, targets)
+	requirePointersListed(t, ctx, pool, "plan_task/serves pointing at its own targets again", requirement, both(true))
+
+	if after := append(pointerRows(t, ctx, pool, stamped), pointerRows(t, ctx, pool, unstamped)...); !slices.Equal(after, rows) {
+		t.Errorf("the retype or the change of targets rewrote the pointers' rows, which neither may touch:\nbefore %v\nafter  %v", rows, after)
 	}
 }
 
-// requirePointerListed holds the three readers of a pointer to listing it, or to hiding it: the
-// serves edge in at the requirement, the serves edge out of the document, and the requirement's
-// backlink count.
-func requirePointerListed(t *testing.T, ctx context.Context, pool *store.Pool, stage, document, task, requirement string, listed bool) {
+// pointerDocument is one document of the pointer fixture: its uuid and its ref_key.
+type pointerDocument struct{ id, refKey string }
+
+// blockPointer is one pointer of the fixture: the document it is written in and its citing block.
+type blockPointer struct{ document, task string }
+
+func seedPointerDocument(t *testing.T, ctx context.Context, pool *store.Pool, slug string) pointerDocument {
+	t.Helper()
+	var document pointerDocument
+	if err := pool.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ('STP-1', 'STP', $1, $1 || '.md', 'doc', false, '{"kind":"user","id":"alice"}')
+		returning id::text, ref_key
+	`, slug).Scan(&document.id, &document.refKey); err != nil {
+		t.Fatalf("seed the pointer document %s: %v", slug, err)
+	}
+	return document
+}
+
+// writeStampedPointer writes the requirement r1 and the task t1 of document, and t1's serves at
+// r1, as this build's block index writes a version: the two blocks' nodes, their in_document
+// tuples and the serves tuple through the store's writer, and then the rows, each naming its node.
+func writeStampedPointer(t *testing.T, ctx context.Context, pool *store.Pool, document pointerDocument, targets []string) {
+	t.Helper()
+	writer := model.Actor{Kind: "system", ID: "supertag-test"}
+	at := time.Now().UTC()
+	requirement, task := document.refKey+"#r1", document.refKey+"#t1"
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the indexed pointer's write: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	var nodes []graphstore.Node
+	tuples := []graphstore.Tuple{{
+		FromKind: refs.BlockNodeKind, FromID: task, Kind: "serves", ToKind: refs.BlockNodeKind, ToID: requirement,
+		At: at, Who: writer, SourceEvent: graphstore.NoEvent, Asserted: true,
+	}}
+	for _, block := range []string{requirement, task} {
+		nodes = append(nodes, graphstore.Node{
+			Kind: refs.BlockNodeKind, ID: block, Supertag: refs.BlockNodeKind,
+			Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
+			MadeAt: at, MadeBy: writer, SourceEvent: graphstore.NoEvent,
+		})
+		tuples = append(tuples, graphstore.Tuple{
+			FromKind: refs.BlockNodeKind, FromID: block, Kind: refs.TupleInDocument, ToKind: "artifact", ToID: document.refKey,
+			At: at, Who: writer, SourceEvent: graphstore.NoEvent, Asserted: true,
+		})
+	}
+	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+		t.Fatalf("write the indexed pointer's nodes and tuples: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into document_blocks (artifact_id, block_id, node_id, node_kind, node_address, type, text_sha256, excerpt, changed_version, changed_at)
+		values ($1::uuid, 'r1', $2, $4, $2, 'requirement', md5('r1'), 'The requirement the tasks serve.', 1, now()),
+		       ($1::uuid, 't1', $3, $4, $3, 'plan_task', md5('t1'), 'The task that serves it.', 1, now())
+	`, document.id, requirement, task, refs.BlockNodeKind); err != nil {
+		t.Fatalf("seed the indexed pointer's two blocks: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into block_refs (artifact_id, block_id, from_node, node_kind, node_address, to_kind, to_id, kind, created_version, to_types)
+		values ($1::uuid, 't1', $2, $4, $2, 'block', $3, 'serves', 1, $5::text[])
+	`, document.id, task, requirement, refs.BlockNodeKind, targets); err != nil {
+		t.Fatalf("seed the indexed pointer's row: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the indexed pointer: %v", err)
+	}
+}
+
+// setPointerTargets writes the targets of the attribute node plan_task/serves in the database
+// alone, as the type changes above write a type node: no document is indexed again.
+func setPointerTargets(t *testing.T, ctx context.Context, pool *store.Pool, targets []string) {
+	t.Helper()
+	changed, err := pool.Exec(ctx, `
+		update graph_nodes
+		set attributes = jsonb_set(attributes, '{targets}', to_jsonb($2::text[]))
+		where kind = $1 and id = 'plan_task/serves'
+	`, schemanodes.KindAttribute, targets)
+	if err != nil || changed.RowsAffected() != 1 {
+		t.Fatalf("point plan_task/serves at %v: %d row(s), %v", targets, changed.RowsAffected(), err)
+	}
+}
+
+// requirePointersListed holds the three readers of each pointer to listing it, or to hiding it,
+// as listed says: the serves edge in at the requirement from its task, the serves edge out of its
+// document at the requirement, and the requirement's backlink count, which counts the listed ones.
+func requirePointersListed(t *testing.T, ctx context.Context, pool *store.Pool, stage, requirement string, listed map[blockPointer]bool) {
 	t.Helper()
 	in, err := refs.Edges(ctx, pool, model.ServerReader, refs.Query{Direction: "in", Kind: "block", ID: requirement})
 	if err != nil {
 		t.Fatalf("%s: read the edges in at %s: %v", stage, requirement, err)
 	}
-	out, err := refs.Edges(ctx, pool, model.ServerReader, refs.Query{Direction: "out", Kind: "artifact", ID: document})
-	if err != nil {
-		t.Fatalf("%s: read the edges out of %s: %v", stage, document, err)
-	}
 	counts, err := refs.BacklinkCounts(ctx, pool, model.ServerReader, "block", []string{requirement}, nil)
 	if err != nil {
 		t.Fatalf("%s: count the backlinks of %s: %v", stage, requirement, err)
 	}
-	want := 0
-	if listed {
-		want = 1
+	shown := 0
+	for pointer, isListed := range listed {
+		want := 0
+		if isListed {
+			want = 1
+			shown++
+		}
+		out, err := refs.Edges(ctx, pool, model.ServerReader, refs.Query{Direction: "out", Kind: "artifact", ID: pointer.document})
+		if err != nil {
+			t.Fatalf("%s: read the edges out of %s: %v", stage, pointer.document, err)
+		}
+		if got := servesEdges(in, pointer.task); got != want {
+			t.Errorf("%s: the edges in at %s list %d serves edge(s) from %s, want %d (%+v)", stage, requirement, got, pointer.task, want, in)
+		}
+		if got := servesEdges(out, requirement); got != want {
+			t.Errorf("%s: the edges out of the document of %s list %d serves edge(s) at %s, want %d (%+v)", stage, pointer.task, got, requirement, want, out)
+		}
 	}
-	if got := servesEdges(in, task); got != want {
-		t.Errorf("%s: the edges in at %s list %d serves edge(s) from %s, want %d (%+v)", stage, requirement, got, task, want, in)
-	}
-	if got := servesEdges(out, requirement); got != want {
-		t.Errorf("%s: the edges out of the document list %d serves edge(s) at %s, want %d (%+v)", stage, got, requirement, want, out)
-	}
-	if got := counts[requirement]; got != want {
-		t.Errorf("%s: %s counts %d backlink(s), want %d", stage, requirement, got, want)
+	if got := counts[requirement]; got != shown {
+		t.Errorf("%s: %s counts %d backlink(s), want %d", stage, requirement, got, shown)
 	}
 }
 
@@ -742,15 +846,15 @@ func retypeBlock(t *testing.T, ctx context.Context, pool *store.Pool, node, typ 
 	}
 }
 
-// pointerRows is every block_refs row of document and its citing block's row, each as text.
-func pointerRows(t *testing.T, ctx context.Context, pool *store.Pool, document string) []string {
+// pointerRows is the block_refs row of one pointer and its citing block's row, each as text.
+func pointerRows(t *testing.T, ctx context.Context, pool *store.Pool, pointer blockPointer) []string {
 	t.Helper()
 	read, err := pool.Query(ctx, `
-		select r::text from block_refs r where r.artifact_id = $1::uuid
+		select r::text from block_refs r where r.artifact_id = $1::uuid and r.from_node = $2
 		union all
-		select d::text from document_blocks d where d.artifact_id = $1::uuid and d.block_id = 't1'
+		select d::text from document_blocks d where d.artifact_id = $1::uuid and d.node_id = $2
 		order by 1
-	`, document)
+	`, pointer.document, pointer.task)
 	if err != nil {
 		t.Fatalf("read the pointer's rows: %v", err)
 	}
@@ -767,7 +871,7 @@ func pointerRows(t *testing.T, ctx context.Context, pool *store.Pool, document s
 		t.Fatalf("read the pointer's rows: %v", err)
 	}
 	if len(rows) != 2 {
-		t.Fatalf("the document holds %d pointer and citing row(s), want its one pointer and its one plan_task", len(rows))
+		t.Fatalf("%s holds %d pointer and citing row(s), want its one pointer and its one plan_task", pointer.task, len(rows))
 	}
 	return rows
 }

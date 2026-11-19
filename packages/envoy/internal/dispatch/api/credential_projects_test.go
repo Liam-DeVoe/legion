@@ -305,79 +305,76 @@ func TestATokenListedBeforeItsPersonLostTheProjectSeesNothingOfIt(t *testing.T) 
 // TestANamedTokenUsesTheProjectItNames: a broker token an operator's entry named, whose person is
 // carol and whose project is PUB, reads PUB and not PRIV, writes a comment on a PUB issue, gets 404
 // on PRIV's issue for a read and a write, and is refused 403 OAUTH_SCOPE_REQUIRED on GET
-// /api/v1/inbox: a named token holds no OAuth scope. A named token that names no project is
-// refused 401 BROKER_TOKEN_NOT_A_SESSION before anything is read: the broker verifier takes a named
-// scope with no project beside it for no session's credential (brokertoken.ErrNotASession). The
-// day the verifier admits one, that row fails here, and is to read as the open viewer it then is.
+// /api/v1/inbox: a named token holds no OAuth scope (namedTokenReads).
 func TestANamedTokenUsesTheProjectItNames(t *testing.T) {
-	for _, named := range []struct {
-		name    string
-		project string
-		listed  bool
-		refused bool
-	}{
-		{name: "carol's named token naming PUB", project: publicProject, listed: true},
-		{name: "carol's named token naming no project", refused: true},
-	} {
-		t.Run(named.name, func(t *testing.T) {
-			rig := newBrokerTokenRig(t)
-			seedCredentialProjects(t, rig.handler, rig.database)
-			pub := issueIn(t, rig.handler, "alice", publicProject)
-			priv := issueIn(t, rig.handler, accessCarol, privateProject)
-			makePrivate(t, rig.database, privateProject)
-			caller := newBrokerCaller(t)
-			const token = "carols-named-token"
-			answer := liveNamedToken(caller.jkt)
-			answer.Person, answer.Project = accessCarol, named.project
-			rig.broker.Says(token, answer)
-			serve := func(method, path string, body any) *httptest.ResponseRecorder {
-				return rig.serve(caller.presenting(t, method, path, token, body))
-			}
-			if named.refused {
-				for _, path := range []string{"/api/v1/whoami", "/api/v1/issues/" + pub} {
-					refused := serve(http.MethodGet, path, nil)
-					if refused.Code != http.StatusUnauthorized || decodeBody[refusalAnswer](t, refused).Code != "BROKER_TOKEN_NOT_A_SESSION" {
-						t.Errorf("GET %s under %s = %d %s, want 401 BROKER_TOKEN_NOT_A_SESSION", path, named.name, refused.Code, refused.Body.String())
-					}
-				}
-				return
-			}
+	namedTokenReads(t, []string{publicProject})
+}
 
-			t.Run("GET /api/v1/inbox", func(t *testing.T) {
-				inbox := serve(http.MethodGet, "/api/v1/inbox", nil)
-				if inbox.Code != http.StatusForbidden || decodeBody[refusalAnswer](t, inbox).Code != codeScopeRequired {
-					t.Fatalf("GET /api/v1/inbox under %s = %d %s, want 403 %s: a named token holds no OAuth scope",
-						named.name, inbox.Code, inbox.Body.String(), codeScopeRequired)
-				}
-			})
-			t.Run("sees the public projects only", func(t *testing.T) {
-				got := viewerOf(t, rig.deps, caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
-				if !slices.Equal(got.Sees, []string{publicProject}) || (len(got.Lists) > 0) != named.listed || got.Open == named.listed {
-					t.Fatalf("%s sees %+v, want PUB alone, listed %v", named.name, got, named.listed)
-				}
-			})
-			t.Run("reads PUB's issue", func(t *testing.T) {
-				if read := serve(http.MethodGet, "/api/v1/issues/"+pub, nil); read.Code != http.StatusOK {
-					t.Fatalf("GET /api/v1/issues/%s under %s = %d %s, want 200", pub, named.name, read.Code, read.Body.String())
-				}
-			})
-			t.Run("writes a comment on PUB's issue", func(t *testing.T) {
-				if wrote := serve(http.MethodPost, "/api/v1/issues/"+pub+"/comments", map[string]any{"body": "From a named token."}); wrote.Code != http.StatusCreated {
-					t.Fatalf("POST /api/v1/issues/%s/comments under %s = %d %s, want 201", pub, named.name, wrote.Code, wrote.Body.String())
-				}
-			})
-			t.Run("reads PRIV's issue as missing", func(t *testing.T) {
-				if read := serve(http.MethodGet, "/api/v1/issues/"+priv, nil); read.Code != http.StatusNotFound {
-					t.Fatalf("GET /api/v1/issues/%s under %s = %d %s, want 404", priv, named.name, read.Code, read.Body.String())
-				}
-			})
-			t.Run("writes on PRIV's issue as missing", func(t *testing.T) {
-				if wrote := serve(http.MethodPost, "/api/v1/issues/"+priv+"/comments", map[string]any{"body": "Never lands."}); wrote.Code != http.StatusNotFound {
-					t.Fatalf("POST /api/v1/issues/%s/comments under %s = %d %s, want 404", priv, named.name, wrote.Code, wrote.Body.String())
-				}
-			})
-		})
+// TestANamedTokenNamingNoProjectReadsPublicProjectsOnly (c-a-named-no-project-public): a broker
+// token an account entry that names no project minted (avenue E's public session pods), whose
+// person is carol, reaches Dispatch as carol's token with no list. It is held to public projects
+// only, though carol is listed on PRIV: it reads PUB and not PRIV, writes a comment on a PUB issue,
+// gets 404 on PRIV's issue for a read and a write, exactly as for a missing one, and is refused
+// 403 OAUTH_SCOPE_REQUIRED on GET /api/v1/inbox, a person-scope route (namedTokenReads). The
+// broker verifier admits such a token since #4119; before it, it was refused as no session's
+// credential, and this test could not run.
+func TestANamedTokenNamingNoProjectReadsPublicProjectsOnly(t *testing.T) {
+	namedTokenReads(t, nil)
+}
+
+// namedTokenReads holds carol's named broker token, naming projects (one project, or none), to
+// what a named token reads and writes once PRIV is private.
+func namedTokenReads(t *testing.T, projects []string) {
+	t.Helper()
+	listed := len(projects) > 0
+	rig := newBrokerTokenRig(t)
+	seedCredentialProjects(t, rig.handler, rig.database)
+	pub := issueIn(t, rig.handler, "alice", publicProject)
+	priv := issueIn(t, rig.handler, accessCarol, privateProject)
+	makePrivate(t, rig.database, privateProject)
+	caller := newBrokerCaller(t)
+	const token = "carols-named-token"
+	answer := liveNamedToken(caller.jkt)
+	answer.Person, answer.Projects = accessCarol, projects
+	rig.broker.Says(token, answer)
+	serve := func(method, path string, body any) *httptest.ResponseRecorder {
+		return rig.serve(caller.presenting(t, method, path, token, body))
 	}
+	name := fmt.Sprintf("carol's named token naming %v", projects)
+
+	t.Run("GET /api/v1/inbox", func(t *testing.T) {
+		inbox := serve(http.MethodGet, "/api/v1/inbox", nil)
+		if inbox.Code != http.StatusForbidden || decodeBody[refusalAnswer](t, inbox).Code != codeScopeRequired {
+			t.Fatalf("GET /api/v1/inbox under %s = %d %s, want 403 %s: a named token holds no OAuth scope",
+				name, inbox.Code, inbox.Body.String(), codeScopeRequired)
+		}
+	})
+	t.Run("sees the public projects only", func(t *testing.T) {
+		got := viewerOf(t, rig.deps, caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
+		if !slices.Equal(got.Sees, []string{publicProject}) || (len(got.Lists) > 0) != listed || got.Open == listed {
+			t.Fatalf("%s sees %+v, want PUB alone, listed %v", name, got, listed)
+		}
+	})
+	t.Run("reads PUB's issue", func(t *testing.T) {
+		if read := serve(http.MethodGet, "/api/v1/issues/"+pub, nil); read.Code != http.StatusOK {
+			t.Fatalf("GET /api/v1/issues/%s under %s = %d %s, want 200", pub, name, read.Code, read.Body.String())
+		}
+	})
+	t.Run("writes a comment on PUB's issue", func(t *testing.T) {
+		if wrote := serve(http.MethodPost, "/api/v1/issues/"+pub+"/comments", map[string]any{"body": "From a named token."}); wrote.Code != http.StatusCreated {
+			t.Fatalf("POST /api/v1/issues/%s/comments under %s = %d %s, want 201", pub, name, wrote.Code, wrote.Body.String())
+		}
+	})
+	t.Run("reads PRIV's issue as missing", func(t *testing.T) {
+		if read := serve(http.MethodGet, "/api/v1/issues/"+priv, nil); read.Code != http.StatusNotFound {
+			t.Fatalf("GET /api/v1/issues/%s under %s = %d %s, want 404: %s is private", priv, name, read.Code, read.Body.String(), privateProject)
+		}
+	})
+	t.Run("writes on PRIV's issue as missing", func(t *testing.T) {
+		if wrote := serve(http.MethodPost, "/api/v1/issues/"+priv+"/comments", map[string]any{"body": "Never lands."}); wrote.Code != http.StatusNotFound {
+			t.Fatalf("POST /api/v1/issues/%s/comments under %s = %d %s, want 404: %s is private", priv, name, wrote.Code, wrote.Body.String(), privateProject)
+		}
+	})
 }
 
 // TestATokenListShowsOnlyTheProjectsItsReaderSees: each token's list, in GET

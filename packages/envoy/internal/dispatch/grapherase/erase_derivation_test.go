@@ -228,10 +228,11 @@ func TestTheRunWithoutConfirmTakesNoLockAndTheConfirmErasesOnlyItsListing(t *tes
 	}
 }
 
-// R5: a redaction replaces bytes inside a JSON string value and never in a key. The comment erased
-// reads `kind`, which every actor of its own event names as a key. After the erase every key of
-// that payload stands, the author is still of kind `user`, each value that held the text holds
-// the marker where it was, and a number the payload holds keeps its digits.
+// R5: a redaction replaces bytes inside a JSON string value and never in a key, and never in a
+// value under a structural key either. The comment erased reads `kind`, which every actor of its
+// own event names as a key. After the erase every key of that payload stands, the author is still
+// of kind `user`, the payload's own kind still reads `kind`, each value that held the text as what
+// somebody wrote holds the marker where it was, and a number the payload holds keeps its digits.
 func TestTheEventRedactionRewritesValuesAndNoKey(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -239,7 +240,7 @@ func TestTheEventRedactionRewritesValuesAndNoKey(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `update comments set body = 'kind' where id = $1::uuid`, seeded.comment); err != nil {
 		t.Fatalf("write the comment's body: %v", err)
 	}
-	event := appendEvent(t, database, "CORE-1", "comment.created", fmt.Sprintf(`{"id": %q, "body": "kind", "kind": "kind",
+	event := appendEvent(t, database, "CORE-1", "comment.created", fmt.Sprintf(`{"id": %q, "body": "kind", "kind": "kind", "ask_question": "kind",
 		"note": "a kind remark", "author": {"kind": "user", "id": "alice"}, "list": ["kind", 12345678901234567890]}`, seeded.comment))
 	beforePayload, _ := eventPayload(t, database, event)
 
@@ -260,8 +261,10 @@ func TestTheEventRedactionRewritesValuesAndNoKey(t *testing.T) {
 	switch {
 	case author == nil || author["kind"] != "user":
 		t.Errorf("the redacted payload's author reads %v, want its kind key standing and reading user: %s", payload["author"], raw)
-	case payload["body"] != marker || payload["kind"] != marker || payload["note"] != "a "+marker+" remark":
-		t.Errorf("the redacted payload reads %s, want the marker in its body, its kind value and its note", raw)
+	case payload["kind"] != "kind":
+		t.Errorf("the redacted payload's kind reads %v, want the structural value as written, kind: %s", payload["kind"], raw)
+	case payload["body"] != marker || payload["ask_question"] != marker || payload["note"] != "a "+marker+" remark":
+		t.Errorf("the redacted payload reads %s, want the marker in its body, its ask_question and its note", raw)
 	case len(list) != 2 || list[0] != marker || fmt.Sprint(list[1]) != "12345678901234567890":
 		t.Errorf("the redacted payload's list reads %v, want the marker and the number as written: %s", payload["list"], raw)
 	}

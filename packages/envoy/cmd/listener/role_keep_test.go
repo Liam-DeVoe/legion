@@ -387,7 +387,7 @@ func startRawKeptStandIn(t *testing.T, uri, sessionID string) <-chan []byte {
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
 	frames := make(chan []byte, 16)
-	subscription, err := conn.Subscribe(contracts.AgentSubject(sessionID), func(message *natsgo.Msg) {
+	subscription, err := conn.Subscribe(contracts.LegacyAgentSubject(sessionID), func(message *natsgo.Msg) {
 		frames <- slices.Clone(message.Data)
 	})
 	if err != nil {
@@ -1087,7 +1087,7 @@ func TestTheRoleLaneKeepsAMessageForAClaimTheRestartGraceRetained(t *testing.T) 
 	// The claim is written before the listener's own registry opens, which is what a restart
 	// leaves behind: that registry restores the claim and gives it one session TTL of grace
 	// (store.ExpiredRoleClaimRetained) even while its holder's session registration is gone.
-	writer, err := store.Open(client.Conn, store.WithReplicas(1))
+	writer, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry that writes the claim: %v", err)
 	}

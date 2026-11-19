@@ -55,8 +55,10 @@ func catalogueEntryOf(kind string) (catalogueEntry, bool) {
 // overRow is the entry's arm over a node's own row in graph_nodes, row its alias: the node names no
 // project and no parties, and, for an entry with a Via, a current tuple of that relation reaches it
 // from a node of Via.FromKind. The tuple is read by the one current-tuple rule
-// (graphstore.CurrentTupleRead) through graph_tuples_inbound, whose columns lead with the far end
-// and the relation, every one of them a literal or the row's own id here. The `exists` sits under
+// (graphstore.CurrentTupleRead) through graph_tuples_as_of_in (graph_tuples_inbound until
+// #3178's spec v50 R2 change), whose columns lead with the far end and the relation, every one of
+// them a literal or the row's own id here; the kind stays a literal, since a parameter would leave
+// neither partial index usable. The `exists` sits under
 // an OR, so it ends in `offset 0`: without that fence Postgres may plan it as a hashed read of the
 // whole log once per statement rather than an index probe per row (#3178 at 0f8b389c).
 func (entry catalogueEntry) overRow(row string) string {

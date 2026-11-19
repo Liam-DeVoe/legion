@@ -68,6 +68,7 @@ var writeProbes = map[string]writeProbe{
 	"POST /api/v1/issues/{key}/handoffs/{phase}": {readProbe{"key": probeIssue, "phase": probeHandoffPhase},
 		`{` + probeActor + `,"body":"{\"next\":\"walked\"}"}`},
 	"PUT /api/v1/issues/{key}/design-gates": {byIssue, `{` + probeActor + `,"gates":[]}`},
+	"PUT /api/v1/issues/{key}/role-holders": {byIssue, `{` + probeActor + `,"holders":[]}`},
 	"POST /api/v1/results/{id}/retract":     {readProbe{"id": probeResult}, `{` + probeActor + `,"reason":"A walked retraction."}`},
 
 	// A project, and what it holds.
@@ -81,6 +82,8 @@ var writeProbes = map[string]writeProbe{
 	"PUT /api/v1/projects/{key}/access/groups/{name}":                      {readProbe{"key": probeProject, "name": probeGroup}, ""},
 	"DELETE /api/v1/projects/{key}/access/groups/{name}":                   {readProbe{"key": probeProject, "name": probeGroup}, ""},
 	"PUT /api/v1/projects/{key}/gated-steps":                               {byProject, `{` + probeActor + `,"steps":[]}`},
+	"PUT /api/v1/projects/{key}/legion/daemon":                             {byProject, `{` + probeActor + `,"state_url":"http://legion-walked.internal"}`},
+	"DELETE /api/v1/projects/{key}/legion/daemon":                          {byProject, ""},
 	"PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}":       {byArchitecture, `{` + probeActor + `,"branch":"main"}`},
 	"DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}":    {byArchitecture, `{` + probeActor + `}`},
 	"POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync": {byArchitecture, ""},

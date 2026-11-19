@@ -48,6 +48,7 @@ const (
 	probeRepositoryOwner probeObject = "repository-owner" // the owner of a repository a project maps
 	probeRepositoryName  probeObject = "repository-name"  // that repository's name
 	probeLivePause       probeObject = "live-pause"       // a live-write pause point a test hook arms
+	probeNearCopyCheck   probeObject = "near-copy-check"  // one near-copy gate answer's uuid, of the project its create named
 )
 
 // probeObjects is every probeObject: the read rows' and the write rows' (write_probes.go).
@@ -55,7 +56,7 @@ var probeObjects = []probeObject{
 	probeProject, probeIssue, probeDocument, probeDocumentSlug, probeDocumentVersion, probeBlock,
 	probeAsk, probeComment, probeMessage, probeHandoff, probeHandoffPhase, probeSession, probePerson,
 	probePriority, probeDeliveryRun, probeBroadcast, probeGoingRun, probeRepositoryOwner,
-	probeRepositoryName, probeLivePause,
+	probeRepositoryName, probeLivePause, probeNearCopyCheck,
 	probeResult, probeThread, probeAttempt, probeEmail, probeGroup, probeAgentToken, probeSessionGroup,
 	probeCredentialRequest, probeCredentialGrant, probeMachineLogin, probeSignin, probeMappedRepository,
 }
@@ -118,6 +119,10 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/projects/{key}/architecture-source":  reads("one project's first architecture source", byProject, readclass.Project),
 	"GET /api/v1/projects/{key}/architecture":         reads("one project's components and the issues attached to them", byProject, readclass.Project),
 	"GET /api/v1/projects/{key}/access":               reads("one project's access list, which names people", byProject, readclass.Project, readclass.People),
+	"GET /api/v1/projects/{key}/legion/daemon":        reads("one project's Legion daemon setting", byProject, readclass.Project),
+	"GET /api/v1/projects/{key}/legion/board":         reads("one project's Legion board: its issues, as its daemon reports them, and the issues a blocker link holds each on", byProject, readclass.Project),
+	"GET /api/v1/near-copy-checks":                    reads("one project's near-copy gate answers, each naming issues of that project", nil, readclass.Project),
+	"GET /api/v1/near-copy-checks/{id}":               reads("one near-copy gate answer, of one project", readProbe{"id": probeNearCopyCheck}, readclass.Project),
 	"GET /api/v1/settings/repo-projects":              reads("the repository mappings, each a row of the project it maps to", nil, readclass.Project),
 	"GET /api/v1/github/app-installation/{owner}/{repo}": reads("whether the GitHub App is installed on a repository, held to the projects its mapping names (access.RepositoryClause): one the caller may not see answers as one the App is not installed on",
 		readProbe{"owner": probeRepositoryOwner, "repo": probeRepositoryName}, readclass.Project),
@@ -140,6 +145,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/issues/{key}/references":              reads("the closure of documents one issue's content references, through refs", byIssue, readclass.Graph),
 	"GET /api/v1/issues/{key}/collaborators":           reads("everyone who worked one issue: its people and its agent sessions", byIssue, readclass.Project, readclass.People, readclass.Agents),
 	"GET /api/v1/issues/{key}/subscribers":             reads("the sessions subscribed to one issue's topics", byIssue, readclass.Project, readclass.Agents),
+	"GET /api/v1/issues/{key}/role-holders":            reads("the sessions that hold one issue's Legion roles", byIssue, readclass.Project, readclass.Agents),
 	"GET /api/v1/issues/{key}/artifacts":               reads("one issue's documents and files", byIssue, readclass.Project),
 	"GET /api/v1/issues/{key}/results":                 reads("the checks of one issue's Verification document and their results", byIssue, readclass.Project),
 	"GET /api/v1/issues/{key}/coverage":                reads("what each requirement of one issue's spec lacks", byIssue, readclass.Project),
@@ -185,6 +191,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/references":           reads("one node's edges in the reference graph, through refs", nil, readclass.Graph),
 	"GET /api/v1/references/questions": reads("the question map of one reference source's document, through refs and the asks of its project", nil, readclass.Graph, readclass.Project),
 	"GET /api/v1/block-links":          reads("the links between two documents' blocks, through refs", nil, readclass.Graph),
+	"GET /api/v1/reference-targets":    reads("what many references point at, through refs", nil, readclass.Graph),
 	"GET /api/v1/people/{login}/nodes": reads("what one person wrote and what reached them, through refs", readProbe{"login": probePerson}, readclass.Graph, readclass.People),
 
 	// Search, over every project's rows and the graph.
@@ -220,6 +227,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/artifacts/{id}/_test/room-counters": reads("this process's counters of one document's room", byDocument, readclass.TestHook),
 	"GET /api/v1/artifacts/{id}/_test/live-write-pauses/{point}": reads("whether a live write of one document parked at an armed pause",
 		readProbe{"id": probeDocument, "point": probeLivePause}, readclass.TestHook),
+	"GET /api/v1/messages/_test/queued": reads("the targeted messages this process queued for a session no store held", nil, readclass.TestHook),
 }
 
 // withinReadScope runs the read check in front of one GET row's handler, decided once at mount

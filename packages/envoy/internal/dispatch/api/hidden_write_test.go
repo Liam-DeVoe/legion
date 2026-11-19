@@ -543,6 +543,8 @@ var missingAnswers = map[string]struct {
 		"removing a mapping of a project the caller cannot see answers as removing one no repository has, writing nothing (refuseHiddenMapping)"},
 	"POST /api/v1/issues/{key}/results": {http.StatusBadRequest, "UNKNOWN_CHECK",
 		"a result names a check of its issue's Verification document, and an issue the caller cannot read holds none"},
+	"PUT /api/v1/issues/{key}/role-holders": {http.StatusForbidden, "ROLE_HOLDER_FORBIDDEN",
+		"only the session of the issue's own project's Legion daemon writes its role holders, and every other caller is refused before any read, naming only the key it sent (putIssueRoleHolders)"},
 }
 
 // refusedAtABrowser is the refusal a row makes a person at a browser before it reads anything: the

@@ -22,6 +22,7 @@ var liveViewReads = map[string]string{
 	deliveryLiveTimeline: "GET /api/v1/delivery/timeline",
 	deliveryLiveMeasures: "GET /api/v1/delivery/measures",
 	deliveryLivePipeline: "GET /api/v1/delivery/pipeline",
+	legionBoardView:      "GET /api/v1/projects/{key}/legion/board",
 }
 
 // liveReadRefusal is the error frame a view of kind answers sub's caller where the view's GET row

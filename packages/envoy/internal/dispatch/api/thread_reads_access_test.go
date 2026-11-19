@@ -248,7 +248,7 @@ type privateLogRow struct {
 // eventLogOf is the whole event log as caller pages it, once the seed's horizon is proven above
 // every event committed before the call (safeHorizon): a read the horizon held back would answer
 // short, and a check that the log holds nothing of a project would then pass over events it never
-// read (readEventLogPage).
+// read (awaitHorizonRead says what holds a read back).
 func eventLogOf(t *testing.T, seed privateSeed, caller privateCaller) []privateLogRow {
 	t.Helper()
 	safeHorizon(t, seed.server)
@@ -280,7 +280,7 @@ func TestNoStateEventOfAHiddenProjectReachesAnOpenViewer(t *testing.T) {
 	url := liveURLOf(t, threads.handler)
 	sockets := map[privateCaller]*socketClient{}
 	for _, caller := range []privateCaller{callerAlice, callerCarol} {
-		sockets[caller] = dialLive(t, url, threads.liveHeader(t, caller))
+		sockets[caller] = threads.dialLive(t, url, threads.liveHeader(t, caller))
 		subscribeEvents(t, sockets[caller], "feed", nil)
 	}
 	now := time.Now().UTC()

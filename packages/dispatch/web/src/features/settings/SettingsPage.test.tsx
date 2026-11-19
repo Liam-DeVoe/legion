@@ -32,6 +32,7 @@ function renderPage(user?: AuthenticatedUser): QueryClient {
 function stubUnrelatedQueries() {
   return {
     getDeliverySettings: spyOn(api, "getDeliverySettings").mockResolvedValue(null),
+    getLegionDaemon: spyOn(api, "getLegionDaemon").mockResolvedValue(null),
     getSignIns: spyOn(api, "getSignIns").mockResolvedValue({ signins: [] }),
     listAccessGroups: spyOn(api, "listAccessGroups").mockResolvedValue([]),
     listAgentTokens: spyOn(api, "listAgentTokens").mockResolvedValue([]),
@@ -39,6 +40,11 @@ function stubUnrelatedQueries() {
     listProjectDefaultAssignees: spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]),
     listProjects: spyOn(api, "listProjects").mockResolvedValue([]),
     listRepoProjects: spyOn(api, "listRepoProjects").mockResolvedValue([]),
+    whoAmI: spyOn(api, "whoAmI").mockResolvedValue({
+      event_head: "0",
+      kind: "user",
+      login: "alice",
+    }),
   };
 }
 

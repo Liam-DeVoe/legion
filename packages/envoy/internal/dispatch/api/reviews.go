@@ -806,10 +806,7 @@ func (s *server) openApprovalAsk(
 	// which the issue that owns the request is in too (an issue's document carries its issue's
 	// project); what that write states waits for the ask.opened event below. The document is read
 	// already, so its project costs no round trip of its own.
-	project, parties := artifact.Project, []string(nil)
-	if project == "" && artifact.SessionID != nil {
-		parties = []string{graphstore.PartySession(*artifact.SessionID)}
-	}
+	project, parties := graphstore.SessionScope(artifact.Project, deref(artifact.SessionID))
 	askNode, err := graphstore.WriteUncaused(ctx, tx,
 		[]graphstore.Node{graphstore.AskNode(ask.ID, project, parties, actor, time.Now().UTC())}, nil)
 	if err != nil {

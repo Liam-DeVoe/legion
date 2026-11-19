@@ -45,7 +45,7 @@ func TestABootReportsAnUnprovisionedPrivateProjectAndStaysUp(t *testing.T) {
 	t.Run("PRIV off an empty list", func(t *testing.T) {
 		logged := report(t, nil)
 		line := lineHolding(logged, unprovisioned)
-		if !strings.Contains(line, "level=ERROR") || !strings.Contains(line, "legion.PrivateProjects") ||
+		if !strings.Contains(line, "level=ERROR") || !strings.Contains(line, "shared/legion/privateprojects/lists.go") ||
 			!strings.Contains(line, "envoy-dispatch project-visibility PRIV public") {
 			t.Fatalf("the boot's report names PRIV with no ERROR line naming it and both repairs:\n%s", logged)
 		}

@@ -29,7 +29,7 @@ func TestAStoredActorsProjectIsNotAnswered(t *testing.T) {
 		t.Fatalf("store an event whose actor carries project: %v", err)
 	}
 	// The event log answers only the events at or below the safe horizon, which a transaction
-	// elsewhere on the test cluster can hold below the stored event (readEventLogPage).
+	// elsewhere on the test cluster can hold below the stored event (awaitHorizonRead).
 	safeHorizon(t, served)
 
 	actorOf := func(t *testing.T, route string, events []json.RawMessage) map[string]any {

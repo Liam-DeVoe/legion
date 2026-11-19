@@ -11,7 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestARoleTargetedMessageGivesItsRoleANodeAndAPage is dispatch://INFRA-1149's R19 for a message
+// TestARoleTargetedMessageGivesItsRoleANodeAndAPage is this change's R19 for a message
 // aimed at a role. POST /api/v1/issues/{key}/messages with target "role:X" stores messages.target
 // role:X, which the store census holds role X to (graphcensus's addressedRoles). Its event is a
 // targeted message, which reaches no route (eventDestinations), so no destination of its batch
