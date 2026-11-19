@@ -395,20 +395,18 @@ type Claim struct {
 	// launch try was refused because that pod waits for its update round
 	// (runtime.AwaitingPodRound), and the claim records no process (Locator is nil) until a later
 	// try starts one. It is memory only, as ProcessGone is: Machine.Claim and View report it, the
-	// daemon's pod-update sweep reads it off each claim's machine (Machine.AwaitsPod), and the
-	// store never writes or reads it. A daemon restart forgets it. The claim's next refusal
-	// records it again (startWaitsForPodRound), but only when the restarted daemon starts that
-	// launch again: after the boot's orphan reconciliation, and at the turn the wake pacing gives
-	// it (internal/daemon's relaunchUnfinished). In a restart of many pods that can be more than a
-	// minute later, and a sweep before then does not see the pod.
+	// daemon's pod-update sweep reads it off the machine of each claim that records no process
+	// (Machine.AwaitsPod), and the store never writes or reads it. A daemon restart forgets it.
+	// The claim's next refusal records it again (startWaitsForPodRound), but only when the
+	// restarted daemon starts that launch again: after the boot's orphan reconciliation, and at the
+	// turn the wake pacing gives it (internal/daemon's relaunchUnfinished). In a restart of many
+	// pods that can be more than a minute later, and a sweep before then does not see the pod.
 	//
 	// It is what the daemon's update round has of such a claim, which may be the issue's only
 	// one: the round opens over this pod as over a pod a process runs in, waits on no answer and
-	// no turn of the claim, and replaces the pod through this locator where no claim records a
-	// process there (internal/daemon's groupPod, waitingClaims, podProcess). Where the claim has
-	// a session and has not answered, a gone pod or a replacement names it as having lost what it
-	// left unpushed, as any member (lostClaims); one with no session never had a worker and is
-	// named nothing.
+	// no turn of the claim, decides whether a gone pod or a replacement names the claim as having
+	// lost work, and replaces the pod through this locator where no claim records a process there
+	// (internal/daemon's groupPod, waitingClaims, lostClaims, podProcess).
 	AwaitsPod *runtime.Locator
 	// PluginContract is the contract the current registration declared: 0 means no contract has
 	// been recorded, which every claim has at the first boot on this release. It is set whenever a
@@ -2092,8 +2090,8 @@ func (m *Machine) WaitingWake() *WaitingWake {
 // AwaitsPod is the live pod the claim's launch waits on as the machine last published it
 // (Claim.AwaitsPod), nil for none. It never waits on the decision in flight, as View does not, and
 // it copies the locator alone rather than the whole claim, since the daemon's pod-update sweep
-// reads it of every claim it groups (internal/daemon's reconcilePodUpdates): publish stores a view
-// built fresh and mutates no stored one.
+// reads it of every claim it groups that records no process (internal/daemon's
+// reconcilePodUpdates): publish stores a view built fresh and mutates no stored one.
 func (m *Machine) AwaitsPod() *runtime.Locator {
 	return cloneLocator(m.view.Load().AwaitsPod)
 }

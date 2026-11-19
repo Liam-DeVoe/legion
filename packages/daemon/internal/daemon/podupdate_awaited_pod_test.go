@@ -4,12 +4,11 @@ package daemon
 // dispatch_token_broker with no dispatch_token_transition_file, a launch that would keep a live
 // pod built before the exchange identity is refused (runtime.AwaitingPodRound), and the claim
 // records no process while it waits: its machine keeps the pod the refusal named instead
-// (supervise.Claim.AwaitsPod), and the sweep reads it off the machine of each claim it groups
-// (reconcilePodUpdates). The sweep takes that pod where the claim records no process, so the
-// round opens over it, waits on no answer of the claim, and replaces the pod through it where no
-// claim records a process there; the claim's next try, within a minute, comes up in the pod that
-// replaced it. The end-to-end cases drive the pod-update rig of podupdate_test.go; the rows hold
-// each reader alone.
+// (supervise.Claim.AwaitsPod). For each claim it groups that records no process, the sweep reads
+// that pod off the claim's machine (reconcilePodUpdates), so the round opens over it, waits on no
+// answer of the claim, and replaces the pod through it where no claim records a process there;
+// the claim's next try, within a minute, comes up in the pod that replaced it. The end-to-end
+// cases drive the pod-update rig of podupdate_test.go; the rows hold each reader alone.
 //
 // That the launch after the round carries no Dispatch token is the Sandbox runtime's to show,
 // since no runtime fake builds a pod: internal/runtime/sandbox's
@@ -158,7 +157,7 @@ func TestPodUpdateReplacesThePodItsOnlyClaimsLaunchWaitsOn(t *testing.T) {
 		t.Errorf("a sweep over the pod that replaced the round's own opened round %q, want none: that pod has drifted from nothing", c.UpdateRound)
 	}
 	if messages := rig.messages(); len(messages) > 0 {
-		t.Errorf("the issue was written %q, want nothing: the claim had no process in the replaced pod", messages)
+		t.Errorf("the issue was written %q, want nothing: a replacement before the round's bound writes on no issue", messages)
 	}
 	if notices := rig.notices(); len(notices) > 0 {
 		t.Errorf("the controller was told %+v, want nothing: the round ended before its bound", notices)
