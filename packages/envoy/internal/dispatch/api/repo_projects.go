@@ -64,7 +64,8 @@ type putRepoProjectInput struct {
 // owner/name and needs no mapping, so no issue holds a mapping in place. Every mapping the write
 // changes emits settings.repo_project.updated on its project, and a moved mapping emits one on
 // the project it left too, deleted:true there. delivery.LockRepoProjectWrite orders the write
-// against every other one.
+// against every other one, and once it has committed the write moves the settings change its
+// trigger recorded into the change log before it answers (delivery.DrainRepoProjectChange).
 //
 // Renamed_to is the full `owner/name` this repository is called today, canonicalised as the
 // route's own path is (externalRef). **Absent, and JSON null, leave the stored pair exactly as
@@ -192,6 +193,7 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.publish(r.Context(), events...)
+	delivery.DrainRepoProjectChange(r.Context(), s.deps.Store.Pool)
 	WriteJSON(w, http.StatusOK, mapping)
 }
 
@@ -199,6 +201,7 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 // repository is any owner/name and needs no mapping, so an issue that names this repository
 // keeps it and still resolves to it. An issue that names none resolves, as before, through its
 // parent chain and then its project's default, which is gone where this mapping was that default.
+// A removal moves its settings change into the change log before it answers, as the PUT does.
 func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {
@@ -242,6 +245,7 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.publish(r.Context(), event)
+	delivery.DrainRepoProjectChange(r.Context(), s.deps.Store.Pool)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -250,9 +254,10 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 // Each repository is seeded in its own transaction under a mapping write's locks
 // (delivery.LockRepoProjectWrite), so a seed racing a PUT or DELETE of the same repository waits
 // for it and then sees what it left. A mapping the seed adds emits settings.repo_project.updated on
-// its project, deleted:false, as the PUT's does, actor the environment session; a repository
-// already mapped, in the seeded project or another, gets no write and no event. A project that does
-// not exist refuses the seed, naming the repository and the project.
+// its project, deleted:false, as the PUT's does, actor the environment session, and moves its
+// settings change into the change log once it has committed, as the PUT does; a repository already
+// mapped, in the seeded project or another, gets no write and no event. A project that does not
+// exist refuses the seed, naming the repository and the project.
 func SeedRepoProjects(ctx context.Context, database *store.Store, broker *events.Broker, raw string) error {
 	mappings, err := ParseRepoProjects(raw)
 	if err != nil {
@@ -308,6 +313,7 @@ func seedRepoProject(ctx context.Context, database *store.Store, broker *events.
 		return err
 	}
 	broker.Publish(event)
+	delivery.DrainRepoProjectChange(ctx, database.Pool)
 	return nil
 }
 

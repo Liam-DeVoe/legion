@@ -67,6 +67,7 @@ import { JudgedFigure } from "./JudgedFigure";
 import { formatDue, formatDuration, formatRate } from "./lib/format";
 import { formatAge } from "./lib/freshness";
 import {
+  count,
   EVAL_SLUGS,
   type Judge,
   judgeWord,
@@ -76,6 +77,7 @@ import {
   type Target,
   targetLine,
   targetWords,
+  type WriteFigure,
 } from "./lib/target";
 import { SourceFreshness } from "./SourceFreshness";
 import { Sparkbars } from "./Sparkbars";
@@ -353,9 +355,7 @@ function Figure(props: {
   judging?: Judging;
 }): ReactNode {
   const { judging } = props;
-  // `write(extra)` writes a figure with `extra` decimals past its usual ones, which a judged
-  // figure takes where its usual ones would print it on the other side of its target.
-  const part = (statistic: Judge, value: number | null, write: (extra: number) => string) =>
+  const part = (statistic: Judge, value: number | null, write: WriteFigure) =>
     judging === undefined ? (
       write(0)
     ) : (
@@ -372,7 +372,7 @@ function Figure(props: {
       </div>
       <div className={`text-xs ${textSecondaryOnSurface}`}>
         p90 {part("minutes.p90", props.p90, (extra) => formatDuration(props.p90, extra))} ·{" "}
-        {part("minutes.n", props.n, () => `${props.n}`)}{" "}
+        {part("minutes.n", props.n, count(props.n))}{" "}
         {props.n === 1 ? props.noun.replace(/s$/, "") : props.noun}
       </div>
     </div>
@@ -484,12 +484,11 @@ function LeadTimeCard(props: {
   const line = targetLine(target, SPREAD_STATISTICS);
   const ofDay: Judging = { evalSlug, target, span: "day" };
   const ofWindow: Judging = { evalSlug, target, span: "window" };
-  // The count of pull requests is a number; every other statistic of a lead time is minutes, with
-  // `extra` decimals past their usual ones where a toned figure takes them (`judgeFigure`).
-  const write =
-    (judge: string, value: number | null) =>
-    (extra: number): string =>
-      judge === "minutes.n" ? `${value}` : formatDuration(value, extra);
+  // The count of pull requests is a number; every other statistic of a lead time is minutes.
+  const write = (judge: string, value: number | null): WriteFigure =>
+    judge === "minutes.n" && value !== null
+      ? count(value)
+      : (extra) => formatDuration(value, extra);
   return (
     <div className={CARD} data-metric={props.metric}>
       <div className="flex items-start justify-between gap-2">

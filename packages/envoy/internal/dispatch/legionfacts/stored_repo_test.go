@@ -5,6 +5,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -88,6 +89,13 @@ func TestAMappingChangeReResolvesEveryStoredRepository(t *testing.T) {
 	c.exec(t, "give the project a default repository", `
 		insert into repo_projects (repo, project, created_by, is_default) values ('acme/widgets', $1, '{"kind":"user","id":"alice"}', true)
 	`, project)
+	// A mapping's trigger records its change in the change log's outbox, and every writer of a
+	// mapping moves it into the log right after its commit (delivery.DrainRepoProjectChange), while
+	// a facts pass reads the log as it stands: the insert above stands for such a writer, so the test
+	// drains as it would.
+	if _, err := delivery.DrainPending(t.Context(), c.database.Pool); err != nil {
+		t.Fatalf("move the mapping's change into the log: %v", err)
+	}
 	changed := c.pass(t)
 	byRepo := map[string]int{}
 	for key, row := range c.rows(t) {

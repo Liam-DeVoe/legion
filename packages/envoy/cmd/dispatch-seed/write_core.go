@@ -39,11 +39,12 @@ func sessionActor(session string) string {
 
 // writeProjects writes the projects and their repository mappings. Each project has one default
 // mapping, which an issue with no repository of its own resolves to, and one more that the issues
-// carrying a repository of their own use. Each mapping's trigger logs a settings change under the
-// change log's lock, so the transaction takes that lock first, before any row lock, and writes each
-// mapping under a mapping write's locks, as the mapping routes do (delivery.LockRepoProjectWrite),
-// which take the change log's lock before any row of repo_projects. Each project also names the
-// seed's own person as its default assignee, the column every project fills
+// carrying a repository of their own use. Each mapping is written under a mapping write's locks,
+// as the mapping routes do (delivery.LockRepoProjectWrite), and the transaction does not take the
+// change log's lock: each mapping's trigger records its settings change in the change log's
+// outbox, which takes no lock, and once the transaction has committed the seed moves those changes
+// into the log, as every writer of a mapping does (delivery.DrainRepoProjectChange). Each project
+// also names the seed's own person as its default assignee, the column every project fills
 // (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql), and that person
 // is written first as somebody who has signed in (0068_people): every write that stores a
 // default holds it to a people row (allowedLogin, internal/dispatch/api/issue_assignee.go), so
@@ -52,10 +53,7 @@ func sessionActor(session string) string {
 // store.PgPeopleStore.Record writes one, and left alone where somebody signed in under that
 // address before the seed ran.
 func (r *seedRun) writeProjects(ctx context.Context) error {
-	return r.inTransaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		if err := delivery.LockChanges(ctx, tx); err != nil {
-			return err
-		}
+	if err := r.inTransaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		broker := events.NewBroker()
 		if _, err := tx.Exec(ctx, `
 			insert into people (email, signed_in_at) values ($1, $2) on conflict (email) do nothing
@@ -85,7 +83,11 @@ func (r *seedRun) writeProjects(ctx context.Context) error {
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	delivery.DrainRepoProjectChange(ctx, r.database.Pool)
+	return nil
 }
 
 // writeArchitecture writes one architecture source and one snapshot for each project, the

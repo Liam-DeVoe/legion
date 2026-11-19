@@ -50,23 +50,24 @@ type Written struct {
 // A slug no eval holds registers its eval as version 1 (written_via reading, kind experiment,
 // source logged, no target, state active, the caller as owner), with its section in the
 // project's `evals-md` document, the document created first where the project has none. Every
-// write takes the eval's lock (lockEval) first, before it locks the readings it corrects
-// (lockReplaced) and reads the eval's definition and series, so two first writes of one slug
-// register it once: the second finds the first's version 1 once it commits. The lock comes before
-// the readings' row locks because a row lock gives the transaction an id, and every reader of the
-// event log waits for each running transaction id (events.Horizon): a correction that waited for
-// the eval's lock behind a register write or another readings write would hold every one of them
-// back for as long as it waited. A write that registers its eval takes the document's owner lock
-// before it stores anything (lockDocument) and does the section's document work there, in its
-// read phase, queued for the commit after its readings and day rows (writeMethod), so the section
-// commits with the eval and the write holds a transaction id only for its database statements. A
-// series no version holds registers too (firstSeries), listed where the eval is logged and
-// unlisted where it is computed, since a reading under a computed eval's slug is stored and
-// answered by its items alone: no day row of a computed eval is written here, and nothing here
-// folds such a reading into the eval's value. A register write that lists or unlists a series of
-// the eval takes the eval's lock too, so it relists the series' rows before this write reads the
-// listing or after it commits, and the day rows the write keeps carry the listing that stands at
-// its commit.
+// write parses its rows (parseRows) and then takes the eval's lock (lockEval), before it locks the
+// readings it corrects (lockReplaced) and reads the eval's definition and series, so two first
+// writes of one slug register it once: the second finds the first's version 1 once it commits.
+// The parse reads no database, so it runs before the lock and no other write of the eval waits on
+// it. The lock comes before the readings' row locks because a row lock gives the transaction an
+// id, and every reader of the event log waits for each running transaction id (events.Horizon): a
+// correction that waited for the eval's lock behind a register write or another readings write
+// would hold every one of them back for as long as it waited. A write that registers its eval
+// takes the document's owner lock before it stores anything (lockDocument) and does the section's
+// document work there, in its read phase, queued for the commit after its readings and day rows
+// (writeMethod), so the section commits with the eval and the write holds a transaction id only
+// for its database statements. A series no version holds registers too (firstSeries), listed
+// where the eval is logged and unlisted where it is computed, since a reading under a computed
+// eval's slug is stored and answered by its items alone: no day row of a computed eval is written
+// here, and nothing here folds such a reading into the eval's value. A register write that lists
+// or unlists a series of the eval takes the eval's lock too, so it relists the series' rows before
+// this write reads the listing or after it commits, and the day rows the write keeps carry the
+// listing that stands at its commit.
 //
 // A correction (replaces) supersedes the reading it names in the same transaction. A logged
 // eval's day rows of every day the batch touches are kept in the same transaction (writeDays):
@@ -90,10 +91,10 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 	evalID := EvalID(batch.Project, batch.Slug)
 	var written Written
 	err := s.inWrite(ctx, batch.Project, func(ctx context.Context, w *writeTx) error {
+		rows, rowErrors := parseRows(evalID, batch.Rows, w.now)
 		if err := lockEval(ctx, w.Tx, evalID); err != nil {
 			return err
 		}
-		rows, rowErrors := parseRows(evalID, batch.Rows, w.now)
 		replaced, replaceErrors, err := lockReplaced(ctx, w.Tx, evalID, rows)
 		if err != nil {
 			return err

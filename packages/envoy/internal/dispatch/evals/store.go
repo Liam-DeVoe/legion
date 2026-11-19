@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"regexp"
 	"time"
 
@@ -152,7 +151,7 @@ func (s *Store) committed(ctx context.Context, w *writeTx) {
 }
 
 // drainChanges moves one batch of the change rows committed writes recorded in the change log's
-// outbox into the log (delivery.DrainPendingBatch), the lowest ids first, in a short transaction of
+// outbox into the log (delivery.DrainAfterCommit), the lowest ids first, in a short transaction of
 // its own. One batch and no more: every eval write drains here, a readings or register write
 // before its route answers, so a backlog another writer left (a whole-project facts pass leaves
 // thousands of rows) would otherwise be moved whole by the next write that answers a person. A
@@ -161,9 +160,7 @@ func (s *Store) committed(ctx context.Context, w *writeTx) {
 // it, and the next drain of any process moves them, or else the next process's boot before it
 // serves (delivery.DrainPending states the bound).
 func (s *Store) drainChanges(ctx context.Context) {
-	if _, _, err := delivery.DrainPendingBatch(ctx, s.database.Pool); err != nil && ctx.Err() == nil {
-		slog.Warn("dispatch: an eval write could not move its changes into the delivery change log; the next drain moves them", "error", err)
-	}
+	delivery.DrainAfterCommit(ctx, s.database.Pool, "dispatch: an eval write could not move its changes into the delivery change log; the next drain moves them")
 }
 
 // lockEval serialises, for the rest of tx, every write of one eval's versions and series and of

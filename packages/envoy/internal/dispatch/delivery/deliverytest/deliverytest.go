@@ -16,9 +16,9 @@
 // as arrays, as legiontest writes its tables: a history of eighty thousand jobs written a statement
 // per row takes minutes against a real Postgres. The mappings are that one statement under a
 // mapping write's locks (WriteRepoProjects), which every fixture that maps a repository calls, so
-// a fixture and a mapping route writing one repository at once never deadlock. The statement
-// alone (InsertRepoProjects) is for a load no other writer of a mapping runs beside: the eval
-// bench's -base load.
+// a fixture and a mapping route writing one repository at once never deadlock, and their settings
+// changes reach the change log as a mapping route's do. The statement alone (InsertRepoProjects)
+// is for a load no other writer of a mapping runs beside: the eval bench's -base load.
 //
 // Containment (delivery/containment.go) ships a pull request of the deploy repository with the
 // earliest-completing successful production job of a deploy run on main that GitHub created after
@@ -787,10 +787,11 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 // WriteRepoProjects stores each mapping's repository as mapped to its project, its default or not,
 // created by its CreatedBy, in one transaction that takes a mapping write's locks for each
 // repository before it inserts the rows (delivery.LockRepoProjectWrite, then InsertRepoProjects),
-// as the mapping routes do: the change log's lock first, before any row of repo_projects. An
-// insert of mappings in a statement of its own would take that lock after its rows, in the
-// table's change trigger, and wait on a mapping route's write of the same repository while that
-// write waited on it. A repository that has a mapping already refuses the whole write.
+// as the mapping routes do, so it and a mapping route writing the same repository wait for each
+// other in one order. Once it has committed it moves the settings changes the mappings' trigger
+// recorded in the change log's outbox into the log, as every writer of a mapping does
+// (delivery.DrainRepoProjectChange). A repository that has a mapping already refuses the whole
+// write.
 func WriteRepoProjects(ctx context.Context, pool *store.Pool, mappings ...model.RepoProject) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -806,7 +807,11 @@ func WriteRepoProjects(ctx context.Context, pool *store.Pool, mappings ...model.
 	if err := InsertRepoProjects(ctx, tx, mappings...); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	delivery.DrainRepoProjectChange(ctx, pool)
+	return nil
 }
 
 // Execer is what InsertRepoProjects writes through: the pool, or a transaction open on it.

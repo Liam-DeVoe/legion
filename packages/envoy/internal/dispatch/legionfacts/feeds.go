@@ -37,10 +37,10 @@ type pages struct {
 	unfed        bool
 }
 
-// readPages is one page of each of the three feeds, read from where each cursor stands. now is
-// this page's own reading of the consumer's clock (passPage), which the change cursor is judged at
-// and a read of the change log to its end is stamped with; the rows are computed as of the pass's
-// moment.
+// readPages is one page of each of the three feeds, read from where each cursor stands. checked
+// is this page's own reading of the consumer's clock (passPage), which the change cursor is judged
+// at and a read of the change log to its end is stamped with; the rows are computed as of the
+// pass's moment.
 //
 // A database holding no cursor row at all (committed false) has committed no pass, because every
 // pass writes the three together (advanceCursors), so every feed would be read from its start. It
@@ -50,16 +50,17 @@ type pages struct {
 // whole read has not already answered. Reading them would recompute every project once per page
 // - about 813 pages of a log the size of INFRA's - while the rows they named waited behind it.
 //
-// The change cursor's ReadAt moves to now where the page read the change log to its end (a page
-// shorter than its limit, readChangePage) or moved the cursor to the log's head, and stands where
-// it stood on a full page and on a held cursor (delivery.ChangeCursor), so the lost-cursor rule
-// measures how long since a page last read the whole log, however many full pages came since.
+// The change cursor's ReadAt moves to checked where the page read the change log to its end (a
+// page shorter than its limit, readChangePage) or moved the cursor to the log's head, and stands
+// where it stood on a full page and on a held cursor (delivery.ChangeCursor and its Through), so
+// the lost-cursor rule measures how long since a page last read the whole log, however many full
+// pages came since.
 //
 // A change cursor that may have passed over changes it never read (delivery.CursorLost, judged
-// on the database's clock for the change at the cursor and on now against the cursor's ReadAt) is
-// answered by computing every project whole, which covers every change the log ever held. The page
-// that carries the work no feed names (unfed, passPage) is the page that carries that whole read,
-// so it is the only page that may move this cursor.
+// on the database's clock for the change at the cursor and on checked against the cursor's
+// ReadAt) is answered by computing every project whole, which covers every change the log ever
+// held. The page that carries the work no feed names (unfed, passPage) is the page that carries
+// that whole read, so it is the only page that may move this cursor.
 //
 // On such a page the cursor moves to the head of the change log rather than to the end of the
 // page it read. The whole read leaves nothing below the head to read, and a cursor left where it
@@ -72,13 +73,13 @@ type pages struct {
 // change the log still holds, so a page that wrote that position back would take the loss away
 // from every later page: the next would read a change that exists and answer lost false. The
 // pruned gap's rows would then stay stale for ever, since a pull request merged inside the gap is
-// read by no page and no pass computes a row its feeds did not name. A held cursor stamped now
-// would take the loss away as well where its reader stalled, since the page after it would find
-// it read a moment ago. The issues that page's own changes named are kept and computed, which is
-// work the next page makes again from the held cursor.
-func readPages(ctx context.Context, q Querier, cursors feedCursors, committed bool, safe int64, now time.Time, limit int, unfed bool) (pages, error) {
+// read by no page and no pass computes a row its feeds did not name. A held cursor stamped with
+// checked would take the loss away as well where its reader stalled, since the page after it
+// would find it read a moment ago. The issues that page's own changes named are kept and
+// computed, which is work the next page makes again from the held cursor.
+func readPages(ctx context.Context, q Querier, cursors feedCursors, committed bool, safe int64, checked time.Time, limit int, unfed bool) (pages, error) {
 	if !committed {
-		return readFeedHeads(ctx, q, safe, now)
+		return readFeedHeads(ctx, q, safe, checked)
 	}
 	read := pages{}
 	var err error
@@ -88,7 +89,7 @@ func readPages(ctx context.Context, q Querier, cursors feedCursors, committed bo
 	if read.observations, err = readObservationPage(ctx, q, cursors.observations, limit); err != nil {
 		return pages{}, err
 	}
-	if read.changes, read.lost, err = readChangePage(ctx, q, cursors.changes, now, limit); err != nil {
+	if read.changes, read.lost, err = readChangePage(ctx, q, cursors.changes, checked, limit); err != nil {
 		return pages{}, err
 	}
 	read.more = read.events.full || read.observations.full
@@ -106,16 +107,16 @@ func readPages(ctx context.Context, q Querier, cursors feedCursors, committed bo
 	if err != nil {
 		return pages{}, fmt.Errorf("read the head of the delivery changes: %w", err)
 	}
-	read.changes.position, read.changes.at, read.changes.readAt = head.Seq, head.At, now
+	read.changes.position, read.changes.at, read.changes.readAt = head.Seq, head.At, checked
 	return read, nil
 }
 
 // readFeedHeads is the three feeds standing at their heads and naming no issue: where the
-// cursors of a database no pass has committed on start, the change cursor stamped now, since a
-// move to the log's head is a read of it to its end. The events feed's head is the safe horizon
-// rather than the newest id, because an event above the horizon may still be committing and a
-// later pass reads it (readEventPage).
-func readFeedHeads(ctx context.Context, q Querier, safe int64, now time.Time) (pages, error) {
+// cursors of a database no pass has committed on start, the change cursor stamped checked, the
+// page's own reading of the clock, since a move to the log's head is a read of it to its end. The
+// events feed's head is the safe horizon rather than the newest id, because an event above the
+// horizon may still be committing and a later pass reads it (readEventPage).
+func readFeedHeads(ctx context.Context, q Querier, safe int64, checked time.Time) (pages, error) {
 	var observations int64
 	if err := q.QueryRow(ctx, `select coalesce(max(id), 0) from legion_observations`).Scan(&observations); err != nil {
 		return pages{}, fmt.Errorf("read the head of the Legion observations: %w", err)
@@ -127,7 +128,7 @@ func readFeedHeads(ctx context.Context, q Querier, safe int64, now time.Time) (p
 	return pages{
 		events:       feed{position: safe},
 		observations: feed{position: observations},
-		changes:      feed{position: changes.Seq, at: changes.At, readAt: now},
+		changes:      feed{position: changes.Seq, at: changes.At, readAt: checked},
 	}, nil
 }
 
@@ -538,31 +539,29 @@ func blockMoved(before, after []byte) bool {
 // resolves every stored row's repository again (reresolveRepos).
 //
 // It also answers whether the cursor may have passed over changes it never read, by the change
-// log's one rule (delivery.CursorLost), judged at now, the page's own reading of the clock: a log
-// holding rows whose newest seq stands below the cursor, its sequence restarted; or the change at
-// the cursor gone from the log, or another change at its seq, where that change was younger than
-// its retention (a log reset, a delete by hand) or no page read the change log to its end for
-// longer than the retention before now, so a prune may have taken changes after the cursor that no
-// page read. That is a backfill (legionProjects): the rows those changes would have named cannot be
-// known, so every project is computed whole. A change pruned after its retention while pages read
-// the log to its end within it is no loss: the routine prune of a quiet day takes the change the
-// cursor rests on, or every row, and the pass after it reads on.
+// log's one rule (delivery.CursorLost), judged at checked, the page's own reading of the clock: a
+// log holding rows whose newest seq stands below the cursor, its sequence restarted; or the change
+// at the cursor gone from the log, or another change at its seq, where that change was younger
+// than its retention (a log reset, a delete by hand) or no page read the change log to its end for
+// longer than the retention before checked, so a prune may have taken changes after the cursor
+// that no page read. That is a backfill (legionProjects): the rows those changes would have named
+// cannot be known, so every project is computed whole. A change pruned after its retention while
+// pages read the log to its end within it is no loss: the routine prune of a quiet day takes the
+// change the cursor rests on, or every row, and the pass after it reads on.
 //
-// The page it answers stands at the last change it read, stamped now where the page read the log
-// to its end (it was shorter than limit) and carrying the cursor's ReadAt where it was full (feed).
-func readChangePage(ctx context.Context, q Querier, after delivery.ChangeCursor, now time.Time, limit int) (feed, bool, error) {
+// The page it answers stands at the last change it read, stamped checked where the page read the
+// log to its end (it was shorter than limit) and carrying the cursor's ReadAt where it was full
+// (delivery.ChangeCursor.Through, feed).
+func readChangePage(ctx context.Context, q Querier, after delivery.ChangeCursor, checked time.Time, limit int) (feed, bool, error) {
 	changes, err := delivery.ChangesSince(ctx, q, after.Seq, limit)
 	if err != nil {
 		return feed{}, false, fmt.Errorf("read the delivery changes after %d: %w", after.Seq, err)
 	}
-	page := feed{position: after.Seq, at: after.At, readAt: after.ReadAt, full: len(changes) == limit}
-	if !page.full {
-		page.readAt = now
-	}
+	moved := after.Through(changes, limit, checked)
+	page := feed{position: moved.Seq, at: moved.At, readAt: moved.ReadAt, full: len(changes) == limit}
 	repos, refs := make([]string, 0, len(changes)), make([]string, 0, len(changes))
 	merges := []time.Time{}
 	for _, change := range changes {
-		page.position, page.at = change.Seq, &change.At
 		if change.Kind == delivery.ChangeKindSettings && change.Repo != "" {
 			page.remapped = true
 		}
@@ -576,7 +575,7 @@ func readChangePage(ctx context.Context, q Querier, after delivery.ChangeCursor,
 			merges = append(merges, *change.TOld)
 		}
 	}
-	lost, err := delivery.CursorLost(ctx, q, after, now)
+	lost, err := delivery.CursorLost(ctx, q, after, checked)
 	if err != nil {
 		return feed{}, false, fmt.Errorf("read the delivery change at %d: %w", after.Seq, err)
 	}

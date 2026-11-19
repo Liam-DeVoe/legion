@@ -181,7 +181,7 @@ func (h *deliveryHub) catchUp(g *hubGeneration) {
 // The clock is read once before each page, for the check and for the cursor's ReadAt: a page
 // shorter than its limit and a move to the newest row read the log to its end and take that
 // reading, and a full page moves the cursor and leaves its ReadAt where it stood
-// (delivery.ChangeCursor).
+// (delivery.ChangeCursor and its Through).
 func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 	ctx, pool := g.readContext(), h.server.deps.Store.Pool
 	if _, err := delivery.DrainPending(ctx, pool); err != nil {
@@ -222,12 +222,8 @@ func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 					h.markDirtyLocked(g, view, now, deliveryCauseChange)
 				}
 			}
-			at := change.At
-			g.change.Seq, g.change.At = change.Seq, &at
 		}
-		if len(changes) < deliveryLivePage {
-			g.change.ReadAt = checked
-		}
+		g.change = g.change.Through(changes, deliveryLivePage, checked)
 		h.mu.Unlock()
 		if len(changes) < deliveryLivePage {
 			return nil

@@ -188,6 +188,8 @@ export const realStackReasons: Record<string, string> = {
     "Time per phase is read against the board route's hours as the facts consumer writes them from role events, phase observations and an ask, with every board frame of the live socket rewritten in flight",
   "issues-views.e2e.ts":
     "the views' rows, tabs and counts are read against the server's own listing and board route, saved views are read by a second login signed in on the same context and on its own, and the Board's frames come over the live socket",
+  "issue-page-d.e2e.ts":
+    "each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue",
   "issue.e2e.ts":
     "asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read",
   "judged-grant.e2e.ts":

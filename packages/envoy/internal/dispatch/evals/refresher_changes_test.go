@@ -595,10 +595,22 @@ func TestARepoProjectsChangeReattributesWithinOnePass(t *testing.T) {
 		t.Fatalf("before the mapping moved, %s counts %d timed CI results and %s some, or %s holds acme/legion rows", main, mainChecks, other, legion.Project)
 	}
 
+	// A mapping's trigger records its change in the change log's outbox, and every writer of a
+	// mapping moves it into the log right after its commit (delivery.DrainRepoProjectChange): the
+	// two writes below stand for such writers, so the test drains as they would, and first moves
+	// whatever the pass left pending, so the log after seq holds the two writes' changes alone.
+	drain := func(what string) {
+		t.Helper()
+		if _, err := delivery.DrainPending(t.Context(), r.database.Pool); err != nil {
+			t.Fatalf("move %s into the log: %v", what, err)
+		}
+	}
+	drain("the changes the pass left pending")
 	seq := r.latestSeq(t)
 	r.exec(t, "map the deploy repository to "+other, `update repo_projects set project = $2 where repo = $1`, deliveries.DeployRepo, other)
 	r.exec(t, "give "+legion.Project+" a default repository", `
 		insert into repo_projects (repo, project, created_by, is_default) values ('acme/legion', $1, '{"kind":"user","id":"alice"}', true)`, legion.Project)
+	drain("the mapping writes' changes")
 	changes, err := delivery.ChangesSince(t.Context(), r.database.Pool, seq, 10)
 	if err != nil {
 		t.Fatal(err)

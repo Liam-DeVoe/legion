@@ -314,17 +314,18 @@ type nextPage struct {
 // rows again and writes the same values.
 //
 // The rows are computed as of now, the pass's moment, and the change cursor is judged lost or not,
-// and a read of the change log to its end stamped, by a reading of the clock this page takes
-// before it reads (readPages, delivery.ChangeCursor): a pass that catches up a backlog for long
-// enough crosses the change log's retention between two of its pages, and a page judged at the
-// pass's start would read on past what a prune took meanwhile.
+// and a read of the change log to its end stamped, by checked, a reading of the clock this page
+// takes before it reads (readPages, delivery.ChangeCursor): a pass that catches up a backlog for
+// long enough crosses the change log's retention between two of its pages, and a page judged at
+// the pass's start would read on past what a prune took meanwhile.
 func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now time.Time, unfed bool) ([]string, nextPage, error) {
 	self := process{build: deps.Build, started: sched.started}
 	cursors, committed, err := readCursors(ctx, deps.Pool)
 	if err != nil {
 		return nil, nextPage{}, err
 	}
-	read, err := readPages(ctx, deps.Pool, cursors, committed, safe, sched.now(), sched.page, unfed)
+	checked := sched.now()
+	read, err := readPages(ctx, deps.Pool, cursors, committed, safe, checked, sched.page, unfed)
 	if err != nil {
 		return nil, nextPage{}, err
 	}

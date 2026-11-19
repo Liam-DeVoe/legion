@@ -2,7 +2,7 @@
 // `formatMinutes` from web/src/lib/dora.ts:34-40, `formatDuration`, `formatRate` and `formatDue`
 // from web/src/lib/pipeline.ts:60-83, and `pct` from web/src/components/DoraPanel.tsx:13-15. Pure.
 
-import { formatMinutes as formatLeadTime } from "./prList";
+import { formatMinutes as formatLeadTime, wholeMinutes } from "./prList";
 
 /** What a measure the measures panel and the Pipeline page have nothing to measure of reads as:
  *  never a zero. */
@@ -21,7 +21,7 @@ export function formatMinutes(v: number | null, extra = 0): string {
 export function formatDuration(minutes: number | null, extra = 0): string {
   if (minutes === null) return NO_VALUE;
   if (minutes < 10) return `${minutes.toFixed(1 + extra)}m`;
-  if (minutes < 180) return `${extra === 0 ? Math.round(minutes) : minutes.toFixed(extra)}m`;
+  if (minutes < 180) return `${wholeMinutes(minutes, extra)}m`;
   return `${(minutes / 60).toFixed(1 + extra)}h`;
 }
 

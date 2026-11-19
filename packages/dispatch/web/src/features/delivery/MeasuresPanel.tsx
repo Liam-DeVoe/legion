@@ -40,7 +40,15 @@ import {
 import { buildIssuePath } from "../refs/routes";
 import { JudgedFigure } from "./JudgedFigure";
 import { formatMinutes, NO_VALUE, pct } from "./lib/format";
-import { EVAL_SLUGS, type Judge, judgeFigure, type Measure, targetLabel } from "./lib/target";
+import {
+  count,
+  EVAL_SLUGS,
+  type Judge,
+  judgeFigure,
+  type Measure,
+  targetLabel,
+  type WriteFigure,
+} from "./lib/target";
 import { Sparkbars } from "./Sparkbars";
 import { TargetBadge } from "./TargetBadge";
 
@@ -48,15 +56,6 @@ const UNOWNED_P0_SHOWN = 6;
 
 /** What a pending read shows in each number's place. */
 const PENDING = "\u2026";
-
-/** How a figure is written with `extra` decimals past its usual ones, which a toned figure takes
- *  where its usual ones would print it on the other side of its target (`judgeFigure`). */
-type Write = (extra: number) => string;
-
-/** A count's `Write`: a count is exact, so it is written the same whatever decimals it is offered. */
-function count(n: number): Write {
-  return () => `${n}`;
-}
 
 /** The change-failure-rate card's breakdown: deploys with a confirmed break, and how many more
  *  have only unreviewed (pending) flags. `confirmedOrPending` counts each deploy once (the
@@ -111,7 +110,7 @@ function WindowFigure(props: {
   statistic: Judge;
   targets: DeliveryTargets | undefined;
   value: number | null | undefined;
-  write: Write;
+  write: WriteFigure;
   className?: string;
   plain?: string;
   pending?: string;
@@ -163,7 +162,7 @@ function BigNumber(props: {
   statistic: Judge;
   targets: DeliveryTargets | undefined;
   value: number | null | undefined;
-  write: Write;
+  write: WriteFigure;
   pending?: string;
 }): ReactNode {
   return <WindowFigure className="text-lg font-semibold" plain={textPrimaryOnSurface} {...props} />;
@@ -187,7 +186,7 @@ function DefinitionCard(props: {
  *  where it shows one. */
 interface StripStat {
   label: string;
-  write: Write;
+  write: WriteFigure;
   judged?: { measure: Measure; statistic: Judge; value: number | null | undefined };
 }
 
@@ -197,14 +196,15 @@ interface StripStat {
  *  `data` is undefined while the read is pending, when the cards show their frame. */
 export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undefined }): ReactNode {
   const [open, setOpen] = useState(false);
-  // A figure of the answer as `Write` writes it, and `PENDING` while the read is pending.
+  // A figure of the answer, and `PENDING` while the read is pending.
   const show =
-    (format: (response: DeliveryMeasuresResponse, extra: number) => string): Write =>
+    (format: (response: DeliveryMeasuresResponse, extra: number) => string): WriteFigure =>
     (extra) =>
       data === undefined ? PENDING : format(data, extra);
   const targets = data?.targets;
   const status = data?.status;
   const measures = data?.measures;
+  const failures = measures?.change_failure_rate;
 
   const strip: StripStat[] = [
     {
@@ -328,7 +328,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
               <span className={`text-xs ${textMutedOnSurface}`}>confirmed</span>
             )}
           </div>
-          {data === undefined ? null : !measured(data.measures.change_failure_rate) ? (
+          {failures === undefined || targets === undefined ? null : !measured(failures) ? (
             <div className={`text-xs ${textMutedOnCanvas}`}>
               Flags arrive with flag confirmation
             </div>
@@ -341,23 +341,17 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
                   measure="change_failure_rate"
                   plain={textPrimaryOnSurface}
                   statistic="upper_bound.rate"
-                  targets={data.targets}
-                  value={data.measures.change_failure_rate.per_deploy.upper_bound_rate}
-                  write={show((d, extra) =>
-                    !measured(d.measures.change_failure_rate)
-                      ? NO_VALUE
-                      : pct(d.measures.change_failure_rate.per_deploy.upper_bound_rate, 2 + extra)
-                  )}
+                  targets={targets}
+                  value={failures.per_deploy.upper_bound_rate}
+                  write={(extra) => pct(failures.per_deploy.upper_bound_rate, 2 + extra)}
                 />{" "}
                 if every pending flag is confirmed
               </div>
               <div className={`text-[11px] ${textMutedOnSurface}`}>
                 <FailureRateBreakdown
-                  confirmed={data.measures.change_failure_rate.per_deploy.confirmed}
-                  confirmedOrPending={
-                    data.measures.change_failure_rate.per_deploy.confirmed_or_pending
-                  }
-                  targets={data.targets}
+                  confirmed={failures.per_deploy.confirmed}
+                  confirmedOrPending={failures.per_deploy.confirmed_or_pending}
+                  targets={targets}
                 />
               </div>
             </>
@@ -608,7 +602,7 @@ function DayCell(props: {
   targets: DeliveryTargets;
   partial: boolean;
   value: number | null;
-  write: Write;
+  write: WriteFigure;
 }): ReactNode {
   const { met, text } = judgeFigure(
     props.partial ? null : props.targets[props.measure],
@@ -642,7 +636,7 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
     measure: Measure,
     statistic: Judge,
     value: number | null,
-    write: Write
+    write: WriteFigure
   ): ReactNode => (
     <WindowFigure
       measure={measure}

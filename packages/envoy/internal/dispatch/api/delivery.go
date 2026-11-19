@@ -106,11 +106,8 @@ func parseDeliveryWindowQuery(query url.Values) (from, to time.Time, err error) 
 	return parseDeliveryWindow(query)
 }
 
-// parseOptionalRFC3339 is query's name parameter as an RFC3339 time, or fallback when the query
-// has no such parameter, refusing a value that does not parse, or one whose UTC year is outside 1
-// to 9999 (R18), with an error naming the parameter. RFC 3339 writes the years 0000 to 9999 with
-// any offset, so 9999-12-31T23:00:00-14:00 parses and is a moment of the year 10000, which no JSON
-// answer can write: a route that echoed it answered an empty body.
+// parseOptionalRFC3339 is query's name parameter as an RFC3339 time of the UTC years 1 to 9999
+// (parseRFC3339), or fallback when the query has no such parameter.
 func parseOptionalRFC3339(query url.Values, name string, fallback time.Time) (time.Time, error) {
 	if !query.Has(name) {
 		return fallback, nil
@@ -118,8 +115,11 @@ func parseOptionalRFC3339(query url.Values, name string, fallback time.Time) (ti
 	return parseRFC3339(name, query.Get(name))
 }
 
-// parseRFC3339 is text, given for the query parameter name, as an RFC3339 time; its error is the
-// text of the route's 400 INVALID_QUERY, naming the parameter.
+// parseRFC3339 is text, given for the query parameter name, as an RFC3339 time, refusing a value
+// that does not parse, or one whose UTC year is outside 1 to 9999 (R18); its error is the text of
+// the route's 400 INVALID_QUERY, naming the parameter. RFC 3339 writes the years 0000 to 9999 with
+// any offset, so 9999-12-31T23:00:00-14:00 parses and is a moment of the year 10000, which no JSON
+// answer can write: a route that echoed it answered an empty body.
 func parseRFC3339(name, text string) (time.Time, error) {
 	value := strings.TrimSpace(text)
 	parsed, err := time.Parse(time.RFC3339, value)
