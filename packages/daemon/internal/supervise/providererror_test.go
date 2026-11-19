@@ -539,9 +539,12 @@ func TestForgettingTheSessionStartsTheRunOfProviderErrorsAgain(t *testing.T) {
 	}
 }
 
-// The one exit from a run of provider errors is the project's controller, told once. There is no
-// hold and no attempt limit behind it.
-func TestTheSixthProviderErrorTurnInARowTellsTheControllerOnce(t *testing.T) {
+// The one exit from a run of provider errors is the project's controller, told once a run. The
+// machine cannot know whether a controller could read its notice, or whether the notice's write
+// committed, so it offers the notice at every turn of the run from the sixth on, each naming the
+// run it stands at, and the daemon tells the controller once (internal/admit's
+// TellOfProviderErrors). There is no hold and no attempt limit behind it.
+func TestEveryProviderErrorTurnFromTheSixthInARowOffersTheControllerItsNotice(t *testing.T) {
 	type told struct {
 		claim  Claim
 		reason string
@@ -554,16 +557,14 @@ func TestTheSixthProviderErrorTurnInARowTellsTheControllerOnce(t *testing.T) {
 	sent := 1
 	for turn := range 7 {
 		h.errorTurn(StreamPromptResult{Error: "Refusal (reasoning_extraction): no.", Model: "claude-opus-4-8"})
-		if turn == 5 && len(notices) != 1 {
-			t.Fatalf("the controller was told %d times at the sixth turn, want once", len(notices))
+		if want := max(turn-4, 0); len(notices) != want {
+			t.Fatalf("the controller was offered its notice %d times by turn %d, want %d: from the sixth turn on, once a turn",
+				len(notices), turn+1, want)
 		}
 		h.climbs(sent, promptRetryDelay(turn+1))
 		sent++
 	}
 
-	if len(notices) != 1 {
-		t.Fatalf("the controller was told %d times over seven turns, want once", len(notices))
-	}
 	notice := notices[0]
 	if notice.claim.Issue != "LEGION-209" || notice.claim.Role != claim.RoleImplementer {
 		t.Errorf("the notice names %s of %s, want the implementer of LEGION-209", notice.claim.Role, notice.claim.Issue)
@@ -580,6 +581,9 @@ func TestTheSixthProviderErrorTurnInARowTellsTheControllerOnce(t *testing.T) {
 	}
 	if got := h.claim().ProviderErrorRun; got != 7 {
 		t.Errorf("the run of provider errors is %d, want 7: the notice bounds nothing", got)
+	}
+	if offered := notices[1]; offered.claim.ProviderErrorRun != 7 || !strings.Contains(offered.reason, "7 turns in a row") {
+		t.Errorf("the seventh turn's offer carries a run of %d and the reason %q, want the run of 7 it stands at", offered.claim.ProviderErrorRun, offered.reason)
 	}
 }
 

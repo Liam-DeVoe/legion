@@ -514,8 +514,13 @@ failure under the cause word `provider_error`, with the same sentence as its `de
 
 **After six turns of one claim in a row have ended in a provider error**, the project's controller
 is told once, as `provider-errors on <KEY>`, with the run, the model and the cause
-(`supervise: a run of turns that ended in a provider error; the controller is told`). Nothing is
-held and nothing is stopped by that count: the task is still kept and still sent again. The run
+(`admission: told the controller of a run of provider errors`). It is told at the first turn of
+the run, from the sixth on, at which a controller is registered: by default an operator launches
+the controller, so a run can reach six with none registered, and the controller registered later
+is told at that claim's next turn that ends in a provider error (the ladder sends the task again
+at most ten minutes after each one). A notice whose write failed is written at the next such turn
+the same way. Nothing is held and nothing is stopped by that count: the task is still kept and
+still sent again. The run
 goes back to zero three ways: at a turn of that claim that ends with no provider error, at a
 compaction of its session that ran (`legion claims compact`, or the controller's `compact`; one
 Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's

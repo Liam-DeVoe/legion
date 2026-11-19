@@ -1,0 +1,17 @@
+-- 20261119114140_provider_errors_told.up.sql — the mark that the project's controller was told of
+-- a claim's run of provider-error turns.
+--
+-- After six turns of one claim in a row end in a provider error, the project's controller is told
+-- once. The daemon used to tell it at exactly the sixth turn, and that notice queues nothing while
+-- no controller is registered, which is the default (`controller: operator`): the run then went
+-- past six, so no later turn told it either. The claim's machine now offers the notice at every
+-- such turn from the sixth on, and admission writes it at the first offer a registered controller
+-- can read, marking the run told in the same transaction (admit's TellOfProviderErrors), so a
+-- controller that registers during the run is told at the claim's next failed turn, and told once.
+--
+-- claims.provider_errors_told_run is the run the claim stood at when its notice was written, and 0
+-- while the run the claim stands in has not been told. It is no part of a machine's claim write
+-- but one rule (store's putClaim): a write whose run is below the mark is a new run, since a run
+-- climbs by one or goes back to 0, so the mark goes back to 0 and the new run can be told in its
+-- turn. An older daemon names the column nowhere, so it runs against this table as it was.
+alter table claims add column provider_errors_told_run integer not null default 0;

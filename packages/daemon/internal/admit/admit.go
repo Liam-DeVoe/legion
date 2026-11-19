@@ -462,15 +462,15 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 // its slot back, every issue nothing starts at all, and every issue whose phase worker nothing
 // will prompt (silentWorkers). So a tick that wakes nobody has judged them all the same, and
 // nothing here judges anything a second time. Every other kind is queued as the caller built it,
-// so a kind that says something of its own — the role and the reason of TellController's —
+// so a kind that says something of its own — the role and the reason of TellOfProviderErrors's —
 // carries it here.
 //
 // Which notices count as the same one is the kind's own rule (record.NoticePerClaim): a kind
 // that speaks for the project is one wake per project, which is what the slot wakes and the tick
 // want, and a kind that speaks for one claim is one wake per claim — its issue and its role. The
-// second is the provider-errors notice: in an outage every claim's turns fail, each claim owes a
-// notice of its own, and the machine tells at exactly the sixth turn in a row, so a notice
-// dropped because another claim's still waited would never be sent. Two claims of one issue, an
+// second is the provider-errors notice: in an outage every claim's turns fail, and each claim owes
+// a notice of its own, so a claim's notice held back behind another claim's would reach the
+// controller only once the other's was published. Two claims of one issue, an
 // architect and its worker, are two such claims, which is why the role is part of the key. The
 // tree-stalled notice is keyed the same way with no role at all, which keys it by its issue
 // alone: a role that is empty is a term the pending read leaves out.
@@ -478,10 +478,11 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 // It answers whether it queued a row. Two of its own rules queue nothing and are no error: no
 // controller is registered, so nothing would read the wake, and an older notice of the same
 // kind, issue and role still waits unsent. A caller that records something of its own about
-// the wake must know which happened, and one does: the stalled-tree rule marks a root only for
-// a notice that went into the outbox, in this same transaction, so a tree that stopped while
-// no controller ran is told at a later pass instead of being marked told and lost
-// (tellStalledTrees). Every other caller has nothing to record and drops the answer.
+// the wake must know which happened, and two do: the stalled-tree rule marks a root, and the
+// provider-errors notice marks its claim's run, only for a notice that went into the outbox, in
+// this same transaction, so a tree that stopped, or a run that reached six, while no controller
+// ran is told later instead of being marked told and lost (tellStalledTrees,
+// TellOfProviderErrors). Every other caller has nothing to record and drops the answer.
 func (a *Admission) wakeController(ctx context.Context, tx pgx.Tx, notice record.ControllerNotice, issue string, dueAt time.Time) (bool, error) {
 	registered, err := a.store.ControllerRegistered(ctx, tx, a.project)
 	if err != nil || !registered {
@@ -504,15 +505,43 @@ func (a *Admission) wakeController(ctx context.Context, tx pgx.Tx, notice record
 	return true, nil
 }
 
-// TellController queues notice on issue in the caller's transaction, for a caller outside any
-// fact: the supervisor, whose machine decides inside its own lock (supervise's
-// Deps.ProviderErrorRunReached, wired in internal/daemon, which opens the transaction). It is
-// wakeController and nothing else: a controller that is not registered is told nothing, and a
-// notice the same wake already waits to send stops this one, so a run of the same cause on the
-// same claim is one wake and another claim's run is a wake of its own (record.NoticePerClaim).
-func (a *Admission) TellController(ctx context.Context, tx pgx.Tx, notice record.ControllerNotice, issue string) error {
-	_, err := a.wakeController(ctx, tx, notice, issue, a.now())
-	return err
+// TellOfProviderErrors tells the project's controller, in the caller's transaction, that the turns
+// of the claim of token, the role of issue, have ended in a provider error run turns in a row, for
+// reason. The caller is outside any fact: the supervisor, whose machine decides inside its own
+// lock and offers this notice at every such turn from the sixth on (supervise's
+// Deps.ProviderErrorRunReached, wired in internal/daemon, which opens the transaction).
+//
+// The controller is told of one run once, and the claim's mark says it has been
+// (record.Store.ProviderErrorsTold), so a run already told queues nothing. The mark is written
+// only for a notice that went into the outbox, in this same transaction, which is the daemon's
+// rule for every wake that keeps a mark (tellStalledTrees, wakeStalledArchitects): while no
+// controller is registered wakeController queues nothing, since a controller that registers
+// later reads its notices from the end of the stream, and the run stays untold, so the claim's
+// next turn that fails the same way tells the controller registered by then. By default an
+// operator launches the controller, so a run can reach six with none registered. A transaction
+// that failed wrote neither the notice nor the mark, and the next offer tells as well. Reading
+// the mark locks the claim's row, so two offers of one run cannot both read it untold.
+//
+// A notice of the same claim that still waits in the outbox stops this one too, and marks
+// nothing (record.NoticePerClaim): it is an earlier run's, and once it is published the next
+// offer tells of this run.
+func (a *Admission) TellOfProviderErrors(ctx context.Context, tx pgx.Tx, token claim.Token, issue string, role claim.Role, run int, reason string) error {
+	told, err := a.store.ProviderErrorsTold(ctx, tx, token)
+	if err != nil || told {
+		return err
+	}
+	queued, err := a.wakeController(ctx, tx, record.ControllerNotice{Kind: record.ProviderErrorsNotice, Role: role, Reason: reason}, issue, a.now())
+	if err != nil || !queued {
+		return err
+	}
+	if err := a.store.MarkProviderErrorsTold(ctx, tx, token, run); err != nil {
+		return err
+	}
+	intake.OnCommit(ctx, func() {
+		a.log.Warn("admission: told the controller of a run of provider errors", "claim", token, "issue", issue,
+			"role", role, "run", run, "reason", reason)
+	})
+	return nil
 }
 
 // queuePersonHandover queues the todo write of a person's handover of key: a root a person handed

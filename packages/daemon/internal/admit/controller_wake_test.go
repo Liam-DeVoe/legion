@@ -244,25 +244,33 @@ func TestTheTickAloneCarriesWhatLegionWaitsOn(t *testing.T) {
 
 // tellOfProviderErrors is the supervisor telling the controller that one claim's turns keep
 // ending in a provider error, as internal/daemon's providerErrorRunReached does: outside any
-// fact, in a transaction of the caller's own (TellController).
+// fact, in a transaction of the caller's own that opens its own commit scope
+// (intake.WithCommitHooks), at a run of six.
 func tellOfProviderErrors(t *testing.T, pool *pgxpool.Pool, admission *Admission, issue string, role claim.Role) {
 	t.Helper()
-	ctx := context.Background()
-	notice := record.ControllerNotice{Kind: record.ProviderErrorsNotice, Role: role,
-		Reason: "6 turns in a row ended in a provider error"}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		return admission.TellController(ctx, tx, notice, issue)
+	project, err := claim.ProjectToken(testProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := claim.NewToken(project, issue, role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scoped, committed := intake.WithCommitHooks(context.Background())
+	if err := pgx.BeginFunc(scoped, pool, func(tx pgx.Tx) error {
+		return admission.TellOfProviderErrors(scoped, tx, token, issue, role, 6, "6 turns in a row ended in a provider error")
 	}); err != nil {
 		t.Fatalf("tell the controller of %s's %s provider errors: %v", issue, role, err)
 	}
+	committed()
 }
 
 // A provider-errors notice is one claim's, so one stands per claim: in an outage every claim's
-// turns fail, and the machine tells at exactly the sixth turn in a row and not again until a
-// turn with no error puts that run back to zero, so a second claim's notice dropped behind the
-// first claim's would never be sent at all. Two claims of one issue — its architect and its
-// worker — are two such claims, so the issue alone is not the key. One claim that keeps failing
-// still tells once: a second notice for the same issue and role finds the first one waiting.
+// turns fail, and each claim owes a notice of its own, so a second claim's notice held behind the
+// first claim's would reach the controller only once the first was published. Two claims of one
+// issue — its architect and its worker — are two such claims, so the issue alone is not the key.
+// One claim that keeps failing still tells once: a second notice for the same issue and role finds
+// the first one waiting.
 func TestEachClaimsProviderErrorsNoticeStandsWhileAnothersWaits(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)

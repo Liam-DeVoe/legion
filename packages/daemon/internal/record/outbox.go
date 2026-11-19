@@ -771,12 +771,14 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // it: an operator's suspension of a role the round asks, a ReplacePod the runtime refused, no
 // claim recording a process in the round's pod (or in any pod), or claims recording two pods. It
 // is told once per round (the daemon's reconcilePodUpdates). A
-// provider-errors notice names an issue whose role has ended six turns in a row in a provider
-// error: its Role is that role, and its Reason the model and the HTTP status the provider
-// answered, where it answered one, in words built from structured fields alone (supervise's
-// tellControllerOfProviderErrors). It is told once, and not again until a turn with no error puts
-// that run back to zero; nothing is held and nothing is bounded, because a chain's bottom
-// refusing deterministically costs one request every ten minutes. A tree-stalled notice names a
+// provider-errors notice names an issue whose role has ended six turns or more in a row in a
+// provider error: its Role is that role, and its Reason the run, the model and the HTTP status the
+// provider answered, where it answered one, in words built from structured fields alone
+// (supervise's tellControllerOfProviderErrors). It is told once a run, at the first turn from the
+// sixth on at which a controller is registered, and not again until a turn with no error puts
+// that run back to zero (admit.Admission.TellOfProviderErrors marks the claim's run told);
+// nothing is held and nothing is bounded, because a chain's bottom refusing deterministically
+// costs one request every ten minutes. A tree-stalled notice names a
 // root of the daemon's own whose tree has stopped: nothing of the tree has moved for longer than
 // `stalled_tree_notice_hours`, no claim of it is at work, and it does not wait by design (admit's
 // tellStalledTrees says which trees are told). Its issue is that root, and its Reason names the
@@ -785,7 +787,7 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // for each stall: the daemon marks the root with the movement the notice was told for, and tells
 // again only once the tree moves past that mark. When admission sends each is its rule
 // (admit.Admission.wakeController and its callers, admit's releaseUnslotted,
-// admit.Admission.TellController).
+// admit.Admission.TellOfProviderErrors).
 //
 // A parked-decision notice names a person's decision on a tree Legion is not running, which
 // nobody inside the tree will hear: a spec decision the notice executor could not deliver to the
@@ -885,11 +887,10 @@ type ArchitectStall struct {
 //
 // Two kinds answer true. A provider-errors notice names the claim whose turns keep ending in a
 // provider error, and in an outage every claim of the project has a notice of its own to send.
-// It is told at exactly the sixth turn in a row and never again until a turn with no error puts
-// that run back to zero, so a second claim's notice dropped behind the first claim's would
-// never be sent at all. Two claims of one issue are two such claims — an issue's architect and
-// its worker fail their turns in the same outage — so the issue alone is not the key; the role
-// is the rest of it.
+// It is told once a run, and a second claim's notice held behind the first claim's would reach
+// the controller only once the first was published. Two claims of one issue are two such claims
+// — an issue's architect and its worker fail their turns in the same outage — so the issue alone
+// is not the key; the role is the rest of it.
 //
 // A tree-stalled notice names one root whose tree has stopped, and carries no role: the stall
 // is the whole tree's and not one agent's. So its key is the issue alone, which is what an

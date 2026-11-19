@@ -509,12 +509,14 @@ says.
 
 ## `provider-errors on <KEY>` (`{kind: "provider-errors", role, reason}`)
 
-Six turns of `<KEY>`'s `role` in a row ended in an error the model's provider returned: a content
-filter, a rate limit, an overload, or any other failure of the provider. `reason` names the model
-and the HTTP status the provider answered, when it answered one, and carries no text the provider
-wrote. Nothing is held and nothing is stopped: the daemon keeps the task, prompts the same session
-with it again, and waits at most ten minutes between prompts for as long as the errors last. You
-are told once, and again only once the run has gone back to zero, which it does three ways: at a
+Six turns or more of `<KEY>`'s `role` in a row ended in an error the model's provider returned: a
+content filter, a rate limit, an overload, or any other failure of the provider. `reason` names the
+run, the model and the HTTP status the provider answered, when it answered one, and carries no
+text the provider wrote. Nothing is held and nothing is stopped: the daemon keeps the task, prompts
+the same session with it again, and waits at most ten minutes between prompts for as long as the
+errors last. You are told once for each run, at its first failed turn from the sixth on after you
+registered, so a run that began before you started reaches you at its next failed turn. You are
+told again only once the run has gone back to zero, which it does three ways: at a
 turn of that role that ends with no provider error, at a compaction of its session that ran (one
 Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's
 recorded session is forgotten, by `fresh_session` or an operator's `legion claims forget-session`.

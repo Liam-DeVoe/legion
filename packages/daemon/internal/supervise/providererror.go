@@ -21,9 +21,11 @@ const (
 	// from [step/2, step] and caps at 32 times its base, which this ladder's exactness forbids.
 	promptRetryFirst = 30 * time.Second
 	promptRetryMax   = 10 * time.Minute
-	// providerErrorRunTold is the run of provider-error turns at which the project's controller
-	// is told, once (Deps.ProviderErrorRunReached). There is no hold and no attempt limit behind
-	// it: a chain's bottom refusing deterministically costs one request every promptRetryMax.
+	// providerErrorRunTold is the run of provider-error turns from which the project's controller
+	// is told, once a run: the machine offers the notice at every such turn from this one on
+	// (Deps.ProviderErrorRunReached), and the daemon writes it once. There is no hold and no
+	// attempt limit behind it: a chain's bottom refusing deterministically costs one request every
+	// promptRetryMax.
 	providerErrorRunTold = 6
 )
 
@@ -154,13 +156,18 @@ func providerErrorTask(cause string) string {
 		"issue's branch. Then continue the task."
 }
 
-// tellControllerOfProviderErrors tells the project's controller, once, when the claim's run of
-// provider-error turns reaches providerErrorRunTold; a turn with no error puts the run back to
-// zero, and only then can another notice go. It is the one exit from a run of such turns, and it
-// is a notice rather than a hold: R2 forbids an attempt limit. model is the model the failed
-// request went to, and is empty when the error named none.
+// tellControllerOfProviderErrors offers the project's controller its notice of the claim's run of
+// provider-error turns, at every such turn from the providerErrorRunTold-th on; a turn with no
+// error puts the run back to zero. The daemon tells the controller of one run once, at the first
+// offer a registered controller can read, and marks the run told (internal/admit's
+// TellOfProviderErrors), so a run that reaches six while no controller is registered — an
+// operator launches it by default — or whose notice's write fails, is told at a later turn rather
+// than at none: the machine has no word of whether an offer was written, and offering it once,
+// at exactly the sixth turn, lost it whenever that one offer wrote nothing. It is the one exit
+// from a run of such turns, and it is a notice rather than a hold: R2 forbids an attempt limit.
+// model is the model the failed request went to, and is empty when the error named none.
 func (m *Machine) tellControllerOfProviderErrors(model, cause string) {
-	if m.claim.ProviderErrorRun != providerErrorRunTold || m.deps.ProviderErrorRunReached == nil {
+	if m.claim.ProviderErrorRun < providerErrorRunTold || m.deps.ProviderErrorRunReached == nil {
 		return
 	}
 	on := ""
@@ -169,7 +176,7 @@ func (m *Machine) tellControllerOfProviderErrors(model, cause string) {
 	}
 	reason := fmt.Sprintf("%d turns in a row%s ended in %s; the daemon keeps the task and sends it again every %s at most",
 		m.claim.ProviderErrorRun, on, cause, promptRetryMax)
-	m.log.Warn("supervise: a run of turns that ended in a provider error; the controller is told",
+	m.log.Info("supervise: a run of turns that ended in a provider error; the controller is told of it unless it already was",
 		"providerErrorRun", m.claim.ProviderErrorRun, "model", model, "reason", reason)
 	m.deps.ProviderErrorRunReached(m.current(), reason)
 }

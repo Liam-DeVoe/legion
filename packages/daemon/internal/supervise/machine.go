@@ -468,7 +468,7 @@ type Claim struct {
 	// clears it (clearUpdate).
 	UpdateLeftRound string
 	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row, and 0
-	// for a claim whose last turn ended with none (promptResulted). At providerErrorRunTold the
+	// for a claim whose last turn ended with none (promptResulted). From providerErrorRunTold on the
 	// project's controller is told once, and not again until a turn with no error puts it back to
 	// zero. It bounds nothing: R2 of dispatch://INFRA-956 forbids an attempt limit here, since a
 	// limit would fail every claim of a project at once in a provider outage.
@@ -1017,9 +1017,12 @@ type Deps struct {
 	// machine's decision, so it returns at once and writes its row elsewhere.
 	StallBackstopped func(c Claim, stop StallBackstopStop)
 	// ProviderErrorRunReached is told of a claim whose turns have ended in a provider error
-	// providerErrorRunTold times in a row, once per run, with the reason the project's controller
-	// is given: the model, and the HTTP status the provider answered where it answered one, in
-	// words built from structured fields alone. The claim carries the issue and the role. nil
+	// providerErrorRunTold times in a row or more, at every such turn, with the reason the
+	// project's controller is given: the run, the model, and the HTTP status the provider answered
+	// where it answered one, in words built from structured fields alone. The claim carries the
+	// issue, the role and the run. It is an offer: the daemon tells the controller of one run once
+	// and drops the offers after that (internal/admit's TellOfProviderErrors), since only the
+	// daemon knows whether a controller could read the notice and whether its write committed. nil
 	// tells nobody, as it does for TaskConfirmed above. It is called inside the machine's
 	// decision, so it returns at once.
 	ProviderErrorRunReached func(c Claim, reason string)

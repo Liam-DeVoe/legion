@@ -2082,16 +2082,16 @@ func (w *workflowRuntime) applySessionFact(c supervise.Claim, id string, fact in
 
 // providerErrorRunReached tells the project's controller that a role's turns keep ending in a
 // provider error (supervise's Deps.ProviderErrorRunReached): the machine counts the run and
-// decides when to tell, and this names the notice kind, since supervise records nothing of
-// internal/record. Admission's own check stops a second notice while one still waits in the
-// outbox (TellController). The machine calls it inside its own decision, so the notice is
+// offers the notice at every such turn from the sixth on, and admission tells the controller of
+// one run once, at the first offer a registered controller can read, which marks the claim's run
+// told (TellOfProviderErrors). The machine calls it inside its own decision, so the notice is
 // queued on a goroutine of its own, bounded by readyReleaseTimeout; a failure is logged and is
-// not the daemon's end, since the run goes on and the task is sent again either way.
+// not the daemon's end, since the run goes on, the task is sent again either way, and the next
+// turn that fails the same way offers the notice again.
 func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, reason string) {
 	if c.Issue == "" || w.admission == nil {
 		return
 	}
-	notice := record.ControllerNotice{Kind: record.ProviderErrorsNotice, Role: c.Role, Reason: reason}
 	go func() {
 		// This goroutine runs beside the machine that started it and every other, so it takes a
 		// hold mark of its own (store.ForConcurrentWorker). The notice is its own transaction, so
@@ -2101,7 +2101,7 @@ func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, reason stri
 		defer cancel()
 		scoped, committed := intake.WithCommitHooks(ctx)
 		if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
-			return w.admission.TellController(scoped, tx, notice, c.Issue)
+			return w.admission.TellOfProviderErrors(scoped, tx, c.Token, c.Issue, c.Role, c.ProviderErrorRun, reason)
 		}); err != nil {
 			w.log.Warn("tell the controller of a run of provider errors", "claim", c.Token, "error", err)
 			return

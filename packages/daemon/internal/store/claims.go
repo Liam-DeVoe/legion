@@ -447,6 +447,12 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_told_at = excluded.update_told_at,
 		update_left_round = excluded.update_left_round,
 		provider_error_run = excluded.provider_error_run,
+		-- provider_errors_told_run is admission's mark that the project's controller was told of
+		-- the run of provider-error turns the claim stands in (admit's TellOfProviderErrors), and
+		-- no part of a claim's write but this: a run climbs by one or goes back to 0, so a write
+		-- whose run is below the mark is a new run, which the mark leaves untold.
+		provider_errors_told_run = case when excluded.provider_error_run < claims.provider_errors_told_run
+			then 0 else claims.provider_errors_told_run end,
 		serving_check_look = excluded.serving_check_look,
 		serving_check_opened_at = excluded.serving_check_opened_at,
 		death_charged = excluded.death_charged,

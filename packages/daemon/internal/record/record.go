@@ -1980,6 +1980,16 @@ type Store interface {
 	// root: the stalled-tree rule asks it of the trees it is about to tell (admit's
 	// tellStalledTrees), on every fact, every tick and every boot.
 	ControllerNoticesPending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issues []string, role claim.Role) (map[string]struct{}, error)
+	// ProviderErrorsTold says whether the project's controller has been told of the run of
+	// provider-error turns the claim of token stands in (claims.provider_errors_told_run, which
+	// the claim's own write puts back to 0 when a new run starts), and locks the claim's row until
+	// the caller's transaction ends: two offers of one run's notice cannot both read it untold,
+	// since the second waits for the first to commit and then reads its mark. A token with no
+	// claim row reads untold.
+	ProviderErrorsTold(ctx context.Context, tx pgx.Tx, token claim.Token) (bool, error)
+	// MarkProviderErrorsTold marks the claim of token told of the run of provider-error turns it
+	// stands in, run turns long when its notice was written (admit's TellOfProviderErrors).
+	MarkProviderErrorsTold(ctx context.Context, tx pgx.Tx, token claim.Token, run int) error
 
 	// PersonHandoverPending says whether outbox still holds a dispatch_status row of issue whose
 	// kind is PersonHandoverStatusRow: a finished row is deleted, so any such row

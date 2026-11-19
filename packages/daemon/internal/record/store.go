@@ -2273,6 +2273,25 @@ func (s *Postgres) ControllerNoticesPending(ctx context.Context, tx pgx.Tx, proj
 	return pending, nil
 }
 
+func (s *Postgres) ProviderErrorsTold(ctx context.Context, tx pgx.Tx, token claim.Token) (bool, error) {
+	var told bool
+	err := tx.QueryRow(ctx, "select provider_errors_told_run > 0 from claims where token = $1 for update", string(token)).Scan(&told)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read whether the controller was told of the provider errors of claim %s: %w", token, err)
+	}
+	return told, nil
+}
+
+func (s *Postgres) MarkProviderErrorsTold(ctx context.Context, tx pgx.Tx, token claim.Token, run int) error {
+	if _, err := tx.Exec(ctx, "update claims set provider_errors_told_run = $2 where token = $1", string(token), run); err != nil {
+		return fmt.Errorf("mark claim %s told of its provider errors: %w", token, err)
+	}
+	return nil
+}
+
 func (s *Postgres) PersonHandoverPending(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
 	var pending bool
 	if err := tx.QueryRow(ctx, "select exists (select 1 from outbox where kind = $1 and issue = $2 and payload->>'kind' = $3)",
