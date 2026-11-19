@@ -13,7 +13,7 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { eventRefreshTargets } from "../../api/event-refresh";
 import { primarySpec } from "../../api/issue-cache";
-import { issueQuery, userStateQuery } from "../../api/queries";
+import { issueQuery, issueTreeKey, userStateQuery } from "../../api/queries";
 import { refreshQueries } from "../../api/query-refresh";
 import type {
   ArchitectureSource,
@@ -60,7 +60,7 @@ import {
 } from "./page-words";
 import { architecture } from "./shared-controls-fixture";
 import { DetailsSlot } from "./slots/details";
-import { issueTreeKey, issueTreeQuery, type TreeAnswer } from "./tree-read/tree-read";
+import { issueTreeQuery, type TreeAnswer } from "./tree-read/tree-read";
 import { blockedByRefusal } from "./useIssueBlockedBy";
 import { type IssueHeaderWrites, useIssueHeaderWrites } from "./useIssueHeaderWrites";
 

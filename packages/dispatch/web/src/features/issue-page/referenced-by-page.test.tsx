@@ -8,7 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
-import { issueQuery, userStateQuery } from "../../api/queries";
+import { issueQuery, issueTreeKey, userStateQuery } from "../../api/queries";
 import type { GraphEdge, GraphReferences, IssueDetails, UserState } from "../../api/types";
 import {
   borderDefault,
@@ -27,7 +27,7 @@ import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel } from "./IssueMargin";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { NoTooltips } from "./NoTooltips";
-import { issueTreeKey, type TreeAnswer } from "./tree-read/tree-read";
+import type { TreeAnswer } from "./tree-read/tree-read";
 import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 // On the new page the outline is the issue's conversation, so Details' list of what references

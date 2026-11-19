@@ -4,15 +4,11 @@ import { act, render, waitFor } from "@testing-library/react";
 import { createElement } from "react";
 
 import { api } from "../../../api/client";
+import { issueTreeKey } from "../../../api/queries";
 import { issueDetails } from "../decisions-filter/decisions-fixtures";
 import { NODE_REFERENCES_WORDS, sentenceCase } from "../page-words";
 import { plainWords } from "../tree-drafts";
-import {
-  issueTreeKey,
-  type TreeAnswer,
-  type TreeAnswerNode,
-  type TreeTuple,
-} from "../tree-read/tree-read";
+import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 import { type RunRowsRead, runRows, useRunRows } from "./run-references";
 
 const KEY = "CORE-1";
