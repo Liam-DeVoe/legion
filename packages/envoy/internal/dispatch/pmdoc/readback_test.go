@@ -273,6 +273,94 @@ func documentAdding(doc, block *Node) *Node {
 	return &Node{Type: "doc", Children: append(slices.Clone(doc.Children), block)}
 }
 
+// A textblock that reads back holding its text with other marks is named by the first character
+// whose marks differ: the mark there, whether the read-back gains it or loses it, and the run it
+// covers on the side that holds it, or, for a link that reads back to another target, both
+// targets. Those words are also what tells this misread from another in the block
+// (misread.differs), so the same mark difference among other words is the same misread. A text
+// that reads back otherwise is named as it was before marks were named: by both texts, and by the
+// span that differs.
+func TestMisreadNamesTheFirstRunWhoseMarksDiffer(t *testing.T) {
+	text := func(value string, marks ...Mark) *Node { return &Node{Type: "text", Text: value, Marks: marks} }
+	doc := func(children ...*Node) *Node {
+		return &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: children}}}
+	}
+	link := func(href string) Mark { return Mark{Type: "link", Attrs: Attrs{"href": href, "title": nil}} }
+	strong, emphasis := Mark{Type: "strong"}, Mark{Type: "emphasis"}
+	for _, test := range []struct {
+		name            string
+		written, back   *Node
+		reason, differs string
+	}{
+		{
+			name:    "a link gained",
+			written: doc(text("Mail hosts@example.com now.")),
+			back:    doc(text("Mail "), text("hosts@example.com", link("mailto:hosts@example.com")), text(" now.")),
+			reason:  `a paragraph reads back with a link on "hosts@example.com"`,
+			differs: `paragraph text with a link on "hosts@example.com"`,
+		},
+		{
+			name:    "the same link gained among other words",
+			written: doc(text("Write to hosts@example.com today.")),
+			back:    doc(text("Write to "), text("hosts@example.com", link("mailto:hosts@example.com")), text(" today.")),
+			reason:  `a paragraph reads back with a link on "hosts@example.com"`,
+			differs: `paragraph text with a link on "hosts@example.com"`,
+		},
+		{
+			name:    "a link lost",
+			written: doc(text("www.a'"), text("b@c.test", link("mailto:b@c.test"))),
+			back:    doc(text("www.a'b@c.test")),
+			reason:  `a paragraph reads back without the link on "b@c.test"`,
+			differs: `paragraph text without the link on "b@c.test"`,
+		},
+		{
+			name:    "emphasis gained",
+			written: doc(text("Ask the agent first.")),
+			back:    doc(text("Ask the "), text("agent", emphasis), text(" first.")),
+			reason:  `a paragraph reads back with emphasis on "agent"`,
+			differs: `paragraph text with emphasis on "agent"`,
+		},
+		{
+			name:    "bold lost",
+			written: doc(text("Ask "), text("now", strong), text(".")),
+			back:    doc(text("Ask now.")),
+			reason:  `a paragraph reads back without bold on "now"`,
+			differs: `paragraph text without bold on "now"`,
+		},
+		{
+			name:    "the first of two runs whose marks differ",
+			written: doc(text("Ask "), text("the", emphasis), text(" agent first.")),
+			back:    doc(text("Ask the "), text("agent", strong), text(" first.")),
+			reason:  `a paragraph reads back without emphasis on "the"`,
+			differs: `paragraph text without emphasis on "the"`,
+		},
+		{
+			name:    "a link to another target",
+			written: doc(text("See "), text("the guide", link("https://a.test/guide")), text(".")),
+			back:    doc(text("See "), text("the guide", link("https://b.test/guide")), text(".")),
+			reason:  `a paragraph reads back linking "the guide" to "https://b.test/guide", not "https://a.test/guide"`,
+			differs: `paragraph text linking "the guide" to "https://b.test/guide", not "https://a.test/guide"`,
+		},
+		{
+			name:    "a text that differs",
+			written: doc(text("a*b*c")),
+			back:    doc(text("a"), text("b", emphasis), text("c")),
+			reason:  `a paragraph reads back holding "abc", not "a*b*c"`,
+			differs: `paragraph text "*b*" as "b"`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			found := misreads(test.written, test.back, skip{})
+			if len(found) != 1 || found[0].reason != test.reason || found[0].differs != test.differs {
+				t.Fatalf("misreads = %+v, want one with reason %q and differs %q", found, test.reason, test.differs)
+			}
+			if got := readDifference(test.written, test.back, skip{}); got != test.reason {
+				t.Errorf("readDifference = %q, want %q", got, test.reason)
+			}
+		})
+	}
+}
+
 // A version's stored markdown keeps the spelling of the renderer that wrote it, so a stored text
 // reads as a rendering where this build reads it and renders it again as that rendering: renderer
 // version 1's loose list, two blank lines between its items, reads as the one blank line this build

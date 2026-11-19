@@ -347,7 +347,9 @@ func pairChildren(parent string, written, back []*Node, ignore skip) ([][2]int, 
 }
 
 // ownDifference is how a block differs from its read-back apart from its child blocks: its kind,
-// its first differing attribute, and a textblock's text, each "" where they agree.
+// its first differing attribute, and a textblock's text, each "" where they agree. textDiffers is
+// what of the text differs, which keys the misread (misread.differs): the span differingSpan
+// gives, or where both hold one text the first run whose marks differ (markDifference).
 type ownDifference struct {
 	kind, attribute, text, textDiffers string
 }
@@ -359,8 +361,16 @@ func selfDifference(want, got *Node, ignore skip) ownDifference {
 	own := ownDifference{attribute: attributeReason(want, got, ignore)}
 	if isTextblock(want.Type) && !ignore.text && !inlineEqual(want.Children, got.Children) {
 		wanted, read := TextContent(want), TextContent(got)
-		own.text = fmt.Sprintf("%s reads back holding %q, not %q", blockName(want.Type), read, wanted)
-		own.textDiffers = differingSpan(wanted, read)
+		marks := ""
+		if wanted == read {
+			marks = markDifference(want.Children, got.Children)
+		}
+		if marks != "" {
+			own.text, own.textDiffers = blockName(want.Type)+" reads back "+marks, marks
+		} else {
+			own.text = fmt.Sprintf("%s reads back holding %q, not %q", blockName(want.Type), read, wanted)
+			own.textDiffers = differingSpan(wanted, read)
+		}
 	}
 	return own
 }
@@ -377,6 +387,108 @@ func differingSpan(wanted, read string) string {
 		suffix++
 	}
 	return fmt.Sprintf("%q as %q", string(w[prefix:len(w)-suffix]), string(r[prefix:len(r)-suffix]))
+}
+
+// markDifference names how want and got, a textblock's inline content as written and as read back
+// where both hold one text, differ at the first character whose marks differ, by the first mark
+// in writing order (renderMarkRank) that one side holds there and the other does not:
+// `with <mark> on "<run>"` where the read-back gains it, `without <mark> on "<run>"` where it loses
+// it, the run being the text that mark covers on the side that holds it (markedRun), and
+// `linking "<run>" to <target>, not <target>` where both hold a link there to other targets, the
+// run the read-back's link covers. It is "" where every character carries the same marks on both
+// sides, which then differ only in how their nodes cut the text or in a node holding none.
+func markDifference(want, got []*Node) string {
+	i, wantEnd := nextTextNode(want, 0, 0)
+	j, gotEnd := nextTextNode(got, 0, 0)
+	for i < len(want) && j < len(got) {
+		gained, gains := firstMarkOutside(got[j].Marks, want[i].Marks)
+		lost, loses := firstMarkOutside(want[i].Marks, got[j].Marks)
+		switch {
+		case gains && loses && gained.Type == "link" && lost.Type == "link":
+			return fmt.Sprintf("linking %q to %s, not %s", markedRun(got, j, gained), linkTarget(gained), linkTarget(lost))
+		case gains && (!loses || renderMarkRank(gained.Type) <= renderMarkRank(lost.Type)):
+			return fmt.Sprintf("with %s on %q", markNoun(gained.Type, true), markedRun(got, j, gained))
+		case loses:
+			return fmt.Sprintf("without %s on %q", markNoun(lost.Type, false), markedRun(want, i, lost))
+		}
+		end := min(wantEnd, gotEnd)
+		if wantEnd == end {
+			i, wantEnd = nextTextNode(want, i+1, wantEnd)
+		}
+		if gotEnd == end {
+			j, gotEnd = nextTextNode(got, j+1, gotEnd)
+		}
+	}
+	return ""
+}
+
+// nextTextNode is the index of the first of nodes from index on whose text (TextContent) is not
+// empty, and the offset that text ends at, from being the offset it starts at; the index is
+// len(nodes) where none is.
+func nextTextNode(nodes []*Node, index, from int) (int, int) {
+	for ; index < len(nodes); index++ {
+		if length := len(TextContent(nodes[index])); length > 0 {
+			return index, from + length
+		}
+	}
+	return index, from
+}
+
+// firstMarkOutside is the first of marks in writing order (renderMarkRank) that others does not
+// hold, and false where others holds every one.
+func firstMarkOutside(marks, others []Mark) (Mark, bool) {
+	first, found := Mark{}, false
+	for _, mark := range marks {
+		if !containsSameMark(others, mark) && (!found || renderMarkRank(mark.Type) < renderMarkRank(first.Type)) {
+			first, found = mark, true
+		}
+	}
+	return first, found
+}
+
+// markedRun is the text of the nodes next to one another around nodes[index] that carry mark.
+func markedRun(nodes []*Node, index int, mark Mark) string {
+	from, to := index, index+1
+	for from > 0 && containsSameMark(nodes[from-1].Marks, mark) {
+		from--
+	}
+	for to < len(nodes) && containsSameMark(nodes[to].Marks, mark) {
+		to++
+	}
+	var run strings.Builder
+	for _, node := range nodes[from:to] {
+		run.WriteString(TextContent(node))
+	}
+	return run.String()
+}
+
+// markNoun is how a refusal names a mark of markType: a link with its article, "a link" where the
+// read-back gains it and "the link" where it loses it, and any other mark by its kind alone.
+func markNoun(markType string, gained bool) string {
+	switch markType {
+	case "link":
+		if gained {
+			return "a link"
+		}
+		return "the link"
+	case "strong":
+		return "bold"
+	case "strike_through":
+		return "strikethrough"
+	case "inlineCode":
+		return "code"
+	}
+	return markType
+}
+
+// linkTarget is where link goes as a refusal names it: its href, and its title where it holds one.
+func linkTarget(link Mark) string {
+	href, _ := link.Attrs["href"].(string)
+	target := fmt.Sprintf("%q", href)
+	if title, ok := link.Attrs["title"].(string); ok {
+		target += fmt.Sprintf(" titled %q", title)
+	}
+	return target
 }
 
 // AgreeWithReadBack is doc with its document-level blocks first to last, which a write changed,
