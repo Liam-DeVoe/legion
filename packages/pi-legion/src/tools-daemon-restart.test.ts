@@ -15,6 +15,7 @@ import { paneHandoffReport } from "@legion/pi-shared/handoff-record";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
 import { DEFAULT_STALL_LIMITS } from "@legion/pi-shared/stall-limits";
 import { callOverdue, type StallCall } from "@legion/pi-shared/stall-watchdog";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
 import { createLegionTool } from "./tools";
 
@@ -54,6 +55,8 @@ const context: SessionContext = {
 
 const COMMIT = "210d53a9d1b109df97fbb5dd5041d659dbab1323";
 const HANDOFF_ID = "0f6d2c1e-7a3b-4e59-9c8d-2b1a6e4f3d70";
+/** The claim's registration secret: random, as the daemon's is, since the pane holds it. */
+const CLAIM_SECRET = fixtureSecret("claim");
 /** The daemon's HANDOFF_NOT_NEW answer to the implementer naming its previous phase's record. */
 const NOT_NEW = `the implementer named handoff record ${HANDOFF_ID} for its previous phase of LEGION-208; write this phase's handoff with \`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\` before completing`;
 const stops: Array<() => void> = [];
@@ -256,7 +259,7 @@ function toolFor(
       sessionID: "ses_208",
       tree,
       issue: "LEGION-208",
-      secret: "claim-secret",
+      secret: CLAIM_SECRET,
       claimToken: `legion-omp-legion-208-${role}`,
       generation: 1,
     }),

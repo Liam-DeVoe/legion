@@ -10,6 +10,7 @@ import { forgetBrokerClients } from "@legion/envoy-client/broker-credential";
 import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { fakeLatestHandoff } from "@legion/envoy-client/test/fake-dispatch";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import {
   versionControlEnvironment,
@@ -770,10 +771,11 @@ test("the pane's Dispatch reads the phase's newest record as the session's confi
     });
     return answers.shift() ?? Response.json({ error: "unexpected" }, { status: 500 });
   }) as typeof fetch;
+  const paneDispatchToken = fixtureSecret("dsp");
   const paneEnv = {
     ...env,
     DISPATCH_URL: "http://dispatch.test",
-    DISPATCH_TOKEN: "pane-dispatch-token",
+    DISPATCH_TOKEN: paneDispatchToken,
   };
   const latestHandoff = paneLatestHandoff(file, paneEnv, root, "pane-session", dispatch);
   const report = () =>
@@ -798,7 +800,7 @@ test("the pane's Dispatch reads the phase's newest record as the session's confi
   expect(requests).toEqual([
     {
       url: "http://dispatch.test/api/v1/issues/LEGION-208/handoffs/review/latest",
-      authorization: "Bearer pane-dispatch-token",
+      authorization: `Bearer ${paneDispatchToken}`,
     },
   ]);
 
@@ -942,13 +944,14 @@ test("a pane whose Dispatch is the broker's reads the record under its own sessi
   scratch.push(root);
   const file = { path: path.join(root, "envoy.json"), error: null } as const;
   const trades: URLSearchParams[] = [];
+  const brokerToken = fixtureSecret("broker");
   const broker = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
     fetch: async (request) => {
       trades.push(new URLSearchParams(await request.text()));
       return Response.json({
-        access_token: "broker-access-token",
+        access_token: brokerToken,
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
         token_type: "DPoP",
         expires_in: 3600,
@@ -956,7 +959,7 @@ test("a pane whose Dispatch is the broker's reads the record under its own sessi
     },
   });
   const identityFile = path.join(root, "projected-token");
-  await Bun.write(identityFile, "projected.service.account.token\n");
+  await Bun.write(identityFile, `${fixtureSecret("proj")}\n`);
   const asked: Array<{ authorization: string | null; proof: string | null }> = [];
   const dispatch = (async (_input, init) => {
     const headers = new Headers(init?.headers);
@@ -981,7 +984,7 @@ test("a pane whose Dispatch is the broker's reads the record under its own sessi
   }
 
   expect(trades.map((form) => form.get("session"))).toEqual(["pane-session"]);
-  expect(asked.map((one) => one.authorization)).toEqual(["DPoP broker-access-token"]);
+  expect(asked.map((one) => one.authorization)).toEqual([`DPoP ${brokerToken}`]);
   expect(asked[0]?.proof).toBeString();
 });
 
