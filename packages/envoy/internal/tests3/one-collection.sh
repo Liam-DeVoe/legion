@@ -34,14 +34,14 @@
 # EVERY WAIT HAS A BOUND, AND EVERY BOUND AND CHECK FAILS BY NAME. The script asks the store
 # things in two helpers only, shell and master, each under a bound of its own, and it waits in
 # one only, within, which ends by its seconds; every check and every wait fails by a message of
-# its own. TestEveryWaitAndCheckOfTheScriptHasACase (waits_test.go) reads this file, with every
-# command substitution and the trap's command in it, and fails when a request runs outside those
-# helpers or under no bound above 0, a wait outside within, a sleep other than within's
-# `sleep 1`, a command outside the list of those that end by themselves (its scriptCommands, with
-# tail only as `tail -n <lines> <file>`), an exit outside fail and usage, a return of a status
-# other than "$status", a test with nothing on its line to act on its failure, or a message is
-# the want of no case of TestOneCollectionFailsWhenTheRuleDoesNotHold, which runs each case with
-# its cut.
+# its own. TestEveryWaitAndCheckOfTheScriptHasACase (waits_test.go) parses this file as POSIX
+# shell and reads every command it runs, wherever it runs it (a function, a substitution, a trap,
+# within's and timeout's command), and fails when a request runs outside those helpers or under
+# no bound above 0, a wait outside within, a sleep other than `sleep 1`, a command outside the
+# list of those that end by themselves (its scriptCommands, with tail only as `tail -n <lines>
+# <file>`), a function that runs itself, an exit outside fail and usage, a return of a status
+# other than "$status", a test whose failure nothing acts on, a message that is the want of no
+# case of TestOneCollectionFailsWhenTheRuleDoesNotHold, or shell that it cannot read.
 #
 # The log lines this reads are SeaweedFS 3.97's, which .github/ci-images.yaml pins by digest for
 # both images; whoever moves that row reads them again.

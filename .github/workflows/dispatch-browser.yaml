@@ -530,13 +530,13 @@ jobs:
         # past the 10 s after which the filer answers 500 to a write that waits on storage being
         # made, so that write is tried again and `check` names its growth. The waits count seconds,
         # not tries, since a try can take its whole bound: the readiness wait's 60 tries of a 5 s
-        # bound held a store that never answered for 361 s. With prepare's own bounds (its head
-        # says how), the step ends by its own name within 10 minutes on any store, before the job's
-        # 22. TestEveryWaitAndCheckOfTheScriptHasACase, in
-        # packages/envoy/internal/tests3/waits_test.go, reads this step and the two around it, and
-        # fails on a command off its list (wget, tail, weed shell), a curl outside s3 or with no
-        # --max-time, an s3 call of 0 seconds, a wait that is not an until right after its deadline
-        # whose body ends the step by name once it passes, a sleep but `sleep 1`, and other loops.
+        # bound held a store that never answered for 361 s. With prepare's own bounds (its head says
+        # how), the step ends by its own name within 10 minutes on any store, before the job's 22.
+        # TestEveryWaitAndCheckOfTheScriptHasACase, in packages/envoy/internal/tests3/waits_test.go,
+        # parses this step and the two around it as shell and fails on a command off its list (wget,
+        # tail, weed shell, .), a curl but s3's, an s3 call of 0 seconds or giving curl more than
+        # -o, -X, --data-binary and a URL, a wait but an until after its deadline whose body ends
+        # the step by name, a sleep but `sleep 1`, other loops, and shell it cannot read.
         run: |
           # s3 <seconds> <what> <curl argument>...: one request to the store, bounded by seconds.
           s3() {
