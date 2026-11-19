@@ -149,9 +149,16 @@ describe("createCodexDelivery", () => {
     const busy = harness(inbox(), true)
     busy.delivery.turnStarted()
     const written = busy.delivery.deliver({ content: "y" })
+    // The refusal is handled from before the turn ends: the sweep that refuses the line can be the
+    // poll timer's, which settles it while turnEnded still reads the inbox, and a rejection left
+    // with no handler across that read is reported as the test's own error.
+    const refusal = written.then(
+      () => "the write resolved",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    )
     await Bun.sleep(20)
     await busy.delivery.turnEnded()
-    await expect(written).rejects.toThrow("codex queue exited 1")
+    expect(await refusal).toBe("codex queue exited 1")
     busy.delivery.stop()
   })
 
