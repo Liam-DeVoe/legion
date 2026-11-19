@@ -57,8 +57,9 @@ const (
 	// unless Deps.MaxDocConnections names another number.
 	maxRoomConnections = 1_000
 	// roomIdleTimeout is how long a room stays resident after its last peer leaves, or after the
-	// last Server.Apply on a room no peer is in returns (New). A peer that returns within it
-	// rejoins the warm room rather than reloading the document.
+	// last Server.Apply on a room no peer is in returns (New), unless Deps.RoomIdleTimeout names
+	// another duration. A peer that returns within it rejoins the warm room rather than reloading
+	// the document.
 	roomIdleTimeout = time.Minute
 	// peerWriteQueueBytes is how many bytes ygo may queue for one browser beyond its handshake
 	// before it closes the browser (Server.PeerWriteQueueBytes). Most of what it queues is other
@@ -105,6 +106,11 @@ type Deps struct {
 	// document socket's admission reads take one of them for their whole length (ServeHTTP).
 	// cmd/dispatch hands it; a service with none limits nothing.
 	Outside *admission.Outside
+	// RoomIdleTimeout is how long an idle room stays resident before ygo's idle sweeper evicts it
+	// (Server.RoomIdleTimeout); zero means roomIdleTimeout, a minute. The sweeper runs on the real
+	// clock, which nothing a test hands the service reaches, so a test whose verdict needs a room
+	// to leave residency only through a close it asked for hands a window that never ends.
+	RoomIdleTimeout time.Duration
 }
 
 // VersionedStore is Dispatch's transactional extension of ygo's durable room
@@ -192,7 +198,7 @@ type Service struct {
 	// peerlessRoomBytes is the heap the service keeps in rooms with no browser connected, which New
 	// sets from the memory the process may use (roomBudgetFor; peerlessRoomHeapBudget says why
 	// there is a budget at all); a test lowers it, which is why it is atomic - every trim reads
-	// it. Zero leaves such a room to roomIdleTimeout alone.
+	// it. Zero leaves such a room to ygo's idle sweeper alone (Deps.RoomIdleTimeout).
 	peerlessRoomBytes atomic.Int64
 	// trimmingRooms is held by the one trim of those rooms that runs at a time
 	// (trimPeerlessRooms), trimPending records an ask for a trim that arrived while one ran,
@@ -1022,21 +1028,24 @@ func New(deps Deps) *Service {
 	srv.MaxPendingItems = service.maxPendingItems
 	srv.PeerWriteQueueBytes = peerWriteQueueBytes
 	// A room whose last peer leaves, or that only Server.Apply touches, stays resident until it has
-	// been idle for roomIdleTimeout, and no longer than the peerless-room budget holds it
-	// (peerlessRoomHeapBudget, trimPeerlessRooms): ygo stamps a room idle when its last peer leaves,
-	// and when an Apply on a room no peer is in returns (reearth/ygo#269). Idle eviction refuses a
-	// room any Apply holds (evictIdleRoom's inflight check) and counts its idle time from the last
-	// Apply's return, and the sweeper flushes the room before it evicts it, so every write a room
-	// the sweeper evicts has taken is durable before a successor can load. No other close retires
-	// a room under a caller either: ygo's CloseRoom answers ErrRoomInUse while an Apply, a relay
-	// Inject or a browser's join is inside the room (reearth/ygo#342), so the service's closes of
-	// an issue's rooms (setRoomIssueOpen, closeRefusedAppendRoom), of a room with an editor at
-	// Shutdown, of a room it evicts (evictRoom) and of the rooms over that budget wait for those
-	// callers to leave (roomServer.closeWhenFree), and its close of a room whose stored history
-	// was replaced under it runs inside its own Apply on the room (roomServer.closeInstance,
-	// ygo's CloseRoomWithin). A write's commit into a room therefore reaches that room's own
-	// persistence worker.
-	srv.RoomIdleTimeout = roomIdleTimeout
+	// been idle for Deps.RoomIdleTimeout, or roomIdleTimeout when that is zero or less, and no
+	// longer than the peerless-room budget holds it (peerlessRoomHeapBudget, trimPeerlessRooms):
+	// ygo stamps a room idle when its last peer leaves, and when an Apply on a room no peer is in
+	// returns (reearth/ygo#269). Idle eviction refuses a room any Apply holds (evictIdleRoom's
+	// inflight check) and counts its idle time from the last Apply's return, and the sweeper
+	// flushes the room before it evicts it, so every write a room the sweeper evicts has taken is
+	// durable before a successor can load. No other close retires a room under a caller either:
+	// ygo's CloseRoom answers ErrRoomInUse while an Apply, a relay Inject or a browser's join is
+	// inside the room (reearth/ygo#342), so the service's closes of an issue's rooms
+	// (setRoomIssueOpen, closeRefusedAppendRoom), of a room with an editor at Shutdown, of a room
+	// it evicts (evictRoom) and of the rooms over that budget wait for those callers to leave
+	// (roomServer.closeWhenFree), and its close of a room whose stored history was replaced under
+	// it runs inside its own Apply on the room (roomServer.closeInstance, ygo's CloseRoomWithin).
+	// A write's commit into a room therefore reaches that room's own persistence worker.
+	srv.RoomIdleTimeout = deps.RoomIdleTimeout
+	if srv.RoomIdleTimeout <= 0 {
+		srv.RoomIdleTimeout = roomIdleTimeout
+	}
 	// A room forgets an awareness client it has not heard from in awarenessExpiry: a reader
 	// relayed from another process that died without removing it goes once its heartbeats stop.
 	srv.AwarenessExpiry = awarenessExpiry
