@@ -1256,6 +1256,16 @@ export function getAgentStates(options: ApiOptions = {}) {
   return marksOf("agent", options);
 }
 
+/** The caller's last read version of a document (`PATCH /api/v2/me/marks/document/{id}`), the
+ *  write the Spec tab makes when it shows that version (`useSpecMarks`). */
+export function putDocumentRead(id: string, version: number, options: ApiOptions = {}) {
+  return patch(
+    "/api/v2/me/marks/{kind}/{id}",
+    { body: { read_version: version }, params: { id, kind: "document" } },
+    options
+  );
+}
+
 /** The signed-in human's own state of one issue (`PATCH /api/v2/me/marks/issue/{key}`): its pin,
  *  its read mark and its pinned items. */
 export function putIssueState(key: string, input: IssueMarkV2Input, options: ApiOptions = {}) {

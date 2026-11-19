@@ -1332,6 +1332,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v2/issues/{key}/results/dry-run": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description The dry run of a result's record: the body POST /api/v2/issues/{key}/results takes, refused as the record refuses it before it writes (400 RESULT_INPUT, 400 RESULT_CONTRADICTS, 400 UNKNOWN_CHECK, 409 CHECK_AMBIGUOUS, 409 CHECK_PROVED_BY_CI, 400 RESULT_COMMIT_UNKNOWN), and otherwise answered 200 {line}, the pull-request body line the record would answer, with nothing recorded and no event appended. A closed issue, a screenshot and a check reworded while the record writes are refused by the record alone. 404 ISSUE_NOT_FOUND. */
+    post: operations["postApiV2IssuesByKeyResultsDryRun"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v2/issues/{key}/role-holder-set": {
     parameters: {
       query?: never;
@@ -3256,6 +3273,9 @@ export interface components {
       skipped: number;
       surface: string;
       verdict: string;
+    };
+    CheckResultDryRun: {
+      line: string;
     };
     CheckResultRecorded: {
       line: string;
@@ -10909,6 +10929,55 @@ export interface operations {
       };
     };
   };
+  postApiV2IssuesByKeyResultsDryRun: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["RecordCheckResultInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CheckResultDryRun"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV2IssuesByKeyRoleHolderSet: {
     parameters: {
       query?: {
@@ -14398,6 +14467,7 @@ export type CheckBasis = components["schemas"]["CheckBasis"];
 export type CheckCI = components["schemas"]["CheckCI"];
 export type CheckPassStands = components["schemas"]["CheckPassStands"];
 export type CheckResult = components["schemas"]["CheckResult"];
+export type CheckResultDryRun = components["schemas"]["CheckResultDryRun"];
 export type CheckResultRecorded = components["schemas"]["CheckResultRecorded"];
 export type CheckResultRetracted = components["schemas"]["CheckResultRetracted"];
 export type CheckV2 = components["schemas"]["CheckV2"];

@@ -10784,6 +10784,115 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v2/issues/{key}/results/dry-run": {
+      "post": {
+        "description": "The dry run of a result's record: the body POST /api/v2/issues/{key}/results takes, refused as the record refuses it before it writes (400 RESULT_INPUT, 400 RESULT_CONTRADICTS, 400 UNKNOWN_CHECK, 409 CHECK_AMBIGUOUS, 409 CHECK_PROVED_BY_CI, 400 RESULT_COMMIT_UNKNOWN), and otherwise answered 200 {line}, the pull-request body line the record would answer, with nothing recorded and no event appended. A closed issue, a screenshot and a check reworded while the record writes are refused by the record alone. 404 ISSUE_NOT_FOUND.",
+        "operationId": "postApiV2IssuesByKeyResultsDryRun",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordCheckResultInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckResultDryRun"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/QueryKeyUnknownBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-refusal-codes": {
+          "ANSWER_NOT_KEPT": "*",
+          "BROKER_TOKEN_KEY_MISMATCH": 401,
+          "BROKER_TOKEN_NOT_ACTIVE": 401,
+          "BROKER_TOKEN_NOT_A_SESSION": 401,
+          "BROKER_TOKEN_PROOF_INVALID": 401,
+          "BROKER_TOKEN_RATE_LIMITED": 429,
+          "BROKER_UNAVAILABLE": 503,
+          "IDENTITY_ERROR": 500,
+          "INTERNAL": 500,
+          "INVALID_JSON": 400,
+          "INVALID_QUERY": 400,
+          "INVALID_UTF8": 400,
+          "ISSUE_NOT_FOUND": 404,
+          "JSON_CONTENT_TYPE": 415,
+          "KEY_COMMITTED": 409,
+          "KEY_INVALID": 400,
+          "KEY_IN_FLIGHT": 409,
+          "KEY_REUSED": 422,
+          "LOGIN_CHANGED": 409,
+          "NO_IDENTITY": 401,
+          "NUL_CHARACTER": 400,
+          "OIDC_ISSUER_UNAVAILABLE": 503,
+          "OIDC_TOKEN_INVALID": 401,
+          "PROJECT_SCOPE": 403,
+          "QUERY_KEY_UNKNOWN": 400,
+          "READ_ONLY_TOKEN": 403,
+          "REQUEST_BODY_UNREADABLE": 400,
+          "REQUEST_TOO_LARGE": 413,
+          "SIGNIN_UNAVAILABLE": 503,
+          "SIGN_IN_REQUIRED": 403,
+          "TOKEN_REVOKED": 401,
+          "UNAUTHORIZED": 401
+        },
+        "x-write-scope": "project"
+      }
+    },
     "/api/v2/issues/{key}/role-holder-set": {
       "get": {
         "description": "The session that holds each Legion role of this issue, as the Legion daemon last published it: {issue, holders}, each holder {role, session, recorded_at} in workflow order, [] when no session holds a role. A closed issue's read too. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
@@ -22530,6 +22639,18 @@
           "session",
           "actor",
           "created_at"
+        ],
+        "type": "object"
+      },
+      "CheckResultDryRun": {
+        "additionalProperties": false,
+        "properties": {
+          "line": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "line"
         ],
         "type": "object"
       },

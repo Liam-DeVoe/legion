@@ -112,6 +112,7 @@ PUT /api/v1/issues/{key}/plans/{id} any
 GET /api/v1/issues/{key}/references any
 GET /api/v1/issues/{key}/results any
 POST /api/v1/issues/{key}/results any
+POST /api/v1/issues/{key}/results/dry-run any
 GET /api/v1/issues/{key}/role-holders any
 PUT /api/v1/issues/{key}/role-holders any
 GET /api/v1/issues/{key}/steps any
@@ -286,6 +287,7 @@ POST /api/v2/issues/{key}/messages any
 PUT /api/v2/issues/{key}/plans/{id} any
 GET /api/v2/issues/{key}/references any
 POST /api/v2/issues/{key}/results any
+POST /api/v2/issues/{key}/results/dry-run any
 GET /api/v2/issues/{key}/role-holder-set any
 PUT /api/v2/issues/{key}/role-holder-set any
 GET /api/v2/issues/{key}/steps any

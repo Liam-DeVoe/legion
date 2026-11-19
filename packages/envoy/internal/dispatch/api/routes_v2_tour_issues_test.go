@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -204,6 +205,15 @@ func issuesTourSteps() []tourStep {
 		},
 		{
 			Method: http.MethodPost, Pattern: "/issues/{key}/results", Status: http.StatusCreated,
+			Setup: func(t *testing.T, tour *routeTour) tourRequest {
+				issue := tour.issue(t)
+				tour.issueDocument(t, issue.Key, "verification.md", tourChecks)
+				return tourRequest{Path: map[string]string{"key": issue.Key}, Body: resultBody("k1", "pass", headCommit, nil), As: alice}
+			},
+			Missing: issueMissing,
+		},
+		{
+			Method: http.MethodPost, Pattern: "/issues/{key}/results/dry-run", Status: http.StatusOK,
 			Setup: func(t *testing.T, tour *routeTour) tourRequest {
 				issue := tour.issue(t)
 				tour.issueDocument(t, issue.Key, "verification.md", tourChecks)
@@ -421,6 +431,41 @@ func TestAChecksTextAndARequirementsTextKeepALinksText(t *testing.T) {
 		if len(coverage.Requirements) != 1 || coverage.Requirements[0].Text != requirement {
 			t.Errorf("the /api/%s coverage report answers %+v, want the one requirement reading %q", version, coverage.Requirements, requirement)
 		}
+	}
+}
+
+// TestAResultsDryRunAnswersOneLineUnderBothVersions: POST /api/v2/issues/{key}/results/dry-run
+// answers the line POST /api/v1/issues/{key}/results/dry-run answers for the same body, the line
+// the /api/v2 record then answers, and records nothing, no result and no event. The line leaves
+// out the issue's own key, a key of a project this Dispatch holds, under both versions.
+func TestAResultsDryRunAnswersOneLineUnderBothVersions(t *testing.T) {
+	tour := newRouteTour(t)
+	issue := tour.issue(t)
+	tour.issueDocument(t, issue.Key, "verification.md", tourChecks)
+	body := resultBody("k1", "pass", headCommit, map[string]any{"observed": issue.Key + "'s guard held on every row."})
+	events := issueEventTypes(t, tour.handler, issue.Key)
+	want := "- Check k1 (before_merge): pass at " + headCommit + ", recorded by implementer. guard held on every row."
+	for _, version := range []string{"v1", "v2"} {
+		dry := dispatchRequest(t, tour.handler, http.MethodPost, "/api/"+version+"/issues/"+issue.Key+"/results/dry-run", body, "alice")
+		if dry.Code != http.StatusOK {
+			t.Fatalf("the /api/%s dry run: %d %s, want 200", version, dry.Code, dry.Body.String())
+		}
+		if line := decodeBody[resultDryRun](t, dry).Line; line != want {
+			t.Errorf("the /api/%s dry run's line = %q, want %q", version, line, want)
+		}
+	}
+	if results := checkOf(t, readResults(t, tour.handler, issue.Key), "k1").Results; len(results) != 0 {
+		t.Fatalf("the dry runs recorded %+v, want nothing", results)
+	}
+	if after := issueEventTypes(t, tour.handler, issue.Key); !slices.Equal(after, events) {
+		t.Fatalf("the dry runs moved the issue's events from %v to %v, want them unmoved", events, after)
+	}
+	recorded := dispatchRequest(t, tour.handler, http.MethodPost, "/api/v2/issues/"+issue.Key+"/results", body, "alice")
+	if recorded.Code != http.StatusCreated {
+		t.Fatalf("the /api/v2 record: %d %s, want 201", recorded.Code, recorded.Body.String())
+	}
+	if line := decodeBody[recordedResult](t, recorded).Line; line != want {
+		t.Fatalf("the /api/v2 record's line = %q, want the dry runs' %q", line, want)
 	}
 }
 

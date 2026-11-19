@@ -7,13 +7,14 @@ package api
 // J3); the patch, which takes the design gates PUT /api/v1/issues/{key}/design-gates wrote (J16);
 // the claim; and an issue's collaborators, coverage, decisions and the keep of one, references,
 // checks, results and the retraction of one, subscribers, the steps #4400 added to /api/v1 and the
-// write of one, and the rating of a retro's run and the plan of a run #4488 added. Every route runs
-// the work its /api/v1 route runs (readIssueListing, createIssueFrom, readIssueParts,
-// patchIssueAs, claimIssueAs, releaseIssueClaimAs, issueCollaboratorsOf, issueCoverage,
-// issueDecisionsOf, writeDecisionKeep, refs.Closure, readIssueChecks, recordCheckResultFrom,
-// retractCheckResultAs, subscribersOf, unsubscribeSession, issueStepTasks, putIssueStepFrom,
-// putIssueStepRatingFrom, putIssuePlanFrom), each path object checked first and answered with its
-// own 404, and a {session_id} keeps the answer /api/v1 gives it (R7).
+// write of one, the rating of a retro's run and the plan of a run #4488 added, and the dry run of a
+// result #4517 added. Every route runs the work its /api/v1 route runs (readIssueListing,
+// createIssueFrom, readIssueParts, patchIssueAs, claimIssueAs, releaseIssueClaimAs,
+// issueCollaboratorsOf, issueCoverage, issueDecisionsOf, writeDecisionKeep, refs.Closure,
+// readIssueChecks, recordCheckResultFrom, dryRunCheckResultFrom, retractCheckResultAs, subscribersOf,
+// unsubscribeSession, issueStepTasks, putIssueStepFrom, putIssueStepRatingFrom, putIssuePlanFrom),
+// each path object checked first and answered with its own 404, and a {session_id} keeps the answer
+// /api/v1 gives it (R7).
 
 import (
 	"context"
@@ -99,9 +100,10 @@ const issueClaimText = "The status does not move. Answers the issue with legion_
 
 // v2IssueRows are the issue routes: rows 80 and 82; 81; the project's
 // list R1.3 adds; 83 and 115; 84 and 102; 95; 96; 97; 100; 101; 17; 110; 111; 112; 113; 114; and
-// 173 of the route map; and four rows of /api/v1 the map predates (testdata/v1-only-routes.txt):
-// #4400's two, GET /issues/{key}/steps and PUT /issues/{key}/steps/{id}, and #4488's two, PUT
-// /issues/{key}/steps/{id}/rating and PUT /issues/{key}/plans/{id}.
+// 173 of the route map; and five rows of /api/v1 the map predates (testdata/v1-only-routes.txt):
+// #4400's two, GET /issues/{key}/steps and PUT /issues/{key}/steps/{id}, #4488's two, PUT
+// /issues/{key}/steps/{id}/rating and PUT /issues/{key}/plans/{id}, and #4517's POST
+// /issues/{key}/results/dry-run.
 func (s *server) v2IssueRows() []routeRow {
 	person := routeScopeSet{model.ScopePerson}
 	issueList := listBounds{Default: contracts.DefaultIssuePageLimit, Max: contracts.MaxIssuePageLimit}
@@ -375,6 +377,21 @@ func (s *server) v2IssueRows() []routeRow {
 			Resource: "results", Kind: kindCollection, Key: "{id}",
 			Body:  requestBody{Kind: bodyJSON, Type: checkResultInput{}},
 			Shape: routeShape{Status: http.StatusCreated, Response: checkResultRecorded{}},
+			Scope: scopeProject, ProjectOf: projectPathIssue,
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal},
+		},
+		{
+			Method: http.MethodPost, Pattern: "/issues/{key}/results/dry-run", Auth: authAny, Versions: onlyV2,
+			Description: "The dry run of a result's record: the body POST /api/v2/issues/{key}/results takes, refused as " +
+				"the record refuses it before it writes (400 RESULT_INPUT, 400 RESULT_CONTRADICTS, 400 UNKNOWN_CHECK, 409 " +
+				"CHECK_AMBIGUOUS, 409 CHECK_PROVED_BY_CI, 400 RESULT_COMMIT_UNKNOWN), and otherwise answered 200 {line}, " +
+				"the pull-request body line the record would answer, with nothing recorded and no event appended. A closed " +
+				"issue, a screenshot and a check reworded while the record writes are refused by the record alone. 404 " +
+				"ISSUE_NOT_FOUND.",
+			Handler:  s.dryRunIssueResultV2,
+			Resource: "dry-run", Kind: kindComputation,
+			Body:  requestBody{Kind: bodyJSON, Type: checkResultInput{}},
+			Shape: routeShape{Status: http.StatusOK, Response: checkResultDryRun{}},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal},
 		},
@@ -1291,6 +1308,15 @@ func (s *server) recordIssueResultV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordCheckResultFrom(w, r, v2Body[checkResultInput](r))
+}
+
+// dryRunIssueResultV2 answers POST /api/v2/issues/{key}/results/dry-run: the dry run POST
+// /api/v1/issues/{key}/results/dry-run makes (dryRunCheckResultFrom).
+func (s *server) dryRunIssueResultV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) || !s.requireIssueV2(w, r, r.PathValue("key")) {
+		return
+	}
+	s.dryRunCheckResultFrom(w, r, v2Body[checkResultInput](r))
 }
 
 // listIssueSubscribersV2 answers GET /api/v2/issues/{key}/subscribers: one page of the sessions GET
