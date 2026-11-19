@@ -4,11 +4,12 @@ package daemon
 // dispatch_token_broker with no dispatch_token_transition_file, a launch that would keep a live
 // pod built before the exchange identity is refused (runtime.AwaitingPodRound), and the claim
 // records no process while it waits: its machine keeps the pod the refusal named instead
-// (supervise.Claim.AwaitsPod), which the supervisor puts on the claims the sweep reads. The sweep
-// reads that pod where the claim records no process, so the round opens over it, waits on no
-// answer of the claim, and replaces the pod through it where no claim records a process there;
-// the claim's next try, within a minute, comes up in the pod that replaced it. The end-to-end
-// cases drive the pod-update rig of podupdate_test.go; the rows hold each reader alone.
+// (supervise.Claim.AwaitsPod), and the sweep reads it off the machine of each claim it groups
+// (reconcilePodUpdates). The sweep takes that pod where the claim records no process, so the
+// round opens over it, waits on no answer of the claim, and replaces the pod through it where no
+// claim records a process there; the claim's next try, within a minute, comes up in the pod that
+// replaced it. The end-to-end cases drive the pod-update rig of podupdate_test.go; the rows hold
+// each reader alone.
 //
 // That the launch after the round carries no Dispatch token is the Sandbox runtime's to show,
 // since no runtime fake builds a pod: internal/runtime/sandbox's

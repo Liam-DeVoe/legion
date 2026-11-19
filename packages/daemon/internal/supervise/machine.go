@@ -395,9 +395,12 @@ type Claim struct {
 	// launch try was refused because that pod waits for its update round
 	// (runtime.AwaitingPodRound), and the claim records no process (Locator is nil) until a later
 	// try starts one. It is memory only, as ProcessGone is: Machine.Claim and View report it, the
-	// daemon's supervisor puts it on each claim it reads from the store (its Claims), and the
-	// store never writes or reads it. A daemon restart forgets it, and the claim's next refusal,
-	// within a minute, records it again (startWaitsForPodRound).
+	// daemon's pod-update sweep reads it off each claim's machine (Machine.AwaitsPod), and the
+	// store never writes or reads it. A daemon restart forgets it. The claim's next refusal
+	// records it again (startWaitsForPodRound), but only when the restarted daemon starts that
+	// launch again: after the boot's orphan reconciliation, and at the turn the wake pacing gives
+	// it (internal/daemon's relaunchUnfinished). In a restart of many pods that can be more than a
+	// minute later, and a sweep before then does not see the pod.
 	//
 	// It is what the daemon's update round has of such a claim, which may be the issue's only
 	// one: the round opens over this pod as over a pod a process runs in, waits on no answer and
@@ -2088,9 +2091,9 @@ func (m *Machine) WaitingWake() *WaitingWake {
 
 // AwaitsPod is the live pod the claim's launch waits on as the machine last published it
 // (Claim.AwaitsPod), nil for none. It never waits on the decision in flight, as View does not, and
-// it copies the locator alone rather than the whole claim, since the daemon reads it of every
-// claim it reads from the store (its supervisor's Claims): publish stores a view built fresh and
-// mutates no stored one.
+// it copies the locator alone rather than the whole claim, since the daemon's pod-update sweep
+// reads it of every claim it groups (internal/daemon's reconcilePodUpdates): publish stores a view
+// built fresh and mutates no stored one.
 func (m *Machine) AwaitsPod() *runtime.Locator {
 	return cloneLocator(m.view.Load().AwaitsPod)
 }

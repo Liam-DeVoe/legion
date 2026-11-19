@@ -41,14 +41,25 @@ import (
 // push, and its plugin contract is carried by the stale-plugin relaunch instead
 // (supervise's refreshPlugin).
 //
+// The store never holds the live pod a claim's launch waits on (supervise.Claim.AwaitsPod): only
+// the claim's machine holds it. Such a claim records no process and may be its issue's only
+// claim, so without that pod the round would have no pod to open over (groupPod). So the sweep
+// reads it off the machine of each claim it groups (supervise.Machine.AwaitsPod). That read is
+// the machine's published view and never waits on the decision in flight, for the reason
+// roundGroup gives. A claim that no machine of this daemon holds is grouped as the store gives
+// it. The pod goes on the group's own copy of the claim and never on claims, which the orphan
+// sweep's other passes read after this one (reconcileOrphans).
+//
 // Everything a round decides comes from the durable claim columns — the round, its reasons, when
 // it opened, when each worker was asked, when each answered, and when the operator's side was
-// told. A daemon restart therefore resumes a round exactly where it stood, and the same record
-// gives the same decision. The one thing this pass keeps of its own is the pace at which it
-// opens new rounds: when it last opened one, and the issues it has opened one for whose claims
-// have not recorded it yet (podUpdateOpenings). Neither goes in the store, because neither
-// decides a round: they pace this daemon's own openings, and a daemon that has just booted
-// opens its first round at its first sweep, one sweep interval after the start.
+// told — but the pod a claim's launch waits on (above). A daemon restart therefore resumes a
+// round exactly where it stood, and the same record gives the same decision, once each claim that
+// waits on its pod has been refused again and holds that pod again. The one thing this pass keeps
+// of its own is the pace at which it opens new rounds: when it last opened one, and the issues it
+// has opened one for whose claims have not recorded it yet (podUpdateOpenings). Neither goes in
+// the store, because neither decides a round: they pace this daemon's own openings, and a daemon
+// that has just booted opens its first round at its first sweep, one sweep interval after the
+// start.
 //
 // The sweep walks the issues in key order, decides each of them, and only then makes the pod
 // replacements those decisions left it, also in key order. A replacement waits its pod out — a
@@ -68,6 +79,10 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 	for _, c := range claims {
 		if c.Issue == "" || c.State == supervise.StateRetired {
 			continue
+		}
+		// c is a copy of the claim in claims, so the pod set on it stays in the group.
+		if m, ok := s.supervisor.Machine(c.Token); ok {
+			c.AwaitsPod = m.AwaitsPod()
 		}
 		if _, grouped := byIssue[c.Issue]; !grouped {
 			issues = append(issues, c.Issue)

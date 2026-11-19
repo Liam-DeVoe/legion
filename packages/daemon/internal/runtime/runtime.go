@@ -188,7 +188,7 @@ var ErrAwaitingPodRound = errors.New("the launch waits for its pod's update roun
 // refusal's own sentence, which names the pod.
 //
 // The claim records no process while it waits, so the pod is what the daemon's update round has
-// of it: the supervisor keeps Pod on the claim (supervise's Claim.AwaitsPod) until a later try is
+// of it: the claim's machine keeps Pod (supervise's Claim.AwaitsPod) until a later try is
 // not refused for want of the round, or the claim's process is let go (supervise's letGo: a
 // suspension, a retirement or a failure of the claim), and the round opens over that pod and
 // replaces it through this locator where no claim records a process in it (internal/daemon's
