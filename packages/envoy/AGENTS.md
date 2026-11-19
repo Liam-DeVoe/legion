@@ -615,7 +615,7 @@ the version after the reopen that holds only the reopen's ask-state write, and a
 On an open issue its derived events still name the kept editor (on a closed issue `planRepairs` gives every derived event `SettlementActor`), and so does its move of an approval request that names a version from before the versions written while the issue was closed (`versionWrite.keptEditor`), since that move spans those versions, which the rule takes to hold that editor's text because no stored version says whose text each added; a request that names the version before this one moves in the name of `SettlementActor`.
 A closed issue's settlement of such a write keeps that same editor in `doc_closed_edit_sources`, so the reopen still finds the editor of the text the closed issue's versions hold.
 The latest person sender (`last_person`) is not kept: no edit notice after the reopen reports those edits.
-The reopen then moves the approval request and carries the approval for the latest version of each document of the issue whose stored updates that version holds (`docs.Service.ClosedIssueVersions` reads those versions, and `docs.Service.FollowClosedIssueVersions` follows them), and deletes the kept editor of each document of the issue that owes no settlement.
+The reopen then moves the approval request and carries the approval for the latest version of each document of the issue whose stored updates that version holds (`docs.Service.FollowClosedIssueVersions`), and deletes the kept editor of each document of the issue that owes no settlement.
 
 A settlement that meets an update that the append gate refused after the close margin saves nothing of that room (`endOnRefusedUpdate`).
 It fails no room and counts no failure, the room closes for its issue, and the resumption settles the document from the store.
@@ -2631,7 +2631,7 @@ An ask's `refs` rows hold its question's mentions alone, so an issue's closure r
 An ask any build writes is owed a part index (`20261101143212`'s `asks_item_blocks_owed` trigger on its question, options and answer, which a part-aware writer's own index clears in the same transaction), which the block-index reconciliation drains and `rebuild-refs` marks for every ask.
 
 An issue's close withdraws its open asks.
-Every close - a person's Close or board drag, `dispatch issue-update --status done`, the Legion daemon's close when a pull request merges, all through `PATCH /api/v1/issues/{key}` - first runs the settlement each document of the issue owes (`settleIssueBeforeClose`), so a decision block written seconds before is an ask credited to its author, then in the close's own transaction withdraws every open ask of the issue, whoever's turn it is (`prepareWithdrawal`, `recordWithdrawnAsksTx`):
+Every close - a person's Close or board drag, `dispatch issue-update --status done`, the Legion daemon's close when a pull request merges, all through `PATCH /api/v1/issues/{key}` - first runs the settlement each document of the issue owes (`settleIssueBeforeClose`), so a decision block written seconds before is an ask credited to its author, then in the close's own transaction withdraws every open ask of the issue, whoever's turn it is (`withdrawIssueAsksTx`):
 decision blocks, plain asks and approval requests.
 Each is recorded `resolved` with resolution `{kind: "withdrawn", actor: <the closer>, reason: "Withdrawn
 by the close of <KEY>.", at}` and gets one `ask.resolved` (actor the closer) before `issue.closed`;
@@ -2646,14 +2646,8 @@ A document of the issue whose stored history does not load (`docs.ErrDocumentUnl
 nothing can read or open it, so the close, the reopen and the repair go on without it rather than answer `409 DOCUMENT_UNLOADABLE` for good;
 a failed room's `503` and a database error still fail them.
 Asks already answered or resolved are left as they were, and the close records no answer, review or approval.
-A reopen opens again the asks whose resolution kind is `withdrawn`.
-Each gets `state: open`, no answer and no resolution, and keeps everything else.
-Each gets one `ask.opened` (actor the reopener) before `issue.updated`, and its block reads `state="open"` again.
-The exception is an approval request whose covered document holds a text that breaks the form of The Spec (`api/spec_form.go`).
-Dispatch judges that request at the versions that it names when the reopen ends: the reopen reads the versions that it follows (`docs.Service.ClosedIssueVersions`), judges each request at them (`docs.FollowedDocuments`) in its own transaction, and then follows exactly those versions.
-It records a request that breaks the form `resolved` with resolution kind `resolved`.
-Its reason is the findings and its actor is the reopener, and it gets one `ask.resolved` after the `ask.opened` events, so no restore finds it again.
-After those events, the reopen does for each document of the issue what a settlement while the issue was closed did not do (`docs.Service.FollowClosedIssueVersions`, at the versions that it read):
+A reopen opens again exactly the asks whose resolution kind is `withdrawn`, with `state: open`, no answer and no resolution and everything else kept, each with one `ask.opened` (actor the reopener) before `issue.updated`, and their blocks read `state="open"` again.
+After those events, the reopen does for each document of the issue what a settlement while the issue was closed did not do (`docs.Service.FollowClosedIssueVersions`):
 it moves the open approval request that names the document to the document's latest version (`docs.MoveApprovalAsk`, with the mover the editor that a settlement while the issue was closed credited and kept in `doc_closed_edit_sources`, or `SettlementActor` where none is kept), and it carries an approval to that version (`docs.carryApproval`'s rules), as the version's own write does on an open issue.
 A document whose stored updates are ahead of its latest version is left to the settlement that it owes, whose version holds the text that the reopen leaves.
 The reopen's own ask-state write is such an update, so a reopen that writes back the text the person was asked about keeps the request with the person.
@@ -2666,12 +2660,10 @@ Only the server writes `withdrawn`: the resolve route accepts `retracted` and `r
 What a release older than this one closed or reopened is converged by `api.RepairIssueAsks`, at boot (bounded at 30 s) and then every `api.IssueAskRepairInterval` (10 minutes) under the lease `issue-ask-repair`, each interval pass bounded at 5 minutes.
 Per issue, under its row, a closed issue's open asks are withdrawn in the name of its latest `issue.closed` actor, an open issue's `withdrawn` asks are restored in the name of the event that reopened it, and a closed issue that has open asks, or whose documents owe a settlement marked since the last pass, gets the close's final sweep in the same write of each document, which writes block `state` attributes only.
 The sweep's write leaves the document owed, and the document's settlement saves that write whether or not the issue is closed.
-A restore of the repair leaves a broken approval request resolved, as a reopen does.
 Each interval pass moves that bound to one interval before its own start whenever it listed its candidates, and carries every issue it did not repair - one that failed or one it ran out of time before - into the next pass, so one issue failing every pass does not make every pass sweep every closed issue.
 The bound and the carried issues live in the memory of the process that ran the pass:
 a pass on another process, once the lease moves, starts from that process's own and never sees them.
-A pass logs its `withdrawn`, `restored`, `swept` and `left_resolved` counts.
-`swept` counts every unindexed block it marked, and `left_resolved` every approval request it left resolved for the form of The Spec.
+A pass logs its `withdrawn`, `restored` and `swept` counts, `swept` counting every unindexed block it marked.
 Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy census").
 
 ## Critical conventions
@@ -2952,7 +2944,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   It is the approval a person gives from the document's header after a reopen and before the settlement the reopen left owed: the review names the latest version, which a settlement while the issue was closed wrote with the close's resolved blocks, and the next version differs from it only in the blocks that the reopen wrote open.
   Before a closed issue's document settled, such an approval named the version from before the close and the settlement after the reopen wrote no version, so it stood.
   So the rule carries over exactly the questions the close withdrew and the reopen opened again, each open when the issue closed, and no other question:
-  an open row passes only when, of its ask's state events (`ask.opened`, `ask.answered` and `ask.resolved`, read through `events_ask_payload_id`), the last before the `artifact.version` that recorded A is the close's `ask.resolved` of kind `withdrawn` and the one after it is the `ask.opened` that `recordRestoredAsksTx` appended;
+  an open row passes only when, of its ask's state events (`ask.opened`, `ask.answered` and `ask.resolved`, read through `events_ask_payload_id`), the last before the `artifact.version` that recorded A is the close's `ask.resolved` of kind `withdrawn` and the one after it is the `ask.opened` that `restoreIssueAsksTx` appended;
   every transaction appending an issue's event locks the issue's row first, so those events' ids follow the order their transactions committed in.
   A block A shows resolved for any other reason carries nothing, though the settlement after the reopen opens it:
   a block the closed issue's settlement saved resolved with no ask (typed inside the close margin, written by a process that had not heard the close, or left unindexed by a settlement before the close that stopped short), whose ask that settlement opens new, and the block of an ask a settlement retracted, back inside the close margin, which that settlement restores;
