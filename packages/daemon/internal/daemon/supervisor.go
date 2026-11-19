@@ -196,9 +196,13 @@ func (s *supervisor) Claims(ctx context.Context) ([]supervise.Claim, error) {
 		return nil, err
 	}
 	own := ofProject(claims, s.project)
+	// AwaitsPod reads the machine's published view and takes no lock, so one read lock covers
+	// the whole loop.
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	for i := range own {
-		if m, ok := s.Machine(own[i].Token); ok {
-			own[i].AwaitsPod = m.AwaitsPod()
+		if m, ok := s.machines[own[i].Token]; ok {
+			own[i].AwaitsPod = m.machine.AwaitsPod()
 		}
 	}
 	return own, nil

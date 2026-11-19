@@ -188,11 +188,12 @@ var ErrAwaitingPodRound = errors.New("the launch waits for its pod's update roun
 // refusal's own sentence, which names the pod.
 //
 // The claim records no process while it waits, so the pod is what the daemon's update round has
-// of it: the supervisor keeps Pod on the claim until a later launch starts a process
-// (supervise's Claim.AwaitsPod), and the round opens over that pod and replaces it through this
-// locator where no claim records a process in it (internal/daemon's groupPod, podProcess).
-// Without it, a pod whose only claim is the one refused would never have a round, and the claim
-// would be refused at every try.
+// of it: the supervisor keeps Pod on the claim (supervise's Claim.AwaitsPod) until a later try is
+// not refused for want of the round, or the claim's process is let go (supervise's letGo: a
+// suspension, a retirement or a failure of the claim), and the round opens over that pod and
+// replaces it through this locator where no claim records a process in it (internal/daemon's
+// groupPod, podProcess). Without it, a pod whose only claim is the one refused would never have a
+// round, and the claim would be refused at every try.
 type AwaitingPodRound struct {
 	Pod    Locator
 	Reason string
@@ -201,8 +202,8 @@ type AwaitingPodRound struct {
 // Error is ErrAwaitingPodRound's words followed by the refusal's own sentence.
 func (e *AwaitingPodRound) Error() string { return ErrAwaitingPodRound.Error() + ": " + e.Reason }
 
-// Is makes every AwaitingPodRound an ErrAwaitingPodRound, so each errors.Is of the sentinel reads
-// the refusal as it did before the refusal named its pod.
+// Is makes every AwaitingPodRound an ErrAwaitingPodRound: errors.Is(err, ErrAwaitingPodRound)
+// holds for an err that is or wraps one.
 func (e *AwaitingPodRound) Is(target error) bool { return target == ErrAwaitingPodRound }
 
 // ErrPodGone is PodDrift asked about a place that is not there, or on its way out for an act

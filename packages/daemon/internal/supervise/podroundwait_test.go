@@ -102,28 +102,19 @@ func TestAWaitForAPodRoundIsNotChargedToTheClaim(t *testing.T) {
 // written the pod.
 func TestAWaitForAPodRoundNamesThePodItWaitsOn(t *testing.T) {
 	const podUID = "6b0f2d4e-8a17-4c39-b5e2-1d9a7c3f0e58"
-	awaited := runtime.Locator{
-		Runtime: runtime.RuntimeSandbox, Claim: testToken, Incarnation: runtime.SandboxIncarnation(podUID, 2),
-		Sandbox: &runtime.SandboxLocator{
-			Namespace: "legion", Name: "legion-legion-legion-209", PodUID: podUID,
-			Container: runtime.IssuePodContainer, Generation: 2,
-		},
-	}
+	awaited := podProcess(podUID, 2)
 	refusal := fmt.Errorf("launch %s: %w", testToken, &runtime.AwaitingPodRound{Pod: awaited,
-		Reason: "pod legion-legion-legion-209 carries no exchange identity and dispatch_token_transition_file is not set; its update round replaces it"})
+		Reason: "pod legion-legion-209 carries no exchange identity and dispatch_token_transition_file is not set; its update round replaces it"})
 	h := newBareHarness(t)
 	h.store.PutClaim(h.ctx, queuedClaim())
 	h.start(queuedClaim())
 	h.reach(StateIdle)
-	same := func(got, want *runtime.Locator) bool {
-		return (got == nil) == (want == nil) && (got == nil || reflect.DeepEqual(*got, *want))
-	}
 	wantAwaits := func(want *runtime.Locator, when string) {
 		t.Helper()
 		for name, got := range map[string]*runtime.Locator{
 			"Claim": h.claim().AwaitsPod, "View": h.m.View().AwaitsPod, "AwaitsPod": h.m.AwaitsPod(),
 		} {
-			if !same(got, want) {
+			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("%s %s reports the awaited pod %+v, want %+v", when, name, got, want)
 			}
 		}
@@ -151,7 +142,7 @@ func TestAWaitForAPodRoundNamesThePodItWaitsOn(t *testing.T) {
 	}
 	h.advance(podRoundRetry)
 	h.wantCalls("Resume", 2)
-	if !same(during, &awaited) {
+	if !reflect.DeepEqual(during, &awaited) {
 		t.Fatalf("while the retry's start ran the view reported the awaited pod %+v, want %+v", during, awaited)
 	}
 	wantAwaits(&awaited, "at the retry's refusal,")

@@ -186,11 +186,12 @@ func (s *supervision) beginPodUpdateSweep(now time.Time, byIssue map[string][]su
 //
 // An opening is dropped from the record as soon as a claim of its issue records that round,
 // because the claims then count the slot themselves. It is dropped too when no claim of the
-// group records a process in that round's own pod (podProcess). That covers two cases. In the
-// first, no claim of the issue records a pod at all: the issue holds no slot then, however the
-// post went, and the next sweep reads its pod round from the claims as it reads every other. In
-// the second, a claim records another pod, which says the pod changed under the opening, and the
-// round over the pod the claims record now is an opening of its own, charged like any other.
+// group records a process in that round's own pod, nor waits on that pod for its launch
+// (podProcess). That covers two cases. In the first, no claim of the issue records a pod at all:
+// the issue holds no slot then, however the post went, and the next sweep reads its pod round
+// from the claims as it reads every other. In the second, a claim records another pod, which
+// says the pod changed under the opening, and the round over the pod the claims record now is an
+// opening of its own, charged like any other.
 //
 // The second case is what keeps a lost opening from holding its slot for ever. The post that
 // carries a round to a machine is asynchronous, and a machine whose claim has failed or retired

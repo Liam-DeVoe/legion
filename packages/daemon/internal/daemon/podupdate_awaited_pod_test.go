@@ -122,6 +122,10 @@ func TestPodUpdateReplacesThePodItsOnlyClaimsLaunchWaitsOn(t *testing.T) {
 	if c := rig.claimOf(claim.RoleImplementer); c.Locator != nil || podOf(c.AwaitsPod) != podUpdatePod {
 		t.Fatalf("after a refused retry the claim is at %+v waiting on %+v, want no process and the same pod", c.Locator, c.AwaitsPod)
 	}
+	// The pod the round replaces is the one the last refusal named, at that refused try's own
+	// generation (refuseUntilReplaced).
+	resumes := rig.rt.CallsOf("Resume")
+	refused := resumes[len(resumes)-1].Spec.Generation
 
 	rig.tick()
 	opened := rig.awaitRound(claim.RoleImplementer, podUpdateRound)
@@ -131,7 +135,7 @@ func TestPodUpdateReplacesThePodItsOnlyClaimsLaunchWaitsOn(t *testing.T) {
 
 	replaced := rig.awaitReplacement(1, "through the claim whose launch waits on it")
 	if got := replaced[0].Pod; got.Claim != token || got.Locator == nil ||
-		!reflect.DeepEqual(*got.Locator, awaitedLocator(token, podUpdatePod, got.Locator.Sandbox.Generation)) {
+		!reflect.DeepEqual(*got.Locator, awaitedLocator(token, podUpdatePod, refused)) {
 		t.Fatalf("ReplacePod was asked %+v, want the refused claim's own locator in pod %s", got, podUpdatePod)
 	}
 	for _, ask := range rig.asks() {
@@ -273,8 +277,9 @@ func TestTheRoundReadsThePodAClaimsLaunchWaitsOn(t *testing.T) {
 // The round's answer set: a claim whose launch waits on the round's own pod is one the round is
 // recorded on — with a session or without, since it may be the issue's only claim — and one the
 // replacement waits on no answer of and the gone-pod report names nothing of, since it has no
-// process in that pod. A claim that waits on another pod, and every claim with no process that
-// waits on none, is weighed as before.
+// process in that pod. A claim with a session that waits on another pod, and every claim with no
+// process that waits on none, is weighed as before. A claim with no session that waits on another
+// pod is no way to this round's pod and never had a worker, so this round reads nothing of it.
 func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 	round := podUpdateRound
 	for name, tc := range map[string]struct {
@@ -285,8 +290,10 @@ func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 			claim: waitingOn(t, claim.RoleImplementer, podUpdatePod, round, true), blocking: true},
 		"it waits on the round's pod, with no session": {
 			claim: waitingOn(t, claim.RoleImplementer, podUpdatePod, round, false), blocking: true},
-		"it waits on another pod": {
+		"it waits on another pod, with a session": {
 			claim: waitingOn(t, claim.RoleImplementer, podUpdateReplacementPod, round, true), blocking: true, waiting: true, lost: true},
+		"it waits on another pod, with no session": {
+			claim: waitingOn(t, claim.RoleImplementer, podUpdateReplacementPod, round, false)},
 		"it is suspended and waits on no pod": {
 			claim: supervise.Claim{Token: mustClaimToken(t, podUpdateIssue, claim.RoleImplementer), Issue: podUpdateIssue, Role: claim.RoleImplementer,
 				State: supervise.StateSuspended, Session: "ses_implementer", UpdateRound: round},
@@ -304,7 +311,7 @@ func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 				got    []supervise.Claim
 				want   bool
 			}{
-				{"blockingClaims", blockingClaims(group), tc.blocking},
+				{"blockingClaims", blockingClaims(group, round), tc.blocking},
 				{"waitingClaims", waitingClaims(group, round), tc.waiting},
 				{"lostClaims", lostClaims(group, round), tc.lost},
 			} {
@@ -343,10 +350,7 @@ func TestTheRoundReplacesThePodThroughAClaimWhoseLaunchWaitsOnIt(t *testing.T) {
 				}
 				return
 			}
-			want := tc.want.Locator
-			if want == nil {
-				want = tc.want.AwaitsPod
-			}
+			want := podLocator(*tc.want)
 			if !found || got.Claim != tc.want.Token || !reflect.DeepEqual(got.Locator, want) {
 				t.Fatalf("podProcess = %+v (found %t), want %s through %+v", got, found, tc.want.Token, want)
 			}

@@ -1404,9 +1404,9 @@ type Machine struct {
 	// (runtime.AwaitingPodRound), and nil for none or for a refusal that named no pod. It is what
 	// Claim.AwaitsPod reports (current), which the daemon's update round reads. It is set where
 	// the wait begins and at each refusal of its retries (startWaitsForPodRound). letGo clears it
-	// with podRoundWaiting, except that the launch retrying the wait keeps it through its own try,
-	// so a sweep that reads the claim while that try runs still finds the pod; that try's outcome
-	// then settles it (launchNow). Memory only, as podRoundWaiting is.
+	// with podRoundWaiting, except that every launch keeps it through its own try, whatever raised
+	// the launch, so a sweep that reads the claim while that try runs still finds the pod; that
+	// try's outcome then settles it (launchNow). Memory only, as podRoundWaiting is.
 	awaitsPod *runtime.Locator
 	// wake is the launch the wake pacing holds until its turn (reserveWake), run when TimerWake
 	// fires (wakeNow); nil for none. It lives as long as that timer, which letGo disarms with it,
@@ -2078,12 +2078,7 @@ func (m *Machine) WaitingWake() *WaitingWake {
 // claim it reads from the store (its supervisor's Claims): publish stores a view built fresh and
 // mutates no stored one.
 func (m *Machine) AwaitsPod() *runtime.Locator {
-	pod := m.view.Load().AwaitsPod
-	if pod == nil {
-		return nil
-	}
-	copied := *pod
-	return &copied
+	return cloneLocator(m.view.Load().AwaitsPod)
 }
 
 // Deciding is the event the decision in flight handles (Handle), or nil when the machine decides
@@ -2121,11 +2116,7 @@ func (m *Machine) current() Claim {
 	}
 	c.Compacting = m.compacting != nil
 	c.ProcessGone = m.processGone
-	c.AwaitsPod = nil
-	if m.awaitsPod != nil {
-		pod := *m.awaitsPod
-		c.AwaitsPod = &pod
-	}
+	c.AwaitsPod = cloneLocator(m.awaitsPod)
 	return c
 }
 
@@ -3345,9 +3336,9 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // wait after a provider error among them (providererror.go) — no relaunch waits on one
 // (relaunchLater), no wait for a pod's update round stands, nor the pod it was for
 // (podRoundWaiting, awaitsPod: a suspension, a retirement or a failure of the waiting claim ends
-// that wait, and a launch that retries it keeps the pod through its own try, launchNow), no wake
-// of the pacing waits its turn (reserveWake) — the launch it was to make is the one this end
-// replaces, and the credit of the refresh gate a refresh of the stale-plugin lane held for that
+// that wait, and every launch, whatever raised it, keeps the pod through its own try, launchNow),
+// no wake of the pacing waits its turn (reserveWake) — the launch it was to make is the one this
+// end replaces, and the credit of the refresh gate a refresh of the stale-plugin lane held for that
 // wake goes back at the end of this decision, which is where a credit whose wake is gone goes
 // back wherever that wake went (endRefreshLane, dispatch://INFRA-2712 R1) — no send talks to it,
 // no prompt of the pending task waits on a
@@ -3936,14 +3927,8 @@ func claimOf(ev Event) claim.Token {
 }
 
 func copyClaim(c Claim) Claim {
-	if c.Locator != nil {
-		loc := *c.Locator
-		c.Locator = &loc
-	}
-	if c.AwaitsPod != nil {
-		pod := *c.AwaitsPod
-		c.AwaitsPod = &pod
-	}
+	c.Locator = cloneLocator(c.Locator)
+	c.AwaitsPod = cloneLocator(c.AwaitsPod)
 	if c.Enrollment != nil {
 		e := *c.Enrollment
 		c.Enrollment = &e
@@ -3957,4 +3942,14 @@ func copyClaim(c Claim) Claim {
 	c.TurnOutcomes = slices.Clone(c.TurnOutcomes)
 	c.EndedWork.Kinds = slices.Clone(c.EndedWork.Kinds)
 	return c
+}
+
+// cloneLocator is a new pointer to a copy of the locator loc points to, and nil for nil, so a
+// claim handed out of the machine shares no Locator value with the one the machine holds.
+func cloneLocator(loc *runtime.Locator) *runtime.Locator {
+	if loc == nil {
+		return nil
+	}
+	copied := *loc
+	return &copied
 }
