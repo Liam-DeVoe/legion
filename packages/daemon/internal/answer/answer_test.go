@@ -922,10 +922,16 @@ func ghExchange(input, output string) func(*conversation.Conversation) {
 // only the question holds ("Is PR 7 green?"), and one that the conversation's history holds (in
 // another case, or only behind a JSON escape in a tool call's input or a tool result's raw JSON)
 // each on one model call, and a word of letters alone that only a gh result of the run holds on
-// two, the gh call's and the reply's. No text of the request holds the word no.
+// two, the gh call's and the reply's. No text of the request holds the word no. A none reply to a
+// message that may ask nothing is never held to the rule: its text, a word of letters alone that
+// no text of the request holds, is taken on one model call.
 func TestATerseReplyIsPostedAtOnce(t *testing.T) {
 	for _, c := range []struct {
 		text string
+		// kind is the reply's kind, Answered when empty, and mayAskNothing the request's
+		// MayAskNothing.
+		kind          Kind
+		mayAskNothing bool
 		// history changes the request's conversation to hold the reply's word.
 		history func(*conversation.Conversation)
 		// gh is the args of a gh call the model makes before it replies, whose output holds the
@@ -946,17 +952,23 @@ func TestATerseReplyIsPostedAtOnce(t *testing.T) {
 		{text: "Medlar", history: ghExchange(`{"args":["pr","comment","7","--body","Merged.\nMedlar is next."]}`, "Commented.")},
 		{text: "Sloe", history: ghExchange(`{"args":["pr","view","7","--json","body"]}`, `{"body":"Merged.\nSloe is next."}`)},
 		{text: "Quince", gh: []string{"release", "view", "quince", "-R", "acme/widgets"}},
+		{text: "Acknowledged", kind: None, mayAskNothing: true},
 	} {
 		t.Run(c.text, func(t *testing.T) {
+			kind := c.kind
+			if kind == "" {
+				kind = Answered
+			}
 			var replies []reply
 			if c.gh != nil {
 				replies = append(replies, anthropicStream("tool_use", anthropicUsage{Input: 2, Output: 3}, anthropicGH("toolu_1", c.gh...)))
 			}
 			replies = append(replies, anthropicStream("end_turn", anthropicUsage{Input: 2, Output: 3},
-				anthropicText(`{"kind":"answered","text":`+quote(c.text)+`,"needs":""}`)))
+				anthropicText(`{"kind":`+quote(string(kind))+`,"text":`+quote(c.text)+`,"needs":""}`)))
 			s := newStandIn(t, replies...)
 			gh := &stubGH{}
 			req := anthropicRequest(t, s, gh, 3)
+			req.MayAskNothing = c.mayAskNothing
 			if c.history != nil {
 				c.history(&req.Conversation)
 			}
@@ -964,8 +976,8 @@ func TestATerseReplyIsPostedAtOnce(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if reply.Fault != "" || reply.Kind != Answered || reply.Text != c.text {
-				t.Fatalf("reply %+v, want answered %q", reply, c.text)
+			if reply.Fault != "" || reply.Kind != kind || reply.Text != c.text {
+				t.Fatalf("reply %+v, want %s %q", reply, kind, c.text)
 			}
 			if n := len(s.requests()); n != len(replies) || reply.Calls != len(replies) || len(gh.made()) != len(replies)-1 {
 				t.Errorf("%d model calls (reply calls %d) and %d gh calls, want %d model calls", n, reply.Calls, len(gh.made()), len(replies))

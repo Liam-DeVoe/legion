@@ -25,6 +25,7 @@ const dispatchFrame = JSON.stringify({
 const handoff = (overrides: Record<string, unknown> = {}) => ({
   original_topic: legacyAgentSubject("ses_tester"),
   target_session: "ses_tester",
+  // fixture-secret-next-line: a role token names a role's topic, not a credential; no client holds it
   role_token: "legion-legion-legion-9-tester",
   project: "legion",
   envelope: {
