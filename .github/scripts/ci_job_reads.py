@@ -1994,6 +1994,8 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/release-bump.sh", "release-push.sh:914 runs it for `version`, and the version cases read its refusals"),
         (".github/workflows/release.yaml", "release-push.test.sh:1079,1093 reads it for the checkout-before-push case"),
         ("packages/pi-legion/.changie.yaml", "release-push.test.sh:2211 copies the shipped configuration into its fold-notes fixture"),
+        (".github/private-names.toml", "release-push.sh:379 reads it beside itself for the leak guard, and "
+         "release-push.test.sh:172-175 copies it into each fixture checkout"),
     ]),
     harness("release_bump_test", "Test the release version bump", f"{SCRIPTS}/release-bump.test.sh", [
         (f"{SCRIPTS}/release-bump.sh", "the script under test"),
@@ -2337,16 +2339,20 @@ GATES = [
       + setup_go(PLUGIN_PACK_JOB, f"{DAEMON}/go.mod") + bun_job(PLUGIN_PACK_JOB)),
 
     # The private-name port harness, in a job of its own: one step, which builds the `legion`
-    # binary of this head and holds the rules that binary carries to the frozen shell script's
-    # verdicts, case for case. The Run is that build, so this filter is its whole closure; the
-    # reads are the harness, the helpers it sources and the frozen script it compares against.
+    # binary of this head and holds the rules of .github/private-names.toml, as that binary runs
+    # them, to the frozen shell script's verdicts, case for case. The Run is that build, so this
+    # filter is its whole closure; the reads are the harness, the helpers it sources, the rule file
+    # it names to the binary and the frozen script it compares against.
     # The comment on PRIVATE_NAMES_PORT_BUILD above says why the step is a job.
     gate("private_names_port", PRIVATE_NAMES_PORT_JOB, runs=[PRIVATE_NAMES_PORT_BUILD], reads=reads(
         (f"{SCRIPTS}/check-private-names-port.test.sh", at(PRIVATE_NAMES_PORT_JOB, PRIVATE_NAMES_PORT_STEP)),
-        (TEST_LIB, "check-private-names-port.test.sh:63 sources it for check/is/summary"),
+        (TEST_LIB, "check-private-names-port.test.sh:69 sources it for check/is/summary"),
+        (".github/private-names.toml",
+         "the rule file check-private-names-port.test.sh names to the binary in "
+         "LEGION_PRIVATE_NAME_RULES_FILE (:55,92) and reads each rule's description out of (:160)"),
         (f"{SCRIPTS}/check-private-names.sh",
          "the frozen script every case of check-private-names-port.test.sh runs beside the "
-         "engine, symlinked into each fixture (:203,411,457,546)"),
+         "engine, symlinked into each fixture (:218,429,475,569)"),
     ) + setup_go(PRIVATE_NAMES_PORT_JOB, f"{DAEMON}/go.mod")),
 
     # What is left of the test job once the daemon's Go suite and the private-name port harness

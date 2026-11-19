@@ -1338,6 +1338,10 @@ jobs:
               # fold-notes case copies the shipped changie configuration (:1928).
               - '.github/workflows/release.yaml'
               - 'packages/pi-legion/.changie.yaml'
+              # release-push.sh:379 reads the rule file beside itself for its leak guard, and
+              # release-push.test.sh:172-175 copies it into each fixture checkout it runs a copy
+              # of the script from.
+              - '.github/private-names.toml'
             release_bump_test: &release_bump_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -4141,13 +4145,13 @@ jobs:
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
             # The private-name port harness, in a job of its own: it builds the `legion` binary
-            # of this head (.github/scripts/check-private-names-port.test.sh:70) and holds the
-            # rules that binary carries to the frozen shell script's verdicts, case for case.
-            # That build is why this list is as long as it is - legion_command is what the
-            # binary is made of, the rule file packages/daemon/internal/leakguard embeds among
-            # it - and why the step has a job: while it was the test job's, the whole closure
-            # sat on the `test` filter, so a change to one package of the daemon ran thirty-odd
-            # shell harnesses and the Bun suites of scripts/ with it (dispatch://INFRA-1413).
+            # of this head (.github/scripts/check-private-names-port.test.sh:76) and holds the
+            # rules of .github/private-names.toml, as that binary runs them, to the frozen shell
+            # script's verdicts, case for case. That build is why this list is as long as it is -
+            # legion_command is what the binary is made of - and why the step has a job: while
+            # it was the test job's, the whole closure sat on the `test` filter, so a change to
+            # one package of the daemon ran thirty-odd shell harnesses and the Bun suites of
+            # scripts/ with it (dispatch://INFRA-1413).
             private_names_port:
               - *ci_router
               - '.github/workflows/ci-job-private-names-port.yaml'
@@ -4156,9 +4160,13 @@ jobs:
               - *go_workspace
               - *legion_command
               - '.github/scripts/check-private-names-port.test.sh'
-              # test-lib.sh, which the harness sources for check/is/summary (:63), and the
+              # The rule file the harness names to the binary in LEGION_PRIVATE_NAME_RULES_FILE
+              # (:55,92), since the binary embeds none, and reads each rule's description out of
+              # (:160).
+              - '.github/private-names.toml'
+              # test-lib.sh, which the harness sources for check/is/summary (:69), and the
               # frozen script it runs every case through beside the binary, symlinked into each
-              # fixture (:203,411,457,546). That script is the subject of
+              # fixture (:218,429,475,569). That script is the subject of
               # check_private_names_test above, which gates another job's step: this job reads
               # it as the engine it compares against.
               - '.github/scripts/test-lib.sh'
