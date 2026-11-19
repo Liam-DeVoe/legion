@@ -31,13 +31,13 @@ name: Dispatch browser suite
 # That reason is a composite action's, and not a script's: a step that calls a script keeps its
 # own timeout-minutes. So a body the shard and alone jobs really share is a script, written
 # once and called from both, and that script's head is where what it does and why is written
-# down. There are two: .github/scripts/dispatch-browser-samples.sh for the memory and CPU
-# sampler and its two readings, and .github/scripts/dispatch-browser-postgres.sh for the
-# reading of the stacks' PostgreSQL, which stood as a copy in each job's own step list until a
-# review read the two together. Two more stood beside them, the Playwright install and the key
-# its apt archive cache was restored under: those two jobs run in the image this repository
-# builds now, which carries the three browsers and every host package they need, so both of
-# those scripts are gone with the steps that called them (dispatch://INFRA-1443).
+# down. There is one, .github/scripts/dispatch-browser-postgres.sh, the reading of the stacks'
+# PostgreSQL, which stood as a copy in each job's own step list until a review read the two
+# together. Three more stood beside it. The memory and CPU sampler of the two browser steps
+# is gone because nothing read its two readings (dispatch://INFRA-983). The Playwright install
+# and the key its apt archive cache was restored under are gone with the steps that called them:
+# those two jobs run in the image this repository builds now, which carries the three browsers
+# and every host package they need (dispatch://INFRA-1443).
 #
 # The budget rule every job and step below follows, this file being where it is written down now
 # that ci.yaml's dispatch job is gone: a step's budget is its measured maximum plus 15 per cent,
@@ -46,7 +46,7 @@ name: Dispatch browser suite
 # steps and not on the job alone, because a step the runner cancels at its own budget fails that
 # step and names it (`The action '<step name>' has timed out after <N> minutes.`), where a job
 # budget cancels the job. So the `if: always()` and `if: failure()` upload steps still run and the
-# report, the memory samples and the CPU samples still reach the run, which a cancelled job loses.
+# report and what the run left behind still reach the run, which a cancelled job loses.
 # A job budget is the backstop above the sum of its step budgets, so it never fires first.
 #
 # No permissions: block, and that is not what decides this workflow's scopes. A called workflow
@@ -542,15 +542,8 @@ jobs:
         # with pgvector. They are set on the command line, not in this step's `env:`, for the
         # reason the job's head gives.
         #
-        # The memory and CPU sampler both this job and the alone job run is
-        # .github/scripts/dispatch-browser-samples.sh: MemAvailable and where the CPU goes,
-        # every 5 s for the length of this step, started below and read back at the end of it.
-        # Its head says what each reading holds and what it does not; on this job `everything
-        # else` holds the file store too, which runs beside the stacks. Both sample files are
-        # written into the record directory the step below collects and uploads, under
-        # $RUNNER_TEMP beside the stacks' own run directory: a file this step wrote into the
-        # checkout would leave it dirty afterwards. The blob report goes beside the list
-        # reporter's output, so a green run reports what it ran too.
+        # The blob report goes beside the list reporter's output, so a green run reports what it
+        # ran too.
         #
         # The budget below is the 9 minutes the job's head derives from the sharded head's own
         # runs, and neither the container nor #2958's added rows move it: at the merged head this
@@ -564,19 +557,11 @@ jobs:
           # the upload steps below read. TMPDIR is exported on the command line, not in this
           # step's `env:`, for the reason the job's head gives.
           export TMPDIR="$RUNNER_TEMP"
-          # The two directories this step's output is sorted into, each of them one artifact
-          # below: the leg's report, which the merge job reads, and the record of what the run
-          # left behind. One directory per artifact because only the first line of a multi-line
-          # `path:` is translated into the container's own filesystem - the step below says what
-          # that cost when it was not done.
-          mkdir -p "$RUNNER_TEMP/leg-report/rows" "$RUNNER_TEMP/dispatch-e2e-record"
-          # The sampler, started as a background process of this step's own shell and killed by
-          # the trap below, as the alone job starts and kills it. It writes memory-samples.txt
-          # and cpu-samples.txt into the directory it is given, which the record below is, and
-          # the reading at the end of this step takes them from there.
-          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-samples.sh" sample "$RUNNER_TEMP/dispatch-e2e-record" &
-          sampler=$!
-          trap 'kill "$sampler" 2>/dev/null || true' EXIT
+          # The directory this step's report is written into, one artifact below, which the merge
+          # job reads: the blob report and the row count in one directory, because only the first
+          # line of a multi-line `path:` is translated into the container's own filesystem - the
+          # step below says what that cost when it was not done.
+          mkdir -p "$RUNNER_TEMP/leg-report/rows"
           # This image's own PostgreSQL 18 with pgvector, through e2e/harness-postgres.ts's
           # binaries provider: initdb and pg_ctl live in that directory alone, and a job inside a
           # container has no docker to run the image provider's digest with.
@@ -686,15 +671,10 @@ jobs:
               echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
           status=0
           [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")
-          kill "$sampler" 2>/dev/null || true
           # The row count this leg printed, for the merge job's first reading. It travels beside
           # the blob report, in a directory of its own so that `merge-reports` sees zips alone.
           sed -n 's/^Running \([0-9][0-9]*\) tests\? using .*/\1/p' "$RUNNER_TEMP/playwright-log.txt" |
             tail -n 1 > "$RUNNER_TEMP/leg-report/rows/shard-${{ matrix.shard }}.txt"
-          # The sampler's two readings, titled with this leg so a run's notices say which
-          # machine each is from. After the suite and before the exit below, so this step still
-          # ends on the suite's own status.
-          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-samples.sh" report "$RUNNER_TEMP/dispatch-e2e-record" "shard ${{ matrix.shard }}"
           exit "$status"
         working-directory: packages/dispatch
         # The file store the step above started. Set here, not written to $GITHUB_ENV, which
@@ -725,8 +705,7 @@ jobs:
       # where a stack-only failure (a port, a migration, a server that never came up) is legible.
       # CI read `docker logs dispatch-e2e-files` for the store before this job ran in a
       # container of its own; the store's log is a file now, and the stacks' own servers write
-      # beside it. The sampler's two files are already in this directory, which is why the
-      # artifact below carries them in place of the samples artifact this job uploaded before.
+      # beside it.
       #
       # The log glob is the run directory e2e/harness-pool.ts made under $TMPDIR, which the step
       # above pointed at $RUNNER_TEMP; mkdtempSync gives the directory a random suffix and each
@@ -735,8 +714,7 @@ jobs:
       #
       # Always, not `if: failure()`: the config retries a failed row once on CI
       # (`retries: process.env.CI ? 1 : 0`), so a flaky row passes on its retry and this leg
-      # ends green, and the memory and CPU readings are of the run that passed as much as of the
-      # one that did not.
+      # ends green.
       - name: What the run left behind
         if: always()
         run: |
@@ -791,9 +769,9 @@ jobs:
     #
     # Its steps are the shard job's, with three differences - one worker rather than four, the
     # Playwright command below, and no file store on the machine - and their commands are kept
-    # the same everywhere else, so the two can be diffed; the two bodies that are really shared
-    # are scripts both jobs call, the sampler and the PostgreSQL reading, which is part of what
-    # keeps them so. They are not one composite action for the reason this file's head gives.
+    # the same everywhere else, so the two can be diffed; the one body that is really shared is
+    # a script both jobs call, the PostgreSQL reading, which is part of what keeps them so. They
+    # are not one composite action for the reason this file's head gives.
     # The container, the `sh -e {0}` rule and the `env:` rule of the shard job's head hold here
     # too, and so do their reasons.
     container:
@@ -970,15 +948,8 @@ jobs:
         # started on the shard job's machines and not on these. A clock spec that later uploads
         # fails here by name rather than quietly.
         #
-        # The memory and CPU sampler both this job and the shard job run is
-        # .github/scripts/dispatch-browser-samples.sh: MemAvailable and where the CPU goes,
-        # every 5 s for the length of this step, started below and read back at the end of it.
-        # Its head says what each reading holds and what it does not; on this job `everything
-        # else` is also the reading that says the machine was quiet, which is the claim these
-        # rows rest on. Both sample files are written into the record directory the step below
-        # collects and uploads, under $RUNNER_TEMP beside the stack's own run directory: a file
-        # this step wrote into the checkout would leave it dirty afterwards. The blob report
-        # goes beside the list reporter's output, so a green run reports what it ran too.
+        # The blob report goes beside the list reporter's output, so a green run reports what it
+        # ran too.
         #
         # The budget below is the 3 minutes the job's head derives from the sharded head's own
         # run, and the containerised reading taken on sha256:ba003193 does not move it: the most
@@ -991,17 +962,10 @@ jobs:
           # the upload steps below read. TMPDIR is exported on the command line, not in this
           # step's `env:`, for the reason the job's head gives.
           export TMPDIR="$RUNNER_TEMP"
-          # The two directories this step's output is sorted into, each of them one artifact
-          # below, as the shard job sorts its own and for the same reason: only the first line
-          # of a multi-line `path:` is translated into the container's own filesystem.
-          mkdir -p "$RUNNER_TEMP/leg-report/rows" "$RUNNER_TEMP/dispatch-e2e-record"
-          # The sampler, started as a background process of this step's own shell and killed by
-          # the trap below, as the shard job starts and kills it. It writes memory-samples.txt
-          # and cpu-samples.txt into the directory it is given, which the record below is, and
-          # the reading at the end of this step takes them from there.
-          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-samples.sh" sample "$RUNNER_TEMP/dispatch-e2e-record" &
-          sampler=$!
-          trap 'kill "$sampler" 2>/dev/null || true' EXIT
+          # The directory this step's report is written into, one artifact below, as the shard
+          # job writes its own and for the same reason: only the first line of a multi-line
+          # `path:` is translated into the container's own filesystem.
+          mkdir -p "$RUNNER_TEMP/leg-report/rows"
           # This image's own PostgreSQL 18 with pgvector, through e2e/harness-postgres.ts's
           # binaries provider: initdb and pg_ctl live in that directory alone, and a job inside a
           # container has no docker to run the image provider's digest with.
@@ -1051,15 +1015,10 @@ jobs:
               echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
           status=0
           [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")
-          kill "$sampler" 2>/dev/null || true
           # The row count this leg printed, for the merge job's first reading. It travels beside
           # the blob report, in a directory of its own so that `merge-reports` sees zips alone.
           sed -n 's/^Running \([0-9][0-9]*\) tests\? using .*/\1/p' "$RUNNER_TEMP/playwright-log.txt" |
             tail -n 1 > "$RUNNER_TEMP/leg-report/rows/alone-${{ matrix.project }}.txt"
-          # The sampler's two readings, titled with this leg so a run's notices say which
-          # machine each is from. After the suite and before the exit below, so this step still
-          # ends on the suite's own status.
-          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-samples.sh" report "$RUNNER_TEMP/dispatch-e2e-record" "${{ matrix.project }}"
           exit "$status"
         working-directory: packages/dispatch
       # This leg's half of the run's report. Always, not on failure alone: the merge job reads
@@ -1071,15 +1030,14 @@ jobs:
           name: dispatch-browser-blob-alone-${{ matrix.project }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/leg-report
       # What the run left behind: the stack's own server logs, in the job's own log and collected
-      # into the one directory the artifact below takes, beside the sampler's two files, which
-      # the browser step already wrote there. No file store runs on this machine, so there is no
-      # store log to collect.
+      # into the one directory the artifact below takes. No file store runs on this machine, so
+      # there is no store log to collect.
       #
-      # Always, not `if: failure()`: a green leg's logs are worth as much as a red one's here,
-      # since they say what the stack's servers did while the clock was read, and the memory and
-      # CPU readings are also what says the machine was quiet while it measured. These three
-      # projects set `retries: 0` of their own (e2e/playwright.config.ts), so no row of this job
-      # is retried and none is reported flaky.
+      # Always, not `if: failure()`, as the shard job's step of this name is. A leg whose rows
+      # all passed has no stack log left to collect: its teardown removes the logs with the run
+      # directory (e2e/run-outcome.ts), so the upload below ignores an empty directory rather
+      # than warn on every green leg. These three projects set `retries: 0` of their own
+      # (e2e/playwright.config.ts), so no row of this job is retried and none is reported flaky.
       - name: What the run left behind
         if: always()
         run: |
@@ -1105,6 +1063,7 @@ jobs:
         with:
           name: dispatch-browser-record-alone-${{ matrix.project }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/dispatch-e2e-record
+          if-no-files-found: ignore
       # The traces of the rows that failed, which the step above does not collect: they are
       # under the checkout, so this path needs no translation and stays as it was. A row that
       # fails fails the leg, and the trace it carries is of its one attempt, which the config's
@@ -1609,9 +1568,9 @@ jobs:
   # project named, since `only` leaves each project nothing but its quarantined rows and every
   # quarantined row is in a project a run that names none selects
   # (packages/dispatch/e2e/__tests__/quarantine.test.ts holds the list to those projects); a JSON
-  # report in place of the blob, which the reading after the browser step reads; and no sampler
-  # and no PostgreSQL reading, which are readings of a lane rather than of these rows. The
-  # container, the `sh -e {0}` rule and the `env:` rule of the shard job's head hold here too.
+  # report in place of the blob, which the reading after the browser step reads; and no
+  # PostgreSQL reading, which is a reading of a lane rather than of these rows. The container,
+  # the `sh -e {0}` rule and the `env:` rule of the shard job's head hold here too.
   #
   # The budget. The browser step takes the shard job's 9 minutes, which this leg's rows fit:
   # at most ten rows over four workers is three to a worker, and three rows that each reach the

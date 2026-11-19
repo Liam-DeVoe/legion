@@ -369,7 +369,6 @@ jobs:
       main_bypass_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.main_bypass_check_test }}
       dispatch_browser_latest_blobs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_latest_blobs_test }}
       dispatch_browser_run_reads_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_run_reads_test }}
-      dispatch_browser_samples_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_samples_test }}
       race_memory_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.race_memory_test }}
       disk_watch_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.disk_watch_test }}
       priorities_seed_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.priorities_seed_check_test }}
@@ -1630,12 +1629,6 @@ jobs:
               - '.github/scripts/dispatch-browser-run-reads.sh'
               # dispatch-browser-run-reads.sh:79 sources it, and the harness tests its retry ladder.
               - '.github/scripts/gh-read.sh'
-            dispatch_browser_samples_test: &dispatch_browser_samples_test
-              - *ci_router
-              - '.github/workflows/ci-job-test.yaml'
-              - '.github/scripts/test-lib.sh'
-              - '.github/scripts/dispatch-browser-samples.test.sh'
-              - '.github/scripts/dispatch-browser-samples.sh'
             race_memory_test: &race_memory_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1774,7 +1767,6 @@ jobs:
               - *main_bypass_check_test
               - *dispatch_browser_latest_blobs_test
               - *dispatch_browser_run_reads_test
-              - *dispatch_browser_samples_test
               - *race_memory_test
               - *disk_watch_test
               - *priorities_seed_check_test
@@ -2659,17 +2651,15 @@ jobs:
               # is a read of the ci_filters gate instead, so a change to it re-runs this check,
               # which holds this filter and that gate together.
               - '.github/workflows/dispatch-browser.yaml'
-              # The memory and CPU sampler the shard and alone jobs' browser steps start and read
-              # back, the reading of the lanes' PostgreSQL those two jobs run before the suite,
-              # the script the merge job runs to take each leg's newest attempt, and the script
-              # that makes the merge job's two reads of its own run, which reads this run's own
-              # attempt's jobs and says a refused blob download was a refused read. The
+              # The reading of the lanes' PostgreSQL the shard and alone jobs run before the
+              # suite, the script the merge job runs to take each leg's newest attempt, and the
+              # script that makes the merge job's two reads of its own run, which reads this run's
+              # own attempt's jobs and says a refused blob download was a refused read. The
               # Playwright install both jobs ran stood here too, with the pinned apt list it
               # installed, the key their apt archive cache was read under and the check that the
               # list had not fallen behind Playwright: those two jobs run in the image this
               # repository builds now, which carries the browsers and their host packages, so
               # all four files are gone (dispatch://INFRA-1443).
-              - '.github/scripts/dispatch-browser-samples.sh'
               - '.github/scripts/dispatch-browser-postgres.sh'
               - '.github/scripts/dispatch-browser-latest-blobs.sh'
               - '.github/scripts/dispatch-browser-run-reads.sh'
@@ -5135,7 +5125,6 @@ jobs:
       main_bypass_check_test: ${{ needs.changes.outputs.main_bypass_check_test }}
       dispatch_browser_latest_blobs_test: ${{ needs.changes.outputs.dispatch_browser_latest_blobs_test }}
       dispatch_browser_run_reads_test: ${{ needs.changes.outputs.dispatch_browser_run_reads_test }}
-      dispatch_browser_samples_test: ${{ needs.changes.outputs.dispatch_browser_samples_test }}
       race_memory_test: ${{ needs.changes.outputs.race_memory_test }}
       disk_watch_test: ${{ needs.changes.outputs.disk_watch_test }}
       priorities_seed_check_test: ${{ needs.changes.outputs.priorities_seed_check_test }}

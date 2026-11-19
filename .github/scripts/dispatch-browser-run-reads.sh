@@ -3,7 +3,7 @@
 # makes, in one file, so that a test can drive them under a stand-in `gh` rather than on a
 # runner against GitHub.
 #
-# Two modes, after dispatch-browser-samples.sh's two:
+# Two modes:
 #
 #   .github/scripts/dispatch-browser-run-reads.sh jobs <out-file>
 #   .github/scripts/dispatch-browser-run-reads.sh blobs-refused
