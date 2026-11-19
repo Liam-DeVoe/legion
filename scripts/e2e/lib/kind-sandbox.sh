@@ -1,14 +1,14 @@
 # shellcheck shell=bash
 # A throwaway kind cluster running Agent Sandbox's controller under gVisor, for a test of Legion's
 # Sandbox runtime on an amd64 Linux host: the rig of the kind job of ci.yaml, which
-# packages/daemon/internal/kindtest drives from a Go test, and of the live proofs under scripts/e2e
-# that source this file. Sourced by the caller, never run. The caller defines `note MESSAGE` (one
-# indented observation line) and `fail MESSAGE` (ends the run, naming its check) before it calls a
-# function here, and calls kind_sandbox_teardown when it ends, so the cluster goes on any exit.
+# packages/daemon/internal/kindtest drives from a Go test. Sourced by the caller, never run. The
+# caller defines `note MESSAGE` (one indented observation line) and `fail MESSAGE` (ends the run,
+# naming its check) before it calls a function here, and calls kind_sandbox_teardown when it ends,
+# so the cluster goes on any exit.
 #
 # Every pin of the rig is here: kind's release, which kind_sandbox_install_kind builds with
 # `go install` and kind_sandbox_create holds the binary to; the node image, the local registry,
-# busybox and the NFS server by digest, each a row of .github/ci-images.yaml, which
+# busybox, the NFS server and PostgreSQL by digest, each a row of .github/ci-images.yaml, which
 # .github/scripts/check-ci-images.sh holds this file to; Agent Sandbox's v1.0.3 manifest, vendored
 # beside its CRD in packages/daemon/internal/runtime/sandbox/testdata (the manifest's own header
 # says how it differs from the release); and gVisor's dated release by sha512.
@@ -44,13 +44,16 @@
 # Kubernetes SIG Storage's nfs-provisioner image ships it), exporting /team, which holds seed.txt
 # with SEED, and /scratch, and sets kind_nfs_server to its Service's cluster IP once the node
 # itself mounts /team and reads the seed.
-# kind_sandbox_internal_kubeconfig FILE writes the kubeconfig a container on the kind network reads,
-# whose server is the node's address on that network.
+# kind_sandbox_start_postgres PASSWORD starts a PostgreSQL server in the cluster (pgvector's image,
+# the services: Postgres of CI's other jobs), whose superuser postgres has PASSWORD, on a Service
+# the cluster's pods reach at its cluster IP and this host reaches at the node's address on the
+# kind network and the Service's node port, once it accepts connections.
 # kind_sandbox_teardown STATUS EVIDENCE writes, when STATUS is not 0, what the cluster held (its
 # nodes and pods, the legion namespace's Sandboxes and volume claims, its pods' descriptions and
-# container logs and the nfs namespace's, every event, and the Agent Sandbox controller's log) to
-# EVIDENCE, then deletes the cluster and the registry. It does nothing before kind_sandbox_use or
-# kind_sandbox_create has named a cluster, and deletes nothing once the cluster is gone.
+# container logs and the nfs and postgres namespaces', every event, and the Agent Sandbox
+# controller's log) to EVIDENCE, then deletes the cluster and the registry. It does nothing before
+# kind_sandbox_use or kind_sandbox_create has named a cluster, and deletes nothing once the
+# cluster is gone.
 #
 # LEGION_E2E_KIND names the kind binary when kind_sandbox_install_kind has not run in this shell.
 
@@ -69,11 +72,12 @@ kind_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 # v1.37.0, kindest/node at this digest).
 kind_version=v0.33.0
 kind_node_image=ghcr.io/cybermonklabs/legion/ci@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
-# The local registry (registry 2.8.3), the busybox of the gVisor check pod (1.37), and the NFS
-# server (nfs-provisioner v4.0.8).
+# The local registry (registry 2.8.3), the busybox of the gVisor check pod (1.37), the NFS server
+# (nfs-provisioner v4.0.8), and PostgreSQL with pgvector.
 kind_registry_image=ghcr.io/cybermonklabs/legion/ci@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
 kind_busybox_image=ghcr.io/cybermonklabs/legion/ci@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
 kind_nfs_image=ghcr.io/cybermonklabs/legion/ci@sha256:c825f3d5e28bde099bd7a3daace28772d412c9157ad47fa752a9ad0baafc118d
+kind_postgres_image=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
 
 kind_agent_sandbox_crd=$kind_root/packages/daemon/internal/runtime/sandbox/testdata/sandboxes.agents.x-k8s.io.yaml
 kind_agent_sandbox_manifest=$kind_root/packages/daemon/internal/runtime/sandbox/testdata/agent-sandbox-v1.0.3.yaml
@@ -293,8 +297,33 @@ EOF
   note "NFS-Ganesha at $kind_nfs_server exports /team (seed.txt: $seed) and /scratch; the node mounts /team and reads the seed"
 }
 
-kind_sandbox_internal_kubeconfig() {
-  "$kind_bin" get kubeconfig --internal --name "$kind_cluster" >"$1"
+kind_sandbox_start_postgres() {
+  local password=$1
+  kind_k create namespace postgres
+  # The data directory is the pod's own: one level above it is mounted, which is where both the
+  # image's PostgreSQL 17 (/var/lib/postgresql/data) and 18 (/var/lib/postgresql/18) keep theirs.
+  kind_k apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata: {name: postgres, namespace: postgres, labels: {app: postgres}}
+spec:
+  containers:
+  - name: postgres
+    image: $kind_postgres_image
+    env: [{name: POSTGRES_PASSWORD, value: "$password"}]
+    readinessProbe: {exec: {command: [pg_isready, -q, -h, 127.0.0.1, -U, postgres]}, periodSeconds: 2}
+    resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {memory: 1Gi}}
+    volumeMounts: [{name: data, mountPath: /var/lib/postgresql}]
+  volumes:
+  - {name: data, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: postgres, namespace: postgres}
+spec: {type: NodePort, selector: {app: postgres}, ports: [{name: postgres, port: 5432}]}
+EOF
+  kind_k -n postgres wait --for=condition=Ready pod/postgres --timeout=180s
+  note "PostgreSQL at $(kind_k -n postgres get service postgres -o jsonpath='{.spec.clusterIP}:5432') in the cluster, node port $(kind_k -n postgres get service postgres -o jsonpath='{.spec.ports[0].nodePort}'), accepting connections"
 }
 
 kind_sandbox_teardown() {
@@ -307,7 +336,7 @@ kind_sandbox_teardown() {
         kind_k get nodes -o wide
         kind_k get pods -A -o wide
         kind_k -n legion get sandboxes,persistentvolumeclaims -o yaml
-        for namespace in legion nfs; do
+        for namespace in legion nfs postgres; do
           kind_k -n "$namespace" describe pods
           for pod in $(kind_k -n "$namespace" get pods -o name 2>/dev/null); do
             kind_k -n "$namespace" logs "$pod" --all-containers --prefix --tail=200

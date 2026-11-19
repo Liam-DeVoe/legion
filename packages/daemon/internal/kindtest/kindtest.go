@@ -39,6 +39,9 @@ import (
 
 	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/fakegithub"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 // The variables the kind job hands the rig. The worker image under test comes by one of the first
@@ -216,6 +219,81 @@ func (r *Rig) StartNFSServer(t *testing.T, seed string) string {
 	t.Helper()
 	r.shell(t, "kind_sandbox_start_nfs_server", seed)
 	return strings.TrimSpace(r.Kubectl(t, "-n", "nfs", "get", "service", "ganesha", "-o", "jsonpath={.spec.clusterIP}"))
+}
+
+// postgresPassword is the password of the rig's PostgreSQL superuser, a server of one test's
+// throwaway cluster that nothing but this host and the cluster reaches.
+const postgresPassword = "kind-postgres-not-a-secret"
+
+// Postgres is the rig's PostgreSQL server (StartPostgres): the URL of its database postgres, as its
+// superuser, from each side that dials it.
+type Postgres struct {
+	// InCluster is the URL a pod of the cluster dials: the Service's cluster IP.
+	InCluster string
+	// Host is the URL this process dials: the node's address on the kind network and the
+	// Service's node port.
+	Host string
+}
+
+// StartPostgres starts the rig's PostgreSQL server (kind_sandbox_start_postgres) in the cluster
+// and returns its URLs once it accepts connections: a session store's database, which the pods of
+// the test reach, and the store of a daemon the test process runs.
+func (r *Rig) StartPostgres(t *testing.T) Postgres {
+	t.Helper()
+	r.shell(t, "kind_sandbox_start_postgres", postgresPassword)
+	address := strings.TrimSpace(r.Kubectl(t, "-n", "postgres", "get", "service", "postgres", "-o", "jsonpath={.spec.clusterIP}"))
+	port := strings.TrimSpace(r.Kubectl(t, "-n", "postgres", "get", "service", "postgres", "-o", "jsonpath={.spec.ports[0].nodePort}"))
+	node := strings.TrimSpace(r.docker(t, "inspect", "--format", `{{with index .NetworkSettings.Networks "kind"}}{{.IPAddress}}{{end}}`, r.Node))
+	if address == "" || port == "" || node == "" {
+		t.Fatalf("the rig's PostgreSQL has cluster IP %q and node port %q, and the node %s address %q on the kind network", address, port, r.Node, node)
+	}
+	url := func(host, port string) string {
+		return "postgres://postgres:" + postgresPassword + "@" + net.JoinHostPort(host, port) + "/postgres?sslmode=disable"
+	}
+	return Postgres{InCluster: url(address, "5432"), Host: url(node, port)}
+}
+
+// leakCheckToken is the read token LeakCheck's Source presents, and the one its repository takes.
+const leakCheckToken = "ghs_kind-leak-check-not-a-secret"
+
+// standInLeakCheck is the shared public leak check a kind test's pods install: the real check is a
+// script of a private repository no CI run reads (leakguardtest says so), so this stand-in, under
+// the real one's name, answers `--help` as the real one does, naming the two shapes a launcher's
+// install verifies (leakguard.InstallServed), and clears every write it is asked about, reading
+// its standard input as the real one does.
+const standInLeakCheck = `case "${1:-}" in --help) echo '# Usage: check-public-text FILE..., --commits REV..., --tree DIR, gh-guard ARGS, or REMOTE URL.'; exit 1 ;; esac
+cat >/dev/null 2>&1
+exit 0
+`
+
+// LeakCheckAPI serves GitHub's tarball route of the shared public leak check's repository
+// (leakguard.CheckSlug) on this host's loopback, over plain HTTP, until the test ends: at any tag, to
+// a request carrying token as its bearer, a tarball shaped as GitHub's
+// (leakguardtest.GitHubTarball) holding standInLeakCheck. It returns the REST root a daemon reads the
+// check at (leakguard.Source.API), for a runtime whose pods' launchers name the worker image's pin:
+// a launcher installs the check its daemon read before it starts any role of its pod, and a
+// runtime that reads none starts no role.
+func LeakCheckAPI(t *testing.T, token string) string {
+	t.Helper()
+	tarball := leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
+		leakguardtest.CheckName: {Body: "#!/bin/sh\n" + standInLeakCheck, Mode: 0o755},
+	})
+	return githubtest.Server(t, githubtest.Spec{Token: token, Handle: func(w http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || !strings.HasPrefix(request.URL.Path, "/repos/"+leakguard.CheckSlug+"/tarball/") {
+			githubtest.Unexpected(t, w, request)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-gzip")
+		_, _ = w.Write(tarball)
+	}})
+}
+
+// LeakCheck is the reader of the shared public leak check a kind test's runtime is built with
+// (sandbox.Options.LeakCheck): the daemon's own reader, leakguard.Source, over LeakCheckAPI's
+// stand-in with its token.
+func LeakCheck(t *testing.T) *leakguard.Source {
+	t.Helper()
+	return &leakguard.Source{API: LeakCheckAPI(t, leakCheckToken), Token: func(context.Context) (string, error) { return leakCheckToken, nil }}
 }
 
 // Pod is what a test reads of a pod.
@@ -406,10 +484,8 @@ func (r *Rig) loadWorkerImage(t *testing.T) string {
 		t.Fatalf("docker load of %s named no image: %s", archive, out)
 	}
 	t.Logf("loaded the worker image %s from %s", loaded[1], archive)
-	// The archive's bytes are in Docker now.
-	if err := os.Remove(archive); err != nil {
-		t.Logf("could not remove %s after loading it: %v", archive, err)
-	}
+	// The archive stays: each kind test of the job brings up a rig of its own, and each loads the
+	// image from it again.
 	return loaded[1]
 }
 
