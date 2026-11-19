@@ -149,6 +149,11 @@ describe("createCodexDelivery", () => {
     const busy = harness(inbox(), true)
     busy.delivery.turnStarted()
     const written = busy.delivery.deliver({ content: "y" })
+    // The write is rejected inside the turn's end, before the expectation below reads it, so it is
+    // marked handled here: a rejection nothing handles yet fails the test as an unhandled one.
+    // (`expect(...).rejects` cannot be taken here instead: Bun waits there for the write to settle,
+    // and it settles only once the turn ends.)
+    written.catch(() => undefined)
     await Bun.sleep(20)
     await busy.delivery.turnEnded()
     await expect(written).rejects.toThrow("codex queue exited 1")

@@ -2261,7 +2261,7 @@ A plain `create index` inside the runner's transaction, it holds `SHARE` on `ask
 Its census answers `0`: one index on an existing column, refusing no row and rewriting none.
 
 Migration `20261101182433_messages_issue_roots` creates `messages_issue_roots` on `messages (issue_key, created_at, id)`, for the read of an issue's root messages that `GET /api/v1/issues/{key}/messages` makes, `where issue_key = $1 and in_reply_to is null order by created_at, id` (`api/messages.go` `listIssueRootMessagesQuery`).
-No index of `messages` led with `issue_key` — `messages_in_reply_to` (`0033`) leads with the parent and `messages_search` (`0061`) is the text index
+No index of `messages` led with `issue_key` — `messages_in_reply_to` (`0013`, renamed in `0016`) leads with the parent and `messages_search` (`0061`) is the text index
 — so every read of an issue's threads scanned the table, 15.8 s of database time in the 24 hours to 2026-10-30 22:00Z.
 The key is the read's predicate and then its order, so the plan takes one range of the index and sorts nothing.
 It is deliberately not partial on `in_reply_to is null`:
