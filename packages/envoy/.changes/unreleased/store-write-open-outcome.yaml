@@ -6,7 +6,7 @@ body: |-
   carried out. The form now says the outcome is open and asks the broker to reread the secret, as
   `secret retag` does, and says what to do next: after a `set`, run it again, since `secret show`
   reads no value; after a `delete` or `restore`, read with `secret show` whether the secret is
-  deleted. Before, it printed the store's error alone and asked for no reread, so the broker went
-  on serving what it had read until its next reload.
+  deleted. Before, it printed the store's error alone and asked for no reread, so a delete that
+  landed took effect only at the broker's next read of the namespace.
 custom:
     Issue: store-write-open-outcome

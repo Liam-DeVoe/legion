@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -113,7 +114,8 @@ func TestAStoreWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 
 // assertOpenOutcome holds a form's answer to a write whose outcome is open: exit 1, the store's
 // answer said to leave the outcome open, the form's next step, the broker's answer printed, and
-// no success line.
+// no success line. Nothing it prints judges the store or the broker's answer: not that the write
+// stands, not that the broker refuses or still serves the secret, not a recovery window.
 func assertOpenOutcome(t *testing.T, form, stdout, stderr string, code int, success, next string) {
 	t.Helper()
 	if code != 1 {
@@ -130,4 +132,34 @@ func assertOpenOutcome(t *testing.T, form, stdout, stderr string, code int, succ
 	if !strings.Contains(stdout, "broker: ") {
 		t.Fatalf("%s whose answer was lost: stdout %q prints no broker answer to the reread", form, stdout)
 	}
+	assertNoClaim(t, form, stdout, stderr)
+}
+
+// assertNoClaim fails t where stdout or stderr judges the store or the broker after a write whose
+// outcome is open, in the words reread and printReread judge them in: the write stands, the broker
+// refuses the secret after the write or still serves it after a delete, or a recovery window. The
+// store's own error is not one: a fake's error text may say it refuses.
+func assertNoClaim(t *testing.T, form, stdout, stderr string) {
+	t.Helper()
+	for _, claim := range []string{" stands", "refuses API_KEY after the write", "still serves API_KEY after", "restorable until"} {
+		if strings.Contains(stdout, claim) || strings.Contains(stderr, claim) {
+			t.Fatalf("%s whose answer was lost: its output claims %q: stdout %q stderr %q", form, claim, stdout, stderr)
+		}
+	}
+}
+
+// TestAnOpenOutcomeTheBrokerCannotRereadClaimsNothing: after a write whose answer was lost, the
+// broker refuses the reread (429). The form says the broker could not be asked, claims nothing of
+// the store, and exits 1.
+func TestAnOpenOutcomeTheBrokerCannotRereadClaimsNothing(t *testing.T) {
+	local := secrets.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
+	broker := startSecretBroker(t, servedBy(local))
+	broker.failRereads(http.StatusTooManyRequests)
+	useAWS(t, &raceOnTag{secretsAPI: local, loseAnswer: "put"}, testAccount, adaSignIn)
+	useStdin(t, "v2")
+	stdout, stderr, code := runSecret("set", "API_KEY")
+	if code != 1 || !strings.Contains(stderr, "leaves open whether this write landed") || !strings.Contains(stderr, "could not be asked to reread API_KEY") {
+		t.Fatalf("set whose answer was lost, its reread refused: exit %d stderr %q; want 1, the open outcome and the broker not asked", code, stderr)
+	}
+	assertNoClaim(t, "set", stdout, stderr)
 }

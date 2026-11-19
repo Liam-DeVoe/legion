@@ -302,8 +302,8 @@ func (r sdkTags) UntagResource(ctx context.Context, in *secretsmanager.UntagReso
 // The last step repeats.
 type sdkScript map[string][]string
 
-// sdkServer is a Secrets Manager endpoint that applies tag calls to a Local as its script says,
-// counting each operation's attempts.
+// sdkServer is a Secrets Manager endpoint that applies tag calls and store writes to a Local as
+// its script says, counting each operation's attempts.
 type sdkServer struct {
 	mu       sync.Mutex
 	attempts map[string]int
@@ -339,6 +339,23 @@ func startSDKServer(t *testing.T, local *secrets.Local, script sdkScript) (*secr
 				var in secretsmanager.UntagResourceInput
 				if err = json.Unmarshal(body, &in); err == nil {
 					_, err = local.UntagResource(r.Context(), &in)
+				}
+			case "PutSecretValue":
+				var in secretsmanager.PutSecretValueInput
+				if err = json.Unmarshal(body, &in); err == nil {
+					// The SDK fills a ClientRequestToken, which the Local refuses.
+					in.ClientRequestToken = nil
+					_, err = local.PutSecretValue(r.Context(), &in)
+				}
+			case "DeleteSecret":
+				var in secretsmanager.DeleteSecretInput
+				if err = json.Unmarshal(body, &in); err == nil {
+					_, err = local.DeleteSecret(r.Context(), &in)
+				}
+			case "RestoreSecret":
+				var in secretsmanager.RestoreSecretInput
+				if err = json.Unmarshal(body, &in); err == nil {
+					_, err = local.RestoreSecret(r.Context(), &in)
 				}
 			default:
 				t.Errorf("unexpected operation %q", op)

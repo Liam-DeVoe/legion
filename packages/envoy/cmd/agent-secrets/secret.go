@@ -1028,10 +1028,13 @@ func printReread(s *secretSession, stdout io.Writer, name string, r Reread, dele
 
 // rereadOpen asks the broker to reread name after a write whose answer left open whether it
 // landed, and prints the broker's answer without judging it, since either outcome is possible.
+// When the broker cannot be asked, it says so and names the reread to ask for once the store
+// holds what the person wants, and nothing of when the broker would serve a change on its own:
+// that depends on the write, which may not have landed.
 func rereadOpen(s *secretSession, stdout, stderr io.Writer, form, name string) {
 	r, err := s.broker.RereadSecret(s.ctx, name)
 	if err != nil {
-		fmt.Fprintf(stderr, "agent-secrets %s: %s could not be asked to reread %s, so it serves whatever the store now holds only from its next reload: %v\n", form, s.src.brokerAt(), name, err)
+		fmt.Fprintf(stderr, "agent-secrets %s: %s could not be asked to reread %s: %v. Once the store holds what you want, ask for the reread with `curl -s -X POST \"$AGENT_SECRETS_URL/v1/secrets/%s/reread\"`\n", form, s.src.brokerAt(), name, err, name)
 		return
 	}
 	printReread(s, stdout, name, r, false, nil)
