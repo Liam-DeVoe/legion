@@ -1235,6 +1235,13 @@ export const chipStripFade: Record<"both" | "leading" | "trailing", string> = {
   trailing: "[mask-image:linear-gradient(to_right,#000_calc(100%-48px),#0000)]",
 };
 
+/**
+ * The width of `scrollFadeTrailing`, for code that keeps an item clear of the fade. Tailwind needs
+ * the class as literal text, so the class spells the same number; `classes.test.ts` holds the two
+ * equal.
+ */
+export const scrollFadeTrailingPx = 32;
+
 // ---------------------------------------------------------------------------------------------
 // Spec block marks: editor decorations (`ProofEditorHandle.setBlockMarks`), never classes written
 // into the editor's DOM
