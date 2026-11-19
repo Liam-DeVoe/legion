@@ -1138,11 +1138,13 @@ var answeredHistory = `select answered.kind, answered.id, answered.made_at from 
 // reachedHistory is every person the store's log names on the end graphstore.ToPerson or
 // graphstore.FromPerson keeps a person on, asserted or retracted since, as (kind, id, at)
 // (storedAuthors): the far end of a delivered_to or a mentions, read as answeredHistory reads its
-// people, through graph_tuples_inbound, and the near end of a participates_in or of a mark
-// (read_through, cleared, reply_read, dismissed, snoozed), through graph_tuples_current. Each of
-// those writers makes the person's node in the statement that states the tuple, so each such
-// person is a node the store must hold, whatever row named them when the tuple was written: the
-// person an ask waited on before it closed or moved, a person whose row a removal deleted.
+// people, through an index led by the far end and the kind (graph_tuples_inbound or
+// graph_tuples_as_of_in), and the near end of a participates_in or of a mark (read_through,
+// cleared, reply_read, dismissed, snoozed), through graph_tuples_current, whose partial predicate
+// those literal kinds prove where that index leaves the delivery kind out. Each of those writers
+// makes the person's node in the statement that states the tuple, so each such person is a node the
+// store must hold, whatever row named them when the tuple was written: the person an ask waited on
+// before it closed or moved, a person whose row a removal deleted.
 var reachedHistory = `select reached.kind, reached.id, reached.made_at from graph_nodes reached
 		where reached.kind = '` + graphstore.KindPerson + `' and (exists (
 			select 1 from graph_tuples t

@@ -32,11 +32,12 @@
 --
 -- Each of the two forms has an arm of its own over the tuples, the last two, as the message block
 -- form has: each renders its far end's kind as a constant, never as an expression over the
--- tuple's kind, so a read keyed on the far end binds graph_tuples_inbound's leading columns, and a
--- read keyed on the near end binds graph_tuples_current's. The tuple arm renders a comment's
--- `replies_to` to a comment or an ask and its `answers` to a comment under their own kinds, which
--- are the tuple's columns, and leaves out the `replies_to` whose far end is a block (its `projects`
--- case names `comment` and `ask` far ends alone).
+-- tuple's kind, so a read keyed on the far end binds the leading columns of an index led by the
+-- far end and the kind (graph_tuples_inbound's or graph_tuples_as_of_in's), and a read keyed on the
+-- near end binds graph_tuples_current's, whose partial predicate the arm's literal kind proves. The
+-- tuple arm renders a comment's `replies_to` to a comment or an ask and its `answers` to a comment
+-- under their own kinds, which are the tuple's columns, and leaves out the `replies_to` whose far
+-- end is a block (its `projects` case names `comment` and `ask` far ends alone).
 --
 -- Measured on this pod's PostgreSQL 18.6 over 708,845 tuples across 16 far-end kinds, 20,555 of
 -- them a comment's replies to a block, beside the seed at scale 0.01: every keyed read walks

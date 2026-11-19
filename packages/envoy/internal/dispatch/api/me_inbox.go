@@ -33,8 +33,10 @@ import (
 // node that holds a current relation to the caller's own person node, at either end of it, each
 // answered once with every relation kind that ties it to them. It takes its relation kinds from the
 // store and from no list here, so a kind a later write appends is an entry of this read the day it is
-// appended; this file names the identity tuple alone (graphstore.TupleAliasOf), which ties a session
-// the server proved to its person and puts nothing in the answer.
+// appended. This file names two kinds, neither as an entry's: the identity tuple
+// (graphstore.TupleAliasOf), which ties a session the server proved to its person and puts nothing
+// in the answer, and the delivery kind, which runs out of no node of the person's and which the reads
+// out of those nodes leave out for an index's sake (meInboxOutOfPerson).
 //
 // The whole answer is one statement (meInboxStatement), which a reader observes rather than infers
 // (TestOneReadAnswersEveryRelationToThePersonsNode). Its rows are the entries, one row an entry and
@@ -60,6 +62,13 @@ const (
 	meInboxInbound  = "inbound"
 	meInboxOutbound = "outbound"
 )
+
+// meInboxOutOfPerson is stated beside the kind a column binds in the two reads out of the person's
+// nodes, the skip over their kinds and the walk out of them, so a generic plan of each can take
+// graph_tuples_current where that index is partial on leaving the delivery kind out: a column proves
+// nothing of that predicate, and this literal does. No delivery runs out of a person or a session,
+// so it leaves out nothing those reads would answer.
+const meInboxOutOfPerson = `t.kind <> '` + graphstore.TupleDeliveredTo + `'`
 
 // The kinds of row the page draws, as an entry's page column names them (meInboxPageRows).
 const (
@@ -1011,8 +1020,9 @@ func meInboxTextOf(shape meInboxShape) *meInboxText {
 // and answers it with the constants it binds after them.
 //
 // The relations are read once either way, by the walk: the distinct relation kinds that touch each
-// of the person's nodes, read by a skip over graph_tuples_inbound and graph_tuples_current (one index
-// probe a kind, kinds_in and kinds_out), then each kind's current tuples through
+// of the person's nodes, read by a skip over an index led by the far end and the kind
+// (graph_tuples_inbound or graph_tuples_as_of_in) and one over graph_tuples_current (one index probe
+// a kind, kinds_in and kinds_out), then each kind's current tuples through
 // graphstore.CurrentTupleRead, one index range a kind, each relation kind and end once a node
 // (tied). With no state the entries are those nodes. Under a state they are the page's own rows
 // in that state, read from the caches the page's lists read (meInboxPageRows). Either way the page's
@@ -1077,7 +1087,7 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 		from kinds_out k
 		cross join lateral (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.at, t.asserted`,
 		`t.from_kind = k.node_kind and t.from_id = k.node_id and t.kind = k.kind
-				and t.to_kind <> '`+graphstore.KindValue+`' and `+atHorizon) + `) stated
+				and t.to_kind <> '`+graphstore.KindValue+`' and `+meInboxOutOfPerson+` and `+atHorizon) + `) stated
 		where ` + readKind("k.kind") + ` and stated.asserted
 	),
 	-- Each relation kind and end that ties a node to the person, once, with its newest moment: the
@@ -1183,13 +1193,19 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 }
 
 // meInboxKindSkip lists the distinct relation kinds that touch each of the person's nodes at one end
-// - to, the tuples into it, read through graph_tuples_inbound, or from, those out of it, through
-// graph_tuples_current - by a recursive skip: each step reads the least kind past the one before off
-// the index, so a kind costs one probe however many tuples it holds, and no kind is named in Go.
-// graphstore.TuplesIntoNode says why a statement naming no kind would otherwise read the log.
+// - to, the tuples into it, read through an index led by the far end and the kind
+// (graph_tuples_inbound or graph_tuples_as_of_in), or from, those out of it, through
+// graph_tuples_current, beside meInboxOutOfPerson - by a recursive skip: each step reads the least
+// kind past the one before off the index, so a kind costs one probe however many tuples it holds,
+// and no kind is named in Go. graphstore.TuplesIntoNode says why a statement naming no kind would
+// otherwise read the log.
 func meInboxKindSkip(name, end string) string {
+	out := ``
+	if end == "from" {
+		out = ` and ` + meInboxOutOfPerson
+	}
 	at := func(kind, id string) string {
-		return `t.` + end + `_kind = ` + kind + ` and t.` + end + `_id = ` + id + ` and t.to_kind <> '` + graphstore.KindValue + `'`
+		return `t.` + end + `_kind = ` + kind + ` and t.` + end + `_id = ` + id + ` and t.to_kind <> '` + graphstore.KindValue + `'` + out
 	}
 	return name + `(node_kind, node_id, kind) as (
 		select n.kind, n.id, (select min(t.kind) from graph_tuples t where ` + at("n.kind", "n.id") + `)

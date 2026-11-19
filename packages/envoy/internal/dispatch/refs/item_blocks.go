@@ -1013,9 +1013,12 @@ func itemBlockMakers(kind ItemKind, itemID string, rows []itemBlockRow) ([]*stri
 // is written (placed, block ids in body order, and addresses, their nodes' addresses): held is the
 // address of each the store places in the item now, read the way the store reads a current
 // relation (graphstore.CurrentTupleRead), in one statement for every block rather than one per
-// block, through graph_tuples_inbound, whose columns the read binds up to the block's address.
-// The read waits on no answer of the rows the revision writes and reads nothing they write, so it
-// is queued on their batch (queueItemBlockPlaces) and held is read once that batch is sent.
+// block. The read binds both ends of the relation and its kind: a plan that knows the bound values
+// keys all five columns in one index (graph_tuples_inbound or graph_tuples_current), and a generic
+// plan, to which a bound to_kind proves nothing of the read indexes' partial predicates, keys
+// graph_tuples_as_of_out on the blocks' addresses and the kind. The read waits on no answer of the
+// rows the revision writes and reads nothing they write, so it is queued on their batch
+// (queueItemBlockPlaces) and held is read once that batch is sent.
 type itemBlockPlaces struct {
 	kind              ItemKind
 	itemID            string

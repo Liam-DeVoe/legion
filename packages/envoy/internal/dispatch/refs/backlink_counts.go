@@ -747,11 +747,12 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 			liveVisibleNode("block", `r.from_id`)),
 		// The links of every item's blocks in the store, in one arm as the view's item block arm
 		// reads them (migration 20261116140008): the current tuples out of a `block` node whose
-		// address an item kind's prefix names, read through graph_tuples_inbound once whichever
-		// item the block is of, each counted only while its link row in that item kind's table
-		// names the block's node and that block stands (itemLinkCarries), and its citing block
-		// tested by the view's state rule over its node and the predicate of the address form
-		// the view renders it under (blockNodeVisibleAs), each chosen by the same prefix.
+		// address an item kind's prefix names, read through an index led by the far end
+		// (graph_tuples_inbound or graph_tuples_as_of_in) once whichever item the block is of, each
+		// counted only while its link row in that item kind's table names the block's node and that
+		// block stands (itemLinkCarries), and its citing block tested by the view's state rule over
+		// its node and the predicate of the address form the view renders it under
+		// (blockNodeVisibleAs), each chosen by the same prefix.
 		arm(`graph_tuples r`, ` and r.from_kind = '`+BlockNodeKind+`' and `+ItemBlockAddress(`r.from_id`)+`
 			and r.kind <> '`+graphstore.TuplePartOf+`' and `+currentTuple("r")+` and `+itemLinkCarried,
 			itemBlockVisible),
@@ -769,11 +770,12 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		tables, _ := item.tables()
 		arms = append(arms,
 			// An item's citations in the store: the current `mentions` tuples out of the item's
-			// node, through graph_tuples_inbound, each counted only while the refs row of its pair
-			// stands holding tuples_stored (citationCarries), as the view's tuple arm joins it, and
-			// held by no block of the item as its refs row would be (heldByABlock over the tuple's
-			// own columns). Its test of the citing item is the view's state rule and the item
-			// kind's predicate out of one read of its node row (liveVisibleNode).
+			// node, through an index led by the far end and the kind (graph_tuples_inbound or
+			// graph_tuples_as_of_in), each counted only while the refs row of its pair stands
+			// holding tuples_stored (citationCarries), as the view's tuple arm joins it, and held by
+			// no block of the item as its refs row would be (heldByABlock over the tuple's own
+			// columns). Its test of the citing item is the view's state rule and the item kind's
+			// predicate out of one read of its node row (liveVisibleNode).
 			arm(`graph_tuples r`, ` and r.from_kind = '`+string(item)+`' and r.kind = 'mentions' and `+currentTuple("r")+`
 				and `+citationCarries("r")+` and not `+heldByABlock("r"),
 				liveVisibleNode(string(item), `r.from_id`)),

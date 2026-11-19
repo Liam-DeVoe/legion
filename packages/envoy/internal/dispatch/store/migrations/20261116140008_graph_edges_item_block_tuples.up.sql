@@ -43,9 +43,12 @@
 -- predicate leaves free, so a read keyed on the far end binds (to_kind, to_id) and walks the block
 -- tuples into that node once, and a read keyed on the near end binds from_id beside the arm's own
 -- from_kind of `block` in graph_tuples_current; the rule of 20261116114517 against a case is the
--- tuple arm's, whose kind columns no predicate fixes. The tuple arm leaves out every tuple out of
--- an address the item block arm keeps, by the same filter negated, so the two split the store's
--- block tuples: none is answered by both, and none by neither.
+-- tuple arm's, whose kind columns no predicate fixes. The arm states `kind <> 'delivered_to'`, which
+-- leaves out no tuple, since no block states a delivery, so a plan of a read keyed on the near end
+-- proves graph_tuples_current's partial predicate where that index leaves that kind out, as no
+-- kind column can. The tuple arm leaves out every tuple out of an address the item block arm
+-- keeps, by the same filter negated, so the two split the store's block tuples: none is answered
+-- by both, and none by neither.
 --
 -- Two rules of 20261109215947 hold through this. A `part_of` whose from_kind is `block` is still
 -- left out of the tuple arm (its `projects` case names none), because a document's block states a
@@ -370,6 +373,8 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
     from graph_tuples tuple
     where tuple.from_kind = 'block' and tuple.to_kind <> 'value'
       and (tuple.from_id like 'comment/%' or tuple.from_id like 'message/%' or tuple.from_id like 'ask/%')
+      -- No block states a delivery: the literal proves graph_tuples_current's partial predicate.
+      and tuple.kind <> 'delivered_to'
     order by tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_id, tuple.seq desc
   ) edge
   join graph_nodes node on node.kind = 'block' and node.id = edge.from_id

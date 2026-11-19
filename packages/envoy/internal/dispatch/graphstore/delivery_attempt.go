@@ -374,8 +374,9 @@ type heldValue struct {
 // readAttemptFacts reads, in one statement, what the store holds of every node rows names: the
 // newest tuple of each value kind, which says whether the node carries that value now and which,
 // and each relation the node currently asserts (CurrentTupleRead), both bounded to the kinds an
-// attempt states. The two halves read graph_tuples_values and graph_tuples_current, each led by
-// the node's own address.
+// attempt states. The value half reads graph_tuples_values; the relation half reads delivered_to
+// among its kinds, so it reads graph_tuples_current only where that index holds that kind, and
+// graph_tuples_as_of_out otherwise. Each index is led by the node's own address.
 func readAttemptFacts(ctx context.Context, tx pgx.Tx, rows []attemptRow) (map[string]attemptFacts, error) {
 	ids := make([]string, 0, len(rows))
 	for _, row := range rows {
