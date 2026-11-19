@@ -119,7 +119,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/projects/{key}/architecture-source":  reads("one project's first architecture source", byProject, readclass.Project),
 	"GET /api/v1/projects/{key}/architecture":         reads("one project's components and the issues attached to them", byProject, readclass.Project),
 	"GET /api/v1/projects/{key}/access":               reads("one project's access list, which names people", byProject, readclass.Project, readclass.People),
-	"GET /api/v1/projects/{key}/legion/daemon":        reads("one project's Legion daemon setting", byProject, readclass.Project),
+	"GET /api/v1/projects/{key}/legion/daemon":        reads("which Legion daemon the deployment reads one project's state from: the deployment's setting, as its writes are, under a project the caller must see", byProject, readclass.Deployment, readclass.Project),
 	"GET /api/v1/projects/{key}/legion/board":         reads("one project's Legion board: its issues, as its daemon reports them, and the issues a blocker link holds each on", byProject, readclass.Project),
 	"GET /api/v1/near-copy-checks":                    reads("one project's near-copy gate answers, each naming issues of that project", nil, readclass.Project),
 	"GET /api/v1/near-copy-checks/{id}":               reads("one near-copy gate answer, of one project", readProbe{"id": probeNearCopyCheck}, readclass.Project),

@@ -79,8 +79,9 @@ export function SettingsPage(): ReactNode {
   const mappings = useQuery({ queryKey: ["repo-projects"], queryFn: () => api.listRepoProjects() });
   const projects = useQuery(projectsQuery());
   // A restricted member reads none of the deployment's own rows (`useRestrictedMember`): no
-  // group list, no delivery settings and no credential list, so their Settings draws no Groups
-  // and no Delivery timeline. Their own grants and sign-ins are theirs to read.
+  // group list, no delivery settings, no credential list and no Legion daemon setting, so their
+  // Settings draws no Groups, no Delivery timeline and no Legion. Their own grants and sign-ins
+  // are theirs to read.
   const restricted = useRestrictedMember();
   // Whether this Dispatch has a secrets broker, without which Live grants and Sign-ins have
   // nothing to list: the credential list answers `null` where it has none. A restricted member
@@ -379,7 +380,7 @@ export function SettingsPage(): ReactNode {
           </section>
         )}
         <IssuePagePreference />
-        <LegionDaemonsSection />
+        {restricted ? null : <LegionDaemonsSection />}
       </div>
     </section>
   );

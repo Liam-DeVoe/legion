@@ -12,10 +12,16 @@ import { credentialPendingQuery } from "../credentials/pending";
 import { SettingsPage } from "./SettingsPage";
 
 /** The page, signed in as `user` through the identity the shell already read, or with no
- *  identity read yet when none is given; it answers the page's query client. */
+ *  identity read yet when none is given; it answers the page's query client. A given identity is
+ *  fresh for the whole test: every section that reads `/auth/whoami` (the restricted gate,
+ *  `useIsHuman`) reads that answer, as the server would answer it again, and no refetch swaps in
+ *  the full member `stubUnrelatedQueries` answers for a test that names nobody. */
 function renderPage(user?: AuthenticatedUser): QueryClient {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  if (user !== undefined) queryClient.setQueryData(whoAmIQuery().queryKey, user);
+  if (user !== undefined) {
+    queryClient.setQueryDefaults(whoAmIQuery().queryKey, { staleTime: Number.POSITIVE_INFINITY });
+    queryClient.setQueryData(whoAmIQuery().queryKey, user);
+  }
   render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
@@ -330,6 +336,8 @@ test("a full member's Settings draws every section from the reads it always made
       "Repositories → Projects",
       "Architecture sources",
       "Delivery timeline",
+      "Preview",
+      "Legion",
     ]);
     expect(getCredentialPending).toHaveBeenCalled();
     expect(unrelated.listAccessGroups).toHaveBeenCalled();
@@ -345,9 +353,10 @@ test("a full member's Settings draws every section from the reads it always made
 
 // A restricted member reads only the projects that name them, and Dispatch refuses them every
 // read of the deployment's own rows (403 DEPLOYMENT_READ_REFUSED): the groups, the delivery
-// settings and the credential list. Their Settings asks for none of them and draws no Groups and
-// no Delivery timeline. Their own grants and sign-ins are theirs to read, so those two sections
-// stand on the grants read itself, which answers wherever this Dispatch has a secrets broker.
+// settings, the credential list and the Legion daemon setting. Their Settings asks for none of them
+// and draws no Groups, no Delivery timeline and no Legion. Their own grants and sign-ins are theirs
+// to read, so those two sections stand on the grants read itself, which answers wherever this
+// Dispatch has a secrets broker. Preview is kept in the browser and reads nothing.
 test("a restricted member's Settings asks no deployment read, and keeps their own grants and sign-ins", async () => {
   const unrelated = stubUnrelatedQueries();
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue({
@@ -372,10 +381,12 @@ test("a restricted member's Settings asks no deployment read, and keeps their ow
       "Sign-ins",
       "Repositories → Projects",
       "Architecture sources",
+      "Preview",
     ]);
     expect(getCredentialPending).not.toHaveBeenCalled();
     expect(unrelated.listAccessGroups).not.toHaveBeenCalled();
     expect(unrelated.getDeliverySettings).not.toHaveBeenCalled();
+    expect(unrelated.getLegionDaemon).not.toHaveBeenCalled();
   } finally {
     cleanup();
     getCredentialPending.mockRestore();

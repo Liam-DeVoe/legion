@@ -3955,7 +3955,8 @@ test("a row back after its session left mid-send holds the send it left until it
     expect(choose().disabled).toBe(true);
     expect(held()).toBe(true);
     expect(field().value).toBe("Status please");
-    field().focus();
+    // The focus runs the composer's own focus handler, a state update, so it is given inside act.
+    act(() => field().focus());
     await user.keyboard("x");
     expect(field().value).toBe("Status please");
 
