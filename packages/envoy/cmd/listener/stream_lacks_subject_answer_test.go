@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // A send or publish the notifications stream did not take because it carries no subject capturing
@@ -62,7 +63,7 @@ func TestAStreamThatLacksTheSubjectIsAnsweredAsSuchNotAsABusThatDidNotAnswer(t *
 				if got := recorder.Header().Get("Retry-After"); got != "1" {
 					t.Fatalf("Retry-After = %q, want 1: the same message is taken once the stream stores its subject", got)
 				}
-				var refusal apiError
+				var refusal listenerwire.APIError
 				if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 					t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 				}

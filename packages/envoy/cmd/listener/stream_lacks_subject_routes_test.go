@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // subjectsWithout is every subject this build carries except those that capture subject: the
@@ -67,7 +68,7 @@ func TestEveryRouteThatEndsInAStoredPublishAnswersAStreamThatLacksTheSubjectAtOn
 		t.Helper()
 		started := time.Now()
 		recorder, record := serveRecorded(t, build, request)
-		var refusal apiError
+		var refusal listenerwire.APIError
 		_ = json.Unmarshal(recorder.Body.Bytes(), &refusal)
 		a := answer{status: recorder.Code, retryAfter: recorder.Header().Get("Retry-After"), body: refusal.Error, record: record, elapsed: time.Since(started)}
 		line, _ := json.Marshal(record)
