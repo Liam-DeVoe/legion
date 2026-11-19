@@ -479,16 +479,18 @@ type DecisionMark struct {
 	Rest     int       `json:"rest,omitempty"`
 }
 
-// ChecksRedRecord is the notice that the head conflicts with its base and the daemon moved the
-// issue (workflow's NoticeFor for a conflict): the phase it left, the base, the head and the pull
-// request. The base is absent where the daemon has not recorded it, as for a pull request recorded
-// before the daemon kept the base (record.PullRequest.Base).
+// ChecksRedRecord is the notice that the daemon asked the implementer to merge the base forward
+// onto a head that conflicts with its base (workflow's mergeForward): the phase the issue stays
+// in, the base, the head, the pull request and why the daemon acted (record.ConflictWhy's word).
+// The base is absent where the daemon has not recorded it, as for a pull request recorded before
+// the daemon kept the base (record.PullRequest.Base).
 type ChecksRedRecord struct {
 	NoticeHead
 	Phase         phase.Phase `json:"phase,omitempty"`
 	ConflictsWith string      `json:"conflicts_with,omitempty"`
 	Head          string      `json:"head"`
 	PullRequest   string      `json:"pull_request"`
+	Why           string      `json:"why"`
 }
 
 // The summary words of a review-stuck notice: the fact that wrote it. dispatch://INFRA-3498's R4

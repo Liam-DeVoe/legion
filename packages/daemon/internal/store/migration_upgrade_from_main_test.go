@@ -64,8 +64,10 @@ import (
 // whose columns it fills, and none of them touches outbox_kind_check.
 // dispatch://INFRA-1997's commit statuses of the checked head (20261117112334) are named here too:
 // that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337,
-// so an upgrade of a database main migrated applies it just before that one, which adds
-// pull_requests.statuses at its default, the empty list, and it touches no outbox_kind_check.
+// dispatch://INFRA-3686's 20261118092930 and 20261118101218, and dispatch://INFRA-4374's
+// 20261119003157, so an upgrade of a database main migrated applies it just before those four. It
+// adds pull_requests.statuses at its default, the empty list, and it touches no
+// outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
 // (migration_20261116234034_test.go), and it touches no outbox_kind_check.
@@ -80,18 +82,25 @@ import (
 // the reviewer's reviewed commit: it names every kind the merge-queue list names and its own.
 // The two kind lists above it are named here too: the step record's (20261117000528) restates
 // 20261116165926's kinds with step_record, and the plan record's (20261117023932) restates those
-// with plan_record. It stands above every other version of the list that rewrites
-// outbox_kind_check, so an upgrade applies it after all of them and it is the last word of that
-// check. The count of starts of each step (20261117004117) creates tables and a function of its
-// own, and its roll forward (20261117064152) changes nothing on a database no rollback touched;
-// neither touches outbox_kind_check.
+// with plan_record. They stand above every other version of the list that rewrites
+// outbox_kind_check but this branch's 20261119003157, so an upgrade applies them after all the
+// others and before that one. The count of starts of each step (20261117004117) creates tables
+// and a function of its own, and its roll forward (20261117064152) changes nothing on a database
+// no rollback touched; neither touches outbox_kind_check.
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued. dispatch://INFRA-3686's words of a person's acts (20261118092930) stand above
 // all of them and are applied after them; they add four columns, three to root_asks and
 // parked_decisions and one to design_gates, and touch no outbox_kind_check. Its update round's
-// drift items (20261118101218) come last; they add one column to claims and touch no
+// drift items (20261118101218) come after those; they add one column to claims and touch no
 // outbox_kind_check.
+// dispatch://INFRA-4374's kind list with the conflict's second read and the merge forward
+// (20261119003157) stands above every other version of this list, INFRA-3686's two included, so it
+// is applied last, and it is the last of them to rewrite outbox_kind_check: it is now that
+// constraint's last word, and it names every kind the plan-record list names and its own two,
+// phase_ended among them, kept for a rollback. The same migration deletes the queued phase_ended
+// rows, the seeded one below among them, and adds pull_requests.conflict_read and
+// pull_requests.merge_forward, both null on every row it finds.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -101,6 +110,7 @@ var thisBranchsMigrations = []int{
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261116144907, 20261116165926, 20261116234034, 20261117000528, 20261117004117,
 	20261117023932, 20261117064152, 20261117112334, 20261117200337, 20261118092930, 20261118101218,
+	20261119003157,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -115,9 +125,9 @@ var thisBranchsMigrations = []int{
 // step records' three: the kind list with the step record (20261117000528), the count of starts of
 // each step (20261117004117) and its roll forward (20261117064152), the kind list with the plan
 // record (20261117023932), dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
-// 20261117200337 and dispatch://INFRA-3686's 20261118092930 and 20261118101218. That is why the
-// loop below holds the list rather than counting it, so that a version added above any of them is
-// named here rather than read as main's.
+// 20261117200337, dispatch://INFRA-3686's 20261118092930 and 20261118101218, and
+// dispatch://INFRA-4374's 20261119003157. That is why the loop below holds the list rather than
+// counting it, so that a version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
@@ -233,6 +243,13 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	}
 	if merged != 0 {
 		t.Fatalf("merge-lane rows after the upgrade = %d, want 20261029120800 to have deleted every one", merged)
+	}
+	var ended int
+	if err := store.pool.QueryRow(ctx, `select count(*) from outbox where kind = 'phase_ended'`).Scan(&ended); err != nil {
+		t.Fatalf("count the phase-ended rows the upgrade left: %v", err)
+	}
+	if ended != 0 {
+		t.Fatalf("phase_ended rows after the upgrade = %d, want 20261119003157 to have deleted the one main's daemon queued", ended)
 	}
 }
 

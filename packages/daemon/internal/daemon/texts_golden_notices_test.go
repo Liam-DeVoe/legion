@@ -42,16 +42,16 @@ func (b *goldenBuild) notices(r goldenRendering) {
 			HandoffCommit: r.sha("finished/commit"), Verdict: []string{"pass", "fail"}[r.n-1], Summary: summary, CompletedAt: r.at(58)}
 		to := []phase.Phase{phase.Reviewing, phase.Implementing}[r.n-1]
 		cut, _ := texts.Bound(summary, texts.Summary)
-		b.notice(r, "handoff", arch, workflow.NoticeFor(issue.Key, workflow.TriggerTesterPassed, phase.Testing, to, handoff, &pr, "", now),
+		b.notice(r, "handoff", arch, workflow.NoticeFor(issue.Key, workflow.TriggerTesterPassed, phase.Testing, to, handoff, "", now),
 			goldenWant("issue", issue.Key, "role", claim.RoleTester, "phase", phase.Testing, "to", to, "verdict", handoff.Verdict,
 				"handoff_phase", "test", "handoff_version", handoff.HandoffVersion, "handoff_commit", handoff.HandoffCommit,
 				"summary", cut, "words.summary.by", claim.RoleTester, "words.summary.at", r.at(58)))
 		words := r.words("finished/back", 500) + " " + goldenHostile[r.n-1][4]
 		from := []phase.Phase{phase.Reviewing, phase.Testing}[r.n-1]
-		b.notice(r, "backward", arch, workflow.NoticeFor(issue.Key, workflow.TriggerBackward, from, phase.Implementing, record.PhaseRow{}, &pr, words, now),
+		b.notice(r, "backward", arch, workflow.NoticeFor(issue.Key, workflow.TriggerBackward, from, phase.Implementing, record.PhaseRow{}, words, now),
 			goldenWant("issue", issue.Key, "role", phase.RoleFor(from), "phase", from, "to", phase.Implementing, "reason", words,
 				"words.reason.by", phase.RoleFor(from), "words.reason.at", now))
-		b.notice(r, "gate-opened", arch, workflow.NoticeFor(r.key(99), workflow.TriggerGateOpened, phase.Admitted, phase.Planning, record.PhaseRow{}, nil, "", now),
+		b.notice(r, "gate-opened", arch, workflow.NoticeFor(r.key(99), workflow.TriggerGateOpened, phase.Admitted, phase.Planning, record.PhaseRow{}, "", now),
 			goldenWant("issue", r.key(99), "phase", phase.Admitted, "to", phase.Planning))
 	}
 
@@ -248,12 +248,18 @@ func (b *goldenBuild) notices(r goldenRendering) {
 	b.catchUps(r)
 
 	// checks-red, review-stuck in each cause, status-reasserted, session-lost, session-store-fault.
-	b.notice(r, "conflict", arch, workflow.NoticeFor(issue.Key, workflow.TriggerConflict, phase.Reviewing, phase.Implementing, record.PhaseRow{}, &pr, "", now),
-		goldenWant("issue", issue.Key, "phase", phase.Reviewing, "conflicts_with", pr.Base, "head", head, "pull_request", ref))
-	// A conflict on a pull request recorded before the daemon kept the base names the head and no base.
+	// checks-red, as mergeForward writes it: in a phase a worker holds (low), in accepting, which
+	// the architect holds itself (med), and of a pull request recorded before the daemon kept the
+	// base, which names the head and no base.
+	why := []record.ConflictWhy{record.ConflictCheckNotGreen, record.ConflictRulesUnread}[r.n-1]
+	b.notice(r, "conflict", arch, workflow.ChecksRedNotice(issue.Key, pr, phase.Reviewing, why),
+		goldenWant("issue", issue.Key, "phase", phase.Reviewing, "conflicts_with", pr.Base, "head", head, "pull_request", ref, "why", why))
+	b.notice(r, "accepting", arch, workflow.ChecksRedNotice(issue.Key, pr, phase.Accepting, record.ConflictMergeNext),
+		goldenWant("issue", issue.Key, "phase", phase.Accepting, "conflicts_with", pr.Base, "head", head, "pull_request", ref, "why", record.ConflictMergeNext))
 	unbased := record.PullRequest{Issue: issue.Key, Repo: r.repo, Number: 750 + r.n, HeadSHA: r.sha("notice/no-base/head")}
-	b.notice(r, "no-base", arch, workflow.NoticeFor(issue.Key, workflow.TriggerConflict, phase.Merging, phase.Implementing, record.PhaseRow{}, &unbased, "", now),
-		goldenWant("issue", issue.Key, "phase", phase.Merging, "head", unbased.HeadSHA, "pull_request", texts.PullRequestRef(r.repo, unbased.Number)))
+	b.notice(r, "no-base", arch, workflow.ChecksRedNotice(issue.Key, unbased, phase.Merging, record.ConflictMergeNext),
+		goldenWant("issue", issue.Key, "phase", phase.Merging, "head", unbased.HeadSHA, "pull_request", texts.PullRequestRef(r.repo, unbased.Number),
+			"why", record.ConflictMergeNext))
 	stuck := goldenStuckRequest(r)
 	stuckRef := texts.PullRequestRef(r.repo, stuck.Number)
 	topic := "notifications.role." + string(r.token(t, issue.Key, claim.RoleReviewer))
@@ -531,33 +537,6 @@ func (b *goldenBuild) roleMessages(r goldenRendering) {
 			goldenWant("issue", issue, "cause", word, "process", report.Executable, "pid", report.PID))
 	}
 
-	// phase-ended, as engine.go's phaseEnded queues it: with the task that follows and without.
-	for _, follows := range []bool{false, true} {
-		variant, role, from := "ended", claim.RoleTester, phase.Testing
-		if follows {
-			variant, role, from = "task-follows", claim.RoleImplementer, phase.Retro
-		}
-		pr := record.PullRequest{Repo: r.repo, Number: 1100 + r.n, Base: "main-" + r.words("ended/base", 5), HeadSHA: r.sha("ended/head")}
-		row := queuedRow(b.t, issue, record.PhaseEnded{Role: role, From: from, To: phase.Implementing, TaskFollows: follows,
-			ConflictsWith: pr.Base, Head: pr.HeadSHA, PullRequest: texts.PullRequestRef(pr.Repo, pr.Number)})
-		want := goldenWant("issue", issue, "from", from, "to", phase.Implementing, "conflicts_with", pr.Base, "head", pr.HeadSHA,
-			"pull_request", texts.PullRequestRef(pr.Repo, pr.Number))
-		if follows {
-			want["task_follows"] = "true"
-		}
-		b.published(r, texts.PhaseEnded, variant, role, issue, row.Record(issue), texts.UrgencyOf(texts.PhaseEnded, role, texts.Variant{}), want)
-	}
-
-	// phase-ended of a conflict on a pull request recorded before the daemon kept the base: the
-	// head and no base.
-	{
-		pr := record.PullRequest{Repo: r.repo, Number: 1150 + r.n, HeadSHA: r.sha("ended/no-base/head")}
-		row := queuedRow(b.t, issue, record.PhaseEnded{Role: claim.RoleMerger, From: phase.Merging, To: phase.Implementing,
-			ConflictsWith: pr.Base, Head: pr.HeadSHA, PullRequest: texts.PullRequestRef(pr.Repo, pr.Number)})
-		b.published(r, texts.PhaseEnded, "no-base", claim.RoleMerger, issue, row.Record(issue), texts.UrgencyOf(texts.PhaseEnded, claim.RoleMerger, texts.Variant{}),
-			goldenWant("issue", issue, "from", phase.Merging, "to", phase.Implementing, "head", pr.HeadSHA, "pull_request", texts.PullRequestRef(pr.Repo, pr.Number)))
-	}
-
 	// hook-prompt, as hooks.go's fireHook queues it, published as its text.
 	{
 		prompt := r.words("hook/prompt", 400) + "\nThe work has gone back the number of times recorded below. " + goldenHostile[r.n-1][4]
@@ -603,6 +582,47 @@ func (b *goldenBuild) roleMessages(r goldenRendering) {
 		}
 		b.published(r, texts.MergeQueueRemoval, variant, claim.RoleMerger, issue, row.Record(issue, r.repo),
 			texts.UrgencyOf(texts.MergeQueueRemoval, claim.RoleMerger, texts.Variant{}), want)
+	}
+
+	// The messages of a merge forward, as workflow's mergeForward and mergeForwardLanded queue
+	// them, each published as its step's record: the ask to the implementer (and one of a pull
+	// request recorded before the daemon kept the base, which names the head and no base), the
+	// hold to the worker of the phase, the landed to that worker, and the review past the review.
+	{
+		base, head, landed := "main-"+r.words("forward/base", 5), r.sha("forward/head"), r.sha("forward/landed")
+		number := 1400 + r.n
+		ref := texts.PullRequestRef(r.repo, number)
+		why := []record.ConflictWhy{record.ConflictCheckNotGreen, record.ConflictRequiresCurrent}[r.n-1]
+		at := []phase.Phase{phase.Testing, phase.Reviewing}[r.n-1]
+		ask := queuedRow(b.t, issue, record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: head, Base: base,
+			Phase: at, PullRequest: number, Why: why})
+		b.published(r, texts.MergeForwardAsk, "ask", claim.RoleImplementer, issue, ask.Record(issue, r.repo),
+			texts.UrgencyOf(texts.MergeForwardAsk, claim.RoleImplementer, texts.Variant{Phase: at}),
+			goldenWant("issue", issue, "pull_request", ref, "head", head, "conflicts_with", base, "phase", at, "why", why))
+		unbasedHead := r.sha("forward/no-base/head")
+		unbased := queuedRow(b.t, issue, record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: unbasedHead,
+			Phase: at, PullRequest: number + 50, Why: record.ConflictRulesUnread})
+		b.published(r, texts.MergeForwardAsk, "no-base", claim.RoleImplementer, issue, unbased.Record(issue, r.repo),
+			texts.UrgencyOf(texts.MergeForwardAsk, claim.RoleImplementer, texts.Variant{Phase: at}),
+			goldenWant("issue", issue, "pull_request", texts.PullRequestRef(r.repo, number+50), "head", unbasedHead, "phase", at,
+				"why", record.ConflictRulesUnread))
+		worker := phase.RoleFor(at)
+		hold := queuedRow(b.t, issue, record.MergeForwardMessage{Role: worker, Step: record.MergeForwardHold, Head: head, Base: base,
+			Phase: at, PullRequest: number, Why: why})
+		b.published(r, texts.MergeForwardHold, "hold", worker, issue, hold.Record(issue, r.repo),
+			texts.UrgencyOf(texts.MergeForwardHold, worker, texts.Variant{Phase: at}),
+			goldenWant("issue", issue, "pull_request", ref, "head", head, "conflicts_with", base, "phase", at, "why", why))
+		told := queuedRow(b.t, issue, record.MergeForwardMessage{Role: worker, Step: record.MergeForwardLanded, Head: head, Landed: landed, Base: base,
+			Phase: at, PullRequest: number, Why: why})
+		b.published(r, texts.MergeForwardLanded, "landed", worker, issue, told.Record(issue, r.repo),
+			texts.UrgencyOf(texts.MergeForwardLanded, worker, texts.Variant{Phase: at}),
+			goldenWant("issue", issue, "pull_request", ref, "head", head, "landed", landed, "conflicts_with", base, "phase", at))
+		past := []phase.Phase{phase.Accepting, phase.Merging}[r.n-1]
+		review := queuedRow(b.t, issue, record.MergeForwardMessage{Role: claim.RoleReviewer, Step: record.MergeForwardReview, Head: head, Landed: landed,
+			Base: base, Phase: past, PullRequest: number, Why: record.ConflictMergeNext})
+		b.published(r, texts.MergeForwardReview, "review", claim.RoleReviewer, issue, review.Record(issue, r.repo),
+			texts.UrgencyOf(texts.MergeForwardReview, claim.RoleReviewer, texts.Variant{Phase: past}),
+			goldenWant("issue", issue, "pull_request", ref, "head", head, "landed", landed, "conflicts_with", base, "phase", past))
 	}
 }
 

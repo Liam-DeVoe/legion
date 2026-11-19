@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
@@ -292,168 +291,114 @@ func TestACompletionHandsOnASettledHeadWithoutReadingIt(t *testing.T) {
 	}
 }
 
-// A head that conflicts with its base sends its issue back to implementing from whatever later
-// phase it stands in: GitHub computes no merge ref for a conflicting head, so it runs no checks on
-// it at all and no CI result will ever arrive for it, and only the implementer merging the base
-// forward clears it. The daemon's own read of GitHub's mergeability (workflow's mergeability) is
-// the only path to it, since GitHub sends no event when it recomputes one. The move names the
-// base the implementer must merge forward and counts the return as a pass, so the implementer's
-// completion of the merge is told from its completion of the pass before. GitHub reports
-// mergeability UNKNOWN until it has computed it - that
-// is "not yet known", never a conflict - so an unknown or a mergeable read moves nothing, and
-// neither does a conflict read in implementing, where the work it needs already is.
-func TestAConflictingHeadSendsTheIssueBackToImplementingFromEveryLaterPhase(t *testing.T) {
+// A read of GitHub's mergeability moves no issue, in any phase (dispatch://INFRA-4374 R1): a
+// confirmed conflict that needs a merge is merged forward in the phase the issue stands in
+// (mergeForward, which TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward reads), and
+// GitHub's UNKNOWN, which it answers until it has computed mergeability, and MERGEABLE leave
+// nothing to act on. Nothing goes back, so no worker is started, no status is written, and the
+// implementer is counted no pass and no round. Each case reads the head twice, a minute apart, so
+// a CONFLICTING answer is a confirmed conflict, and every case's base requires a check that is not
+// green on the head, so that conflict needs the merge in every phase.
+func TestNoMergeabilityReadMovesTheIssue(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		from      phase.Phase
-		status    string
-		mergeable record.Mergeability
-		want      phase.Phase
+		name       string
+		at         phase.Phase
+		status     string
+		mergeable  record.Mergeability
+		mergeState record.MergeState
 	}{
-		{"conflicting in testing", phase.Testing, "testing", record.MergeabilityConflicting, phase.Implementing},
-		{"conflicting in reviewing", phase.Reviewing, "needs_review", record.MergeabilityConflicting, phase.Implementing},
-		{"conflicting in accepting", phase.Accepting, "needs_review", record.MergeabilityConflicting, phase.Implementing},
-		{"conflicting in retro", phase.Retro, "retro", record.MergeabilityConflicting, phase.Implementing},
-		{"conflicting in merging", phase.Merging, "retro", record.MergeabilityConflicting, phase.Implementing},
-		{"conflicting in implementing: the work it needs is already there", phase.Implementing, "in_progress", record.MergeabilityConflicting, phase.Implementing},
-		{"unknown in merging: GitHub has not computed it yet", phase.Merging, "retro", record.MergeabilityUnknown, phase.Merging},
-		{"mergeable in merging", phase.Merging, "retro", record.MergeabilityMergeable, phase.Merging},
+		{"conflicting in implementing", phase.Implementing, "in_progress", record.MergeabilityConflicting, record.MergeStateDirty},
+		{"conflicting in testing", phase.Testing, "testing", record.MergeabilityConflicting, record.MergeStateDirty},
+		{"conflicting in reviewing", phase.Reviewing, "needs_review", record.MergeabilityConflicting, record.MergeStateDirty},
+		{"conflicting in accepting", phase.Accepting, "needs_review", record.MergeabilityConflicting, record.MergeStateDirty},
+		{"conflicting in retro", phase.Retro, "retro", record.MergeabilityConflicting, record.MergeStateDirty},
+		{"conflicting in merging", phase.Merging, "retro", record.MergeabilityConflicting, record.MergeStateDirty},
+		{"unknown in merging: GitHub has not computed it yet", phase.Merging, "retro", record.MergeabilityUnknown, record.MergeStateUnknown},
+		{"mergeable in merging", phase.Merging, "retro", record.MergeabilityMergeable, record.MergeStateClean},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := migratedPool(t)
-			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
-				Phase: tc.from, Generation: 1, Status: tc.status, Rank: "U"})
-			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
-				Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head"})
-			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
-			applyRefusingNothing(t, pool, mergingEngine(),
-				intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: "head", Mergeable: tc.mergeable})
-			if got := issuePhase(t, pool); got != tc.want {
-				t.Fatalf("after the mergeability read the issue is in %s, want %s", got, tc.want)
+			pool := seedConflictIssue(t, tc.at, tc.status, settledGreen("lint"))
+			read := conflictingRead(&record.BaseRules{Required: []string{"ci"}})
+			read.Mergeable, read.MergeState = tc.mergeable, tc.mergeState
+			if tc.mergeable != record.MergeabilityConflicting {
+				// A read carries the base's rules only when it finds the head conflicting
+				// (intake.PullRequestMergeability.Rules).
+				read.Rules = nil
 			}
-			if tc.from == tc.want {
-				assertOutboxCount(t, pool, "supervise", 0)
-				if pass := implementerPass(t, pool); pass != 0 {
-					t.Fatalf("pass = %d, want none counted: nothing went back", pass)
-				}
-				return
+			applyRefusingNothing(t, pool, readsAfter(0), read)
+			applyRefusingNothing(t, pool, readsAfter(conflictConfirmWait), read)
+			if got, status := issuePhase(t, pool), recordedStatus(t, pool, "LEGION-208"); got != tc.at || status != tc.status {
+				t.Fatalf("after the two reads the issue is in %s with status %q, want it still in %s with %q", got, status, tc.at, tc.status)
 			}
-			want := []string{"conflicts_with: main", "head: head", "pull_request: sjawhar/legion#42"}
-			red := checksRedNotice(t, pool)
-			var status, posted string
-			if err := pool.QueryRow(context.Background(),
-				"select payload->>'status', coalesce(payload->>'reason', '') from outbox where kind = 'dispatch_status'").Scan(&status, &posted); err != nil {
-				t.Fatalf("read the status write: %v", err)
-			}
-			if task := implementerTask(t, pool); !hasLines(task, want...) || status != "in_progress" {
-				t.Fatalf("task %q, status %q; want the task to name %q and the issue in_progress", task, status, want)
-			}
-			if red.Phase != tc.from || red.ConflictsWith != "main" || red.Head != "head" || red.PullRequest != "sjawhar/legion#42" ||
-				red.Issue != "LEGION-208" || red.Role != "" || red.Reason != "" {
-				t.Fatalf("the checks-red notice is %+v, want LEGION-208 from %s with head head conflicting with main on sjawhar/legion#42, no role and no reason", red, tc.from)
-			}
-			// The move is the daemon's own, so no worker's act on Dispatch says why the issue went
-			// back: the status write posts the reason on the issue first, naming the phase it left,
-			// the pull request and head that conflict, and the base.
-			wantPosted := fmt.Sprintf("Legion moved this issue from %s back to implementing, because pull request #42 at head head conflicts with main. "+
-				"GitHub runs no checks on a head that conflicts with its base, so the implementer merges main forward.", tc.from)
-			if posted != wantPosted {
-				t.Fatalf("the status write posts %q on the issue, want %q", posted, wantPosted)
-			}
-			// The return is a pass and no review round: the implementer answers a conflict with a
-			// forward merge nobody asked it for, so it costs the issue nothing against
-			// review_round_cap.
-			if pass, rounds := implementerPass(t, pool), implementerRounds(t, pool); pass != 1 || rounds != 0 {
-				t.Fatalf("pass = %d, rounds = %d; want the return to implementing counted as a pass and as no round against review_round_cap", pass, rounds)
+			assertOutboxCount(t, pool, "supervise", 0)
+			assertOutboxCount(t, pool, "dispatch_status", 0)
+			if pass, rounds := implementerPass(t, pool), implementerRounds(t, pool); pass != 0 || rounds != 0 {
+				t.Fatalf("pass = %d, rounds = %d; want neither counted: nothing went back", pass, rounds)
 			}
 		})
 	}
 }
 
-// The handler decides on every CONFLICTING read, whether or not the record already said so: the
-// read that found the conflict first may have run while the issue stood in a phase the trigger has
-// no row for, and deciding only on a read that changes the stored value would leave that conflict
-// unacted on for good - every later read of the same CONFLICTING answer "changes" nothing. What
-// stops the repeat from acting twice is the move itself: implementing, where the conflict sends
-// the issue, has no row for the trigger, so the same read again changes nothing and tells nobody
-// a second time.
-func TestEveryConflictingReadDecidesAndTheMoveItselfStopsTheRepeat(t *testing.T) {
-	pool := migratedPool(t)
-	engine := testEngine(config.DesignGateRootIssues, nil)
-	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
-		Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "U"})
-	seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 1, ApprovedVersion: new(1)})
-	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
-		Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merger-claim"})
+// The handler decides on every CONFLICTING read of a head the record already holds conflicting,
+// not only on the read that confirmed it: the confirmation may have come while the issue stood in
+// a phase that needed no merge, and deciding only then would leave that conflict unacted on for
+// good once a later phase needs one. So a read of such a head decides at once, with no first read
+// to wait out. What stops the repeat from asking twice is the ask itself: the record keeps the
+// merge forward it asked for that head (record.PullRequest.MergeForward), so the same read again
+// asks nothing and tells nobody a second time.
+func TestEveryConflictingReadDecidesAndTheAskItselfStopsTheRepeat(t *testing.T) {
+	pool := seedConflictIssue(t, phase.Merging, "retro", record.PullRequest{ConflictingHead: conflictHead})
+	applyRefusingNothing(t, pool, readsAfter(0), conflictingRead(&record.BaseRules{}))
+	if due := conflictConfirms(t, pool); len(due) != 0 {
+		t.Fatalf("second reads due at %v, want none: the record already held the conflict", due)
+	}
+	askedOnce(t, pool, phase.Merging, "retro", record.ConflictMergeNext, claim.RoleMerger)
 
-	conflict := intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: "head", Mergeable: record.MergeabilityConflicting}
-	applyRefusingNothing(t, pool, engine, conflict)
-	if got := issuePhase(t, pool); got != phase.Implementing {
-		t.Fatalf("after the conflicting read the issue is in %s, want implementing: the merger cannot merge a head GitHub will not", got)
-	}
-
-	applyRefusingNothing(t, pool, engine, conflict)
-	if got := issuePhase(t, pool); got != phase.Implementing {
-		t.Fatalf("after the same conflicting read again the issue is in %s, want implementing", got)
-	}
-	var notices int
-	if err := pool.QueryRow(context.Background(), "select count(*) from outbox where kind = 'notice' and payload->>'kind' = 'checks-red'").Scan(&notices); err != nil {
-		t.Fatalf("count the architect's checks-red notices: %v", err)
-	}
-	if red := checksRedNotice(t, pool); notices != 1 || red.ConflictsWith != "main" || red.Head != "head" {
-		t.Fatalf("checks-red notices = %d, the notice %+v; want exactly one of head head conflicting with main", notices, red)
-	}
-	if pass := implementerPass(t, pool); pass != 1 {
-		t.Fatalf("pass = %d, want the one return to implementing counted once", pass)
-	}
+	applyRefusingNothing(t, pool, readsAfter(time.Minute), conflictingRead(&record.BaseRules{}))
+	askedOnce(t, pool, phase.Merging, "retro", record.ConflictMergeNext, claim.RoleMerger)
 }
 
 // A pull request recorded before the daemon kept its base (record.PullRequest.Base) conflicts as
-// any other does: a conflict is its head's, so a conflicting read sends the issue back to
-// implementing. The phase-ended message to the tester whose phase ended, the architect's
-// checks-red notice and the implementer's task name the head and the pull request, and no base:
-// the record holds none, so each leaves conflicts_with out rather than naming an empty base.
-func TestAConflictOnAPullRequestWithNoRecordedBaseSendsTheIssueBack(t *testing.T) {
+// any other does: a conflict is its head's, so a confirmed conflict that needs the merge asks for
+// it, and the issue stays in its phase. The implementer's ask, the tester's hold and the
+// architect's checks-red notice name the head and the pull request, and no base: the record holds
+// none, and no read named one, so each leaves conflicts_with out rather than naming an empty base.
+func TestAConflictOnAPullRequestWithNoRecordedBaseAsksTheMergeForward(t *testing.T) {
 	pool := migratedPool(t)
-	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
-		Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
+	standsIn(t, pool, phase.Testing, "testing")
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
-		Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
-	applyRefusingNothing(t, pool, mergingEngine(),
-		intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, HeadSHA: "head", Mergeable: record.MergeabilityConflicting})
+		Number: 42, Branch: "legion/LEGION-208", HeadSHA: conflictHead, Failing: []string{}})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Entry: 1})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Entry: 1})
+	read := conflictingRead(nil)
+	read.Base = ""
+	applyRefusingNothing(t, pool, readsAfter(0), read)
+	applyRefusingNothing(t, pool, readsAfter(conflictConfirmWait), read)
 	if base := recordedPR(t, pool, "LEGION-208").Base; base != "" {
 		t.Fatalf("the pull request records the base %q; this test is of one that records none", base)
 	}
-	if got := issuePhase(t, pool); got != phase.Implementing {
-		t.Fatalf("after the conflicting read the issue is in %s, want implementing", got)
+	if got := issuePhase(t, pool); got != phase.Testing {
+		t.Fatalf("after the confirmed conflict the issue is in %s, want testing", got)
 	}
 
-	var payload []byte
-	if err := pool.QueryRow(context.Background(), "select payload from outbox where kind = $1 and issue = 'LEGION-208'",
-		string(record.OutboxKindPhaseEnded)).Scan(&payload); err != nil {
-		t.Fatalf("read the tester's phase-ended message: %v", err)
+	messages := mergeForwardMessages(t, pool)
+	if len(messages) != 2 {
+		t.Fatalf("merge-forward messages %+v, want the implementer's ask and the tester's hold", messages)
 	}
-	var ended record.PhaseEnded
-	if err := json.Unmarshal(payload, &ended); err != nil {
-		t.Fatalf("decode the phase-ended row %s: %v", payload, err)
-	}
-	if want := (record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Head: "head", PullRequest: "sjawhar/legion#42"}); ended != want {
-		t.Fatalf("the phase-ended row is %+v, want %+v", ended, want)
-	}
-	published, err := json.Marshal(ended.Record("LEGION-208"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(published), "conflicts_with") || !strings.Contains(string(published), `"head":"head"`) {
-		t.Fatalf("the phase-ended message is %s, want the head and no base", published)
+	for _, message := range messages {
+		published, err := json.Marshal(message.Record("LEGION-208", "sjawhar/legion"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if message.Base != "" || strings.Contains(string(published), "conflicts_with") || !strings.Contains(string(published), `"head":"`+conflictHead+`"`) {
+			t.Fatalf("the merge-forward %s to the %s is %s, want the head and no base", message.Step, message.Role, published)
+		}
 	}
 
 	red := checksRedNotice(t, pool)
-	if red.Phase != phase.Testing || red.ConflictsWith != "" || red.Head != "head" || red.PullRequest != "sjawhar/legion#42" {
-		t.Fatalf("the checks-red notice is %+v, want head head of sjawhar/legion#42 from testing and no base", red)
+	if red.Phase != phase.Testing || red.ConflictsWith != "" || red.Head != conflictHead || red.PullRequest != "sjawhar/legion#42" ||
+		red.Why != string(record.ConflictRulesUnread) {
+		t.Fatalf("the checks-red notice is %+v, want head %s of sjawhar/legion#42 in testing for %s and no base", red, conflictHead, record.ConflictRulesUnread)
 	}
 	notice, err := json.Marshal(red)
 	if err != nil {
@@ -461,11 +406,6 @@ func TestAConflictOnAPullRequestWithNoRecordedBaseSendsTheIssueBack(t *testing.T
 	}
 	if strings.Contains(string(notice), "conflicts_with") {
 		t.Fatalf("the checks-red notice is %s, want no base", notice)
-	}
-
-	task := implementerTask(t, pool)
-	if !hasLines(task, "head: head", "pull_request: sjawhar/legion#42") || strings.Contains(task, "conflicts_with") {
-		t.Fatalf("the implementer's task is %q, want it to name the head and the pull request and no base", task)
 	}
 }
 
@@ -583,7 +523,9 @@ func roleMessageRows(t *testing.T, pool *pgxpool.Pool, issue string) []record.Ro
 	return got
 }
 
-// checksRedNotice is the architect's checks-red notice the outbox holds.
+// checksRedNotice is the architect's checks-red notice the outbox holds, decoded as the outbox
+// holds it (record.Notice): its phase is the phase the issue stays in while its head is merged
+// forward (mergeForward).
 func checksRedNotice(t *testing.T, pool *pgxpool.Pool) record.Notice {
 	t.Helper()
 	var payload []byte
@@ -632,12 +574,6 @@ func applyRefusingNothing(t *testing.T, pool *pgxpool.Pool, engine *Engine, fact
 			t.Fatalf("apply %T = %+v", fact, result.Refusal)
 		}
 	}
-}
-
-// implementerTask is the task the implementer was last started with, "" when it was not started.
-func implementerTask(t *testing.T, pool *pgxpool.Pool) string {
-	t.Helper()
-	return startTask(t, pool, claim.RoleImplementer)
 }
 
 // startTask is the task role was last started with, "" when it was not started.

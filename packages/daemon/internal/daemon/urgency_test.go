@@ -36,12 +36,13 @@ import (
 // implementing, in a tree of its own.
 const urgencyIssue = "LEGION-208"
 
-// urgencyChecksRed is a checks-red notice of urgencyIssue: low to the architect, since the daemon
-// has already moved the issue and started the implementer.
+// urgencyChecksRed is a checks-red notice of urgencyIssue in testing: low to the architect, since
+// a worker holds the phase the issue stays in and the daemon has already asked the implementer to
+// merge the base forward.
 func urgencyChecksRed(t *testing.T) record.Notice {
 	t.Helper()
 	return urgencyNoticeOf(t, texts.ChecksRedRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChecksRed, Issue: urgencyIssue},
-		Phase: phase.Testing, ConflictsWith: "main", Head: "c0de", PullRequest: "acme/widgets#86"})
+		Phase: phase.Testing, ConflictsWith: "main", Head: "c0de", PullRequest: "acme/widgets#86", Why: string(record.ConflictCheckNotGreen)})
 }
 
 // urgencyHeldForFailure is a held notice of urgencyIssue for a worker's failed claim: med to the
@@ -483,8 +484,14 @@ func designLow() []urgencyCase {
 		{texts.ChildStatus, arch, texts.Variant{Change: texts.ChangeLeft}, texts.Med},
 		{texts.ChildStatus, arch, texts.Variant{Change: texts.ChangeBeneathAccepted}, texts.Med},
 		{texts.ChildStatus, arch, texts.Variant{Change: texts.ChangeReparented}, texts.Med},
-		// checks-red and pr-merged to the architect; awaiting-person to the controller.
+		// checks-red to the architect while a worker holds the phase the issue stays in, med in
+		// accepting, which the architect holds itself; pr-merged to the architect; awaiting-person
+		// to the controller.
 		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Testing}, texts.Low},
+		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Reviewing}, texts.Low},
+		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Retro}, texts.Low},
+		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Merging}, texts.Low},
+		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Accepting}, texts.Med},
 		{texts.PRMerged, arch, texts.Variant{Phase: phase.Merging}, texts.Low},
 		{texts.AwaitingPerson, ctl, texts.Variant{}, texts.Low},
 	}
@@ -615,16 +622,26 @@ func TestEachKindHasTheUrgencyTheSpecSays(t *testing.T) {
 		ctx := context.Background()
 
 		// The merger's issue, in merging at the head its pull request is open at, so the
-		// merge-queue removal's row is delivered; and a tester holding an update round, so the
-		// round's ask is.
-		mergingKey := "LEGION-209"
-		putOutboxIssue(t, pool, runner.records, record.Issue{Key: mergingKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-			Project: "LEGION", Tree: mergingKey, Title: "Merging", Phase: phase.Merging, Generation: 1, Status: "in_progress", Rank: "V"})
+		// merge-queue removal's row is delivered, and with a merge forward asked of that head, so
+		// the ask and the hold are; an issue in merging whose merge forward landed, so the landed
+		// and the review are; and a tester holding an update round, so the round's ask is.
+		mergingKey, landedKey := "LEGION-209", "LEGION-210"
+		for _, key := range []string{mergingKey, landedKey} {
+			putOutboxIssue(t, pool, runner.records, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Project: "LEGION", Tree: key, Title: "Merging", Phase: phase.Merging, Generation: 1, Status: "in_progress", Rank: "V"})
+		}
+		asked := record.MergeForward{Head: "c0de", Base: "main", Phase: phase.Merging, Why: record.ConflictMergeNext, AskedAt: time.Now().UTC()}
+		landed := asked
+		landed.Landed, landed.ReviewAsked = "d00d", true
 		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-			return runner.records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: mergingKey, Repo: "acme/widgets",
-				Number: 87, Branch: "legion/" + mergingKey, HeadSHA: "c0de"})
+			if err := runner.records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: mergingKey, Repo: "acme/widgets",
+				Number: 87, Branch: "legion/" + mergingKey, HeadSHA: "c0de", Base: "main", MergeForward: &asked}); err != nil {
+				return err
+			}
+			return runner.records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: landedKey, Repo: "acme/widgets",
+				Number: 88, Branch: "legion/" + landedKey, HeadSHA: "d00d", Base: "main", MergeForward: &landed})
 		}); err != nil {
-			t.Fatalf("record the merging pull request: %v", err)
+			t.Fatalf("record the merging pull requests: %v", err)
 		}
 		if _, _, err := sup.Create(ctx, supervise.Claim{Token: mustClaimToken(t, urgencyIssue, claim.RoleTester), Project: "legion",
 			Tree: urgencyIssue, Issue: urgencyIssue, Role: claim.RoleTester, State: supervise.StateQueued, UpdateRound: "round-1"}, ""); err != nil {
@@ -671,9 +688,18 @@ func TestEachKindHasTheUrgencyTheSpecSays(t *testing.T) {
 				}
 			case texts.RoleMessage:
 				switch entry.Kind {
-				case texts.PhaseEnded:
-					send(entry.Kind, claim.RoleTester, texts.Variant{}, urgencyIssue, record.PhaseEnded{Role: claim.RoleTester,
-						From: phase.Testing, To: phase.Implementing, ConflictsWith: "main", Head: "c0de", PullRequest: "acme/widgets#86"})
+				case texts.MergeForwardAsk, texts.MergeForwardHold, texts.MergeForwardLanded, texts.MergeForwardReview:
+					step := map[texts.Kind]record.MergeForwardStep{texts.MergeForwardAsk: record.MergeForwardAsk, texts.MergeForwardHold: record.MergeForwardHold,
+						texts.MergeForwardLanded: record.MergeForwardLanded, texts.MergeForwardReview: record.MergeForwardReview}[entry.Kind]
+					issue, number, head := mergingKey, 87, ""
+					if step == record.MergeForwardLanded || step == record.MergeForwardReview {
+						issue, number, head = landedKey, 88, "d00d"
+					}
+					for _, reader := range entry.Readers {
+						v := texts.Variant{Phase: phase.Merging}
+						send(entry.Kind, reader, v, issue, record.MergeForwardMessage{Role: reader, Step: step, Head: "c0de", Landed: head, Base: "main",
+							Phase: phase.Merging, PullRequest: number, Why: record.ConflictMergeNext})
+					}
 				case texts.HookPrompt:
 					send(entry.Kind, claim.RoleImplementer, texts.Variant{}, urgencyIssue, firedHook)
 				case texts.UpdateAsk:

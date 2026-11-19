@@ -305,6 +305,8 @@ func goldenWant(pairs ...any) map[string]string {
 			want[key] = string(v)
 		case claim.Role:
 			want[key] = string(v)
+		case record.ConflictWhy:
+			want[key] = string(v)
 		case time.Time:
 			want[key] = v.UTC().Format(time.RFC3339Nano)
 		case []string:
@@ -367,25 +369,16 @@ func (b *goldenBuild) tasks(r goldenRendering) {
 			goldenWant("issue", issue.Key, "title", issue.Title, "phase", issue.Phase, "reviewed_head", head,
 				"pull_request", texts.PullRequestRef(r.repo, 60+r.n), "body", body, "body@by", by, "body@at", r.at(9)))
 	}
-	// A head that conflicts with its base.
+	// A merger started in merging at the head a merge forward landed after the review, while the
+	// review that landing asked of the reviewer stands for that head.
 	{
-		issue := record.Issue{Key: r.key(4), Title: hostile[3], Phase: phase.Implementing}
-		request := pr(70+r.n, "conflict")
-		b.task(r, "conflict", claim.RoleImplementer, issue.Key, workflow.PhaseAssignment(issue, record.PhaseRow{}, request,
-			workflow.PhaseMove{Conflict: true}),
-			goldenWant("issue", issue.Key, "title", issue.Title, "phase", issue.Phase, "conflicts_with", request.Base,
-				"head", request.HeadSHA, "pull_request", texts.PullRequestRef(r.repo, request.Number)))
-	}
-	// A head that conflicts with its base, on a pull request recorded before the daemon kept the
-	// base: the task names the head and no base.
-	{
-		issue := record.Issue{Key: r.key(4), Title: hostile[3], Phase: phase.Implementing}
-		request := pr(75+r.n, "conflict-no-base")
-		request.Base = ""
-		b.task(r, "conflict-no-base", claim.RoleImplementer, issue.Key, workflow.PhaseAssignment(issue, record.PhaseRow{}, request,
-			workflow.PhaseMove{Conflict: true}),
-			goldenWant("issue", issue.Key, "title", issue.Title, "phase", issue.Phase,
-				"head", request.HeadSHA, "pull_request", texts.PullRequestRef(r.repo, request.Number)))
+		issue := record.Issue{Key: r.key(4), Title: hostile[3], Phase: phase.Merging}
+		request := pr(70+r.n, "merge-forward")
+		request.MergeForward = &record.MergeForward{Head: r.sha("merge-forward/old"), Base: request.Base, Phase: phase.Retro,
+			Why: record.ConflictMergeNext, Landed: request.HeadSHA, ReviewAsked: true}
+		b.task(r, "merge-forward-review", claim.RoleMerger, issue.Key, workflow.PhaseAssignment(issue, record.PhaseRow{}, request, workflow.PhaseMove{}),
+			goldenWant("issue", issue.Key, "title", issue.Title, "phase", issue.Phase, "merged_forward", request.Base,
+				"approval_owed", request.HeadSHA, "pull_request", texts.PullRequestRef(r.repo, request.Number)))
 	}
 	// A retry of a held phase, with the architect's words or none (the operator's).
 	{

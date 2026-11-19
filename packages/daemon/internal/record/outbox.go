@@ -40,7 +40,6 @@ const (
 	OutboxKindCheckLook        OutboxKind = "check_look"
 	OutboxKindCheckBound       OutboxKind = "check_bound"
 	OutboxKindRoleMessage      OutboxKind = "role_message"
-	OutboxKindPhaseEnded       OutboxKind = "phase_ended"
 	OutboxKindHookPrompt       OutboxKind = "hook_prompt"
 	OutboxKindUpdateAsk        OutboxKind = "update_ask"
 	OutboxKindIssueBundle      OutboxKind = "issue_bundle"
@@ -65,6 +64,12 @@ const (
 	// record of that step, or the rating a retro gave the plan onto the retro's record
 	// (StepRecord).
 	OutboxKindStepRecord OutboxKind = "step_record"
+	// OutboxKindConflictConfirm reads a pull request's head again a minute after a first read
+	// found it conflicting with its base (ConflictConfirm), and OutboxKindMergeForward carries one
+	// message of a merge forward, the daemon's act on a confirmed conflict, to one role of the
+	// issue (MergeForwardMessage).
+	OutboxKindConflictConfirm OutboxKind = "conflict_confirm"
+	OutboxKindMergeForward    OutboxKind = "merge_forward"
 	// OutboxKindPlanRecord writes the plan one run of the issue carries out onto Dispatch
 	// (PlanRecord).
 	OutboxKindPlanRecord OutboxKind = "plan_record"
@@ -82,16 +87,20 @@ const (
 // publish too, the one row addressed to the bare project key rather than to an issue, so that
 // write runs on a board lane of the project's own, behind none of any issue's rows and holding
 // none of them back. The role-message lane runs the kinds the daemon addresses to one role of
-// the issue on that role's own topic: the end of a phase and a hook's words, which go to a phase
-// worker (phase_ended, hook_prompt), the message that tells the merger its pull request left the
-// merge queue (merge_queue_removal), and an update round's ask, which goes to any role whose
-// process runs in the issue's pod, its architect included (update_ask). It also runs the read of
-// GitHub that comes before a merge-queue removal's message (merge_queue_read). It is a lane of its
-// own because the board lane's architect notices are ordered among themselves and one of them waits
-// for as long as its architect holds no role (the daemon's errNoticeWaits): a role told that its
-// phase ended, given the words a hook fired on a move back, told that its pull request left the
-// merge queue, or asked to get ready for the replacement of its pod must hear it while that is
-// news, not after whatever the architect that owns its issue is owed.
+// the issue on that role's own topic: a hook's words, which go to a phase worker (hook_prompt),
+// the message that tells the merger its pull request left the merge queue (merge_queue_removal),
+// the messages of a merge forward, which go to the implementer and to the worker of the phase the
+// issue stays in (merge_forward), and an update round's ask, which goes to any role whose process
+// runs in the issue's pod, its architect included (update_ask). It also runs the two reads of
+// GitHub that come before a message: the read before a merge-queue removal's message
+// (merge_queue_read), and the second read of a head a first read found conflicting, whose
+// confirmation is what writes a merge forward's messages (conflict_confirm). It is a lane of its
+// own because the board lane's architect notices are ordered among themselves and one of them
+// waits for as long as its architect holds no role (the daemon's errNoticeWaits): a role given the
+// words a hook fired on a move back, told that its pull request left the merge queue, asked to
+// merge the base forward or to hold while that merge runs, or asked to get ready for the
+// replacement of its pod must hear it while that is news, not after whatever the architect that
+// owns its issue is owed.
 // The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
@@ -116,7 +125,7 @@ const (
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
-	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval},
+	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
 }
@@ -524,10 +533,12 @@ type Notice struct {
 	Refusal       string                  `json:"refusal,omitempty"`
 	// Relaunch is what the last let-go of the architect's process ended (catch-up).
 	Relaunch *texts.RelaunchFacts `json:"relaunch,omitempty"`
-	// The head that conflicts with its base (checks-red), and a stuck review round
-	// (review-stuck) with the checks and the commit statuses of its head.
+	// The head that conflicts with its base and why the daemon asked for its merge forward
+	// (checks-red), and a stuck review round (review-stuck) with the checks and the commit
+	// statuses of its head.
 	ConflictsWith     string                  `json:"conflicts_with,omitempty"`
 	Head              string                  `json:"head,omitempty"`
+	Why               string                  `json:"why,omitempty"`
 	Cause             string                  `json:"cause,omitempty"`
 	ApprovedHead      string                  `json:"approved_head,omitempty"`
 	EndsRound         string                  `json:"ends_round,omitempty"`
@@ -1499,68 +1510,6 @@ type CheckBound struct{}
 
 func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 
-// PhaseEnded tells the role whose phase a transition the daemon raised on its own ended that its
-// phase is over, on that role's own Envoy topic. It is the daemon's own news of the workflow to a
-// role that is not an architect, where the hook prompt beside it on this lane carries a
-// deployment's words: when the daemon moves an issue out of a phase on something it read of the
-// pull request — a head that conflicts with its base, the review GitHub delivered, the merge —
-// the next role starts at once, and without this message nothing tells the tester, the reviewer,
-// the merger or the implementer in retro that the phase it was working is no longer its own,
-// since the daemon's next task for a role waits for that role's turn to end. Role is the
-// recipient, From the phase that ended, To the phase the issue is in now, and TaskFollows that
-// the recipient is also the role the new phase starts — the implementer sent back from retro —
-// whose task for that phase follows this message. ConflictsWith is the base the head conflicts
-// with, "" where the pull request's record holds no base (PullRequest.Base), Head that head and
-// PullRequest the pull request as owner/name#n: the facts of the conflict that ended the phase,
-// which its record names (Record). A conflict is always a head's, so a row names its head whether
-// or not the base is known. Reason is that conflict as a sentence, which a row an older daemon
-// queued carries in place of those facts.
-// It stops nothing: the recipient keeps its turn, its jobs, its process and its session.
-type PhaseEnded struct {
-	Role          claim.Role  `json:"role"`
-	From          phase.Phase `json:"from"`
-	To            phase.Phase `json:"to"`
-	Reason        string      `json:"reason,omitempty"`
-	TaskFollows   bool        `json:"taskFollows,omitempty"`
-	ConflictsWith string      `json:"conflictsWith,omitempty"`
-	Head          string      `json:"head,omitempty"`
-	PullRequest   string      `json:"pullRequest,omitempty"`
-}
-
-func (PhaseEnded) OutboxKind() OutboxKind { return OutboxKindPhaseEnded }
-
-// Record is the message the runner publishes for issue: the kind's record, with the phase that
-// ended, the phase the issue is in now, whether the recipient's task follows, and the conflict.
-func (p PhaseEnded) Record(issue string) texts.PhaseEndedRecord {
-	return texts.PhaseEndedRecord{
-		RoleHead:      texts.RoleHead{Kind: texts.PhaseEnded, Issue: issue},
-		From:          p.From,
-		To:            p.To,
-		TaskFollows:   p.TaskFollows,
-		ConflictsWith: p.ConflictsWith,
-		Head:          p.Head,
-		PullRequest:   p.PullRequest,
-	}
-}
-
-// Message is what the runner publishes for issue from a row an older daemon queued, which holds
-// the conflict as its Reason and none of its facts: one sentence that the recipient's phase ended
-// and which phase the issue is in now, the implementer's own sentence where its task follows, the
-// two that keep the role off the working copy the new phase owns without stopping it (the worker
-// prompt says the same, internal/prompts/go/worker-common.md), and the reason last, behind the
-// `Reason:` label.
-func (p PhaseEnded) Message(issue string) string {
-	follows := ""
-	if p.TaskFollows {
-		follows = fmt.Sprintf(" Your %s task follows.", p.To)
-	}
-	return fmt.Sprintf("%s: the daemon ended your %s phase, and the issue is in %s now.%s"+
-		" Nothing of yours is stopped: your turn, your jobs, your process and your session run on."+
-		" The workspace is the %s phase's now, so stop writing it at once and leave whatever you have uncommitted."+
-		" Reason: %s.",
-		issue, p.From, p.To, follows, p.To, p.Reason)
-}
-
 // HookPrompt is a hook of the deployment that fired on a move back of the issue, and its words
 // put in front of one role of the issue on that role's own Envoy topic. Hook is the hook's name
 // as the deployment spells it, Role the recipient, From the phase the work left and To the phase
@@ -1568,9 +1517,10 @@ func (p PhaseEnded) Message(issue string) string {
 // backward-move count of the issue after the move, PullRequest the issue's pull request as
 // `owner/name#n` where the issue has one, and Prompt the hook's own words.
 //
-// It rides the role-message lane beside PhaseEnded because a role hears a hook prompt while it is
-// news, as it hears that its phase ended: a prompt held behind whatever the architect that owns
-// its issue is owed would reach the role rounds after the round the firing wrote it for.
+// It rides the role-message lane (LaneRoleMessage) because a role hears a hook prompt while it is
+// news, as it hears a merge forward's messages (MergeForwardMessage): a prompt held behind
+// whatever the architect that owns its issue is owed would reach the role rounds after the round
+// the firing wrote it for.
 //
 // The daemon writes the facts and never substitutes anything into the hook's own words: Message
 // names the hook and the move on its first line, then gives the prompt exactly as the deployment
@@ -1578,13 +1528,12 @@ func (p PhaseEnded) Message(issue string) string {
 // and the pull request as fields. There is nothing for a hook to interpolate, because every fact
 // it could ask for stands beside its words already.
 //
-// The prompt is published with keep, as a phase-ended message is: for a role no live session
-// holds, the listener answers it kept and holds it for an hour for the role's next live holder,
-// and the row ends with one log line, the listener its keeper. A listener before #4079 keeps
-// nothing for a claim whose holder is not live. The daemon's publishKeptToRole says what each
-// answer does to the row, and why a later round's session can be handed the prompt and what
-// bounds that; the move back and the counts Message states tell that reader which round the
-// words were written for.
+// The prompt is published with keep: for a role no live session holds, the listener answers it
+// kept and holds it for an hour for the role's next live holder, and the row ends with one log
+// line, the listener its keeper. A listener before #4079 keeps nothing for a claim whose holder is
+// not live. The daemon's publishKeptToRole says what each answer does to the row, and why a later
+// round's session can be handed the prompt and what bounds that; the move back and the counts
+// Message states tell that reader which round the words were written for.
 type HookPrompt struct {
 	Hook        string         `json:"hook"`
 	Role        claim.Role     `json:"role"`
@@ -1693,8 +1642,8 @@ func (MergeQueueRead) OutboxKind() OutboxKind { return OutboxKindMergeQueueRead 
 // for the removal, so the merger reads the reason on GitHub itself. The row names no role: the
 // merger is the one role it is ever for.
 //
-// The row is held as an architect's notice is held, not dropped as a phase-ended message nobody
-// holds is: it wakes a released merger and waits until the merger's session holds its role, since
+// The row is held as an architect's notice is held, not ended as a hook prompt nobody holds is:
+// it wakes a released merger and waits until the merger's session holds its role, since
 // a merger whose pod was released would otherwise never learn that its pull request is out of the
 // queue. While the root's design gate is closed it neither wakes nor tells a released merger, which
 // could enqueue the pull request again against the gate, and it waits for the gate to open; a
@@ -1720,6 +1669,152 @@ func (p MergeQueueRemoval) Record(issue, repo string) texts.MergeQueueRemovalRec
 		Head:        p.Head,
 		Unread:      p.Unread,
 	}
+}
+
+// ConflictConfirm is the daemon's second read of a pull request whose head a first read found
+// conflicting with its base (PullRequest.ConflictRead, dispatch://INFRA-4374 R2). The transaction
+// that records the first read writes it, due a minute after that read (workflow's mergeability),
+// and its executor reads the pull request from GitHub again. GitHub computes mergeability in a
+// background job and can answer CONFLICTING about a base it has not caught up with, so one read
+// acts on nothing: a CONFLICTING answer about the same head and base branch, a minute or more
+// after the first read, confirms the conflict, and a MERGEABLE answer releases it, each through
+// the mergeability fact every read of the pull request applies. An UNKNOWN answer is read again,
+// a bounded number of times; when the last read still answers UNKNOWN, or no read succeeded, the
+// row applies the fact that releases the first read (intake.ConflictConfirmDone). Number is the
+// pull request, Head the head the first read found conflicting, and FirstReadAt when that first
+// read was made (PullRequest.ConflictRead.At).
+//
+// A first read a MERGEABLE read released and a later CONFLICTING read of the same head made again
+// is a new first read with a row of its own, so the head alone does not say which first read a row
+// is the second read of: FirstReadAt does. Its executor finishes without a read once the record's
+// first read was made at another time, and the fact its last attempt applies carries the time
+// (intake.ConflictConfirmDone.FirstReadAt), so a row of a released first read can neither read for
+// nor release the newer one. Both this payload and pull_requests.conflict_read are jsonb, where
+// Go's time is kept to the nanosecond, so the two times compare equal for the same read.
+//
+// It is a durable row rather than a timer held in memory for the reason MergeQueueRead is: a
+// restart between the two reads loses nothing, since the first read's fact is acknowledged once
+// its transaction commits.
+type ConflictConfirm struct {
+	Number      int       `json:"number"`
+	Head        string    `json:"head"`
+	FirstReadAt time.Time `json:"firstReadAt"`
+}
+
+func (ConflictConfirm) OutboxKind() OutboxKind { return OutboxKindConflictConfirm }
+
+// MergeForwardStep is which message of a merge forward a MergeForwardMessage carries
+// (PullRequest.MergeForward): the two the act on a confirmed conflict writes, and the two the
+// landing of a new head writes.
+type MergeForwardStep string
+
+const (
+	// MergeForwardAsk asks the implementer to merge the base forward onto the head and push.
+	MergeForwardAsk MergeForwardStep = "ask"
+	// MergeForwardHold tells the worker of the phase the issue stays in, when that is the
+	// tester, the reviewer or the merger, to stop writing the workspace while the merge runs.
+	MergeForwardHold MergeForwardStep = "hold"
+	// MergeForwardLanded tells that same worker that the merge landed, and which head it left.
+	MergeForwardLanded MergeForwardStep = "landed"
+	// MergeForwardReview asks the reviewer to read the merge that landed on an issue standing
+	// past its review, and to approve the new head or request changes.
+	MergeForwardReview MergeForwardStep = "review"
+)
+
+// mergeForwardRoles is the roles each step of a merge forward may go to: the ask to the
+// implementer, whose merge it is; the hold and the landed to a worker of the phase the issue
+// stays in that is neither the implementer, whom the ask tells, nor the architect, whom the
+// checks-red notice tells; and the review to the reviewer.
+var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
+	MergeForwardAsk:    {claim.RoleImplementer},
+	MergeForwardHold:   {claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
+	MergeForwardLanded: {claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
+	MergeForwardReview: {claim.RoleReviewer},
+}
+
+// MergeForwardReaches says whether step of a merge forward goes to role (mergeForwardRoles): the
+// one list the workflow addresses the hold and the landed by (workflow's mergeForward and
+// mergeForwardLanded) and a row is validated against (validateOutboxPayload).
+func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
+	return slices.Contains(mergeForwardRoles[step], role)
+}
+
+// MergeForwardMessage is one message of a merge forward (PullRequest.MergeForward,
+// dispatch://INFRA-4374 R1) to one role of the issue, on that role's own Envoy topic. The daemon
+// acts on a confirmed conflict without moving the issue out of its phase: it asks the implementer
+// to merge Base forward onto Head in the issue workspace and push (MergeForwardAsk), and tells the
+// worker of the phase the issue stays in to stop writing that workspace while the merge runs
+// (MergeForwardHold). Once a new head lands it tells that worker so (MergeForwardLanded), and asks
+// the reviewer of an issue past its review to read the merge (MergeForwardReview).
+//
+// Role is the recipient, and Step the message (mergeForwardRoles says which role each step goes
+// to). Head is the head that conflicted, Landed the head the merge left ("" before it lands), Base
+// the base branch ("" where the record holds none, PullRequest.Base), Phase the phase the issue
+// stays in, PullRequest the pull request's number, and Why the first of R0's reasons that held
+// (MergeForward.Why), which the ask and the hold state.
+//
+// It is a row of its own kind rather than a RoleMessage, because a RoleMessage ends undelivered on
+// a released claim, and a released implementer must still be woken for the merge; its executor
+// follows the merge-queue removal's (MergeQueueRemoval).
+type MergeForwardMessage struct {
+	Role        claim.Role       `json:"role"`
+	Step        MergeForwardStep `json:"step"`
+	Head        string           `json:"head"`
+	Landed      string           `json:"landed,omitempty"`
+	Base        string           `json:"base"`
+	Phase       phase.Phase      `json:"phase"`
+	PullRequest int              `json:"pullRequest"`
+	Why         ConflictWhy      `json:"why,omitempty"`
+}
+
+func (MergeForwardMessage) OutboxKind() OutboxKind { return OutboxKindMergeForward }
+
+// knownConflictWhy says whether why is one of R0's reasons (ConflictWhy). validateOutboxPayload
+// refuses a row whose why is none of them, save the empty why of a landed or a review, which
+// states no reason, so no message can go out with a reason its reader's prompt does not name.
+func knownConflictWhy(why ConflictWhy) bool {
+	switch why {
+	case ConflictMergeNext, ConflictRulesUnread, ConflictRequiresCurrent, ConflictCheckNotGreen:
+		return true
+	}
+	return false
+}
+
+// Kind is the kind on the list of the message of p's step: merge-forward-ask, -hold, -landed or
+// -review.
+func (p MergeForwardMessage) Kind() texts.Kind {
+	switch p.Step {
+	case MergeForwardAsk:
+		return texts.MergeForwardAsk
+	case MergeForwardHold:
+		return texts.MergeForwardHold
+	case MergeForwardLanded:
+		return texts.MergeForwardLanded
+	}
+	return texts.MergeForwardReview
+}
+
+// Record is what the runner publishes for issue to Role, where repo is the repository the record
+// holds the pull request under (PullRequest.Repo): the record of the step's kind, with the pull
+// request as owner/name#n, the head that conflicted, the base where the record holds one, and the
+// phase the issue stays in. The ask and the hold name why the daemon acted; the landed and the
+// review name the head the merge left. What each reader does with its message - the merge in the
+// issue workspace and the push with no handoff and no completion, the stop of every write and of
+// a completion at the old head, the read of what the merge changed, and the approval of the new
+// head with the roles it tells - is its prompt's (internal/prompts/go/worker-common.md and the
+// prompt of each role).
+func (p MergeForwardMessage) Record(issue, repo string) any {
+	head := texts.RoleHead{Kind: p.Kind(), Issue: issue}
+	pull := texts.PullRequestRef(repo, p.PullRequest)
+	switch p.Step {
+	case MergeForwardAsk:
+		return texts.MergeForwardAskRecord{RoleHead: head, PullRequest: pull, Head: p.Head, ConflictsWith: p.Base, Phase: p.Phase, Why: string(p.Why)}
+	case MergeForwardHold:
+		return texts.MergeForwardHoldRecord{RoleHead: head, PullRequest: pull, Head: p.Head, ConflictsWith: p.Base, Phase: p.Phase, Why: string(p.Why)}
+	case MergeForwardLanded:
+		return texts.MergeForwardLandedRecord{RoleHead: head, PullRequest: pull, Head: p.Head, Landed: p.Landed, ConflictsWith: p.Base, Phase: p.Phase}
+	}
+	return texts.MergeForwardReviewRecord{RoleHead: head, PullRequest: pull, Head: p.Head, Landed: p.Landed, ConflictsWith: p.Base, Phase: p.Phase}
 }
 
 // retryBackoffDoublings is how many times a row's backoff doubles before it stops at
@@ -1882,12 +1977,6 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
-	case OutboxKindPhaseEnded:
-		value := PhaseEnded{}
-		if err := decoder.Decode(&value); err != nil {
-			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
-		}
-		payload = value
 	case OutboxKindHookPrompt:
 		value := HookPrompt{}
 		if err := decoder.Decode(&value); err != nil {
@@ -1908,6 +1997,18 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		payload = value
 	case OutboxKindMergeQueueRemoval:
 		value := MergeQueueRemoval{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindConflictConfirm:
+		value := ConflictConfirm{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindMergeForward:
+		value := MergeForwardMessage{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
@@ -1966,10 +2067,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			return fmt.Errorf("outbox status write has empty status")
 		}
 		// A reason is posted on the issue before the status lands: a done write's, and an ordinary
-		// move's that nothing else on Dispatch explains (workflow's moveReason: a head that
-		// conflicts with its base, and a worker's backward move). A hand-over, a re-assertion or a
-		// person's handover repeats or carries out a move whose cause is already on the issue, so it
-		// posts none.
+		// move's that nothing else on Dispatch explains (workflow's moveReason: a worker's backward
+		// move). A hand-over, a re-assertion or a person's handover repeats or carries out a move
+		// whose cause is already on the issue, so it posts none.
 		if value.Reason != "" && value.Status != "done" && value.Kind != OrdinaryStatusRow {
 			return fmt.Errorf("a %s status write to %s carries a reason; only a done write or the workflow's own move does", value.Kind, value.Status)
 		}
@@ -2188,23 +2288,6 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Look <= 0 {
 			return fmt.Errorf("check look bound requires the look it bounds")
 		}
-	case PhaseEnded:
-		if !claim.IsRole(value.Role) || value.Role == claim.RoleArchitect {
-			return fmt.Errorf("a phase-ended message goes to the role whose phase ended, never to an architect, which its checks-red notice tells; %q is neither", value.Role)
-		}
-		if value.From == "" || value.To == "" || value.From == value.To {
-			return fmt.Errorf("a phase-ended message names the phase that ended and the different phase the issue is in now; it names %q and %q", value.From, value.To)
-		}
-		facts := value.ConflictsWith != "" || value.Head != "" || value.PullRequest != ""
-		if value.Reason == "" && value.Head == "" {
-			return fmt.Errorf("a phase-ended message names the head that conflicts with its base, and that base where the daemon recorded it, as a row an older daemon queued names its reason")
-		}
-		if value.Reason != "" && facts {
-			return fmt.Errorf("a phase-ended message carries the conflict's facts or, in a row an older daemon queued, its reason, and never both")
-		}
-		if value.TaskFollows && value.Role != claim.RoleImplementer {
-			return fmt.Errorf("only the implementer is told its task follows, since the phase a conflicting head opens is its own; the %s is not", value.Role)
-		}
 	case HookPrompt:
 		if value.Hook == "" {
 			return fmt.Errorf("a hook prompt carries the name of the hook that fired it")
@@ -2242,6 +2325,32 @@ func validateOutboxPayload(payload OutboxPayload) error {
 	case MergeQueueRemoval:
 		if value.Number < 1 || value.Head == "" {
 			return fmt.Errorf("a merge-queue removal names the pull request that left the queue and the head it left at; it names #%d at %q", value.Number, value.Head)
+		}
+	case ConflictConfirm:
+		if value.Number < 1 || value.Head == "" {
+			return fmt.Errorf("a conflict confirm names the pull request it reads again and the head the first read found conflicting; it names #%d at %q", value.Number, value.Head)
+		}
+		if value.FirstReadAt.IsZero() {
+			return fmt.Errorf("a conflict confirm names when the first read it reads again was made; its read of #%d at %q names no time", value.Number, value.Head)
+		}
+	case MergeForwardMessage:
+		if _, known := mergeForwardRoles[value.Step]; !known {
+			return fmt.Errorf("a merge-forward message is an ask, a hold, a landed or a review; %q is none of them", value.Step)
+		}
+		if !MergeForwardReaches(value.Step, value.Role) {
+			return fmt.Errorf("a merge-forward ask goes to the implementer, a hold or a landed to the tester, the reviewer or the merger, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
+		}
+		// The base is named where the record holds one: a pull request recorded before the daemon
+		// kept the base holds none, and its message names the head and no base, as checks-red does.
+		if value.Head == "" || value.Phase == "" || value.PullRequest < 1 {
+			return fmt.Errorf("a merge-forward message names the head, the phase the issue stays in and the pull request; it names %q, %q and #%d", value.Head, value.Phase, value.PullRequest)
+		}
+		landing := value.Step == MergeForwardLanded || value.Step == MergeForwardReview
+		if landing != (value.Landed != "") {
+			return fmt.Errorf("a merge-forward landed or review names the head that landed, and an ask or a hold names none; a %s names %q", value.Step, value.Landed)
+		}
+		if !knownConflictWhy(value.Why) && (value.Why != "" || !landing) {
+			return fmt.Errorf("a merge-forward ask or hold names why the daemon acted, as one of R0's reasons, and a landed or a review names one of them or none; a %s names %q", value.Step, value.Why)
 		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
 	// with a warning (the outbox's permanentRefusal). These two it would not: an empty id

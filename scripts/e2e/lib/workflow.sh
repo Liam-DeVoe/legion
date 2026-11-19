@@ -1372,7 +1372,7 @@ worker_sessions() {
 # session under SESSIONS: the session file, the role it claims, and the delivery's summary. Every
 # notice kind is for an architect, the issue's own or the one above it that the daemon routes it
 # to, published on that architect's role topic, so a phase worker's session holds none. A role
-# message (`ci-settled`, `gate-moved`, `memory-kill`, `phase-ended` and the others of the daemon's
+# message (`ci-settled`, `gate-moved`, `memory-kill`, `merge-forward-ask` and the others of the daemon's
 # list) is no notice: it goes to a worker's own role topic, so none is named here.
 worker_notices() {
   local f role

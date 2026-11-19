@@ -86,20 +86,54 @@ type MemoryKillRecord struct {
 	Limit     string `json:"limit"`
 }
 
-// PhaseEndedRecord is the message to the role whose phase the daemon ended because the head
-// conflicts with its base (record.PhaseEnded.Record): the phase that ended, the phase the issue is
-// in now, whether the recipient's task for that phase follows, the base, the head and the pull
-// request. The base is absent where the daemon has not recorded it, as for a pull request recorded
-// before the daemon kept the base (record.PullRequest.Base): a conflict is always a head's, so the
-// head is always named.
-type PhaseEndedRecord struct {
+// MergeForwardAskRecord is the merge-forward ask to the implementer (record.MergeForwardMessage,
+// its ask): the pull request, the head that conflicts with its base, the base, the phase the issue
+// stays in, and why the daemon acted (record.ConflictWhy's word). The base is absent where the
+// daemon has not recorded it (record.PullRequest.Base).
+type MergeForwardAskRecord struct {
 	RoleHead
-	From          phase.Phase `json:"from"`
-	To            phase.Phase `json:"to"`
-	TaskFollows   bool        `json:"task_follows,omitempty"`
-	ConflictsWith string      `json:"conflicts_with,omitempty"`
-	Head          string      `json:"head"`
 	PullRequest   string      `json:"pull_request"`
+	Head          string      `json:"head"`
+	ConflictsWith string      `json:"conflicts_with,omitempty"`
+	Phase         phase.Phase `json:"phase"`
+	Why           string      `json:"why"`
+}
+
+// MergeForwardHoldRecord is the message to the tester, the reviewer or the merger that holds the
+// phase that the implementer merges the base forward in the workspace they share
+// (record.MergeForwardMessage, its hold): the facts of the ask.
+type MergeForwardHoldRecord struct {
+	RoleHead
+	PullRequest   string      `json:"pull_request"`
+	Head          string      `json:"head"`
+	ConflictsWith string      `json:"conflicts_with,omitempty"`
+	Phase         phase.Phase `json:"phase"`
+	Why           string      `json:"why"`
+}
+
+// MergeForwardLandedRecord is the message to that same worker that the merge forward landed
+// (record.MergeForwardMessage, its landed): the pull request, the head the merge replaced, the
+// head it left (Landed), the base it brought forward, absent where the daemon has not recorded it,
+// and the phase the issue stays in.
+type MergeForwardLandedRecord struct {
+	RoleHead
+	PullRequest   string      `json:"pull_request"`
+	Head          string      `json:"head"`
+	Landed        string      `json:"landed"`
+	ConflictsWith string      `json:"conflicts_with,omitempty"`
+	Phase         phase.Phase `json:"phase"`
+}
+
+// MergeForwardReviewRecord is the ask to the reviewer of an issue past its review to read the
+// merge forward that landed and approve the new head or request changes (record.MergeForwardMessage,
+// its review): the facts of the landed, the phase being the one the issue stands in.
+type MergeForwardReviewRecord struct {
+	RoleHead
+	PullRequest   string      `json:"pull_request"`
+	Head          string      `json:"head"`
+	Landed        string      `json:"landed"`
+	ConflictsWith string      `json:"conflicts_with,omitempty"`
+	Phase         phase.Phase `json:"phase"`
 }
 
 // HookPromptRecord is a hook of the deployment that fired on a move back of the issue

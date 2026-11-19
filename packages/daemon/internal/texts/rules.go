@@ -75,10 +75,21 @@ func childStatusUrgency(reader claim.Role, v Variant) Urgency {
 	return Med
 }
 
-// lowToArchitect is Low for the architect and Med for every other reader: checks-red, whose
-// move the daemon has already made, and pr-merged.
+// lowToArchitect is Low for the architect and Med for every other reader: pr-merged.
 func lowToArchitect(reader claim.Role, _ Variant) Urgency {
 	if reader == claim.RoleArchitect {
+		return Low
+	}
+	return Med
+}
+
+// checksRedUrgency is the checks-red notice's rule, read from the phase the issue stays in
+// (Variant.Phase). For the architect it is Low while a worker holds that phase, since the daemon
+// has already asked the implementer to merge the base forward and told that worker to hold, and
+// Med where the architect holds it itself (accepting), where it must not sign off the conflicting
+// head, and where no role does. It is Med for every other reader.
+func checksRedUrgency(reader claim.Role, v Variant) Urgency {
+	if worker := phase.RoleFor(v.Phase); reader == claim.RoleArchitect && worker != "" && worker != claim.RoleArchitect {
 		return Low
 	}
 	return Med

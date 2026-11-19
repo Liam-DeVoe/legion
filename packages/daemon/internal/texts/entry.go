@@ -45,6 +45,8 @@ var (
 	toArchitectAndController = []claim.Role{claim.RoleArchitect, claim.RoleController}
 	toReviewer               = []claim.Role{claim.RoleReviewer}
 	toMerger                 = []claim.Role{claim.RoleMerger}
+	toImplementer            = []claim.Role{claim.RoleImplementer}
+	toHoldingWorkers         = []claim.Role{claim.RoleTester, claim.RoleReviewer, claim.RoleMerger}
 	toCheckRoles             = []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	toPhaseWorkers           = []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger}
 	toPodRoles               = []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger}

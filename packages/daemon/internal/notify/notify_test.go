@@ -168,7 +168,7 @@ func TestHTTPPublisherPublishKeptTellsAKeptMessageFromADeliveredOne(t *testing.T
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
-				if body.Topic != "notifications.role.legion-demo-implementer" || body.Message != "phase-ended on DEMO-1" || body.Urgency == nil || *body.Urgency != "med" || body.DedupeKey != "legion-outbox:11" {
+				if body.Topic != "notifications.role.legion-demo-implementer" || body.Message != "hook-prompt on DEMO-1" || body.Urgency == nil || *body.Urgency != "med" || body.DedupeKey != "legion-outbox:11" {
 					t.Errorf("kept publish body = %#v", body)
 				}
 				if body.Keep == nil || !*body.Keep {
@@ -181,7 +181,7 @@ func TestHTTPPublisherPublishKeptTellsAKeptMessageFromADeliveredOne(t *testing.T
 			defer server.Close()
 
 			kept, err := New(server.URL, "").PublishKept(context.Background(), "notifications.role.legion-demo-implementer",
-				"phase-ended on DEMO-1", map[string]string{"kind": "phase-ended"}, texts.Med, "legion-outbox:11")
+				"hook-prompt on DEMO-1", "Legion hook back-to-implementing on DEMO-1: work went back from reviewing to implementing.", texts.Med, "legion-outbox:11")
 			if kept != tc.kept {
 				t.Fatalf("kept publish kept = %t with %v, want %t", kept, err, tc.kept)
 			}

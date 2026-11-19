@@ -251,43 +251,19 @@ func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, stat
 	return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(status, issue.Status, reason))
 }
 
-// moveReason is what a move's status write posts on the issue, for the two moves that nothing else
-// on Dispatch explains. One is the move the daemon makes on its own, a head that conflicts with its
-// base (TriggerConflict). The other is a worker's backward move (TriggerBackward,
-// request_backward_move): the request reaches the daemon's API and no Dispatch record, so an
-// architect's send-back from accepting showed a bare status change, with its reason only in the
-// notice and the next role's task over Envoy. Every other move is recorded on Dispatch by the act
-// that makes it, a tester's or a reviewer's hand-off, so it posts nothing: transition also carries a
-// review's whole body, which does not go on the issue a second time.
-// A person reads this text on the issue, so a conflict's is built from the pull request, not from
-// the conflict handler's sentence to the implementer, and a backward move's names the role that
-// asked and gives its words.
-func moveReason(trigger TriggerKind, from, to phase.Phase, pr *record.PullRequest, reason string) string {
-	switch trigger {
-	case TriggerConflict:
-	case TriggerBackward:
-		return backwardMoveReason(from, to, reason)
-	default:
+// moveReason is what a move's status write posts on the issue, for the one move nothing else on
+// Dispatch explains: a worker's backward move (TriggerBackward, request_backward_move). The request
+// reaches the daemon's API and no Dispatch record, so an architect's send-back from accepting
+// showed a bare status change, with its reason only in the notice and the next role's task over
+// Envoy. Every other move is recorded on Dispatch by the act that makes it, a tester's or a
+// reviewer's hand-off, so it posts nothing: transition also carries a review's whole body, which
+// does not go on the issue a second time. A person reads this text on the issue, so a backward
+// move's names the role that asked and gives its words.
+func moveReason(trigger TriggerKind, from, to phase.Phase, reason string) string {
+	if trigger != TriggerBackward {
 		return ""
 	}
-	what, base := "its pull request", "its base"
-	if pr != nil {
-		if pr.Number != 0 {
-			what = fmt.Sprintf("pull request #%d", pr.Number)
-			if head := pr.HeadSHA; head != "" {
-				if len(head) > 12 {
-					head = head[:12]
-				}
-				what += " at head " + head
-			}
-		}
-		if pr.Base != "" {
-			base = pr.Base
-		}
-	}
-	return fmt.Sprintf("Legion moved this issue from %s back to %s, because %s conflicts with %s. "+
-		"GitHub runs no checks on a head that conflicts with its base, so the implementer merges %s forward.",
-		from, to, what, base, base)
+	return backwardMoveReason(from, to, reason)
 }
 
 // backwardMoveReason is a worker's backward move as the issue shows it: the phase it left, the one
@@ -1049,9 +1025,6 @@ type PhaseMove struct {
 	// Review is the decision of the review round a request for changes ended
 	// (TriggerReviewRejected): the head it reviewed, and its body by its author.
 	Review *record.ReviewDecision
-	// Conflict says the pull request's head conflicts with its base (TriggerConflict), which the
-	// pull request names.
-	Conflict bool
 	// Retried names who retried the phase (RetriedByArchitect and the others). The architect's own
 	// words, where it gave any, are Reason, given at At.
 	Retried string
@@ -1098,11 +1071,19 @@ type StuckRound struct {
 // already holds them, since the move posts them on the issue (backwardReasonRefusal). A review's
 // request for changes names the head it reviewed, and its whole body goes in the body block by
 // its author, cut to texts.OneAct where that author is a person and whole where it is the
-// reviewer, as the reviewer's own review always went. A head that conflicts with its base names
-// the base and the head. A retry names who retried, with the architect's words in the reason
-// block, and a retry of a stuck review round names the round's cause, its head and the review
-// that ends it; for a round GitHub will not merge from, the merge state and the head's checks and
-// commit statuses, as the review-stuck notice names them.
+// reviewer, as the reviewer's own review always went. A retry names who retried, with the
+// architect's words in the reason block, and a retry of a stuck review round names the round's
+// cause, its head and the review that ends it; for a round GitHub will not merge from, the merge
+// state and the head's checks and commit statuses, as the review-stuck notice names them.
+//
+// A merger started in merging at the head a merge forward landed past the review, while the
+// review that landing asked of the reviewer stands for that head (mergeForwardReviewOwed), is told
+// the base that merge brought forward and that head as the one whose approval it waits for: the
+// daemon records no decision outside reviewing, so the approval is the merger's to read on GitHub,
+// and its prompt says to merge that head only once the approval is on the pull request. The
+// merger's task is built at retro's completion, the one move into merging, and at the retry of a
+// held merging (retryPhase); each reads the pull request in its own transaction, so pr says what
+// the record holds.
 func PhaseAssignment(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, move PhaseMove) texts.PhaseAssignmentRecord {
 	task := texts.PhaseAssignmentRecord{TaskHead: texts.TaskHead{Kind: texts.PhaseAssignment, Issue: issue.Key}, Title: issue.Title,
 		Phase: issue.Phase, HandoffCommit: handoff.HandoffCommit, TesterVerdict: handoff.Verdict}
@@ -1112,6 +1093,9 @@ func PhaseAssignment(issue record.Issue, handoff record.PhaseRow, pr *record.Pul
 	if pr != nil && pr.Number != 0 {
 		task.PullRequest = pullRequestRef(*pr)
 	}
+	if issue.Phase == phase.Merging && pr != nil && mergeForwardReviewOwed(*pr) {
+		task.MergedForward, task.ApprovalOwed = pr.MergeForward.Base, pr.HeadSHA
+	}
 	switch {
 	case move.BackFrom != "":
 		task.MovedBackFrom = move.BackFrom
@@ -1119,8 +1103,6 @@ func PhaseAssignment(issue record.Issue, handoff record.PhaseRow, pr *record.Pul
 	case move.Review != nil:
 		task.ReviewedHead = move.Review.Head
 		task.Body = rejectionBody(*move.Review)
-	case move.Conflict && pr != nil:
-		task.ConflictsWith, task.Head = pr.Base, pr.HeadSHA
 	case move.Retried != "":
 		task.Retried = move.Retried
 		task.Reason = wordsOf(move.Reason, "", move.At)

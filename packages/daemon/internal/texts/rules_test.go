@@ -30,7 +30,6 @@ func TestEachKindHasTheUrgencyItsRuleGives(t *testing.T) {
 		{ChildStatus, architect, Variant{Change: ChangeTodo}},
 		{ChildStatus, architect, Variant{Change: ChangeJoined}},
 		{ChildStatus, architect, Variant{Change: ChangeStarted}},
-		{ChecksRed, architect, Variant{Phase: phase.Testing}},
 		{PRMerged, architect, Variant{}},
 		{AwaitingPerson, controller, Variant{}},
 	}
@@ -48,6 +47,19 @@ func TestEachKindHasTheUrgencyItsRuleGives(t *testing.T) {
 				lows = append(lows, low{CISettled, reader, Variant{Phase: p}})
 			}
 		}
+		// checks-red is low to the architect while a worker holds the phase the issue stays in,
+		// and med in accepting, which the architect holds itself, and wherever no worker holds it.
+		if _, held := workers[p]; held {
+			lows = append(lows, low{ChecksRed, architect, Variant{Phase: p}})
+		}
+	}
+	// The two variants the architect's ruling names, read on their own: low while a worker holds
+	// the phase, med in accepting.
+	if got := UrgencyOf(ChecksRed, architect, Variant{Phase: phase.Testing}); got != Low {
+		t.Errorf("checks-red to the architect in testing is %q, want low: the tester holds the phase and the merge forward is asked", got)
+	}
+	if got := UrgencyOf(ChecksRed, architect, Variant{Phase: phase.Accepting}); got != Med {
+		t.Errorf("checks-red to the architect in accepting is %q, want med: the architect holds the phase and must not sign off the head", got)
 	}
 
 	variants := []Variant{{}}
@@ -73,7 +85,7 @@ func TestEachKindHasTheUrgencyItsRuleGives(t *testing.T) {
 			return Variant{Hold: v.Hold}
 		case ChildStatus:
 			return Variant{Change: v.Change}
-		case CISettled:
+		case CISettled, ChecksRed:
 			return Variant{Phase: v.Phase}
 		}
 		return Variant{}

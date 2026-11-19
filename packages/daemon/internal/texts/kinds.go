@@ -77,10 +77,13 @@ const (
 	GateMoved          Kind = "gate-moved"
 	ApprovedRoundStuck Kind = "approved-round-stuck"
 	MemoryKill         Kind = "memory-kill"
-	PhaseEnded         Kind = "phase-ended"
 	HookPrompt         Kind = "hook-prompt"
 	UpdateAsk          Kind = "update-ask"
 	MergeQueueRemoval  Kind = "merge-queue-removal"
+	MergeForwardAsk    Kind = "merge-forward-ask"
+	MergeForwardHold   Kind = "merge-forward-hold"
+	MergeForwardLanded Kind = "merge-forward-landed"
+	MergeForwardReview Kind = "merge-forward-review"
 )
 
 // list is the one list: one entry for each kind, in the order of the constants above.
@@ -120,7 +123,7 @@ var list = []Entry{
 	{Kind: ChildReleaseStalled, Form: Notice, Record: ChildReleaseStalledRecord{}, Readers: toArchitect},
 	{Kind: ChildNotRecorded, Form: Notice, Record: ChildNotRecordedRecord{}, Readers: toArchitect},
 	{Kind: CatchUp, Form: Notice, Record: CatchUpRecord{}, Readers: toArchitect},
-	{Kind: ChecksRed, Form: Notice, Record: ChecksRedRecord{}, Readers: toArchitect, Urgency: lowToArchitect},
+	{Kind: ChecksRed, Form: Notice, Record: ChecksRedRecord{}, Readers: toArchitect, Urgency: checksRedUrgency},
 	{Kind: ReviewStuck, Form: Notice, Record: ReviewStuckRecord{}, Readers: toArchitect},
 	{Kind: StatusReasserted, Form: Notice, Record: StatusReassertedRecord{}, Readers: toArchitect},
 	{Kind: VolumeNearFull, Form: Notice, Record: VolumeNearFullRecord{}, Readers: toArchitect},
@@ -143,8 +146,11 @@ var list = []Entry{
 	{Kind: GateMoved, Form: RoleMessage, Record: GateMovedRecord{}, Readers: toPodRoles},
 	{Kind: ApprovedRoundStuck, Form: RoleMessage, Record: ApprovedRoundStuckRecord{}, Readers: toReviewer},
 	{Kind: MemoryKill, Form: RoleMessage, Record: MemoryKillRecord{}, Readers: toPodRoles},
-	{Kind: PhaseEnded, Form: RoleMessage, Record: PhaseEndedRecord{}, Readers: toPhaseWorkers},
 	{Kind: HookPrompt, Form: RoleMessage, Record: HookPromptRecord{}, Readers: toPhaseWorkers},
 	{Kind: UpdateAsk, Form: RoleMessage, Record: UpdateAskRecord{}, Readers: toPodRoles},
 	{Kind: MergeQueueRemoval, Form: RoleMessage, Record: MergeQueueRemovalRecord{}, Readers: toMerger},
+	{Kind: MergeForwardAsk, Form: RoleMessage, Record: MergeForwardAskRecord{}, Readers: toImplementer},
+	{Kind: MergeForwardHold, Form: RoleMessage, Record: MergeForwardHoldRecord{}, Readers: toHoldingWorkers},
+	{Kind: MergeForwardLanded, Form: RoleMessage, Record: MergeForwardLandedRecord{}, Readers: toHoldingWorkers},
+	{Kind: MergeForwardReview, Form: RoleMessage, Record: MergeForwardReviewRecord{}, Readers: toReviewer},
 }

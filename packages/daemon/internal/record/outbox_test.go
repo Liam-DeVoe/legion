@@ -67,8 +67,7 @@ func samePayload(t *testing.T, got, want OutboxPayload) bool {
 
 // Every payload a row can carry is stored and read back as the payload queued: each notice and
 // role message in the shape its kind's record declares, and the rows an older daemon queued
-// beside them (a role message with its body alone, a phase-ended message and an update ask with
-// their text).
+// beside them (a role message with its body alone, and an update ask with its text).
 func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 	now := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
 	passed := 59
@@ -76,9 +75,9 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 	payloads := []OutboxPayload{
 		OrdinaryStatusWrite("testing", "in_progress", ""),
 		OrdinaryStatusWrite("done", "in_progress", "Closed by its architect: no change is needed."),
-		// A workflow move that nothing else on Dispatch explains, here a head that conflicts with its
-		// base, carries its reason to post on the issue before the status (workflow's moveReason).
-		OrdinaryStatusWrite("in_progress", "testing", "Legion moved this issue from testing back to implementing, because pull request #42 at head c0de conflicts with main. GitHub runs no checks on a head that conflicts with its base, so the implementer merges main forward."),
+		// A workflow move that nothing else on Dispatch explains, here a worker's backward move,
+		// carries its reason to post on the issue before the status (workflow's moveReason).
+		OrdinaryStatusWrite("in_progress", "testing", "Legion moved this issue from testing back to implementing at the tester's request: the fix does not cover the empty list."),
 		PersonHandoverStatusWrite("todo", "triage"),
 		ReassertStatusWrite("in_progress", "done"),
 		HandOverStatusWrite("todo", "in_progress", "LEGION-200", 3),
@@ -153,12 +152,6 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		mustRoleMessage(t, "legion.sjawhar-legion.LEGION-208.architect", texts.GateMovedRecord{
 			RoleHead: texts.RoleHead{Kind: texts.GateMoved, Issue: "LEGION-208"}, Gate: texts.GateOpened, Step: string(DesignStepSpec),
 			Document: "dispatch://LEGION-208/artifact/spec@v4", Artifact: "artifact-208", Version: 4, Merge: texts.MergeReleased}, texts.Med),
-		PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, ConflictsWith: "main", Head: "c0de", PullRequest: "sjawhar/legion#42"},
-		PhaseEnded{Role: claim.RoleImplementer, From: phase.Retro, To: phase.Implementing, TaskFollows: true, ConflictsWith: "main", Head: "c0de", PullRequest: "sjawhar/legion#42"},
-		// A conflict on a pull request recorded before the daemon kept the base: the head, no base.
-		PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Head: "c0de", PullRequest: "sjawhar/legion#42"},
-		// A phase-ended message an older daemon queued, with the conflict as its reason.
-		PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"},
 		HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing,
 			Count: 3, Counts: map[string]int{"testing-implementing": 1, "reviewing-implementing": 3},
 			PullRequest: "sjawhar/legion#42", Prompt: "Read the reviewer's thread before you write anything."},
@@ -174,6 +167,14 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		MergeQueueRead{Number: 42, Head: "c0de"},
 		MergeQueueRemoval{Number: 42, Head: "c0de"},
 		MergeQueueRemoval{Number: 42, Head: "c0de", Unread: true},
+		ConflictConfirm{Number: 42, Head: "c0de", FirstReadAt: now.Add(-time.Minute)},
+		MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Implementing, PullRequest: 42, Why: ConflictCheckNotGreen},
+		MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext},
+		MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictRulesUnread},
+		MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Retro, PullRequest: 42},
+		// A merge forward of a pull request recorded before the daemon kept the base: the head, no
+		// base, as its message names them.
+		MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Phase: phase.Reviewing, PullRequest: 42, Why: ConflictRulesUnread},
 	}
 	for _, payload := range payloads {
 		t.Run(string(payload.OutboxKind()), func(t *testing.T) {
@@ -320,10 +321,10 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	every := []OutboxKind{OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindSupervise,
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
-		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk,
+		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
-		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish, OutboxKindStepRecord,
-		OutboxKindPlanRecord}
+		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish, OutboxKindStepRecord, OutboxKindConflictConfirm,
+		OutboxKindMergeForward, OutboxKindPlanRecord}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -439,14 +440,6 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a negative check look", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, CheckLook: -1}, reason: checkLookRefusal},
 		{name: "a check wake without a look", payload: CheckWakeDue{Reason: "the tester's own wake"}, reason: "check wake requires the look it was named at"},
 		{name: "a check wake without a reason", payload: CheckWakeDue{Look: 1}, reason: "check wake requires the reason it wakes the check"},
-		{name: "a phase-ended message to an architect", payload: PhaseEnded{Role: claim.RoleArchitect, From: phase.Accepting, To: phase.Implementing, Reason: "CI is red at head: pytest"}, reason: "never to an architect"},
-		{name: "a phase-ended message to no role", payload: PhaseEnded{From: phase.Testing, To: phase.Implementing, Reason: "CI is red at head: pytest"}, reason: "never to an architect"},
-		{name: "a phase-ended message without the phase that ended", payload: PhaseEnded{Role: claim.RoleTester, To: phase.Implementing, Reason: "CI is red at head: pytest"}, reason: "names the phase that ended and the different phase"},
-		{name: "a phase-ended message out of the phase the issue is in", payload: PhaseEnded{Role: claim.RoleImplementer, From: phase.Implementing, To: phase.Implementing, Reason: "CI is red at head: pytest"}, reason: "names the phase that ended and the different phase"},
-		{name: "a phase-ended message naming neither the conflict nor a reason", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing}, reason: "names the head that conflicts with its base"},
-		{name: "a phase-ended message naming a base and no head", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, ConflictsWith: "main", PullRequest: "sjawhar/legion#42"}, reason: "names the head that conflicts with its base"},
-		{name: "a phase-ended message naming the conflict and a reason", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, ConflictsWith: "main", Head: "c0de", Reason: "the head conflicts with main"}, reason: "never both"},
-		{name: "a phase-ended task that follows for another role", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "CI is red at head: pytest", TaskFollows: true}, reason: "only the implementer is told its task follows"},
 		{name: "a hook prompt with no hook", payload: HookPrompt{Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "carries the name of the hook that fired it"},
 		{name: "a hook prompt to an architect", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleArchitect, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
 		{name: "a hook prompt to no role", payload: HookPrompt{Hook: "back-to-implementing", From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
@@ -467,6 +460,24 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a merge-queue read with no head", payload: MergeQueueRead{Number: 42}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a merge-queue removal of no pull request", payload: MergeQueueRemoval{Head: "c0de"}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
 		{name: "a merge-queue removal with no head", payload: MergeQueueRemoval{Number: 42, Unread: true}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
+		{name: "a conflict confirm of no pull request", payload: ConflictConfirm{Head: "c0de", FirstReadAt: now}, reason: "a conflict confirm names the pull request it reads again and the head"},
+		{name: "a conflict confirm with no head", payload: ConflictConfirm{Number: 42, FirstReadAt: now}, reason: "a conflict confirm names the pull request it reads again and the head"},
+		{name: "a conflict confirm with no time of the first read", payload: ConflictConfirm{Number: 42, Head: "c0de"}, reason: "a conflict confirm names when the first read it reads again was made"},
+		{name: "a merge-forward message of no step", payload: MergeForwardMessage{Role: claim.RoleImplementer, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen}, reason: "is an ask, a hold, a landed or a review"},
+		{name: "a merge-forward ask to the tester", payload: MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen}, reason: "a merge-forward ask goes to the implementer"},
+		{name: "a merge-forward hold to the implementer", payload: MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Retro, PullRequest: 42, Why: ConflictMergeNext}, reason: "a merge-forward ask goes to the implementer"},
+		{name: "a merge-forward hold to the architect", payload: MergeForwardMessage{Role: claim.RoleArchitect, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Accepting, PullRequest: 42, Why: ConflictMergeNext}, reason: "a merge-forward ask goes to the implementer"},
+		{name: "a merge-forward landed to the architect", payload: MergeForwardMessage{Role: claim.RoleArchitect, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Accepting, PullRequest: 42}, reason: "a merge-forward ask goes to the implementer"},
+		{name: "a merge-forward review to the merger", payload: MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Merging, PullRequest: 42}, reason: "a merge-forward ask goes to the implementer"},
+		{name: "a merge-forward ask with no head", payload: MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen}, reason: "names the head, the phase the issue stays in and the pull request"},
+		{name: "a merge-forward ask in no phase", payload: MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Base: "main", PullRequest: 42, Why: ConflictCheckNotGreen}, reason: "names the head, the phase the issue stays in and the pull request"},
+		{name: "a merge-forward ask of no pull request", payload: MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Testing, Why: ConflictCheckNotGreen}, reason: "names the head, the phase the issue stays in and the pull request"},
+		{name: "a merge-forward ask with no why", payload: MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42}, reason: "a merge-forward ask or hold names why the daemon acted"},
+		{name: "a merge-forward hold with a why that is no reason of R0", payload: MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: "dirty"}, reason: "a merge-forward ask or hold names why the daemon acted"},
+		{name: "a merge-forward review with a why that is no reason of R0", payload: MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Accepting, PullRequest: 42, Why: "dirty"}, reason: "a landed or a review names one of them or none"},
+		{name: "a merge-forward ask naming a head that landed", payload: MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen}, reason: "a merge-forward landed or review names the head that landed"},
+		{name: "a merge-forward landed with no head that landed", payload: MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
+		{name: "a merge-forward review with no head that landed", payload: MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Base: "main", Phase: phase.Accepting, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a check look bound without a look", payload: CheckLook{}, reason: "check look bound requires the look it bounds"},
 		{name: "unsupported payload", payload: unsupportedOutboxPayload{}, reason: "unknown outbox payload"},
 	}
@@ -573,8 +584,6 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a check wake with an unknown field", row: OutboxRow{ID: 43, Kind: OutboxKindCheckWake, Payload: json.RawMessage(`{"look":1,"reason":"the tester's own wake","build":"b00f"}`)}, reason: "unknown field"},
 		{name: "a check bound with a field", row: OutboxRow{ID: 41, Kind: OutboxKindCheckBound, Payload: json.RawMessage(`{"look":1}`)}, reason: "unknown field"},
 		{name: "a role message with no body", row: OutboxRow{ID: 48, Kind: OutboxKindRoleMessage, Payload: json.RawMessage(`{"role":"legion.sjawhar-legion.LEGION-208.architect"}`)}, reason: "role message requires body"},
-		{name: "a phase-ended message to an architect", row: OutboxRow{ID: 49, Kind: OutboxKindPhaseEnded, Payload: json.RawMessage(`{"role":"architect","from":"accepting","to":"implementing","reason":"the head conflicts with main"}`)}, reason: "never to an architect"},
-		{name: "a phase-ended message with an unknown field", row: OutboxRow{ID: 50, Kind: OutboxKindPhaseEnded, Payload: json.RawMessage(`{"role":"tester","from":"testing","to":"implementing","reason":"the head conflicts with main","quiesce":"tester"}`)}, reason: "unknown field"},
 		{name: "a hook prompt to an architect", row: OutboxRow{ID: 55, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"architect","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread."}`)}, reason: "never to an architect"},
 		{name: "a hook prompt on a move forward", row: OutboxRow{ID: 56, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"reviewer","from":"implementing","to":"reviewing","count":1,"counts":{},"prompt":"Read the thread."}`)}, reason: "is no move back"},
 		{name: "a hook prompt with an unknown field", row: OutboxRow{ID: 57, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"implementer","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread.","cap":2}`)}, reason: "unknown field"},
@@ -584,6 +593,11 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a merge-queue read of no pull request", row: OutboxRow{ID: 59, Kind: OutboxKindMergeQueueRead, Payload: json.RawMessage(`{"number":0,"head":"c0de"}`)}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a merge-queue removal of no pull request", row: OutboxRow{ID: 60, Kind: OutboxKindMergeQueueRemoval, Payload: json.RawMessage(`{"head":"c0de"}`)}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
 		{name: "a merge-queue removal naming a role", row: OutboxRow{ID: 61, Kind: OutboxKindMergeQueueRemoval, Payload: json.RawMessage(`{"role":"merger","number":42,"head":"c0de"}`)}, reason: "unknown field"},
+		{name: "a conflict confirm with no head", row: OutboxRow{ID: 62, Kind: OutboxKindConflictConfirm, Payload: json.RawMessage(`{"number":42,"firstReadAt":"2026-09-23T00:59:00Z"}`)}, reason: "a conflict confirm names the pull request it reads again and the head"},
+		{name: "a conflict confirm with no time of the first read", row: OutboxRow{ID: 66, Kind: OutboxKindConflictConfirm, Payload: json.RawMessage(`{"number":42,"head":"c0de"}`)}, reason: "a conflict confirm names when the first read it reads again was made"},
+		{name: "a conflict confirm with an unknown field", row: OutboxRow{ID: 63, Kind: OutboxKindConflictConfirm, Payload: json.RawMessage(`{"number":42,"head":"c0de","firstReadAt":"2026-09-23T00:59:00Z","base":"main"}`)}, reason: "unknown field"},
+		{name: "a merge-forward message of an unknown step", row: OutboxRow{ID: 64, Kind: OutboxKindMergeForward, Payload: json.RawMessage(`{"role":"implementer","step":"merge","head":"c0de","base":"main","phase":"testing","pullRequest":42,"why":"merge-next"}`)}, reason: "is an ask, a hold, a landed or a review"},
+		{name: "a merge-forward message with an unknown field", row: OutboxRow{ID: 65, Kind: OutboxKindMergeForward, Payload: json.RawMessage(`{"role":"implementer","step":"ask","head":"c0de","base":"main","phase":"testing","pullRequest":42,"why":"merge-next","task":"Merge main."}`)}, reason: "unknown field"},
 		{name: "a claim release with a field", row: OutboxRow{ID: 54, Kind: OutboxKindClaimRelease, Payload: json.RawMessage(`{"issue":"LEGION-208"}`)}, reason: "unknown field"},
 		{name: "a retro's stored reason without its rating", row: OutboxRow{ID: 62, Kind: OutboxKindStepRecord, Payload: json.RawMessage(`{"id":"` + stepRecordID +
 			`","task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-leg-leg-1-implementer","generation":1,"rating_reason":"The plan put the tests after the review."}`)},
@@ -1187,8 +1201,8 @@ func TestAnOutboxRowOfAKindOffTheListIsRefused(t *testing.T) {
 // phase-finished notice whose reason holds the move back's prose, a worker-stalled notice and an
 // architect-stalled wake whose facts are a sentence in the reason, a catch-up with the text of
 // the decisions it kept, a held notice with the architect's words, the tick's lists, a role
-// message of no kind with its body, a phase-ended message with its reason, an update ask with its
-// text and a start with the decisions it kept. This daemon decodes and validates each, for one
+// message of no kind with its body, an update ask with its text, a merge forward's ask and its
+// landed, and a start with the decisions it kept. This daemon decodes and validates each, for one
 // release, into the payload main wrote.
 func TestARowAnOlderDaemonQueuedStillDecodes(t *testing.T) {
 	at := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
@@ -1247,9 +1261,12 @@ func TestARowAnOlderDaemonQueuedStillDecodes(t *testing.T) {
 		{"a role message of no kind", OutboxKindRoleMessage,
 			`{"role":"legion.sjawhar-legion.LEGION-208.implementer","body":"CI settled at head c0de: \"build\" succeeded, \"unit\" failed"}`,
 			RoleMessage{Role: "legion.sjawhar-legion.LEGION-208.implementer", Body: "CI settled at head c0de: \"build\" succeeded, \"unit\" failed"}},
-		{"a phase-ended message", OutboxKindPhaseEnded,
-			`{"role":"tester","from":"testing","to":"implementing","reason":"pull request #42 at head c0de conflicts with main"}`,
-			PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "pull request #42 at head c0de conflicts with main"}},
+		{"a merge-forward ask", OutboxKindMergeForward,
+			`{"role":"implementer","step":"ask","head":"c0de","base":"main","phase":"reviewing","pullRequest":42,"why":"base-rules-unread"}`,
+			MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Reviewing, PullRequest: 42, Why: ConflictRulesUnread}},
+		{"a merge-forward landed", OutboxKindMergeForward,
+			`{"role":"merger","step":"landed","head":"c0de","landed":"d00d","base":"main","phase":"merging","pullRequest":42,"why":"merge-next"}`,
+			MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext}},
 		{"an update ask", OutboxKindUpdateAsk,
 			`{"role":"tester","round":"pod:9d3f0c7a","pod":"9d3f0c7a","text":"The daemon must replace the pod that runs this issue's roles."}`,
 			UpdateAsk{Role: claim.RoleTester, Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Text: "The daemon must replace the pod that runs this issue's roles."}},
@@ -1635,17 +1652,32 @@ func TestARoleMessageOfAKindCarriesItsRecord(t *testing.T) {
 	}
 }
 
-// The three role-message rows of their own outbox kinds build their kind's record from the row's
-// fields: the end of a phase with the conflict that ended it, an update round's ask with the
-// round's drift and the facts every ask gives, and a removal from the merge queue with the pull
-// request in the repository the record holds it under.
+// The role-message rows of their own outbox kinds build their kind's record from the row's
+// fields: an update round's ask with the round's drift and the facts every ask gives, a removal
+// from the merge queue with the pull request in the repository the record holds it under, and
+// each message of a merge forward as its step's kind, the base left out where the row names none.
 func TestTheRoleMessageRowsBuildTheirKindsRecords(t *testing.T) {
 	ends := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
-	ended := PhaseEnded{Role: claim.RoleImplementer, From: phase.Retro, To: phase.Implementing, TaskFollows: true,
-		ConflictsWith: "main", Head: "c0de", PullRequest: "sjawhar/legion#42"}
-	if got, want := ended.Record("LEGION-208"), (texts.PhaseEndedRecord{RoleHead: texts.RoleHead{Kind: texts.PhaseEnded, Issue: "LEGION-208"},
-		From: phase.Retro, To: phase.Implementing, TaskFollows: true, ConflictsWith: "main", Head: "c0de", PullRequest: "sjawhar/legion#42"}); !reflect.DeepEqual(got, want) {
-		t.Errorf("the phase-ended record is %+v, want %+v", got, want)
+	for _, tc := range []struct {
+		message MergeForwardMessage
+		want    any
+	}{
+		{MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Reviewing, PullRequest: 42, Why: ConflictCheckNotGreen},
+			texts.MergeForwardAskRecord{RoleHead: texts.RoleHead{Kind: texts.MergeForwardAsk, Issue: "LEGION-208"}, PullRequest: "sjawhar/legion#42",
+				Head: "c0de", ConflictsWith: "main", Phase: phase.Reviewing, Why: string(ConflictCheckNotGreen)}},
+		{MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardHold, Head: "c0de", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext},
+			texts.MergeForwardHoldRecord{RoleHead: texts.RoleHead{Kind: texts.MergeForwardHold, Issue: "LEGION-208"}, PullRequest: "sjawhar/legion#42",
+				Head: "c0de", Phase: phase.Merging, Why: string(ConflictMergeNext)}},
+		{MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictRulesUnread},
+			texts.MergeForwardLandedRecord{RoleHead: texts.RoleHead{Kind: texts.MergeForwardLanded, Issue: "LEGION-208"}, PullRequest: "sjawhar/legion#42",
+				Head: "c0de", Landed: "d00d", ConflictsWith: "main", Phase: phase.Testing}},
+		{MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Retro, PullRequest: 42},
+			texts.MergeForwardReviewRecord{RoleHead: texts.RoleHead{Kind: texts.MergeForwardReview, Issue: "LEGION-208"}, PullRequest: "sjawhar/legion#42",
+				Head: "c0de", Landed: "d00d", ConflictsWith: "main", Phase: phase.Retro}},
+	} {
+		if got := tc.message.Record("LEGION-208", "sjawhar/legion"); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("the merge-forward %s's record is %+v, want %+v", tc.message.Step, got, tc.want)
+		}
 	}
 	ask := UpdateAsk{Role: claim.RoleTester, Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Images: []string{"3f6a0b2c9d1e"},
 		Settings: []string{"LEGION_MODEL"}, Reasons: "image a, now b", EndsAt: ends}

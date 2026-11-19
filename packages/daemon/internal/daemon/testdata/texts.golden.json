@@ -2,46 +2,6 @@
   "samples": [
     {
       "kind": "phase-assignment",
-      "variant": "conflict",
-      "sample": 1,
-      "reader": "implementer",
-      "form": "task",
-      "urgency": "",
-      "issue": "ALPHA-1004",
-      "text": "kind: phase-assignment\nissue: ALPHA-1004\ntitle: \"123456e78901\"\nphase: implementing\npull_request: alpha-works/alpha-tower#71\nconflicts_with: main-myhehb\nhead: 61867ebd5e12ccd61ce1459236e4c22c28a30fb2"
-    },
-    {
-      "kind": "phase-assignment",
-      "variant": "conflict",
-      "sample": 2,
-      "reader": "implementer",
-      "form": "task",
-      "urgency": "",
-      "issue": "BRAVO-2004",
-      "text": "kind: phase-assignment\nissue: BRAVO-2004\ntitle: \"\"\nphase: implementing\npull_request: bravo-labs/bravo-yard#72\nconflicts_with: \"main-ksdcx \"\nhead: a411ceb8d54a413bb73036fb56ec024faeb6327a"
-    },
-    {
-      "kind": "phase-assignment",
-      "variant": "conflict-no-base",
-      "sample": 1,
-      "reader": "implementer",
-      "form": "task",
-      "urgency": "",
-      "issue": "ALPHA-1004",
-      "text": "kind: phase-assignment\nissue: ALPHA-1004\ntitle: \"123456e78901\"\nphase: implementing\npull_request: alpha-works/alpha-tower#76\nhead: 327423fc4d18c9923465d10ee7eb9f9f0146f7ae"
-    },
-    {
-      "kind": "phase-assignment",
-      "variant": "conflict-no-base",
-      "sample": 2,
-      "reader": "implementer",
-      "form": "task",
-      "urgency": "",
-      "issue": "BRAVO-2004",
-      "text": "kind: phase-assignment\nissue: BRAVO-2004\ntitle: \"\"\nphase: implementing\npull_request: bravo-labs/bravo-yard#77\nhead: b2e019fd7dc4da4d586434a60afb055fadd06aa8"
-    },
-    {
-      "kind": "phase-assignment",
       "variant": "handoff",
       "sample": 1,
       "reader": "reviewer",
@@ -59,6 +19,26 @@
       "urgency": "",
       "issue": "BRAVO-2001",
       "text": "kind: phase-assignment\nissue: BRAVO-2001\ntitle: \"null\"\nphase: reviewing\nhandoff_phase: test\nhandoff_version: 11\nhandoff_commit: 560117ea94efe0c80cd21946c1ee2d1b7b1294ee\ntester_verdict: fail\npull_request: bravo-labs/bravo-yard#42"
+    },
+    {
+      "kind": "phase-assignment",
+      "variant": "merge-forward-review",
+      "sample": 1,
+      "reader": "merger",
+      "form": "task",
+      "urgency": "",
+      "issue": "ALPHA-1004",
+      "text": "kind: phase-assignment\nissue: ALPHA-1004\ntitle: \"123456e78901\"\nphase: merging\npull_request: alpha-works/alpha-tower#71\nmerged_forward: main-ljmpnd\napproval_owed: 24bf8be033875913c42e98f5fd5680cf6900f54e"
+    },
+    {
+      "kind": "phase-assignment",
+      "variant": "merge-forward-review",
+      "sample": 2,
+      "reader": "merger",
+      "form": "task",
+      "urgency": "",
+      "issue": "BRAVO-2004",
+      "text": "kind: phase-assignment\nissue: BRAVO-2004\ntitle: \"\"\nphase: merging\npull_request: bravo-labs/bravo-yard#72\nmerged_forward: main-jaicxs\napproval_owed: ba73a469a2a7e91d7d3e038d71dcdbcc46d10a0d"
     },
     {
       "kind": "phase-assignment",
@@ -4542,6 +4522,44 @@
     },
     {
       "kind": "checks-red",
+      "variant": "accepting",
+      "sample": 1,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "ALPHA-1100",
+      "summary": "checks-red on ALPHA-1100",
+      "payload": {
+        "kind": "checks-red",
+        "phase": "accepting",
+        "issue": "ALPHA-1100",
+        "pull_request": "alpha-works/alpha-tower#701",
+        "conflicts_with": "main-utobo",
+        "head": "a4aa35d37cd80c0cbbf323a8d7a3a9dc2f543e01",
+        "why": "merge-next"
+      }
+    },
+    {
+      "kind": "checks-red",
+      "variant": "accepting",
+      "sample": 2,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "BRAVO-2100",
+      "summary": "checks-red on BRAVO-2100",
+      "payload": {
+        "kind": "checks-red",
+        "phase": "accepting",
+        "issue": "BRAVO-2100",
+        "pull_request": "bravo-labs/bravo-yard#702",
+        "conflicts_with": "main-mbvdv",
+        "head": "1315f971598302e61b9a45984bc494f5921e9bcf",
+        "why": "merge-next"
+      }
+    },
+    {
+      "kind": "checks-red",
       "variant": "conflict",
       "sample": 1,
       "reader": "architect",
@@ -4555,7 +4573,8 @@
         "issue": "ALPHA-1100",
         "pull_request": "alpha-works/alpha-tower#701",
         "conflicts_with": "main-utobo",
-        "head": "a4aa35d37cd80c0cbbf323a8d7a3a9dc2f543e01"
+        "head": "a4aa35d37cd80c0cbbf323a8d7a3a9dc2f543e01",
+        "why": "required-check-not-green"
       }
     },
     {
@@ -4573,7 +4592,8 @@
         "issue": "BRAVO-2100",
         "pull_request": "bravo-labs/bravo-yard#702",
         "conflicts_with": "main-mbvdv",
-        "head": "1315f971598302e61b9a45984bc494f5921e9bcf"
+        "head": "1315f971598302e61b9a45984bc494f5921e9bcf",
+        "why": "base-rules-unread"
       }
     },
     {
@@ -4590,7 +4610,8 @@
         "phase": "merging",
         "issue": "ALPHA-1100",
         "pull_request": "alpha-works/alpha-tower#751",
-        "head": "b697c1422a588852e77999920646cad1e6b932cb"
+        "head": "b697c1422a588852e77999920646cad1e6b932cb",
+        "why": "merge-next"
       }
     },
     {
@@ -4607,7 +4628,8 @@
         "phase": "merging",
         "issue": "BRAVO-2100",
         "pull_request": "bravo-labs/bravo-yard#752",
-        "head": "f76661655cccf8e971859627687d8581f97b41ca"
+        "head": "f76661655cccf8e971859627687d8581f97b41ca",
+        "why": "merge-next"
       }
     },
     {
@@ -9413,120 +9435,6 @@
       }
     },
     {
-      "kind": "phase-ended",
-      "variant": "ended",
-      "sample": 1,
-      "reader": "tester",
-      "form": "role-message",
-      "urgency": "med",
-      "issue": "ALPHA-1260",
-      "summary": "phase-ended on ALPHA-1260",
-      "payload": {
-        "kind": "phase-ended",
-        "issue": "ALPHA-1260",
-        "from": "testing",
-        "to": "implementing",
-        "conflicts_with": "main-vfhac",
-        "head": "de5073fab18a51a21eda4ae8f90aeec8d7c6cb9c",
-        "pull_request": "alpha-works/alpha-tower#1101"
-      }
-    },
-    {
-      "kind": "phase-ended",
-      "variant": "ended",
-      "sample": 2,
-      "reader": "tester",
-      "form": "role-message",
-      "urgency": "med",
-      "issue": "BRAVO-2260",
-      "summary": "phase-ended on BRAVO-2260",
-      "payload": {
-        "kind": "phase-ended",
-        "issue": "BRAVO-2260",
-        "from": "testing",
-        "to": "implementing",
-        "conflicts_with": "main-kmlqz",
-        "head": "456156c389c475c916e44b6f706af847718a7ae8",
-        "pull_request": "bravo-labs/bravo-yard#1102"
-      }
-    },
-    {
-      "kind": "phase-ended",
-      "variant": "no-base",
-      "sample": 1,
-      "reader": "merger",
-      "form": "role-message",
-      "urgency": "med",
-      "issue": "ALPHA-1260",
-      "summary": "phase-ended on ALPHA-1260",
-      "payload": {
-        "kind": "phase-ended",
-        "issue": "ALPHA-1260",
-        "from": "merging",
-        "to": "implementing",
-        "head": "59a7326afdbc08fa2e59517a2941a267895113b6",
-        "pull_request": "alpha-works/alpha-tower#1151"
-      }
-    },
-    {
-      "kind": "phase-ended",
-      "variant": "no-base",
-      "sample": 2,
-      "reader": "merger",
-      "form": "role-message",
-      "urgency": "med",
-      "issue": "BRAVO-2260",
-      "summary": "phase-ended on BRAVO-2260",
-      "payload": {
-        "kind": "phase-ended",
-        "issue": "BRAVO-2260",
-        "from": "merging",
-        "to": "implementing",
-        "head": "da29dfbb74a5b0dd255fc3a09e5fe06fcc3b4267",
-        "pull_request": "bravo-labs/bravo-yard#1152"
-      }
-    },
-    {
-      "kind": "phase-ended",
-      "variant": "task-follows",
-      "sample": 1,
-      "reader": "implementer",
-      "form": "role-message",
-      "urgency": "med",
-      "issue": "ALPHA-1260",
-      "summary": "phase-ended on ALPHA-1260",
-      "payload": {
-        "kind": "phase-ended",
-        "issue": "ALPHA-1260",
-        "from": "retro",
-        "to": "implementing",
-        "task_follows": true,
-        "conflicts_with": "main-vfhac",
-        "head": "de5073fab18a51a21eda4ae8f90aeec8d7c6cb9c",
-        "pull_request": "alpha-works/alpha-tower#1101"
-      }
-    },
-    {
-      "kind": "phase-ended",
-      "variant": "task-follows",
-      "sample": 2,
-      "reader": "implementer",
-      "form": "role-message",
-      "urgency": "med",
-      "issue": "BRAVO-2260",
-      "summary": "phase-ended on BRAVO-2260",
-      "payload": {
-        "kind": "phase-ended",
-        "issue": "BRAVO-2260",
-        "from": "retro",
-        "to": "implementing",
-        "task_follows": true,
-        "conflicts_with": "main-kmlqz",
-        "head": "456156c389c475c916e44b6f706af847718a7ae8",
-        "pull_request": "bravo-labs/bravo-yard#1102"
-      }
-    },
-    {
       "kind": "hook-prompt",
       "variant": "fired",
       "sample": 1,
@@ -9744,6 +9652,194 @@
         "pull_request": "bravo-labs/bravo-yard#1302",
         "head": "4d0b3ab945619d47d433aaeb82f70cdd1eb4d069",
         "unread": true
+      }
+    },
+    {
+      "kind": "merge-forward-ask",
+      "variant": "ask",
+      "sample": 1,
+      "reader": "implementer",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "ALPHA-1260",
+      "summary": "merge-forward-ask on ALPHA-1260",
+      "payload": {
+        "kind": "merge-forward-ask",
+        "issue": "ALPHA-1260",
+        "pull_request": "alpha-works/alpha-tower#1401",
+        "head": "454bcc3badb4b52ee18c24294633649dbdaa8fe2",
+        "conflicts_with": "main-knboh",
+        "phase": "testing",
+        "why": "required-check-not-green"
+      }
+    },
+    {
+      "kind": "merge-forward-ask",
+      "variant": "ask",
+      "sample": 2,
+      "reader": "implementer",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "BRAVO-2260",
+      "summary": "merge-forward-ask on BRAVO-2260",
+      "payload": {
+        "kind": "merge-forward-ask",
+        "issue": "BRAVO-2260",
+        "pull_request": "bravo-labs/bravo-yard#1402",
+        "head": "2ea6b3169417aed84e417bc26ccf66948dc2b587",
+        "conflicts_with": "main-esxue",
+        "phase": "reviewing",
+        "why": "base-requires-current"
+      }
+    },
+    {
+      "kind": "merge-forward-ask",
+      "variant": "no-base",
+      "sample": 1,
+      "reader": "implementer",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "ALPHA-1260",
+      "summary": "merge-forward-ask on ALPHA-1260",
+      "payload": {
+        "kind": "merge-forward-ask",
+        "issue": "ALPHA-1260",
+        "pull_request": "alpha-works/alpha-tower#1451",
+        "head": "d46dd3ec615afa00ec455d4d887aaf98ea7d41c0",
+        "phase": "testing",
+        "why": "base-rules-unread"
+      }
+    },
+    {
+      "kind": "merge-forward-ask",
+      "variant": "no-base",
+      "sample": 2,
+      "reader": "implementer",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "BRAVO-2260",
+      "summary": "merge-forward-ask on BRAVO-2260",
+      "payload": {
+        "kind": "merge-forward-ask",
+        "issue": "BRAVO-2260",
+        "pull_request": "bravo-labs/bravo-yard#1452",
+        "head": "f7ab29ca4d43ee8dda0d9f7a646cf308c321345d",
+        "phase": "reviewing",
+        "why": "base-rules-unread"
+      }
+    },
+    {
+      "kind": "merge-forward-hold",
+      "variant": "hold",
+      "sample": 1,
+      "reader": "tester",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "ALPHA-1260",
+      "summary": "merge-forward-hold on ALPHA-1260",
+      "payload": {
+        "kind": "merge-forward-hold",
+        "issue": "ALPHA-1260",
+        "pull_request": "alpha-works/alpha-tower#1401",
+        "head": "454bcc3badb4b52ee18c24294633649dbdaa8fe2",
+        "conflicts_with": "main-knboh",
+        "phase": "testing",
+        "why": "required-check-not-green"
+      }
+    },
+    {
+      "kind": "merge-forward-hold",
+      "variant": "hold",
+      "sample": 2,
+      "reader": "reviewer",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "BRAVO-2260",
+      "summary": "merge-forward-hold on BRAVO-2260",
+      "payload": {
+        "kind": "merge-forward-hold",
+        "issue": "BRAVO-2260",
+        "pull_request": "bravo-labs/bravo-yard#1402",
+        "head": "2ea6b3169417aed84e417bc26ccf66948dc2b587",
+        "conflicts_with": "main-esxue",
+        "phase": "reviewing",
+        "why": "base-requires-current"
+      }
+    },
+    {
+      "kind": "merge-forward-landed",
+      "variant": "landed",
+      "sample": 1,
+      "reader": "tester",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "ALPHA-1260",
+      "summary": "merge-forward-landed on ALPHA-1260",
+      "payload": {
+        "kind": "merge-forward-landed",
+        "issue": "ALPHA-1260",
+        "pull_request": "alpha-works/alpha-tower#1401",
+        "head": "454bcc3badb4b52ee18c24294633649dbdaa8fe2",
+        "landed": "0021af707958b12430f752a50c33ea0e573ce0b1",
+        "conflicts_with": "main-knboh",
+        "phase": "testing"
+      }
+    },
+    {
+      "kind": "merge-forward-landed",
+      "variant": "landed",
+      "sample": 2,
+      "reader": "reviewer",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "BRAVO-2260",
+      "summary": "merge-forward-landed on BRAVO-2260",
+      "payload": {
+        "kind": "merge-forward-landed",
+        "issue": "BRAVO-2260",
+        "pull_request": "bravo-labs/bravo-yard#1402",
+        "head": "2ea6b3169417aed84e417bc26ccf66948dc2b587",
+        "landed": "8d840a7ad632e1238e91608047b7a44d198b2dc2",
+        "conflicts_with": "main-esxue",
+        "phase": "reviewing"
+      }
+    },
+    {
+      "kind": "merge-forward-review",
+      "variant": "review",
+      "sample": 1,
+      "reader": "reviewer",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "ALPHA-1260",
+      "summary": "merge-forward-review on ALPHA-1260",
+      "payload": {
+        "kind": "merge-forward-review",
+        "issue": "ALPHA-1260",
+        "pull_request": "alpha-works/alpha-tower#1401",
+        "head": "454bcc3badb4b52ee18c24294633649dbdaa8fe2",
+        "landed": "0021af707958b12430f752a50c33ea0e573ce0b1",
+        "conflicts_with": "main-knboh",
+        "phase": "accepting"
+      }
+    },
+    {
+      "kind": "merge-forward-review",
+      "variant": "review",
+      "sample": 2,
+      "reader": "reviewer",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "BRAVO-2260",
+      "summary": "merge-forward-review on BRAVO-2260",
+      "payload": {
+        "kind": "merge-forward-review",
+        "issue": "BRAVO-2260",
+        "pull_request": "bravo-labs/bravo-yard#1402",
+        "head": "2ea6b3169417aed84e417bc26ccf66948dc2b587",
+        "landed": "8d840a7ad632e1238e91608047b7a44d198b2dc2",
+        "conflicts_with": "main-esxue",
+        "phase": "merging"
       }
     }
   ]
