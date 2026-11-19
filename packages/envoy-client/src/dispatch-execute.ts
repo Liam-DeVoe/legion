@@ -5,6 +5,7 @@ import {
   type ExecuteDispatchToolInput,
   sessionContext,
 } from "./dispatch-commands/context";
+import { dryRunAsksDispatch } from "./dispatch-commands/issues";
 import { type DispatchCommand, dispatchCommandOf } from "./dispatch-commands/table";
 import { ToolInputError } from "./tool-input-errors";
 
@@ -27,7 +28,7 @@ export type {
 export { readDocumentBlocks, resolveIssueDocumentId } from "./dispatch-commands/document-targets";
 export { dispatchRefFromUrl, linkBaseOf } from "./dispatch-commands/links";
 export { formatOpenAsksSummary, positionText } from "./dispatch-commands/render-item";
-export { checkDispatchCall, dispatchServerUrls };
+export { checkDispatchCall, dispatchServerUrls, dryRunAsksDispatch };
 
 /** Validate and execute one native Dispatch tool against the JSON HTTP API. */
 export async function executeDispatchTool(
@@ -42,6 +43,11 @@ export async function executeDispatchTool(
     serverUrls: dispatchServerUrls(input.config),
   });
   if (checked.problems.length > 0) throw new ToolInputError(input.tool, checked.problems);
+  // A dry run reaches a command only where Dispatch answers it: run as one, any other command
+  // would make its write.
+  if (input.dryRun === true && !dryRunAsksDispatch(input.tool, checked.args)) {
+    throw new Error(`dispatch ${input.tool}'s dry run asks Dispatch nothing`);
+  }
   // The check reads the tool's own schema, so an unknown tool is already refused by the time this
   // runs; the lookup can still miss, so the name stays in the message. A spec that binds its
   // routes is served by the one generic command that calls them.
