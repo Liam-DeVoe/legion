@@ -900,6 +900,34 @@ test("with keysOnTrigger, a printable key on the closed trigger opens the list w
   }
 });
 
+// R6 is "a typed letter": a closed trigger's type-ahead takes a letter or a digit, as a
+// `<select>` does, and punctuation opens nothing. The page's `?` then reaches the keymap, which
+// reads a list's trigger as editable and opens no Keyboard shortcuts over it.
+test("with keysOnTrigger, punctuation on the closed trigger opens no list, and a letter after it still does", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <SingleHost initial="api" keysOnTrigger options={["api", "docs", "frontend"]} />
+  );
+  const page = keysThePageReads();
+  try {
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
+    act(() => trigger.focus());
+    for (const key of ["?", "/", "]", "."]) {
+      await user.keyboard(key);
+      expect(screen.queryByRole("listbox"), `${key} opened the list`).not.toBeInTheDocument();
+      expect(trigger).toHaveFocus();
+    }
+    expect(page.keys).toEqual(["?", "/", "]", "."]);
+    await user.keyboard("2");
+    expect(screen.getByRole("combobox", { name: "Search epics" })).toHaveValue("2");
+    expect(page.keys).toEqual(["?", "/", "]", "."]);
+    expect(screen.getByTestId("handed").textContent).toBe("");
+  } finally {
+    page.stop();
+    view.unmount();
+  }
+});
+
 // Opt-in: a single pick that does not write the moment it is picked - the Version picker, whose
 // `]` is the page's next tab - leaves every key but Enter and Space on its closed trigger to the
 // page.

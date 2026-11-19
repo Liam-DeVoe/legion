@@ -51,6 +51,10 @@ const MOVE_KEYS: Readonly<Record<string, true>> = {
   PageUp: true,
 };
 
+/** A key a closed trigger that takes the list's keys opens the list with as its search: one
+ *  letter or digit, in any script. Punctuation (`?`, `/`, `]`) is no type-ahead and opens nothing. */
+const TYPED_KEY = /^[\p{L}\p{N}]$/u;
+
 /** Where `key` moves the highlight in `rows` from `from`, or undefined for a key that moves
  *  nothing or rows that hold nothing. The arrows wrap at the ends; Home and End go to them, and
  *  Page Down and Page Up go `PAGE_ROWS` rows on and stop there. From no row, or one the rows do
@@ -201,8 +205,10 @@ interface MultipleProps extends SharedProps {
 interface SingleProps extends SharedProps {
   /** The closed trigger takes the list's keys, as a focused `<select>` does: ArrowDown, ArrowUp,
    *  Home, End, Page Down and Page Up open the list on the value picked and move the highlight by
-   *  that key, and a printable key opens it with that key in the text box. Each is the trigger's
-   *  own (`preventDefault`), so the page's keymap, which skips a handled key, never reads it. A
+   *  that key, and a letter or a digit opens it with that key in the text box (`TYPED_KEY`). Each
+   *  is the trigger's own (`preventDefault`), so the page's keymap, which skips a handled key,
+   *  never reads it; any other key, `?` among them, opens nothing and reaches the keymap, which
+   *  reads a list's trigger as editable and fires no single key of the page on it. A
    *  host whose value is written the moment it is picked passes it (the assignee, the
    *  repository, an ask's hand-on), so a key moves only the highlight and only Enter or a click
    *  writes. Without it the closed trigger takes Enter, Space and a click, and every other key
@@ -394,13 +400,14 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   }, [open]);
 
   // A key on the closed trigger of a single pick that takes the list's keys: a move key opens the
-  // list on the row it moves to from the value picked, and a printable one opens it with that key
-  // as the search, whose first match is then the active row. A key held with Ctrl, Alt or Meta is
-  // a chord, and Space presses the trigger, so both stay the browser's and the page's.
+  // list on the row it moves to from the value picked, and a letter or a digit opens it with that
+  // key as the search, whose first match is then the active row - the type-ahead a `<select>` does
+  // (R6: "a typed letter"). A key held with Ctrl, Alt or Meta is a chord, and Space presses the
+  // trigger, so both stay the browser's and the page's.
   const openFromKey = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (!keysOnTrigger || open || event.altKey || event.ctrlKey || event.metaKey) return;
     if (event.nativeEvent.isComposing) return;
-    const typed = event.key.length === 1 && event.key !== " ";
+    const typed = TYPED_KEY.test(event.key);
     if (!typed && MOVE_KEYS[event.key] !== true) return;
     event.preventDefault();
     openedBy.current = typed ? { query: event.key } : { key: event.key, query: "" };
