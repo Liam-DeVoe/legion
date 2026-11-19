@@ -1035,6 +1035,34 @@ func TestTheImplementerPointsToTheBriefOnATaskWithNoReviewer(t *testing.T) {
 	}
 }
 
+// On a task whose `Steps:` line names no reviewer, nobody adjudicates a bot's review thread, so the
+// implementer's prompt gives it the duty, held here by its contract terms rather than its wording:
+// the paragraph of the composed implementer prompt that names that case and bot threads names the
+// retro among the completions it answers them before, `request_backward_move` to `implementing`
+// for a thread whose fix the retro cannot push, and the completion's `summary`, in which it names
+// each thread it declined to its architect. This shows the text is loaded, never that an
+// implementer follows it.
+func TestTheImplementerAnswersTheBotThreadsOnATaskWithNoReviewer(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	var held []string
+	for _, paragraph := range strings.Split(composedText(t, composer, claim.RoleImplementer, false), "\n\n") {
+		if paragraph = foldWhitespace(paragraph); strings.Contains(paragraph, "names no reviewer") && strings.Contains(paragraph, "bot thread") {
+			held = append(held, paragraph)
+		}
+	}
+	if len(held) == 0 {
+		t.Fatal("the composed implementer prompt holds no paragraph on bot threads on a task whose `Steps:` line names no reviewer")
+	}
+	for _, term := range []string{"retro", "`request_backward_move`", "`implementing`", "`summary`", "declined", "architect"} {
+		if !slices.ContainsFunc(held, func(paragraph string) bool { return strings.Contains(paragraph, term) }) {
+			t.Errorf("the composed implementer prompt's duty on bot threads on a task with no reviewer names no %s: %q", term, held)
+		}
+	}
+}
+
 // A catch-up that names an issue waiting in `accepting` leaves the root architect its acceptance.
 // The daemon part states what to do, in two sentences: sign off or send back, and the head a
 // parent's sign-off needs; the role part points to it rather than saying it again, so the composed

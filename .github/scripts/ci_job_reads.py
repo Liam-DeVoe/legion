@@ -495,9 +495,6 @@ RULES = {
         ("scripts/e2e/README.md", "internal/textcheck/production_check_rule_test.go:30 reads it under ../../../.."),
         ("docs/site/src/content/docs/legion/concepts.md",
          "internal/textcheck/production_check_rule_test.go:30 reads it under ../../../..")),
-    f"{DAEMON}/internal/textcheck/no_reviewer_duties_doc_test.go": reads(
-        ("docs/site/src/content/docs/legion/concepts.md",
-         "internal/textcheck/no_reviewer_duties_doc_test.go:20 reads it under ../../../..")),
     f"{DAEMON}/internal/textcheck/reclaim_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/reclaim_doc_test.go:51,277 reads it under ../../../.."),
         (f"{DAEMON}/internal/runtime/sandbox/reclaim_doc_extract.txt",
