@@ -103,6 +103,10 @@ func newFreshSessionRig(t *testing.T) *freshSessionRig {
 	}
 	rig.register(oldSession, oldSessionFile)
 	rig.must(supervise.RequestDeliver{Claim: rig.implementer, Task: phaseTask, ID: "outbox:7", Phase: phase.Implementing, Generation: issue.Generation})
+	// The delivery's send runs on a goroutine of its own (supervise's startSend). Oh My Pi
+	// acknowledges a prompt at its admission, before the turn it starts, so the rig waits that
+	// acknowledgement out: every turn it then drives is one whose prompt's result is still owed.
+	rig.machine.Wait()
 	return rig
 }
 

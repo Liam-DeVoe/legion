@@ -594,15 +594,17 @@ func (r *claudeBackendLive) implementerCompletes() {
 	t := r.t
 	token := r.token(claim.RoleImplementer)
 	r.implementRecord = r.writeRecord(r.session, "implement")
-	mark := time.Now()
+	// The daemon answers the completion before its answer reaches the stand-in as the tool's
+	// result, so the read of its line starts from a count taken before the turn is released.
+	from := r.daemon.count()
 	r.model.release()
 	result := r.model.awaitResult(t, 3*time.Minute)
 	r.note("the reminded turn called %s %s; the tool answered (error %t): %s", claudeLegionTool, r.model.callInput(), result.isError, result.text)
 	if result.isError {
 		t.Fatalf("the legion MCP tool refused the implementer's handoff_complete: %s", result.text)
 	}
-	line := r.awaitLog("the daemon's answer to the implementer's completion", time.Minute, func(l loggedRecord) bool {
-		return l.Message == lateCompletionAnswered && l.Attrs["claim"] == string(token) && l.at.After(mark)
+	line := r.awaitLogFrom("the daemon's answer to the implementer's completion", from, time.Minute, func(l loggedRecord) bool {
+		return l.Message == lateCompletionAnswered && l.Attrs["claim"] == string(token)
 	})
 	r.note("daemon: %s", answeredLine(*line))
 	if line.Attrs["status"] != float64(http.StatusOK) || line.Attrs["handoffId"] != r.implementRecord.ID || line.Attrs["commit"] != r.head {

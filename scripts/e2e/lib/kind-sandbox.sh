@@ -162,7 +162,16 @@ EOF
 
 kind_sandbox_install_agent_sandbox() {
   kind_k apply -f "$kind_agent_sandbox_crd"
-  kind_k wait --for=condition=Established crd/sandboxes.agents.x-k8s.io --timeout=60s
+  # `kubectl wait --for=condition=` refuses a CRD whose status holds no conditions yet, which a
+  # wait issued right after the create can meet (CI run 44538419665: ".status.conditions accessor
+  # error: <nil>"), so this reads the condition until it is True, for at most 60 seconds.
+  local established="" deadline=$((SECONDS + 60))
+  until [ "$established" = True ]; do
+    [ "$SECONDS" -lt "$deadline" ] || fail "the Sandbox CRD is not Established after 60 s"
+    sleep 1
+    established=$(kind_k get crd/sandboxes.agents.x-k8s.io \
+      -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || true)
+  done
   kind_k apply -f "$kind_agent_sandbox_manifest"
   kind_k -n agent-sandbox-system rollout status deployment/agent-sandbox-controller --timeout=300s
 }
