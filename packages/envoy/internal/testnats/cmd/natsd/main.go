@@ -51,14 +51,6 @@ func main() {
 // run parses args as nats-server parses its own command line (-p for the client port, -store_dir
 // for the JetStream store) and -callout-keys, starts the server with JetStream on 127.0.0.1 and
 // its log on stdout, and returns once a signal has shut it down.
-//
-// It listens on 127.0.0.1, not on an address of its own as a server of the tests does
-// (testnats.NewHost). Every caller builds the URL nats://127.0.0.1:<port> from the port the
-// log reports (dev-stack.sh, lib/callout-stack.sh, the scripts/e2e stacks), and e2e-refill.sh,
-// envoy-session-states.sh and dev-stack.sh restart it on that same port under a running listener.
-// Nor does it meet the class NewHost closes: each script runs one natsd for one stack whose
-// every client is that stack's own, and stops them all when the run ends, so no client of an
-// earlier stack is left dialing a port this one takes.
 func run(args []string) error {
 	flags := flag.NewFlagSet("natsd", flag.ContinueOnError)
 	calloutDir := flags.String("callout-keys", "", "run behind an auth callout whose keys are in (or are made in) this directory")
