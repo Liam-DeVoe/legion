@@ -16,8 +16,16 @@ import {
   RECOVERY_BOUND_MS,
   recoveryBoundMs,
   runFreezeScenario,
+  type SessionStep,
 } from "@legion/envoy-client/test/stall-scenario"
 import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
+import {
+  TIMER_RECORD_FILE,
+  TIMER_RECORD_ROOTS,
+  type TimerStep,
+  timersBetween,
+} from "@legion/test-fixtures/timer-record"
+import { completeLines } from "@legion/test-fixtures/transcript-lines"
 import { settled, until } from "@legion/test-fixtures/wait"
 import type { Subprocess } from "bun"
 import { type ModCallArguments, modSocketPath } from "../hooks/mod-protocol"
@@ -25,6 +33,18 @@ import { CHANNEL_RECORD_FILE, type ChannelRecordLine } from "../src/channel-reco
 import { startFakeMod } from "./fake-mod"
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
+/** The preload that records the timers the server's own code arms, into the server's record. */
+const timerRecordPreload = Bun.resolveSync(
+  "@legion/test-fixtures/timer-record-preload",
+  import.meta.dir,
+)
+/** The server's own code: this package's and the envoy-client and pi-shared sources it runs. */
+const serverRoots = [
+  resolve(import.meta.dir, "..", "src"),
+  resolve(import.meta.dir, "..", "bin"),
+  resolve(import.meta.dir, "..", "..", "envoy-client", "src"),
+  resolve(import.meta.dir, "..", "..", "pi-shared", "src"),
+]
 
 /** The exit this file held a server to on SIGTERM before its waits ended at the row's deadline:
  *  the bounded waits a shutdown arms on its way out must sum to less. */
@@ -45,8 +65,12 @@ interface ChannelServer {
   readonly home: string
   /** The channel messages Claude Code would be shown, in the order the server sent them. */
   readonly channel: readonly string[]
-  /** What the server wrote to its record so far (`../src/channel-record`). */
-  record(): readonly ChannelRecordLine[]
+  /** What the server wrote to its record so far, in its order (`../src/channel-record`), with
+   *  the timers its own code armed and fired between (`@legion/test-fixtures/timer-record`). */
+  record(): readonly (ChannelRecordLine | TimerStep)[]
+  /** The server's own record of its way back from a freeze, in its order, each message it showed
+   *  given by its text, which the record holds by its Envoy event only. */
+  sessionRecord(): readonly SessionStep[]
   /** The server's NATS connection as its record gives it: the settings it dialled with and each
    *  status event since; undefined before it dialled. */
   natsDial(): NatsDial | undefined
@@ -103,7 +127,7 @@ async function startChannelServer(
   )
   const sessionID = `${sessionPrefix}_${crypto.randomUUID().replaceAll("-", "")}`
   const recordFile = join(home, "channel-record.jsonl")
-  const server = Bun.spawn(["bun", channelEntry], {
+  const server = Bun.spawn(["bun", "--preload", timerRecordPreload, channelEntry], {
     cwd: home,
     env: {
       ...bunCacheOff,
@@ -117,8 +141,12 @@ async function startChannelServer(
       // No heartbeat registration runs in the test's window: the reconnect's registration, on a
       // new epoch, is the only one that restarts the relay.
       ENVOY_HEARTBEAT_MS: "240000",
-      // The server's own record of its dial and its bounded waits (`../src/channel-record`).
+      // The server's own record of its dial, its steps and its bounded waits
+      // (`../src/channel-record`), and into the same file, so one order holds both, each timer
+      // its own code arms and fires (`@legion/test-fixtures/timer-record`).
       [CHANNEL_RECORD_FILE]: recordFile,
+      [TIMER_RECORD_FILE]: recordFile,
+      [TIMER_RECORD_ROOTS]: serverRoots.join(":"),
     },
     stdin: "pipe",
     stdout: "pipe",
@@ -130,11 +158,14 @@ async function startChannelServer(
   // prompt of a new turn while the session is idle, which this one is throughout (`show` in
   // `../src/mod-session`) - so the mod is this test's view of what the session was shown.
   const channel: string[] = []
+  /** The Envoy event each shown message was handed to the mod under, beside its text. */
+  const shownEvents: { readonly text: string; readonly eventId: string | undefined }[] = []
   const mod = await startFakeMod(socketPath, {
     sessionId: sessionID,
     answers: {
       "session.message": (args) => {
         channel.push(shownText(args))
+        shownEvents.push({ text: shownText(args), eventId: args.eventId })
         // The prompt an idle session took, which is what answers the frame: a prompt carries
         // no row of its own (`../hooks/mod-protocol.ts`, `ModCallResults["session.message"]`).
         return { as: "prompt" }
@@ -158,12 +189,11 @@ async function startChannelServer(
     })}\n`,
   )
   server.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`)
-  const record = (): ChannelRecordLine[] =>
+  const record = (): (ChannelRecordLine | TimerStep)[] =>
     existsSync(recordFile)
-      ? readFileSync(recordFile, "utf8")
-          .split("\n")
-          .filter((line) => line !== "")
-          .map((line) => JSON.parse(line) as ChannelRecordLine)
+      ? completeLines(readFileSync(recordFile, "utf8")).map(
+          (line) => JSON.parse(line) as ChannelRecordLine | TimerStep,
+        )
       : []
   return {
     server,
@@ -172,6 +202,18 @@ async function startChannelServer(
     home,
     channel,
     record,
+    sessionRecord() {
+      return record().flatMap((line): SessionStep[] => {
+        if ("status" in line) return [{ status: line.status }]
+        if ("registered" in line) return [{ registered: line.registered }]
+        if ("shown" in line) {
+          const text = shownEvents.find((shown) => shown.eventId === line.shown)?.text
+          return text === undefined ? [] : [{ shown: text }]
+        }
+        if ("timer" in line || "fired" in line) return [line]
+        return []
+      })
+    },
     natsDial() {
       const lines = record()
       const dial = lines.find((line) => "dial" in line)
@@ -241,7 +283,7 @@ describe.skipIf(!envoyStackEnabled)(
       const running = stack
       const { envoyUrl } = running
       await withChannelServer(running, "ses_stall", async (channelServer) => {
-        const { proxy, sessionID, channel, waitFor, natsDial } = channelServer
+        const { proxy, sessionID, channel, waitFor, natsDial, sessionRecord } = channelServer
         await waitFor(
           async () => (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok,
           "the session's registration",
@@ -264,6 +306,7 @@ describe.skipIf(!envoyStackEnabled)(
           sessionID,
           proxy,
           shown: (marker) => channel.filter((content) => content.includes(marker)),
+          sessionRecord,
           natsDial,
           waitFor,
         })
@@ -301,20 +344,62 @@ describe.skipIf(!envoyStackEnabled)(
         expect(recoveryBoundMs(dial.options, 1)).toBeLessThan(RECOVERY_BOUND_MS)
         expectRecoveredByPingOut(dial, 1)
         // The hung redial must not hold the process: it exits on SIGTERM, which the shared wait
-        // reads through its exit, failing at the row's deadline while the server still runs. The
-        // server promises no exit time of its own, only bounded steps on the way out, and its
-        // record names each with the delay it armed (R4: the bound the server chose, read across
-        // the process boundary, not a clock): the NATS drain's second and the settle's
-        // `SHUTDOWN_SETTLE_MS`. Together they stay under the 15 s this row held its exit to; that
-        // it ran the shutdown to its end is its exit, 0 and not the signal's, and the
+        // reads through its exit, failing at the row's deadline while the server still runs. How
+        // long the way out may take is what the server chose for it, read from its own record
+        // (R4: the bounds it armed and the order it took its steps, not a clock): every wait of
+        // the way armed a bound, in the order the shutdown takes them, and those bounds, with any
+        // other timer its own code ran on the way, stay under the exit bound it holds the whole
+        // way to, which is no more than the 15 s this row holds its exit to. That the way ended
+        // on its own, not on that bound, is the record's `completed` before the process's exit;
+        // a wait no bound names - a sleep, a handle left open - ends it on the exit bound instead.
+        // That it ran the shutdown to its end is its exit, 0 and not the signal's, and the
         // deregistration the shutdown sends reaching the listener.
+        const beforeStop = record().length
+        // Read for `SHUTDOWN_EXIT_MS`'s sizing beside it, never asserted: the way out's time.
+        const stoppedAt = Date.now()
         server.kill("SIGTERM")
         const exitCode = await settled("the channel server's exit on SIGTERM", server.exited)
+        console.log(
+          `claude-envoy stall exit: the way out took ${Date.now() - stoppedAt} ms from SIGTERM to the process's exit`,
+        )
         expect({ exitCode, signal: server.signalCode }).toEqual({ exitCode: 0, signal: null })
         expect((await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok).toBe(false)
-        const waits = record().flatMap((line) => ("wait" in line ? [line] : []))
-        expect(waits.map((wait) => wait.wait)).toEqual(["drain", "settle"])
-        expect(waits.reduce((armed, wait) => armed + wait.armedMs, 0)).toBeLessThan(EXIT_BOUND_MS)
+        const steps = record()
+        const wayOut = steps.slice(beforeStop)
+        expect(wayOut.flatMap((line) => ("shutdown" in line ? [line.shutdown] : []))).toEqual([
+          "began",
+          "completed",
+          "exited",
+        ])
+        const began = wayOut.find((line) => "shutdown" in line && line.shutdown === "began")
+        const exitBoundMs = began !== undefined && "exitBoundMs" in began ? began.exitBoundMs : NaN
+        expect(exitBoundMs).toBeLessThanOrEqual(EXIT_BOUND_MS)
+        const waits = wayOut.flatMap((line) => ("wait" in line ? [line] : []))
+        const names = waits.map((wait) => wait.wait)
+        // The drained connection's close is waited for only where the drain left it open.
+        expect(names.filter((name) => name !== "close")).toEqual([
+          "drain",
+          "settle",
+          "deregister",
+          "state",
+          "turns",
+          "mod",
+          "server",
+        ])
+        expect([-1, 1]).toContain(names.indexOf("close"))
+        const completed = steps.findIndex(
+          (line) => "shutdown" in line && line.shutdown === "completed",
+        )
+        const otherTimers = timersBetween(steps, beforeStop - 1, completed).filter(
+          (timer) => !timer.from.includes("/settled-or-given-up.ts:"),
+        )
+        const armedMs =
+          waits.reduce((armed, wait) => armed + wait.armedMs, 0) +
+          otherTimers.reduce((armed, timer) => armed + timer.delayMs, 0)
+        expect(
+          armedMs,
+          `the way out's bounds, ${JSON.stringify(waits)}, and its other timers, ${JSON.stringify(otherTimers)}`,
+        ).toBeLessThan(exitBoundMs)
       })
     })
   },

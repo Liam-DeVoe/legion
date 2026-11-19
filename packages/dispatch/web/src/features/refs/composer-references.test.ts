@@ -22,7 +22,7 @@ test.each(
 // A body near the server's 1 MiB request cap that trails a reference with a run of closing
 // parentheses, alone or between the emphasis delimiters the trim also drops, still cites that
 // reference, and a long run of closers followed by anything else is read in one pass too. The
-// pass is counted rather than timed (`referenceTrimReads`): each body is one span, so its one
+// pass is counted rather than timed (`reference-reads.ts`): each body is one span, so its one
 // trim reads every character of it once to count the parentheses and walks back over at most
 // as many again. A trim that rescans the run for every start, as an end-anchored regular
 // expression does, took over ten seconds on the 64 KiB body alone; written as a loop it reads

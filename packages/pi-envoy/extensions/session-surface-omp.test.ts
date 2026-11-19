@@ -1202,9 +1202,11 @@ test.skipIf(skip)("a Send of `!sleep 600` is stopped at the limit and says when"
   expect(reply).toBe(
     `!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after ${SHELL_LIMIT_MS} ms.`
   );
-  expect(
-    (await session.shellRecord()).slice(recorded).filter((line) => line.command === "sleep 600")
-  ).toEqual([{ command: "sleep 600", armedMs: SHELL_LIMIT_MS, endedBy: "limit" }]);
+  // The session runs one command at a time, so the one line written since the send is this
+  // command's, and its index is the count of the lines before it.
+  expect((await session.shellRecord()).slice(recorded)).toEqual([
+    { index: recorded, armedMs: SHELL_LIMIT_MS, endedBy: "limit" },
+  ]);
 });
 
 // One command runs for a session at a time: a second is answered naming the first rather than

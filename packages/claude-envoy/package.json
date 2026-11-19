@@ -27,7 +27,7 @@
   },
   "//": [
     "test: each command's --timeout is at least twice the slowest row or hook it ran under 8 busy loops on 2 CPUs at 61b66deb (two runs in a builds Job).",
-    "The first, 15000: a Legion pane's server registers on its transcript, claims its role, serves the legion tool and delivers through the inbox, 5,687.14 ms (the slowest hook, packed-skills.test.ts's beforeAll, 984.92 ms).",
+    "The first, 15000: a Legion pane's server registers on its transcript, claims its role, serves the legion tool and delivers through the inbox, 5,687.14 ms (the slowest hook, packed-skills.test.ts's beforeAll, 984.92 ms). The codex files main's #4406 added read later, under the same 8 loops: their slowest row, codex-owner.test.ts's two server processes racing for a dead owner's place, took 4,803.83 and 5,078.79 ms at d22477d9 (two runs in builds Job d5-8, 2026-11-19; 2,970.21 and 3,190.70 ms in d4-codex-8-3 at fdce4e94d2), under the 7,500 ms half of this guard.",
     "The second, 120000: a turn that ends with a background task running earns no reminder, 19,096.00 ms here; envoy-channel-stall.test.ts runs only with LEGION_E2E_ENVOY_STACK=1, and there its rows took up to 53,001.47 ms (its beforeAll 14,816.41 ms) under the same load.",
     "The third, 300000, runs codex-real.test.ts alone, which runs only where LEGION_TEST_CODEX names a Codex binary, and no CI job or builds Job has one: it is the 300,000 ms its beforeAll carried on main (#4406), not a reading."
   ],

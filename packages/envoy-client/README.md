@@ -169,8 +169,9 @@ from the seed (`src/nats-auth.ts`, which the package does not export, so a plugi
 these options), reconnecting forever 2 s apart, and a ping every 10 s (`NATS_PING_INTERVAL_MS`)
 with the connection dropped on the tick that finds two pings unanswered (`NATS_MAX_PINGS_OUT`). So a
 path that freezes without closing is left within 30 s and redialed at once, and a session is back
-within 52 s when that redial also hangs on nats.js's 20 s dial timeout and the 2 s wait; nats.js's
-default 120 s interval left a frozen path for up to 6 minutes.
+within 52.1 s when that redial also hangs on the 20 s dial timeout (`NATS_DIAL_TIMEOUT_MS`), the 2 s
+wait and its 0.1 s jitter (`NATS_RECONNECT_JITTER_MS`), both set here rather than left to nats.js's
+defaults; nats.js's default 120 s interval left a frozen path for up to 6 minutes.
 
 nats.js 2.29.3, the last 2.x release, leaves a redial's socket open when it gives up on that dial
 at its 20 s timeout (a TCP connect that hangs, or a server that never sends `INFO`): it closes

@@ -94,14 +94,19 @@ export interface ShellCommandResult {
  *  deployment runs, nothing is written. */
 export const SHELL_RECORD_FILE = "ENVOY_SHELL_RECORD_FILE";
 
-/** One command's line in `SHELL_RECORD_FILE`: the command, the delay its limit was armed for, and
- *  what ended it: the limit's timer (`limit`), a stop before it (`stop`), or its own end
- *  (`exit`). */
+/** One command's line in `SHELL_RECORD_FILE`: which command of this process it was (`index`, 0 for
+ *  the first `runShellCommand` started), the delay its limit was armed for, and what ended it: the
+ *  limit's timer (`limit`), a stop before it (`stop`), or its own end (`exit`). It holds no text
+ *  of the command, which a person typed and may carry a credential: a test finds its command's
+ *  line by that order. */
 export interface ShellCommandRecord {
-  readonly command: string;
+  readonly index: number;
   readonly armedMs: number;
   readonly endedBy: "limit" | "stop" | "exit";
 }
+
+/** How many commands `runShellCommand` has started in this process: the next one's `index`. */
+let commandsStarted = 0;
 
 /** Appends `line` to the file `SHELL_RECORD_FILE` names, where it names one; never throws. */
 function recordShellCommand(line: ShellCommandRecord): void {
@@ -343,6 +348,8 @@ export async function runShellCommand(
     };
   }
   runningGroups.add(child.pid);
+  const index = commandsStarted;
+  commandsStarted += 1;
   // The reads start before the wait: a pipe nobody empties fills, and a command blocked on a
   // full one would never reach its own end.
   const printed = new BoundedOutput();
@@ -371,7 +378,7 @@ export async function runShellCommand(
     killGroup(child.pid);
     runningGroups.delete(child.pid);
   }
-  recordShellCommand({ command, armedMs, endedBy: ended ?? "exit" });
+  recordShellCommand({ index, armedMs, endedBy: ended ?? "exit" });
   await drained(reads);
   const output = printable(printed.text());
   const cut = output.length > SHELL_OUTPUT_MAX;

@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The channel server exits within 3 s of the end of its stdin or a stop signal. Every wait of its
+  way out has a bound of its own - the NATS drain 1 s, the connection's close 100 ms, the
+  registration writes in flight 250 ms, the deregistration what is left of that and 750 ms more,
+  the last state and turn writes, the mod link and the MCP server 100 ms each - and when the way
+  out has not ended by 3 s the server exits anyway, saying so on stderr, rather than wait for
+  whatever is still running. An MCP client kills a stdio server 4 s after it ends its stdin, so the
+  deregistration and the last writes now finish, or are given up, before that kill.

@@ -4,6 +4,7 @@ import { messageFor } from "@legion/envoy-client/errors"
 import { expandSubscriptionTopics } from "@legion/envoy-client/transport"
 import { z } from "zod"
 import type { ChannelRecord } from "./channel-record"
+import { settledOrGivenUp } from "./settled-or-given-up"
 
 /** A message as the broker yields it (a nats.js `Msg` satisfies this). */
 export interface ChannelBrokerMessage {
@@ -59,7 +60,7 @@ export interface ChannelTopics {
   topics(): readonly string[]
   /** True once the connection is closed for good. */
   isClosed(): boolean
-  /** Drain the NATS connection; never rejects. */
+  /** Drain the NATS connection, then close it, each wait bounded; never rejects. */
   close(): Promise<void>
 }
 
@@ -82,6 +83,9 @@ const DeliveryIdentity = DedupeIdentitySchema.extend({
 })
 
 const DEFAULT_DRAIN_TIMEOUT_MS = 1_000
+/** How long close waits for a connection the drain left open to close before it goes on: the
+ *  process's exit ends whatever is left of it. */
+const CLOSE_TIMEOUT_MS = 100
 
 /** A frame's identity fields, each kept only when valid; undefined for a frame that is not JSON. */
 export function deliveryIdentity(raw: string): z.infer<typeof DeliveryIdentity> | undefined {
@@ -132,26 +136,22 @@ export function createChannelTopics(
     async close() {
       following.clear()
       if (connection.isClosed()) return
-      const timeout = Promise.withResolvers<"bound">()
-      const timer = setTimeout(() => timeout.resolve("bound"), drainTimeoutMs)
       // A drain that fails ended the wait as much as one that finished: what it waited for came.
-      let endedBy: "fact" | "bound" = "fact"
-      try {
-        endedBy = await Promise.race([
-          connection.drain().then(() => "fact" as const),
-          timeout.promise,
-        ])
-      } catch (error) {
-        report("draining the broker connection failed", error)
-      }
-      clearTimeout(timer)
-      options.record?.({ wait: "drain", armedMs: drainTimeoutMs, endedBy })
+      const drained = await settledOrGivenUp(
+        connection
+          .drain()
+          .catch((error: unknown) => report("draining the broker connection failed", error)),
+        drainTimeoutMs,
+      )
+      options.record?.({ wait: "drain", armedMs: drainTimeoutMs, endedBy: drained })
       if (connection.isClosed()) return
-      try {
-        await connection.close()
-      } catch (error) {
-        report("closing the broker connection failed", error)
-      }
+      const closed = await settledOrGivenUp(
+        connection
+          .close()
+          .catch((error: unknown) => report("closing the broker connection failed", error)),
+        CLOSE_TIMEOUT_MS,
+      )
+      options.record?.({ wait: "close", armedMs: CLOSE_TIMEOUT_MS, endedBy: closed })
     },
   }
 }

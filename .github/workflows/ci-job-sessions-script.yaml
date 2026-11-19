@@ -40,7 +40,10 @@ jobs:
   sessions-script:
     runs-on: ubuntu-24.04-arm
     # One Bun suite over a local Postgres: the measured run is seconds, and ten minutes fails a
-    # hung connection rather than waiting out the runner's own limit.
+    # hung connection rather than waiting out the runner's own limit. At least the job's sum over
+    # its 20 newest green merge-group runs up to 2026-11-18T07:33Z: its other steps at their
+    # longest, 94 s (the Postgres service's start 72 s of it), 6 s of its clock over them, and its
+    # test step's longest, 1 s, plus that command's guard of 5 s: 106 s in all.
     timeout-minutes: 10
     services:
       postgres:

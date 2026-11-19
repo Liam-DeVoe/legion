@@ -33,6 +33,14 @@
       "types": "./src/temporary-tmpdir.ts",
       "bun": "./src/temporary-tmpdir.ts"
     },
+    "./timer-record": {
+      "types": "./src/timer-record.ts",
+      "bun": "./src/timer-record.ts"
+    },
+    "./timer-record-preload": {
+      "types": "./src/timer-record-preload.ts",
+      "bun": "./src/timer-record-preload.ts"
+    },
     "./transcript-lines": {
       "types": "./src/transcript-lines.ts",
       "bun": "./src/transcript-lines.ts"

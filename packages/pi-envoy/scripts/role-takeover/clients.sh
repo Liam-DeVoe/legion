@@ -239,6 +239,16 @@ claim_count() {
     "${proxy_log[$1]}" 2>/dev/null
 }
 
+# claim_date LABEL SESSION PREVIOUS: the listener's own clock at its answer to that client's last
+# such claim (the proxy's `date`, epoch seconds), 0 where it made none or the listener dated none.
+claim_date() {
+  jq -rs --arg sid "$2" --arg previous "$3" \
+    'map(select(.path == "/v1/roles/set" and .request.session_id == $sid
+                and (.request.previous_session_id // "") == $previous))
+     | if length == 0 then 0 else (.[-1].date // 0 | floor) end' \
+    "${proxy_log[$1]}" 2>/dev/null || printf '0'
+}
+
 # late_refusal LABEL SESSION PREVIOUS SINCE: the last such claim of that client the listener
 # answered other than 200 at a moment its own clock dates more than SINCE (epoch seconds of that
 # clock, from the proxy's `date`), as `<status> naming <holder> at <date>`; empty where it

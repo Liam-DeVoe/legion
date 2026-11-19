@@ -44,6 +44,10 @@ env:
 jobs:
   lint:
     runs-on: ubuntu-24.04-arm
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-18T11:04Z: its
+    # other steps at their longest, 1,362 s, 7 s of its clock over them, and its one Bun test
+    # step's longest ("Check every NATS server a script starts or installs is one the floor
+    # takes"), 41 s, plus that command's guard of 5 s: 1,415 s in all, 23.6 minutes.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -735,12 +735,14 @@ test.skipIf(skip)(
     // And the sixth turn's WAITING line holds off a seventh: the only wake the pane armed after
     // that turn, as its own activity reports name it, is the ten minutes the line bought, not the
     // half second between reminders. A report names only a live timer (`phaseWake`), and the
-    // pane's moment and the wake it names are the wait apart, less the little it did between
-    // arming and reporting.
+    // pane's moment and the wake it names are the wait apart, less what the pane did between
+    // arming and reporting - two reads of its clock a loaded pod can put any time apart, so the
+    // row reads no slack between them: a wake past five minutes is the ten-minute wait, and the
+    // reminder's half second, the defect this reads, is far below it.
     const wakes = wakesAfter(pane, 6);
     expect(wakes.length).toBeGreaterThan(0);
     for (const wake of wakes) {
-      expect(wake).toBeGreaterThanOrEqual(600_000 - 100);
+      expect(wake).toBeGreaterThan(300_000);
       expect(wake).toBeLessThanOrEqual(600_000);
     }
     expect(entryField((await pane.phaseRecords()).at(-1)?.data, "state")).toBe("waiting");

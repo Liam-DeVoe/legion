@@ -866,8 +866,9 @@ describe("DispatchClient", () => {
   /** The most of a body an excerpt reads (dispatch-http.ts's EXCERPT_SCAN_LIMIT). */
   const SCAN_LIMIT = 64 * 1024;
   /** The pattern passes an excerpt makes over what it read: scripts and styles, tags, the
-   *  Authorization value and the Bearer value (dispatch-http.ts's `excerpt`). */
-  const PATTERN_PASSES = 4;
+   *  Authorization value, the Bearer value and `textHead`'s whitespace runs (dispatch-http.ts's
+   *  `excerpt`). */
+  const PATTERN_PASSES = 5;
 
   /**
    * The work `call` made the excerpt do, read from the client's own counters, held to what one

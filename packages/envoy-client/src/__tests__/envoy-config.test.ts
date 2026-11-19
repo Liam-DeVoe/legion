@@ -1283,6 +1283,36 @@ describe("a ! command in envoy.json", () => {
     expect(left).toEqual([]);
   });
 
+  // The tests' slot runs once the command's process group is killed, outside the spawn's own
+  // `try`: a slot that throws leaves the value read and the group kill as they were, where one
+  // inside the `try` read as a command that never started and left what it started running.
+  test("whose spawn record throws is still its value, and a process it left running is still killed", async () => {
+    const home = tempDir();
+    const env = commandEnvironment(home);
+    const pidFile = path.join(home, "child.pid");
+    const file = writeFile(path.join(home, "envoy.json"), {
+      dispatch: { ...dispatchOn, token: `!sleep 900 & echo $! > ${pidFile}; echo slot-secret` },
+    });
+    const cwd = tempDir();
+    let dispatch: DispatchWithToken | undefined;
+    recordCommandSpawnsForTests(() => {
+      throw new Error("the tests' slot threw");
+    });
+    try {
+      inScratchTmp(() => {
+        dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
+      });
+    } finally {
+      recordCommandSpawnsForTests(undefined);
+    }
+    expect(dispatch).toEqual({
+      enabled: true,
+      url: "https://dispatch.example",
+      token: "slot-secret",
+    });
+    await gone(Number(readFileSync(pidFile, "utf-8").trim()));
+  });
+
   // The command never ends by itself while the row runs: it waits for a `release` file that nothing
   // in the row creates, so only the read's own 10 s timeout ends it, however long this process is
   // not run. Its wait ends unreleased only at the row's deadline (`timeLeft`, in turns of its 0.1 s

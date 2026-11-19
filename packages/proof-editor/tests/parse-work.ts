@@ -2,8 +2,8 @@
  * The work a parse does, as the parse itself counts it, for the rows that hold a heavy body's parse
  * to a cost in proportion to its length.
  *
- * A row reads four counts around one parse (packages/proof-editor/AGENTS.md, "The four dependency
- * patches"):
+ * A row reads its counts around one parse (packages/proof-editor/AGENTS.md, "The four dependency
+ * patches"). The first five are held to a cost a character as well as to a linear growth:
  *
  * - `tokenizerSteps` of `micromark` (`patches/micromark@4.0.2.patch`): one step for each code
  *   micromark's tokenizers hand a state, a code a construct read and gave back counting again each
@@ -16,11 +16,32 @@
  *   opening `[` reads and one per character its definition lookup reads.
  * - `nestingScanSteps` of src/block-nesting.ts, one per event `openedOnLine` reads: the one loop of
  *   that module outside the tokenizer's states.
+ * - `directiveScanSteps` of src/directive-container.ts, one per event its resolver
+ *   (`resolveDirectiveContainers`) and its looks back while it tokenizes read.
  *
- * The last three are the scans that read events rather than codes, which the tokenizer's count does
- * not see. The counts are the code's own record of the work, so a busy machine does not move them,
- * and a parse put back to reading every event or every code again on each line, each `]` or each
- * opener reads a number of steps that grows with the square of the body.
+ * The last four are the scans that read events rather than codes, which the tokenizer's count does
+ * not see. The resolvers that walk the events once a tokenizer has them are counted after them,
+ * each held to a linear growth alone:
+ *
+ * - `textResolveScanSteps` of `micromark`: the events, chunks and spaces the string and text
+ *   resolvers (`resolveAllText`, `resolveAllLineSuffixes`) read, and every event they copy, put in
+ *   or shift, so a resolver that splices once a line shows the square of the paragraph here.
+ * - `resolverScanSteps` of `micromark-core-commonmark`: the same, for each of its resolvers
+ *   (attention, label end, ATX heading, setext underline, code text), each `splice` counted with
+ *   the events after it that it shifts, and for content the events `micromark-util-subtokenize`
+ *   hands it back.
+ *
+ * Three stages no patch reaches are held from outside, by what each hands on: the events every
+ * tokenizer's resolvers hand on (`resolvedEvents` of `micromark`, after the extensions' resolvers
+ * too), the events `postprocess` hands on once `subtokenize` is done (`postprocessedEvents`: the
+ * events `mdast-util-from-markdown`'s compile takes), and the nodes of the document Milkdown's
+ * transform built from that tree, counted on the document the parse returns. Output that grows
+ * with the square of the body grows them so; a walk inside those stages that grows so while its
+ * output does not is read in the timing lane only (tests/cpu-time.ts).
+ *
+ * The counts are the code's own record of the work, so a busy machine does not move them, and a
+ * parse put back to reading every event or every code again on each line, each `]` or each opener
+ * reads a number of steps that grows with the square of the body.
  *
  * A row reads each count at the shape's full size and at `1/growthStep` of its growing dimension,
  * and holds them three ways: each count moved as far as the body says it must (`expectFloors`), the
@@ -33,21 +54,31 @@
  */
 
 import { expect } from "bun:test";
-import { lazyLineScanSteps, tokenizerSteps } from "micromark";
-import { labelEndScanSteps } from "micromark-core-commonmark";
+import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
+import {
+  lazyLineScanSteps,
+  postprocessedEvents,
+  resolvedEvents,
+  textResolveScanSteps,
+  tokenizerSteps,
+} from "micromark";
+import { labelEndScanSteps, resolverScanSteps } from "micromark-core-commonmark";
 import { nestingScanSteps } from "../src/block-nesting";
+import { directiveScanSteps } from "../src/directive-container";
 
 /**
- * The most scan steps - lazy-line, label-end and nesting together - a parse may take per character
- * of its body at the full size.
+ * The most scan steps - lazy-line, label-end, nesting and directive together - a parse may take
+ * per character of its body at the full size.
  *
  * The highest healthy reading is 3.0 a character: a run of 15,000 brackets and as many closers,
  * where each `]` reads the events added since the label end before it stopped looking and the
  * opening below them (89,995 steps on 30,000 characters, in both modes, 2026-11-14). The lazy
- * shapes read 0.5 a character (one event for each lazy line) and the nesting scan at most 0.19 (100
- * items nested by indentation then blank lines, 2026-11-18). This bound is twice the highest. A
- * scan that reads every event again reads a number of steps that grows with the square of the body
- * instead: thousands a character at these lengths.
+ * shapes read 0.5 a character (one event for each lazy line), the nesting scan at most 0.19 (100
+ * items nested by indentation then blank lines, 2026-11-18), and the directive scans at most 2.13
+ * (1,000 nested openers then 1,000 closing lines: 19,104 steps on 9,000 characters, 2.24 with the
+ * other scans, in both modes, 2026-11-19). This bound is twice the highest. A scan that reads
+ * every event again reads a number of steps that grows with the square of the body instead:
+ * thousands a character at these lengths.
  */
 export const scanStepsPerCharacter = 6;
 
@@ -104,14 +135,28 @@ export type WorkShape = {
    * `nestingScanSteps`'s walk at least once.
    */
   opensContainers: boolean;
+  /** Whether the body opens a `:::` container, whose parse reads `directiveScanSteps`'s walks at
+   *  least once, in a mode that refuses the body too: the refusal comes after them. */
+  opensDirectives?: boolean;
 };
 
-/** The four counts of one parse. */
+/** The counts of one parse. */
 type WorkCounts = {
   readonly tokenizer: number;
   readonly lazyLine: number;
   readonly labelEnd: number;
   readonly nesting: number;
+  readonly directive: number;
+  readonly textResolve: number;
+  readonly attentionResolve: number;
+  readonly labelEndResolve: number;
+  readonly headingAtxResolve: number;
+  readonly setextUnderlineResolve: number;
+  readonly codeTextResolve: number;
+  readonly contentHandedBack: number;
+  readonly resolvedHandedOn: number;
+  readonly postprocessedHandedOn: number;
+  readonly documentNodes: number;
 };
 
 /** What each count is, as a failure names it. */
@@ -120,15 +165,49 @@ const countNames: Record<keyof WorkCounts, string> = {
   lazyLine: "lazy-line steps",
   labelEnd: "label-end steps",
   nesting: "nesting-scan steps",
+  directive: "directive-scan steps",
+  textResolve: "text-resolver steps",
+  attentionResolve: "attention-resolver steps",
+  labelEndResolve: "label-end-resolver steps",
+  headingAtxResolve: "ATX-heading-resolver steps",
+  setextUnderlineResolve: "setext-underline-resolver steps",
+  codeTextResolve: "code-text-resolver steps",
+  contentHandedBack: "events subtokenize handed content",
+  resolvedHandedOn: "events the tokenizers' resolvers handed on",
+  postprocessedHandedOn: "events postprocess handed the mdast compile",
+  documentNodes: "nodes of the document Milkdown's transform built",
 };
 
-function readCounts(): WorkCounts {
+/** The counts the code keeps, read now; the document's nodes are read on the parse's value. */
+function readCounts(): Omit<WorkCounts, "documentNodes"> {
+  const resolvers = resolverScanSteps();
   return {
     tokenizer: tokenizerSteps(),
     lazyLine: lazyLineScanSteps(),
     labelEnd: labelEndScanSteps(),
     nesting: nestingScanSteps(),
+    directive: directiveScanSteps(),
+    textResolve: textResolveScanSteps(),
+    attentionResolve: resolvers.attention,
+    labelEndResolve: resolvers.labelEnd,
+    headingAtxResolve: resolvers.headingAtx,
+    setextUnderlineResolve: resolvers.setextUnderline,
+    codeTextResolve: resolvers.codeText,
+    contentHandedBack: resolvers.content,
+    resolvedHandedOn: resolvedEvents(),
+    postprocessedHandedOn: postprocessedEvents(),
   };
+}
+
+/** The nodes of `value`, where it is a document: itself and every node below it. */
+function documentNodes(value: unknown): number {
+  const document = value as Partial<ProseMirrorNode> | undefined;
+  if (typeof document?.descendants !== "function") return 0;
+  let nodes = 1;
+  document.descendants(() => {
+    nodes++;
+  });
+  return nodes;
 }
 
 /** What one parse of a body counted, and what it threw where it threw. */
@@ -147,7 +226,7 @@ type WorkReading<T> = {
   readonly value: T | undefined;
 };
 
-/** Parses `shape` once at `size`, reading the four counts around the parse, and keeps what it threw. */
+/** Parses `shape` once at `size`, reading the counts around the parse, and keeps what it threw. */
 function readWork<T>(shape: WorkShape, size: number, parse: (body: string) => T): WorkReading<T> {
   const body = shape.grow(size);
   const before = readCounts();
@@ -161,12 +240,10 @@ function readWork<T>(shape: WorkShape, size: number, parse: (body: string) => T)
     thrown = cause;
   }
   const after = readCounts();
-  const counts: WorkCounts = {
-    tokenizer: after.tokenizer - before.tokenizer,
-    lazyLine: after.lazyLine - before.lazyLine,
-    labelEnd: after.labelEnd - before.labelEnd,
-    nesting: after.nesting - before.nesting,
-  };
+  const moved = Object.fromEntries(
+    (Object.keys(after) as (keyof typeof after)[]).map((key) => [key, after[key] - before[key]])
+  ) as Omit<WorkCounts, "documentNodes">;
+  const counts: WorkCounts = { ...moved, documentNodes: documentNodes(value) };
   return { body, size, counts, threw, thrown, value };
 }
 
@@ -200,6 +277,27 @@ function expectFloors(what: string, shape: WorkShape, reading: WorkReading<unkno
       `${at} opens containers and took no ${countNames.nesting}`
     ).toBeGreaterThan(0);
   }
+  if (shape.opensDirectives === true) {
+    expect(
+      counts.directive,
+      `${at} opens \`:::\` containers and took no ${countNames.directive}`
+    ).toBeGreaterThan(0);
+  }
+  // A parse that returned a document went through every stage: its text was resolved, its
+  // tokenizers and `postprocess` handed events on, and the transform built a document.
+  if (!reading.threw) {
+    for (const key of [
+      "textResolve",
+      "resolvedHandedOn",
+      "postprocessedHandedOn",
+      "documentNodes",
+    ] as const) {
+      expect(
+        counts[key],
+        `${at} returned a document and took no ${countNames[key]}`
+      ).toBeGreaterThan(0);
+    }
+  }
 }
 
 /**
@@ -209,13 +307,14 @@ function expectFloors(what: string, shape: WorkShape, reading: WorkReading<unkno
  */
 function expectWorkInProportion(what: string, reading: WorkReading<unknown>): void {
   const { body, counts } = reading;
-  const scans = counts.lazyLine + counts.labelEnd + counts.nesting;
+  const scans = counts.lazyLine + counts.labelEnd + counts.nesting + counts.directive;
   const scansAllowed = scanStepsPerCharacter * body.length;
   expect(
     scans,
     `${what} took ${scans} scan steps (${counts.lazyLine} lazy-line, ${counts.labelEnd} ` +
-      `label-end, ${counts.nesting} nesting-scan) on ${body.length} characters, where at most ` +
-      `${scansAllowed} (${scanStepsPerCharacter} a character) are allowed`
+      `label-end, ${counts.nesting} nesting-scan, ${counts.directive} directive-scan) on ` +
+      `${body.length} characters, where at most ${scansAllowed} (${scanStepsPerCharacter} a ` +
+      `character) are allowed`
   ).toBeLessThanOrEqual(scansAllowed);
   const tokenizerAllowed = tokenizerStepsPerCharacter * body.length;
   expect(

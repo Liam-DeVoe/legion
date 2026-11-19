@@ -16,6 +16,12 @@ import { readFileSync } from "node:fs";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import type { BlockSchema } from "../src/block-schema.js";
 import { createHeadlessProof } from "../src/lib-headless.js";
+import {
+  parsedWithinCostBounds,
+  refusalWithinCostBounds,
+  TIMING_ENV,
+  timingLane,
+} from "./cpu-time";
 import { parsedWithinWorkBounds, refusalWithinWorkBounds, type WorkShape } from "./parse-work";
 
 /** The document service's own block schema: its callout takes `block+`, so callouts nest. */
@@ -51,6 +57,7 @@ const bodies: DirectiveBody[] = [
     grow: (size) => ":::a\n".repeat(size) + "x".repeat(Math.round(size * lineCharsPerOpener)),
     full: 2_000,
     opensContainers: true,
+    opensDirectives: true,
     expectDoc: (doc) => {
       // The openers past the bound, and the long line, are the text of the 32 paragraphs the
       // bound allows and of the one that holds the rest.
@@ -64,6 +71,7 @@ const bodies: DirectiveBody[] = [
     grow: (size) => ":::a\n".repeat(size) + ":::\n".repeat(size),
     full: 1_000,
     opensContainers: true,
+    opensDirectives: true,
     expectDoc: (doc) => {
       expect(doc.childCount).toBe(35);
       expect(doc.textContent.length).toBe(8_965);
@@ -185,4 +193,34 @@ for (const body of bodies) {
       body.refusedInDefaultMode
     );
   });
+}
+
+// The timing lane (tests/cpu-time.ts): each body's whole parse in CPU time, as the base's rows
+// held it. They run where PROOF_EDITOR_BENCH_TIMING is set, on a quiet machine, never in CI.
+for (const body of bodies) {
+  test.skipIf(!timingLane)(
+    `${TIMING_ENV}: read-only parses ${body.name} in CPU time proportional to its length`,
+    async () => {
+      const proof = await readOnlyProof();
+      const doc = parsedWithinCostBounds(
+        `the read-only engine's parse of ${body.name}`,
+        body,
+        (input) => proof.parseMarkdown(input)
+      );
+      body.expectDoc(doc);
+    }
+  );
+
+  test.skipIf(!timingLane)(
+    `${TIMING_ENV}: the default mode refuses ${body.name} in CPU time proportional to its length`,
+    async () => {
+      const proof = await defaultProof();
+      refusalWithinCostBounds(
+        `the default mode's refusal of ${body.name}`,
+        body,
+        (input) => proof.parseMarkdown(input),
+        body.refusedInDefaultMode
+      );
+    }
+  );
 }

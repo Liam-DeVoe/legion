@@ -1,4 +1,5 @@
 import { expect } from "bun:test";
+import { type TimerStep, timersBetween } from "@legion/test-fixtures/timer-record";
 import { connect, DebugEvents, Events, type KV } from "nats";
 import { z } from "zod";
 import { deliverSubject } from "../src/consumer-delivery";
@@ -17,12 +18,6 @@ import type { StallProxy } from "./stall-proxy";
  */
 export const RECOVERY_BOUND_MS = 60_000;
 
-/** How long nats.js 2.29.3 gives a dial before it abandons it, where the options set no `timeout`
- *  (`this.options.timeout || 20000`, lib/nats-base-client/protocol.js). */
-export const NATS_JS_DIAL_TIMEOUT_MS = 20_000;
-/** nats.js 2.29.3's `reconnectJitter`, where the options set none (lib/nats-base-client/options.js). */
-export const NATS_JS_RECONNECT_JITTER_MS = 100;
-
 /** The settings of a NATS dial that pace its recovery from a frozen path (nats.js's
  *  `ConnectionOptions` of these names). */
 export interface NatsPacing {
@@ -39,6 +34,18 @@ export interface NatsStatusEvent {
   readonly data: unknown;
 }
 
+/**
+ * One step of a session's own record of its way back from a freeze, in the order the session's
+ * process took them: a status event its NATS client reported (`status`), a registration the
+ * listener answered with the epoch it named (`registered`), a message handed to its host (`shown`,
+ * the text), or a timer its own code armed or fired (`@legion/test-fixtures/timer-record`).
+ */
+export type SessionStep =
+  | { readonly status: string }
+  | { readonly registered: string }
+  | { readonly shown: string }
+  | TimerStep;
+
 /** A NATS connection as a session dialled it: the settings it chose, and every status event
  *  nats.js reported on the connection since, in order. */
 export interface NatsDial {
@@ -51,14 +58,17 @@ export interface NatsDial {
  * nats.js 2.29.3 sends a ping each `pingInterval` and leaves the path on the tick that finds
  * `maxPingOut` pings unanswered (lib/nats-base-client/heartbeats.js), the `maxPingOut + 1`th
  * since the last answered one, and redials at once; each of `hungRedials` redials that hangs as
- * well costs its dial timeout, the reconnect wait and its jitter before the next dial.
+ * well costs its dial timeout, the reconnect wait and its jitter before the next dial. Every one
+ * is read from the options the connection was dialled with: a setting they leave to nats.js's
+ * default prices the bound as NaN, which no row passes, so a default nats.js changes cannot move
+ * a recovery past the minute unseen.
  */
 export function recoveryBoundMs(options: NatsPacing, hungRedials: number): number {
   const left = (options.pingInterval ?? Number.NaN) * ((options.maxPingOut ?? Number.NaN) + 1);
   const redial =
-    (options.timeout ?? NATS_JS_DIAL_TIMEOUT_MS) +
+    (options.timeout ?? Number.NaN) +
     (options.reconnectTimeWait ?? Number.NaN) +
-    (options.reconnectJitter ?? NATS_JS_RECONNECT_JITTER_MS);
+    (options.reconnectJitter ?? Number.NaN);
   return left + hungRedials * redial;
 }
 
@@ -107,6 +117,9 @@ export interface FreezeScenarioHost {
   readonly proxy: StallProxy;
   /** The text of every message the host showed the session that holds `marker`, in order. */
   shown(marker: string): readonly string[];
+  /** The session's own record of its way back, every step in the order its process took it,
+   *  read through seams the plugin leaves unset in production and the stand-ins at its edges. */
+  sessionRecord(): readonly SessionStep[];
   /** The session's NATS connection as the plugin itself dialled it, read through a seam the
    *  plugin leaves unset in production; undefined until it dialled. */
   natsDial(): NatsDial | undefined;
@@ -167,9 +180,13 @@ async function subscribedSince(monitorUrl: string, subject: string, since: numbe
  * been away for: the relay delivers all three.
  *
  * The host runs on nats.js's real ping and dial timers against a real listener, so each wait is
- * real time, and each ends at its row's deadline. How long the recovery took is logged for
- * reading, not judged: the minute the spec allows is held on the session's own connection, by
- * the settings the plugin dialled it with and the steps its status events show it took.
+ * real time, and each ends at its row's deadline. The minute the spec allows is held in two
+ * halves, neither on a clock: the connection's, by the settings the plugin dialled it with and
+ * the steps its status events show it took (`recoveryBoundMs`, `expectRecoveredByPingOut`); and
+ * the session's own, from its first sight of the freeze to the missed message handed to its host,
+ * by the delays of the timers its own code armed and ran on that way (R4: the bounds the session
+ * chose, read through its record), which covers its resubscribe, the new epoch's registration,
+ * the relay's restart and the delivery. The order those took is a fact of the same record.
  */
 export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void> {
   const { label, stack, sessionID, proxy, shown, waitFor } = host;
@@ -201,16 +218,18 @@ export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void>
     await send(live);
     await waitFor(() => shown(live).length > 0, "the live message");
 
+    // Every step of the session's record from here on was taken after the freeze.
+    const beforeFreeze = host.sessionRecord().length;
     const frozenAt = proxy.freeze();
     const missed = `stall-missed-${run}`;
     await send(missed);
     await waitFor(() => shown(missed).length > 0, "the message sent while the path was frozen");
-    const shownAt = Date.now();
+    const loggedAt = Date.now();
     const resubscribed = proxy.connections.find(
       (opened) => opened.acceptedAt >= frozenAt && opened.subscribedAt !== undefined
     );
     console.log(
-      `${label}: resubscribed ${(((resubscribed?.subscribedAt ?? Number.NaN) - frozenAt) / 1000).toFixed(1)} s, missed message shown ${((shownAt - frozenAt) / 1000).toFixed(1)} s after the freeze`
+      `${label}: resubscribed ${(((resubscribed?.subscribedAt ?? Number.NaN) - frozenAt) / 1000).toFixed(1)} s, missed message shown ${((loggedAt - frozenAt) / 1000).toFixed(1)} s after the freeze`
     );
     // The connection nats.js dialled after the freeze subscribed again before the missed message
     // could be shown: the proxy forwards nothing on the frozen one.
@@ -235,6 +254,46 @@ export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void>
     expect(renewed?.delivery).toBe("consumer");
     expect(renewed?.epoch).toBeDefined();
     expect(renewed?.epoch).not.toBe(firstEpoch);
+    // The session's own half, on its own record. In the order its process took them: its NATS
+    // client gave the frozen path up (its stale connection, the step the connection's priced half
+    // ends its pings on), then reconnected, the listener answered its registration of the epoch
+    // the relay now runs on, and its host was handed the missed message. What the session itself
+    // waited on that way is each timer its own code armed after the stale connection and ran
+    // before the hand-over, with the delay it chose: a renewal it put off, a retry it spaced, a
+    // sleep. Those delays and the connection's priced recovery stay under the minute, whatever
+    // the machine's load did to how long either took.
+    const steps = host.sessionRecord();
+    /** The index of the first step after `from` that `holds`; infinite where there is none. */
+    const nextStep = (from: number, holds: (step: SessionStep) => boolean): number => {
+      const found = steps.findIndex((step, index) => index > from && holds(step));
+      return found === -1 ? Number.POSITIVE_INFINITY : found;
+    };
+    const sawFreeze = nextStep(
+      beforeFreeze - 1,
+      (step) => "status" in step && step.status === DebugEvents.StaleConnection
+    );
+    const reconnected = nextStep(
+      sawFreeze,
+      (step) => "status" in step && step.status === Events.Reconnect
+    );
+    const registered = nextStep(
+      reconnected,
+      (step) => "registered" in step && step.registered === renewed?.epoch
+    );
+    const handed = nextStep(registered, (step) => "shown" in step && step.shown.includes(missed));
+    expect(
+      [sawFreeze, reconnected, registered, handed].every(Number.isFinite),
+      `the session's record holds, in this order, its stale connection after the freeze (${sawFreeze}), its reconnect (${reconnected}), its registration of epoch ${renewed?.epoch} (${registered}) and the missed message handed to its host (${handed})`
+    ).toBe(true);
+    const waits = timersBetween(steps, sawFreeze, handed);
+    const waitedMs = waits.reduce((sum, wait) => sum + wait.delayMs, 0);
+    console.log(
+      `${label}: the session's own timers between its stale connection and the missed message's hand-over chose ${waitedMs} ms (${waits.length} timers)`
+    );
+    expect(
+      recoveryBoundMs(dial.options, 0) + waitedMs,
+      `the connection's priced recovery and the session's own waits on its way back: ${JSON.stringify(waits)}`
+    ).toBeLessThan(RECOVERY_BOUND_MS);
 
     const after = `stall-live-after-${run}`;
     await send(after);

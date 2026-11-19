@@ -92,7 +92,7 @@ import {
 } from "@legion/contracts";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 
-import { textHead } from "./ask-answer";
+import { textHead, WHITESPACE_RUN } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
 import { withoutUserinfo } from "./errors";
 
@@ -852,11 +852,11 @@ function redactBearer(text: string, bearer: string): string {
 
 /**
  * The patterns of `excerpt`'s passes, in the order it runs them: scripts and styles, tags, the
- * value after `Authorization:` and the value after `Bearer`. A tag holds no `<`, and a script or
- * style block left open runs to the end. The block pattern spells its two names out, where a
- * back-reference to one name would close a block with the name that opened it the same way:
- * recheck's automaton checker cannot read a back-reference, and reads each of these linear
- * (`excerpt-patterns.test.ts`).
+ * value after `Authorization:`, the value after `Bearer`, and the whitespace runs `textHead` folds
+ * to one space (`WHITESPACE_RUN`). A tag holds no `<`, and a script or style block left open runs
+ * to the end. The block pattern spells its two names out, where a back-reference to one name
+ * would close a block with the name that opened it the same way: recheck's automaton checker
+ * cannot read a back-reference, and reads each of these linear (`excerpt-patterns.test.ts`).
  */
 const SCRIPT_OR_STYLE_BLOCK =
   /<script\b[^<>]*>(?:[\s\S]*?<\/script\s*>|[\s\S]*)|<style\b[^<>]*>(?:[\s\S]*?<\/style\s*>|[\s\S]*)/gi;
@@ -871,6 +871,7 @@ export const EXCERPT_PATTERNS: Readonly<Record<string, RegExp>> = {
   tag: TAG,
   "authorization-value": AUTHORIZATION_VALUE,
   "bearer-value": BEARER_VALUE,
+  "whitespace-run": WHITESPACE_RUN,
 };
 
 /**
@@ -886,13 +887,19 @@ function excerpt(text: string, token: string): string {
   const withoutBlocks = patternPass(redactBearer(text, token.trim()), SCRIPT_OR_STYLE_BLOCK, " ");
   const withoutTags = patternPass(withoutBlocks, TAG, " ");
   const withoutAuthorization = patternPass(withoutTags, AUTHORIZATION_VALUE, `$1${REDACTED}`);
-  return textHead(patternPass(withoutAuthorization, BEARER_VALUE, `$1${REDACTED}`));
+  return headPass(patternPass(withoutAuthorization, BEARER_VALUE, `$1${REDACTED}`));
 }
 
 /** `text` with `pattern` replaced, counting the characters the pass is handed. */
 function patternPass(text: string, pattern: RegExp, replacement: string): string {
   patternCharactersHanded += text.length;
   return text.replace(pattern, replacement);
+}
+
+/** `textHead` of `text`, counting the characters its pass (`WHITESPACE_RUN`) is handed. */
+function headPass(text: string): string {
+  patternCharactersHanded += text.length;
+  return textHead(text);
 }
 
 /**

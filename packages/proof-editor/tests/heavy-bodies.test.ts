@@ -36,6 +36,12 @@ import remarkParse from "remark-parse";
 import { unified } from "unified";
 import { createHeadlessProof, type HeadlessProofEditor } from "../src/lib-headless.js";
 import { serverBlockSchema } from "./block-schema-fixture";
+import {
+  parsedWithinCostBounds,
+  refusalWithinCostBounds,
+  TIMING_ENV,
+  timingLane,
+} from "./cpu-time";
 import { parsedWithinWorkBounds, refusalWithinWorkBounds, type WorkShape } from "./parse-work";
 
 /** The longest comment, message or broadcast body a caller may write, in characters. */
@@ -168,6 +174,23 @@ const shapes: HeavyShape[] = [
     },
     refusedInDefaultMode: /line 1\b/,
   },
+  {
+    // Every line ends in spaces: two before a line ending (a hard break), one before the next
+    // (a line suffix). micromark's text resolver puts a token in for each, so a resolver that
+    // inserts each with a splice of its own shifts the rest of the paragraph once a line.
+    name: "a paragraph of 9,000 lines each ending in a hard break or a line suffix",
+    grow: (size) => "x  \ny \n".repeat(size),
+    full: 4_500,
+    opensContainers: false,
+    expectDoc: (doc) => {
+      expect(doc.childCount).toBe(1);
+      let breaks = 0;
+      doc.descendants((node) => {
+        if (node.type.name === "hardbreak") breaks++;
+      });
+      expect(breaks).toBe(4_500);
+    },
+  },
 ];
 
 /**
@@ -230,6 +253,54 @@ for (const shape of shapes) {
         refused
       );
     });
+  }
+}
+
+// The timing lane (tests/cpu-time.ts): each shape's whole parse in CPU time, held to the budget
+// and to a linear growth as the base's rows held it, which reaches the walks no count does. They
+// run where PROOF_EDITOR_BENCH_TIMING is set, on a quiet machine, and never as a CI verdict.
+for (const shape of shapes) {
+  const refused = shape.refusedInDefaultMode;
+
+  test.skipIf(!timingLane)(
+    `${TIMING_ENV}: the read-only engine parses ${shape.name} in CPU time proportional to its length`,
+    async () => {
+      const proof = await readOnlyProof();
+      const doc = parsedWithinCostBounds(
+        `the read-only engine's parse of ${shape.name}`,
+        shape,
+        (body) => proof.parseMarkdown(body)
+      );
+      shape.expectDoc(doc);
+    }
+  );
+
+  if (refused === undefined) {
+    test.skipIf(!timingLane)(
+      `${TIMING_ENV}: the default mode parses ${shape.name} in CPU time proportional to its length`,
+      async () => {
+        const proof = await defaultProof();
+        const doc = parsedWithinCostBounds(
+          `the default mode's parse of ${shape.name}`,
+          shape,
+          (body) => proof.parseMarkdown(body)
+        );
+        shape.expectDoc(doc);
+      }
+    );
+  } else {
+    test.skipIf(!timingLane)(
+      `${TIMING_ENV}: the default mode refuses ${shape.name} in CPU time proportional to its length`,
+      async () => {
+        const proof = await defaultProof();
+        refusalWithinCostBounds(
+          `the default mode's refusal of ${shape.name}`,
+          shape,
+          (body) => proof.parseMarkdown(body),
+          refused
+        );
+      }
+    );
   }
 }
 

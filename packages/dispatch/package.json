@@ -6,7 +6,7 @@
   "private": true,
   "//": [
     "test: each bun test command's --timeout is at least twice the slowest row or hook it ran under 8 busy loops on 2 CPUs at 61b66deb (two builds Jobs) or on CI.",
-    "test:web, 15000, read again at INFRA-3149's head 84270ff1 (two runs in builds Job gf-bun-dispatch-web-2, under the same load): every document of the table reads in a DOM as the table says it reads, 5,003.03 ms (4,594.21 ms in the second run; the slowest hook, stored-text-drawing.test.tsx's beforeAll, 500 ms), which the 10000 it had before held only 1.9988 times.",
+    "test:web, 15000, read again at INFRA-3149's head 84270ff1 (two runs in builds Job gf-bun-dispatch-web-2, under the same load): every document of the table reads in a DOM as the table says it reads, 5,003.03 ms (4,594.21 ms in the second run; the slowest hook, stored-text-drawing.test.tsx's beforeAll, 500 ms), which this branch's first guard, 10000, held only 1.9988 times; main's 60000 had no reading beside it.",
     "e2e/__tests__, 60000: the pull-request lane stays inside its budget, and inside its real-stack share, 29,450.42 ms over 20 green merge-group runs on CI (9,898.28 ms under the loops, where the slowest row was no row runs twice in one configuration, 13,500.67 ms)."
   ],
   "scripts": {

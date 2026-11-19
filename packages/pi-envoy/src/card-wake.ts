@@ -267,12 +267,16 @@ export interface CardWakeDeps {
 }
 
 /** One step of the startup phase, for `CardWakeDeps.record`, in this process's `Date.now()`: an
- *  unsent start-turn mark first read, with the moment its cap ends the hold; a check the mark
- *  held, with the delay it read the mark again after; and the wake a check sent, with how many
- *  cards it named. */
+ *  unsent start-turn mark first read; a check the mark held, with the delay it reads the mark
+ *  again after, the moment the hold's decision read (`at`) and the moment it counted the cap
+ *  from (`from`: the mark's first read, or its start's send); a check an unseen startup card held
+ *  back, with the same three and the card's send (`sentAt`); and the wake a check sent, with how
+ *  many cards it named. Every number is the one the decision itself used, so a decision that held
+ *  at or past its cap shows here whatever its delay. */
 export type CardWakeStep =
-  | { readonly startTurnMark: { readonly firstRead: number; readonly capAt: number } }
-  | { readonly heldFor: number }
+  | { readonly startTurnMark: { readonly firstRead: number } }
+  | { readonly heldFor: number; readonly at: number; readonly from: number }
+  | { readonly unseenFor: number; readonly at: number; readonly sentAt: number }
   | { readonly woke: number };
 
 /** Tests only: the file `cardWakeRecord` appends each `CardWakeStep` to, one JSON line each, so a
@@ -522,24 +526,26 @@ export class CardWake {
    * reads it again: undefined when it does not hold (no mark, a mark naming another session, or one
    * past its cap), the time to its cap once its start was sent, and while it is unsent the time to
    * its cap from this module's first read of it, but no more than `STARTUP_TURN_POLL_MS`, so a
-   * mark a refused claim cleared, or one the send replaced, is read again soon.
+   * mark a refused claim cleared, or one the send replaced, is read again soon. With it, the
+   * moment the decision read (`at`) and the one it counted the cap from (`from`), for the record.
    */
-  #startTurnHold(): number | undefined {
+  #startTurnHold():
+    | { readonly ms: number; readonly at: number; readonly from: number }
+    | undefined {
     const mark = this.#deps.startupTurn();
     if (mark === undefined || !this.#deps.isOwnSession(mark.session)) return undefined;
     const now = this.#deps.now();
     if (mark.sentAt !== undefined) {
       const left = mark.sentAt + STARTUP_TURN_CAP_MS - now;
-      return left > 0 ? left : undefined;
+      return left > 0 ? { ms: left, at: now, from: mark.sentAt } : undefined;
     }
     if (this.#unsentMark?.mark !== mark) {
       this.#unsentMark = { mark, firstRead: now };
-      this.#deps.record?.({
-        startTurnMark: { firstRead: now, capAt: now + STARTUP_TURN_CAP_MS },
-      });
+      this.#deps.record?.({ startTurnMark: { firstRead: now } });
     }
-    const left = this.#unsentMark.firstRead + STARTUP_TURN_CAP_MS - now;
-    return left > 0 ? Math.min(left, STARTUP_TURN_POLL_MS) : undefined;
+    const from = this.#unsentMark.firstRead;
+    const left = from + STARTUP_TURN_CAP_MS - now;
+    return left > 0 ? { ms: Math.min(left, STARTUP_TURN_POLL_MS), at: now, from } : undefined;
   }
 
   #arm(context: CardWakeContext, delayMs = 0): void {
@@ -557,15 +563,16 @@ export class CardWake {
 
   #check(context: CardWakeContext): void {
     // The soonest an unseen startup card stops holding the check back, if one still does.
-    let waitMs: number | undefined;
+    let wait: { readonly ms: number; readonly sentAt: number } | undefined;
     const now = this.#deps.now();
     for (const [id, sentAt] of this.#unseenStartup) {
       const left = sentAt + STARTUP_CARD_CAP_MS - now;
       if (left <= 0) this.#unseenStartup.delete(id);
-      else waitMs = Math.min(waitMs ?? left, left);
+      else if (wait === undefined || left < wait.ms) wait = { ms: left, sentAt };
     }
-    if (waitMs !== undefined) {
-      this.#arm(context, waitMs);
+    if (wait !== undefined) {
+      this.#deps.record?.({ unseenFor: wait.ms, at: now, sentAt: wait.sentAt });
+      this.#arm(context, wait.ms);
       return;
     }
     if (context.isIdle?.() !== true) {
@@ -579,14 +586,14 @@ export class CardWake {
     this.#runActive = false;
     // The start turn is still to come: the seen startup cards wait for it, owed their wake after
     // it, and the phase goes on.
-    const holdMs = this.#startTurnHold();
-    if (holdMs !== undefined) {
+    const hold = this.#startTurnHold();
+    if (hold !== undefined) {
       for (const card of this.#seen) {
         if (card.startup) this.#owed.add(card.id);
       }
       if (this.#seen.length > 0) {
-        this.#deps.record?.({ heldFor: holdMs });
-        this.#arm(context, holdMs);
+        this.#deps.record?.({ heldFor: hold.ms, at: hold.at, from: hold.from });
+        this.#arm(context, hold.ms);
       }
       return;
     }

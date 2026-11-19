@@ -154,6 +154,7 @@ import {
   touchStateFile,
 } from "./session-state"
 import { type SessionTitle, sessionTitle } from "./session-title"
+import { settledOrGivenUp } from "./settled-or-given-up"
 import {
   createUserTurnRouter,
   type UserTurnRouter,
@@ -175,6 +176,33 @@ const encoder = new TextEncoder()
 const HANDOFF_POLL_MS = 250
 /** How long a handoff waits for NATS to confirm the new direct subject before retrying. */
 const HANDOFF_FLUSH_TIMEOUT_MS = 10_000
+/** How long each of the way out's last waits takes before the way goes on without it: the state
+ *  and turn records' last writes, the mod link's close and the MCP server's. A write still running
+ *  then lands before the process exits, which waits for it up to `SHUTDOWN_EXIT_MS`. */
+const SHUTDOWN_STEP_MS = 100
+/** How long the way out waits for the listener to answer the DELETE of the session's record, past
+ *  what is left of the settle budget: the DELETE stays on the wire after it, and a record it did
+ *  not reach in time is left to the listener's gone horizon. */
+const SHUTDOWN_DEREGISTER_MS = 750
+/**
+ * The most the way out takes, from the signal or the end of stdin to the process's exit: past it
+ * the process exits, whatever await, timer or handle is still running. Each wait of the way has a
+ * bound of its own, and together they stay under this one (1,000 ms of drain, 100 of the
+ * connection's close, 250 of settle, up to 1,000 of deregistration and 400 of the last four
+ * steps: 2,750 ms), so a shutdown whose waits all end on their bounds still exits on its own.
+ *
+ * It is set inside the shortest grace anything that stops the server gives it. An MCP client
+ * ends a stdio server with the MCP SDK's close: stdin's end, 2 s, SIGTERM, 2 s more, then SIGKILL
+ * (`StdioClientTransport.close`, @modelcontextprotocol/sdk 1.30.0, the version in this tree;
+ * Claude Code's client is taken to close the same way, which this tree cannot read), so the
+ * server has 4 s from the end of its stdin, where this way out starts. The pod's worker shim
+ * gives the agent 5 s (AGENTS.md, `legion worker-shim`), inside the pod's
+ * `terminationGracePeriodSeconds` (`worker_stop_timeout_seconds`, 10 s by default, 9 s at least).
+ * So 3,000 ms leaves a second before that SIGKILL. The slowest correct way out read 185 ms from
+ * SIGTERM to the process's exit under 8 busy loops on 2 CPUs, and 94 ms in the other run
+ * (envoy-channel-stall.test.ts, builds Job d5-stall-8, 2026-11-19): this bound is 16 times that.
+ */
+export const SHUTDOWN_EXIT_MS = 3_000
 
 /** `promise`, or a rejection naming `what` once `ms` pass. */
 async function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
@@ -689,26 +717,6 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    *  test that shortens `settleMs` shortens this with it. */
   const shutdownSettleMs = Math.min(settleMs, SHUTDOWN_SETTLE_MS)
 
-  /** Resolves when `settling` settles, or when `ms` have passed, naming which came first. */
-  const settledOrGivenUp = async (
-    settling: Promise<unknown>,
-    ms = settleMs,
-  ): Promise<"fact" | "bound"> => {
-    const { promise, resolve } = Promise.withResolvers<"bound">()
-    const timer = setTimeout(() => resolve("bound"), ms)
-    try {
-      return await Promise.race([
-        settling.then(
-          () => "fact" as const,
-          () => "fact" as const,
-        ),
-        promise,
-      ])
-    } finally {
-      clearTimeout(timer)
-    }
-  }
-
   /** Deregisters a session this server has stopped heartbeating: its own at shutdown, and the
    *  pre-`/clear` id a handoff leaves behind, once that session's registration has settled or
    *  `settleFor` has passed. The DELETE carries this process's client instance id, so the
@@ -999,6 +1007,8 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   const takeDeliveryAnswer = (sessionID: string, asked: Relay, result: SubscribeResult): void => {
     if (sessionID !== identity.id || relay !== asked) return
     asked.delivery.answered(result.delivery)
+    // The tests' record, unset in production: the epoch the listener restarts the relay on.
+    record?.({ registered: asked.delivery.epoch().id })
   }
 
   // Nothing is subscribed per topic: this holds the followed set a registration carries, and
@@ -1813,15 +1823,30 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       const settleBy = Date.now() + shutdownSettleMs
       const settled = await settledOrGivenUp(registryWrites, shutdownSettleMs)
       record?.({ wait: "settle", armedMs: shutdownSettleMs, endedBy: settled })
-      await deregister(identity.id, Math.max(0, settleBy - Date.now())).catch((error: unknown) => {
-        process.stderr.write(
-          `envoy-channel: session deregistration failed — ${messageFor(error)}\n`,
-        )
-      })
+      // The DELETE is bounded by what is left of the settle budget and the answer's own wait.
+      const deregisterMs = Math.max(0, settleBy - Date.now()) + SHUTDOWN_DEREGISTER_MS
+      const deregistered = await settledOrGivenUp(
+        deregister(identity.id, Math.max(0, settleBy - Date.now())).catch((error: unknown) => {
+          process.stderr.write(
+            `envoy-channel: session deregistration failed — ${messageFor(error)}\n`,
+          )
+        }),
+        deregisterMs,
+      )
+      record?.({ wait: "deregister", armedMs: deregisterMs, endedBy: deregistered })
       // What was written meanwhile (a resume point, a ledger record, a message taken) lands
-      // before the process goes.
-      await stateWriter?.idle()
-      await turns?.idle()
+      // before the process goes: a write still running when its wait ends keeps the process
+      // until it lands, up to the exit bound.
+      const stateWritten = await settledOrGivenUp(
+        stateWriter?.idle() ?? Promise.resolve(),
+        SHUTDOWN_STEP_MS,
+      )
+      record?.({ wait: "state", armedMs: SHUTDOWN_STEP_MS, endedBy: stateWritten })
+      const turnsWritten = await settledOrGivenUp(
+        turns?.idle() ?? Promise.resolve(),
+        SHUTDOWN_STEP_MS,
+      )
+      record?.({ wait: "turns", armedMs: SHUTDOWN_STEP_MS, endedBy: turnsWritten })
       // The handoff directory stays: Claude Code restarts this server inside the
       // same `claude` process (plugin reload, changed config), and the hook does
       // not rewrite the file until the next SessionStart. Startup pruning removes
@@ -2217,13 +2242,26 @@ export async function runEnvoyChannelServer(): Promise<void> {
       })
     },
   }
-  const notifier: ChannelNotifier =
-    phaseHook === undefined
+  // The tests' record (`./channel-record`), unset in production: each Envoy event the session was
+  // shown, once its write was made, and the way out: its start, each bounded wait, and how it
+  // ended, in the order the server took them.
+  const serverRecord = channelRecord(process.env)
+  const shown: ChannelNotifier =
+    serverRecord === undefined
       ? writer
       : {
           notification: async (notification) => {
-            phaseHook.deliveryWritten(notification.content)
             await writer.notification(notification)
+            if (notification.eventId !== undefined) serverRecord({ shown: notification.eventId })
+          },
+        }
+  const notifier: ChannelNotifier =
+    phaseHook === undefined
+      ? shown
+      : {
+          notification: async (notification) => {
+            phaseHook.deliveryWritten(notification.content)
+            await shown.notification(notification)
           },
         }
   const capabilities = (): readonly DeliveryCapability[] =>
@@ -2233,9 +2271,22 @@ export async function runEnvoyChannelServer(): Promise<void> {
   const stopped = Promise.withResolvers<void>()
   let stopping = false
   let session: ChannelSession | undefined
+  if (serverRecord !== undefined) {
+    process.once("exit", () => serverRecord({ shutdown: "exited" }))
+  }
   const stop = (): void => {
     if (stopping) return
     stopping = true
+    serverRecord?.({ shutdown: "began", exitBoundMs: SHUTDOWN_EXIT_MS })
+    // The exit bound holds nothing open itself: a way out that ends leaves the process to exit
+    // as soon as nothing else runs.
+    setTimeout(() => {
+      serverRecord?.({ shutdown: "bound" })
+      process.stderr.write(
+        `envoy-channel: the shutdown was still running ${SHUTDOWN_EXIT_MS} ms after it began; exiting\n`,
+      )
+      process.exit(1)
+    }, SHUTDOWN_EXIT_MS).unref()
     booting.abort()
     // A reminder waiting on a 15-minute WAITING wait holds no shutting-down server open.
     phaseHook?.stop()
@@ -2439,13 +2490,21 @@ export async function runEnvoyChannelServer(): Promise<void> {
     if (stopping) await session.shutdown()
     await stopped.promise
   } finally {
-    await modLink?.close().catch(() => undefined)
+    const modClosed = await settledOrGivenUp(
+      modLink?.close() ?? Promise.resolve(),
+      SHUTDOWN_STEP_MS,
+    )
+    if (stopping) serverRecord?.({ wait: "mod", armedMs: SHUTDOWN_STEP_MS, endedBy: modClosed })
     if (session === undefined && connection !== undefined) {
-      await connection.drain().catch(() => undefined)
-      await connection.close().catch(() => undefined)
+      await settledOrGivenUp(connection.drain(), SHUTDOWN_STEP_MS)
+      await settledOrGivenUp(connection.close(), SHUTDOWN_STEP_MS)
     }
     // Release stdin so the process can exit once the session is deregistered,
     // even when the parent has not closed its end yet.
-    await server.close().catch(() => undefined)
+    const serverClosed = await settledOrGivenUp(server.close(), SHUTDOWN_STEP_MS)
+    if (stopping) {
+      serverRecord?.({ wait: "server", armedMs: SHUTDOWN_STEP_MS, endedBy: serverClosed })
+      serverRecord?.({ shutdown: "completed" })
+    }
   }
 }

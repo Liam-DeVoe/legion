@@ -944,18 +944,37 @@ row7_handback_mark() {
     "$(jq -c '.removed' "${work}/answer.json")" "[]"
   expect "the claim stands" "$(role_holder "$role")" "$session"
   expect "it is still the holder's own process's" "$(role_instance "$role")" "$instance"
-  expect "the lookup reports the hand-back" "$(role_handed_back "$role")" "true"
+  local handed_back
+  handed_back="$(role_handed_back "$role")"
+  expect "the lookup reports the hand-back" "$handed_back" "true"
 
+  # claimed_again: the holder's claim back, made on the heartbeat renew_omp drives below. The
+  # holder has something to claim back only where the lookup above read the hand-back mark, so
+  # where it never did the wait ends at once. Where it did, the wait goes on for the claim's log
+  # line, bounded by wait_held alone: once a lookup no longer reads the mark the listener granted
+  # a claim, and how soon the client writes that claim's line is the client's pace, which no
+  # bound of this row judges.
   claimed_again() {
     [[ "$(claim_count omp-handback "$session" "")" -gt "$claims" ]] && return 0
-    exited "${client_pid[omp-handback]}" "the omp-handback client" || true
+    exited "${client_pid[omp-handback]}" "the omp-handback client" && return 1
+    if [[ "$handed_back" != "true" ]]; then
+      wait_impossible="the lookup never reported the hand-back, so the holder has nothing to claim back"
+    fi
     return 1
   }
-  # A claim back the listener refused leaves the mark on the claim it was written on.
+  # unmarked: a claim back the listener refused leaves the mark on the claim it was written on,
+  # and one it granted (200) writes a fresh record without it, so a lookup the listener dates
+  # past its grant that still shows the mark ends the wait. The 2 s are the listener's one clock
+  # read twice, at the grant and at the lookup, plus a second for its Date header, which reads
+  # whole seconds: no correct listener answers a lookup that late with the mark still on.
   unmarked() {
     [[ -z "$(role_handed_back "$role")" ]] && return 0
-    [[ "$(claim_status omp-handback "$session" "")" == 200 ]] ||
+    if [[ "$(claim_status omp-handback "$session" "")" != 200 ]]; then
       wait_impossible="the holder's claim back was answered $(claim_status omp-handback "$session" ""), so nothing clears the mark"
+      return 1
+    fi
+    answered_past "$(claim_date omp-handback "$session" "")" 2 \
+      "the lookup still read the mark the holder's granted claim back wrote over"
     return 1
   }
   renew_omp omp-handback "$session"

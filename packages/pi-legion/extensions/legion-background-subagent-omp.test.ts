@@ -17,6 +17,13 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import {
+  TIMER_RECORD_FILE,
+  TIMER_RECORD_ROOTS,
+  type TimerStep,
+  timersBetween,
+} from "@legion/test-fixtures/timer-record";
+import { completeLines } from "@legion/test-fixtures/transcript-lines";
 import { until } from "@legion/test-fixtures/wait";
 
 // On the real Oh My Pi: a Legion role pane dispatches `deep-worker`, gets its
@@ -58,6 +65,21 @@ const ASSIGNMENT = `Implement ${ISSUE}. BGSUB-ROLE-ASSIGNMENT.`;
  * self-check, a skill's routing-hint compression), and those arrive among the turns.
  */
 const DEEP_WORKER_SYSTEM = "You are an autonomous coding worker";
+
+/** The spec's bound on a message the role is sent while its worker runs: it is in the role's
+ *  context at a model turn within 30 s of reaching the session. */
+const MESSAGE_BOUND_MS = 30_000;
+
+/** The pane's own plugin code, whose timers the record keeps: pi-envoy, this package and the
+ *  sources both run (`@legion/test-fixtures/timer-record`). */
+const PANE_ROOTS = [
+  path.resolve(import.meta.dir, "../../pi-envoy/extensions"),
+  path.resolve(import.meta.dir, "../../pi-envoy/src"),
+  path.resolve(import.meta.dir, "../../envoy-client/src"),
+  path.resolve(import.meta.dir, "../../pi-shared/src"),
+  import.meta.dir,
+  path.resolve(import.meta.dir, "../src"),
+];
 
 /** What the subagent reports, which the finished job's result must carry back to the role. */
 const SUBAGENT_REPORT = "BGSUB-SUBAGENT-REPORT: the scratch check passed.";
@@ -318,6 +340,9 @@ interface RolePane {
   /** Waits through the shared wait until `probe` returns a value, failing at the row's deadline
    * or when omp exits. */
   until<T>(what: string, probe: () => T | undefined): Promise<T>;
+  /** Every timer the pane's own plugin code armed and fired so far, in the pane process's order
+   *  (`@legion/test-fixtures/timer-record`, loaded into the pane as one more extension). */
+  timerRecord(): Promise<readonly TimerStep[]>;
 }
 
 /**
@@ -418,10 +443,14 @@ async function startRolePane(): Promise<RolePane> {
   const frames: object[] = [];
   const agentEnds: Moment[] = [];
   const closed: { error?: unknown } = {};
+  const timerRecordFile = path.join(home, "timer-record.jsonl");
   const rpc = spawnRpc(
     binary,
     {
       extensions: [
+        // The tests' record of the plugins' own timers, first, so it holds every one they arm:
+        // a module of no effect but the record, which only this case hands the pane.
+        Bun.resolveSync("@legion/test-fixtures/timer-record-preload", import.meta.dir),
         path.resolve(import.meta.dir, "../../pi-envoy/extensions/envoy.ts"),
         // The package root, not its extension file: Oh My Pi discovers an extension package's
         // `agents/` from its root, and `deep-worker` lives there.
@@ -442,6 +471,8 @@ async function startRolePane(): Promise<RolePane> {
         LEGION_BOOT_TOKEN: "bgsub-boot",
         LEGION_STATE_DIR: path.join(workspace, ".state"),
         LEGION_WORKSPACE: workspace,
+        [TIMER_RECORD_FILE]: timerRecordFile,
+        [TIMER_RECORD_ROOTS]: PANE_ROOTS.join(":"),
       },
       onFrame: (frame) => {
         frames.push(frame);
@@ -492,6 +523,10 @@ async function startRolePane(): Promise<RolePane> {
     },
     publish: (payload) => relay(sessionId, payload, seq++),
     until: waitFor,
+    timerRecord: async () => {
+      const text = await readFile(timerRecordFile, "utf8").catch(() => "");
+      return completeLines(text).map((line) => JSON.parse(line) as TimerStep);
+    },
   };
 }
 
@@ -576,12 +611,15 @@ test.skipIf(skip)(
     // which are a millisecond apart at best and tie whenever the host does this work fast.
     expect(subagent.arrived.order).toBeLessThan(ended.order);
 
+    // How far the pane's timer record ran before the frame was sent: each later step came after.
+    const beforePublish = (await pane.timerRecord()).length;
     const published = await pane.publish(
       forwardedRoleEnvelope(MESSAGE_SUMMARY, `bgsub-${randomUUID()}`)
     );
     const read = await pane.next("the role's turn carrying the message", (request) =>
       isRoleTurn(request) ? conversation(request).includes(MESSAGE_SUMMARY) : false
     );
+    const recordAtRead = await pane.timerRecord();
     // The message is in the role's context at its next model turn: no turn of the role came
     // between the frame's arrival and the turn that read it.
     expect(published.order).toBeLessThan(read.arrived.order);
@@ -593,6 +631,16 @@ test.skipIf(skip)(
           arrived.order < read.arrived.order
       )
     ).toEqual([]);
+    // And within the 30 s, by what the plugins chose rather than a clock (R4): each timer their
+    // own code armed after the frame was sent and ran before the turn that read it was seen here,
+    // with the delay it chose - a card put off, a wake held, a retry spaced - stays under the
+    // bound together. A plugin that holds the card for a timer of its own shows here with that
+    // timer's delay, however the pane's load stretched the time either side of it.
+    const waits = timersBetween(recordAtRead, beforePublish - 1, recordAtRead.length);
+    expect(
+      waits.reduce((sum, wait) => sum + wait.delayMs, 0),
+      `the plugins' own timers between the frame and the turn that read it: ${JSON.stringify(waits)}`
+    ).toBeLessThan(MESSAGE_BOUND_MS);
     read.reply([{ type: "text", text: "Noted; the retry bound is three." }]);
 
     const released = subagent.reply([{ type: "text", text: SUBAGENT_REPORT }]);

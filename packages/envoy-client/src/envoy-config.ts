@@ -387,9 +387,9 @@ function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): 
     const output = path.join(directory, "stdout");
     const fd = openSync(output, "wx", 0o600);
     let result: SyncSubprocess<number, "ignore">;
+    // Its own process group, so every process the command started is killed with it.
+    const spawn = { timeout: COMMAND_TIMEOUT_MS, detached: true } as const;
     try {
-      // Its own process group, so every process the command started is killed with it.
-      const spawn = { timeout: COMMAND_TIMEOUT_MS, detached: true } as const;
       result = Bun.spawnSync(["/bin/sh", "-c", command], {
         cwd,
         env: childEnv,
@@ -397,12 +397,6 @@ function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): 
         stdout: fd,
         stderr: "ignore",
         ...spawn,
-      });
-      processGlobal[COMMAND_SPAWNS]?.({
-        timeoutMs: spawn.timeout,
-        detached: spawn.detached,
-        exitedDueToTimeout: result.exitedDueToTimeout === true,
-        success: result.success,
       });
     } catch (error) {
       return { failure: `could not start: ${messageFor(error)}`, timedOut: false };
@@ -415,6 +409,18 @@ function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): 
       process.kill(-result.pid, "SIGKILL");
     } catch {
       // The group is already gone.
+    }
+    // The tests' record of the spawn, once the group is gone: a slot that throws changes neither
+    // the kill above nor the outcome below.
+    try {
+      processGlobal[COMMAND_SPAWNS]?.({
+        timeoutMs: spawn.timeout,
+        detached: spawn.detached,
+        exitedDueToTimeout: result.exitedDueToTimeout === true,
+        success: result.success,
+      });
+    } catch {
+      // The tests' seam only.
     }
     if (result.exitedDueToTimeout) {
       return {

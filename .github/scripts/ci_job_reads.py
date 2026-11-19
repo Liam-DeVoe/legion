@@ -2400,6 +2400,8 @@ GATES = [
         ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.test.ts:6,28 spawns it"),
         ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),
         ("scripts/priorities-seed.ts", "scripts/priorities-seed.test.ts:4 imports it"),
+        ("scripts/bun-cache-census.test.ts", at("test", "Test the Bun transpiler-cache census")),
+        ("scripts/bun-cache-census.ts", "scripts/bun-cache-census.test.ts:8 runs it"),
         ("scripts/e2e/**", f"{at('test', 'bun test --preload @legion/test-fixtures/row-deadline --timeout 65000 scripts/e2e/lib')} (lib/script-functions.test.ts:105-108 scans scripts/e2e/*.sh and lib/*); "
                            f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
         (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:3-9 (tsc -p scripts/dispatch); "
@@ -2573,7 +2575,7 @@ GATES = [
         ("packages/dispatch/e2e/**", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:506-514,668-686,746-754 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
         ("docs/site/src/**", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:506-514,668-686,746-754 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
         ("**/AGENTS.md", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:506-514,668-686,746-754 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
-        (f"{ENVOY}/cmd/dispatch/README.md", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:783 names it and :791 reads it ('states the rule'): the CLI guide's sentence on an assignee move names the project's default assignee"),
+        (f"{ENVOY}/cmd/dispatch/README.md", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:782 names it and :789 reads it ('states the rule'): the CLI guide's sentence on an assignee move names the project's default assignee"),
         (TEST_FIXTURES_SRC, "packages/envoy-client/src/__tests__ import @legion/test-fixtures"),
         (f"{ENVOY}/internal/bus/testdata/private-stream-subjects.json", "packages/envoy-client/src/__tests__/stream-topics.test.ts:131 reads the listener's own cases by relative path (SHARED_CASES :118-121), which packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads too"),
     ) + bun_job("envoy-client")),
@@ -2643,7 +2645,7 @@ GATES = [
         ("packages/dispatch/e2e/**", "packages/pi-legion/scripts/skill-scenarios/seed.ts:111 imports packages/dispatch/e2e/api.ts (typecheck includes scripts/skill-scenarios/*.ts), and that program holds six of that directory's modules: api.ts, harness-ports.ts, harness-broker.ts, harness-processes.ts, harness-real-broker.ts and harness-signin.ts"),
         ("packages/dispatch/web/src/api/types.ts", "packages/dispatch/e2e/api.ts:20"),
         ("packages/dispatch/web/src/api/paths.ts", "packages/dispatch/e2e/api.ts:8-19 imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Answer from it, since that client is keyed on the generated document's path patterns"),
-        ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:39 stages them and :199-203 reads the roots at :189-197; scripts/skill-scenarios/rig.test.ts:990,1227-1229; prepack stages skills"),
+        ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:39 stages them and :199-203 reads the roots at :189-197; scripts/skill-scenarios/rig.test.ts:999,1236-1238; prepack stages skills"),
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-legion/package.json prepack ({at('pi-legion', 'Pack pi-legion')}); packages/pi-shared/test/skills-guard.ts:17,34"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100"),
         (f"{DAEMON}/internal/**", "packages/pi-legion/src/skills-guard.test.ts:199-203 sweeps every .md/.go/.ts/.yaml/.yml/.example/.sh under packages/daemon/internal, a root of the list at :192"),
@@ -2652,8 +2654,8 @@ GATES = [
         ("deploy/kubernetes/daemon/controller.yaml.example", "packages/pi-legion/src/skills-guard.test.ts:199-203, a root of the list at :194"),
         ("AGENTS.md", "packages/pi-legion/src/skills-guard.test.ts:199-203, a root of the list at :195"),
         ("README.md", "packages/pi-legion/src/skills-guard.test.ts:199-203, a root of the list at :196"),
-        ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:15 imports scripts/e2e/lib/script-functions; rig.sh:279 sources scripts/e2e/lib/rig.sh"),
-        (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1227-1229 copies .omp-pin"),
+        ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:15 imports scripts/e2e/lib/script-functions; rig.sh:278 sources scripts/e2e/lib/rig.sh"),
+        (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1236-1238 copies .omp-pin"),
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run (:29-30)"),
     ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                          "import @legion/envoy-client/*")

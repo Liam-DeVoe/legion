@@ -64,7 +64,11 @@ import {
   useEnvoyStackDirectory,
 } from "@legion/envoy-client/test/envoy-stack";
 import { startStallProxy } from "@legion/envoy-client/test/stall-proxy";
-import { type NatsDial, runFreezeScenario } from "@legion/envoy-client/test/stall-scenario";
+import {
+  type NatsDial,
+  runFreezeScenario,
+  type SessionStep,
+} from "@legion/envoy-client/test/stall-scenario";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { TmuxPlace, TmuxPlaceReading } from "@legion/envoy-client/tmux-place";
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract";
@@ -89,6 +93,7 @@ import {
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
+import { recordTimers } from "@legion/test-fixtures/timer-record";
 import { settled, span, until } from "@legion/test-fixtures/wait";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
@@ -288,6 +293,11 @@ const natsState = {
     readonly options: NatsDial["options"];
     statuses: NatsDial["statuses"][number][];
   }[],
+  /** The session's own record of its way back (`SessionStep`), for a row that keeps one: each
+   *  status event of a real dial goes into it before the extension's own reader of the
+   *  connection's status acts on it, since this reader was opened first and nats.js hands each
+   *  event to its readers in the order they were opened. */
+  sessionSteps: undefined as SessionStep[] | undefined,
   /** A connect a test parks on, so a pass can be abandoned at its deadline while its connection
    *  is still being made and what its late continuation writes can be watched. */
   heldConnect: undefined as Promise<void> | undefined,
@@ -355,6 +365,7 @@ const natsStandInConnect = async (options: {
     void (async () => {
       for await (const status of connection.status()) {
         dial.statuses.push({ type: status.type, data: status.data });
+        natsState.sessionSteps?.push({ status: status.type });
       }
     })();
     return connection;
@@ -794,6 +805,7 @@ afterEach(async () => {
   natsState.failSubscribes = 0;
   natsState.realConnect = false;
   natsState.realDials.length = 0;
+  natsState.sessionSteps = undefined;
   natsState.drainHangs = false;
   natsState.drainStarted = false;
   natsState.statusReaders.length = 0;
@@ -23070,13 +23082,51 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
     process.env.ENVOY_HEARTBEAT_MS = "240000";
     process.env.ENVOY_URL = envoyUrl;
     process.env.ENVOY_NATS_URL = proxy.url;
-    globalThis.fetch = originalFetch;
+    // The session's own record of its way back, in this process, which is the session's, in the
+    // order it took each step: the status events of its NATS dial (`natsState.sessionSteps`),
+    // each registration the listener answered, with the epoch it named, each card handed to the
+    // host, and each timer the extension's own code armed and ran, with the delay it chose.
+    const steps: SessionStep[] = [];
+    natsState.sessionSteps = steps;
+    const RegistrationBody = z.object({
+      delivery: z.object({ epoch: z.string() }).optional(),
+    });
+    globalThis.fetch = standInFetch(async (input, init) => {
+      const answer = await originalFetch(input, init);
+      const url = input instanceof Request ? input.url : input.toString();
+      if (answer.ok && new URL(url).pathname === "/v1/interests/subscribe") {
+        const body = RegistrationBody.safeParse(
+          typeof init?.body === "string" ? JSON.parse(init.body) : undefined
+        );
+        const epoch = body.success ? body.data.delivery?.epoch : undefined;
+        if (epoch !== undefined) steps.push({ registered: epoch });
+      }
+      return answer;
+    });
+    const stopTimerRecord = recordTimers(
+      [
+        import.meta.dir,
+        join(dirname(import.meta.dir), "src"),
+        join(dirname(dirname(import.meta.dir)), "envoy-client", "src"),
+        join(dirname(dirname(import.meta.dir)), "pi-shared", "src"),
+      ],
+      (step) => steps.push(step)
+    );
     natsState.realConnect = true;
     const sessionID = `ses_stall_${crypto.randomUUID().replaceAll("-", "")}`;
     // A module instance of its own per mode: the extension keeps its session's state.
     const { default: envoyExtension } = await import("./envoy.ts?nats-stall");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    envoyExtension({
+      ...fixture.pi,
+      sendMessage: (message, options) => {
+        steps.push({
+          shown:
+            typeof message.content === "string" ? message.content : JSON.stringify(message.content),
+        });
+        fixture.pi.sendMessage(message, options);
+      },
+    });
     const context = sessionContext(sessionID);
     try {
       await fixture.handlers.get("session_start")?.({}, context);
@@ -23107,6 +23157,7 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
                 delivery.customType === "envoy-message" && delivery.content.includes(marker)
             )
             .map((delivery) => delivery.content),
+        sessionRecord: () => steps,
         // The extension's NATS dial, through `setNatsConnectForTests`, which production never
         // sets: the last one is the session's connection through the proxy.
         natsDial: () => natsState.realDials.at(-1),
@@ -23118,6 +23169,7 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
       });
     } finally {
       await fixture.handlers.get("session_shutdown")?.({}, context);
+      stopTimerRecord();
       await proxy.close();
       if (originalHeartbeat === undefined) delete process.env.ENVOY_HEARTBEAT_MS;
       else process.env.ENVOY_HEARTBEAT_MS = originalHeartbeat;

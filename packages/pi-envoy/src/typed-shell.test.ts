@@ -75,7 +75,10 @@ describe("running a person's command", () => {
   beforeEach(() => {
     procmgr.__resetShellConfigCacheForTests();
   });
+  // A row that holds its run on Bun's fake clock and is ended by the command's guard never
+  // reaches its own `finally`, so the real clock comes back here too, before the next row.
   afterEach(() => {
+    jest.useRealTimers();
     procmgr.__resetShellConfigCacheForTests();
   });
 

@@ -344,6 +344,28 @@ describe("the model gateway key command", () => {
     const notes = unserved("--notes", dest, since, "outlast").stdout;
     expect(notes).toContain(`: timeout: the mint ran past the call's ${bound} ms`);
     expect(notes).toContain("for another call's mint");
+    // How long each call could take is the key command's own record of each timeout it armed and
+    // the time it had left when it armed it, read the moment it did (R4: the bound the program
+    // chose, across the process boundary, not timed here): every timeout is at most the time the
+    // call had left of its bound, so a call that armed one past its bound fails here, whenever
+    // the stand-in's TERM came. Both calls armed their lock wait, and the first its mint.
+    const armed = [
+      ...readFileSync(join(dest, "hawk-token.log"), "utf8").matchAll(
+        /armed the (lock wait|mint) for (\d+)\.(\d{3}) s with (-?\d+) ms of the call's (\d+) ms left/g
+      ),
+    ].map(([, what, seconds, milliseconds, left, deadline]) => ({
+      what,
+      armedMs: Number(seconds) * 1000 + Number(milliseconds),
+      leftMs: Number(left),
+      deadlineMs: Number(deadline),
+    }));
+    expect(armed.filter(({ what }) => what === "lock wait").length).toBeGreaterThanOrEqual(2);
+    expect(armed.filter(({ what }) => what === "mint").length).toBeGreaterThanOrEqual(1);
+    for (const timeout of armed) {
+      expect(timeout.deadlineMs).toBe(bound);
+      expect(timeout.armedMs).toBeLessThanOrEqual(timeout.leftMs);
+      expect(timeout.leftMs).toBeLessThanOrEqual(bound);
+    }
   });
 
   test("bounds every call but the preflight below the ten seconds Oh My Pi gives a `!command`", () => {

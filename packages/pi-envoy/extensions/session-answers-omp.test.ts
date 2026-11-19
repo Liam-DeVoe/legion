@@ -859,9 +859,11 @@ test.skipIf(skipped)(
      *  lets go of only once the case ends, and the session's record of that read (`record`) names
      *  the deadline the session waited, under a second. The wait itself is the session's own
      *  record of each wait it armed (R4: the bound the session chose and what ended it, read
-     *  across the process boundary, not a clock): each was armed for under a second, and a
-     *  hanging route ended one at its deadline. A wait armed longer than the line it writes, or a
-     *  second wait of its own, shows there whatever the line says. */
+     *  across the process boundary, not a clock): each was armed for under a second, and exactly
+     *  one ended at its deadline. Once one has, the read is overdue, and every later request of
+     *  the session answers at once without arming a wait (`readSessionAnswers`), so a request
+     *  that waited twice, or a wait armed longer than the line it writes, shows here whatever the
+     *  line says. */
     const heldNoLonger = (
       session: { readonly seen: Seen[]; readonly waits: readonly AnswersWait[] },
       request: Seen,
@@ -869,7 +871,7 @@ test.skipIf(skipped)(
     ): void => {
       expect(answersBefore(session.seen, request).answeredAfter).toBeUndefined();
       expect(deadlineNamed(record)).toBeLessThan(1_000);
-      expect(session.waits.some((wait) => wait.endedBy === "deadline")).toBe(true);
+      expect(session.waits.filter((wait) => wait.endedBy === "deadline")).toHaveLength(1);
       for (const wait of session.waits) expect(wait.armedMs).toBeLessThan(1_000);
     };
 

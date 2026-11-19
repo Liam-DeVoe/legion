@@ -236,12 +236,15 @@ interface ControllerSession {
   cardWakeSteps(): Promise<z.infer<typeof CardWakeStepSchema>[]>;
 }
 
-/** One line of pi-envoy's record of the startup phase: an unsent start-turn mark first read, with
- *  when its cap ends the hold; a check the mark held, with the delay it reads it again after; the
- *  wake a check sent. */
+/** One line of pi-envoy's record of the startup phase (`CardWakeStep`, pi-envoy's
+ *  src/card-wake.ts): an unsent start-turn mark first read; a check the mark held, with the delay
+ *  it reads it again after, the moment the decision read and the moment it counted the cap from;
+ *  a check an unseen startup card held back, with the same and that card's send; the wake a check
+ *  sent. */
 const CardWakeStepSchema = z.union([
-  z.object({ startTurnMark: z.object({ firstRead: z.number(), capAt: z.number() }) }),
-  z.object({ heldFor: z.number() }),
+  z.object({ startTurnMark: z.object({ firstRead: z.number() }) }),
+  z.object({ heldFor: z.number(), at: z.number(), from: z.number() }),
+  z.object({ unseenFor: z.number(), at: z.number(), sentAt: z.number() }),
   z.object({ woke: z.number() }),
 ]);
 
@@ -1875,9 +1878,12 @@ test.skipIf(skip)(
 // still get a turn of its own, without waiting for the operator to type; pi-envoy's
 // STARTUP_TURN_CAP_MS (30 s) is when.
 //
-// The bound the row held the card's turn to before its waits ended at its deadline: three times
-// that cap. And how often pi-envoy reads an unsent mark again (STARTUP_TURN_POLL_MS).
-const STARTUP_CARD_TURN_BOUND_MS = 90_000;
+// The caps, as the spec sets them: an unsent start mark holds the wake back for
+// STARTUP_TURN_CAP_MS from its first read, an unseen startup card holds the check back for
+// STARTUP_CARD_CAP_MS from its send, and pi-envoy reads an unsent mark again every
+// STARTUP_TURN_POLL_MS. The base held the card's turn to 90 s of the test's clock instead.
+const STARTUP_TURN_CAP_MS = 30_000;
+const STARTUP_CARD_CAP_MS = 30_000;
 const STARTUP_TURN_POLL_MS = 1_000;
 for (const variant of ["the start claim never answers", "the start command never runs"] as const) {
   test.skipIf(skip)(
@@ -1918,21 +1924,33 @@ for (const variant of ["the start claim never answers", "the start command never
       const first = await session.until("the startup card's model request", () => session.turns[0]);
       expect(conversation(first.request)).toContain(card.summary);
       expect(lastMessage(first.request)).toContain(WAKE_ONE);
-      // The unsent mark held the card back from its first read to its cap, and every check it held
-      // read the mark again within a second; the wake then came from a check, not from anything
-      // that rescued it later. Together that is the 90 s this row held the card's turn to, with
-      // room: the hold's cap and one more read.
+      // The unsent mark held the card back from its first read to its cap, and the wake then came
+      // from a check, not from anything that rescued it later. Each hold is read with the moments
+      // its own decision read (R4: the program's own record of when it acted): the check that
+      // held read the clock before its cap, and holds no further than that cap, so the last read
+      // again comes by the cap whatever the load, and the wake one read after it, well inside
+      // the 90 s the base held the card's turn to. A decision that held at or past its cap - a
+      // cap of its own three times the spec's, or a comparison that kept holding - shows here as
+      // a hold read at or after it. An unseen startup card's hold of the check is held to its own
+      // cap the same way.
       const steps = await session.cardWakeSteps();
-      const marks = steps.flatMap((step) => ("startTurnMark" in step ? [step.startTurnMark] : []));
-      const mark = marks.at(-1);
-      expect(mark).toBeDefined();
-      const holds = steps.flatMap((step) => ("heldFor" in step ? [step.heldFor] : []));
+      const firstReads = steps.flatMap((step) =>
+        "startTurnMark" in step ? [step.startTurnMark.firstRead] : []
+      );
+      expect(firstReads.length).toBeGreaterThan(0);
+      const holds = steps.flatMap((step) => ("heldFor" in step ? [step] : []));
       expect(holds.length).toBeGreaterThan(0);
-      const longestHold = Math.max(...holds);
-      expect(longestHold).toBeLessThanOrEqual(STARTUP_TURN_POLL_MS);
-      expect(
-        (mark?.capAt ?? Number.NaN) - (mark?.firstRead ?? Number.NaN) + longestHold
-      ).toBeLessThan(STARTUP_CARD_TURN_BOUND_MS);
+      for (const hold of holds) {
+        expect(firstReads).toContain(hold.from);
+        expect(hold.at - hold.from).toBeLessThan(STARTUP_TURN_CAP_MS);
+        expect(hold.heldFor).toBeLessThanOrEqual(STARTUP_TURN_POLL_MS);
+        expect(hold.at + hold.heldFor - hold.from).toBeLessThanOrEqual(STARTUP_TURN_CAP_MS);
+      }
+      for (const step of steps) {
+        if (!("unseenFor" in step)) continue;
+        expect(step.at - step.sentAt).toBeLessThan(STARTUP_CARD_CAP_MS);
+        expect(step.at + step.unseenFor - step.sentAt).toBeLessThanOrEqual(STARTUP_CARD_CAP_MS);
+      }
       expect(steps.filter((step) => "woke" in step)).toEqual([{ woke: 1 }]);
     }
   );

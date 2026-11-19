@@ -52,7 +52,7 @@ The wait has one bound, and the test command sets it (R5):
 - In a shell proof, the bound is the proof's guard less its margin.
 
 The margin is the time a test's cleanups take after its wait gives up and before Bun's timeout or the proof's guard ends the run.
-It is `max(1000 ms, guard / 20)` in Bun (`packages/test-fixtures/src/deadline.ts`), and 30 s in a shell proof (`proof_margin_seconds` in `scripts/e2e/lib/rig.sh`).
+It is `max(1000 ms, guard / 20)` in Bun (`packages/test-fixtures/src/deadline.ts`), and 30 s in a shell proof (`proof_margin_seconds` in `scripts/e2e/lib/proof-wait.sh`).
 
 A fact that the product writes after the test's last action is waited for, and never read once.
 A log line that the product writes is such a fact.
@@ -89,7 +89,8 @@ The helpers:
   `timeLeft` gives the milliseconds left before the deadline, at most the longest delay that a timer takes.
   Each function refuses an argument past its own, so a planted duration fails.
 
-- A shell proof: `wait_for` in `scripts/e2e/lib/rig.sh`, which gives up before the guard that `proof_guard` set.
+- A shell proof: `wait_for` in `scripts/e2e/lib/proof-wait.sh`, which `scripts/e2e/lib/rig.sh` and `packages/pi-envoy/scripts/local-stack.sh` source, and which gives up before the guard that `proof_guard` set.
+  `wait_held` is the same wait returning rather than failing, for a proof that drives every row past one that did not hold and reports each itself, as the role takeover smoke does.
 
 ### R3: the code under test tells a test what happened
 
@@ -118,7 +119,11 @@ So no verdict reads any of these:
 - a moment taken from the real clock before the test runs and judged later against another clock
 
 A bound on work is a count of that work.
-A timing promise across a process boundary is checked by the order of the events it promises, or by the program's own record of when it acted.
+A timing promise across a process boundary is checked by the order of the events it promises, and by the bounds the program chose on the way, read from its own record: the delay of each timer its own code armed and ran there (`@legion/test-fixtures/timer-record`, in the test's process or preloaded into the child's), and the bound of each wait it armed.
+No verdict holds an elapsed time, two readings of a clock subtracted, to a bound, the program's own clock included: a loaded machine stretches the program's time as much as the test's.
+The readings a decision itself used may be held to that decision's own rule, which no load can break: pi-envoy's card wake records the moment each hold's decision read and the moment it counted the cap from, and no hold read at or past its cap (`controller-start-omp.test.ts`).
+A lower bound, that the program waited at least its delay, may read the program's own record of when it acted, since load can only lengthen the wait.
+A time a person wants read, such as a whole parse's processor time, is a row of a timing lane, which runs on request on a quiet machine and never as a CI verdict: proof-editor's whole-parse CPU rows run only where `PROOF_EDITOR_BENCH_TIMING` is set, and skip elsewhere with a name that says so (`packages/proof-editor/tests/cpu-time.ts`).
 
 A Bun test drives Bun's fake timers (`jest.useFakeTimers()`) where the code runs in the test's own process.
 
@@ -155,13 +160,20 @@ Each test command sets the guard of its runner in one place:
 
 - a package's `test` script (`bun test --timeout`)
 
-- a shell proof's `proof_guard` (`scripts/e2e/lib/rig.sh`)
+- a shell proof's `proof_guard` (`scripts/e2e/lib/proof-wait.sh`)
 
 - a CI job's `timeout-minutes`
 
 Set each guard to at least twice the longest correct run that it bounds, read on the machines that run it.
 Write that reading beside the number.
-No helper sets a timeout of its own.
+No helper sets a timeout of its own, but for these, each of which states its bound where it is set:
+
+- Go's `testwait`, whose `Eventually` waits a minute or the binary's own deadline less a second, and whose `WithinPolling` takes a bound of its own ("The fixtures a test takes rather than copies" below).
+
+- `packages/dispatch/e2e/__tests__/bounded-subprocess.ts`, whose `whether` and `eventually` waits end at `bounds.short` (60,000 ms) and whose `rowLimit` is the one third argument a row of that directory gives `test`, the sum of the bounds it names; `row-limits.test.ts` holds that rule, and `web/src/__tests__/setup.ts` says why the dashboard's own rows set none.
+
+- the Bun hooks and rows that hold one measured download or process run, below.
+
 A row that needs more than its package's guard keeps its own guard in one place, with the reading that shows it.
 Where the sum of a CI job passes the merge queue's check timeout of 180 minutes, split the job or cut the cost of the suite.
 
@@ -273,7 +285,7 @@ A Bun test waits and is guarded as R2 and R5 above say:
 
 - A command sets one guard, its `--timeout`.
   A row or a hook sets no timeout of its own, neither a third argument to `test` or `beforeAll` nor a `setDefaultTimeout`, because the shared wait reads the command's guard and not a row's.
-  The one exception R5 allows is a hook or a row whose work is one measured download or one measured process run with no shared wait in it, as the judge-omp `beforeAll` of `packages/pi-legion/scripts/skill-scenarios/rig.test.ts` pulls the judges' image and each of its rows that runs a judge holds that judge's `docker run`:
+  The exceptions R5 allows are a row of `packages/dispatch/e2e/__tests__` that states its limit through `bounded-subprocess.ts`'s `rowLimit`, and a hook or a row whose work is one measured download or one measured process run with no shared wait in it, as the judge-omp `beforeAll` of `packages/pi-legion/scripts/skill-scenarios/rig.test.ts` pulls the judges' image and each of its rows that runs a judge holds that judge's `docker run`:
   such a hook or row takes a guard of its own, at least twice its slowest reading on a machine that runs the suite (CI's, or a dev box's), and the `"//"` note of its package's `package.json`, where the command's guards are written, gives that number with the readings and their runs.
   A file whose rows need a much larger guard than the rest runs in a second `bun test` command of the same script, with its own `--timeout` and the same preload, as `packages/pi-envoy`'s `-omp` files do.
 
