@@ -206,7 +206,7 @@ cleanup() {
   # ends all three itself. Each step a case starts with &, and each of those two subshells, is
   # recorded at its start (record_pid), and ended here by its pid with the processes below it
   # (end_recorded), so no step of another run of this suite is reached, whatever its command line.
-  end_recorded "${started:-$tmp/started}" || true
+  end_recorded "${started_record:-$tmp/started}" || true
   rm -rf -- "$tmp"
 }
 trap cleanup EXIT
@@ -870,8 +870,9 @@ chmod +x "$bin"/*
 # shellcheck source=packages/envoy/loadtest/test-lib.sh
 source "$here/../test-lib.sh"
 # Its path for the rows that source it in a shell of their own, and the record of what the suite
-# starts that may outlive a case (record_pid, end_recorded in cleanup).
-readonly test_lib=$here/../test-lib.sh started=$tmp/started
+# starts that may outlive a case (record_pid, end_recorded in cleanup), under a name no function of
+# cluster.sh declares local (several declare `started`).
+readonly test_lib=$here/../test-lib.sh started_record=$tmp/started
 
 export FAKE_DIR=$fake FAKE_NS=$ns
 export LOADTEST_CLUSTER_ROOT=$tmp/root
@@ -2756,7 +2757,7 @@ df_seq "$pg_size $pg_used_low $pg_free_low"
 FAKE_PG_DF_SEQ=$fake/df-seq FAKE_RC_UNTIL_STOP=1 FAKE_FAST_SLEEP=30 \
   bash "$cluster" step --namespace "$ns" pgkill 1 --duration 1m >"$tmp/out" 2>&1 &
 kill_step=$!
-record_pid "$started" "$kill_step"
+record_pid "$started_record" "$kill_step"
 # The waits in this case are the step's own doing, never a stretch of wall clock: this one ends
 # at the watcher's first nap, which the fake sleep records, and at once if the step ends first.
 watching=no
@@ -2778,7 +2779,7 @@ for kill_file in "/proc/$kill_step"/task/*/children; do
   { read -r -a kill_found <"$kill_file"; } 2>/dev/null || true
   kill_kids+=("${kill_found[@]}")
 done
-for kid in "${kill_kids[@]}"; do record_pid "$started" "$kid"; done
+for kid in "${kill_kids[@]}"; do record_pid "$started_record" "$kid"; done
 ((${#kill_kids[@]} >= 2)) ||
   fail "the step shell has ${#kill_kids[@]} children, not its disk watcher and its wait on the runner job: $(cat "$tmp/out")"
 kill -KILL "$kill_step"
@@ -3748,7 +3749,7 @@ step_at=$EPOCHSECONDS
 FAKE_RC_UNTIL_STOP=1 FAKE_RUNNER_EXEC_FAIL=$unreach_fail FAKE_FAST_SLEEP=60 FAKE_SLEEP_GATE=$fake/root-unreach-step.gate \
   bash "$tmp/step-bounded.sh" step --namespace "$ns" unreach 1 --duration 1s >"$unreach_step" 2>&1 &
 unreach_pid=$!
-record_pid "$started" "$unreach_pid"
+record_pid "$started_record" "$unreach_pid"
 # The pod goes away once the load runs in it, which is when a step has nothing but this wait left.
 until grep -q '^step-unreach ' "$fake/runner-starts" 2>/dev/null || ! kill -0 "$unreach_pid" 2>/dev/null; do sleep 0.05; done
 grep -q '^step-unreach ' "$fake/runner-starts" 2>/dev/null ||
