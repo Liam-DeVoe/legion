@@ -14,7 +14,12 @@ body: |-
   live pod built before the setting, which carries no exchange identity, gets that token as every
   launch got it before. With no such file named, that launch is refused, naming the pod and the
   update round that replaces it. The claim is charged nothing, and the launch is tried again every
-  minute. Each launch that carries the transition token is logged at Warn. `legion state --json`
+  minute. The update round opens over that pod even when no process of the issue runs in it, and
+  it waits on no answer of the refused claim. Where no claim runs a process in the pod, the daemon
+  replaces the pod through that claim, and the next try starts in the new pod. The replacement's
+  log line (`waitingOnThePodNotWaitedFor`), or a gone pod's message on the issue, names a refused
+  claim with a session that had not answered as having lost its unpushed work.
+  Each launch that carries the transition token is logged at Warn. `legion state --json`
   gains `dispatchCredential` under the setting: the daemon's session, the launches since the boot
   that carried the transition token with the time of the last one, and
   `liveLaunchesWithDispatchToken`. Remove `dispatch_token_transition_file` when that last count is

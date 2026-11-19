@@ -5957,7 +5957,14 @@ The first sweep after its agent is ready asks it.
 The message can reach a role in the middle of a turn, and it tells the role to act at once.
 A role that no live session holds — one whose pod an idle release took, or one a suspension let go — is not revived to read it, and the round does not wait for that role past its bound.
 A ready session claims its role's topic inside its first turn or at the first-turn bound, so a message published inside that window finishes undelivered, and the next sweep asks that role again.
-A `failed` claim is the exception: it runs no turn on the pod, so the round asks it nothing and does not wait for it (`askedClaims`); what it left unpushed goes with the disk, and a retry brings it back into the round as any other claim.
+A `failed` claim is one exception: it runs no turn on the pod, so the round asks it nothing and does not wait for it (`askedClaims`); what it left unpushed goes with the disk, and a retry brings it back into the round as any other claim.
+A claim whose launch waits on the round's pod is the other exception ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker), under the transition file).
+The runtime refused that launch because the pod carries no exchange identity, so the claim records no process and runs no turn on the pod (`awaitsRoundPod`).
+The daemon records the round on that claim even when it has no session, because the claim can be the issue's only claim and so the round's only way to the pod (`blockingClaims`).
+The round asks it nothing and does not wait for it (`waitingClaims`).
+Where no claim records a process in the pod, the daemon replaces the pod through that claim (`podProcess`).
+Where the claim has a session and had not answered, the replacement's log line and a gone pod's message on the issue name it as having lost what it did not push (`replacePodForRound`, `lostClaims`).
+A claim with no session never had a worker, and nothing names it.
 No claim is left out of a round for the contract its plugin records:
 a role whose `legion` tool has no `ready_for_update` operation is told to push its work and end its turn, since its round ends at the bound whatever it does.
 The end of a turn is no answer at any contract: only the `ready_for_update` call answers the round.
@@ -7576,6 +7583,27 @@ With no transition file named, a launch into a live pod that carries no exchange
 The supervisor charges the claim nothing.
 It logs `supervise: this start waits for its pod's update round; trying it again every minute, charging nothing` at Warn at the first refusal, and starts the same launch again every minute until the pod it finds carries the identity.
 An update round can take hours, so a project at work names the transition file for the move.
+
+While the claim waits, it records no process, and its machine keeps the refused pod in the daemon's memory (`supervise.Claim.AwaitsPod`).
+The pod-update sweep reads that pod as the claim's pod, as it reads the pod of a claim with a process (`podLocator`, `groupPod`).
+So the update round opens over that pod even when no process of the issue runs in it.
+Without that pod, a waiting claim that is its issue's only claim would get no round and would wait for ever.
+The daemon records the round on the claim, with a session or without one (`blockingClaims`).
+The round asks the claim nothing and waits on no answer of it, because no process of the claim can answer (`waitingClaims`).
+Where no claim records a process in the pod, the daemon replaces the pod through the waiting claim when the round ends (`podProcess`).
+The claim's next try, within a minute, starts in the new pod, which carries the exchange identity.
+
+A waiting claim with a session had a worker, and that worker's process can have died in the pod before the runtime refused its relaunch.
+So where such a claim had not answered the round, the daemon names it as having lost what it did not push.
+The replacement's Info line, `supervise: the pod of this update round is replaced and the round is over`, names it under `waitingOnThePodNotWaitedFor`.
+If the pod goes before its round is over, the daemon's message on the issue names it with the other roles that had not answered (`lostClaims`).
+A waiting claim with no session never had a worker, and nothing names it.
+
+The daemon keeps the waiting pod in memory only.
+After a daemon restart, the claim gets the pod back only at its next refused launch (`startWaitsForPodRound`).
+The restarted daemon starts that launch after the boot's orphan sweep, at the turn its wake pacing gives the claim (`relaunchUnfinished`).
+In a restart of many pods, that launch can come more than a minute after the boot.
+A sweep before it does not find the pod through that claim.
 
 Each launch that carries the transition token logs `sandbox: a launch into a pod with no exchange identity carries the transition Dispatch token` at Warn, naming the claim, the pod, `transitionLaunches` and `liveLaunchesWithDispatchToken`.
 Under the setting the daemon also logs `sandbox: live launches carrying a Dispatch token`, with its `count`, each time that number moves.
