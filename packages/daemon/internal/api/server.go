@@ -254,14 +254,6 @@ type Options struct {
 	// one. It is called before the route answers the agent, so it returns at once, and this
 	// package reads no GitHub for it.
 	HandoffCompleted func(issue string)
-	// MergerMoveRead reads GitHub once for the merger's backward move of issue, before the route
-	// applies it (the daemon's mergerMoveRead): what GitHub answers for whether the head of the
-	// issue's pull request can be merged into its base, which the move carries
-	// (intake.BackwardMove.Mergeability) so that a move a conflict with the base made is
-	// classified as one. It answers nil when it read nothing or GitHub did not answer, and the
-	// move is applied all the same: the read never holds a move back. Nil reads nothing, and this
-	// package reads no GitHub for it.
-	MergerMoveRead func(ctx context.Context, issue string) *intake.PullRequestMergeability
 	// PromptAgents is the sorted names of every task agent the role prompts dispatch
 	// (prompts.RoleReferences), which the registration answers so a session's capability report
 	// measures the agents its role is told to run (LEGION-663). Nil or empty answers an empty list.
@@ -379,9 +371,8 @@ type server struct {
 	records     record.Store
 	dispatch    dispatch.Client
 	claimReady  func(c supervise.Claim)
-	// handoffCompleted is Options.HandoffCompleted, mergerMoveRead Options.MergerMoveRead.
+	// handoffCompleted is Options.HandoffCompleted.
 	handoffCompleted func(issue string)
-	mergerMoveRead   func(ctx context.Context, issue string) *intake.PullRequestMergeability
 	// promptAgents and capabilityReported are Options.PromptAgents and Options.CapabilityReported,
 	// releaseRecordStore Options.ReleaseRecords and claimActivity Options.ClaimActivity.
 	promptAgents       []string
@@ -454,7 +445,6 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		dispatch:           opts.Dispatch,
 		claimReady:         opts.ClaimReady,
 		handoffCompleted:   opts.HandoffCompleted,
-		mergerMoveRead:     opts.MergerMoveRead,
 		promptAgents:       opts.PromptAgents,
 		capabilityReported: opts.CapabilityReported,
 		roleHoldersChanged: opts.RoleHoldersChanged,

@@ -30,7 +30,7 @@ const (
 	askNotRunningLine = "outbox update ask finished without a publish: the claim's agent is not running"
 )
 
-// askRunner is an outbox runner as phase_ended_test.go's unit case builds one — a project, a
+// askRunner is an outbox runner as hook_prompt_test.go's unit case builds one — a project, a
 // publisher and a log — with the claim supervisor the executor reads the round from. Each role in
 // rounds gets a claim on LEGION-208 in the round given, "" for no round; a role not in rounds has
 // no claim this daemon supervises.
@@ -206,7 +206,7 @@ func (w *wakeCountingTrees) taken() int {
 // would take the ask, as a listener that answers the publish does, so the control is the check
 // removed (supervise.Machine.PublishUpdateAsk): the ask is then published and the claim marked
 // asked. c-one-channel's control is the other half: an executor that called wakeForDelivery
-// first, as phaseEnded does, takes a wake and resumes the claim here.
+// first, as hookPrompt does, takes a wake and resumes the claim here.
 func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 	rig := newIdleRig(t)
 	ctx := context.Background()

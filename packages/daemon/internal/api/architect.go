@@ -1277,12 +1277,6 @@ func recordedOutside(tree string, children []releasedChild) []intake.AdoptedChil
 // accepting. The workflow decides whether the requester runs the phase (BACKWARD_REFUSED), so a
 // move it applies ends the requester's own step — the worker's phase, or accepting, the owning
 // architect's — which apply waits for the requester's stream before.
-//
-// The merger's move carries what GitHub answers for the head just before it is applied
-// (Options.MergerMoveRead), because the merger sends a head back when GitHub shows it conflicting
-// with its base, and the record need not know that yet: the move is counted as work sent back
-// unless the record holds the head conflicting when the workflow classifies it (workflow's
-// recordPass). No other role's move is read for, since no other move out of merging is made.
 func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 	var req PhaseBackwardRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
@@ -1324,11 +1318,8 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusBadRequest, "ISSUE_NOT_GRANTS", fmt.Sprintf("a phase worker moves only its own issue %s, not %s", grant.Issue, req.Issue))
 		return
 	}
-	move := intake.BackwardMove{Issue: grant.Issue, Requester: grant.Role, To: req.To, Reason: req.Reason}
-	if grant.Role == claim.RoleMerger && s.mergerMoveRead != nil {
-		move.Mergeability = s.mergerMoveRead(r.Context(), grant.Issue)
-	}
-	s.applyFact(w, r, requestFactID("phase/backward"), move, PhaseBackwardResponse{})
+	s.applyFact(w, r, requestFactID("phase/backward"),
+		intake.BackwardMove{Issue: grant.Issue, Requester: grant.Role, To: req.To, Reason: req.Reason}, PhaseBackwardResponse{})
 }
 
 func (s *server) phaseRetry(w http.ResponseWriter, r *http.Request) {

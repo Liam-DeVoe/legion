@@ -94,9 +94,10 @@ type githubPullRequest struct {
 
 // mergeability is the pull request's `mergeable` as the mergeability fact reads it: null
 // is record.MergeabilityUnknown, GitHub not having computed it yet; true is
-// record.MergeabilityMergeable; false is record.MergeabilityConflicting, the state that sends the
-// issue back to implementing from every phase after the implementer's (workflow's
-// mergeability).
+// record.MergeabilityMergeable; false is record.MergeabilityConflicting, a head that conflicts
+// with its base, which a second read confirms before the workflow decides whether to merge the
+// base forward (workflow's mergeability), and which the read carries the base's rules for
+// (applyMergeability).
 func (p githubPullRequest) mergeability() record.Mergeability {
 	switch {
 	case p.Mergeable == nil:
@@ -125,17 +126,6 @@ func (p githubPullRequest) mergeState() record.MergeState {
 	default:
 		return record.MergeStateUnknown
 	}
-}
-
-// mergeabilityFact is what this answer says about merging pr's head into its base, as the fact
-// that records it carries (intake.PullRequestMergeability): the head GitHub answered for, its
-// mergeability and merge state, the base it names, and readAt, the moment the reader had the
-// answer in hand. applyMergeability applies it for the per-issue read and the merge-state ladder,
-// and the merger's backward move carries it (mergerMoveRead), so each is written from one reading
-// of the answer.
-func (p githubPullRequest) mergeabilityFact(pr record.PullRequest, readAt time.Time) intake.PullRequestMergeability {
-	return intake.PullRequestMergeability{Repo: pr.Repo, Number: pr.Number, Base: p.Base.Ref, HeadSHA: p.Head.SHA,
-		Mergeable: p.mergeability(), MergeState: p.mergeState(), ReadAt: readAt}
 }
 
 // readPullRequest reads pr from one GET /pulls/{number}: the base the mergeability is recorded

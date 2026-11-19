@@ -164,8 +164,9 @@ type overrides struct {
 	// that came due (workflowRuntime.idleTick, both ticks); zero is the production minute. A test
 	// of release and wake shortens it, so it waits out its own period rather than the daemon's.
 	idleTick time.Duration
-	// mergeStateRetry is how long the merge-state ladder and the merge-queue read wait between two
-	// reads of GitHub (workflowRuntime.mergeStateRetry, read through mergeStateWait); zero is the
+	// mergeStateRetry is how long the merge-state ladder, the merge-queue read and the second read
+	// of a conflicting head wait between two reads of GitHub, and the unit the reads after a
+	// ladder wait in (workflowRuntime.mergeStateRetry, read through mergeStateWait); zero is the
 	// production mergeStateLadderWait. A whole-daemon test of those reads shortens it, so it waits
 	// out its own wait rather than half a minute a read.
 	mergeStateRetry time.Duration
@@ -2611,7 +2612,6 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var grants *credential.Grants
 	var claimReady func(supervise.Claim)
 	var handoffCompleted func(string)
-	var mergerMoveRead func(context.Context, string) *intake.PullRequestMergeability
 	var roleHoldersChanged func(context.Context, supervise.Claim) error
 	var prepare func(context.Context, intake.DispatchIssue) (intake.DispatchIssue, error)
 	var unread func(string) bool
@@ -2622,7 +2622,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	if workflow != nil {
 		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.apps, workflow.grants
 		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
-		handoffCompleted, mergerMoveRead = workflow.handoffCompleted, workflow.mergerMoveRead
+		handoffCompleted = workflow.handoffCompleted
 		roleHoldersChanged = workflow.roleHoldersChanged
 		githubAPI = workflow.githubAPI
 		consumerLag = workflow.consumers.Lag
@@ -2702,7 +2702,6 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Experiments:        cfg.ExperimentsDeclared(),
 		ClaimReady:         claimReadyHook(keeper, claimReady),
 		HandoffCompleted:   handoffCompleted,
-		MergerMoveRead:     mergerMoveRead,
 		PromptAgents:       promptAgents(p.roleReferences),
 		CapabilityReported: s.capabilityReported,
 		RoleHoldersChanged: roleHoldersChanged,
