@@ -31,7 +31,6 @@ export type {
 export { readDocumentBlocks, resolveIssueDocumentId } from "./dispatch-commands/document-targets";
 export { dispatchRefFromUrl, linkBaseOf } from "./dispatch-commands/links";
 export { formatOpenAsksSummary, positionText } from "./dispatch-commands/render-item";
-export { goBlankPattern } from "./go-space";
 export { checkDispatchCall, dispatchServerUrls };
 
 /** Validate and execute one native Dispatch tool against the JSON HTTP API. */

@@ -25,6 +25,7 @@ import {
   messageBody,
   OTHER_UUID,
   planReviewBody,
+  plansBody,
   prioritiesBody,
   reviewBody,
   SESSION,
@@ -271,6 +272,7 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest === "architecture-sources") return response([architectureSource()]);
     if (rest.startsWith("architecture-sources/")) return response(architectureSource());
     if (rest === "artifacts") return response([]);
+    if (rest === "plans") return response(plansBody());
   }
   throw new Error(`unexpected request: ${route}`);
 }

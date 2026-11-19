@@ -982,12 +982,13 @@ about or narrows a read, before any request, and of each item of such a flag's l
 `--commit`, `--at`, `--retract`, `--comment`, `--session` of `dispatch send-to-agent`, and
 `--parent` of `dispatch issues` and `dispatch issue` (`IDENTIFIER_FIELDS` in
 `dispatch-command.ts`). An empty variable gives such a value. The command reads the value trimmed
-by Go's white space, the set Dispatch trims a value by (`go-space.ts`), so a value of only white
-space is refused too, U+0085 among it. For a flag whose value goes into a URL path in some command,
-which is `--issue`, `--project`, `--artifact`, `--retract`, `--comment` and `--session`, it
-refuses a value of only dots and slashes too, such as `.`, `..` or `./`. The other flags send `.`
-and `..` as they are. The refusal names the flag, and the command exits 2. Sent, such a value
-named nothing. In a path it reached no route, a redirect of Dispatch's router, or another route:
+by Go's white space, the set Dispatch trims a value by (`GO_SPACE` of `@legion/contracts/go-blank`),
+so a value of only white space is refused too, U+0085 among it. For a flag whose value goes into a
+URL path in some command, which is `--issue`, `--project`, `--artifact`, `--retract`, `--comment`
+and `--session`, it refuses a value of only dots and slashes too, such as `.`, `..` or `./`. The
+other flags send `.` and `..` as they are. The refusal names the flag, and the command exits 2.
+Sent, such a value named nothing. In a path it reached no route, a redirect of Dispatch's router,
+or another route:
 the URL drops `.` and `..` as steps of the path, so `dispatch read --issue ..` asked
 `GET /api/v1/`. A read that it narrowed came back wider: `dispatch search --project ""` answered
 every project's rows, and `dispatch issues --project ""` or `" "` every project's issues.
@@ -1052,7 +1053,7 @@ prints its URL, for proving what a command shows when a gateway, not Dispatch, a
 
 ## Command specs
 
-`@legion/contracts` `src/dispatch-tools.ts` is the single source for the thirty-six
+`@legion/contracts` `src/dispatch-tools.ts` is the single source for the thirty-seven
 Dispatch specs behind the `dispatch` command: each one's name, description, field schemas
 and example. `dispatch-command.ts` derives the command and its flags from them, and no host
 adds aliases or descriptions of its own.
