@@ -163,10 +163,11 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
 
     // Every chord of the key table opens its target's address (R11, R20): a filter's chord
     // turns it on from any other view and off from its own, `t c` turns every filter off, and
-    // the rest open the children, the node menu, the history and the collaborators.
+    // the rest open the steps, the children, the node menu, the history and the collaborators.
     for (const [key, address] of [
       ["k", "verification"],
       ["p", "plan"],
+      ["e", "steps"],
       ["d", "decisions"],
       ["h", "children"],
       ["a", "artifacts"],
@@ -220,6 +221,9 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
         .filter({ hasText: `Turn the ${PRESET_NAMES.plan} filter on or off` })
         .locator("kbd")
     ).toHaveText(["t", "p"]);
+    await expect(
+      issueSection.getByRole("listitem").filter({ hasText: "Steps tab" }).locator("kbd")
+    ).toHaveText(["t", "e"]);
     // The history takes `t v`, since `t a` opens the node menu and `l` the labels. Its words
     // are the page's own (`useIssueKeymap.ts`): `/activity` opens Details at the issue's history
     // (R15), as the user docs' address table has it.
