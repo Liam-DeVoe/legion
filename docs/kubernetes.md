@@ -2100,23 +2100,44 @@ This release's migration `20261117034837_issue_plans.up.sql` adds three tables, 
 The tables hold the plan of each issue that has one: each version of it given at a generation, which is the owner's version of its plan document or the project's default steps, each task of that plan with where the task stands and its counts of returns, and each step of a task by its place.
 The columns hold the step a role's phases row runs for an issue with plan rows.
 An earlier release boots with all five in place: its phases reads and writes name each column they touch, and it names none of the three tables, so it reads none of them, and every row it inserts takes the columns' defaults, which read as no step.
-At the rollback, with the daemon stopped and before the earlier image is pinned, run the way back that the migration's header gives: it drops the three tables and the two columns and deletes the migration's version row, so the roll-forward's `Migrate` runs the migration again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
-That way back is owed to the roll-forward, not to the earlier release.
+This release also queues rows an earlier release cannot decode.
+It tells an architect of three new kinds of notice: `task-stopped`, the stop of a task, whose notice of an owner's stop names the architect that made it (`stoppedBy`); `retro-held`, a parent held before its retro for the issues beneath it; and `plan-not-taken`, a plan of an earlier owner that an issue's first step passed over.
+A `controller_notice` row takes every kind an architect is told, these three among them.
+It writes one new supervise op, `step_stop`: the stop of the process of the step a stopped task ran, with its session kept.
+An earlier release decodes a `notice`, a `controller_notice` and a `supervise` row strictly: its decode refuses a notice kind it does not know (`unknown notice kind`, `validNoticeKinds` in `record/outbox.go`), a field it does not hold, such as `stoppedBy`, and an op it does not know (`unknown supervise operation`, `validSuperviseOp`), which is no permanent refusal for those kinds (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll-forward.
+The refusal of a `step_stop` row also fails every read of that role's run at that generation, because `RoleRuns` in `record/store.go` decodes the queued supervise rows of each run it reads, and the transaction that makes the read fails with it.
+
+At the rollback, with the daemon stopped and before the earlier image is pinned, run the way back below, with `<PROJECT>` the key of the project whose daemon rolls back.
+It drops the three tables and the two columns and deletes the migration's version row, so the roll-forward's `Migrate` runs the migration again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
+That part is owed to the roll-forward, not to the earlier release.
 Left in place, the place a task stands at goes stale while the earlier release moves its issue along today's fixed line, and after the roll-forward the walk would start that issue from the stale place.
 With the tables and the columns dropped, each issue the earlier release moved has no plan rows after the roll-forward and goes on as it did.
-What the way back costs is every plan given before the rollback, which its owner gives again.
+It also deletes the queued rows that the earlier release cannot decode, which are owed to that release: the notices and the controller notices of the three kinds, and the `step_stop` rows.
+The outbox is shared by every project's daemon on the database, so each of those deletes takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project, since a project key holds no hyphen).
+The tables and the columns are the database's, so every project's daemon on it rolls back too: run the block once for each project, and a later run drops nothing again and deletes that project's rows.
 
-This release also writes one new supervise op, `step_stop`: the stop of the process of the step a stopped task ran, with its session kept.
-It is an op of the `supervise` kind, so the kind check needs no statement, but an earlier release does not know the op: its decode refuses the row (`unknown supervise operation`, `validSuperviseOp` in `record/outbox.go`), which is no permanent refusal for that kind (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll forward.
-The same refusal fails every read of that role's run at that generation, because `RoleRuns` in `record/store.go` decodes the queued supervise rows of each run it reads, and the transaction that makes the read fails with it.
-Run this with the daemon stopped, before the earlier image is pinned:
-
-```sql
--- The stops of the steps of stopped tasks, which an earlier release cannot decode.
-delete from outbox where kind = 'supervise' and payload->>'op' = 'step_stop';
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+drop table if exists plan_steps;
+drop table if exists plan_tasks;
+drop table if exists issue_plans;
+alter table phases drop column if exists step_task, drop column if exists step_place;
+delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' in ('task-stopped', 'retro-held', 'plan-not-taken') and split_part(issue, '-', 1) = '<PROJECT>';
+delete from outbox where kind = 'supervise' and payload->>'op' = 'step_stop' and split_part(issue, '-', 1) = '<PROJECT>';
+delete from schema_version where version = 20261117034837;
+commit;
+SQL
 ```
 
-Each deleted row costs the stop of one step's process: that process runs on until its issue closes, and the way back above drops the task's stop with the plan rows.
+The header of `20261117034837_issue_plans.up.sql` carries this same block.
+
+What the way back costs is every plan given before the rollback, which its owner gives again, and each delivery a deleted row had still to make.
+A deleted `task-stopped` notice is a stop its issue's architect is never told of: which task stopped, and which architect or which failed step stopped it.
+A deleted `retro-held` notice is a hold its parent's architect is never told of, with the issues beneath it that the retro waits for.
+A deleted `plan-not-taken` notice is a plan of an earlier owner that the issue's architect is never told its first step passed over, so it is not asked to give that plan again as its own.
+A deleted controller notice of one of those kinds is the same telling, lost to the controller.
+A deleted `step_stop` row costs the stop of one step's process: that process runs on until its issue closes, and the way back drops the task's stop with the plan rows.
 
 #### Rolling back the release whose update round ends at its bound
 

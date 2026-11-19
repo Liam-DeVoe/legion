@@ -388,10 +388,10 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 
 // rollBackOwnersPlans runs the way back of the migration that adds the plan rows
 // (inFlightPlanMigration) as an operator runs it with the daemon stopped: the statements its
-// header gives from `begin;` to `commit;`. A rollback of the release whose owner's plan picks the
-// steps to any release before it takes that way back too (docs/kubernetes.md, "Rolling back the
-// release whose owner's plan picks the steps"), which drops the plan's tables and columns, so the
-// roll forward creates them again empty.
+// header gives from `begin;` to `commit;`, with <PROJECT> the run's project. A rollback of the
+// release whose owner's plan picks the steps to any release before it takes that way back too
+// (docs/kubernetes.md, "Rolling back the release whose owner's plan picks the steps"), which drops
+// the plan's tables and columns, so the roll forward creates them again empty.
 func (r *stepRecordsRig) rollBackOwnersPlans() {
 	r.t.Helper()
 	all, err := migrations.All()
@@ -409,7 +409,7 @@ func (r *stepRecordsRig) rollBackOwnersPlans() {
 				continue
 			}
 			if block = append(block, statement); statement == "commit;" {
-				r.exec(strings.Join(block, "\n"))
+				r.exec(strings.ReplaceAll(strings.Join(block, "\n"), "<PROJECT>", r.cfg.Project))
 				return
 			}
 		}

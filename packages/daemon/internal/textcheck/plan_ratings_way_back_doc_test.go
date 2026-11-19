@@ -36,7 +36,7 @@ const (
 // carries, line for line. An edit to either side alone fails here: a line changed in the guide
 // and not in the header would otherwise never reach the test that runs the header's block.
 func TestThePlanRatingsWayBackIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
-	header := planRatingsWayBackOfTheHeader(t)
+	header := indentedWayBackOfTheHeader(t, planRatingsMigration)
 	guide := wayBackBlockOfTheGuide(t, planRatingsWayBackSection, planRatingsWayBackMark,
 		"the header of "+planRatingsMigration)
 	if header == guide {
@@ -47,19 +47,19 @@ func TestThePlanRatingsWayBackIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
 		planRatingsMigration, wayBackGuide, wayBackBlockDifference("the header", header, guide))
 }
 
-// planRatingsWayBackOfTheHeader is the way back's block the header of planRatingsMigration
-// carries: its header lines, up to the first line that is no comment, that stand indented two
-// spaces past the prose, each with the comment marker and that indent taken off. A migration that
-// is not embedded, and a header with no such lines, stop the test by name.
-func planRatingsWayBackOfTheHeader(t *testing.T) string {
+// indentedWayBackOfTheHeader is the way back's block the header of migration (planRatingsMigration,
+// ownerStepsMigration) carries: its header lines, up to the first line that is no comment, that stand
+// indented two spaces past the prose, each with the comment marker and that indent taken off. A
+// migration that is not embedded, and a header with no such lines, stop the test by name.
+func indentedWayBackOfTheHeader(t *testing.T, migration string) string {
 	t.Helper()
 	embedded, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	at := slices.IndexFunc(embedded, func(m migrations.Migration) bool { return m.Name == planRatingsMigration })
+	at := slices.IndexFunc(embedded, func(m migrations.Migration) bool { return m.Name == migration })
 	if at < 0 {
-		t.Fatalf("the daemon embeds no %s, whose header carries the way back %s gives", planRatingsMigration, wayBackGuide)
+		t.Fatalf("the daemon embeds no %s, whose header carries the way back %s gives", migration, wayBackGuide)
 	}
 	var block []string
 	for _, line := range strings.Split(embedded[at].SQL, "\n") {
@@ -71,7 +71,7 @@ func planRatingsWayBackOfTheHeader(t *testing.T) string {
 		}
 	}
 	if len(block) == 0 {
-		t.Fatalf("the header of %s carries no indented block: that block is the way back %s gives", planRatingsMigration, wayBackGuide)
+		t.Fatalf("the header of %s carries no indented block: that block is the way back %s gives", migration, wayBackGuide)
 	}
 	return strings.Join(block, "\n")
 }

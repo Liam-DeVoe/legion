@@ -24,20 +24,21 @@ import (
 // of the guide alone.
 const planRatingsMigration = "20261117023932_outbox_kinds_with_the_plan_record.up.sql"
 
-// planRatingsWayBack is the way back's block as the header of planRatingsMigration carries it, read
-// from the embedded migration (migrations.All), which is that file's bytes as the binary ships them:
-// the one run of header lines indented two spaces past the comment's own, with the comment marker
-// and the indent taken off each. A header with no such run, or with two, stops the test by name: a
-// block this cannot find is a block it would pass while running nothing.
-func planRatingsWayBack(t *testing.T) string {
+// indentedWayBack is the way back's block as the header of migration carries it, read from the
+// embedded migration (migrations.All), which is that file's bytes as the binary ships them: the one
+// run of header lines indented two spaces past the comment's own, with the comment marker and the
+// indent taken off each. The headers of planRatingsMigration and of ownerStepsMigration each carry
+// one. A header with no such run, or with two, stops the test by name: a block this cannot find is
+// a block it would pass while running nothing.
+func indentedWayBack(t *testing.T, migration string) string {
 	t.Helper()
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	i := slices.IndexFunc(all, func(m migrations.Migration) bool { return m.Name == planRatingsMigration })
+	i := slices.IndexFunc(all, func(m migrations.Migration) bool { return m.Name == migration })
 	if i < 0 {
-		t.Fatalf("the embedded migrations hold no %s, whose header carries the way back this test runs", planRatingsMigration)
+		t.Fatalf("the embedded migrations hold no %s, whose header carries the way back this test runs", migration)
 	}
 	var block []string
 	ended := false
@@ -51,7 +52,7 @@ func planRatingsWayBack(t *testing.T) string {
 		held, inBlock := strings.CutPrefix(comment, "   ")
 		switch {
 		case inBlock && ended:
-			t.Fatalf("%s carries two indented blocks in its header, want the one way back", planRatingsMigration)
+			t.Fatalf("%s carries two indented blocks in its header, want the one way back", migration)
 		case inBlock:
 			block = append(block, held)
 		case len(block) > 0:
@@ -59,7 +60,7 @@ func planRatingsWayBack(t *testing.T) string {
 		}
 	}
 	if len(block) == 0 {
-		t.Fatalf("%s carries no indented block in its header: that block is the way back an operator runs", planRatingsMigration)
+		t.Fatalf("%s carries no indented block in its header: that block is the way back an operator runs", migration)
 	}
 	return strings.Join(block, "\n")
 }
@@ -187,7 +188,7 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		}
 	}
 
-	if _, err := store.Pool().Exec(ctx, planRatingsWayBack(t), pgx.QueryExecModeSimpleProtocol); err != nil {
+	if _, err := store.Pool().Exec(ctx, indentedWayBack(t, planRatingsMigration), pgx.QueryExecModeSimpleProtocol); err != nil {
 		t.Fatalf("run the way back %s's header carries: %v", planRatingsMigration, err)
 	}
 
