@@ -198,6 +198,16 @@ func settingValue(value reflect.Value) string {
 	return fmt.Sprintf("%v", value.Interface())
 }
 
+// KeptByEveryKeeper is the subject a test's narrowing of a stream under prefix leaves in the place
+// of the subjects it takes away: nothing a test sends is published on it, and it overlaps what was
+// taken away, so no keeper puts that back. A keeper puts back a subject of its own build only when
+// no subject the stream holds overlaps it (bus's keptSubjects), at every pass, the first 30 s
+// after its client's start. On a loaded machine a test's set-up outlasts that, and a narrowing
+// that left nothing in the place of what it took away was taken back before the test sent what
+// the narrowing was to refuse: the outbox's own client's keeper had the session route of
+// TestABackedOffEventHoldsBackOnlyItsDestination published, not refused.
+func KeptByEveryKeeper(prefix string) string { return prefix + "nothing-is-sent-here" }
+
 // Copies is how many copies of a stream or a consumer a cluster holds, its leader's and its
 // replicas', as its info's Cluster reports them: 0 for none reported.
 func Copies(cluster *natsgo.ClusterInfo) int {

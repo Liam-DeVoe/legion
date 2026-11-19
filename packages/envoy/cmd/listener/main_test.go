@@ -530,7 +530,9 @@ func TestPublishHandlerReturnsWithinDeadline(t *testing.T) {
 	}
 	originalConfig := info.Config
 	unboundConfig := originalConfig
-	unboundConfig.Subjects = []string{"notifications.bound.>"}
+	// The stream keeps a subject under the topic's family in the place of the one that captured
+	// it, so no keeper of the client puts that one back before the publish.
+	unboundConfig.Subjects = []string{"notifications.bound.>", testnats.KeptByEveryKeeper("notifications.github.")}
 	testnats.UpdateStream(t, client.JS(), unboundConfig)
 	t.Cleanup(func() { testnats.UpdateStream(t, client.JS(), originalConfig) })
 

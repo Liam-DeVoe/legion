@@ -408,7 +408,7 @@ func (r *roleRig) narrowAgentCapture(t *testing.T, holders ...string) func() {
 	narrowed.Subjects = slices.DeleteFunc(slices.Clone(capturing.Subjects), func(subject string) bool {
 		return subject == contracts.AgentTopicPrefix+">"
 	})
-	narrowed.Subjects = append(narrowed.Subjects, keptByEveryKeeper(contracts.AgentTopicPrefix))
+	narrowed.Subjects = append(narrowed.Subjects, testnats.KeptByEveryKeeper(contracts.AgentTopicPrefix))
 	for _, holder := range holders {
 		narrowed.Subjects = append(narrowed.Subjects, contracts.LegacyAgentSubject(holder))
 	}

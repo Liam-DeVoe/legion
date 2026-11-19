@@ -468,9 +468,9 @@ func TestRoleLaneForwardTheStreamDoesNotStoreIsDeliveryFailed(t *testing.T) {
 		t.Fatalf("read the stream: %v", err)
 	}
 	config := info.Config
-	config.Subjects = slices.DeleteFunc(slices.Clone(config.Subjects), func(subject string) bool {
+	config.Subjects = append(slices.DeleteFunc(slices.Clone(config.Subjects), func(subject string) bool {
 		return strings.HasPrefix(subject, contracts.AgentTopicPrefix)
-	})
+	}), testnats.KeptByEveryKeeper(contracts.AgentTopicPrefix))
 	testnats.UpdateStream(t, client.JS(), config)
 	exceptions, err := client.Conn.SubscribeSync(bus.ExceptionTopicPrefix + contracts.RoleTopicPrefix + role)
 	if err != nil {
