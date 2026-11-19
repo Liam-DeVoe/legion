@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -211,7 +212,7 @@ func TestCleanSessionStopDeletesARegistrationWrittenBeforeTheProbesMoment(t *tes
 	server := listener.server(t)
 	var inFlight sessionStopsInFlight
 	defer inFlight.wait()
-	stop := cleanSessionStop(&inFlight, server.URL, "envoy-token", quietLogger())
+	stop := cleanSessionStop(&inFlight, server.URL, "envoy-token", 0, quietLogger())
 
 	stop("ses_dead")
 
@@ -351,15 +352,26 @@ func (r *relaunchRegistering) Resume(ctx context.Context, prev *runtime.Locator,
 
 // The relaunch that wakes a suspended claim, in the same session, is not removed by the clean
 // stop of the process before it, whatever the listener's clock says (R3 of the suspension's clean
-// stop), and neither is the relaunch a death decides at once. Here the listener's clock runs a
-// minute behind the daemon's, so every registration it stamps reads as written before the stop's
-// moment and the moment keeps none; and the claim is relaunched while the stop still waits for its
-// registry read, so the relaunched agent comes up, and registers, before that read is answered
-// unless something orders the two. A read answered after that registration hands back the
-// relaunch's own client instance, the delete names it, and nothing keeps the relaunch's
-// registration. The daemon starts no process of the claim while a clean stop of its session is in
-// flight, so the read answers the ended process's instance, the delete removes that registration
-// alone, and the relaunch's stays.
+// stop), and neither is the relaunch a death decides at once. Each row is that case with the
+// relaunch the daemon itself starts: the listener's clock runs a minute behind the daemon's, so
+// every registration it stamps reads as written before the stop's moment and the moment keeps
+// none; the stop is sent and the listener holds its registry read; and the daemon relaunches the
+// claim while the read is held, so a relaunch that started at once would come up, and register,
+// before the read is answered. That read would hand back the relaunch's own client instance, the
+// delete would name it, and nothing would keep the relaunch's registration, which is what a
+// daemon whose starts do not wait does. The daemon starts no process of the claim while a clean
+// stop of its session is in flight, so the read answers the ended process's instance, the delete
+// removes that registration alone, and the relaunch's stays.
+//
+// A process the daemon did not start that registers the session before the read is the one case
+// left to the moment alone, which a listener clock behind the daemon's cannot keep: the client
+// instance is minted inside the agent's own process, and nothing the daemon records of the claim
+// names it, so the read is the stop's only way to learn it.
+//
+// The test holds no fixed time of its own over what the machine's load decides: the daemon's boot
+// and the stop's read and delete each have what is left of the test binary's deadline, less a
+// minute for the row's own steps (testwait.Bounded), so a slow boot or a slow relaunch is not read
+// as a daemon that never answered or a listener that never did.
 func TestARelaunchIsNotRemovedByTheStopBeforeItWhenTheListenersClockIsBehind(t *testing.T) {
 	const listenerBehind = time.Minute
 	listenerNow := func() time.Time { return time.Now().Add(-listenerBehind) }
@@ -390,6 +402,10 @@ func TestARelaunchIsNotRemovedByTheStopBeforeItWhenTheListenersClockIsBehind(t *
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// What is left of the binary's deadline, with no bound of the test's own when the
+			// binary has none (-timeout 0): the daemon's exit still ends the boot's wait.
+			left := testwait.Bounded(t, time.Duration(math.MaxInt64), time.Minute)
+			bound := testwait.Bounded(t, time.Minute, time.Second)
 			cfg := testConfig(t)
 			envoy := &listenerRecorder{
 				held:     storedRegistration{clientInstanceID: "inst_ended", lastSeen: listenerNow()},
@@ -403,15 +419,17 @@ func TestARelaunchIsNotRemovedByTheStopBeforeItWhenTheListenersClockIsBehind(t *
 				envoy.register(storedRegistration{clientInstanceID: "inst_relaunched", lastSeen: listenerNow()})
 			}
 			logs := &syncBuffer{}
-			d := startDaemonLogging(t, cfg, fakeRuntime(rt, &built{}), slog.New(slog.NewJSONHandler(logs, nil)))
+			o := fakeRuntime(rt, &built{})
+			o.sessionStopBudget = left
+			d := startDaemonWithin(t, cfg, o, slog.New(slog.NewJSONHandler(logs, nil)), left)
 			token := d.spawn(api.SpawnRequest{Tree: "LEGION-9", Issue: "LEGION-9", Role: claim.RoleArchitect, Prompt: "Reply ready and wait."})
 			readyClaim(t, d, rt.Runtime, token)
 
 			tc.end(t, d, rt, token)
 			select {
 			case <-envoy.arrived:
-			case <-time.After(10 * time.Second):
-				t.Fatalf("the clean stop never reached the listener; log:\n%s", logs)
+			case <-time.After(bound):
+				t.Fatalf("the clean stop did not reach the listener within %s; log:\n%s", bound, logs)
 			}
 			var answered <-chan int
 			if tc.relaunch != nil {
@@ -435,15 +453,15 @@ func TestARelaunchIsNotRemovedByTheStopBeforeItWhenTheListenersClockIsBehind(t *
 					if status != http.StatusOK {
 						t.Fatalf("the request that relaunched the claim = %d, want 200; log:\n%s", status, logs)
 					}
-				case <-time.After(20 * time.Second):
-					t.Fatalf("the request that relaunched the claim was not answered; log:\n%s", logs)
+				case <-time.After(bound):
+					t.Fatalf("the request that relaunched the claim was not answered within %s; log:\n%s", bound, logs)
 				}
 			}
 			for what, done := range map[string]chan struct{}{"the relaunch to come up": rt.resumed, "the stop's delete to be answered": envoy.settled} {
 				select {
 				case <-done:
-				case <-time.After(20 * time.Second):
-					t.Fatalf("waited 20s for %s; log:\n%s", what, logs)
+				case <-time.After(bound):
+					t.Fatalf("waited %s for %s; log:\n%s", bound, what, logs)
 				}
 			}
 
@@ -601,7 +619,7 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 	}
 	server := listener.server(t)
 	var inFlight sessionStopsInFlight
-	stop := cleanSessionStop(&inFlight, server.URL, "envoy-token", quietLogger())
+	stop := cleanSessionStop(&inFlight, server.URL, "envoy-token", 0, quietLogger())
 
 	returned := make(chan struct{})
 	go func() {
@@ -631,7 +649,7 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 // With no listener configured there is nothing to tell, and the machines are given no SessionGone
 // at all.
 func TestNoCleanSessionStopWithoutAListener(t *testing.T) {
-	if stop := cleanSessionStop(&sessionStopsInFlight{}, "", "", quietLogger()); stop != nil {
+	if stop := cleanSessionStop(&sessionStopsInFlight{}, "", "", 0, quietLogger()); stop != nil {
 		t.Fatal("a daemon with no Envoy listener was given a clean stop to call")
 	}
 }
@@ -650,7 +668,7 @@ func TestCleanSessionStopSentAfterTheFinalWaitBeganStillDeletesTheRegistration(t
 	}
 	server := listener.server(t)
 	var inFlight sessionStopsInFlight
-	stop := cleanSessionStop(&inFlight, server.URL, "envoy-token", quietLogger())
+	stop := cleanSessionStop(&inFlight, server.URL, "envoy-token", 0, quietLogger())
 	// Nothing is counted yet, so the wait returns at once, and from here it has begun.
 	inFlight.wait()
 

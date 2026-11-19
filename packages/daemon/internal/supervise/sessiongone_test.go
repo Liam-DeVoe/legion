@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -453,6 +454,10 @@ func TestASuspensionThatEndsAProcessStopsItsSessionOnce(t *testing.T) {
 // the stop runs, and resumes the recorded session once the stop has ended. A suspension that comes
 // while it waits cuts the launch short, as it cuts a start the runtime is making short, and
 // charges nothing beyond the one launch failure the death itself charged (relaunchAfterFailure).
+//
+// The suspension is sent from a goroutine of its own, under a bound of its own: a wait that did
+// not end with its context would keep the death's decision, and the machine's lock, for as long as
+// the stop runs, and the row fails here, saying so, rather than hanging to the binary's timeout.
 func TestARelaunchStartsNoProcessWhileTheCleanStopIsInFlight(t *testing.T) {
 	for _, suspends := range []bool{false, true} {
 		name := "the stop ends"
@@ -478,17 +483,30 @@ func TestARelaunchStartsNoProcessWhileTheCleanStopIsInFlight(t *testing.T) {
 				t.Fatalf("the relaunch resumed the session %d times while the stop of the process before it was in flight, want none", len(resumes))
 			}
 
+			bound := testwait.Bounded(t, time.Minute, time.Second)
 			if suspends {
-				if err := h.m.Handle(h.ctx, RequestSuspend{Claim: h.token, Reason: "the operator stops it", By: SuspendedByOperator}); err != nil {
-					t.Fatalf("suspend: %v", err)
+				suspended := make(chan error, 1)
+				go func() {
+					suspended <- h.m.Handle(h.ctx, RequestSuspend{Claim: h.token, Reason: "the operator stops it", By: SuspendedByOperator})
+				}()
+				select {
+				case err := <-suspended:
+					if err != nil {
+						t.Fatalf("suspend: %v", err)
+					}
+				case <-time.After(bound):
+					// Ending the stop lets the death's decision go, so the row's own failure is
+					// what this run reports.
+					close(stopping)
+					t.Fatalf("the suspension was not decided within %s while the relaunch waited for the clean stop: the wait went on past the suspension's cancel, holding the death's decision", bound)
 				}
 			} else {
 				close(stopping)
 			}
 			select {
 			case <-died:
-			case <-time.After(10 * time.Second):
-				t.Fatal("the death's decision did not return once the wait for the stop was over")
+			case <-time.After(bound):
+				t.Fatalf("the death's decision did not return within %s once the wait for the stop was over", bound)
 			}
 			h.m.Wait()
 
@@ -502,6 +520,93 @@ func TestARelaunchStartsNoProcessWhileTheCleanStopIsInFlight(t *testing.T) {
 			}
 			if resumed := h.wantCalls("Resume", 1)[0]; resumed.Spec.ResumeSessionFile != h.claim().SessionFile {
 				t.Fatalf("the relaunch resumed %q, want the recorded session %q", resumed.Spec.ResumeSessionFile, h.claim().SessionFile)
+			}
+		})
+	}
+}
+
+// Two clean stops of one session can be in flight at once. A death whose relaunch the wake pacing
+// parked keeps the dead process recorded until the wake's turn (parkWake), so a suspension that
+// comes meanwhile stops that process again and sends a second stop (sessionGone's own doc). Either
+// can be the one still in flight when the claim next starts, since each runs on a goroutine of its
+// own to its own budget, and the relaunch registers after every read a stop makes only if it
+// waits for both (awaitSessionStops). Here one of the two has ended when the operator resumes the
+// claim, the death's in one row and the suspension's in the other: the launch says it waits,
+// starts nothing, and resumes the recorded session once the other stop has ended too.
+//
+// The negative controls are a wait that looks at the newest stop alone, which resumes at once in
+// the second row, and a wait that ends with the oldest stop, or that forgets the rest once the
+// oldest has ended, which resumes at once in the first.
+func TestARelaunchWaitsForBothStopsOfASuspensionOverAParkedRelaunch(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		// ended is the stop that has ended when the operator resumes the claim: 0 is the death's,
+		// 1 the suspension's.
+		ended int
+	}{
+		{name: "the death's stop has ended and the suspension's is in flight", ended: 0},
+		{name: "the suspension's stop has ended and the death's is in flight", ended: 1},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			var mu sync.Mutex
+			stops := []chan struct{}{make(chan struct{}), make(chan struct{})}
+			told := 0
+			tells := func() int {
+				mu.Lock()
+				defer mu.Unlock()
+				return told
+			}
+			h := pacedHarness(t, wakeRate, func(d *Deps) {
+				d.SessionGone = func(string) <-chan struct{} {
+					mu.Lock()
+					defer mu.Unlock()
+					if told == len(stops) {
+						t.Errorf("a clean stop was told %d times, want the death's and the suspension's alone", told+1)
+						return nil
+					}
+					told++
+					return stops[told-1]
+				}
+			})
+			h.reach(StateReady)
+			// A claim of the wave takes the turn the limiter has, so the death's relaunch waits
+			// for the next one over the dead process.
+			queueAhead(h, 1)
+			h.observe(runtime.Gone)
+			h.wantWaitingWake(WakeLaunch)
+			if n := tells(); n != 1 {
+				t.Fatalf("the death told %d clean stops, want 1", n)
+			}
+			h.must(RequestSuspend{Claim: h.token, Reason: "the operator suspends it", By: SuspendedByOperator})
+			h.wantState(StateSuspended)
+			if n := tells(); n != 2 {
+				t.Fatalf("the death and the suspension over its parked relaunch told %d clean stops, want 2, one each", n)
+			}
+			h.wantCalls("Resume", 0)
+
+			close(stops[row.ended])
+			bound := testwait.Bounded(t, time.Minute, time.Second)
+			resumed := make(chan error, 1)
+			go func() { resumed <- h.m.Handle(h.ctx, RequestResume{Claim: h.token}) }()
+			testwait.Eventually(t, "the resume to wait for the clean stop still in flight, or to resume", func() bool {
+				return len(h.records.of(launchWaitsForSessionStop)) > 0 || len(h.calls("Resume")) > 0
+			})
+			if resumes := h.calls("Resume"); len(resumes) != 0 {
+				t.Fatalf("the resume started the session %d times while the other clean stop was in flight, want none", len(resumes))
+			}
+
+			close(stops[1-row.ended])
+			select {
+			case err := <-resumed:
+				if err != nil {
+					t.Fatalf("resume: %v", err)
+				}
+			case <-time.After(bound):
+				t.Fatalf("the resume was not decided within %s of both clean stops ending", bound)
+			}
+			h.m.Wait()
+			if resumes := h.wantCalls("Resume", 1); resumes[0].Spec.ResumeSessionFile != h.claim().SessionFile {
+				t.Fatalf("the resume started %q, want the recorded session %q", resumes[0].Spec.ResumeSessionFile, h.claim().SessionFile)
 			}
 		})
 	}
