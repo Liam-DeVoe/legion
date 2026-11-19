@@ -109,11 +109,11 @@ type agentRoute struct {
 // an issue where the record names that agent the agent of a run that is not ended waits for the
 // agent's stream before its fact applies: the tester's completion, a phase worker's and the
 // architect's moves back, the architect's sign-off and its park of a child in accepting, each
-// ending its own step, and the architect's retry of an issue its own failure held in accepting
-// and its gate registration on a root in accepting. So the record of a step an agent's request
-// ends names the model whose answer its stream read ahead of the request. The routes are read
-// from the server's own table (routes), so a route added later fails here by name until it is
-// put in this one.
+// ending its own step, the architect's retry of an issue its own failure held in accepting, and
+// its gate registration, its plan registration and its stop of a task on a root in accepting, the
+// stop ending its own step. So the record of a step an agent's request ends names the model whose
+// answer its stream read ahead of the request. The routes are read from the server's own table
+// (routes), so a route added later fails here by name until it is put in this one.
 func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *testing.T) {
 	noFact := "it applies no fact"
 	noRequester := "the operator's bearer redeems no grant, so no requester is noted and a fact it applies waits for nothing (TestAFactNoAgentRequestedWaitsForNothing)"
@@ -206,6 +206,30 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 			return []agentRequest{{architect.token, func() *httptest.ResponseRecorder {
 				return r.h.request(http.MethodPost, "/legion/v1/gates/register", map[string]any{
 					"grantId": architect.grant(t), "issue": "LEGION-208", "artifactId": artifact, "version": 7}, nil)
+			}}}
+		}},
+		"POST /legion/v1/plans/register": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
+			// A later version of the plan, given while the architect runs the root's accepting.
+			r.statuses.documents = map[string]string{planDoc: "LEGION-208"}
+			r.statuses.approvals = map[string]dispatch.Approval{planDoc: {State: "none", LatestVersion: 9}}
+			r.statuses.plans = map[string]dispatch.DocumentVersion{}
+			r.statuses.givePlan(planDoc, 9, taskBlock("a", "implementer reviewer"))
+			seedTree(t, r.h, "LEGION-208")
+			setIssue(t, r.h, "LEGION-208", func(issue *record.Issue) { issue.Phase = phase.Accepting })
+			architect := newLiveClaim(t, r.h, "LEGION-208", claim.RoleArchitect)
+			r.runs(t, "LEGION-208", acceptingPlace, architect.token)
+			return []agentRequest{{architect.token, func() *httptest.ResponseRecorder {
+				return registerPlan(r.h, architect.grant(t), "LEGION-208", planDoc, 9)
+			}}}
+		}},
+		"POST /legion/v1/tasks/stop": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
+			// A stop at accepting ends the architect's own step.
+			seedTree(t, r.h, "LEGION-208")
+			setIssue(t, r.h, "LEGION-208", func(issue *record.Issue) { issue.Phase = phase.Accepting })
+			architect := newLiveClaim(t, r.h, "LEGION-208", claim.RoleArchitect)
+			r.runs(t, "LEGION-208", acceptingPlace, architect.token)
+			return []agentRequest{{architect.token, func() *httptest.ResponseRecorder {
+				return stopTask(r.h, architect.grant(t), "LEGION-208", "a")
 			}}}
 		}},
 		"POST /legion/v1/operator/claims":                        {none: noRequester},
