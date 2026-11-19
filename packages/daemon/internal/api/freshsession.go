@@ -142,13 +142,15 @@ var freshSessionOp = controllerOp{
 }
 
 // controllerTarget is the claim a controller's recovery named, read and authenticated: the
-// machine to run the effect on, and the issue and role the caller spelled, which the route logs
-// as the controller named them.
+// machine to run the effect on, the issue and role the caller spelled, which the route logs as the
+// controller named them, and request, the caller's request carrying the step's standing, which the
+// effect runs on (controllerClaim).
 type controllerTarget struct {
 	machine *supervise.Machine
 	token   claim.Token
 	issue   string
 	role    claim.Role
+	request *http.Request
 }
 
 // controllerClaim is the door both of the controller's claim recoveries come through
@@ -161,6 +163,14 @@ type controllerTarget struct {
 // agent that works the role's step of the issue (workerToken), which the issue's role names, and
 // no issue's role spells the controller's token (claim.ControllerToken), so a role this check takes
 // can never name it.
+//
+// That claim is read before any lock the effect's acts take, so the effect runs on a request
+// carrying its standing (worksStep, supervise.Standing): the effect's first act on the machine
+// judges again under the machine's lock that the record still names the claim on the role's step,
+// and a step that moved to another claim before it is refused there with nothing of the claim
+// changed (operatorFailure, compact's refusal of a claim not taken). A move after that act finds
+// the effect under way, and the phase's restart the fresh session applies names the claim, so a
+// step entered for another claim since is not restarted (restartWorkedPhase).
 func (s *server) controllerClaim(w http.ResponseWriter, r *http.Request, op controllerOp) (controllerTarget, bool) {
 	var req ClaimRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
@@ -197,7 +207,8 @@ func (s *server) controllerClaim(w http.ResponseWriter, r *http.Request, op cont
 		writeFailure(w, http.StatusNotFound, "NO_CLAIM", "no claim "+string(token))
 		return controllerTarget{}, false
 	}
-	return controllerTarget{machine: m, token: token, issue: req.Issue, role: role}, true
+	judged := r.WithContext(supervise.Standing(r.Context(), s.worksStep(req.Issue, role, token)))
+	return controllerTarget{machine: m, token: token, issue: req.Issue, role: role, request: judged}, true
 }
 
 // claimFreshSession is the controller's door onto the fresh session (freshSession). The effect
@@ -210,7 +221,7 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_, notRestarted, started, ok := s.freshSession(w, r, target.machine, target.token)
+	_, notRestarted, started, ok := s.freshSession(w, target.request, target.machine, target.token)
 	if !ok {
 		return
 	}

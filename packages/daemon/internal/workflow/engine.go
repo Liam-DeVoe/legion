@@ -1340,10 +1340,31 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return intake.Result{}, err
 	}
+	if refusal, err := e.stepMovedRefusal(ctx, tx, *issue, phase.RoleFor(issue.Hold.From), fact.Claim); err != nil || refusal != nil {
+		return intake.Result{Refusal: refusal}, err
+	}
 	// The architect's own words where it named any, which the restarted role's task and the log
 	// line for the release both carry; a decision that names none keeps the daemon's.
 	_, err = e.retryPhase(ctx, tx, *issue, issue.Hold.From, cmp.Or(fact.Reason, "retry held phase"), false)
 	return intake.Result{}, err
+}
+
+// stepMovedRefusal refuses a restart of role's phase of issue asked for one claim, asked, where the
+// record names another claim on role's step now (workerClaim), read here under the fact's lock: the
+// start the restart queues hands the step's entry to that other claim, whose step was entered for
+// it after the caller read the step, and starting it again would send the retry's task to an agent
+// the caller did not ask about. A restart that names no claim is the architect's or the operator's
+// of the role's step as it stands, and is never refused here.
+func (e *Engine) stepMovedRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, asked claim.Token) (*intake.Refusal, error) {
+	if asked == "" || role == "" || role == claim.RoleArchitect {
+		return nil, nil
+	}
+	now, err := e.workerClaim(ctx, tx, issue, role)
+	if err != nil || now == asked {
+		return nil, err
+	}
+	return refused("PHASE_NOT_RESTARTED", fmt.Sprintf("the %s's step of %s is the claim %s's now, not %s's, so nothing restarted it",
+		role, issue.Key, now, asked)).Refusal, nil
 }
 
 // restartPhase is the operator's retry of a phase worker through `legion claims retry` (api's
@@ -1375,6 +1396,9 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 	}
 	if lingers {
 		return refusedLingering(*issue, fmt.Sprintf("the operator's restart of the %s", fact.Role)), nil
+	}
+	if refusal, err := e.stepMovedRefusal(ctx, tx, *issue, fact.Role, fact.Claim); err != nil || refusal != nil {
+		return intake.Result{Refusal: refusal}, err
 	}
 	_, err = e.retryPhase(ctx, tx, *issue, working, "the operator retried this phase's worker", fact.FreshSession)
 	return intake.Result{}, err

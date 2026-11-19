@@ -924,10 +924,15 @@ const (
 // answered as it did, which a retry writes into the task the restarted role is given and into
 // the daemon's own log line for the release; it is empty for a response that names none, which
 // leaves the daemon's own words in both.
+//
+// Claim is the claim a caller retrying the phase for one claim read as the worker on the held
+// phase's step (api's restartWorkedPhase), and "" for the architect's own decision, which names
+// none: a retry that names one is refused where the step is another claim's when it applies.
 type RetryOrEscalate struct {
 	Issue    string
 	Decision RetryOrEscalateDecision
 	Reason   string
+	Claim    claim.Token
 }
 
 func (RetryOrEscalate) isFact() {}
@@ -943,10 +948,16 @@ func (RetryOrEscalate) isFact() {}
 // claim in a new session rather than resuming the one it recorded (supervise's RequestRetry). It
 // rides the fact so that the session is forgotten inside the retry decision itself, which means a
 // restart the workflow refuses leaves the claim's session where the operator still has it.
+//
+// Claim is the claim the caller retries, which it read as the worker on Role's step, and the
+// restart is refused where the step is another claim's when the fact applies: the start it would
+// queue hands the step's entry to whichever claim the role's row names, and that claim's step,
+// entered for it since, is no step of the claim the caller asked about. "" names none.
 type RestartPhase struct {
 	Issue        string
 	Role         claim.Role
 	FreshSession bool
+	Claim        claim.Token
 }
 
 func (RestartPhase) isFact() {}
