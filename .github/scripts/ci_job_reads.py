@@ -449,7 +449,8 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
                              "packages/claude-envoy/tests/answers-claude.test.ts:312,338 runs"),
         ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts:5-12 imports three of its modules, and tsc puts four files of that directory in the claude-envoy program"),
         (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:43-44, legion-pane-mcp.test.ts:19-20, legion-tool.test.ts:13"),
-        (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
+        (".agents/plugins/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
+        (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:10"),
 )
 
 
@@ -1832,7 +1833,7 @@ TEXT_CHECK_TESTS = {
         "TestEveryReviewReadOrdersByReviewOrder",
         "TestTheReviewOrderGuardReadsBothOrders"},
     f"{ENVOY}/internal/dispatch/api/review_write_guard_test.go": {
-        "TestOnlyWriteReviewWritesReviews",
+        "TestOnlyQueueReviewWritesReviews",
         "TestTheReviewWriterPatternsReadEveryNameOfTheTable",
         "TestTheReviewWriterScanFindsAnIdentifierNamingTheTable"},
 }
@@ -2048,8 +2049,11 @@ unit=$!
 # The tests the race detector makes impossible, which the race job of each of these
 # packages therefore cannot make, so envoy-go keeps a plain run of exactly them:
 # internal/bus counts HoldsSeed's allocations, which the race runtime's own
-# allocations would be counted into, and the documents package measures the heap a
-# room keeps, which the detector's shadow memory and instrumentation move. Those are
+# allocations would be counted into; the API's and delivery's xid window tests judge
+# a window's gaps, which the detector stretches past any bound, so a race run checks
+# only their shape, which this run checks as well (storetest.XidJudgesGaps,
+# INFRA-636); and the documents package measures the heap a room keeps, which the
+# detector's shadow memory and instrumentation move. Those are
 # out of the race build altogether (//go:build !race), and the two render-reuse storms
 # run fewer seeds and fewer edits under it (raceEnabled), so this is their full-size
 # run. The API's seven source guards, and one_expression_guard_test.go beside them,
@@ -2074,16 +2078,17 @@ unit=$!
 # (the table on this job): this call's slowest package on the slower run is
 # internal/dispatch/docs, 413.9 s (run 44195030350, job 134434361048), and
 # 413.9 / 30 = 13.80, so 14m. The limit leaves 426.1 s above that time, over the 30 s
-# of the documents package's roomWaitMargin.
+# of the documents package's roomWaitMargin. With the xid window tests in, one run on a
+# two-vCPU pod took the API 134.082 s and delivery 4.106 s (INFRA-636).
 #
-# One go test over both packages rather than one per package: go builds the test
+# One go test over its packages rather than one per package: go builds the test
 # binaries together and runs each package's tests as soon as its own binary is
-# linked, so one package's tests run beside the other's build instead of after it.
+# linked, so one package's tests run beside another's build instead of after it.
 # Three commands in a row, while the API package's source guards were still among
 # them, cost 96 s for 44 s of tests - 40 s of them the API package's build, with
-# nothing running beside it (run 42307926510, dispatch://INFRA-1075). Each package
-# measures its own process's heap or allocations, so running them at the same time
-# changes no number either of them asserts on.
+# nothing running beside it (run 42307926510, dispatch://INFRA-1075). The bus and
+# documents packages each measure their own process's heap or allocations, so running
+# them at the same time changes no number either of them asserts on.
 {RACE_IMPOSSIBLE_CALL} > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
 impossible=$!
 # internal/pgmigrate, on a Postgres service of its own: its redaction oracle holds

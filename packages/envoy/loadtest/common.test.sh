@@ -25,8 +25,11 @@
 # here (this test's own) is refused as "not visible", without naming that process as the holder;
 # (i) a root always gets the same set of ports, these two roots get two sets that share none (two
 # roots in general share all 7 when their paths hash into one block of the 200, which stack.sh
-# refuses), every port of every block lies in 1024-65535 and no two ports of two blocks meet, and a
-# LOADTEST_*_PORT overrides its own port alone.
+# refuses), every port of every block lies in 1024-65535, outside this machine's ephemeral range,
+# and no two ports of two blocks meet, and a LOADTEST_*_PORT overrides its own port alone; (j) under
+# an ephemeral range that covers the old block (a gVisor pod's 16000-65535, or one from 15500) every
+# default port lies below it, Linux's default range keeps the blocks at 15000, and a range with no
+# room for 2000 ports above 1023 is refused naming both ranges unless every port variable is set.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -482,14 +485,18 @@ case_stack_ports() {
   local report
   report=$(bash -c '
     source "$1"
+    base=$(port_base)
+    printf "range %s\n" "$(ephemeral_range)"
     for ((k = 0; k < PORT_BLOCKS; k++)); do
       for key in "${PORT_KEYS[@]}"; do
         printf "%s %s " "$k" "$key"
-        default_port "$key" "$k"
+        default_port "$key" "$k" "$base"
       done
     done' blocks "$helper" |
-    awk '{
+    awk 'NR == 1 { low = $2; high = $3; next }
+    {
       if ($3 < 1024 || $3 > 65535) { bad = bad "block " $1 " " $2 " is on port " $3 ", outside 1024-65535; " }
+      if (high != "" && $3 >= low + 0 && $3 <= high + 0) { bad = bad "block " $1 " " $2 " is on port " $3 ", inside the ephemeral range " low " " high "; " }
       if ($3 in seen) { bad = bad "block " $1 " " $2 " and " seen[$3] " are both on port " $3 "; " }
       seen[$3] = "block " $1 " " $2
     }
@@ -507,6 +514,48 @@ case_stack_ports() {
   printf 'PASS: the default ports follow LOADTEST_ROOT, two roots in two blocks share no port, and each LOADTEST_*_PORT overrides its own\n'
 }
 
+# range_file LOW HIGH: a file holding an ephemeral range as /proc/sys/net/ipv4/ip_local_port_range
+# does, for LOADTEST_PORT_RANGE_FILE.
+range_file() {
+  local file="${temporary_dir}/range-$1-$2"
+  printf '%s\t%s\n' "$1" "$2" >"$file"
+  printf '%s\n' "$file"
+}
+
+# case_ports_below_ephemeral_range: every default port lies below the machine's ephemeral range, so
+# no outgoing connection of the stack can take a stack port as its source port first. Linux's
+# default range (32768-60999) leaves the blocks at 15000-16998; a gVisor pod's (16000-65535), and
+# one that covers the old block from 15500, move them to the 2000 ports below the range; a range
+# starting too low for 2000 ports above 1023 is refused naming both ranges, unless every port
+# variable is set; and a range this machine cannot read leaves the blocks at 15000.
+case_ports_below_ephemeral_range() {
+  out=""
+  local root=/legion/scratch/tmp/lt-one ports low rc max
+  for low in 16000 15500; do
+    ports=$(ports_for "$root" LOADTEST_PORT_RANGE_FILE="$(range_file "$low" 65535)") ||
+      { out="$ports" fail "(j) a range from $low refused the stack's ports"; return; }
+    max=$(awk '{print $2}' <<<"$ports" | sort -n | tail -1)
+    ((max < low)) || { out="$ports" fail "(j) a range from $low left port $max inside it"; return; }
+    (($(awk '{print $2}' <<<"$ports" | sort -n | head -1) >= low - 2000)) ||
+      { out="$ports" fail "(j) a range from $low put a port more than 2000 below it"; return; }
+  done
+  local linux unread
+  linux=$(ports_for "$root" LOADTEST_PORT_RANGE_FILE="$(range_file 32768 60999)")
+  unread=$(ports_for "$root" LOADTEST_PORT_RANGE_FILE="${temporary_dir}/no-such-range")
+  [ "$linux" = "$unread" ] || { out="$linux"$'\n'"$unread" fail "(j) Linux's default range moved the blocks from 15000"; return; }
+  (($(awk '$1 == "postgres" {print $2}' <<<"$linux") % 10 == 0 && $(awk '$1 == "postgres" {print $2}' <<<"$linux") >= 15000)) ||
+    { out="$linux" fail "(j) Linux's default range did not keep the blocks at 15000"; return; }
+  out=$(ports_for "$root" LOADTEST_PORT_RANGE_FILE="$(range_file 1500 65535)" 2>&1) && rc=0 || rc=$?
+  ((rc != 0)) || { fail "(j) a range from 1500 left room for 2000 ports above 1023"; return; }
+  [[ $out == *"1500-65535"* && $out == *"2000 ports"* ]] || { fail "(j) the refusal does not name the range and the ports the stack needs"; return; }
+  out=$(ports_for "$root" LOADTEST_PORT_RANGE_FILE="$(range_file 1500 65535)" LOADTEST_PG_PORT=1100 \
+    LOADTEST_PROXY_PORT=1101 LOADTEST_PROXY_STATS_PORT=1102 LOADTEST_NATS_PORT=1103 LOADTEST_NATS_MONITOR_PORT=1104 \
+    LOADTEST_LISTENER_PORT=1105 LOADTEST_DISPATCH_PORT=1106 LOADTEST_PPROF_PORT=1107 LOADTEST_ENVOY_PROXY_PORT=1108 2>&1) ||
+    { fail "(j) every port variable set, a range from 1500 still refused the stack"; return; }
+  out=""
+  printf 'PASS: the default ports sit below the ephemeral range, and a range with no room below it is refused naming both\n'
+}
+
 failed=0
 case_orphaned_child || failed=$((failed + 1))
 case_stale_record || failed=$((failed + 1))
@@ -518,7 +567,8 @@ case_foreign_record_live_pid || failed=$((failed + 1))
 case_prepare_stack_built_migration || failed=$((failed + 1))
 case_prepare_stack_migration_set || failed=$((failed + 1))
 case_stack_ports || failed=$((failed + 1))
+case_ports_below_ephemeral_range || failed=$((failed + 1))
 if ((failed > 0)); then
-  printf 'FAIL: %d of 10 cases failed\n' "$failed" >&2
+  printf 'FAIL: %d of 11 cases failed\n' "$failed" >&2
   exit 1
 fi

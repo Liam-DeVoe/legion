@@ -218,7 +218,7 @@ func TestWritingIssueAskStatesLeavesTheLatestEditSourceAlone(t *testing.T) {
 			var marked []BlockRef
 			err := joinedWrite(service, func(ctx context.Context) (err error) {
 				tx, _ := txFromContext(ctx)
-				if _, err := tx.Exec(ctx, `select 1 from issues where key = 'DOC-1' for no key update`); err != nil {
+				if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 					return fmt.Errorf("lock the issue: %w", err)
 				}
 				if test.edit {
@@ -421,8 +421,8 @@ func requireLatestEditSource(t *testing.T, service *Service, artifactID string, 
 }
 
 // A closed issue's documents refuse every ordinary write, and the close's own still reaches them,
-// since its caller holds the issue's row: a room flagged closed that a reader loaded again, and a
-// document no room holds, whose write the store keeps.
+// since its caller holds the issue's owner lock: a room flagged closed that a reader loaded again,
+// and a document no room holds, whose write the store keeps.
 func TestWritingIssueAskStatesReachesAClosedIssuesDocuments(t *testing.T) {
 	t.Parallel()
 	for _, resident := range []bool{true, false} {
@@ -612,8 +612,8 @@ func writeIssueAskStates(t *testing.T, service *Service, asks []model.Ask, actor
 	var marked []BlockRef
 	err := joinedWrite(service, func(ctx context.Context) (err error) {
 		tx, _ := txFromContext(ctx)
-		// The issue route holds the issue's row before it writes any document.
-		if _, err := tx.Exec(ctx, `select 1 from issues where key = 'DOC-1' for no key update`); err != nil {
+		// The issue route holds the issue's owner lock before it writes any document.
+		if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 			return fmt.Errorf("lock the issue: %w", err)
 		}
 		marked, err = service.WriteIssueAskStates(ctx, "DOC-1", asks, actor, markUnindexed)

@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 func createReferenceAPIProject(t *testing.T, handler http.Handler, key string) {
@@ -497,7 +498,7 @@ func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *t
 // transaction holds below a, so it answers neither mention while a is open: each read waits out
 // referencesSinceWait for the horizon, then answers the mentions at or below it, which are none.
 // Once a commits it answers both. Each edit indexes its comment's body as a comment write does
-// (refs.ReplaceCounted, then refs.Stamp with the edit's event).
+// (planFoundReferences and the replacement it plans, then refs.Stamp with the edit's event).
 func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T) {
 	// No t.Parallel: this test holds a transaction open on purpose, below the event it then
 	// reads for. The safe horizon is proven from pg_snapshot_xmin, the oldest transaction id
@@ -524,7 +525,15 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 	ctx := t.Context()
 	mention := func(tx pgx.Tx, issueKey, commentID string) int64 {
 		t.Helper()
-		if _, err := refs.ReplaceCounted(ctx, tx, refs.NewReader(ctx, tx, "comment", commentID, ""), "Now see "+targetRef); err != nil {
+		found := text.Refs(refs.NewReader(ctx, tx, "comment", commentID, "").Mentions("Now see " + targetRef))
+		replacement, _, err := planFoundReferences(ctx, tx, "comment", commentID, found, nil)
+		if err != nil {
+			t.Fatalf("plan comment %s's references: %v", commentID, err)
+		}
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			replacement.Queue(b)
+			return nil
+		}); err != nil {
 			t.Fatalf("index comment %s: %v", commentID, err)
 		}
 		event, err := broker.Append(ctx, tx, model.Event{

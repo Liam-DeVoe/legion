@@ -14,6 +14,7 @@ import (
 	"testing/fstest"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // mintCall is one token a fakeMinter minted: the endpoint and user it was asked for.
@@ -112,10 +113,19 @@ func endpointOf(t *testing.T, databaseURL string) string {
 // host:port and user, rather than one minted at startup, since an RDS token is good for 15
 // minutes and a pool opens connections for as long as the broker runs. The role's password is
 // the fake token, so a connection that brought anything else would be refused; and the same URL
-// opened without the minter is refused, so the token is what signed in.
+// opened without the minter is refused, so the token is what signed in. That refusal is asked
+// for first: a server that signs the role in without its password, as one whose pg_hba trusts
+// the connection does, cannot tell the token from no password, and the test skips there, except
+// on GitHub Actions, where it fails (testdb.SkipOutsideCI).
 func TestOpenSignsEveryNewConnectionInWithAFreshlyMintedToken(t *testing.T) {
 	ctx := context.Background()
 	role, databaseURL := passwordRole(t, "fake-iam-token-1")
+	if s, err := Open(ctx, databaseURL); err == nil {
+		s.Pool.Close()
+		testdb.SkipOutsideCI(t, "the test server signed the role %s in with no password (its pg_hba trusts the connection), so it cannot tell a minted token from no password: the test needs a server that asks the role for its password", role)
+	} else if !strings.Contains(err.Error(), "authentication failed") {
+		t.Fatalf("Open without the token minter = %v, want Postgres to refuse the password", err)
+	}
 	minter := &fakeMinter{token: "fake-iam-token-1"}
 
 	s, err := Open(ctx, databaseURL, WithTokenMinter(minter.mint))
@@ -147,13 +157,6 @@ func TestOpenSignsEveryNewConnectionInWithAFreshlyMintedToken(t *testing.T) {
 	}
 	if got := minter.minted(); len(got) != 2 || got[1] != want {
 		t.Fatalf("after a second connection the minter was asked for %+v, want a second token for %+v", got, want)
-	}
-
-	if s, err := Open(ctx, databaseURL); err == nil {
-		s.Pool.Close()
-		t.Fatal("Open without the token minter signed in to a role that has a password; the test proves nothing")
-	} else if !strings.Contains(err.Error(), "authentication failed") {
-		t.Fatalf("Open without the token minter = %v, want Postgres to refuse the password", err)
 	}
 }
 

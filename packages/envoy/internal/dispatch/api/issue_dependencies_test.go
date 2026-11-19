@@ -11,7 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // blocked_by is an issue-to-issue dependency: create and PATCH replace its complete target
@@ -240,7 +243,7 @@ func TestIssueBlockedByConcurrentWritesDoNotDeadlock(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() { _ = gate.Rollback(context.Background()) })
-				if _, err := gate.Exec(context.Background(), `select key from issues where key = $1 for no key update`, gateKey); err != nil {
+				if err := store.LockOwner(context.Background(), gate, store.IssueOwner(gateKey)); err != nil {
 					t.Fatal(err)
 				}
 				responses := make(chan *httptest.ResponseRecorder, 2)
@@ -369,7 +372,7 @@ func TestIssueBlockedByIgnoresIndirectRowActivity(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer gate.Rollback(context.Background())
-	if _, err := gate.Exec(context.Background(), `select key from issues where key = $1 for no key update`, keys[2]); err != nil {
+	if err := store.LockOwner(context.Background(), gate, store.IssueOwner(keys[2])); err != nil {
 		t.Fatal(err)
 	}
 	responses := make(chan *httptest.ResponseRecorder, 1)
@@ -395,6 +398,11 @@ func TestStatusPatchRacingReparentUsesCommittedParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer gate.Rollback(context.Background())
+	// The gate is a reparent of keys[2]: it holds the issue's owner lock, as every reparent does,
+	// and moves the parent before the status write reads it under that lock.
+	if err := store.LockOwner(context.Background(), gate, store.IssueOwner(keys[2])); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := gate.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, keys[1], keys[2]); err != nil {
 		t.Fatal(err)
 	}
@@ -435,7 +443,7 @@ func TestReparentIgnoresUnrelatedGrandchildRowActivity(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer gate.Rollback(context.Background())
-	if _, err := gate.Exec(context.Background(), `select key from issues where key = $1 for no key update`, keys[1]); err != nil {
+	if err := store.LockOwner(context.Background(), gate, store.IssueOwner(keys[1])); err != nil {
 		t.Fatal(err)
 	}
 	responses := make(chan *httptest.ResponseRecorder, 1)
@@ -452,8 +460,8 @@ func TestReparentIgnoresUnrelatedGrandchildRowActivity(t *testing.T) {
 }
 
 // A status write locks its issue and then its parent. Reparenting that issue's sibling under it
-// must not hold the shared parent while it waits for the new parent's row: the status write would
-// hold that row and wait for the shared parent, and Postgres would abort one of them.
+// must not hold the shared parent while it waits for the new parent's lock: the status write would
+// hold that lock and wait for the shared parent, and Postgres would abort one of them.
 func TestReparentUnderSiblingDoesNotDeadlockWithItsStatusWrite(t *testing.T) {
 	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
 	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
@@ -472,7 +480,7 @@ func TestReparentUnderSiblingDoesNotDeadlockWithItsStatusWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer gate.Rollback(context.Background())
-	if _, err := gate.Exec(context.Background(), `select key from issues where key = $1 for no key update`, parent); err != nil {
+	if err := store.LockOwner(context.Background(), gate, store.IssueOwner(parent)); err != nil {
 		t.Fatal(err)
 	}
 	responses := make(chan *httptest.ResponseRecorder, 2)
@@ -501,9 +509,9 @@ func TestReparentUnderSiblingDoesNotDeadlockWithItsStatusWrite(t *testing.T) {
 }
 
 // A board move locks its two rank neighbours, and a reparent locks the issue and its new parent,
-// each pair in key order. Reparenting one neighbour under the other while an issue moves between
-// them therefore queues one write behind the other, whichever of the two the board shows first,
-// rather than each holding one neighbour while waiting on the other.
+// each pair in owner lock order (store.LockOwners). Reparenting one neighbour under the other while
+// an issue moves between them therefore queues one write behind the other, whichever of the two the
+// board shows first, rather than each holding one neighbour while waiting on the other.
 func TestReparentDoesNotDeadlockWithBoardMoveBetweenItsEnds(t *testing.T) {
 	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
 	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
@@ -511,7 +519,8 @@ func TestReparentDoesNotDeadlockWithBoardMoveBetweenItsEnds(t *testing.T) {
 	// horizon.go), so a hold here stalls every parallel test reading that feed.
 	for _, scenario := range []struct {
 		name string
-		// moving, parent and child index the three issues in creation order, which is key order.
+		// moving, parent and child index the three issues in creation order, which is key order
+		// and, for these keys, owner lock order (requireOwnerLockOrder).
 		moving, parent, child int
 		// childFirst moves the child ahead of its parent on the board before the race.
 		childFirst bool
@@ -522,6 +531,7 @@ func TestReparentDoesNotDeadlockWithBoardMoveBetweenItsEnds(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 			keys := createListedIssues(t, handler, "CORE", 3)
+			requireOwnerLockOrder(t, database, keys...)
 			moving, parent, child := keys[scenario.moving], keys[scenario.parent], keys[scenario.child]
 			after, before := parent, child
 			if scenario.childFirst {
@@ -539,7 +549,7 @@ func TestReparentDoesNotDeadlockWithBoardMoveBetweenItsEnds(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer gate.Rollback(context.Background())
-			if _, err := gate.Exec(context.Background(), `select key from issues where key = $1 for no key update`, before); err != nil {
+			if err := store.LockOwner(context.Background(), gate, store.IssueOwner(before)); err != nil {
 				t.Fatal(err)
 			}
 			responses := make(chan *httptest.ResponseRecorder, 2)
@@ -576,9 +586,9 @@ func TestReparentDoesNotDeadlockWithBoardMoveBetweenItsEnds(t *testing.T) {
 	}
 }
 
-// A PATCH locks the issue, its new parent and its rank neighbours together, in one key order.
-// Moving an issue on the board while it is reparented under one of its neighbours therefore never
-// has one write holding the issue while the other holds the neighbour: a move waiting for its
+// A PATCH locks the issue, its new parent and its rank neighbours together, in one owner lock
+// order. Moving an issue on the board while it is reparented under one of its neighbours therefore
+// never has one write holding the issue while the other holds the neighbour: a move waiting for its
 // gated first neighbour holds nothing yet, so the reparent finishes before the gate opens.
 func TestReparentDoesNotDeadlockWithABoardMoveOfTheSameIssue(t *testing.T) {
 	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
@@ -588,12 +598,14 @@ func TestReparentDoesNotDeadlockWithABoardMoveOfTheSameIssue(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 3)
 	after, before, moving := keys[0], keys[1], keys[2]
+	// The gated neighbour must be the first lock the move takes.
+	requireOwnerLockOrder(t, database, after, before, moving)
 	gate, err := database.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer gate.Rollback(context.Background())
-	if _, err := gate.Exec(context.Background(), `select key from issues where key = $1 for no key update`, after); err != nil {
+	if err := store.LockOwner(context.Background(), gate, store.IssueOwner(after)); err != nil {
 		t.Fatal(err)
 	}
 	moves := make(chan *httptest.ResponseRecorder, 1)
@@ -641,9 +653,9 @@ func TestReparentDoesNotDeadlockWithABoardMoveOfTheSameIssue(t *testing.T) {
 }
 
 // A status write appends to its issue's parent, so it locks the issue and that parent together, in
-// key order, as a board move locks its neighbours. A child shown above its parent on the board,
-// with an issue moved between the two while the child's status is written, therefore never has the
-// move holding the parent while the status write holds the child.
+// owner lock order, as a board move locks its neighbours. A child shown above its parent on the
+// board, with an issue moved between the two while the child's status is written, therefore never
+// has the move holding the parent while the status write holds the child.
 func TestStatusWriteDoesNotDeadlockWithBoardMoveBetweenTheIssueAndItsParent(t *testing.T) {
 	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
 	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
@@ -652,6 +664,7 @@ func TestStatusWriteDoesNotDeadlockWithBoardMoveBetweenTheIssueAndItsParent(t *t
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 3)
 	parent, child, moving := keys[0], keys[1], keys[2]
+	requireOwnerLockOrder(t, database, parent, child, moving)
 	if _, err := database.Pool.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, parent, child); err != nil {
 		t.Fatal(err)
 	}
@@ -665,7 +678,7 @@ func TestStatusWriteDoesNotDeadlockWithBoardMoveBetweenTheIssueAndItsParent(t *t
 		t.Fatal(err)
 	}
 	defer gate.Rollback(context.Background())
-	if _, err := gate.Exec(context.Background(), `select key from issues where key = $1 for no key update`, child); err != nil {
+	if err := store.LockOwner(context.Background(), gate, store.IssueOwner(child)); err != nil {
 		t.Fatal(err)
 	}
 	responses := make(chan *httptest.ResponseRecorder, 2)
@@ -700,9 +713,10 @@ func TestStatusWriteDoesNotDeadlockWithBoardMoveBetweenTheIssueAndItsParent(t *t
 	}
 }
 
-// A reparent locks the issue's old parent together with the issue and its new parent, in key
-// order. Moving an issue up to its grandparent while its old parent's status is written therefore
-// never has the reparent holding the grandparent while the status write holds the old parent.
+// A reparent locks the issue's old parent together with the issue and its new parent, in owner
+// lock order. Moving an issue up to its grandparent while its old parent's status is written
+// therefore never has the reparent holding the grandparent while the status write holds the old
+// parent.
 func TestReparentToGrandparentDoesNotDeadlockWithAStatusWriteOnTheOldParent(t *testing.T) {
 	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
 	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
@@ -711,6 +725,7 @@ func TestReparentToGrandparentDoesNotDeadlockWithAStatusWriteOnTheOldParent(t *t
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 3)
 	grandparent, parent, child := keys[0], keys[1], keys[2]
+	requireOwnerLockOrder(t, database, grandparent, parent, child)
 	for _, link := range [][2]string{{parent, grandparent}, {child, parent}} {
 		if _, err := database.Pool.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, link[1], link[0]); err != nil {
 			t.Fatal(err)
@@ -721,7 +736,7 @@ func TestReparentToGrandparentDoesNotDeadlockWithAStatusWriteOnTheOldParent(t *t
 		t.Fatal(err)
 	}
 	defer gate.Rollback(context.Background())
-	if _, err := gate.Exec(context.Background(), `select key from issues where key = $1 for no key update`, grandparent); err != nil {
+	if err := store.LockOwner(context.Background(), gate, store.IssueOwner(grandparent)); err != nil {
 		t.Fatal(err)
 	}
 	responses := make(chan *httptest.ResponseRecorder, 2)
@@ -752,7 +767,7 @@ func TestReparentToGrandparentDoesNotDeadlockWithAStatusWriteOnTheOldParent(t *t
 // A status write reads its issue's parent before it locks the pair, and a reparent of the issue
 // can commit in between. It then takes its locks again for the parent that stands; a parent that
 // moves at every attempt is refused with 409 PARENT_CONTENDED and nothing applied, never locked
-// out of key order.
+// out of owner lock order.
 func TestStatusWriteRefusesAParentThatMovesAtEveryAttempt(t *testing.T) {
 	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
 	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
@@ -761,6 +776,7 @@ func TestStatusWriteRefusesAParentThatMovesAtEveryAttempt(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 4)
 	first, second, third, child := keys[0], keys[1], keys[2], keys[3]
+	requireOwnerLockOrder(t, database, first, second, third, child)
 	if _, err := database.Pool.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, first, child); err != nil {
 		t.Fatal(err)
 	}
@@ -770,7 +786,7 @@ func TestStatusWriteRefusesAParentThatMovesAtEveryAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer childGate.Rollback(context.Background())
-	if _, err := childGate.Exec(context.Background(), `select key from issues where key = $1 for no key update`, child); err != nil {
+	if err := store.LockOwner(context.Background(), childGate, store.IssueOwner(child)); err != nil {
 		t.Fatal(err)
 	}
 	responses := make(chan *httptest.ResponseRecorder, 1)
@@ -784,7 +800,7 @@ func TestStatusWriteRefusesAParentThatMovesAtEveryAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer parentGate.Rollback(context.Background())
-	if _, err := parentGate.Exec(context.Background(), `select key from issues where key = $1 for no key update`, second); err != nil {
+	if err := store.LockOwner(context.Background(), parentGate, store.IssueOwner(second)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := childGate.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, second, child); err != nil {
@@ -828,7 +844,7 @@ func TestChildCreateWithoutBlockersDoesNotWaitOnParentRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer gate.Rollback(context.Background())
-	if _, err := gate.Exec(context.Background(), `select key from issues where key = $1 for no key update`, parent); err != nil {
+	if err := store.LockOwner(context.Background(), gate, store.IssueOwner(parent)); err != nil {
 		t.Fatal(err)
 	}
 	responses := make(chan *httptest.ResponseRecorder, 1)
@@ -899,18 +915,19 @@ func TestConcurrentThreeWayDependenciesDoNotCommitCycle(t *testing.T) {
 	}
 }
 
-// A board move locks its rank neighbours with every other row it names, in one key order, so while
-// it waits for its gated anchor it holds its other neighbour (CORE-12 sorts before CORE-2). A
-// status write on that neighbour waits for the move and finishes once the gate opens; a dependency
-// write naming the neighbour finishes while the move still waits.
+// A board move takes the owner locks of its rank neighbours with every other issue it names, in one
+// lock order (store.LockOwners), so while it waits for its gated anchor it holds its other
+// neighbour, which sorts first. A status write on that neighbour waits for the move and finishes
+// once the gate opens; a dependency write naming the neighbour finishes while the move still waits.
 func TestBoardMoveStatusAndDependencyWriteDoNotDeadlock(t *testing.T) {
 	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
 	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
 	// transaction id running anywhere on the instance (internal/dispatch/events,
 	// horizon.go), so a hold here stalls every parallel test reading that feed.
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
-	keys := createListedIssues(t, handler, "CORE", 12)
-	anchor, parent, moving, dependent, neighbor := keys[1], keys[2], keys[3], keys[4], keys[11]
+	keys := createListedIssues(t, handler, "CORE", 6)
+	anchor, parent, moving, neighbor, dependent := keys[1], keys[2], keys[3], keys[4], keys[5]
+	requireOwnerLockOrder(t, database, neighbor, anchor)
 	if _, err := database.Pool.Exec(context.Background(), `
 		update issues set parent_key = $1 where key = any($2::text[])
 	`, parent, []string{moving, neighbor}); err != nil {
@@ -921,7 +938,7 @@ func TestBoardMoveStatusAndDependencyWriteDoNotDeadlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer gate.Rollback(context.Background())
-	if _, err := gate.Exec(context.Background(), `select key from issues where key = $1 for no key update`, anchor); err != nil {
+	if err := store.LockOwner(context.Background(), gate, store.IssueOwner(anchor)); err != nil {
 		t.Fatal(err)
 	}
 	moves := make(chan *httptest.ResponseRecorder, 1)
@@ -1010,5 +1027,25 @@ func TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks(t *testing.T) {
 		if got := decodeBody[model.Issue](t, response).BlockedBy; !slices.Equal(got, []string{keys[1]}) {
 			t.Fatalf("dependency write lost its target: %v", got)
 		}
+	}
+}
+
+// requireOwnerLockOrder fails the test unless the issues keys name are in the order
+// store.LockOwners takes their locks, the order of the hashtext of `issue:<key>`: a scenario that
+// gates the first lock a write takes, or the lock it holds while it waits for another, rests on it.
+func requireOwnerLockOrder(t *testing.T, database *store.Store, keys ...string) {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select key from unnest($1::text[]) as key order by hashtext('issue:' || key)
+	`, keys)
+	if err != nil {
+		t.Fatalf("order the issues by owner lock: %v", err)
+	}
+	ordered, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("order the issues by owner lock: %v", err)
+	}
+	if !slices.Equal(ordered, keys) {
+		t.Fatalf("the scenario wants issues %v in owner lock order, but store.LockOwners takes them as %v", keys, ordered)
 	}
 }
