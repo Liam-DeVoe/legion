@@ -38,6 +38,7 @@ import { RUN_SELECTORS } from "./gh-selectors";
 import { callWrites, GH_COMMANDS } from "./gh-writes";
 import { GITHUB_ROUTES, githubRouteOf } from "./github-routes";
 import { PRINTS_TOKEN } from "./health";
+import { leakCheckEnv } from "./leak-check-env";
 import { argvOf, type PinnedRead, pinnedReads, RECORD_READ, shapeDiff } from "./production-shapes";
 import { casesOf, SCENARIOS, WORLD_PROJECT, workerWorld } from "./run-names";
 
@@ -227,7 +228,10 @@ function scriptDefinitions(script: string): string[] {
  * fixture_workspace alone left out, since it clones the remote into the issue workspace with jj
  * and writes neither fixtures.json nor world.json. Each world is given the checkout's gh
  * selectors (gh-selectors.ts's RUN_SELECTORS), as worker_boot gives them, without which the gh
- * stand-in answers no call. */
+ * stand-in answers no call. Each build runs under the caller's PATH, a HOME of its own and the
+ * caller's PUBLIC_LEAK_CHECK, as a pane carries it (leak-check-env.ts): its pushes to the world's
+ * remote.git meet the guard of the `git` on PATH, which on a pod finds the shared check through
+ * that variable. */
 export function buildWorlds(tree: Tree, into: string): BuiltWorld[] {
   const script = tree.text(rig("rig.sh"));
   const values = script.match(
@@ -258,7 +262,7 @@ export function buildWorlds(tree: Tree, into: string): BuiltWorld[] {
           `${WORLD_PROJECT}-1`,
           one,
         ],
-        { env: { PATH: process.env.PATH ?? "", HOME: into } }
+        { env: { PATH: process.env.PATH ?? "", HOME: into, ...leakCheckEnv() } }
       );
       if (made.exitCode !== 0)
         throw new Error(`rig.sh's worker_fixture of ${name}: ${made.stderr.toString().trim()}`);
@@ -287,7 +291,8 @@ interface Answered {
   readonly handler: string;
 }
 /** Runs the tree's gh stand-in as `gh <argv...>` in the world under `dir`, from a pane whose gh
- * configuration is `config` (a `hosts.yml`, as the daemon renders a role's claim). */
+ * configuration is `config` (a `hosts.yml`, as the daemon renders a role's claim) and which
+ * carries the caller's PUBLIC_LEAK_CHECK, as a pane does (leak-check-env.ts). */
 async function gh(
   tree: Tree,
   dir: string,
@@ -297,7 +302,13 @@ async function gh(
   const child = Bun.spawn(
     [process.execPath, path.join(tree.root, rig("gh-standin.ts")), "gh", ...argv],
     {
-      env: { PATH: process.env.PATH ?? "", HOME: dir, GH_DATA_DIR: dir, GH_CONFIG_DIR: config },
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: dir,
+        GH_DATA_DIR: dir,
+        GH_CONFIG_DIR: config,
+        ...leakCheckEnv(),
+      },
       stdout: "pipe",
       stderr: "pipe",
       stdin: "ignore",

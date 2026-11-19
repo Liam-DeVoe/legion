@@ -1648,7 +1648,9 @@ ruling of 2026-11-18T08:40Z). With no `<checkout>` it searches the checkout `rig
 one it runs that checkout's own `class-search.ts` over that checkout's tree, so the search of a
 commit is that commit's own command. It needs bun, git, jq, ssh-keygen and go (each world gets the
 checkout's gh selectors, read by `gh-selectors.go` as `worker_boot` reads them), and takes about
-three minutes on a pod of two CPUs.
+three minutes on a pod of two CPUs. The children it starts, each world's build and each gh call,
+carry the caller's `PUBLIC_LEAK_CHECK` as a pane does (`leak-check-env.ts`), so on a pod, whose
+`git` is Legion's leak-check wrapper, a world's pushes find the shared check through it.
 
 For each check it prints the class, the reading it makes, its rule, the count of its hits, and each
 hit: `<file>:<line>` (or the world, route or read it names), its text cut, and its verdict,

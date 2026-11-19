@@ -13,6 +13,7 @@ import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
+import { leakCheckEnv } from "./leak-check-env";
 import { WORLD_PROJECT } from "./run-names";
 import { spawnChecked } from "./test-programs";
 
@@ -278,10 +279,10 @@ function namedRun(name: string): string | undefined {
  * and config directories when the caller names them: jq is a mise shim on a devbox, which finds
  * nothing under a fresh HOME without them. A caller that names neither gets neither, so the
  * developer's own home decides nothing here. The caller's PUBLIC_LEAK_CHECK goes through where it
- * names one: on a Legion pod the `git` on PATH is the leak-check wrapper, and rig.sh refuses a run
- * whose wrapper has no check to run (its push_guard). And RIG_TMUX_CHECKED names the tmux stand-in,
- * as a batch hands each of its runs the tmux it checked (rig.sh's tmux_ready), so a run here, a
- * batch's, does not check it again. */
+ * names one (leak-check-env.ts): on a Legion pod the `git` on PATH is the leak-check wrapper, and
+ * rig.sh refuses a run whose wrapper has no check to run (its push_guard). And RIG_TMUX_CHECKED
+ * names the tmux stand-in, as a batch hands each of its runs the tmux it checked (rig.sh's
+ * tmux_ready), so a run here, a batch's, does not check it again. */
 const miseData =
   process.env.MISE_DATA_DIR ??
   (process.env.XDG_DATA_HOME === undefined
@@ -296,9 +297,7 @@ const env = {
   ...(process.env.XDG_CONFIG_HOME === undefined
     ? {}
     : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
-  ...(process.env.PUBLIC_LEAK_CHECK === undefined
-    ? {}
-    : { PUBLIC_LEAK_CHECK: process.env.PUBLIC_LEAK_CHECK }),
+  ...leakCheckEnv(),
   STUB_DIR: stub,
   RIG_TMUX_CHECKED: path.join(bin, "tmux"),
   SKILL_SCENARIOS_WORK: work,

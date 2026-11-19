@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   type BuiltWorld,
   CHECKS,
@@ -71,6 +72,113 @@ test("the class search finds no instance outside its residuals at this checkout,
   );
   for (const check of CHECKS) expect(stdout).toContain(`== ${check.name}\n`);
 }, 900_000);
+
+// A pod's `git` is Legion's leak-check wrapper, whose guard refuses every push for which it finds
+// no shared check: through PUBLIC_LEAK_CHECK, then public-leak-check.sh on PATH, then the pointer
+// file under the configuration home (packages/daemon/internal/leakguard's Resolve). The class
+// search builds its worlds with rig.sh's worker_fixture under a HOME of its own, which holds no
+// pointer file, and gave that build PATH and HOME alone: on the tester's pod, whose check is on no
+// PATH entry, the first world's push was refused with `LEAK CHECK SETUP ERROR` and the search
+// exited 2 (tester, 2026-11-19). The first row below brings that pod to every host: it runs the
+// second in a child `bun test` whose environment, set before the child loads this file, reaches
+// the check through PUBLIC_LEAK_CHECK alone, behind a `git` that looks for it as the guard does.
+describe("the worlds the class search builds, under a leak-check git", () => {
+  const BUILD = "every world is built, each push finding the shared check";
+  /** Set for the child `bun test` the first row starts, and by nothing else. */
+  const CHILD = "SKILL_SCENARIOS_CLASS_SEARCH_GUARD_ROW";
+  const freshDir = temporaryDirectories("class-search-guard");
+
+  // Catches: a world build whose environment drops the caller's PUBLIC_LEAK_CHECK, on any host
+  // (leak-check-env.ts). The stand-in git then finds no check for the world's push and refuses it
+  // with `LEAK CHECK SETUP ERROR`, exit 2, as the pod's guard refused the tester's; the child's row
+  // fails on the build's error, and this row fails quoting the child's report.
+  test("they carry the caller's PUBLIC_LEAK_CHECK to every push, as a pane does", () => {
+    const dir = freshDir();
+    const bin = path.join(dir, "bin");
+    mkdirSync(bin);
+    const check = path.join(dir, "check", "public-leak-check.sh");
+    mkdirSync(path.dirname(check));
+    writeFileSync(check, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const pushes = path.join(dir, "pushes");
+    // Legion's leak-check git as far as this row needs one (/opt/legion/bin/git and the guard its
+    // pre-push hook runs): a push runs only where the shared check is found as Resolve finds it,
+    // and is recorded by its refspec with the check found; every other command is the real git's.
+    writeFileSync(
+      path.join(bin, "git"),
+      [
+        "#!/bin/sh",
+        'case " $* " in',
+        '*" push "*)',
+        "  for last; do :; done",
+        `  pointer=\${XDG_CONFIG_HOME:-\${HOME:-}/.config}/public-leak-check/path`,
+        `  if [ -n "\${PUBLIC_LEAK_CHECK:-}" ]; then`,
+        "    check=$PUBLIC_LEAK_CHECK",
+        "  elif check=$(command -v public-leak-check.sh); then",
+        "    :",
+        '  elif [ -r "$pointer" ]; then',
+        '    check=$(cat "$pointer")',
+        "  else",
+        '    echo "LEAK CHECK SETUP ERROR: the push of $last: the shared public leak check could not be found: PUBLIC_LEAK_CHECK names none, public-leak-check.sh is on no PATH entry, and the pointer file $pointer could not be read" >&2',
+        "    exit 2",
+        "  fi",
+        '  if [ ! -f "$check" ]; then',
+        '    echo "LEAK CHECK SETUP ERROR: the push of $last: the shared public leak check could not be found: $check is not there" >&2',
+        "    exit 2",
+        "  fi",
+        `  printf '%s %s\\n' "$last" "$check" >>'${pushes}'`,
+        "  ;;",
+        "esac",
+        'exec /usr/bin/git "$@"',
+        "",
+      ].join("\n"),
+      { mode: 0o755 }
+    );
+    // The caller's PATH with no directory that holds the check, as on the tester's pod.
+    const callerPath = (process.env.PATH ?? "")
+      .split(":")
+      .filter((entry) => entry !== "" && !existsSync(path.join(entry, "public-leak-check.sh")));
+    const child = spawnChecked(
+      [
+        process.execPath,
+        "test",
+        import.meta.path,
+        "-t",
+        `^the worlds the class search builds, under a leak-check git ${BUILD}$`,
+      ],
+      {
+        cwd: path.resolve(import.meta.dir, "../.."),
+        env: {
+          ...process.env,
+          PATH: [bin, ...callerPath].join(":"),
+          PUBLIC_LEAK_CHECK: check,
+          [CHILD]: "1",
+        },
+      }
+    );
+    const report = `${child.stdout.toString()}${child.stderr.toString()}`;
+    expect({ code: child.exitCode, report }).toEqual({
+      code: 0,
+      report: expect.stringMatching(/^ 1 pass$[\s\S]*^ 0 fail$/m),
+    });
+    // Each world pushes its base and its pull request's branch, and every push found the check
+    // the caller named, the one place it could find it.
+    const recorded = readFileSync(pushes, "utf8").split("\n").filter(Boolean);
+    expect(recorded.length).toBeGreaterThanOrEqual(2);
+    expect(recorded.filter((line) => !line.endsWith(` ${check}`))).toEqual([]);
+  }, 300_000);
+
+  // Registered in that child alone: anywhere else the `git` on PATH and the check are the host's,
+  // and the row would read the host rather than the class search.
+  if (process.env[CHILD] !== undefined)
+    test(BUILD, () => {
+      const worlds = new Worlds(tree);
+      try {
+        expect(worlds.all().length).toBeGreaterThan(0);
+      } finally {
+        worlds.done();
+      }
+    }, 240_000);
+});
 
 // Catches: a data file whose hand search drops an entry of the 46, maps one to no check and no
 // row, or names a check the search has not got; and a residual with no ruling.

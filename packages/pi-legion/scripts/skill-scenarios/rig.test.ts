@@ -24,6 +24,7 @@ import { ANSWERS, BOOTED, labelOf, SKIPS, scenarioOf } from "./completion-answer
 import { routeFor } from "./gh-call";
 import { routeOf, WORLD_ROUTES, worldRouteOf } from "./gh-routes";
 import { headUnmoved } from "./health";
+import { leakCheckEnv } from "./leak-check-env";
 import {
   nameWords,
   runIdentity,
@@ -198,11 +199,10 @@ const childEnv = {
   // public-leak-check.sh on PATH, then the pointer file under the configuration home, which the
   // fresh HOME above does not hold. A pod carries the variable, so a childEnv without it had every
   // push a world's build makes to its own remote.git refused on a pod with no pointer file (40
-  // rows, tester 2026-11-15). rig.sh's push_guard passes it to an agent's pane by the same rule,
-  // and rig-isolation.test.ts's env to its rigs; the "childEnv" rows below hold it to that.
-  ...(process.env.PUBLIC_LEAK_CHECK === undefined
-    ? {}
-    : { PUBLIC_LEAK_CHECK: process.env.PUBLIC_LEAK_CHECK }),
+  // rows, tester 2026-11-15). leak-check-env.ts gives it here as it gives it to every child
+  // environment the rig builds by hand, and rig.sh's push_guard to an agent's pane by the same
+  // rule; the "childEnv" rows below hold it to that.
+  ...leakCheckEnv(),
 };
 
 let profiles = 0;
