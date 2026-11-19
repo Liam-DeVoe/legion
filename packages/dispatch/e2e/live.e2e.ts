@@ -41,18 +41,33 @@ async function renameUntilShown(
   title: string,
   reads: () => number
 ): Promise<void> {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    renames += 1;
-    const renamed = `${title} (rename ${renames})`;
-    const loads = reads();
-    await patchIssue(key, { title: renamed }, bob);
-    const shown = await expect(header)
-      .toHaveText(renamed, { timeout: 2_000 })
-      .then(() => true)
-      .catch(() => false);
-    if (shown && reads() > loads) return;
-  }
-  throw new Error(`no rename of ${key} reached the page in 10 writes 2 s apart`);
+  // The poll is the whole barrier, as `eventBarrier`'s is in e2e/refetch-budget.e2e.ts. It
+  // renames again whenever the name before it has had its 2 s and has not arrived - the page may
+  // still have been subscribing when the first went out, and an event it missed never comes
+  // again - and it ends on the first name the page both read and drew. Ten renames 2 s apart is
+  // the budget, as before.
+  let renamed = "";
+  let loads = 0;
+  let renameDue = 0;
+  await expect
+    .poll(
+      async () => {
+        if (Date.now() >= renameDue) {
+          renames += 1;
+          renamed = `${title} (rename ${renames})`;
+          loads = reads();
+          await patchIssue(key, { title: renamed }, bob);
+          renameDue = Date.now() + 2_000;
+        }
+        return reads() > loads && (await header.textContent())?.trim() === renamed;
+      },
+      {
+        intervals: [100],
+        message: `no rename of ${key} reached the page in 10 writes 2 s apart`,
+        timeout: 20_000,
+      }
+    )
+    .toBe(true);
 }
 
 // @pr: A two-context race over the live stream: bob's ask has to move alice's Inbox and project badges with no reload.
@@ -776,20 +791,27 @@ test("live: an event during a project list's first load fetches it again once th
     await expect(pinnedRow).toContainText("OLDTITLE");
     await inFlight;
     // Renamed, again every 2 s, until the pinned row shows it: the feed is open and the event
-    // was handled while the held first load was still in flight.
+    // was handled while the held first load was still in flight. The poll is that wait, as in
+    // `renameUntilShown` above, and ten renames 2 s apart is its budget, as before.
     let newTitle = "";
-    for (let attempt = 1; attempt <= 10 && newTitle === ""; attempt += 1) {
-      await patchIssue(issue.key, { title: `NEWTITLE ${attempt}` }, bob);
-      if (
-        await expect(pinnedRow)
-          .toContainText(`NEWTITLE ${attempt}`, { timeout: 2_000 })
-          .then(() => true)
-          .catch(() => false)
-      ) {
-        newTitle = `NEWTITLE ${attempt}`;
-      }
-    }
-    expect(newTitle).not.toBe("");
+    let written = "";
+    let attempt = 0;
+    let renameDue = 0;
+    await expect
+      .poll(
+        async () => {
+          if (Date.now() >= renameDue) {
+            attempt += 1;
+            written = `NEWTITLE ${attempt}`;
+            await patchIssue(issue.key, { title: written }, bob);
+            renameDue = Date.now() + 2_000;
+          }
+          if ((await pinnedRow.textContent())?.includes(written)) newTitle = written;
+          return newTitle;
+        },
+        { intervals: [100], timeout: 20_000 }
+      )
+      .not.toBe("");
     // The event did not start a second request beside the held one.
     expect(listRequests).toBe(1);
     release();

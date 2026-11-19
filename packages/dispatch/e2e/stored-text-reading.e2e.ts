@@ -13,10 +13,9 @@
  * the server sent its reading with the text.
  */
 import { readFileSync } from "node:fs";
-import { expect, test } from "@playwright/test";
 
 import { createComment, createIssue, createProject } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 const agent = {
@@ -31,10 +30,6 @@ const body = readFileSync(
   ),
   "utf8"
 );
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("Conversation draws Go's reading of a comment whose markdown the browser's own parser refuses", async ({
   browser,

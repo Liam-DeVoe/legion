@@ -58,8 +58,7 @@ function askedId(stdout: string): string {
 // around one hand-on made in a browser.
 test("open-asks names the person each ask waits on, before and after a hand-on", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the command runs outside the browser");
+}) => {
   test.setTimeout(240_000);
   // carol creates the project, so she is its default assignee and the person a question on its
   // document waits on: a project document has no assignee of its own.

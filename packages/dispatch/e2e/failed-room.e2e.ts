@@ -65,21 +65,45 @@ test.afterEach(async () => {
  * writer, which owns the room's advisory lock while it sleeps, so cancelling it fails the room
  * itself rather than one request's transaction. */
 async function heldAppendPid(): Promise<string> {
-  for (let attempt = 0; attempt < 250; attempt += 1) {
-    const pid = await sql(`
-      select pid from pg_stat_activity
-      where datname = current_database()
-        and wait_event = 'PgSleep'
-        and query ilike '%doc_updates%'
-      order by query_start limit 1
-    `);
-    if (pid !== "") {
-      return pid;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error("no append was held in its insert");
+  let pid = "";
+  // Read until an append sleeps inside its insert: ygo flushes the browser's keystrokes about
+  // twelve seconds after they were typed (the row below), and 25 s is the 250 reads 100 ms
+  // apart this wait has always been given.
+  await expect
+    .poll(
+      async () => {
+        pid = await sql(`
+          select pid from pg_stat_activity
+          where datname = current_database()
+            and wait_event = 'PgSleep'
+            and query ilike '%doc_updates%'
+          order by query_start limit 1
+        `);
+        return pid;
+      },
+      { intervals: [100], message: "no append was held in its insert", timeout: 25_000 }
+    )
+    .not.toBe("");
+  return pid;
 }
+
+/** How many of this database's backends wait on a lock, as `count(*)`'s text: the anchored
+ * writers queued behind the held append. The first waits on the document's advisory lock, which
+ * the sleeping append holds (`readFork` taking `headUnderDocumentLock`, envoy's
+ * `dispatch/docs/livewrite.go`); the one behind it waits on its issue's owner lock, which the
+ * first took when it began (`lockCommentOwner`, `dispatch/api/comment_create.go`). The append
+ * itself waits in `pg_sleep`, which Postgres reports as a timeout and not as a lock. */
+async function writersQueued(): Promise<string> {
+  return sql(`
+    select count(*) from pg_stat_activity
+    where datname = current_database() and wait_event_type = 'Lock'
+  `);
+}
+
+/** How each wait for a writer to queue polls. A writer reaches its lock in one request's time,
+ * and the two waits, with the pid read before them, have to end inside the 20 s the trigger holds
+ * the append for: a writer that has not queued in 5 s will not have queued when the cancel comes. */
+const QUEUE = { intervals: [50], timeout: 5_000 };
 
 interface Attempt {
   readonly status: number;
@@ -153,9 +177,14 @@ test("a writer inside the docs layer when its room fails is told, and the room r
   try {
     const pid = await heldAppendPid();
     holding = anchoredComment(issue.key, "the writer that arrives after the failure", "migration");
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // Each writer is sent once the one before it has queued, so the second queues behind the first.
+    await expect
+      .poll(writersQueued, { message: "the first writer never queued behind the room", ...QUEUE })
+      .toBe("1");
     queued = anchoredComment(issue.key, "the writer behind it", "migration");
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await expect
+      .poll(writersQueued, { message: "the second writer never queued behind the first", ...QUEUE })
+      .toBe("2");
     const cancelled = await sql(`select pg_cancel_backend(${pid})`);
     console.log(`FAILED-ROOM cancelled the room's durable append pid=${pid} result=${cancelled}`);
   } finally {
@@ -184,12 +213,21 @@ test("a writer inside the docs layer when its room fails is told, and the room r
   }
 
   // The recovery half: the room reloads from its durable copy, so a later write lands and the
-  // browser's edit is in the document the server serves.
-  let recovered = await anchoredComment(issue.key, "after the recovery", "migration");
-  for (let attempt = 0; attempt < 20 && recovered.status !== 201; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    recovered = await anchoredComment(issue.key, `after the recovery ${attempt}`, "migration");
-  }
+  // browser's edit is in the document the server serves. The write is made again each second
+  // until one lands, for the 20 s of twenty retries this probe has always given the reload, and
+  // the poll returns the status of every write, so a reload that never ends reports all of them.
+  const writes: Attempt[] = [];
+  await expect
+    .poll(
+      async () => {
+        const retry = writes.length === 0 ? "" : ` ${writes.length - 1}`;
+        writes.push(await anchoredComment(issue.key, `after the recovery${retry}`, "migration"));
+        return writes.map((write) => write.status);
+      },
+      { intervals: [1_000], timeout: 20_000 }
+    )
+    .toContain(201);
+  const recovered = writes[writes.length - 1];
   console.log(
     `FAILED-ROOM recovered status=${recovered.status} code=${recovered.code} in ${recovered.seconds}s`
   );

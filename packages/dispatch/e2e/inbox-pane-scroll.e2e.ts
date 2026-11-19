@@ -1,5 +1,3 @@
-import { type Browser, expect, test } from "@playwright/test";
-
 import { createArtifactComment, editArtifact } from "./api";
 import { blockId } from "./editor";
 import { inboxList, inboxPane, selectedRow, selectRow } from "./inbox-pane";
@@ -50,8 +48,8 @@ import {
 } from "./inbox-pane-scroll";
 import { holdReadMarks } from "./inbox-threads";
 import { holdMermaidWorkers } from "./mermaid-helpers";
-import { resetDatabase } from "./seed";
 import { serveWithoutDisplayTrees } from "./strip-trees";
+import { type Browser, expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -68,10 +66,6 @@ import { asUser } from "./users";
  * Everything seeded here is made up: this repository is public, so nothing names a real person,
  * host or project. The seed and the readings are in `inbox-pane-scroll.ts`.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // ---------------------------------------------------------------------------
 // The approval request the reader reads down.

@@ -79,6 +79,9 @@ async function watchMark(
   untilMs: number,
   log: string[]
 ): Promise<void> {
+  // A sampler, not a wait-for: it runs for the whole span `untilMs` names whatever the page
+  // shows, and the log it builds is what the row asserts on afterwards, so no assertion can
+  // stand in for the loop.
   while (Date.now() - writtenAt < untilMs) {
     // One sample of this instant, by design: the row measures when the span goes, so a read
     // that waited for it to settle would move the sample and blur the log it builds.

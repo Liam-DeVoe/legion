@@ -1,5 +1,4 @@
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts/dispatch-tools";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import {
   answerAsk,
@@ -15,8 +14,7 @@ import {
 import { paragraphsOf } from "./bodies";
 import { documentEditor, indexedBlockAsk } from "./editor";
 import { askCard, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
-import { signIn } from "./users";
+import { expect, type Locator, type Page, test } from "./test";
 
 /**
  * A person declines to answer a question, and the agent that asked is told so
@@ -41,11 +39,6 @@ const session = {
 
 /** Both choices of every seeded question, so an answer is one the server takes as it stands. */
 const shipOrHold = [{ label: "Ship" }, { label: "Hold" }];
-
-test.beforeEach(async ({ context }) => {
-  await resetDatabase();
-  await signIn(context, "alice");
-});
 
 /** The person's way out of a question, on the card `card` draws: **Decline to answer**. While the
  *  dialog is open the card holds the dialog's own button of that name too, so this is read before

@@ -1,5 +1,4 @@
 import { writeFile } from "node:fs/promises";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import {
   createIssue,
@@ -11,13 +10,7 @@ import {
   listIssueArtifacts,
   patchIssue,
 } from "./api";
-import { resetDatabase } from "./seed";
-import { signIn } from "./users";
-
-test.beforeEach(async ({ context }) => {
-  await resetDatabase();
-  await signIn(context, "alice");
-});
+import { expect, type Locator, type Page, test } from "./test";
 
 /** The control's open form: the Title the person types and the Create that writes it. */
 function newDocumentForm(page: Page): Locator {

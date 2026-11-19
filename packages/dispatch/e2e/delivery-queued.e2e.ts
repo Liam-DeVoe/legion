@@ -149,7 +149,6 @@ test("a mention of a stopped but known session is queued for it, and the listene
 test("a broadcast keeps a session that stopped after it was ticked, and queues for it", async ({
   browser,
 }) => {
-  test.skip(test.info().project.name !== "chromium", "one browser proves the broadcast flow");
   // The composer learns of a departure on its 15 s agent poll, which the page's own clock spends.
   await setLiveSessions([planner, observer]);
 
@@ -205,7 +204,6 @@ test("a broadcast keeps a session that stopped after it was ticked, and queues f
 test("the broadcast strip counts a queued copy rather than calling the broadcast delivered", async ({
   browser,
 }) => {
-  test.skip(test.info().project.name !== "chromium", "one browser proves the strip");
   // The composer learns of a departure on its 15 s agent poll, which the page's own clock spends.
   await setLiveSessions([planner, observer]);
 

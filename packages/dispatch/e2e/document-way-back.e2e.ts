@@ -1,15 +1,7 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { createIssue, createProject, getArtifact, listIssueArtifacts } from "./api";
 import { documentEditor } from "./editor";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
-import { signIn } from "./users";
-
-test.beforeEach(async ({ context }) => {
-  await resetDatabase();
-  await signIn(context, "alice");
-});
+import { expect, type Page, test } from "./test";
 
 /** The whole press a person makes on the Documents tab: `New document`, the title, `Create`. */
 async function createDocument(page: Page, title: string): Promise<void> {

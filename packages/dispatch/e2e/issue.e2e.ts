@@ -1260,6 +1260,8 @@ test("an issue page whose mappings read fails says so and retries it, rather tha
     // before the rail may say so; those waits are page timers its own clock fires.
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
+    // One turn per retry, and no poll of its own: each turn waits on `expect.poll` for the read
+    // before it to be refused, and only then fires the next retry's delay on the page's clock.
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       await expect.poll(() => refused).toBeGreaterThanOrEqual(attempt);
       await page.clock.fastForward(QUERY_RETRY_DELAY_MS);

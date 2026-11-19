@@ -8,8 +8,6 @@
  * is the control: the same pages, served with every tree stripped from their answers, draw the
  * same texts by parsing the markdown themselves, and the counter sees those parses.
  */
-import { type BrowserContext, expect, type Locator, type Page, test } from "@playwright/test";
-
 import { plannerSession, reviewerSession, setLiveSessions } from "./agents";
 import {
   answerAsk,
@@ -33,8 +31,8 @@ import {
   readParseCounts,
   rewrittenParseCallSites,
 } from "./parse-counting";
-import { resetDatabase } from "./seed";
 import { serveWithoutDisplayTrees } from "./strip-trees";
+import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -410,14 +408,9 @@ async function parsesOf(context: BrowserContext, surface: Surface): Promise<Surf
   }
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 test("no page that draws stored text parses markdown in either browser engine", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one engine proves what the pages parse");
+}) => {
   // Fifteen pages, each loaded in a page of its own, on a two-core box: the default deadline
   // is one page's.
   test.setTimeout(310_000);
@@ -445,10 +438,7 @@ test("no page that draws stored text parses markdown in either browser engine", 
   }
 });
 
-test("the counter sees the parse a text served with no reading costs", async ({
-  browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the control runs where the rows run");
+test("the counter sees the parse a text served with no reading costs", async ({ browser }) => {
   // The same fifteen pages as the row above, each in a page of its own: the deadline is that
   // walk's, not one page's.
   test.setTimeout(310_000);
