@@ -947,33 +947,37 @@ class Source:
         out.append((start, b))
         return out
 
-    def array_elements(self, a, b, depth=0):
-        """The element ranges of an array literal, or of the one a name is bound to, else None."""
+    def array_elements(self, a, b, depth=0, seen=None):
+        """The element ranges of an array literal, or of the one a name is bound to, else None. seen,
+        when given, is a set of the caller's: the index of the literal's [ is added to it."""
         if b - a > 1 and self.lang == "ts" and self.punct(b - 1, "!"):
             b -= 1
         if self.punct(a, "[") and self.partner.get(a) == b - 1:
+            if seen is not None:
+                seen.add(a)
             return self.split(a + 1, b - 1)
         name = self.name(a, b)
         if name and depth < 4:
             bound = self.bound(name, a)
             if bound:
-                return self.array_elements(*bound, depth + 1)
+                return self.array_elements(*bound, depth + 1, seen)
         return None
 
-    def ts_spawn_argv(self, call):
+    def ts_spawn_argv(self, call, seen=None):
         """The argv of a TypeScript call that starts a program, and the index of the argument its
         options are in: Bun.spawn's argv array (or `{ cmd: [...] }`, whose options are that object),
-        else node's command and the args array after it. (None, 1) for a call with no arguments."""
+        else node's command and the args array after it. (None, 1) for a call with no arguments.
+        seen is array_elements': each array literal read is added to it."""
         if not call.args:
             return None, 1
-        argv, options = self.array_elements(*call.args[0]), 1
+        argv, options = self.array_elements(*call.args[0], seen=seen), 1
         if argv is None and self.punct(call.args[0][0], "{"):
             a, b = call.args[0]
             for pa, pb in self.split(a + 1, b - 1):
                 if self.tokens[pa].value == "cmd" and self.punct(pa + 1, ":"):
-                    argv, options = self.array_elements(pa + 2, pb), 0
+                    argv, options = self.array_elements(pa + 2, pb, seen=seen), 0
         if argv is None:
-            rest = self.array_elements(*call.args[1]) if len(call.args) > 1 else None
+            rest = self.array_elements(*call.args[1], seen=seen) if len(call.args) > 1 else None
             argv, options = [call.args[0]] + (rest or []), 2 if rest is not None else 1
         return argv, options
 
@@ -1566,6 +1570,25 @@ def shell_env_elements(command, upto):
     return out
 
 
+def shell_args(values, k):
+    """For an argv whose word k is a shell (bash, sh, ...): (the index of its first word after its
+    options, whether those options hold -c, as -c or among others: -ec, -lc); else None. A word no
+    reading can know (None) ends the options."""
+    if k is None or k >= len(values) or values[k] is None or values[k].rsplit("/", 1)[-1] not in SHELLS:
+        return None
+    j, takes_c = k + 1, False
+    while j < len(values) and values[j] is not None and values[j].startswith("-"):
+        takes_c |= bool(re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", values[j]))
+        j += 2 if re.fullmatch(r"[-+][a-zA-Z]*[oO]", values[j]) else 1
+    return j, takes_c
+
+
+def shell_c_script(values, k=0):
+    """The index of the script after a shell's -c in an argv whose program is word k, else None."""
+    found = shell_args(values, k)
+    return found[0] if found and found[1] and found[0] < len(values) else None
+
+
 def shell_inner_scripts(command):
     """(text, line) of the shell each command hands more shell to: the string after a shell's -c
     (bash -c, sh -lc, ...), what eval joins, and a heredoc a shell with no script operand reads."""
@@ -1573,14 +1596,10 @@ def shell_inner_scripts(command):
     if values and values[0] == "eval":
         out.append((" ".join(values[1:]), command.words[1].line if len(command.words) > 1 else command.line))
         return out
-    k = shell_command_word(command)
-    if k is None or values[k].rsplit("/", 1)[-1] not in SHELLS:
+    found = shell_args(values, shell_command_word(command))
+    if found is None:
         return out
-    j, takes_c = k + 1, False
-    while j < len(values) and values[j].startswith("-"):
-        if re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", values[j]):
-            takes_c = True
-        j += 2 if re.fullmatch(r"[-+][a-zA-Z]*[oO]", values[j]) else 1
+    j, takes_c = found
     if takes_c and j < len(values):
         out.append((values[j], command.words[j].line))
     elif j >= len(values):

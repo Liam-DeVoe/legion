@@ -194,17 +194,6 @@ def env_words(values):
     return k, settings
 
 
-def shell_c(values):
-    """The index of the script after a shell's -c in an argv, else None."""
-    if not values or values[0] is None or values[0].rsplit("/", 1)[-1] not in scan.SHELLS:
-        return None
-    j, takes_c = 1, False
-    while j < len(values) and values[j] is not None and values[j].startswith("-"):
-        takes_c |= bool(re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", values[j]))
-        j += 2 if re.fullmatch(r"[-+][a-zA-Z]*[oO]", values[j]) else 1
-    return j if takes_c and j < len(values) else None
-
-
 # --- Shell: each simple command, its own settings, and the shell it hands more shell to.
 
 def shell_sites(text, line=0, base=(), depth=0):
@@ -298,7 +287,7 @@ def go_sites(src):
         if k < len(argv) and goish(*argv[k]):
             found.append((src.line(call.at), offline(env + settings)))
             continue
-        script = shell_c(values)
+        script = scan.shell_c_script(values)
         if script is not None:
             found += shell_sites(text_of(*argv[script]), src.line(argv[script][0]), env)
     for call in src.calls():
@@ -329,7 +318,7 @@ def ts_sites(src):
         if b - a == 1 and token.kind in ("string", "template"):
             return goish_text(src.template_text(token, lambda sub: "\x00") if token.kind == "template" else token.value)
         for op in ("??", "||"):
-            parts = [p for p in split_op(a, b, op)]
+            parts = src.split_op(a, b, op)
             if len(parts) > 1:
                 return any([goish(*p, depth) for p in parts])
         call = src.call_of(a, b)
@@ -340,23 +329,6 @@ def ts_sites(src):
         if name and depth < 4:
             return any([goish(*r, depth + 1) for r in src.bound_all(name, a)])
         return False
-
-    def split_op(a, b, op):
-        """[a, b) split at each top-level two-character operator op (?? or ||)."""
-        out, start, i = [], a, a
-        while i < b:
-            if src.tokens[i].kind == "punct" and src.tokens[i].value in ("(", "[", "{") and i in src.partner:
-                i = src.partner[i] + 1
-                continue
-            if i + 1 < b and src.punct(i, op[0]) and src.punct(i + 1, op[1]) \
-                    and src.tokens[i].end == src.tokens[i + 1].start:
-                out.append((start, i))
-                start = i + 2
-                i += 2
-                continue
-            i += 1
-        out.append((start, b))
-        return out
 
     def substitute(sub):
         """A template substitution as shell text: go when it names the go binary."""
@@ -370,26 +342,13 @@ def ts_sites(src):
             return src.template_text(token, substitute)
         return "".join(src.string(*p) or "\x00" for p in src.split(a, b, "+"))
 
-    def elements(a, b, depth=0):
-        """The element ranges of an array literal, or of the array a name is bound to, else None."""
-        a, b = strip_bang(a, b)
-        if src.punct(a, "[") and src.partner.get(a) == b - 1:
-            handled.add(a)
-            return src.split(a + 1, b - 1)
-        name = src.name(a, b)
-        if name and depth < 4:
-            bound = src.bound(name, a)
-            if bound:
-                return elements(*bound, depth + 1)
-        return None
-
     def argv_site(argv, line, env):
         values = [src.string(*r) for r in argv]
         k, settings = env_words(values)
         if k < len(argv) and goish(*argv[k]):
             found.append((line, offline(env + settings)))
             return
-        script = shell_c(values)
+        script = scan.shell_c_script(values)
         if script is not None:
             found.extend(shell_sites(text_of(*argv[script]), src.line(argv[script][0]), env))
 
@@ -405,15 +364,8 @@ def ts_sites(src):
                 env = src.env_elements(*inner[0]) if inner else env
             found.extend(shell_sites(text_of(call.open, call.open + 1), line, env))
         elif call.name in SPAWNS and call.args:
-            argv, options = elements(*call.args[0]), 1
-            if argv is None and src.punct(call.args[0][0], "{"):  # Bun.spawn({ cmd: [...], env })
-                a, b = call.args[0]
-                for pa, pb in src.split(a + 1, b - 1):
-                    if src.tokens[pa].value == "cmd" and src.punct(pa + 1, ":"):
-                        argv, options = elements(pa + 2, pb), 0
-            if argv is None:
-                rest = elements(*call.args[1]) if len(call.args) > 1 else None
-                argv, options = [call.args[0]] + (rest or []), 2 if rest is not None else 1
+            # Each array the spawn reads is its argv's, so the pass over argv arrays below skips it.
+            argv, options = src.ts_spawn_argv(call, handled)
             env = src.ts_options_env(call, options)
             # An argv bound to a name is read where it is spelled, as one given in place is.
             bound = argv and src.name(*call.args[0]) is not None
@@ -488,7 +440,7 @@ def python_sites(tree):
         if k < len(nodes) and goish(nodes[k]):
             found.append((line, offline(env_of(call) + settings)))
             return True
-        script = shell_c(values)
+        script = scan.shell_c_script(values)
         if script is not None:
             found.extend(shell_sites(text_of(nodes[script]) or "", nodes[script].lineno - 1, env_of(call)))
             return True
