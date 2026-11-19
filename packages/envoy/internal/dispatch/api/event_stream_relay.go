@@ -41,8 +41,8 @@ const (
 	// while the horizon stays where it was, and starts again from eventRelayGapMin each time the
 	// horizon moves. The event writer holding the gap is usually a write whose commit notifies,
 	// and that notification reads at once; the fallback is for one that ends without notifying (a
-	// write that locked events and appended no event, another process's observation), which
-	// nothing else would announce. It runs only while a gap is open.
+	// write that locked events and appended no event), which nothing else would announce. It runs
+	// only while a gap is open.
 	eventRelayGapMin = 10 * time.Millisecond
 	eventRelayGapMax = 250 * time.Millisecond
 )

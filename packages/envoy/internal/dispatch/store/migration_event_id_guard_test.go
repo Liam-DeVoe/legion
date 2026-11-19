@@ -16,9 +16,11 @@ import (
 var migrationEventIDSequence = regexp.MustCompile(`\bevents_id_seq\b|pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'|pg_get_serial_sequence\(\s*[^'\s]`)
 
 // migrationEventIDCurrval is a read of the id this session's nextval last drew from
-// events_id_seq, which draws no id and moves no counter. It is api.eventIDCurrval's pattern, held
-// to it the same way, and migrationEventIDOffences reads the SQL with each such read blanked out.
-var migrationEventIDCurrval = regexp.MustCompile(`currval\(\s*(?:'\s*(?:"?public"?\s*\.\s*)?"?events_id_seq"?\s*'(?:\s*::\s*regclass)?|pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'\s*,\s*'\s*"?id"?\s*'\s*\))\s*\)`)
+// events_id_seq, which draws no id and moves no counter: Postgres's own currval, bare or as
+// pg_catalog.currval, and no function whose name only ends in currval or that another schema
+// holds. It is api.eventIDCurrval's pattern, held to it the same way, and
+// migrationEventIDOffences reads the SQL with each such read blanked out.
+var migrationEventIDCurrval = regexp.MustCompile(`(?:^|[^\w.])(?:pg_catalog\s*\.\s*)?currval\(\s*(?:'\s*(?:"?public"?\s*\.\s*)?"?events_id_seq"?\s*'(?:\s*::\s*regclass)?|pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'\s*,\s*'\s*"?id"?\s*'\s*\))\s*\)`)
 
 // migrationEventIDOffences is each place in a migration's SQL that names the events id sequence
 // other than to read currval, as "<path>:<line>: <match>". Each currval read is blanked out
@@ -73,6 +75,9 @@ func TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault(t *testing.T) {
 			{"a trigger that reads the id its insert drew", "create function o() returns trigger language plpgsql as $$\n" +
 				"begin new.opened := currval(pg_get_serial_sequence('events', 'id')); return new; end $$;", 0},
 			{"a draw beside a currval read", "select nextval('events_id_seq'), currval('events_id_seq');", 1},
+			{"a currval read at a line's start, and pg_catalog's", "select\ncurrval('events_id_seq'), pg_catalog.currval('events_id_seq');", 0},
+			{"a function whose name ends in currval", "select draw_currval('events_id_seq');", 1},
+			{"another schema's currval", "select util.currval('events_id_seq');", 1},
 		} {
 			if got := migrationEventIDOffences("m.sql", row.sql); len(got) != row.found {
 				t.Errorf("%s: %d matches %q, want %d", row.shape, len(got), got, row.found)
