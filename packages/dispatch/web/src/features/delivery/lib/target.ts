@@ -47,7 +47,7 @@ interface Statistic {
 // is written as JavaScript writes it, the shortest text that reads back as the same number.
 const minutes = (value: number) => `${value}m`;
 const everyChange = (value: number) => `${value}m for every change`;
-const count = (value: number) => `${value}`;
+const bare = (value: number) => `${value}`;
 const perDay = (value: number) => `${value}/day`;
 /** A rate's target as its percentage, to the twelve significant digits that keep every digit a
  *  person set and drop the floating-point noise of scaling it by 100: 0.755 as "75.5%", 0.07
@@ -64,40 +64,40 @@ const perPR = (value: number) => `${share(value)} per PR`;
 const STATISTICS: Readonly<Record<Judge, Statistic>> = {
   "deploys.per_day": { word: "deploys", format: perDay, alone: perDay },
   "deploys.with_prs_per_day": { word: "deploys with a PR", format: perDay },
-  "deploys.deploys": { word: "deploys", format: count },
-  "deploys.with_prs": { word: "deploys with a PR", format: count },
+  "deploys.deploys": { word: "deploys", format: bare },
+  "deploys.with_prs": { word: "deploys with a PR", format: bare },
   "per_deploy.rate": { word: "failure rate", format: perDeploy, alone: perDeploy },
-  "per_deploy.confirmed": { word: "deploys with a confirmed flag", format: count },
-  "per_deploy.pending": { word: "deploys with a pending flag", format: count },
-  "per_deploy.rejected": { word: "deploys with a rejected flag", format: count },
-  "per_deploy.total": { word: "deploys", format: count },
+  "per_deploy.confirmed": { word: "deploys with a confirmed flag", format: bare },
+  "per_deploy.pending": { word: "deploys with a pending flag", format: bare },
+  "per_deploy.rejected": { word: "deploys with a rejected flag", format: bare },
+  "per_deploy.total": { word: "deploys", format: bare },
   "per_pr.rate": { word: "failure rate", format: perPR },
-  "per_pr.confirmed": { word: "PRs with a confirmed flag", format: count },
-  "per_pr.pending": { word: "PRs with a pending flag", format: count },
-  "per_pr.rejected": { word: "PRs with a rejected flag", format: count },
-  "per_pr.reverts": { word: "reverted PRs", format: count },
-  "per_pr.total": { word: "PRs", format: count },
+  "per_pr.confirmed": { word: "PRs with a confirmed flag", format: bare },
+  "per_pr.pending": { word: "PRs with a pending flag", format: bare },
+  "per_pr.rejected": { word: "PRs with a rejected flag", format: bare },
+  "per_pr.reverts": { word: "reverted PRs", format: bare },
+  "per_pr.total": { word: "PRs", format: bare },
   "upper_bound.rate": { word: "failure rate's upper bound", format: perDeploy },
   "upper_bound.confirmed_or_pending": {
     word: "deploys with a confirmed or pending flag",
-    format: count,
+    format: bare,
   },
-  "minutes.n": { word: "count", format: count },
+  "minutes.n": { word: "count", format: bare },
   "minutes.median": { word: "median", format: minutes },
   "minutes.p90": { word: "p90", format: minutes },
   "minutes.max": { word: "longest", format: minutes, alone: everyChange },
   "runs.rate": { word: "success", format: share, alone: share },
-  "runs.concluded": { word: "concluded runs", format: count },
-  "runs.reached_production": { word: "runs reaching production", format: count },
-  "runs.cancelled": { word: "cancelled runs", format: count },
-  "issues.value": { word: "unowned P0 issues", format: count, alone: count },
+  "runs.concluded": { word: "concluded runs", format: bare },
+  "runs.reached_production": { word: "runs reaching production", format: bare },
+  "runs.cancelled": { word: "cancelled runs", format: bare },
+  "issues.value": { word: "unowned P0 issues", format: bare, alone: bare },
 };
 
 /** A judge as a caption names it; one this page does not know, from a server newer than its
  *  contract, reads as the server wrote it. */
 function statistic(judge: string): Statistic {
   const known: Readonly<Partial<Record<string, Statistic>>> = STATISTICS;
-  return known[judge] ?? { word: judge, format: count };
+  return known[judge] ?? { word: judge, format: bare };
 }
 
 /** The statistics target's verdict judges, in the order the server judges them: the eval's whole
@@ -146,7 +146,7 @@ function phrase(target: NonNullable<Target>, words: boolean): string {
   const judges = shownJudges(target);
   const [first] = judges;
   const alone = judges.length === 1 && first !== undefined ? statistic(first).alone : undefined;
-  const format = alone ?? (first === undefined ? count : statistic(first).format);
+  const format = alone ?? (first === undefined ? bare : statistic(first).format);
   const named =
     alone === undefined ? judges.map((judge) => statistic(judge).word).join(" and ") : "";
   const lead = named === "" ? "" : `${named} `;
@@ -242,46 +242,64 @@ export function targetLine(target: Target, drawn: readonly Judge[]): number | un
   return drawn.some((statistic) => judgesDay(target, statistic)) ? target?.value : undefined;
 }
 
-/** How much of a target's unit one of each unit a figure is written in makes: a rate is written
- *  as a percentage of its target's share, a lead time in minutes, hours or days of its target's
- *  minutes, and deploys a day, and every count, as the number itself. */
-const UNIT: Readonly<Record<string, number>> = {
-  "%": 0.01,
-  m: 1,
-  h: 60,
-  d: 1440,
-  "/day": 1,
-  "": 1,
+/** Each unit a figure is written in, as the fraction of its target's unit one of it makes
+ *  (`times` / `over`): a rate as a percentage of its target's share, a lead time in minutes, hours
+ *  or days of its target's minutes, and deploys a day, and every count, as the number itself. */
+const UNIT: Readonly<Record<string, { times: number; over: number }>> = {
+  "%": { times: 1, over: 100 },
+  m: { times: 1, over: 1 },
+  h: { times: 60, over: 1 },
+  d: { times: 1440, over: 1 },
+  "/day": { times: 1, over: 1 },
+  "": { times: 1, over: 1 },
 };
 
 /** A written figure read back in its target's unit (`UNIT`): "4.96%" as 0.0496, "44.6m" as 44.6,
  *  "8.5h" as 510, "2.1d" as 3024, "0.17/day" and "0.17" as 0.17; NaN for a text that writes no
- *  number, "n/a". */
+ *  number, "n/a". It reads the decimal written, as one division of two integers, so the reading is
+ *  the double nearest that decimal, the double of the target a figure on its target was written
+ *  from: "95.0%" is 950 / 1000, where 95 x 0.01 is 0.9500000000000001, past 0.95. */
 function readFigure(text: string): number {
-  const match = /^(-?\d+(?:\.\d+)?)(%|m|h|d|\/day)?$/.exec(text);
-  if (match === null) return Number.NaN;
-  return Number(match[1]) * (UNIT[match[2] ?? ""] ?? Number.NaN);
+  const match = /^(-?)(\d+)(?:\.(\d+))?(%|m|h|d|\/day)?$/.exec(text);
+  const unit = UNIT[match?.[4] ?? ""];
+  if (match === null || unit === undefined) return Number.NaN;
+  const [, sign, whole, decimals = ""] = match;
+  return (
+    ((sign === "-" ? -1 : 1) * Number(`${whole}${decimals}`) * unit.times) /
+    (10 ** decimals.length * unit.over)
+  );
 }
 
 /** The most decimals `judgeFigure` writes past a figure's usual ones: a double holds no more than
  *  17 significant digits, so a figure written to 17 more has its value's whole stored precision. */
 const MAX_EXTRA_DECIMALS = 17;
 
-/** A figure's own verdict (`ownVerdict`) and its text, the architect's rule for review round 3
- *  (dispatch://INFRA-2916, R3-C1): a toned figure's text lies on the same side of its target as
- *  its value. `write(extra)` writes the figure with `extra` decimals past its usual ones. Its
- *  usual text, `write(0)`, stands unless, read back in the target's unit (`readFigure`), it lies
- *  on the target itself or past it where the value does not, or the other way round; then the
- *  figure takes the fewest more decimals whose text reads back on the value's side, up to its
- *  stored precision (`MAX_EXTRA_DECIMALS`). So a failure rate of 0.0496 under "< 5%" reads 4.96%
- *  in green, never 5.0%, and a longest change of 44.6m under "< 45m" reads 44.6m, never 45m. A
- *  figure that takes no verdict is written its usual way. */
+/** How a figure is written with `extra` decimals past its usual ones, `extra` 0 for its usual
+ *  text: a toned figure takes more where its usual ones would put it on the other side of its
+ *  target from its own value (`judgeFigure`). */
+export type WriteFigure = (extra: number) => string;
+
+/** An exact count's `WriteFigure`: a count takes no decimals, so it is written the same whatever
+ *  it is offered. */
+export function count(n: number): WriteFigure {
+  return () => `${n}`;
+}
+
+/** A figure's own verdict (`ownVerdict`) and its text (dispatch://INFRA-2916, R3-C1): a toned
+ *  figure's text lies on the same side of its target as its value. Its usual text, `write(0)`,
+ *  stands unless, read back in the target's unit (`readFigure`), it lies on the target itself or
+ *  past it where the value does not, or the other way round; then the figure takes the fewest
+ *  more decimals whose text reads back on the value's side, up to its stored precision
+ *  (`MAX_EXTRA_DECIMALS`). So a failure rate of 0.0496 under "< 5%" reads 4.96% in green, never
+ *  5.0%, and a longest change of 44.6m under "< 45m" reads 44.6m, never 45m, while a value on a
+ *  strict target, missed, keeps its usual "5.0%". A figure that takes no verdict is written its
+ *  usual way. */
 export function judgeFigure(
   target: Target,
   statistic: string,
   span: Span,
   value: number | null,
-  write: (extra: number) => string
+  write: WriteFigure
 ): { met: boolean | null; text: string } {
   const met = ownVerdict(target, statistic, span, value);
   let text = write(0);

@@ -386,6 +386,68 @@ test("judgeFigure: a toned figure takes the fewest more decimals that print it o
   ).toEqual({ met: null, text: "45m" });
 });
 
+// R3-C1: a written figure is read back as the decimal it writes, exactly. Read back by a
+// floating-point product, 95% as 95 x 0.01 is 0.9500000000000001, past a target of 0.95, so a value
+// on its target read as past it and took decimals to the cap: "95.000000000000000000%".
+test("judgeFigure: a value on its target reads back as the target itself, so its usual digits stand on the side of its own verdict", () => {
+  const success = (value: number, over: Partial<NonNullable<Target>> = {}) =>
+    deploys({ value, inclusive: false, judges: ["runs.rate"], ...over });
+  const rate = (target: NonNullable<Target>) =>
+    judgeFigure(target, "runs.rate", "window", target.value, (extra) =>
+      pct(target.value, 1 + extra)
+    );
+  expect(rate(success(0.95))).toEqual({ met: false, text: "95.0%" });
+  expect(rate(success(0.7, { inclusive: true, direction: "lower_better" }))).toEqual({
+    met: true,
+    text: "70.0%",
+  });
+  expect(rate(success(0.57))).toEqual({ met: false, text: "57.0%" });
+  // 4.1h, 246 minutes: missed under "< 246m" and met under "<= 246m".
+  for (const [inclusive, met] of [
+    [false, false],
+    [true, true],
+  ] as const) {
+    expect(
+      judgeFigure(
+        minutes(["minutes.median"], { value: 246, inclusive }),
+        "minutes.median",
+        "window",
+        246,
+        (extra) => formatMinutes(246, extra)
+      )
+    ).toEqual({ met, text: "4.1h" });
+  }
+});
+
+// R3-C1: every tenth a rate or a lead time is written to reads back as the double of that decimal
+// in its target's unit. A value equal to the target misses both a strict target above it and one
+// below it, so a reading a hair over or under it would take decimals under one of the two.
+test("judgeFigure: every tenth of 0-100.0%, of 0-240.0h and of 0-240.0d reads back as that decimal exactly", () => {
+  const sides = (value: number, judges: Judge[]) =>
+    (["higher_better", "lower_better"] as const).map((direction) =>
+      deploys({ value, inclusive: false, direction, judges })
+    );
+  const misread: string[] = [];
+  const sweep = (tenths: number, unit: string, value: (tenth: number) => number, judge: Judge) => {
+    for (let tenth = 0; tenth <= tenths; tenth++) {
+      const written = `${Math.floor(tenth / 10)}.${tenth % 10}${unit}`;
+      const exact = value(tenth);
+      for (const target of sides(exact, [judge])) {
+        // Written as `written` alone: a figure that takes a decimal reads "past it".
+        const { text } = judgeFigure(target, judge, "window", exact, (extra) =>
+          extra === 0 ? written : "past it"
+        );
+        if (text !== written) misread.push(`${written} ${target.direction}`);
+      }
+    }
+  };
+  // The decimal itself in the target's unit: a rate's share, and a lead time's minutes.
+  sweep(1000, "%", (tenth) => Number(`${tenth}e-3`), "runs.rate");
+  sweep(2400, "h", (tenth) => tenth * 6, "minutes.median");
+  sweep(2400, "d", (tenth) => tenth * 144, "minutes.median");
+  expect(misread).toEqual([]);
+});
+
 test("leadTimeValue reads a lead-time cell's value of a judge, null where the cell states none", () => {
   const cell: DeliveryLeadTimeCell = {
     n: 2,

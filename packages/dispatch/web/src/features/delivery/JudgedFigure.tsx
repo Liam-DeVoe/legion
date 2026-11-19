@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 import { dangerText, successText } from "../../theme/classes";
-import { judgeFigure, type Span, type Target } from "./lib/target";
+import { judgeFigure, type Span, type Target, type WriteFigure } from "./lib/target";
 
 /** A figure's tone by its own verdict: met green, missed red, and `plain` where it has none. */
 export function tone(met: boolean | null, plain = ""): string {
@@ -14,16 +14,17 @@ export function tone(met: boolean | null, plain = ""): string {
  *  It names the eval, the statistic it shows and whether its value is one day's or the window's
  *  (`data-eval`, `data-statistic`, `data-span`), and is green where its own value meets the
  *  target, red where it misses it, and `plain` where it has no verdict: never the card's badge,
- *  which is the server's verdict of everything the target judges. `write(extra)` writes it with
- *  `extra` decimals past its usual ones, which it takes where its usual ones would print it on the
- *  target itself or past it (`lib/target.ts`'s `judgeFigure`). */
+ *  which is the server's verdict of everything the target judges. It is written with `write`,
+ *  with more decimals where its usual ones would put it on the other side of the target from
+ *  its own value: on the target where the value is not, or past it (`lib/target.ts`'s
+ *  `judgeFigure`). */
 export function JudgedFigure(props: {
   evalSlug: string;
   statistic: string;
   span: Span;
   target: Target;
   value: number | null;
-  write: (extra: number) => string;
+  write: WriteFigure;
   plain?: string;
   className?: string;
 }): ReactNode {

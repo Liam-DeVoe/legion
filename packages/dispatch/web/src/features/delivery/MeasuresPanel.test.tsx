@@ -1402,6 +1402,30 @@ test("a card's caption writes its rate target exactly: above 75.5% beside a run 
   expect(within(card("Change failure rate")).getByText("target < 5% per deploy")).toBeDefined();
 });
 
+// R3-C1: a figure on its target is read back as the target itself. Read back by a floating-point
+// product, 95.0% read as 0.9500000000000001, past "> 95%", and the card wrote the run success to
+// its last digit: "95.000000000000000000%".
+test("a run success on its strict target reads 95.0% and missed, with no digits past its usual one", () => {
+  renderPanel({
+    ...fixtureMeasures,
+    measures: {
+      ...fixtureMeasures.measures,
+      deploy_run_success: { ...fixtureMeasures.measures.deploy_run_success, rate: 0.95 },
+    },
+    targets: {
+      ...catalogueTargets,
+      deploy_run_success_rate: {
+        ...catalogueTargets.deploy_run_success_rate,
+        value: 0.95,
+        inclusive: false,
+      },
+    },
+  });
+  const runs = card("Deploy runs reaching production");
+  expect(within(runs).getByText("target > 95%")).toBeDefined();
+  expect(written(runs)["runs.rate"]).toBe("95.0% missed");
+});
+
 test("a lead-time card whose target is off reads off alone, with no verdict", () => {
   renderPanel({
     ...fixtureMeasures,
