@@ -248,12 +248,11 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	// service DaemonAccount logs in as, which is what lets that login enrol those pods
 	// (enroll.Service.podUnderTokenLogin).
 	servicesByAccount := map[string]string{WorkerAccount: "legion-daemon"}
-	// BROKER_POD_REGISTRARS: DaemonAccount, the one registrar, listed for WorkerAccount and for the
-	// two BROKER_EXCHANGE_ACCOUNTS accounts a test registers for, so a registration a test makes as
-	// that daemon reaches the step it is about rather than 403 POD_REGISTRAR_NOT_LISTED: the
-	// exchange policy's refusal of a WorkerAccount pod (POD_ACCOUNT_NOT_LISTED) or of an
-	// ExchangeAccount pod, whose entry fixes its session (SESSION_FIXED), and the write itself for
-	// an ExchangeRolesAccount pod.
+	// BROKER_POD_REGISTRARS: DaemonAccount, the one registrar, listed for WorkerAccount and both
+	// accounts BROKER_EXCHANGE_ACCOUNTS lists, so a registration a test makes as that daemon reaches
+	// the step it is about rather than 403 POD_REGISTRAR_NOT_LISTED: the exchange policy's refusal
+	// of a WorkerAccount pod (POD_ACCOUNT_NOT_LISTED) or of an ExchangeAccount pod, whose entry
+	// fixes its session (SESSION_FIXED), and the write itself for an ExchangeRolesAccount pod.
 	podRegistrars := api.PodRegistrars{}
 	for _, pod := range []string{WorkerAccount, ExchangeRolesAccount, ExchangeAccount} {
 		podRegistrars[api.PodRegistrar{Registrar: DaemonAccount, Pod: pod}] = struct{}{}

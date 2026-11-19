@@ -2421,7 +2421,7 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 175: dispatch://INFRA-4425 -- under `dispatch_token_broker` a role trades its pod's exchange
+// 179: dispatch://INFRA-4425 -- under `dispatch_token_broker` a role trades its pod's exchange
 // identity at the secrets broker for a Dispatch token of its own session, and the daemon names
 // that session, which moves three surfaces this number names. The agent's argv: in a pod that
 // carries the exchange identity (sandbox's launch.trades) the daemon chooses each Oh My Pi role's
@@ -2439,8 +2439,8 @@ package api
 // token, which a deployment waits to see at zero before it removes
 // `dispatch_token_transition_file`. The settings block's `dispatch_token_broker` is a key of the
 // block the plugin parses loosely (35 above), and moves no number.
-// A plugin before 175 reads the state with a strict schema that knows no `dispatchCredential` and
-// refuses the whole body for it, so a caller from a pod whose claims record a contract below 175
+// A plugin before 179 reads the state with a strict schema that knows no `dispatchCredential` and
+// refuses the whole body for it, so a caller from a pod whose claims record a contract below 179
 // is served the state without the key (api's stateFor, withoutDispatchCredential), as a caller
 // below 146 is served the issues without the entry times; 151 moves no strictly parsed shape of
 // the state and narrows nothing.
@@ -2451,14 +2451,15 @@ package api
 // `legion probe-image` hold the daemon to an image built from this contract. A role in a kept pod
 // of an older image carries no exchange identity, so it keeps the argv and the credential it had,
 // and its pod's update round replaces the pod.
-// (This change takes 175, the lowest number above main's 168 that no open pull request declared
-// when the forward merge of 2026-11-19 brought main in at a16c218ee3, which declares 168 (#4488,
-// the entry above); it had declared 165 until then, above main's 160. A reading of `const
-// DaemonAPIVersion` at refs/pull/<n>/head for each of the 243 open pull requests, made between
-// 2026-11-19T16:42:02Z and 16:45:12Z, found 169 (#3831, #4065), 170 (#2230, #4030, #4173, #4180,
-// #4193), 171 (#4115, #4485, #4495), 172 (#3659), 173 (#4493) and 174 (#4273) declared, and
-// nothing above 174. Read the base's own number and every open pull request again at the next
-// merge rather than from this line, as
+// (This change takes 179, the lowest number above main's 168 that no open pull request declared
+// when the forward merge of 2026-11-19 brought main in at 506395beea, which declares 168 (#4488,
+// the entry above); it had declared 165, then 175 from the merge that brought main in at
+// a16c218ee3. A reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 241 open
+// pull requests, made between 2026-11-19T20:58:43Z and 21:02:20Z, found 169 (#4065), 170 (#4180,
+// #4182, #4193), 171 (#2230, #4049, #4115), 172 (#3659), 173 (#4493), 174 (#3993, #4273), 175
+// (#3712, #4432, #4485, #4495 and this change's own head before this merge), 176 (#4030, #4173),
+// 177 (#4017) and 178 (#3831, #4175) declared, and nothing above 178. Read the base's own number
+// and every open pull request again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 175
+const DaemonAPIVersion = 179

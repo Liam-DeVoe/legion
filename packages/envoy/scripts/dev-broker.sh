@@ -572,9 +572,9 @@ fi
 # (BROKER_SERVICE_LOGINS), BROKER_POD_REGISTRARS lists it for the pod's account, and the body
 # carries the pod's own broker-audience token, the one a daemon enrolls that pod with. Without
 # it the exchange below is refused invalid_grant, naming the session. Both tokens stay out of
-# every command line: the body reaches curl on standard input from a here-string, which the shell
-# writes before curl starts, so no pipeline's status can hide curl's, and the header from a file
-# curl reads. ---
+# every command line: the body reaches curl on standard input from a here-string, which the
+# shell writes before curl starts, so no pipeline's status can hide curl's, and the header from a
+# file curl reads. ---
 registration=$(printf '{"pod_token": "%s", "session": "%s"}' "$(cat "$POD_TOKEN_FILE")" "$EXCHANGE_SESSION")
 if ! curl -sf -X POST "${PUBLIC_URL}/v1/oauth/exchange/pod-sessions" \
   -H @<(printf 'Authorization: Bearer %s' "$(cat "$REGISTRAR_TOKEN_FILE")") \

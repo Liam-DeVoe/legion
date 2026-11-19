@@ -5,7 +5,6 @@ package api_test
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"reflect"
 	"slices"
@@ -43,8 +42,9 @@ func (ts *testServer) releases(t *testing.T, what, bearer string, sessions []str
 // with released: 1. The row stays in oauth_pod_sessions, marked released, and P's trade under S,
 // proved with k, is refused invalid_grant naming S, with a description that does not begin
 // pod_session_not_registered:, which both clients retry: the release is final for that
-// registration. The released row still holds S for A, so daemon B, listed for the same pod
-// account, is still refused S. A's next write of P and S takes the row back, and P trades again.
+// registration. S stays bound to A after the release, as it does for good from A's first
+// registration of it, so daemon B, listed for the same pod account, is still refused S. A's next
+// write of P and S takes the row back, and P trades again.
 func TestAReleasedNameIsNotHonoured(t *testing.T) {
 	ts := newTestServer(t)
 	const session, pod, podB = "implementer-g1", "pod-uid-released", "pod-uid-of-b"
@@ -82,9 +82,9 @@ func TestAReleasedNameIsNotHonoured(t *testing.T) {
 	}
 
 	status, body := ts.registerPodSession(t, daemonB, ts.rolesPodToken(t, podB), session)
-	if refusal := decode[wireError](t, body); status != http.StatusConflict || refusal.Code != "SESSION_HELD_BY_ANOTHER_REGISTRAR" ||
+	if refusal := decode[wireError](t, body); status != http.StatusConflict || refusal.Code != "SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR" ||
 		!strings.Contains(refusal.Error, session) || !strings.Contains(refusal.Error, daemonAccount) {
-		t.Fatalf("%s registering %s for %s, which %s released = %d %s; want 409 SESSION_HELD_BY_ANOTHER_REGISTRAR naming %s and %s: a released registration holds its name until it lapses",
+		t.Fatalf("%s registering %s for %s, which %s released = %d %s; want 409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR naming %s and %s: a release leaves the name bound to its registrar",
 			otherDaemonAccount, podB, session, daemonAccount, status, strings.TrimSpace(string(body)), session, daemonAccount)
 	}
 
@@ -98,13 +98,18 @@ func TestAReleasedNameIsNotHonoured(t *testing.T) {
 // pods, and S2; daemon B holds S3. A release the route refuses releases nothing: 0 names, 4097
 // (one name sent 4097 times, since the bound counts entries as sent), a missing sessions, a null
 // one and a body of null are each 400 SESSIONS_INVALID naming the count, an unknown field is 400
-// INVALID_REQUEST, and an account BROKER_SERVICE_LOGINS does not list is 403 ACCOUNT_NOT_LISTED;
-// 4096 entries of a name B holds no registration of are admitted and release nothing. B releasing
-// [S1, S3, S3] is answered {sessions: 2, released: 1}: its own S3, and none of A's rows of S1,
-// whose pods still trade. A, once the list no longer names it, releasing [S2, S1, "has space",
-// ""] is answered {sessions: 4, released: 3}, and the same again, which leaves each release mark
-// where the first call put it: a release is not gated by BROKER_POD_REGISTRARS, and a name no
-// registration could have taken is released with nothing to release. No row's expires_at moved.
+// INVALID_REQUEST, a list of one null and B's list of its own S3 and a null are each 400
+// INVALID_REQUEST naming the null's index, since a null is no name, an entry that is a number
+// and a body that is a string are each 400 INVALID_REQUEST with encoding/json's whole text, which
+// names podSessionReleaseBody, and for the number its sessions field too, and an account
+// BROKER_SERVICE_LOGINS does not list is 403 ACCOUNT_NOT_LISTED; 4096 entries of a name B holds
+// no registration of are admitted and release nothing. B releasing [S1, S3, S3] is answered
+// {sessions: 2, released: 1}: its own S3, and none of A's rows of S1, whose pods still trade. A,
+// once the list no longer names it, releasing [S2, S1, "has space", "", "\u0000"] is answered
+// {sessions: 5, released: 3}, and the same again, which leaves each release mark where the first
+// call put it: a release is not gated by BROKER_POD_REGISTRARS, and a name no registration could
+// have taken is released with nothing to release, a NUL byte, which Postgres refuses in text,
+// included. No row's expires_at moved.
 func TestTheReleaseRouteReleasesOnlyTheCallersRegistrations(t *testing.T) {
 	var registrars api.PodRegistrars
 	ts := newTestServerWith(t, func(d *api.Deps) { registrars = d.PodRegistrars })
@@ -143,24 +148,40 @@ func TestTheReleaseRouteReleasesOnlyTheCallersRegistrations(t *testing.T) {
 		body   any
 		status int
 		code   string
-		count  int // the count a SESSIONS_INVALID refusal names
+		names  string // what the refusal's error must name, "" for nothing
 	}{
-		{"no names", daemonB, map[string]any{"sessions": []string{}}, http.StatusBadRequest, "SESSIONS_INVALID", 0},
-		{"4097 entries of one name", daemonB, map[string]any{"sessions": slices.Repeat([]string{s3}, 4097)}, http.StatusBadRequest, "SESSIONS_INVALID", 4097},
-		{"a missing sessions", daemonB, map[string]any{}, http.StatusBadRequest, "SESSIONS_INVALID", 0},
-		{"a null sessions", daemonB, map[string]any{"sessions": nil}, http.StatusBadRequest, "SESSIONS_INVALID", 0},
-		{"a body of null", daemonB, json.RawMessage("null"), http.StatusBadRequest, "SESSIONS_INVALID", 0},
-		{"an unknown field", daemonB, map[string]any{"sessions": []string{s3}, "pods": []string{p3}}, http.StatusBadRequest, "INVALID_REQUEST", 0},
+		{"no names", daemonB, map[string]any{"sessions": []string{}}, http.StatusBadRequest, "SESSIONS_INVALID", "holds 0 names"},
+		{"4097 entries of one name", daemonB, map[string]any{"sessions": slices.Repeat([]string{s3}, 4097)}, http.StatusBadRequest, "SESSIONS_INVALID", "holds 4097 names"},
+		{"a missing sessions", daemonB, map[string]any{}, http.StatusBadRequest, "SESSIONS_INVALID", "holds 0 names"},
+		{"a null sessions", daemonB, map[string]any{"sessions": nil}, http.StatusBadRequest, "SESSIONS_INVALID", "holds 0 names"},
+		{"a body of null", daemonB, json.RawMessage("null"), http.StatusBadRequest, "SESSIONS_INVALID", "holds 0 names"},
+		{"an unknown field", daemonB, map[string]any{"sessions": []string{s3}, "pods": []string{p3}}, http.StatusBadRequest, "INVALID_REQUEST", ""},
+		{"a list of one null", daemonB, map[string]any{"sessions": []any{nil}}, http.StatusBadRequest, "INVALID_REQUEST", "sessions[0] is null"},
+		{"B's own " + s3 + " and a null", daemonB, map[string]any{"sessions": []any{s3, nil}}, http.StatusBadRequest, "INVALID_REQUEST", "sessions[1] is null"},
 		{"an account BROKER_SERVICE_LOGINS does not list", ts.accountToken(t, unlistedAccount, "", time.Hour),
-			map[string]any{"sessions": []string{s1, s2, s3}}, http.StatusForbidden, "ACCOUNT_NOT_LISTED", 0},
+			map[string]any{"sessions": []string{s1, s2, s3}}, http.StatusForbidden, "ACCOUNT_NOT_LISTED", ""},
 	} {
 		status, body := ts.releasePodSessions(t, c.bearer, c.body)
 		refusal := decode[wireError](t, body)
 		if status != c.status || refusal.Code != c.code {
 			t.Errorf("a release with %s = %d %s, want %d %s", c.name, status, strings.TrimSpace(string(body)), c.status, c.code)
 		}
-		if named := fmt.Sprintf("holds %d names", c.count); c.code == "SESSIONS_INVALID" && !strings.Contains(refusal.Error, named) {
-			t.Errorf("a release with %s is refused %q, want it to name the count: %q", c.name, refusal.Error, named)
+		if c.names != "" && !strings.Contains(refusal.Error, c.names) {
+			t.Errorf("a release with %s is refused %q, want it to name %q", c.name, refusal.Error, c.names)
+		}
+	}
+	// encoding/json's error is the text of these two refusals. It names the body's type, and for
+	// the number its sessions field as well; a client reads it, so the test holds each refusal to
+	// its whole text.
+	for _, c := range []struct{ name, body, refusal string }{
+		{"an entry that is a number", `{"sessions":[1]}`,
+			"body must be one valid JSON object: json: cannot unmarshal number into podSessionReleaseBody.sessions.0 of type string"},
+		{"a body that is a string", `"x"`,
+			"body must be one valid JSON object: json: cannot unmarshal string into Go value of type api.podSessionReleaseBody"},
+	} {
+		status, body := ts.releasePodSessions(t, daemonB, json.RawMessage(c.body))
+		if refusal := decode[wireError](t, body); status != http.StatusBadRequest || refusal.Code != "INVALID_REQUEST" || refusal.Error != c.refusal {
+			t.Errorf("a release with %s = %d %s %q, want 400 INVALID_REQUEST %q", c.name, status, refusal.Code, refusal.Error, c.refusal)
 		}
 	}
 	ts.releases(t, "B's release of 4096 entries of a name it holds no registration of", daemonB, slices.Repeat([]string{"unheld-g1"}, 4096), 1, 0)
@@ -189,13 +210,14 @@ func TestTheReleaseRouteReleasesOnlyTheCallersRegistrations(t *testing.T) {
 	}
 	status, body := ts.registerPodSession(t, daemonA, ts.rolesPodToken(t, p2), s2)
 	refusedNotListed(t, daemonAccount+" registering once the list no longer names it", status, body, daemonAccount, brokertest.ExchangeRolesAccount)
-	ts.releases(t, "A's release of ["+s2+", "+s1+", \"has space\", \"\"], once the list no longer names it", daemonA, []string{s2, s1, "has space", ""}, 4, 3)
+	const nul = "\x00" // a NUL byte, which JSON carries as "\u0000"
+	ts.releases(t, "A's release of ["+s2+", "+s1+", \"has space\", \"\", \"\\u0000\"], once the list no longer names it", daemonA, []string{s2, s1, "has space", "", nul}, 5, 3)
 	released := ts.column(t, `select pod_uid || ' released ' || (released_at is not null)::text from oauth_pod_sessions order by pod_uid`)
 	if want := []string{p1 + " released true", p1Sibling + " released true", p2 + " released true", p3 + " released true"}; !slices.Equal(released, want) {
 		t.Errorf("after A released its names, oauth_pod_sessions holds %v, want %v", released, want)
 	}
 	first := marks()
-	ts.releases(t, "A's same release again", daemonA, []string{s2, s1, "has space", ""}, 4, 3)
+	ts.releases(t, "A's same release again", daemonA, []string{s2, s1, "has space", "", nul}, 5, 3)
 	if again := marks(); !slices.Equal(again, first) {
 		t.Errorf("A's repeated release left %v, want %v: a repeat moves no release mark", again, first)
 	}

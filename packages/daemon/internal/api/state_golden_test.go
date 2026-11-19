@@ -879,7 +879,7 @@ func populatedState(t *testing.T) State {
 			RegisteredAt: time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC),
 		},
 		AgentSecretsLogin: &AgentSecretsLoginView{State: "issued"},
-		// A deployment under dispatch_token_broker in its move (contract 175): two launches since
+		// A deployment under dispatch_token_broker in its move (contract 179): two launches since
 		// this boot kept pods built before the setting and carried the transition token, and three
 		// live generations still hold a Dispatch token, one of them started before this boot.
 		DispatchCredential: &DispatchCredentialView{

@@ -460,9 +460,9 @@ const exchangeTookName = "broker: the token exchange took a session name from th
 
 // pairedExchangeEnv is exchangeEnv with pairedPodAccount listed for the exchange beside
 // podAccount, and listedAccount's entry kept: the third listed account, which no pair here names.
-// registrarAccount is listed to register the pods of all three (BROKER_POD_REGISTRARS), so the
-// rows register each account's pod for the one name and only the pair decides who trades under it.
-// It pairs nothing itself; a row adds BROKER_SESSION_ACCOUNT_PAIRS to it.
+// registrarAccount is listed as the registrar of pairedPodAccount's pods too
+// (BROKER_POD_REGISTRARS), since a row registers a moved pod of that account. It pairs nothing
+// itself; a row adds BROKER_SESSION_ACCOUNT_PAIRS to it.
 func pairedExchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Issuer) []string {
 	t.Helper()
 	return append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds), "BROKER_EXCHANGE_ACCOUNTS="+

@@ -309,7 +309,7 @@ func TestAnEmptyPlanReasonIsAReasonNamed(t *testing.T) {
 			// A stale claim is served in its turn (staleClaim), and its grants are minted first, as
 			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one.
 			grants := []string{implementer.grant(t), implementer.grant(t), implementer.grant(t)}
-			if band.contract != PlanRatingContract {
+			if band.contract != DaemonAPIVersion {
 				h.makeStale(t, implementer.token, implementer.session, implementer.secret, band.contract)
 			}
 			if c := h.stored(implementer.token); c.State != supervise.StateWorking || c.PluginContract != band.contract {
@@ -384,16 +384,24 @@ func mustRate(t *testing.T, h *harness, unrated, rated string, score int, reason
 
 // A plugin at PlanRatingContract or later must rate: its retro's completion with no rating is
 // refused PLAN_RATING_REQUIRED, which says how to rate, with nothing recorded, and the same
-// completion with a rating is taken (mustRate).
+// completion with a rating is taken (mustRate). The claim here declares PlanRatingContract itself:
+// the harness registers every claim at this daemon's own contract (DaemonAPIVersion), so where
+// that is a later one the claim is seeded at PlanRatingContract, a claim in its turn the daemon
+// still serves (staleClaim), its grants minted first as TestAPluginAboveTheRatingContractMustRateToo
+// mints its own.
 func TestANewPluginMustRate(t *testing.T) {
 	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	grants := []string{implementer.grant(t), implementer.grant(t)}
+	if DaemonAPIVersion != PlanRatingContract {
+		h.makeStale(t, implementer.token, implementer.session, implementer.secret, PlanRatingContract)
+	}
 	if got := pluginContractOf(t, h, implementer.token); got != PlanRatingContract {
 		t.Fatalf("the implementer's plugin declared contract %d, want PlanRatingContract %d: this case proves nothing", got, PlanRatingContract)
 	}
 
-	message := mustRate(t, h, implementer.grant(t), implementer.grant(t), 5, "The plan fit the work.")
+	message := mustRate(t, h, grants[0], grants[1], 5, "The plan fit the work.")
 	for _, want := range []string{"this completion of phase retro of LEGION-208 carries no rating of the plan", "planRating", "planReason", "1 (the plan cost the work) to 5 (the plan fit the work)", "nothing was recorded"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("the refusal = %q, want it to say %q", message, want)
@@ -402,10 +410,10 @@ func TestANewPluginMustRate(t *testing.T) {
 }
 
 // "PlanRatingContract or later" holds above the contract too, where TestANewPluginMustRate's claim
-// cannot reach: every claim the harness registers declares this daemon's own contract, which is
-// PlanRatingContract. The claim here records a later one and the daemon still serves it, a claim
-// in its turn (staleClaim), as after a later release rolled back to this daemon while its worker
-// was in the retro's turn. Its retro's completion with no rating is refused PLAN_RATING_REQUIRED
+// does not reach: that claim declares PlanRatingContract itself. The claim here records the
+// contract right after it, PlanRatingContract+1, and the daemon still serves it, a claim in its
+// turn (staleClaim), as after a later release rolled back to this daemon while its worker was in
+// the retro's turn. Its retro's completion with no rating is refused PLAN_RATING_REQUIRED
 // with nothing recorded, and the same completion with a rating is taken (mustRate).
 func TestAPluginAboveTheRatingContractMustRateToo(t *testing.T) {
 	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
@@ -758,7 +766,7 @@ func TestTheRatingIsJudgedOnTheIssueTheWorkflowEndsTheRetroOn(t *testing.T) {
 			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one.
 			req := row.request(implementer)
 			req.GrantID = implementer.grant(t)
-			if row.contract != PlanRatingContract {
+			if row.contract != DaemonAPIVersion {
 				h.makeStale(t, implementer.token, implementer.session, implementer.secret, row.contract)
 			}
 			if c := h.stored(implementer.token); c.State != supervise.StateWorking || c.PluginContract != row.contract {

@@ -1003,7 +1003,7 @@ const legionAgentSecretsLoginView = z.object({
 });
 
 /** `api.DispatchCredentialView` — the daemon's Dispatch credential under `dispatch_token_broker`
- * (contract 175): `session`, the session its own Dispatch calls run under
+ * (contract 179): `session`, the session its own Dispatch calls run under
  * (`legion-daemon:<PROJECT>`); `transitionLaunches`, the launches since the daemon's boot that
  * carried the transition token of `dispatch_token_transition_file`, and `lastTransitionLaunchAt`,
  * when the latest of them was sent, null before the first; and `liveLaunchesWithDispatchToken`,
@@ -1173,9 +1173,9 @@ const legionConsumerLag = z.object({
  * claims record no contract and a caller the daemon can place in no pod are served the mark, and
  * the shapes `internal/projection` answers before the route marks them carry none either.
  * `dispatchCredential` is the daemon's Dispatch credential and the two counts of the Dispatch
- * tokens its launches hand out, written only under `dispatch_token_broker` (contract 175); the
- * route strips it for a caller in a pod below 175, and for that caller alone, since a reader before
- * 175 refuses the key (`api.stateFor`, `withoutDispatchCredential`). */
+ * tokens its launches hand out, written only under `dispatch_token_broker` (contract 179); the
+ * route strips it for a caller in a pod below 179, and for that caller alone, since a reader before
+ * 179 refuses the key (`api.stateFor`, `withoutDispatchCredential`). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo,
   contract: legionContract.optional(),

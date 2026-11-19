@@ -50,11 +50,11 @@
 # on its keeper's socket, each old process gone, its log kept, and the stack up; and the controls
 # that (l)'s same-port checks can fail, each stopping the whole stack and naming both ports: (m) a
 # natsd that comes back on another client port, (n) one that comes back on its client port and
-# another monitor port, and (o) a listener that comes back on another port than its keeper's; and
+# another monitor port, and (o) a listener that comes back on another port than its keeper's;
 # (p) a bash older than 5.1 (4.4, 5.0) is refused with exit 2 and one line naming the bash it needs
-# and the one it is, while 5.1 and 5.3 are taken, by the gate the driver runs at its top; and (q)
-# every broker a run starts, the --callout run's second among them, lists the run's registrar as
-# the registrar of the pod's account and of nothing else (BROKER_POD_REGISTRARS), without which
+# and the one it is, while 5.1 and 5.3 are taken, by the gate the driver runs at its top; and
+# (q) every broker a run starts, the --callout run's second among them, lists the run's registrar
+# as the registrar of the pod's account and of nothing else (BROKER_POD_REGISTRARS), without which
 # the one registration the run makes is refused.
 set -euo pipefail
 # Monitor mode, for the two cases that signal an instance: a background command of a shell

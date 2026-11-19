@@ -2,8 +2,8 @@ kind: Changed
 custom:
   Issue: pr4392
 body: |-
-  The plugin declares daemon API contract 175. In a pod that carries the exchange identity, the
+  The plugin declares daemon API contract 179. In a pod that carries the exchange identity, the
   daemon starts an Oh My Pi role with `--session-id <id>` or `--resume <id>`. Under
   `dispatch_token_broker`, it tells the roles of such a pod `DISPATCH_TOKEN_BROKER=1` and no
   `DISPATCH_TOKEN_FILE`, and `GET /legion/v1/state` carries `dispatchCredential`, which a caller
-  below 175 is served without.
+  below 179 is served without.

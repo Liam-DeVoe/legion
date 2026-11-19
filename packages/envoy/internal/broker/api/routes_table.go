@@ -214,9 +214,16 @@ func accountAuthAfterRecordKind(needs power, h func(*server, http.ResponseWriter
 // authorities: BROKER_API_ACCOUNTS names the callers that relay a person's decisions and read
 // tokens back, and a daemon that registers its own pods is not one of them. A deployment already
 // lists its per-project daemons in BROKER_SERVICE_LOGINS for their token logins, so the class
-// needs no new login. The login is all a release needs, since a release touches only the caller's
-// own registrations (releasePodSessions); a registration needs an entry of BROKER_POD_REGISTRARS
-// too (registerPodSession), since a session pod logs in as a service as well.
+// needs no new login. The login is all a release needs, and a registration needs an entry of
+// BROKER_POD_REGISTRARS too (registerPodSession), since a session pod logs in as a service as
+// well. A release is the login account's (releasePodSessions): it releases every registration
+// that account wrote of the names it sends, whichever of its pods wrote it. So every pod of an
+// account paired with itself in BROKER_POD_REGISTRARS logs in as that registrar and can release
+// every registration the account wrote, by session name alone, with no token of the pod whose
+// trade it ends. Every pod that runs as any registrar's account logs in as that registrar in the
+// same way and can release every registration that account wrote. So a deployment lists as a
+// registrar only an account whose pods may end the trades of every pod that account registers. An
+// account paired with itself is the common case of an account whose pods may not.
 func serviceAuth(h func(*server, http.ResponseWriter, *http.Request, machine.ServiceAccount)) routeHandler {
 	return routeHandler{auth: authService, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s, w, r, who.service)
@@ -304,13 +311,16 @@ func routes() []apiRoute {
 		{http.MethodPost, "/v1/oauth/revoke", accountAuth(relaysDecisions, (*server).revokeOAuthToken)},
 		// Register that one pod may exchange under one session name: the row the token exchange
 		// reads before it mints a token for a pod of an account that fixes no session, written by
-		// the deployment's own daemon as it starts that pod. Mounted only when the broker runs its
-		// OAuth provider.
+		// the deployment's own daemon as it starts that pod. A name's first registration binds it,
+		// for good, to the daemon that wrote it, and another daemon's registration of the name is
+		// 409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR. Mounted only when the broker runs its OAuth
+		// provider.
 		{http.MethodPost, "/v1/oauth/exchange/pod-sessions", serviceAuth((*server).registerPodSession)},
-		// Release session names the calling daemon registered: each live registration of each name
-		// that it wrote is marked released, so the token exchange refuses its pod's trade under it,
-		// and the row keeps the name bound to that daemon until it expires. Mounted only when the
-		// broker runs its OAuth provider.
+		// Release session names the caller's login account registered: each live registration of
+		// each name that the account wrote, whichever of its pods wrote it, is marked released, so
+		// the token exchange refuses the trade under it of the pod the registration names, and the
+		// name stays bound to that account, as it is for good. Mounted only when the broker runs
+		// its OAuth provider.
 		{http.MethodPost, "/v1/oauth/exchange/pod-sessions/release", serviceAuth((*server).releasePodSessions)},
 		// Extend the calling session's lease.
 		{http.MethodPost, "/v1/enrollments/{id}/renew", renewAuth((*server).renewEnrollment)},
