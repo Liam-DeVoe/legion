@@ -24,9 +24,9 @@ const heldLockBudget = 100 * time.Millisecond
 // own, and answers within heldLockBudget. Every read of nats.go's state takes nats.go's connection
 // lock (IsConnected, Status, Stats), so a caller that holds a lock of its own - a session's
 // consumer lock, the shared stream read, a relay's restart turn - and asked nats.go directly while
-// a reconnect's handshake was in progress held what it holds for the whole handshake. A caller asks
-// the prober instead (connForRequest, requestLife, closedUnder, Connected) and waits at most
-// heldLockBudget.
+// a reconnect's handshake was in progress held what it holds for the whole handshake. On the
+// session consumers' client (withLossAtOnce), whose callers can hold such a lock, a caller asks
+// the prober instead (connForRequest, requestLife, closedUnder) and waits at most heldLockBudget.
 //
 // One read runs at a time, so a long handshake leaves one goroutine waiting on nats.go's lock,
 // however many callers ask. Reads are numbered, and a caller takes the answer of a read begun after

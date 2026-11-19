@@ -12,9 +12,10 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// onClosed is wired as the ClosedCB callback. It ends the life requests on the connection are bound
-// to (endLifeIfDown), reports the connection event (ConnectionChanged) and launches recovery in a
-// background goroutine so the NATS library callback returns immediately.
+// onClosed is wired as the ClosedCB callback. It ends the life of a connection the client has
+// since replaced (endLifeIfDown), reports the connection event (ConnectionChanged), which wakes the
+// life of the closed connection to end itself (requestLife), and launches recovery in a background
+// goroutine so the NATS library callback returns immediately.
 func (c *Client) onClosed() {
 	c.endLifeIfDown()
 	c.connectionChanged()
@@ -189,10 +190,10 @@ func (c *Client) AddDisconnectHook(hook func()) {
 	c.reconnectHooksMu.Unlock()
 }
 
-// onDisconnect is wired as the DisconnectedErrCB callback, after its log line: it ends the life
-// requests on the connection are bound to (endLifeIfDown) where nats.go's status report has not
-// already, reports the connection event (ConnectionChanged), so that a publish waiting for the
-// connection reads it again, and then runs the disconnect hooks.
+// onDisconnect is wired as the DisconnectedErrCB callback, after its log line: it ends the life of
+// a connection the client has since replaced (endLifeIfDown), reports the connection event
+// (ConnectionChanged), which wakes the life of the dropped connection to end itself (requestLife)
+// and a publish waiting for the connection to read it again, and then runs the disconnect hooks.
 func (c *Client) onDisconnect() {
 	c.endLifeIfDown()
 	c.connectionChanged()

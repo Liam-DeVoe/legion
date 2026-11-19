@@ -762,14 +762,23 @@ func (m *sessionRelays) start(sessionID string, previous <-chan struct{}) {
 // session's next registration. Both only while the session is still this listener's. A restart or
 // pull whose connection was lost (relayLost) waits for that connection instead, holding nothing,
 // and restarts the moment it is back, with the retry backoff left where it was; a wait whose dial
-// ends unconnected (bus.Reconnected names each way it does) waits out the retry backoff first.
+// ends unconnected (bus.Reconnected names each way it does) waits out the retry backoff first, and
+// so does a second loss in a row that came within relayRetryFirst of its restart, so a connection
+// that reads back but loses every restart at once is retried at the backoff, not in a loop.
 //
 // The pause is logged once an episode: the line is written for the first pause since the session
 // last answered a frame, not for each probe that found it silent again.
 func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 	retry, pause, paused := relayRetryFirst, m.pauseFirst, false
+	// lostAgain is whether the last run ended relayLost: a restart that is lost again within
+	// relayRetryFirst of its start, though Reconnected had found the connection back, met a probe's
+	// false "down" (a box loaded past the bus's 100 ms budget) or a link flapping faster than a
+	// restart, and waits the retry backoff before the next, rather than restarting in a loop.
+	lostAgain := false
 	for {
+		began := time.Now()
 		outcome := m.relayNATS(ctx, run)
+		quickLoss := outcome == relayLost && time.Since(began) < relayRetryFirst
 		switch outcome {
 		case relayEnded:
 			return
@@ -806,12 +815,21 @@ func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 					return
 				}
 				retry = min(retry*2, relayRetryMax)
+			} else if lostAgain && quickLoss {
+				if !run.waitRetry(ctx, retry) {
+					return
+				}
+				retry = min(retry*2, relayRetryMax)
 			}
+			lostAgain = true
 		default:
 			if !run.waitRetry(ctx, retry) {
 				return
 			}
 			retry = min(retry*2, relayRetryMax)
+		}
+		if outcome != relayLost {
+			lostAgain = false
 		}
 		if ours, _ := m.wanted(run.sessionID); !ours {
 			return

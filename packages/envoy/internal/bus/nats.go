@@ -48,6 +48,7 @@ type connectOpts struct {
 	reconnectWaitTick           func()
 	beforeRequestFlush          func()
 	lifeEndGate                 func()
+	lifeListenGate              func(stage string)
 	beforeStoredSend            func(resend bool)
 	background                  bool
 	silentCutDetection          bool
@@ -323,6 +324,11 @@ type Client struct {
 	// nats.go's answer for its connection's close, the order nats.go gives when close clears the
 	// pending requests before its status report reaches the client.
 	lifeEndGate func()
+	// lifeListenGate, when not nil, runs on a life's own goroutine (requestLife) before it
+	// registers its status listener (stage "register") and before its first wait (stage
+	// "select"). It is nil outside tests: a test sets it (withLifeListenGate,
+	// conn_status_life_test.go) to stand for that goroutine not yet scheduled.
+	lifeListenGate func(stage string)
 	// beforeStoredSend, when not nil, runs in sendStored on the goroutine that sends: between its
 	// read of the client's JetStream context and its first send on that context (resend false),
 	// and, in its branch for a closed connection, before the wait for the connection the second
@@ -560,6 +566,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		reconnectWaitTick:           opts.reconnectWaitTick,
 		beforeRequestFlush:          opts.beforeRequestFlush,
 		lifeEndGate:                 opts.lifeEndGate,
+		lifeListenGate:              opts.lifeListenGate,
 		beforeStoredSend:            opts.beforeStoredSend,
 		lossAtOnce:                  opts.lossAtOnce,
 		stopCh:                      make(chan struct{}),

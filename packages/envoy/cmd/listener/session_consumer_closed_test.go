@@ -107,16 +107,16 @@ const heldHandshakeWait = 10 * time.Second
 // authorization timeout - releases the session's lock while the handshake is still held, and
 // deletes once the connection is back. nats.go holds its connection lock through the whole
 // handshake (doReconnect, nats.go v1.53.1 :3458-3485), and every read of its state waits for it;
-// the delete's first consumer call reads the client's own record of the connection's status
-// (bus's connForRequest and requestLife), answers the loss at once, and the delete releases the
-// lock and waits for the connection with nothing held (relockAfterReconnect).
+// the delete's first consumer call asks bus's probe of the connection's status (connForRequest),
+// which waits for nats.go's lock at most its 100 ms budget, answers the loss, and the delete
+// releases the lock and waits for the connection with nothing held (relockAfterReconnect).
 //
 // The order is made certain: the proxy holds the server's answer to the reconnect's CONNECT until
 // the row restores it (testnats.Proxy.HoldConnectAnswers), and the row holds the session's lock
 // until the delete waits for it, as the row above does.
 //
 // The control is this row with bus's connForRequest reading conn.IsConnected() in place of the
-// record: the delete holds the session's lock for as long as the handshake is held, and the row
+// probe: the delete holds the session's lock for as long as the handshake is held, and the row
 // fails at heldHandshakeWait.
 func TestADeleteDuringAHeldReconnectHandshakeReleasesTheSessionsLockWhileItIsHeld(t *testing.T) {
 	rig := newSweepRig(t)
