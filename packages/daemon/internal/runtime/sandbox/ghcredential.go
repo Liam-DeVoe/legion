@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -227,7 +228,7 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 	var role claim.Role
 	judge := func(ctx context.Context, secret *corev1.Secret) (claim.Role, error) {
 		var err error
-		role, err = r.slotAppRole(ctx, held, pod.Name, slot, claim.Role(secret.Annotations[launchedRoleAnnotation]))
+		role, err = r.slotAppRole(ctx, held, pod.Name, slot, secret.Annotations[launchedRoleAnnotation])
 		return role, err
 	}
 	if _, err := r.writeSlotCredential(ctx, pod, uid, slot, repo, slotWrite{role: judge}); err != nil && !errors.Is(err, errSecretNotOwned) {
@@ -249,20 +250,40 @@ type slotCredential struct {
 // slotWrite is what one write of a slot's Secret is made for (writeSlotCredential). role judges,
 // on the Secret as the write read it, the role whose App the slot is written for: a refresh's
 // judges it on what the Secret records (refreshGitHubCredential), a launch's is the role of the
-// step its claim does now. launched is the role a launch's process runs as, which the write
-// records on the Secret (launchedRoleAnnotation), and "" for a refresh, which records nothing.
+// step its claim does now. launched is the record of a launch's process, which the write puts on
+// the Secret (launchedRecord), and "" for a refresh, which records nothing.
 type slotWrite struct {
 	role     func(ctx context.Context, secret *corev1.Secret) (claim.Role, error)
-	launched claim.Role
+	launched string
 }
 
-// launchedRoleAnnotation records, on a slot's Secret, the stored role of the claim whose launch
-// last wrote it, the role the slot's process runs as for its whole life, since a claim takes
-// another role only while it runs nothing (supervise.Machine.Rerole). A launch into a pod it keeps
-// writes it with the slot's credential, in the one update (writeLaunchCredential), and the build
-// of a pod writes it for the launching claim's slot and clears it on every other, whose process
-// the build ends (writeLauncherSecrets). The refresher renders a slot for it (slotAppRole).
+// launchedRoleAnnotation records, on a slot's Secret, the role the slot's process runs as and the
+// generation of its claim whose launch started the claim in that role (launchedRecord). A process
+// runs its role for its whole life, since a claim takes another role only while it runs nothing
+// (supervise.Machine.Rerole). A launch into a pod it keeps writes the record with the slot's
+// credential, in the one update, where it starts the claim in another role than the record names
+// (writeLaunchCredential, writeSlotCredential), and the build of a pod writes it for the launching
+// claim's slot and clears it on every other, whose process the build ends (writeLauncherSecrets).
+// The refresher renders a slot for it while it is of the stored claim's latest generation or a
+// later one (slotAppRole).
 const launchedRoleAnnotation = "legion.dev/launched-role"
+
+// launchedRecord is the record a launch of generation, as role, leaves on its slot's Secret
+// (launchedRoleAnnotation): `<generation>/<role>`.
+func launchedRecord(generation uint64, role claim.Role) string {
+	return strconv.FormatUint(generation, 10) + "/" + string(role)
+}
+
+// readLaunched is the generation and the role a slot's record names (launchedRecord), and false
+// for a Secret that holds none or holds one of another shape.
+func readLaunched(record string) (uint64, claim.Role, bool) {
+	at, role, ok := strings.Cut(record, "/")
+	if !ok || role == "" {
+		return 0, "", false
+	}
+	generation, err := strconv.ParseUint(at, 10, 64)
+	return generation, claim.Role(role), err == nil
+}
 
 // writeSlotCredential is the one-slot write, shared by the refresher (refreshGitHubCredential) and
 // a launch into a pod it keeps (writeLaunchCredential): slot's Secret in pod, owned by the Sandbox
@@ -325,7 +346,15 @@ func (r *Runtime) writeSlotCredential(ctx context.Context, pod *corev1.Pod, uid 
 				changed = append(changed, dir)
 			}
 		}
-		record := write.launched != "" && secret.Annotations[launchedRoleAnnotation] != string(write.launched)
+		// The record is rewritten where the launch starts the claim in another role than it names,
+		// or the Secret holds none: a record of the same role stays with the generation that took
+		// it, which every later generation of that role reads past to the stored role, the same one.
+		record := false
+		if write.launched != "" {
+			_, was, ok := readLaunched(secret.Annotations[launchedRoleAnnotation])
+			_, now, _ := readLaunched(write.launched)
+			record = !ok || was != now
+		}
 		if len(changed) == 0 && !record {
 			return held, nil
 		}
@@ -340,7 +369,7 @@ func (r *Runtime) writeSlotCredential(ctx context.Context, pod *corev1.Pod, uid 
 			if secret.Annotations == nil {
 				secret.Annotations = map[string]string{}
 			}
-			secret.Annotations[launchedRoleAnnotation] = string(write.launched)
+			secret.Annotations[launchedRoleAnnotation] = write.launched
 		}
 		_, err = secrets.Update(ctx, secret, metav1.UpdateOptions{})
 		if err == nil {
@@ -379,7 +408,7 @@ func (r *Runtime) writeLaunchCredential(ctx context.Context, pod *corev1.Pod, sp
 	repo, _ := fetchRepository(pod)
 	held, err := r.writeSlotCredential(ctx, pod, owner.UID, slot, repo, slotWrite{
 		role:     func(context.Context, *corev1.Secret) (claim.Role, error) { return role, nil },
-		launched: spec.Role,
+		launched: launchedRecord(spec.Generation, spec.Role),
 	})
 	if err != nil {
 		return nil, err
@@ -406,11 +435,12 @@ type slotKey struct {
 	slot    claim.Role
 }
 
-// slotHolder is the stored claim that runs in a slot: its token and its stored role, the role of
-// the step its agent does now.
+// slotHolder is the stored claim that runs in a slot: its token, its stored role, the role of the
+// step its agent does now, and the generation of it the store holds.
 type slotHolder struct {
-	token claim.Token
-	role  claim.Role
+	token      claim.Token
+	role       claim.Role
+	generation uint64
 }
 
 // slotHolders is every stored claim by the Sandbox its issue names (SandboxName) and the slot it
@@ -425,25 +455,28 @@ func (r *Runtime) slotHolders(ctx context.Context) (map[slotKey]slotHolder, erro
 		// A claim the store holds no role for (a row written before claims recorded one) names no
 		// slot's App, so its slot keeps its own.
 		if slot := slotOf(c.Token); slot != "" && c.Role != "" {
-			held[slotKey{sandbox: SandboxName(c.Token), slot: slot}] = slotHolder{token: c.Token, role: c.Role}
+			held[slotKey{sandbox: SandboxName(c.Token), slot: slot}] = slotHolder{token: c.Token, role: c.Role, generation: c.Generation}
 		}
 	}
 	return held, nil
 }
 
 // slotAppRole is the role whose App slot of the pod of sandbox holds: runtime.SlotRole of the
-// stored claim that runs in it, for launched, the role the slot's process was launched as, which
-// a launch's write of the slot's Secret records (launchedRoleAnnotation), or for that claim's
-// stored role in held where launched is "", and the slot's own name where no stored claim runs in
-// it. SlotRole gives the claim's role unless the runtime's ActsAs gives another. It is never the
+// stored claim that runs in it, for the role its process was launched as where launched, the
+// record a launch's write of the slot's Secret left (launchedRoleAnnotation), is of the stored
+// claim's generation or a later one, and otherwise for that claim's stored role in held; the slot's
+// own name where no stored claim runs in it. A record of a later generation than held's is a launch
+// held was read before, whose role is the one its process runs; a record of an earlier one is of a
+// process a later launch replaced, by a release that leaves no record, whose role the stored claim
+// holds. SlotRole gives the claim's role unless the runtime's ActsAs gives another. It is never the
 // slot's name for a claim that holds another role: a keyed agent's slot is named by its agent.
-func (r *Runtime) slotAppRole(ctx context.Context, held map[slotKey]slotHolder, sandbox string, slot, launched claim.Role) (claim.Role, error) {
+func (r *Runtime) slotAppRole(ctx context.Context, held map[slotKey]slotHolder, sandbox string, slot claim.Role, launched string) (claim.Role, error) {
 	h, ok := held[slotKey{sandbox: sandbox, slot: slot}]
 	if !ok {
 		return slot, nil
 	}
-	if launched != "" {
-		h.role = launched
+	if generation, role, ok := readLaunched(launched); ok && generation >= h.generation {
+		h.role = role
 	}
 	return runtime.SlotRole(ctx, r.actsAs, h.token, h.role)
 }

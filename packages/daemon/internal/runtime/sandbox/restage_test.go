@@ -920,9 +920,9 @@ func TestARoleStartedInARunningPodWritesOnlyItsAddressRecord(t *testing.T) {
 		t.Errorf("the patch %s is not the tester's record alone", body)
 	}
 	after := g.secret(slot)
-	if !maps.EqualFunc(after.Data, before.Data, slices.Equal) || after.Annotations[launchedRoleAnnotation] != string(claim.RoleTester) {
+	if want := launchedRecord(spec.Generation, claim.RoleTester); !maps.EqualFunc(after.Data, before.Data, slices.Equal) || after.Annotations[launchedRoleAnnotation] != want {
 		t.Errorf("the slot's Secret holds %v with the record %q, want its data unchanged and the record %q",
-			slices.Sorted(maps.Keys(after.Data)), after.Annotations[launchedRoleAnnotation], claim.RoleTester)
+			slices.Sorted(maps.Keys(after.Data)), after.Annotations[launchedRoleAnnotation], want)
 	}
 	delete(after.Annotations, launchedRoleAnnotation)
 	delete(before.Annotations, launchedRoleAnnotation)
