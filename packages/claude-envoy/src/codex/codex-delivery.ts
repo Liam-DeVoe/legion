@@ -118,6 +118,20 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
       waiter.resolve()
     }
   }
+  /** Ends the write of a line still in `directory` once delivery has stopped. A refused write
+   *  leaves its Envoy frame unanswered, so Envoy sends it again: the line is withdrawn before the
+   *  write is refused, so the hook cannot deliver it as well. A line the hook took first was
+   *  delivered, and its write resolves. */
+  const endStopped = async (
+    directory: string,
+    name: string,
+    item: CodexInboxItem,
+  ): Promise<void> => {
+    if (await withdrawWaiting(directory, name)) {
+      throw new Error("the Codex session's delivery stopped before the message was taken")
+    }
+    if ((await takenBy(directory, name)) === "hook") options.taken?.(item)
+  }
   const timer = setInterval(() => {
     if (waiting.size === 0) return
     void check()
@@ -140,6 +154,9 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
       }
       const directory = options.inboxDirectory(options.sessionId())
       const name = await putInbox(directory, item)
+      // stop() ran while the line was being written, after it ended the writes it knew of: this
+      // one ends the same way, or it would never settle.
+      if (stopped) return endStopped(directory, name, item)
       const written = new Promise<void>((resolve, reject) => {
         waiting.set(name, { directory, item, reject, resolve })
       })
@@ -172,22 +189,12 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
     stop() {
       stopped = true
       clearInterval(timer)
-      // A refused write leaves its Envoy frame unanswered, so Envoy sends it again. Each line is
-      // withdrawn before its write is refused, so the hook cannot deliver it as well; a line the
-      // hook took first was delivered, and its write resolves.
       const left = [...waiting]
       waiting.clear()
       return Promise.all(
-        left.map(async ([name, waiter]) => {
-          if (await withdrawWaiting(waiter.directory, name)) {
-            waiter.reject(
-              new Error("the Codex session's delivery stopped before the message was taken"),
-            )
-          } else {
-            if ((await takenBy(waiter.directory, name)) === "hook") options.taken?.(waiter.item)
-            waiter.resolve()
-          }
-        }),
+        left.map(([name, waiter]) =>
+          endStopped(waiter.directory, name, waiter.item).then(waiter.resolve, waiter.reject),
+        ),
       ).then(() => undefined)
     },
   }

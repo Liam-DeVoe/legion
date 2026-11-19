@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdirSync, readdirSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { createCodexDelivery } from "../src/codex/codex-delivery"
@@ -85,6 +85,18 @@ describe("the Codex inbox", () => {
 })
 
 describe("createCodexDelivery", () => {
+  /** Waits until `count` lines wait in `directory`. A write puts its line there with a file write
+   *  and a rename, which a loaded machine can take longer than any fixed sleep, and a test that
+   *  acts on the line before it is there tests nothing. */
+  async function waitingLines(directory: string, count = 1): Promise<void> {
+    const waiting = join(directory, "waiting")
+    for (let i = 0; i < 500; i++) {
+      if (existsSync(waiting) && readdirSync(waiting).length === count) return
+      await Bun.sleep(10)
+    }
+    throw new Error(`${waiting} never held ${count} line(s)`)
+  }
+
   function harness(directory: string, failQueue = false) {
     const queued: string[] = []
     const taken: CodexInboxItem[] = []
@@ -117,6 +129,7 @@ describe("createCodexDelivery", () => {
     const written = delivery.deliver({ content: "mid-turn", dispatchMessageId: "m1" }).then(() => {
       done = true
     })
+    await waitingLines(directory)
     await Bun.sleep(30)
     expect(done).toBe(false)
     expect((await takeInbox(directory, "hook")).map(({ item }) => item.content)).toEqual([
@@ -130,10 +143,11 @@ describe("createCodexDelivery", () => {
   })
 
   test("a line no tool call took goes to codex queue when the turn ends", async () => {
-    const { delivery, queued, taken } = harness(inbox())
+    const directory = inbox()
+    const { delivery, queued, taken } = harness(directory)
     delivery.turnStarted()
     const written = delivery.deliver({ content: "late" })
-    await Bun.sleep(20)
+    await waitingLines(directory)
     expect(queued).toEqual([])
     await delivery.turnEnded()
     await written
@@ -149,6 +163,11 @@ describe("createCodexDelivery", () => {
     const busy = harness(inbox(), true)
     busy.delivery.turnStarted()
     const written = busy.delivery.deliver({ content: "y" })
+    // The write is rejected inside the turn's end, before the expectation below reads it, so it is
+    // marked handled here: a rejection nothing handles yet fails the test as an unhandled one.
+    // (`expect(...).rejects` cannot be taken here instead: Bun waits there for the write to settle,
+    // and it settles only once the turn ends.)
+    written.catch(() => undefined)
     await Bun.sleep(20)
     await busy.delivery.turnEnded()
     await expect(written).rejects.toThrow("codex queue exited 1")
@@ -170,7 +189,7 @@ describe("createCodexDelivery", () => {
     })
     delivery.turnStarted()
     const written = delivery.deliver({ content: "waiting" })
-    await Bun.sleep(20)
+    await waitingLines(codexInboxDirectory(base, "old"))
     session = "new"
     await delivery.rebind()
     await written
@@ -194,7 +213,7 @@ describe("createCodexDelivery", () => {
     })
     delivery.turnStarted()
     const written = delivery.deliver({ content: "late" })
-    await Bun.sleep(20)
+    await waitingLines(directory)
     // The first sweep finds a file where the server's directory should be and fails.
     const blocker = join(directory, "queued")
     await Bun.write(blocker, "not a directory")
@@ -231,13 +250,30 @@ describe("createCodexDelivery", () => {
     const { delivery } = harness(directory)
     delivery.turnStarted()
     const written = delivery.deliver({ content: "never" })
-    await Bun.sleep(20)
-    expect(readdirSync(join(directory, "waiting"))).toHaveLength(1)
+    await waitingLines(directory)
     delivery.stop()
     await expect(written).rejects.toThrow("stopped before the message was taken")
     for (let i = 0; i < 50 && readdirSync(join(directory, "waiting")).length > 0; i++) {
       await Bun.sleep(10)
     }
+    expect(readdirSync(join(directory, "waiting"))).toEqual([])
+    expect(await takeInbox(directory, "hook")).toEqual([])
+  })
+
+  test("a write that stopping overtakes while its line is being written still settles", async () => {
+    const directory = inbox()
+    const { delivery } = harness(directory)
+    delivery.turnStarted()
+    // stop() runs while the write is still putting its line into the inbox, before it waits.
+    const written = delivery.deliver({ content: "overtaken" })
+    const stopped = delivery.stop()
+    expect(
+      await written.then(
+        () => "resolved",
+        (error: Error) => error.message,
+      ),
+    ).toBe("the Codex session's delivery stopped before the message was taken")
+    await stopped
     expect(readdirSync(join(directory, "waiting"))).toEqual([])
     expect(await takeInbox(directory, "hook")).toEqual([])
   })

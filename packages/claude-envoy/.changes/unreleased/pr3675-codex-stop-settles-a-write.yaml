@@ -1,0 +1,5 @@
+kind: Fixed
+body: A Codex message that arrives while the Codex session's delivery stops no longer waits for ever. When the stop came while the message was still being written into the session's inbox, its write never settled, so its Envoy frame was never answered or sent again. The message is now withdrawn and its write refused, so Envoy sends it again, as for any other message the stop found waiting.
+time: 2026-11-19T02:42:11Z
+custom:
+    Issue: pr3675
