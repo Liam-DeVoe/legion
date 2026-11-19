@@ -1,4 +1,4 @@
-import { expect, jest, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts";
 import {
   focusManager,
@@ -60,6 +60,14 @@ import {
   broadcastSendState,
   composedBroadcast,
 } from "./broadcast-plan";
+
+// A message, a reply and a held send's words are Markdown (`MarkdownBody`), drawn by the lazy
+// Markdown engine, and several rows read them as soon as their row shows. So the file loads the
+// engine before its first row, in whatever order the rows run and in the cold lane, which holds
+// the engine's load back.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** What each attempt of a message to one agent, or of a broadcast, is held to, beside what it
  *  carries: its deadline and the key that names the press (`Idempotency-Key`). */
