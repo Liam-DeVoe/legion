@@ -167,7 +167,9 @@ type Outbox struct {
 }
 
 // New returns an outbox for deps, holding the publisher hold under deps.Instance, or an id of its
-// own when that is zero. Run starts it.
+// own when that is zero. Run starts it. It makes the record of the fallback copies its passes find
+// held behind an earlier event (heldCopies) and registers that record's gauges on deps.Metrics
+// when it is set.
 func New(deps Deps) *Outbox {
 	host, err := os.Hostname()
 	if err != nil {
@@ -177,6 +179,10 @@ func New(deps Deps) *Outbox {
 	if instance == uuid.Nil {
 		instance = uuid.New()
 	}
+	if deps.held == nil {
+		deps.held = newHeldCopies()
+	}
+	deps.held.register(deps.Metrics)
 	return &Outbox{
 		deps:        deps,
 		instance:    instance,
