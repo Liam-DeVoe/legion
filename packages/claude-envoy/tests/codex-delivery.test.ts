@@ -114,13 +114,13 @@ describe("the Codex inbox", () => {
 })
 
 describe("createCodexDelivery", () => {
-  function harness(directory: string, failQueue = false) {
+  function harness(directory: string, failQueue = false, pollMs = 10) {
     const queued: string[] = []
     const taken: CodexInboxItem[] = []
     const delivery = createCodexDelivery({
       inboxDirectory: () => directory,
       sessionId: () => "session/1",
-      pollMs: 10,
+      pollMs,
       queue: async (text) => {
         if (failQueue) throw new Error("codex queue exited 1")
         queued.push(text)
@@ -389,11 +389,14 @@ describe("createCodexDelivery", () => {
 
   test("a line that lands once the turn ended and stop() ran is withdrawn, and no sweep takes it", async () => {
     const directory = inbox()
-    const { delivery, queued } = harness(directory)
+    // No poll: the only sweeps are the turn's end, done before stop(), and the write's own once its
+    // line lands. A poll's sweep asked for before stop() may still run after it, and rightly
+    // settles any line it takes, so with one this test could not tell that sweep from a new one.
+    const { delivery, queued } = harness(directory, false, 3_600_000)
     delivery.turnStarted()
     let stopping: Promise<void> | undefined
-    // Every sweep after stop() is one stop() cannot see: it would queue a line stop() then finds
-    // taken, and answer its write by a codex queue stop() never waited for.
+    // A sweep that starts after stop() is one stop() cannot see: it would queue a line stop() then
+    // finds taken, and answer its write by a codex queue stop() never waited for.
     const sweptAfterStop: string[] = []
     spyOn(codexInbox, "takeInbox").mockImplementation(async (...args) => {
       if (stopping !== undefined && args[1] === "server") sweptAfterStop.push(args[0])
