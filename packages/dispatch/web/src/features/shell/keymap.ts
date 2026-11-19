@@ -232,10 +232,27 @@ const TEXT_INPUT_TYPES: Record<string, true> = {
   week: true,
 };
 
+/** Whether `element` takes typed text: a content-editable element, an `<input>` of a text-entry
+ *  type (`TEXT_INPUT_TYPES`), or a `<textarea>`. A key pressed on one is the control's own
+ *  (`isEditableTarget`), and the page's focus rescue lands no loss the reader did not cause on
+ *  one (`focus-place.ts`'s `landQuietly`), since their next key would be typed there. */
+export function takesText(element: Element): boolean {
+  if (element instanceof HTMLElement && element.isContentEditable) {
+    return true;
+  }
+  // An `<input>` takes typed text only in the text-entry types; a checkbox, radio or button
+  // takes none.
+  if (element instanceof HTMLInputElement) {
+    return TEXT_INPUT_TYPES[element.type] === true;
+  }
+  return element.tagName === "TEXTAREA";
+}
+
 /**
  * Whether a key pressed on `target` is the control's own, so that only the bindings that fire
- * while the reader types (`inEditable`) may take it: a control that takes typed text, a
- * `<select>`, the trigger of an option list, or anything at all inside an open panel.
+ * while the reader types (`inEditable`) may take it: a control that takes typed text
+ * (`takesText`), a `<select>`, the trigger of an option list, or anything at all inside an open
+ * panel.
  *
  * A panel - the display menu, a filter panel and the lists opened from it, a column filter -
  * stands over the page in place of the selects it replaced, and its keys are its own whatever
@@ -255,21 +272,20 @@ function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
     return false;
   }
-  if (target.isContentEditable || target.closest(IN_PANEL) !== null) {
+  if (takesText(target) || target.closest(IN_PANEL) !== null) {
     return true;
   }
-  // An `<input>` takes typed text only in the text-entry types; a checkbox, radio or button
-  // takes none, so a page's single-key shortcuts keep working while one has focus. That is a
-  // permission with an obligation attached: the registry stops guarding those controls, so a
-  // page whose key writes something must say for itself where the reader may press it
-  // (`IssuePage`'s `outsideInputsAndAskCards`, the Inbox's `outsideAskCard`).
+  // An `<input>` that takes no text - a checkbox, radio or button - leaves its keys to the page,
+  // so a page's single-key shortcuts keep working while one has focus. That is a permission with
+  // an obligation attached: the registry stops guarding those controls, so a page whose key
+  // writes something must say for itself where the reader may press it (`IssuePage`'s
+  // `outsideInputsAndAskCards`, the Inbox's `outsideAskCard`).
   if (target instanceof HTMLInputElement) {
-    return TEXT_INPUT_TYPES[target.type] === true;
+    return false;
   }
-  const tag = target.tagName;
   // A `<select>` stays editable: its own keys type-ahead and step through the options, and the
   // Inbox's `h` hands it focus on purpose. A list's trigger is read as one.
-  return tag === "TEXTAREA" || tag === "SELECT" || target.matches(LIST_TRIGGER);
+  return target.tagName === "SELECT" || target.matches(LIST_TRIGGER);
 }
 
 export interface KeymapOptions {
