@@ -789,7 +789,7 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // names an issue whose role has ended six turns in a row in a provider error: its Role is that
 // role, and its Reason the model and the HTTP status the provider answered, where it answered
 // one, in words built from structured fields alone
-// (supervise's tellControllerOfProviderErrors). It is told once, and not again until a turn with
+// (supervise's tellOfProviderErrors). It is told once, and not again until a turn with
 // no error puts that run back to zero; nothing is held and nothing is bounded, because a chain's
 // bottom refusing deterministically costs one request every ten minutes. It is the one kind of
 // these that the issue's architect is told as well, in a notice row of its own, unless the run is
@@ -2233,7 +2233,7 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // its own (MergeHoldsChanged), since a notice reaches only an architect.
 //
 // `provider-errors` is a claim whose turns have ended six times in a row in an error the model's
-// provider returned (supervise's tellControllerOfProviderErrors). The issue's architect is told,
+// provider returned (supervise's tellOfProviderErrors). The issue's architect is told,
 // since narrowing the work the provider keeps refusing is the architect's, and so is the
 // controller, in a row of its own (ProviderErrorsNotice), since compacting or refreshing that
 // claim's session is the controller's (internal/daemon's providerErrorRunReached). A run of the

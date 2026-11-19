@@ -294,8 +294,14 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// machine then refuses is answered: by then this request has stopped the claim, so that
 	// refusal is a sentence of the answer rather than the answer itself (notStartedAgain,
 	// FreshSessionResponse.PhaseNotRestarted), bar a forget a hold above the caller refused, which
-	// is that hold's refusal saying the suspension ran (itsSuspensionTakenOver).
+	// is that hold's refusal saying the suspension ran (outcome).
 	stopped := false
+	// outcome is what a hold's refusal met from here on says became of the claim (refuseHold),
+	// moved forward at each step that changes it: nothing yet; this request's own suspension, once
+	// it ran (itsSuspensionTakenOver); the recorded session left behind, once the forget dropped
+	// it (sessionLeftBehind). Only a claim this request found suspended reads it after the forget,
+	// since a refusal of the resume of a claim it stopped is a sentence of the answer.
+	outcome := nothingChanged
 	resumeRefusal := c.ResumeRefusal(by)
 	switch {
 	case view.SuspensionHeld:
@@ -319,7 +325,7 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 		if !s.suspendForFreshSession(w, r, m, token, by) {
 			return 0, "", false, false
 		}
-		stopped = true
+		stopped, outcome = true, itsSuspensionTakenOver
 	case startsAgain(c.State):
 	default:
 		writeFailure(w, http.StatusConflict, claimUnsettled, fmt.Sprintf(
@@ -332,19 +338,12 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// TestTheOperatorsFreshSessionRetryForgetsTheSessionBeforeTheRestartIsApplied). The ask rides
 	// the retry as well (RequestAskedRetry.FreshSession, intake.RestartPhase.FreshSession), so
 	// the start the workflow raises spawns rather than resumes whatever the claim still records.
-	// forgot is whether the forget below dropped a recorded session, which a refusal of the
-	// resume after it must say: the claim is no longer the one the request found.
-	forgot := false
 	if session := m.Claim().Session; session != "" {
 		switch err := s.forgetRecordedSession(r, m, token, session, by); {
 		case holdRefusal(err):
 			// A suspension above the caller took the claim over since the read at the request,
 			// so the forget kept the session, and the hold is the answer: the caller's resume
 			// would be refused it, and only its holder starts the claim now.
-			outcome := nothingChanged
-			if stopped {
-				outcome = itsSuspensionTakenOver
-			}
 			s.log.Warn("api: a suspension above the caller took the claim over before the fresh session's forget, which kept its session",
 				"claim", token, "session", session, "stopped", stopped, "error", err)
 			s.refuseHold(w, token, freshSessionOp, by, err, outcome)
@@ -357,7 +356,7 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 			s.operationFailure(w, by, "forget-session", token, err)
 			return 0, "", false, false
 		}
-		forgot = true
+		outcome = sessionLeftBehind
 	}
 	if s.beforeFreshSessionResume != nil {
 		s.beforeFreshSessionResume()
@@ -380,10 +379,6 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 		// Only a claim this request found suspended comes here (a refusal after this request's
 		// own suspension is answered above), so the hold took over a suspension that was already
 		// there, and the forget, when there was one, has dropped the session.
-		outcome := nothingChanged
-		if forgot {
-			outcome = sessionLeftBehind
-		}
 		s.refuseHold(w, token, freshSessionOp, by, err, outcome)
 		return 0, "", false, false
 	case err != nil:
@@ -630,7 +625,7 @@ func refuseHeldSuspension(w http.ResponseWriter, token claim.Token, state superv
 	if state == supervise.StateWorking {
 		code = claimInATurn
 	}
-	if _, heldBy, lifts := holdSentences(token, hold); lifts != "" {
+	if _, heldBy, lifts, held := holdSentences(token, hold); held {
 		writeFailure(w, http.StatusConflict, code, fmt.Sprintf(
 			"%s has a suspension held over it, and %s reaches no claim a suspension waits over, whatever state it is in; it is %s. %s",
 			token, op.name, heldBy, lifts))

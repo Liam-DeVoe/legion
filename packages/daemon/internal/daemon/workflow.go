@@ -2107,7 +2107,7 @@ func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, reason stri
 	// controller's notice already carries. A child's own architect's run does tell an architect:
 	// the notice's walk starts at the child's parent (record.NoticeStartsAtParent), so the
 	// architect above the child hears it, which is who can narrow that child's work.
-	tellsArchitect := c.Role != claim.RoleArchitect || !claim.IsTreeRoot(c.Issue, c.Tree)
+	tellsArchitect := !claim.IsTreeArchitect(c.Role, c.Issue, c.Tree)
 	go func() {
 		// This goroutine runs beside the machine that started it and every other, so it takes a
 		// hold mark of its own (store.ForConcurrentWorker). The notices are their own transaction,

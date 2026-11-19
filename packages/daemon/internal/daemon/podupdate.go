@@ -249,7 +249,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	// it was told would be replaced. Replacing it is one restart of each role in its own session,
 	// which the alternative — a release of the answered roles that the daemon alone knows about —
 	// is not.
-	terms := strings.Join(reasons, ", ")
+	//
 	// One live read, given to both decisions below, so the claims the replacement waits on and
 	// the claims the post records the round on, which the ask then reaches, are one set. Read
 	// live by the replacement and from the snapshot by the post, a claim whose session registered
@@ -257,46 +257,25 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	// the replacement would wait on that claim for an answer to a round the post never recorded
 	// on it, so no ask would reach it, and the round would run to its bound waiting for a worker
 	// nothing had asked anything of.
-	var live []supervise.Claim
+	live := s.liveGroup(group)
 	if open != "" {
 		// A round open here is over the pod the claims record, the one round this issue can be
 		// in: a round over any other pod has ended above.
-		live = s.liveGroup(group)
-		terms = roundReasons(group, open)
+		terms := roundReasons(group, open)
 		if replace, decided := s.completePodUpdate(ctx, issue, group, live, open, pod, terms, now); decided {
 			return replace
 		}
+		// A round the claims record is posted again at every tick, which records nothing new on
+		// a claim that holds it, and no limit holds that post back: a round held back after it
+		// opened would leave its workers waiting in a pod the daemon has already told them is
+		// going, and these limits are about how fast a change reaches the fleet, not about how
+		// long a round may run.
+		s.openPodUpdate(ctx, issue, live, pod, terms)
+		return nil
 	}
-	// A round the claims do not already record is an opening, and the project's limits may hold
-	// it back (podUpdateSweep). A round they do record is posted again at every tick, which
-	// records nothing new on a claim that holds it, and no limit holds that post back: a round
-	// held back after it opened would leave its workers waiting in a pod the daemon has already
-	// told them is going, and these limits are about how fast a change reaches the fleet, not
-	// about how long a round may run.
-	//
-	// A round this daemon has already opened, whose post the claims have not recorded yet, is
-	// posted again too, as that same opening rather than a new one, and no limit holds that post
-	// back either (podUpdateSweep.reposts): it is in a round for the sweep's record, and nothing
-	// more is charged for it.
-	opening := open == ""
-	if opening {
-		if inFlight, again := sweep.reposts(issue, round); again {
-			// Posted with the reasons it opened with, so every claim records one set of them
-			// whichever post reaches it first.
-			opening, terms = false, inFlight.reasons
-		}
-	}
-	if opening {
-		if _, held := sweep.holds(issue); held {
-			return nil
-		}
-	}
-	if open == "" {
-		live = s.liveGroup(group)
-	}
-	if s.openPodUpdate(ctx, issue, live, pod, terms) && opening {
-		s.recordPodUpdateOpening(sweep, issue, round, terms, now)
-	}
+	// A round the claims do not record is an opening, which the project's limits may hold back,
+	// or this daemon's own opening still in flight, posted again (openPodUpdateUnderLimits).
+	s.openPodUpdateUnderLimits(ctx, sweep, issue, live, pod, strings.Join(reasons, ", "), now)
 	return nil
 }
 
@@ -1157,6 +1136,49 @@ func (s *supervision) endRoundOverAGonePod(ctx context.Context, issue string, gr
 	s.endPodUpdates(told, round)
 }
 
+// podOpeningStep is what the opening step of an issue's pod round did (openPodUpdateUnderLimits):
+// the reasons its post carried, whether that post was a new opening charged to the project's
+// limits, and the limit that held the opening back, "" where none did. An opening a limit held
+// back posted nothing and carries no reasons.
+type podOpeningStep struct {
+	reasons string
+	opened  bool
+	held    podUpdateLimit
+}
+
+// openPodUpdateUnderLimits is the opening step of the pod round of an issue whose claims record
+// no round, the one both the sweep's walk (reconcileIssuePodUpdate) and the controller's request
+// (postRequestedPodUpdate) take, over live, the issue's claims as their machines hold them now,
+// and pod, the pod those claims record.
+//
+// An opening of this daemon's own whose post no claim has recorded yet is posted again with the
+// reasons it opened with, so every claim records one set of them whichever post reaches it
+// first: the post that opened it may have gone to claims this read no longer asks, and a machine
+// that records the round already takes nothing from it. No limit holds that post back and nothing
+// more is charged for it: it is the same opening, holding the slot it was charged
+// (podUpdateSweep.reposts). Any other round is an opening, which a limit of the project may hold
+// back (podUpdateSweep.holds), and then nothing is posted. Otherwise it is posted with reasons,
+// and charged to the sweep and to this daemon's record of its own openings
+// (recordPodUpdateOpening) only where that post can reach a claim whose machine records the round
+// (openPodUpdate): an opening no claim records holds no slot, and charged all the same it would
+// hold one for ever.
+func (s *supervision) openPodUpdateUnderLimits(ctx context.Context, sweep *podUpdateSweep, issue string,
+	live []supervise.Claim, pod, reasons string, now time.Time) podOpeningStep {
+	round := supervise.PodRound(pod)
+	if inFlight, again := sweep.reposts(issue, round); again {
+		s.openPodUpdate(ctx, issue, live, pod, inFlight.reasons)
+		return podOpeningStep{reasons: inFlight.reasons}
+	}
+	if limit, held := sweep.holds(issue); held {
+		return podOpeningStep{held: limit}
+	}
+	opened := s.openPodUpdate(ctx, issue, live, pod, reasons)
+	if opened {
+		s.recordPodUpdateOpening(sweep, issue, round, reasons, now)
+	}
+	return podOpeningStep{reasons: reasons, opened: opened}
+}
+
 // openPodUpdate opens the round, or keeps it open, and asks each role of it once: one ask that
 // reaches the role's session, since an ask that reached none is asked again (askRound). Every
 // claim that blocks the round is posted PodUpdateOpen at every tick while the round runs: the
@@ -1188,7 +1210,7 @@ func (s *supervision) endRoundOverAGonePod(ctx context.Context, issue string, gr
 // they say, and the readings that hold a round past its bound are told where they are read.
 //
 // It reports whether this ask can reach a claim whose machine records the round, which is what
-// the project's limits charge an opening for (reconcileIssuePodUpdate). Those are the claims the
+// the project's limits charge an opening for (openPodUpdateUnderLimits). Those are the claims the
 // round asks (askedClaims) rather than every claim it posts to: a failed claim is posted like
 // any other and its machine ignores the event (supervise's table), so an ask whose blocking
 // claims have all failed is recorded by no claim at all. An issue with no claim the round can

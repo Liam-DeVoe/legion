@@ -426,7 +426,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	if s.stopped(w, "spawn") {
 		return
 	}
-	if req.Tree == req.Issue && req.Role == claim.RoleArchitect {
+	if claim.IsTreeArchitect(req.Role, req.Issue, req.Tree) {
 		if _, err := s.trees.OpenOperatorTreeLifecycle(ctx, s.project, req.Tree, s.drawExperiments(req.Tree)); errors.Is(err, treelifecycle.ErrCleanupReserved) {
 			writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf("operator tree %s is waiting for durable cleanup: %v", req.Tree, err)))
 			return

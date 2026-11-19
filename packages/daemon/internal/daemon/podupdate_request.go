@@ -19,15 +19,16 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 
 // requestPodUpdate opens the update round over issue's pod on the request of the project's
 // controller (api.Options.RequestPodUpdate, the route POST /legion/v1/issues/pod-update). The
-// round is the one a drift opens, opened the way the sweep opens it: posted to every claim of the
-// issue that has run a worker (openPodUpdate), charged to the project's limits as the sweep
-// charges an opening (recordPodUpdateOpening), and carried from then on by the sweep alone. Its
-// reasons say the controller asked for it (requestedPodUpdateReasons). The sweep asks each role
-// of the pod, at the first sweep that reads the round recorded on its claim, to push its work and
-// answer ready_for_update (askRound), and replaces the pod once every role it asks has answered,
-// or at the round's bound whatever they said (completePodUpdate). No drift is needed for any of
-// that: a round open over the pod its claims record goes on, drift or no drift, until its pod is
-// replaced or gone (reconcileIssuePodUpdate).
+// round is the one a drift opens, opened through the sweep's own opening step
+// (openPodUpdateUnderLimits): posted to every claim of the issue that has run a worker
+// (openPodUpdate), charged to the project's limits as the sweep charges an opening
+// (recordPodUpdateOpening), and carried from then on by the sweep alone. Its reasons say the
+// controller asked for it (requestedPodUpdateReasons). The sweep asks each role of the pod, at
+// the first sweep that reads the round recorded on its claim, to push its work and answer
+// ready_for_update (askRound), and replaces the pod once every role it asks has answered, or at
+// the round's bound whatever they said (completePodUpdate). No drift is needed for any of that: a
+// round open over the pod its claims record goes on, drift or no drift, until its pod is replaced
+// or gone (reconcileIssuePodUpdate).
 //
 // It reads the issue as the sweep groups it — every claim of the issue that has not retired — and
 // answers, in this order:
@@ -52,9 +53,9 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 //     claim would record the round: refused (api.PodUpdateNoPod).
 //   - this daemon's own opening of the round still in flight, posted and not yet recorded by any
 //     claim: that opening, posted again with its own reasons, opened nothing new.
-//   - a limit of the project that holds the opening back, read as the sweep reads it
-//     (beginPodUpdateSweep, podUpdateSweep.holds): refused, naming the limit
-//     (api.PodUpdateLimited). The request is not kept: the controller asks again.
+//   - a limit of the project that holds the opening back, read as the sweep reads it, against a
+//     sweep read for this one request (beginPodUpdateSweep, podUpdateSweep.holds): refused,
+//     naming the limit (api.PodUpdateLimited). The request is not kept: the controller asks again.
 //   - otherwise the round is opened, and answered with opened true.
 //
 // A round it posted, opened or in flight, is answered only once a claim of the issue records it
@@ -156,21 +157,15 @@ func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) 
 	round := supervise.PodRound(pod)
 	now := s.plan.clock.Now()
 	sweep := s.beginPodUpdateSweep(now, byIssue)
-	if opening, again := sweep.reposts(issue, round); again {
-		// Posted again, as the sweep posts an opening of its own still in flight: the post that
-		// opened it may have gone to claims this read no longer asks, and a machine that records
-		// the round already takes nothing from it.
-		s.openPodUpdate(ctx, issue, live, pod, opening.reasons)
-		return api.PodUpdateResponse{Round: round, Reasons: opening.reasons}, tokens, nil
+	step := s.openPodUpdateUnderLimits(ctx, &sweep, issue, live, pod, requestedPodUpdateReasons, now)
+	if step.held != "" {
+		return refusePodUpdate(api.PodUpdateLimited, "%s", s.podUpdateLimitHolds(issue, step.held))
 	}
-	if limit, held := sweep.holds(issue); held {
-		return refusePodUpdate(api.PodUpdateLimited, "%s", s.podUpdateLimitHolds(issue, limit))
+	if step.opened {
+		s.log.Info("supervise: the project's controller asked for the replacement of this issue's pod; its update round is posted",
+			"issue", issue, "round", round, "pod", pod, "roles", namesOf(blockingClaims(live)))
 	}
-	s.openPodUpdate(ctx, issue, live, pod, requestedPodUpdateReasons)
-	s.recordPodUpdateOpening(&sweep, issue, round, requestedPodUpdateReasons, now)
-	s.log.Info("supervise: the project's controller asked for the replacement of this issue's pod; its update round is posted",
-		"issue", issue, "round", round, "pod", pod, "roles", namesOf(blockingClaims(live)))
-	return api.PodUpdateResponse{Round: round, Reasons: requestedPodUpdateReasons, Opened: true}, tokens, nil
+	return api.PodUpdateResponse{Round: round, Reasons: step.reasons, Opened: step.opened}, tokens, nil
 }
 
 // defaultPodRoundRecordBound is how long the controller's request waits for the walk's turn

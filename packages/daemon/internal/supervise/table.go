@@ -2759,15 +2759,15 @@ func forgottenBy(by SuspendSource) (string, error) {
 
 // askedBy refuses a resume, a stop, a forget of the session or a caller's retry
 // (RequestResume.By, RequestStop.By, RequestForgetSession.By, RequestAskedRetry.By) that names a
-// source other than the three that ask one: the operator, the controller and an architect. The
-// source decides which suspensions refuse the request (Claim.ResumeRefusal,
-// Claim.StopOrSuspendRefusal) and whether the wake pacing lets its launch through (exemptWake), so
-// a request naming none, or one of the daemon's own, is a wiring error: it is refused before
-// anything is asked, rather than read as the operator's, whom nothing refuses, as suspendRequest
-// refuses a suspension that names no source.
+// source other than the ones that ask one, the sources whose suspension holds
+// (SuspendSource.Holds): the operator, the controller and an architect. The source decides which
+// suspensions refuse the request (Claim.ResumeRefusal, Claim.StopOrSuspendRefusal) and whether
+// the wake pacing lets its launch through (exemptWake), so a request naming none, or one of the
+// daemon's own, is a wiring error: it is refused before anything is asked, rather than read as
+// the operator's, whom nothing refuses, as suspendRequest refuses a suspension that names no
+// source.
 func askedBy(m *Machine, request string, by SuspendSource) error {
-	switch by {
-	case SuspendedByOperator, SuspendedByController, SuspendedByArchitect:
+	if by.Holds() {
 		return nil
 	}
 	return fmt.Errorf("%s %s: the request names source %q, not operator, controller or architect", request, m.claim.Token, by)

@@ -433,7 +433,7 @@ const overADeadProcess = "stored working over a process that is no longer runnin
 // gives it (holdSentences): the operator's own for the controller's compaction of a claim the
 // operator suspended, and the daemon's rules for an architect's of one the daemon did.
 func refuseNotRunning(w http.ResponseWriter, token claim.Token, doing string, role claim.Role, hold error) {
-	if _, heldBy, lifts := holdSentences(token, hold); lifts != "" {
+	if _, heldBy, lifts, held := holdSentences(token, hold); held {
 		writeFailure(w, http.StatusConflict, claimNotRunning, fmt.Sprintf(
 			"%s is %s, so it runs no Oh My Pi session to compact; it is %s. %s", token, doing, heldBy, lifts))
 		return

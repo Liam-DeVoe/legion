@@ -355,10 +355,12 @@ func (s *server) refuseClaimOperation(w http.ResponseWriter, target claimTarget,
 // holdRefusal is whether err is the machine's refusal of a request a suspension stands in the way
 // of, which refuseHold answers: one above the caller (supervise.Claim.HeldAgainst), or one the
 // daemon placed under an architect's resume, suspend, stop or forget
-// (supervise.Claim.ResumeRefusal, supervise.Claim.StopOrSuspendRefusal).
+// (supervise.Claim.ResumeRefusal, supervise.Claim.StopOrSuspendRefusal). It is read from
+// holdSentences, whose list of those refusals is the only one; the token fills only the words,
+// which this reads none of.
 func holdRefusal(err error) bool {
-	return errors.Is(err, supervise.ErrOperatorHolds) || errors.Is(err, supervise.ErrControllerHolds) ||
-		errors.Is(err, supervise.ErrNotTheArchitectsSuspension)
+	_, _, _, held := holdSentences("", err)
+	return held
 }
 
 // refuseHold is the refusal of a request of the controller's or an architect's (by) that a
@@ -372,12 +374,12 @@ func holdRefusal(err error) bool {
 // hold it may not be.
 func (s *server) refuseHold(w http.ResponseWriter, token claim.Token, op claimOp, by supervise.SuspendSource, err error,
 	outcome string) {
-	switch code, heldBy, lifts := holdSentences(token, err); code {
-	case "":
+	switch code, heldBy, lifts, held := holdSentences(token, err); {
+	case !held:
 		s.logFailure("api: a refusal of a hold that no answer of the claim door decides", "claim", token, "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorBody(fmt.Sprintf(
 			"%s by %s of %s met a refusal this daemon has no answer for: %v", op.name, callerName(by), token, err)))
-	case suspendedByDaemon:
+	case code == suspendedByDaemon:
 		writeFailure(w, http.StatusConflict, code, fmt.Sprintf(
 			"%s is %s, and %s by %s does not reach the daemon's suspension, so it %s. %s",
 			token, heldBy, op.name, callerName(by), outcome, lifts))
@@ -388,26 +390,27 @@ func (s *server) refuseHold(w http.ResponseWriter, token claim.Token, op claimOp
 }
 
 // holdSentences is how the refusals of a suspension a caller may not get past name it, from the
-// machine's word for it (holdRefusal): the code, what the claim is held by, in words that read
-// after "<token> is", and the sentence naming what starts the claim again — the holder's resume,
-// or for the daemon's own suspension the daemon's rules, the controller's resume and the
-// operator's. Each refusal of a hold says both (refuseHold), and so does each recovery's refusal
-// of a claim such a hold stands over, where it would otherwise name a door that refuses the caller
-// (refuseHeldSuspension, refuseNotRunning). An error that names no hold, nil among them, has no
-// words, and every string is empty.
-func holdSentences(token claim.Token, err error) (code, heldBy, lifts string) {
+// machine's word for it: the code, what the claim is held by, in words that read after "<token>
+// is", and the sentence naming what starts the claim again — the holder's resume, or for the
+// daemon's own suspension the daemon's rules, the controller's resume and the operator's. Each
+// refusal of a hold says both (refuseHold), and so does each recovery's refusal of a claim such a
+// hold stands over, where it would otherwise name a door that refuses the caller
+// (refuseHeldSuspension, refuseNotRunning). held is whether err names such a hold at all, which
+// is the one answer every reader takes to that question (holdRefusal among them): an error that
+// names no hold, nil among them, has no words, and every string is empty.
+func holdSentences(token claim.Token, err error) (code, heldBy, lifts string, held bool) {
 	switch {
 	case errors.Is(err, supervise.ErrOperatorHolds):
 		return suspendedByOperator, "held by the operator's own suspension, which only the operator lifts",
-			"Ask the operator: `legion claims resume --claim " + string(token) + "` is theirs to run"
+			"Ask the operator: `legion claims resume --claim " + string(token) + "` is theirs to run", true
 	case errors.Is(err, supervise.ErrControllerHolds):
 		return suspendedByController, "held by the controller's suspension, which only the controller or the operator lifts",
-			"Ask the controller: its `resume` of the claim is its own to run"
+			"Ask the controller: its `resume` of the claim is its own to run", true
 	case errors.Is(err, supervise.ErrNotTheArchitectsSuspension):
 		return suspendedByDaemon, "suspended by the daemon, not by an architect",
-			"The daemon's own rules start such a claim again — its issue's phase, or its role's next wake — and so do the controller's resume and the operator's"
+			"The daemon's own rules start such a claim again — its issue's phase, or its role's next wake — and so do the controller's resume and the operator's", true
 	}
-	return "", "", ""
+	return "", "", "", false
 }
 
 // refuseClaimInATurn is the retry's and the resume's refusal of a claim stored working
