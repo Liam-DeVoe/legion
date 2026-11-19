@@ -71,6 +71,10 @@ type projection struct {
 	// index narrows that scan. Two kinds with one names read it once between them, as a role and
 	// its page do. It is empty for a kind whose rows read their own table.
 	names string
+	// earlierNames is names as read on a database this release's migrations have not reached
+	// (readMessagesNamed), for a kind whose names read a column those migrations add, and empty
+	// for every other kind, whose names read the same either way.
+	earlierNames string
 	// authored says names reads as $1, $2 and $3 the kinds, ids and times of storedAuthors
 	// (censusAuthors), which the census reads once for the run (readStoredAuthors), as it reads
 	// each kind's names once: its arms read the store's log, the largest table, and the person and
@@ -460,8 +464,9 @@ var projections = append([]projection{{
 		" beside the person of each inbox and read-state row this release marked, the person each open ask" +
 		" it stated waits on, and every person a delivered_to, a mentions, a participates_in or a mark of the" +
 		" store's log ever named, which the writer of that tuple made a node of",
-	names:    `select p.login from (` + commentPeople(censusAuthors) + `) p`,
-	authored: true,
+	names:        `select p.login from (` + commentPeople(censusAuthors, true) + `) p`,
+	earlierNames: `select p.login from (` + commentPeople(censusAuthors, false) + `) p`,
+	authored:     true,
 	rows: `
 		select 'person ' || p.login, '` + graphstore.KindPerson + `', p.login, ''
 		from unnest($1::text[]) p (login)`,
@@ -476,8 +481,9 @@ var projections = append([]projection{{
 		" named as the asker, an ask.follower_added event named or a comment.delivery receipt says the listener" +
 		" took an attempt to, and the author of every comment the erase took, as the actor of the event that" +
 		" stored it names it",
-	names:    `select s.id from (` + recordedSessions(censusAuthors, MessagesNameTheirNode) + `) s`,
-	authored: true,
+	names:        `select s.id from (` + recordedSessions(censusAuthors, MessagesNameTheirNode) + `) s`,
+	earlierNames: `select s.id from (` + recordedSessions(censusAuthors, "false") + `) s`,
+	authored:     true,
 	rows: `
 		select 'session ' || s.id, '` + graphstore.KindSession + `', s.id, ''
 		from unnest($1::text[]) s (id) where octet_length(s.id) <= ` + addressBound,
@@ -1016,7 +1022,47 @@ var commentWriterPeople = `
 // every person a participates_in or a mark ever came from, asserted or retracted since, is read
 // too, off the store's log (reachedHistory, through storedAuthors): the people ToPerson and
 // FromPerson make a node of, in the statement that states the tuple.
-func commentPeople(authors string) string {
+//
+// migrated says whether this release's migrations reached the database (readMessagesNamed): the
+// arms that read a messages row's node, a user_threads row's mark, a read-state row's or an ask's
+// tuples_stored_at name columns those migrations add, so a census of a database before them reads
+// around those arms, whose rows no writer of the store has marked there.
+func commentPeople(authors string, migrated bool) string {
+	thisRelease := ""
+	if migrated {
+		thisRelease = `
+		union all
+		select case
+			when m.author->>'kind' = 'user' and coalesce(m.author->>'id', '') <> '' then m.author->>'id'
+			when m.author->>'kind' = 'session' and coalesce(m.author->>'id', '') <> '' then null
+			when coalesce(m.author->>'owner', '') <> '' then m.author->>'owner'
+		end
+		from messages m where ` + MessagesNameTheirNode + `
+		union all
+		select m.author->>'owner'
+		from messages m
+		where ` + MessagesNameTheirNode + ` and m.author->>'kind' = 'session' and coalesce(m.author->>'id', '') <> ''
+		  and m.author->'act'->>'session' = m.author->>'id'
+		  and octet_length(m.author->>'id') <= ` + addressBound + `
+		union all
+		select t.login from user_threads t where t.marked_version is not null
+		union all
+		select r.login from user_agent_read r where r.tuples_stored_at is not null
+		union all
+		select r.login from user_agent_state r where r.tuples_stored_at is not null
+		union all
+		select r.login from user_agent_reply_read r where r.tuples_stored_at is not null
+		union all
+		select r.login from user_agent_thread_dismissed r where r.tuples_stored_at is not null
+		union all
+		select r.login from user_ask_snooze r where r.tuples_stored_at is not null
+		union all
+		select waiting.login
+		from asks a` + asks.AskedOfPersonJoins + `
+		cross join lateral (select ` + asks.AskedOfPersonExpression + ` as login) waiting
+		where a.tuples_stored_at is not null and a.state = 'open'
+		  and octet_length(user_threads_login(waiting.login)) <= ` + addressBound
+	}
 	return `
 	select distinct user_threads_login(author.login) as login
 	from (
@@ -1024,19 +1070,6 @@ func commentPeople(authors string) string {
 		from (` + commentWriterPeople + `) named
 		where named.event is null
 		   or not ` + erasedSince(`'`+graphstore.KindPerson+`'`, `named.login`, `named.at`) + `
-		union all
-		select case
-			when m.author->>'kind' = 'user' and coalesce(m.author->>'id', '') <> '' then m.author->>'id'
-			when m.author->>'kind' = 'session' and coalesce(m.author->>'id', '') <> '' then null
-			when coalesce(m.author->>'owner', '') <> '' then m.author->>'owner'
-		end
-		from messages m where m.node_kind is not null
-		union all
-		select m.author->>'owner'
-		from messages m
-		where m.node_kind is not null and m.author->>'kind' = 'session' and coalesce(m.author->>'id', '') <> ''
-		  and m.author->'act'->>'session' = m.author->>'id'
-		  and octet_length(m.author->>'id') <= ` + addressBound + `
 		union all
 		select case
 			when k.author->>'kind' = 'user' and coalesce(k.author->>'id', '') <> '' then k.author->>'id'
@@ -1055,25 +1088,7 @@ func commentPeople(authors string) string {
 		union all
 		select stored.id from ` + authors + ` where stored.kind = '` + graphstore.KindPerson + `'
 		union all
-		select owner.login from (` + storedOwners(authors) + `) owner
-		union all
-		select t.login from user_threads t where t.marked_version is not null
-		union all
-		select r.login from user_agent_read r where r.tuples_stored_at is not null
-		union all
-		select r.login from user_agent_state r where r.tuples_stored_at is not null
-		union all
-		select r.login from user_agent_reply_read r where r.tuples_stored_at is not null
-		union all
-		select r.login from user_agent_thread_dismissed r where r.tuples_stored_at is not null
-		union all
-		select r.login from user_ask_snooze r where r.tuples_stored_at is not null
-		union all
-		select waiting.login
-		from asks a` + asks.AskedOfPersonJoins + `
-		cross join lateral (select ` + asks.AskedOfPersonExpression + ` as login) waiting
-		where a.tuples_stored_at is not null and a.state = 'open'
-		  and octet_length(user_threads_login(waiting.login)) <= ` + addressBound + `
+		select owner.login from (` + storedOwners(authors) + `) owner` + thisRelease + `
 	) author (login)
 	where author.login is not null and user_threads_login(author.login) <> ''`
 }
@@ -1148,22 +1163,26 @@ var answeredHistory = `select answered.kind, answered.id, answered.made_at from 
 
 // reachedHistory is every person the store's log names on the end graphstore.ToPerson or
 // graphstore.FromPerson keeps a person on, asserted or retracted since, as (kind, id, at)
-// (storedAuthors): the far end of a delivered_to or a mentions, read as answeredHistory reads its
-// people, through graph_tuples_as_of_in, the index led by the far end and the kind, and the near
-// end of a participates_in or of a mark (read_through, cleared, reply_read, dismissed, snoozed),
-// through graph_tuples_current, whose partial predicate those literal kinds prove where that index
-// leaves the delivery kind out. Each of those writers makes the person's node in the statement that
-// states the tuple, so each such person is a node the store must hold, whatever row named them when
-// the tuple was written: the person an ask waited on before it closed or moved, a person whose row
-// a removal deleted.
+// (storedAuthors): the far end of a delivered_to or a mentions, through graph_tuples_as_of_in, the
+// index led by the far end and the kind, and the near end of a participates_in or of a mark
+// (read_through, cleared, reply_read, dismissed, snoozed), through graph_tuples_current, whose
+// partial predicate those literal kinds prove where that index leaves the delivery kind out. Each
+// probe states the person's kind as a literal rather than through its join: the two probes sit
+// in one OR, which the planner may read as a hashed subplan, and that subplan's one scan of
+// graph_tuples keys an index's first column only where the probe states it, as `person` -
+// joined, it would read every delivered_to and mentions through graph_tuples_as_of_in by kind
+// alone. Each of those writers makes the person's node in the statement that states the tuple, so
+// each such person is a node the store must hold, whatever row named them when the tuple was
+// written: the person an ask waited on before it closed or moved, a person whose row a removal
+// deleted.
 var reachedHistory = `select reached.kind, reached.id, reached.made_at from graph_nodes reached
 		where reached.kind = '` + graphstore.KindPerson + `' and (exists (
 			select 1 from graph_tuples t
-			where t.to_kind = reached.kind and t.to_kind <> '` + graphstore.KindValue + `' and t.to_id = reached.id
+			where t.to_kind = '` + graphstore.KindPerson + `' and t.to_kind <> '` + graphstore.KindValue + `' and t.to_id = reached.id
 			  and t.kind in ('` + graphstore.TupleDeliveredTo + `', '` + graphstore.TupleMentions + `')
 		) or exists (
 			select 1 from graph_tuples t
-			where t.from_kind = reached.kind and t.from_id = reached.id and t.to_kind <> '` + graphstore.KindValue + `'
+			where t.from_kind = '` + graphstore.KindPerson + `' and t.from_id = reached.id and t.to_kind <> '` + graphstore.KindValue + `'
 			  and t.kind in ('` + graphstore.TupleParticipatesIn + `', '` + graphstore.TupleReadThrough + `', '` +
 	graphstore.TupleCleared + `', '` + graphstore.TupleReplyRead + `', '` + graphstore.TupleDismissed + `', '` +
 	graphstore.TupleSnoozed + `')))`
@@ -1333,6 +1352,22 @@ func recordedSessions(authors, messagesNamed string) string {
 // the column pair migration 20261116114515 adds: what every reader of this release binds, and what
 // no reader of a database before that migration may name (recordedSessions).
 const MessagesNameTheirNode = `m.node_kind is not null`
+
+// readMessagesNamed reads whether messages holds the column pair MessagesNameTheirNode names,
+// which this release's migrations add beside the inbox's other columns. The census and the sizing
+// are taken on a database those migrations have not reached as well (R4), where no statement may
+// name one, so each reader of those columns asks this once, in its snapshot, and reads around
+// them where it is false: the sizing's terms (readStoreKinds) and the person and session row sides
+// (censusOfKinds).
+func readMessagesNamed(ctx context.Context, tx pgx.Tx) (bool, error) {
+	var named bool
+	if err := tx.QueryRow(ctx, `select exists (
+		select 1 from pg_attribute
+		where attrelid = to_regclass('messages') and attname = 'node_kind' and not attisdropped)`).Scan(&named); err != nil {
+		return false, fmt.Errorf("read whether messages names its node yet: %w", err)
+	}
+	return named, nil
+}
 
 // addressedRoles are the roles a row of the store addresses now or an event of the log has ever
 // addressed (R19), each once, with the first event that named it, null for a role only a row
@@ -1690,7 +1725,11 @@ func readStoreOnly(ctx context.Context, tx pgx.Tx) ([]StoreOnlyReport, error) {
 	})
 }
 
-// censusOfKinds reads every kind of projections in order, running afterKind after each.
+// censusOfKinds reads every kind of projections in order, running afterKind after each. On a
+// database this release's migrations have not reached (readMessagesNamed), which R4 takes its
+// readings on and which holds the store all the same, it reads the kinds before the inbox's: each
+// of the inbox's kinds (inboxProjections, appended last) reads a column those migrations add, and
+// no row of such a database names a node of its kind.
 func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Context, kind string) error) ([]KindReport, error) {
 	var kinds []KindReport
 	// A kind's names are read before the first kind that binds them and kept for every kind after
@@ -1698,26 +1737,38 @@ func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Co
 	// read before the first kind whose names read them and kept for every kind after it.
 	read := map[string][]string{}
 	var authors *storedWriters
-	for _, held := range projections {
+	// A database this release's migrations have not reached holds none of the columns some kinds'
+	// names read, and those kinds read their earlier names there (projection.earlierNames).
+	migrated, err := readMessagesNamed(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	reading := projections
+	if !migrated {
+		reading = projections[:len(projections)-len(inboxProjections)]
+	}
+	for _, held := range reading {
 		var args []any
 		if held.names != "" {
-			names, done := read[held.names]
+			query := held.names
+			if !migrated && held.earlierNames != "" {
+				query = held.earlierNames
+			}
+			names, done := read[query]
 			if !done {
 				var bound []any
 				if held.authored {
 					if authors == nil {
-						var err error
 						if authors, err = readStoredAuthors(ctx, tx); err != nil {
 							return nil, err
 						}
 					}
 					bound = []any{authors.kinds, authors.ids, authors.ats}
 				}
-				var err error
-				if names, err = readNames(ctx, tx, held.name, held.names, bound); err != nil {
+				if names, err = readNames(ctx, tx, held.name, query, bound); err != nil {
 					return nil, err
 				}
-				read[held.names] = names
+				read[query] = names
 			}
 			args = []any{names}
 		}

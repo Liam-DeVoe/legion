@@ -199,10 +199,10 @@ const movedParents = "block_parent_moved"
 //   - a comment's node and its visibility, state and project or parties (graphstore.Write), the
 //     authored_by and the aliases of whoever wrote it (graphstore.AuthorFacts), and the artifacts
 //     it is anchored to and owned by (api's commentStored);
-//   - a delivery to a comment's mention, one delivered_to (outbox.deliveredGraph), and the same
-//     one tuple for each session or role the bus reached with a comment event
-//     (outbox.deliveredGraph) and for each fallback copy the outbox published
-//     (outbox.fallbackDelivered);
+//   - a delivery to a comment's mention, two delivered_to tuples, the comment's
+//     (outbox.deliveredGraph) and its attempt's, and one tuple for each session or role the bus
+//     reached with a comment event (outbox.deliveredGraph) and for each fallback copy the outbox
+//     published (outbox.fallbackDelivered);
 //   - a version's blocks as refs.IndexBlocks states them: a block it inserts afresh, its node, its
 //     three base attributes (its project being its document's), its in_document and its part_of;
 //     a block it restores, its state and its in_document, with at most the retraction and the
@@ -273,13 +273,15 @@ func storeKinds(messagesNamed string) []StoreKind {
 		Driver: "comments.created_at: each alias_of and recorded_as the credential that wrote one proved",
 		count:  `(select coalesce(sum(aliases), 0) from sized_comments)`,
 	}, {
-		// A reply that answers an attempt the listener refused flips it to sent and states two
-		// tuples of that one delivery: the attempt's own delivered_to the session
-		// (graphstore.Attempted) and the comment's delivered_to the session (api's
-		// queueAnsweredDelivery). Every other attempt the listener took states the attempt's
-		// alone, so the term counts one a taken attempt and under-states a reply's.
-		Name: "delivery", MovedBy: movedHere, Tuples: 1,
-		Driver: "comment_deliveries.created_at, taken by the listener: a delivered_to for each attempt that reached its destination",
+		// Every attempt the listener took is two delivered_to facts of one delivery: the attempt's
+		// own, out of its node, which its settle states (graphstore.Attempted), and the comment's,
+		// out of the comment's node, which the outbox states under the attempt's comment.delivery
+		// receipt (outbox's mentionReached) - or, for an attempt a session's reply flipped to sent,
+		// which no receipt follows, the reply's write states (api's queueAnsweredDelivery). The
+		// base's term counted the comment's alone, the attempt being no node of its store.
+		Name: "delivery", MovedBy: movedHere, Tuples: 2,
+		Driver: "comment_deliveries.created_at, taken by the listener: the attempt's delivered_to and the comment's" +
+			" for each attempt that reached its destination",
 		count: `(select count(*) from comment_deliveries where state in ` + model.DeliveryTakenStatesSQL +
 			` and created_at > ` + sizingWindow + `)`,
 	}, {
@@ -904,11 +906,9 @@ func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 func readStoreKinds(ctx context.Context, tx pgx.Tx) ([]StoreKind, error) {
 	// The sizing is taken on a database this branch's migrations have not reached as well (R4),
 	// where messages holds no node column pair and no statement may name one.
-	var named bool
-	if err := tx.QueryRow(ctx, `select exists (
-		select 1 from pg_attribute
-		where attrelid = to_regclass('messages') and attname = 'node_kind' and not attisdropped)`).Scan(&named); err != nil {
-		return nil, fmt.Errorf("read whether messages names its node yet: %w", err)
+	named, err := readMessagesNamed(ctx, tx)
+	if err != nil {
+		return nil, err
 	}
 	messagesNamed := "false"
 	if named {

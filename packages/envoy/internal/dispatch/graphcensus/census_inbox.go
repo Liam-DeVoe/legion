@@ -442,8 +442,11 @@ var publishedOfAStoredItem = `p.reached_kind is not null and coalesce(p.reached_
 // row of its own (outbox.deliveredGraph): the delivery of a mention attempt the listener took,
 // stated under its comment.delivery receipt (mentionReached), which comment_deliveries' attempt
 // projects; and a fallback copy, stated under the comment.created it is a copy of
-// (fallbackDelivered), which its comment_fallback_copies row projects. Each is a predicate over a
-// delivered_to tuple d and its event e.
+// (fallbackDelivered), which its comment_fallback_copies row projects. Beside them, the delivery
+// of a mention attempt a session's reply flipped to sent, which no receipt follows, so the reply's
+// own write states it under the reply's comment.answered (api's queueAnsweredDelivery), and the
+// answered attempt's comment_deliveries row, whose reply_id names that reply, projects it. Each is
+// a predicate over a delivered_to tuple d and its event e.
 var (
 	mentionReceiptDelivery = `(e.type = 'comment.delivery' and e.payload->>'state' in ` + model.DeliveryTakenStatesSQL + `
 	  and d.from_kind = '` + graphstore.KindComment + `' and d.from_id = e.payload->>'comment_id'
@@ -451,6 +454,10 @@ var (
 	fallbackCopyDelivery = `(e.type = 'comment.created' and d.from_kind = '` + graphstore.KindComment + `' and d.to_kind = '` + graphstore.KindSession + `'
 	  and exists (select 1 from comment_fallback_copies f
 	              where f.published and f.comment_id::text = d.from_id and f.destination = '` + contracts.AgentTopicPrefix + `' || d.to_id))`
+	answeredDelivery = `(e.type = 'comment.answered' and d.from_kind = '` + graphstore.KindComment + `' and d.to_kind = '` + graphstore.KindSession + `'
+	  and exists (select 1 from comment_deliveries a
+	              where a.comment_id::text = d.from_id and a.reply_id::text = e.payload->>'id'
+	                and btrim(a.session_id) = d.to_id and a.state in ` + model.DeliveryTakenStatesSQL + `))`
 )
 
 // publishedDeliveries is every delivered_to tuple from a live comment or message node to a session
@@ -478,7 +485,7 @@ var publishedDestinationsProjection = projection{
 		select d.from_kind, d.from_id, d.kind, d.to_kind, d.to_id || ' under event ' || d.source_event::text
 		` + publishedDeliveries + `
 		  and (` + storeRelease + ` is null or e.created_at >= ` + storeRelease + `)
-		  and not ` + mentionReceiptDelivery + ` and not ` + fallbackCopyDelivery,
+		  and not ` + mentionReceiptDelivery + ` and not ` + fallbackCopyDelivery + ` and not ` + answeredDelivery,
 	pastBound: `
 		select count(*) from (` + publishedPairs + `) p
 		where p.reached_kind is not null and (not ` + fits(`coalesce(p.reached_id, '')`) + ` or not ` + fits(`coalesce(p.item_id, '')`) + `)`,
@@ -520,6 +527,12 @@ var publishedDestinationsProjection = projection{
 		note: "fallback copies published to a session's own topic, which the event's array never lists and a" +
 			" comment_fallback_copies row projects",
 		count: `select count(*) ` + publishedDeliveries + ` and ` + fallbackCopyDelivery,
+	}, {
+		name: "answered_deliveries",
+		note: "deliveries of a mention attempt a session's reply flipped to sent, stated under the reply's" +
+			" comment.answered, which no receipt follows, no topic of an array names and the answered attempt's" +
+			" comment_deliveries row projects",
+		count: `select count(*) ` + publishedDeliveries + ` and ` + answeredDelivery,
 	}},
 	emptyAgrees: true,
 }

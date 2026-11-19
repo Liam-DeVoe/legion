@@ -215,7 +215,7 @@ func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 	}
 	bound := []any{[]string{}, []string{}, []time.Time{}}
 	if keyed := requireKeyedTupleReads(t, keys, "the person row side",
-		planWithoutSeqScans(t, database, `select p.login from (`+commentPeople(censusAuthors)+`) p`, bound...),
+		planWithoutSeqScans(t, database, `select p.login from (`+commentPeople(censusAuthors, true)+`) p`, bound...),
 		"graph_tuples_current"); keyed != 1 {
 		t.Errorf("the person row side reads graph_tuples through %d keyed scan(s), want the one of the owners' alias_of", keyed)
 	}

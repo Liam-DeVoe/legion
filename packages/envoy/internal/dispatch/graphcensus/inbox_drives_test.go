@@ -321,9 +321,15 @@ func seedAnAbandonedMention(t *testing.T, database *store.Store) {
 	`, comment); err != nil {
 		t.Fatalf("write the comment's mention: %v", err)
 	}
+	// The event moves the issue's last_seq with it, as an append does, so the receipt the settle
+	// appends next takes the seq after it.
 	if _, err := database.Pool.Exec(ctx, `
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		values ('ABAN-1', 1, 'comment.created', '{"kind":"user","id":"alice"}', $1::jsonb, true)
+		with appended as (
+			insert into events (issue_key, seq, type, actor, payload, notify)
+			values ('ABAN-1', 1, 'comment.created', '{"kind":"user","id":"alice"}', $1::jsonb, true)
+			returning seq
+		)
+		update issues set last_seq = (select seq from appended) where key = 'ABAN-1'
 	`, payload); err != nil {
 		t.Fatalf("append the comment's comment.created: %v", err)
 	}

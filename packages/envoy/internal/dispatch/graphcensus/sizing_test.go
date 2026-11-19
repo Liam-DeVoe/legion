@@ -1039,9 +1039,10 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 	want := map[string]sizedTerm{
 		"comment": {tuples: 3, writes: 1}, "authored_by": {tuples: 1, writes: 1}, "anchored_to": {tuples: 1, writes: 1},
 		"owned_by": {tuples: 1, writes: 1}, "author_alias": {tuples: 1, writes: 1},
-		// The mention's attempt to ses_sized, the comment.created the bus delivered to the role
-		// sizer, and the copy the fallback pass published to ses_copy.
-		"delivery": {tuples: 1, writes: 1}, "bus_delivery": {tuples: 1, writes: 1}, "fallback_delivery": {tuples: 1, writes: 1},
+		// The mention's attempt to ses_sized, whose two delivered_to are the attempt's and the
+		// comment's, the comment.created the bus delivered to the role sizer, and the copy the
+		// fallback pass published to ses_copy.
+		"delivery": {tuples: 2, writes: 1}, "bus_delivery": {tuples: 1, writes: 1}, "fallback_delivery": {tuples: 1, writes: 1},
 		// Five blocks are new at version 1 and one at version 2; version 2 drops one and rewrites
 		// the callout, and version 3 brings the dropped one back, so eight rows of the window hold
 		// a text.
@@ -1057,15 +1058,15 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"page": {tuples: 3, writes: 1},
 		// The comment and the message each move alice's read_through on their thread (migrations
 		// 0095 and 0097's triggers), so she takes part in two threads and each is a read mark; the
-		// reply, a session's, reaches her in the message's thread, and the ask opened reaches the
-		// person it waits on.
+		// reply, a session's, reaches her in the message's thread and is ses_sized's part in it, the
+		// third participation, and the ask opened reaches the person it waits on.
 		"message_delivery": {tuples: 1, writes: 1}, "read_mark": {tuples: 1, writes: 2}, "clear": {tuples: 1, writes: 1},
 		"dismissal": {tuples: 1, writes: 1}, "snooze": {tuples: 1, writes: 1},
 		"message": {tuples: 3, writes: 2}, "message_relation": {tuples: 2, writes: 2}, "message_pointer": {tuples: 1, writes: 1},
 		"reply": {tuples: 2, writes: 1},
 		// The mention is one tuple to its role and one to the session the role resolved to. The
 		// comment's one refs row is its citation.
-		"mention": {tuples: 1, writes: 2}, "participation": {tuples: 1, writes: 2}, "person_delivery": {tuples: 1, writes: 2},
+		"mention": {tuples: 1, writes: 2}, "participation": {tuples: 1, writes: 3}, "person_delivery": {tuples: 1, writes: 2},
 		"citation": {tuples: 2, writes: 1}, "ask_asked_of": {tuples: 4, writes: 1},
 		"body_block": {tuples: 3, writes: 2}, "body_block_gone": {tuples: 1, writes: 1},
 		// The attempts are the mention's and the message's.
