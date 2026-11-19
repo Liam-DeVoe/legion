@@ -704,6 +704,85 @@ test("Tab reaches a scroll button, and Enter on it that brings the strip to its 
   }
 });
 
+/**
+ * The chips strip `chip` is drawn in, which happy-dom lays out not at all (its `clientWidth` is
+ * 0): the test sets how far it is scrolled from its start (`scrollLeft`) and how wide its content
+ * is (`scrollWidth`), and `readEnds` fires the scroll event on which the row reads the strip's
+ * ends again - the event a browser fires a frame after a focus scrolled the strip, not as it
+ * scrolls.
+ */
+function laidOutStrip(chip: HTMLElement): {
+  readEnds: () => void;
+  set: (to: { scrollLeft?: number; scrollWidth?: number }) => void;
+} {
+  const strip = chip.parentElement;
+  if (strip === null) throw new Error("the chip is drawn outside the strip");
+  let scrollLeft = 0;
+  let scrollWidth = 0;
+  Object.defineProperty(strip, "scrollLeft", { configurable: true, get: () => scrollLeft });
+  Object.defineProperty(strip, "scrollWidth", { configurable: true, get: () => scrollWidth });
+  return {
+    readEnds: () =>
+      act(() => {
+        strip.dispatchEvent(new Event("scroll"));
+      }),
+    set: (to) => {
+      scrollLeft = to.scrollLeft ?? scrollLeft;
+      scrollWidth = to.scrollWidth ?? scrollWidth;
+    },
+  };
+}
+
+// dispatch://INFRA-2160, R12. Tab onto the last chip scrolls the strip to its end, but the row
+// reads its ends on the scroll event that comes a frame later: a Tab in between lands on the right
+// button, still drawn, which then goes while it holds the focus. The reader was going on past the
+// strip, so the focus goes on, not back to the chip they had just left (CI run 44557669985: "the
+// keyboard reached 10 of 9 chips").
+test("Tab onto the right scroll button as the strip reaches its end hands the focus on to Clear filters, not back to the last chip", async () => {
+  const user = userEvent.setup();
+  const view = render(<RemovableChips names={["Alpha", "Beta"]} />);
+  try {
+    const beta = screen.getByRole("button", { name: "Beta" });
+    const strip = laidOutStrip(beta);
+    strip.set({ scrollWidth: 1000 });
+    strip.readEnds();
+    // Beta's focus scrolls it into view, which brings the strip to its end; the event that tells
+    // the row so is still to come.
+    spyOn(beta, "scrollIntoView").mockImplementation(() => strip.set({ scrollLeft: 1000 }));
+    act(() => beta.focus());
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Scroll filters right" })).toHaveFocus();
+    strip.readEnds();
+    expect(screen.queryByRole("button", { name: "Scroll filters right" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Clear filters" })).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+// The same, the other way: Shift+Tab onto the first chip scrolls the strip to its start, and a
+// Shift+Tab before the row reads that lands on the left button, which then goes.
+test("Shift+Tab onto the left scroll button as the strip reaches its start hands the focus back to the control before the strip, not on to the first chip", async () => {
+  const user = userEvent.setup();
+  const view = render(<RemovableChips names={["Alpha", "Beta"]} />);
+  try {
+    const alpha = screen.getByRole("button", { name: "Alpha" });
+    const strip = laidOutStrip(alpha);
+    strip.set({ scrollLeft: 500, scrollWidth: 500 });
+    strip.readEnds();
+    // Alpha's focus brings the strip back to its start, and the event is still to come.
+    spyOn(alpha, "scrollIntoView").mockImplementation(() => strip.set({ scrollLeft: 0 }));
+    act(() => alpha.focus());
+    await user.tab({ shift: true });
+    expect(screen.getByRole("button", { name: "Scroll filters left" })).toHaveFocus();
+    strip.readEnds();
+    expect(screen.queryByRole("button", { name: "Scroll filters left" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Filter" })).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
 /** The `scope` pushed, as the page that draws a row pushes its own. */
 function Scoped({ children, scope }: { children: ReactNode; scope: KeymapScope }) {
   useKeymapScope(scope);

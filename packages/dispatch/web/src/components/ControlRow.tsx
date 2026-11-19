@@ -10,7 +10,7 @@ import {
 import { restingChip } from "./Chip";
 import { type ControlRowScope, useControlRowKeys } from "./control-keys";
 import { CONTROL, type ControlSize, controlIn } from "./control-names";
-import { useFocusPlace } from "./focus-place";
+import { focusableIn, useFocusPlace } from "./focus-place";
 import { useScrollEnds } from "./useScrollEnds";
 
 /** **Clear filters**: the one control of the row that is not a box of its own, since it undoes
@@ -102,14 +102,42 @@ function scrollPage(strip: HTMLElement, side: ScrollSide): void {
   strip.scrollBy({ behavior: "smooth", left: by });
 }
 
+/** Moves the focus off `button`, a scroll button that is going while it holds the focus, on the
+ *  way the reader was going when Tab put it there: from the right button to the first control
+ *  after it in Tab order - the page's order of the controls the focus can reach (`focusableIn`),
+ *  every chip of the strip before it - which is **Clear filters** where the row draws it; from the
+ *  left button to the last control before it, which is the last before the strip. The first of
+ *  them, nearest first, that takes the focus, as Tab passes over a control the page does not draw
+ *  at this width. The controls are those of the dialog the row is drawn in, where it is in one
+ *  (the command bar, the Inbox drawer), so the focus never leaves the dialog for the page behind. */
+function passFocusOn(button: HTMLElement, side: ScrollSide): void {
+  const controls = focusableIn(button.closest<HTMLElement>('[role="dialog"]') ?? document.body);
+  const at = controls.indexOf(button);
+  if (at === -1) return;
+  const onward = side === "right" ? controls.slice(at + 1) : controls.slice(0, at).reverse();
+  for (const control of onward) {
+    control.focus();
+    if (document.activeElement === control) return;
+  }
+}
+
 /** One scroll button of the chips line, at its `side` of the strip. Tab reaches it, as it reaches
  *  every other button of the row (dispatch://INFRA-2160, R12), so the keyboard can page the strip
  *  too, though Tab reaches every chip already and scrolls it into view. A pointer's press takes no
  *  focus (`preventDefault` on `mousedown`, where the browser moves it): the press that brings the
  *  strip to its end takes the button away, and a focus it held would drop onto the page with it,
- *  so the focus stays where the reader had it, a chip included. A key's press on the focused
- *  button that brings the strip to its end hands the focus, as the button goes, to the chip at
- *  that end, which the press has brought into view. */
+ *  so the focus stays where the reader had it, a chip included.
+ *
+ *  The button goes once the strip is at its end, and one that holds the focus then hands it on as
+ *  it goes. Pressed since it took the focus - by a key, or by a pointer on the focused button - it
+ *  hands the focus to the chip at that end, which its press has brought into view. Otherwise the
+ *  focus goes on the way the reader was going when Tab put it on the button (`passFocusOn`):
+ *  from the right button to the control after the strip, **Clear filters** where it is drawn,
+ *  and from the left one to the control before the strip. That is what a Tab onto the last chip
+ *  leads to: the chip's focus scrolls the strip to its end, but the row reads its ends on the
+ *  scroll event that comes a frame later (`useScrollEnds`), so a Tab in between lands on the right
+ *  button still drawn, which then goes - and the reader, going on, is not sent back to the chip
+ *  they left. Shift+Tab onto the first chip does the same at the left. */
 function ScrollButton({
   className,
   side,
@@ -123,13 +151,20 @@ function ScrollButton({
   const button = useRef<HTMLButtonElement>(null);
   const paged = useRef(strip);
   paged.current = strip;
+  // Whether the button has been pressed since it last took the focus.
+  const pressed = useRef(false);
   // Run as the button goes: React runs it before the button leaves the page, so the button
   // still holds the focus it had.
   useLayoutEffect(() => {
     const own = button.current;
     return () => {
+      if (own === null || document.activeElement !== own) return;
+      if (!pressed.current) {
+        passFocusOn(own, side);
+        return;
+      }
       const at = paged.current;
-      if (own === null || at === null || document.activeElement !== own) return;
+      if (at === null) return;
       const chip = side === "left" ? at.firstElementChild : at.lastElementChild;
       if (chip !== null) focusableOf(chip)?.focus();
     };
@@ -139,7 +174,11 @@ function ScrollButton({
       aria-label={label}
       className={`${place} ${className}`}
       onClick={() => {
+        pressed.current = true;
         if (strip !== null) scrollPage(strip, side);
+      }}
+      onFocus={() => {
+        pressed.current = false;
       }}
       onMouseDown={(event) => event.preventDefault()}
       ref={button}
@@ -254,8 +293,9 @@ export interface ControlRowProps {
  *   do scroll it), so the buttons are a pointer's way to every chip. They are laid over the
  *   strip's two ends rather than beside it, so one appearing never narrows the strip and moves
  *   the chips under the pointer. Tab reaches them too, as it reaches every button the row
- *   draws, and a key's press that brings the strip to its end hands the focus to the chip there
- *   as the button goes;
+ *   draws: a key's press that brings the strip to its end hands the focus to the chip there as
+ *   the button goes, and a button that goes under a focus Tab has just put on it hands the focus
+ *   on past the strip, the way the reader was going;
  * - every narrowing is also in the page's filter panel.
  *
  * The scroll bar is not drawn, because on a phone its height would be more than the one line the
