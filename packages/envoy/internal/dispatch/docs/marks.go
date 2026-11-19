@@ -407,10 +407,11 @@ func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWi
 		if err := refuseBrokenAsks(tree, next); err != nil {
 			return err
 		}
-		if err := refuseMisreadAccept(tree, next, with); err != nil {
+		stored, err := refuseMisreadAccept(tree, next, with)
+		if err != nil {
 			return err
 		}
-		return write(next)
+		return write(stored)
 	})
 }
 

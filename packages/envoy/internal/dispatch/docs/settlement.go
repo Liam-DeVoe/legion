@@ -563,7 +563,7 @@ func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcom
 	// The settlement rendered its read already (readLocked): a tree the stamp and the
 	// reconciliation left as that read is checked against that rendering, as commitVersion reuses it.
 	rendered := ""
-	if st.reconciled == st.read && !reconciliation.changedTree() && st.renderErr == nil {
+	if st.readUnchanged(st.reconciled) && st.renderErr == nil {
 		rendered = st.markdown
 	}
 	if _, st.baseEmailLinks, err = fallBackEmailLinks(st.reconciled, rendered); err != nil {
@@ -573,6 +573,13 @@ func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcom
 		s.afterSettleReconcile(st.room)
 	}
 	return settleOn, settleOutcome{}
+}
+
+// readUnchanged reports whether tree is the settlement's read, unchanged: the read's own tree,
+// which nothing but planRepairs changes in place, where the reconciliation recorded no change
+// (changedTree).
+func (st *settlement) readUnchanged(tree *pmdoc.Node) bool {
+	return tree == st.read && !st.reconciliation.changedTree()
 }
 
 // commitRepairs writes the reconciled repairs into the room, then the base's email links where the
@@ -596,30 +603,16 @@ func (st *settlement) commitRepairs(ctx context.Context) (settleStep, settleOutc
 	if len(st.reconciliation.repairs) > 0 {
 		// The repairs are made on the document as it stands (writeLive): the tree they were
 		// reconciled on was read before settlement's database work.
-		slot, update, err := s.applySuppressed(ctx, room, st.doc, st.reconciliation.writeLive)
-		st.keep(slot, update)
-		if err != nil {
-			return settleDone, st.abandon(fmt.Errorf("write reconciled typed blocks: %w", err))
-		}
-		if slot != nil {
-			if err := ledger.storeRepair(ctx, tx, room, st.cursor, update); err != nil {
-				return settleDone, st.abandon(fmt.Errorf("store reconciled typed blocks: %w", err))
-			}
+		if err := st.writeRepair(ctx, st.reconciliation.writeLive, "reconciled typed blocks"); err != nil {
+			return settleDone, st.abandon(err)
 		}
 	}
 	if st.baseEmailLinks {
 		// The base's email links are given to the document as it stands too
 		// (fallBackEmailLinksLive), after the reconciliation's repairs, so the version rendered from
 		// the read below holds them and reads back as the room's tree.
-		slot, update, err := s.applySuppressed(ctx, room, st.doc, fallBackEmailLinksLive)
-		st.keep(slot, update)
-		if err != nil {
-			return settleDone, st.abandon(fmt.Errorf("write the base's email links: %w", err))
-		}
-		if slot != nil {
-			if err := ledger.storeRepair(ctx, tx, room, st.cursor, update); err != nil {
-				return settleDone, st.abandon(fmt.Errorf("store the base's email links: %w", err))
-			}
+		if err := st.writeRepair(ctx, fallBackEmailLinksLive, "the base's email links"); err != nil {
+			return settleDone, st.abandon(err)
 		}
 	}
 
@@ -664,6 +657,24 @@ func (st *settlement) commitRepairs(ctx context.Context) (settleStep, settleOutc
 		s.afterSettleVersionRead(room)
 	}
 	return settleOn, settleOutcome{}
+}
+
+// writeRepair writes one repair into the room, mutate making it on the document as it stands
+// (applySuppressed), keeps the update it wrote (keep), and stores that update in the room's commit
+// order (storeRepair); what names the repair in either error. A repair that wrote nothing has
+// nothing to store.
+func (st *settlement) writeRepair(ctx context.Context, mutate func(doc *crdt.Doc, origin any) error, what string) error {
+	slot, update, err := st.service.applySuppressed(ctx, st.room, st.doc, mutate)
+	st.keep(slot, update)
+	if err != nil {
+		return fmt.Errorf("write %s: %w", what, err)
+	}
+	if slot != nil {
+		if err := st.ledger.storeRepair(ctx, st.tx, st.room, st.cursor, update); err != nil {
+			return fmt.Errorf("store %s: %w", what, err)
+		}
+	}
+	return nil
 }
 
 // appendEvents queues events in this settlement's transaction, as one step of its write phase.
@@ -723,7 +734,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// versioned is another tree once a stamp replaced the read or a write read the document again.
 	// So the version takes the rendering of the read when it is that tree, unchanged.
 	markdown, offsets, err := st.markdown, st.offsets, st.renderErr
-	reused := st.versioned == st.read && !st.reconciliation.changedTree()
+	reused := st.readUnchanged(st.versioned)
 	if s.beforeSettleVersionRender != nil {
 		s.beforeSettleVersionRender(room, st.read, reused)
 	}
@@ -735,6 +746,20 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 			return settleDone, settleOutcome{}
 		}
 		return settleDone, st.abandon(err)
+	}
+	// planRepairs judged the reconciled tree's email links. A tree the settlement read again after
+	// its writes, or the judged tree where the live write of the base's links wrote nothing (a
+	// browser's edit made after the settlement's read and applied before its observer armed a
+	// newer settlement), is versioned as that repair would leave it (versionedEmailLinks), so the
+	// version's markdown, token and index name one tree, as a snapshot's do. The room keeps its own
+	// tree until its next settlement; the mark sweep below reads that tree.
+	versionTree := st.versioned
+	if st.baseEmailLinks || st.versioned != st.reconciled {
+		versioned, _, err := versionedEmailLinks(renderedTree{tree: st.versioned, markdown: markdown, offsets: offsets})
+		if err != nil {
+			return settleDone, st.abandon(err)
+		}
+		versionTree, markdown, offsets = versioned.tree, versioned.markdown, versioned.offsets
 	}
 
 	// The second read of a refused update's second order (roomRefusedUpdate), beside the reads of
@@ -820,7 +845,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		if st.credit.kept {
 			keptEditor = &st.credit.actor
 		}
-		result, writeErr := s.writeVersionTx(ctx, tx, room, renderedTree{tree: st.versioned, markdown: markdown, offsets: offsets}, st.credit.versionActor(), &versionWrite{
+		result, writeErr := s.writeVersionTx(ctx, tx, room, renderedTree{tree: versionTree, markdown: markdown, offsets: offsets}, st.credit.versionActor(), &versionWrite{
 			authors:          st.credit.authors,
 			capture:          &st.credit.capture,
 			docUpdateVersion: &st.snapshotCursor,

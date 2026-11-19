@@ -10,7 +10,7 @@ import (
 // maxEmailFallbackRounds bounds how many times FallBackEmailLinks gives a tree the base's email
 // links and reads the result back. Each round renders the tree and parses the rendering twice.
 // Every tree the fallback is known to change reads back after one round
-// (TestLinkifyStoresEveryShapeTheTesterDraws), so a tree still misread after this many is left to
+// (TestLinkifyStoresEveryClassicSeedShape), so a tree still misread after this many is left to
 // the write's check.
 const maxEmailFallbackRounds = 4
 
@@ -29,19 +29,19 @@ const maxEmailFallbackRounds = 4
 // that reaches into it (withBaseEmailLinks); every other mark stays doc's, and neighbouring text
 // nodes of one set of marks are joined as the parser joins them. That tree is read back in turn,
 // and the fallback repeats until a tree reads back as written, at most maxEmailFallbackRounds
-// times; changed reports that one did, and read is its read-back.
+// times; changed reports that one did.
 //
 // Where the textblocks of a tree, its read-back and the base's reading do not pair, or do not hold
 // the same text between the same inline nodes, where no link is left to take, or where no round
-// reads back, doc is answered unchanged with changed false and its own read-back: a misread of any
-// other kind is the write check's (documentMisread). Block ids and every attribute stay doc's.
-// doc is never written; the tree answered shares its nodes wherever they are unchanged. err is
-// the refusal of doc's own rendering or read-back, where there is no read-back to answer, or any
-// error but a refusal (ErrSchema) in a later round, which is this package's bug.
-func FallBackEmailLinks(doc *Node) (tree *Node, changed bool, read WrittenReadBack, err error) {
-	read, err = readBackWritten(doc, maxSpanCells)
+// reads back, doc is answered unchanged with changed false: a misread of any other kind is the
+// write check's (documentMisread). Block ids and every attribute stay doc's. doc is never
+// written; the tree answered shares its nodes wherever they are unchanged. err is the refusal of
+// doc's own rendering or read-back, or any error but a refusal (ErrSchema) in a later round, which
+// is this package's bug.
+func FallBackEmailLinks(doc *Node) (tree *Node, changed bool, err error) {
+	read, err := readBackWritten(doc, maxSpanCells)
 	if err != nil {
-		return doc, false, WrittenReadBack{}, err
+		return doc, false, err
 	}
 	return fallBackEmailLinksRead(doc, read)
 }
@@ -49,27 +49,47 @@ func FallBackEmailLinks(doc *Node) (tree *Node, changed bool, read WrittenReadBa
 // FallBackEmailLinksRendered is FallBackEmailLinks of doc whose rendering, as Render writes it, is
 // rendering, for a caller that rendered doc already: it reads that rendering back rather than
 // rendering doc again.
-func FallBackEmailLinksRendered(doc *Node, rendering string) (tree *Node, changed bool, read WrittenReadBack, err error) {
-	back, err := ParseRendering(rendering)
-	if err = renderedNesting(doc, err); err != nil {
-		return doc, false, WrittenReadBack{}, err
+func FallBackEmailLinksRendered(doc *Node, rendering string) (tree *Node, changed bool, err error) {
+	read, err := readBackRendering(doc, rendering)
+	if err != nil {
+		return doc, false, err
 	}
-	return fallBackEmailLinksRead(doc, WrittenReadBack{Markdown: rendering, Tree: back})
+	return fallBackEmailLinksRead(doc, read)
 }
 
 // fallBackEmailLinksRead is FallBackEmailLinks of doc, whose rendering read reads back as it
 // does, otherwise or not.
-func fallBackEmailLinksRead(doc *Node, read WrittenReadBack) (*Node, bool, WrittenReadBack, error) {
-	if readDifference(asWritten(doc), read.Tree, skip{}) == "" {
-		return doc, false, read, nil
+func fallBackEmailLinksRead(doc *Node, read WrittenReadBack) (*Node, bool, error) {
+	if readsBackAsWritten(doc, read.Tree) {
+		return doc, false, nil
 	}
-	return fallBackEmailLinks(doc, read)
+	tree, changed, _, err := fallBackEmailLinks(doc, read)
+	return tree, changed, err
 }
 
-// fallBackEmailLinks is FallBackEmailLinks of doc, whose rendering read reads back otherwise.
+// fallBackEmailLinks is FallBackEmailLinks of doc, whose rendering read reads back otherwise, with
+// the read-back of the tree it answers, read where that tree is doc.
 func fallBackEmailLinks(doc *Node, read WrittenReadBack) (*Node, bool, WrittenReadBack, error) {
+	return fallBackEmailLinksUntil(doc, read, func(next *Node, back WrittenReadBack) (bool, error) {
+		return readsBackAsWritten(next, back.Tree), nil
+	})
+}
+
+// fallBackEmailLinksUntil is fallBackEmailLinks with the test that ends it given: it answers the
+// first tree of its rounds that done takes, with the read-back done was given. An error from done
+// is answered with doc.
+func fallBackEmailLinksUntil(doc *Node, read WrittenReadBack, done func(next *Node, back WrittenReadBack) (bool, error)) (*Node, bool, WrittenReadBack, error) {
 	tree, back := doc, read
 	for range maxEmailFallbackRounds {
+		// A probe before the base's parse, the read-back standing in for the base, and an exact one:
+		// emailMisread reads only the tree's links and the read-back's, so with base set to the
+		// read-back withBaseEmailLinks answers ok exactly where this round could change a link.
+		// Pairing and alignment fail with the real base wherever they fail with the read-back, and a
+		// run with no email misread changes nothing with either base. So a misread that involves no
+		// email link costs no parse with the base's reader.
+		if _, ok := withBaseEmailLinks(tree, back.Tree, back.Tree); !ok {
+			break
+		}
 		base, err := parseRenderingAsBase(back.Markdown)
 		if err != nil {
 			if errors.Is(err, ErrSchema) {
@@ -87,12 +107,61 @@ func fallBackEmailLinks(doc *Node, read WrittenReadBack) (*Node, bool, WrittenRe
 			}
 			return doc, false, read, err
 		}
-		if readDifference(asWritten(next), back.Tree, skip{}) == "" {
+		finished, err := done(next, back)
+		if err != nil {
+			return doc, false, read, err
+		}
+		if finished {
 			return next, true, back, nil
 		}
 		tree = next
 	}
 	return doc, false, read, nil
+}
+
+// FallBackMisread is after, the tree an edit over before leaves, as the edit stores it, and the
+// misread NewMisread names in it, "" where none is left. Where after reads back otherwise in a way
+// before did not, it is after with the base's email links where the renderer cannot write after's
+// own so that they read back (FallBackEmailLinks): the first tree of that fallback that leaves no
+// such misread, so a block that read back otherwise before the edit is still not the edit's. A
+// misread of any other kind is answered with after. err is any error but a refusal, which is this
+// package's bug.
+func FallBackMisread(before, after *Node) (tree *Node, misread string, err error) {
+	return fallBackMisread(before, after, maxSpanCells)
+}
+
+// FallBackMisreadWrite is FallBackMisread for a write RefuseMisreadWrite judges: the tree the write
+// stores, or that refusal.
+func FallBackMisreadWrite(before, after *Node) (*Node, error) {
+	tree, misread, err := fallBackMisread(before, after, 0)
+	if err := refuseMisread(misread, nil, err); err != nil {
+		return nil, err
+	}
+	return tree, nil
+}
+
+// fallBackMisread is FallBackMisread reading before and each tree back with their tables' spans
+// adding at most spanCells empty cells, as newMisread does.
+func fallBackMisread(before, after *Node, spanCells int) (*Node, string, error) {
+	misread, err := newMisread(before, after, spanCells)
+	if err != nil || misread == "" {
+		return after, misread, err
+	}
+	read, err := readBackWritten(after, maxSpanCells)
+	switch {
+	case errors.Is(err, ErrSchema):
+		return after, misread, nil
+	case err != nil:
+		return after, "", err
+	}
+	fallen, changed, _, err := fallBackEmailLinksUntil(after, read, func(next *Node, _ WrittenReadBack) (bool, error) {
+		left, err := newMisread(before, next, spanCells)
+		return left == "", err
+	})
+	if err != nil || !changed {
+		return after, misread, err
+	}
+	return fallen, "", nil
 }
 
 // withBaseEmailLinks is tree with the base's email links where back, tree's read-back, reads them
@@ -369,13 +438,14 @@ func sameLink(a, b *Mark) bool {
 	return attrsEqual(a.Attrs, b.Attrs)
 }
 
-// isEmailLink reports whether link is a link to a mailto: URL.
+// isEmailLink reports whether link is a link to a mailto: URL, its scheme in any case, as the email
+// rule reads one (mailtoHref).
 func isEmailLink(link *Mark) bool {
 	if link == nil {
 		return false
 	}
 	href, _ := link.Attrs["href"].(string)
-	return strings.HasPrefix(href, "mailto:")
+	return mailtoHref(href)
 }
 
 // withInline is node with each textblock inline names holding the inline nodes it maps to: a copy

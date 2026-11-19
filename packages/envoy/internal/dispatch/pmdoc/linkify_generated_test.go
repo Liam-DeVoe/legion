@@ -168,12 +168,12 @@ func TestLinkifyStoresEveryGeneratedAddress(t *testing.T) {
 	t.Logf("seeds and bounds %v: %d shapes, %d distinct markdowns for the engine, in %v", emailShapeSets, len(shapes), len(markdowns), time.Since(began))
 }
 
-// testerShapes is what the tester's own generator draws, the generator that found the two shapes
-// of TestLinkifyStoresTheShapesTheTesterFoundRefused: for each of its seeds, 3,000 draws of a
-// prefix, one to six local-part pieces, an `@`, a domain and a suffix, in one of its contexts,
-// each distinct markdown once. Its source is math/rand's classic one, rand.New(rand.NewSource(seed)),
+// classicSeedShapes is what seeds 11, 23 and 4242 draw on math/rand's classic stream, the
+// generator that found the two shapes of TestLinkifyStoresTheShapesTheTesterFoundRefused: for
+// each seed, 3,000 draws of a prefix, one to six local-part pieces, an `@`, a domain and a suffix,
+// in one of its contexts, each distinct markdown once. The source is rand.New(rand.NewSource(seed)),
 // kept rather than math/rand/v2's because the shapes it found are the stream that source gives.
-func testerShapes() []string {
+func classicSeedShapes() []string {
 	prefixes := []string{"", "x ", "q/", "a/b/", "key=", "--account=", "(", "\"", "www.", "http://", "https://",
 		"&#45;", "&amp;", "*e*", "`c`", "[t](mailto:a@b.co) ", "<a@b.co>", "_www.", "alice@example.com/", "see: ",
 		"é", "$HOME/", "~", "a&#64;b.co ", "http://x.co/", "q/&#45;", "x;http://", "ftp://"}
@@ -218,18 +218,18 @@ func baseParseRefusal(markdown string) error {
 }
 
 // R4 (INFRA-4224) stores every text the base stores, each address as the rule reads it or, where
-// that tree has no spelling that reads back, as the base reads it (FallBackEmailLinks). The
-// tester's generator (testerShapes) draws 8,994 distinct shapes, and for every one the base's
-// parse reads (baseParseRefusal), a write of it is not refused (ParseWritten), the text it stores
-// reads back as the tree it stores, and the browser editor's engine reads that text as that tree.
-// The shapes the base refuses too, tables holding `|`, are counted and named in the log; the test
-// stops after a few failures.
-func TestLinkifyStoresEveryShapeTheTesterDraws(t *testing.T) {
+// that tree has no spelling that reads back, as the base reads it (FallBackEmailLinks). Seeds 11,
+// 23 and 4242 on math/rand's classic stream (classicSeedShapes) draw 8,994 distinct shapes, and
+// for every one the base's parse reads (baseParseRefusal), a write of it is not refused
+// (ParseWritten), the text it stores reads back as the tree it stores, and the browser editor's
+// engine reads that text as that tree. The shapes the base refuses too, tables holding `|`, are
+// counted and named in the log; the test stops after a few failures.
+func TestLinkifyStoresEveryClassicSeedShape(t *testing.T) {
 	const most = 5
 	began := time.Now()
-	shapes := testerShapes()
+	shapes := classicSeedShapes()
 	if len(shapes) != 8994 {
-		t.Fatalf("the tester's generator draws %d distinct shapes, want 8,994", len(shapes))
+		t.Fatalf("seeds 11, 23 and 4242 on the classic stream draw %d distinct shapes, want 8,994", len(shapes))
 	}
 	failures := 0
 	fail := func(format string, args ...any) {
@@ -251,8 +251,9 @@ func TestLinkifyStoresEveryShapeTheTesterDraws(t *testing.T) {
 			fail("the base stores %q, and a write of it is refused: %v", shape, err)
 			continue
 		}
-		if back, err := ParseRendering(read.Markdown); err != nil || !back.Equal(tree) {
-			fail("a write of %q stores %q, which Go reads back as %s (%v), not as the stored tree %s", shape, read.Markdown, inlineSummaries(back), err, inlineSummaries(tree))
+		// ParseWritten's read-back is the parse of the text it stores (ParseRendering).
+		if !read.Tree.Equal(tree) {
+			fail("a write of %q stores %q, which Go reads back as %s, not as the stored tree %s", shape, read.Markdown, inlineSummaries(read.Tree), inlineSummaries(tree))
 		}
 		stored = append(stored, tree)
 		written = append(written, read.Markdown)

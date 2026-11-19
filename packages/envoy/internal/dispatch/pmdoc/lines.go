@@ -64,7 +64,12 @@ func (reader markdownReader) parse(source []byte, unclosedFrontmatter bool, budg
 // past a bound is no refusal there (nestingRefusal), and so is a parse with the base's reading of
 // email addresses (baseEmailsKey), whose links the linkify guard leaves as the readers made them.
 func (reader markdownReader) read(source []byte, unclosedFrontmatter bool, budget *WriteBudget, server int) (ast.Node, *parseCount, parser.Context, error) {
-	pc, count := readContext(unclosedFrontmatter, budget, server, reader.display)
+	pc, count := readContext(unclosedFrontmatter, budget, server)
+	// A display reader's parse is marked as one, since a block nested past a bound is no refusal
+	// there (nestingRefusal); every other reader of a document's markdown parses as a write does.
+	if reader.display {
+		pc.Set(displayParseKey, true)
+	}
 	if reader.baseEmails {
 		pc.Set(baseEmailsKey, true)
 	}
@@ -77,15 +82,10 @@ func (reader markdownReader) read(source []byte, unclosedFrontmatter bool, budge
 // it, nil for a budget that counts no elements - with that count. Every read of a document's
 // markdown starts here, the read-only reader of a body the parse refuses included
 // (FindDecisionCard), so each of them hands goldmark the same context and reads the same tree.
-func readContext(unclosedFrontmatter bool, budget *WriteBudget, server int, display bool) (parser.Context, *parseCount) {
+func readContext(unclosedFrontmatter bool, budget *WriteBudget, server int) (parser.Context, *parseCount) {
 	pc := parser.NewContext()
 	if unclosedFrontmatter {
 		pc.Set(unclosedFrontmatterKey, true)
-	}
-	// A display reader's parse is marked as one, since a block nested past a bound is no refusal
-	// there (nestingRefusal); every other reader of a document's markdown parses as a write does.
-	if display {
-		pc.Set(displayParseKey, true)
 	}
 	pc.Set(writeBudgetKey, budget)
 	return pc, budget.elements.countParse(pc, server)

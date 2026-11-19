@@ -356,9 +356,9 @@ func fallBackEmailLinks(tree *pmdoc.Node, rendered string) (*pmdoc.Node, bool, e
 	var changed bool
 	var err error
 	if rendered != "" {
-		fallen, changed, _, err = pmdoc.FallBackEmailLinksRendered(tree, rendered)
+		fallen, changed, err = pmdoc.FallBackEmailLinksRendered(tree, rendered)
 	} else {
-		fallen, changed, _, err = pmdoc.FallBackEmailLinks(tree)
+		fallen, changed, err = pmdoc.FallBackEmailLinks(tree)
 	}
 	switch {
 	case errors.Is(err, pmdoc.ErrSchema):
@@ -367,6 +367,24 @@ func fallBackEmailLinks(tree *pmdoc.Node, rendered string) (*pmdoc.Node, bool, e
 		return tree, false, err
 	}
 	return fallen, changed, nil
+}
+
+// versionedEmailLinks is rendered, the live tree a snapshot or a named version takes between a
+// browser's edit and its settlement, as the settlement's repair will leave it (planRepairs): where
+// the renderer cannot write its email links so that they read back, the tree with the base's
+// links (fallBackEmailLinks), rendered again, with rendered's head, and fell true. So the version's
+// markdown, token and index name one tree. The room keeps its own tree until its settlement, which
+// that edit has armed.
+func versionedEmailLinks(rendered renderedTree) (versioned renderedTree, fell bool, err error) {
+	fallen, changed, err := fallBackEmailLinks(rendered.tree, rendered.markdown)
+	if err != nil || !changed {
+		return rendered, false, err
+	}
+	markdown, offsets, err := renderTreeWithOffsets(fallen)
+	if err != nil {
+		return renderedTree{}, false, err
+	}
+	return renderedTree{tree: fallen, markdown: markdown, offsets: offsets, head: rendered.head}, true, nil
 }
 
 // fallBackEmailLinksLive gives doc's tree as it stands the base's email links where its own do not

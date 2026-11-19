@@ -300,7 +300,7 @@ func TestOrdinaryNestedInlineMarksReadAndRenderUnchanged(t *testing.T) {
 // timing the parse, so it holds on any machine.
 func TestARunOfBracketsTheirClosersTurnBackIntoTextIsOneText(t *testing.T) {
 	source := []byte(strings.Repeat("[", 15_000) + strings.Repeat("]", 15_000))
-	pc, _ := readContext(false, NewWriteBudget(), 0, false)
+	pc, _ := readContext(false, NewWriteBudget(), 0)
 	root := readSource(blockReader.md.Parser(), source, pc)
 	paragraph := root.FirstChild()
 	if paragraph == nil || paragraph.Kind() != ast.KindParagraph || paragraph.NextSibling() != nil {

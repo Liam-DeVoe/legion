@@ -463,15 +463,33 @@ func connectBrowser(t *testing.T, serverURL, artifactID, login string) *docstest
 
 // editAsBrowser replaces the document's text from browser's own copy and sends the room the update,
 // as a keystroke does: the copy's tree is read and rewritten in the one transaction that makes the
-// update, under the copy's own lock, which the browser's reader applies the room's updates under.
-// ygo applies the update to the room in its own transaction, under the room's lock - the path every
-// browser edit takes. It returns once the room's update observer has run for that update -
+// update (sendAsBrowser).
+func editAsBrowser(t *testing.T, service *Service, artifactID string, browser *docstest.Peer, markdown string) {
+	t.Helper()
+	sendAsBrowser(t, service, artifactID, browser, func(txn *crdt.Transaction, fragment *crdt.YXmlFragment) error {
+		current, err := treeOfTransaction(txn, fragment)
+		if err != nil {
+			return fmt.Errorf("read the browser's copy of the document: %w", err)
+		}
+		target, err := parseReplacing(current, markdown)
+		if err != nil {
+			return fmt.Errorf("parse the browser's edit: %w", err)
+		}
+		return pmdoc.Update(txn, fragment, target)
+	})
+}
+
+// sendAsBrowser makes change in browser's own copy of the document and sends the room the update:
+// change is handed the one transaction that makes the update, under the copy's own lock, which the
+// browser's reader applies the room's updates under, and the copy's fragment. ygo applies the
+// update to the room in its own transaction, under the room's lock - the path every browser edit
+// takes. It returns once the room's update observer has run for that update -
 // creditContentChange credited it and queueUpdateClass counted its durable append - whether or not
 // the append has reached storage. The signal is an observer this helper registers on the room after
 // the service's own: ygo fires a transaction's update observers in the order they were registered
 // (reearth/ygo crdt/doc.go, the onUpdate snapshot loop), so this one runs after the service's has
 // finished with the same update.
-func editAsBrowser(t *testing.T, service *Service, artifactID string, browser *docstest.Peer, markdown string) {
+func sendAsBrowser(t *testing.T, service *Service, artifactID string, browser *docstest.Peer, change func(txn *crdt.Transaction, fragment *crdt.YXmlFragment) error) {
 	t.Helper()
 	// These take the copy's lock themselves, so they are read before the transaction that holds it.
 	fragment := browser.Doc.GetXmlFragment(fragmentName)
@@ -491,17 +509,7 @@ func editAsBrowser(t *testing.T, service *Service, artifactID string, browser *d
 	defer unsubscribe()
 	var changeErr error
 	if _, err := browser.Send(func(txn *crdt.Transaction) {
-		current, err := treeOfTransaction(txn, fragment)
-		if err != nil {
-			changeErr = fmt.Errorf("read the browser's copy of the document: %w", err)
-			return
-		}
-		target, err := parseReplacing(current, markdown)
-		if err != nil {
-			changeErr = fmt.Errorf("parse the browser's edit: %w", err)
-			return
-		}
-		changeErr = pmdoc.Update(txn, fragment, target)
+		changeErr = change(txn, fragment)
 	}); err != nil || changeErr != nil {
 		t.Fatalf("send the browser's edit: %v %v", err, changeErr)
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,7 +13,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // laterAddress is the address after `/` in each shape below whose email links the renderer cannot
@@ -41,20 +39,10 @@ func TestSettlementGivesALiveDocumentTheBaseEmailLinksItsOwnCannotBeWrittenAs(t 
 		{name: "an address the rule reads as written", markdown: "Write to bob-smith@example.com today.\n"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			service, artifactID := newTestService(t)
-			service.settle = time.Hour // the test runs each settlement itself
-			seedServiceText(t, service, artifactID, "First.\n")
-			settleCurrentGeneration(t, service, artifactID)
-			browser := connectBrowser(t, newTestServer(t, service).URL, artifactID, "bob")
-
-			typed, err := pmdoc.Parse(row.markdown)
-			if err != nil {
-				t.Fatalf("Parse(%q): %v", row.markdown, err)
-			}
+			service, artifactID, browser, typed := roomTypedByBrowser(t, row.markdown)
 			if _, href := runHolding(typed, laterAddress); row.repaired && href != "" {
 				t.Fatalf("the rule reads %q as %s, linking %s, where it links nothing", row.markdown, linkSummary(typed), laterAddress)
 			}
-			typeAsBrowser(t, service, artifactID, browser, typed)
 			if held := liveTree(t, service, artifactID); !held.EqualWithBlockIDs(typed) {
 				t.Fatalf("the room holds %s, not the tree the browser typed, %s", linkSummary(held), linkSummary(typed))
 			}
@@ -154,16 +142,7 @@ func TestAVersionBeforeTheSettlementStoresTheBaseEmailLinksItsTreeCannotBeWritte
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			service, artifactID := newTestService(t)
-			service.settle = time.Hour // the test runs each settlement itself
-			seedServiceText(t, service, artifactID, "First.\n")
-			settleCurrentGeneration(t, service, artifactID)
-			browser := connectBrowser(t, newTestServer(t, service).URL, artifactID, "bob")
-			typed, err := pmdoc.Parse(shape)
-			if err != nil {
-				t.Fatalf("Parse(%q): %v", shape, err)
-			}
-			typeAsBrowser(t, service, artifactID, browser, typed)
+			service, artifactID, _, _ := roomTypedByBrowser(t, shape)
 
 			var version VersionResult
 			if err := joinedWrite(service, func(ctx context.Context) error {
@@ -180,7 +159,7 @@ func TestAVersionBeforeTheSettlementStoresTheBaseEmailLinksItsTreeCannotBeWritte
 			if _, href := runHolding(room, laterAddress); href != "" {
 				t.Fatalf("the room holds %s before its settlement, linking %s, where the browser typed it unlinked", linkSummary(room), laterAddress)
 			}
-			want, changed, _, err := pmdoc.FallBackEmailLinks(room)
+			want, changed, err := pmdoc.FallBackEmailLinks(room)
 			if err != nil || !changed {
 				t.Fatalf("FallBackEmailLinks(the room's tree) = changed %t, %v; the test needs a tree whose email links do not read back", changed, err)
 			}
@@ -202,23 +181,20 @@ func TestAVersionBeforeTheSettlementStoresTheBaseEmailLinksItsTreeCannotBeWritte
 			if wantToken, err := nodeToken(want); err != nil || token != wantToken {
 				t.Errorf("the version's token is %q, where its tree's is %q (%v)", token, wantToken, err)
 			}
-			indexed := map[string]string{}
-			rows, err := service.store.Pool.Query(context.Background(), `select block_id, text_sha256 from document_blocks where artifact_id = $1`, artifactID)
-			if err != nil {
-				t.Fatalf("read the block index: %v", err)
+			requireIndexedBlocks(t, service, artifactID, rendering, offsets)
+
+			// A snapshot of the same room before the settlement holds the version just stored, so
+			// it writes none (SnapshotVersion compares the latest version with what it would store).
+			var again VersionResult
+			if err := joinedWrite(service, func(ctx context.Context) error {
+				var err error
+				again, err = service.SnapshotVersion(ctx, artifactID, writer)
+				return err
+			}); err != nil {
+				t.Fatalf("snapshot the room again: %v", err)
 			}
-			for rows.Next() {
-				var id, sum string
-				if err := rows.Scan(&id, &sum); err != nil {
-					t.Fatalf("read a block of the index: %v", err)
-				}
-				indexed[id] = sum
-			}
-			rows.Close()
-			for _, block := range offsets {
-				if sum, held := indexed[block.ID]; !held || sum != refs.BlockTextSum(rendering[block.From:block.To]) {
-					t.Errorf("the block index holds block %s as %q (held %t), where the version's markdown holds %q", block.ID, sum, held, rendering[block.From:block.To])
-				}
+			if again.Wrote || again.Version.Number != version.Version.Number {
+				t.Errorf("a second snapshot before the settlement wrote %t, version %d, where the latest version %d holds the room", again.Wrote, again.Version.Number, version.Version.Number)
 			}
 
 			settleCurrentGeneration(t, service, artifactID)
@@ -233,39 +209,147 @@ func TestAVersionBeforeTheSettlementStoresTheBaseEmailLinksItsTreeCannotBeWritte
 	}
 }
 
+// A browser's edit applied after the settlement's read, and before its observer arms a newer
+// settlement, can take the address out from under the base's links the settlement planned: the
+// live write then finds nothing to give them, and the settlement versions the tree it read. That
+// version is stored as the repair would leave its tree, so its markdown reads back as the tree its
+// token names; the room keeps the browser's edit, which the next settlement versions.
+func TestASettlementWhoseLiveFallbackWritesNothingVersionsItsReadWithTheBaseEmailLinks(t *testing.T) {
+	const shape = "b-_www.@example.com./bob-smith@example.com\n"
+	service, artifactID, _, _ := roomTypedByBrowser(t, shape)
+	read := liveTree(t, service, artifactID)
+	want, changed, err := pmdoc.FallBackEmailLinks(read)
+	if err != nil || !changed {
+		t.Fatalf("FallBackEmailLinks(the room's tree) = changed %t, %v; the test needs a tree whose email links do not read back", changed, err)
+	}
+	rendering, err := pmdoc.Render(want)
+	if err != nil {
+		t.Fatalf("render the room's tree with the base's links: %v", err)
+	}
+	versionsBefore := latestVersionNumber(t, service, artifactID)
+
+	var release func()
+	service.afterSettleReconcile = func(room string) {
+		if room != artifactID || release != nil {
+			return
+		}
+		// The browser takes `@example.com` off the later address, so the room's tree reads back
+		// and the live write of the base's links has nothing to give. Its observer is held before
+		// it arms a settlement, so this one stays the room's and writes its version.
+		release = holdPeerEdit(t, service, artifactID, &service.afterCreditUpdate, replaceRun(laterAddress, "smith"))
+	}
+	settleCurrentGeneration(t, service, artifactID)
+	service.afterSettleReconcile = nil
+	if release == nil {
+		t.Fatal("the settlement never reached the window between its plan and its repairs")
+	}
+	if versions := latestVersionNumber(t, service, artifactID); versions != versionsBefore+1 {
+		t.Fatalf("latest version = %d, want %d: the settlement wrote no version of the typed address", versions, versionsBefore+1)
+	}
+	stored := latestVersionMarkdown(t, service, artifactID)
+	if stored != rendering {
+		t.Errorf("the settlement's version stores %q, where its read with the base's links renders to %q", stored, rendering)
+	}
+	requireReadsBackAs(t, "the settlement's version", stored, want)
+	var token string
+	if err := service.store.Pool.QueryRow(context.Background(), `
+		select document_token from artifact_versions where artifact_id = $1 order by number desc limit 1
+	`, artifactID).Scan(&token); err != nil {
+		t.Fatalf("read the version's token: %v", err)
+	}
+	if wantToken, err := nodeToken(want); err != nil || token != wantToken {
+		t.Errorf("the version's token is %q, where its tree's is %q (%v)", token, wantToken, err)
+	}
+
+	release()
+	settleCurrentGeneration(t, service, artifactID)
+	if err := service.roomFailure(artifactID); err != nil {
+		t.Fatalf("the settlement failed the room: %v", err)
+	}
+	requireSettledAtLatestVersion(t, service, artifactID)
+	requireReadsBackAs(t, "the latest version", latestVersionMarkdown(t, service, artifactID), liveTree(t, service, artifactID))
+}
+
+// An edit through the service that writes one of the shapes whose rule's reading has no spelling
+// that reads back - an insert, a replacement of blocks, an accepted suggestion - is stored, as an
+// upload of the same text is, with the base's link on `smith@example.com`: main stores each (R4 of
+// INFRA-4224). The room holds that tree, and the settlement's version reads back as it.
+func TestAnEditOfAnAddressTheRuleCannotWriteStoresTheBaseEmailLinks(t *testing.T) {
+	writer := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
+	for _, shape := range []string{"b-_www.@example.com./bob-smith@example.com", "`c`&period;.@x_y.com/bob-smith@example.com"} {
+		for _, row := range []struct {
+			name string
+			edit func(service *Service, artifactID string) error
+		}{
+			{name: "an insert", edit: func(service *Service, artifactID string) error {
+				_, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "insert", After: "end", Markdown: shape + "\n"}}, writer, nil)
+				return err
+			}},
+			{name: "a replacement of blocks", edit: func(service *Service, artifactID string) error {
+				_, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "replace", Find: "First.", With: shape + "\n\nMore."}}, writer, nil)
+				return err
+			}},
+			{name: "an accepted suggestion", edit: func(service *Service, artifactID string) error {
+				spec := MarkSpec{Kind: MarkSuggestion, ID: "s1", By: writer}
+				if _, err := joinedMarkQuote(service, artifactID, spec, "First.", nil); err != nil {
+					return err
+				}
+				return joinedAcceptSuggestion(service, artifactID, "s1", shape, model.Actor{Kind: "user", ID: "alice"})
+			}},
+		} {
+			t.Run(row.name+" of "+shape, func(t *testing.T) {
+				service, artifactID := newTestService(t)
+				service.settle = time.Hour // the test runs each settlement itself
+				seedServiceText(t, service, artifactID, "First.\n")
+				settleCurrentGeneration(t, service, artifactID)
+				if err := row.edit(service, artifactID); err != nil {
+					t.Fatalf("the edit was refused: %v", err)
+				}
+				room := liveTree(t, service, artifactID)
+				requireBaseLink(t, "the edited room", room)
+				rendering, err := pmdoc.Render(room)
+				if err != nil {
+					t.Fatalf("render the edited room: %v", err)
+				}
+				requireReadsBackAs(t, "the edited room's rendering", rendering, room)
+				settleCurrentGeneration(t, service, artifactID)
+				if err := service.roomFailure(artifactID); err != nil {
+					t.Fatalf("the settlement failed the room: %v", err)
+				}
+				requireSettledAtLatestVersion(t, service, artifactID)
+				requireReadsBackAs(t, "the latest version", latestVersionMarkdown(t, service, artifactID), liveTree(t, service, artifactID))
+			})
+		}
+	}
+}
+
+// roomTypedByBrowser is a document seeded "First.\n" and settled on a new service, which runs each
+// settlement itself, over which browser bob typed markdown's tree (typeAsBrowser): the service, the
+// document, the browser and the tree it typed.
+func roomTypedByBrowser(t *testing.T, markdown string) (service *Service, artifactID string, browser *docstest.Peer, typed *pmdoc.Node) {
+	t.Helper()
+	service, artifactID = newTestService(t)
+	service.settle = time.Hour // the test runs each settlement itself
+	seedServiceText(t, service, artifactID, "First.\n")
+	settleCurrentGeneration(t, service, artifactID)
+	browser = connectBrowser(t, newTestServer(t, service).URL, artifactID, "bob")
+	typed, err := pmdoc.Parse(markdown)
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", markdown, err)
+	}
+	typeAsBrowser(t, service, artifactID, browser, typed)
+	return service, artifactID, browser, typed
+}
+
 // typeAsBrowser makes browser's copy of the document hold typed and sends the room the update, as
 // a person's typing or paste reaches the room: the browser editor's engine gives the room its own
 // tree, with no markdown behind it. It returns once the room's update observer has run for that
-// update, as editAsBrowser does.
+// update (sendAsBrowser).
 func typeAsBrowser(t *testing.T, service *Service, artifactID string, browser *docstest.Peer, typed *pmdoc.Node) {
 	t.Helper()
-	// These take the copy's lock themselves, so they are read before the transaction that holds it.
-	fragment := browser.Doc.GetXmlFragment(fragmentName)
-	client := browser.Doc.ClientID()
-	sentFrom := browser.Doc.StateVector().Clock(client)
-	room := service.srv.GetDoc(artifactID)
-	if room == nil {
-		t.Fatal("the room is not resident while its browser is connected")
-	}
-	recorded := make(chan struct{})
-	var once sync.Once
-	unsubscribe := room.OnUpdate(func([]byte, any) {
-		if room.StateVector().Clock(client) > sentFrom {
-			once.Do(func() { close(recorded) })
-		}
+	sendAsBrowser(t, service, artifactID, browser, func(txn *crdt.Transaction, fragment *crdt.YXmlFragment) error {
+		return pmdoc.Update(txn, fragment, typed)
 	})
-	defer unsubscribe()
-	var changeErr error
-	if _, err := browser.Send(func(txn *crdt.Transaction) {
-		changeErr = pmdoc.Update(txn, fragment, typed)
-	}); err != nil || changeErr != nil {
-		t.Fatalf("send the browser's edit: %v %v", err, changeErr)
-	}
-	select {
-	case <-recorded:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room did not record the browser's edit within roomWait")
-	}
 }
 
 // browserTree is browser's copy of the document, read under its lock while the room's updates

@@ -141,9 +141,20 @@ func readBackWritten(doc *Node, spanCells int) (WrittenReadBack, error) {
 	if err != nil {
 		return WrittenReadBack{}, err
 	}
-	markdown := r.b.String()
+	return readBackRendering(doc, r.b.String())
+}
+
+// readBackRendering is what markdown, doc's rendering, reads back as (ParseRendering), with that
+// markdown: a refusal of blocks nested past a bound is told by how many doc nests (renderedNesting).
+func readBackRendering(doc *Node, markdown string) (WrittenReadBack, error) {
 	back, err := ParseRendering(markdown)
 	return WrittenReadBack{Markdown: markdown, Tree: back}, renderedNesting(doc, err)
+}
+
+// readsBackAsWritten reports whether back, what doc's markdown reads back as, is doc as written
+// (asWritten), as documentMisread compares them.
+func readsBackAsWritten(doc, back *Node) bool {
+	return readDifference(asWritten(doc), back, skip{}) == ""
 }
 
 // NewMisread names how after, which a write made from before, reads back otherwise where before
