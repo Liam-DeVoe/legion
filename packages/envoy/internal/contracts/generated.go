@@ -429,6 +429,44 @@ const IdempotencyAnswerNotKept = "ANSWER_NOT_KEPT"
 const IdempotencyKeyTTL = 86400000 * time.Millisecond
 const IdempotencyLease = 60000 * time.Millisecond
 
+// DispatchAsOfNotServed is the code of the 400 for an as_of that a route cannot answer. A route
+// that holds no history answers only the present, and it refuses every as_of with this code. A
+// route that answers as_of refuses with this code a filter parameter that it cannot evaluate at
+// that time. The message names that parameter. Generated from DISPATCH_AS_OF_NOT_SERVED in
+// packages/contracts so the server's refusal and every client's reading of it cannot drift apart.
+const DispatchAsOfNotServed = "AS_OF_NOT_SERVED"
+
+// DispatchInvalidAsOf is the code of the 400 for an as_of that Dispatch cannot read: a value that
+// is not an RFC 3339 time, a time later than the server's present time, or an as_of that the
+// request sends more than once. Generated from DISPATCH_INVALID_AS_OF in packages/contracts so the
+// server's refusal and every client's reading of it cannot drift apart.
+const DispatchInvalidAsOf = "INVALID_AS_OF"
+
+// DispatchAsOfSearchNotFilled is the code of the 409 for a search at a past time that the fill of
+// the keyword table has not reached. The message and DispatchAsOfFilledThroughHeader name the time
+// that the fill reached. Generated from DISPATCH_AS_OF_SEARCH_NOT_FILLED in packages/contracts so
+// the server's refusal and every client's reading of it cannot drift apart.
+const DispatchAsOfSearchNotFilled = "AS_OF_SEARCH_NOT_FILLED"
+
+// DispatchAsOfHeader is the response header on every answer that Dispatch gives as of a past time
+// (the cut), for an as_of in the request or for a token that carries a cut. The value is the cut
+// in RFC 3339, with six fractional digits, in UTC. Generated from DISPATCH_AS_OF_HEADER in
+// packages/contracts so the server and every client name the header once.
+const DispatchAsOfHeader = "Dispatch-As-Of"
+
+// DispatchAsOfAbsentHeader is the response header that names each member that a past-time answer
+// omits because the records at the cut cannot give it. The value is a comma-separated list of
+// RFC 6901 JSON Pointers, in which a segment * stands for every member of an array, such as
+// /open_asks/*/referenced_by_count. Generated from DISPATCH_AS_OF_ABSENT_HEADER in
+// packages/contracts so the server and every client name the header once.
+const DispatchAsOfAbsentHeader = "Dispatch-As-Of-Absent"
+
+// DispatchAsOfFilledThroughHeader is the response header on a 409 DispatchAsOfSearchNotFilled. The
+// value is the time that the fill of the keyword table reached, in RFC 3339. Generated from
+// DISPATCH_AS_OF_FILLED_THROUGH_HEADER in packages/contracts so the server and every client name
+// the header once.
+const DispatchAsOfFilledThroughHeader = "Dispatch-As-Of-Filled-Through"
+
 // SessionHeartbeat is how often a pane's pi-envoy plugin refreshes its listener registration, and
 // SessionLiveWindow how long a session's last registration keeps it live to the listener. Three
 // heartbeats plus one whole listener call fit inside the live window, so two refreshes may fail
