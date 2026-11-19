@@ -3,8 +3,9 @@
 // the database the string names. Such a string may carry a user and a password, and pgx prints
 // parts of it: its parse error masks the password and quotes the rest, the user among it, and its
 // connect error names the user and the database in front of what failed. And a user part written
-// with a raw @ or / is read by pgx in part as the host or the database. So each opener reads its
-// string here: one whose user part pgx reads apart is refused (Refuse), one pgx cannot parse is
+// with a raw @ or / is read by pgx in part as the host or the database, and a URL pgx does not take
+// for one is read as keyword=value text. So each opener reads its string here: one whose user part
+// pgx reads apart, or a URL pgx would not read as one, is refused (Refuse), one pgx cannot parse is
 // refused too, each named by its length and the cause the check found (redact.Refusal), and a
 // failed connect names no user and no database (ConnectFailure). A reader that also parses the
 // string with net/url refuses what net/url reads apart first (URLParserReadsApart).
@@ -23,6 +24,14 @@ import (
 
 // The causes a refusal of a Postgres connection string names, in redact.Refusal's words.
 const (
+	// SchemeNotRead: a value that holds :// is a URL, but pgx reads it as one only when it starts
+	// with postgres:// or postgresql:// as written, in lower case with nothing before it, and reads
+	// any other value as keyword=value text. A URL whose scheme is not in lower case, or with white
+	// space before it, is then one keyword whose name is the whole URL up to its first =, the
+	// password among it, which pgx sends to the server as the name of a runtime parameter while it
+	// dials the local socket; and a URL with white space after it ends its last part with that
+	// space. Written in lower case with no space around it, the same URL reads as one.
+	SchemeNotRead redact.Misreading = "holds :// but does not start with postgres:// or postgresql:// in lower case with no space around it, so pgx reads it as keyword=value text and sends the URL up to its first =, the password among it, as the name of a setting; write the scheme in lower case, with no space before or after the value"
 	// AtAfterPath: an @ after the first / and none before it. pgx and net/url both end the
 	// authority at that /, so a user part that holds a / is read as a host, a port and a database
 	// name, which pgx's connect error prints.
@@ -88,19 +97,24 @@ func ParsePoolConfig(setting, raw string) (*pgxpool.Config, error) {
 	return config, nil
 }
 
-// misread is what makes raw a Postgres URL whose user part pgx itself reads apart, so that pgx
-// takes a piece of the user part for a host or a database name, which its connect error and a
-// refusal naming its host would print; the empty Misreading when nothing does. pgx reads the user
-// part as libpq does, up to the FIRST @ before the first / (pgconn's parseURLSettings), and keeps a
-// ?, # or \ before that @ in it, where net/url would end the authority (URLParserReadsApart). So a
-// raw @ anywhere after the first @ is refused: a second @ before the first / (AtsBeforePath); an @
-// after the first / with none before it, which may end a user part that held a / (AtAfterPath);
-// and, with an @ before the /, another in the database name (AtInDatabaseName) or in the query
-// (AtInQuery), which may follow a piece of a password that held an @ and a /. No rule of the
-// string tells such a password from an honest @ in the same place, and the honest form can always
-// write that @ as %40. The key=value form has no such part.
+// misread is what makes raw a Postgres URL that pgx does not read as the URL it is, or whose user
+// part pgx itself reads apart, so that pgx takes a piece of the user part for a host or a database
+// name, which its connect error and a refusal naming its host would print; the empty Misreading
+// when nothing does. A value that holds :// is a URL, and one pgx would read as keyword=value text
+// is refused first (SchemeNotRead). pgx reads the user part as libpq does, up to the FIRST @
+// before the first / (pgconn's parseURLSettings), and keeps a ?, # or \ before that @ in it, where
+// net/url would end the authority (URLParserReadsApart). So a raw @ anywhere after the first @ is
+// refused: a second @ before the first / (AtsBeforePath); an @ after the first / with none before
+// it, which may end a user part that held a / (AtAfterPath); and, with an @ before the /, another
+// in the database name (AtInDatabaseName) or in the query (AtInQuery), which may follow a piece of
+// a password that held an @ and a /. No rule of the string tells such a password from an honest @
+// in the same place, and the honest form can always write that @ as %40. The key=value form,
+// which holds no ://, has no such part.
 func misread(raw string) redact.Misreading {
 	authority, afterPath, ok := splitURL(raw)
+	if strings.Contains(raw, "://") && (!ok || strings.TrimSpace(raw) != raw) {
+		return SchemeNotRead
+	}
 	if !ok {
 		return ""
 	}

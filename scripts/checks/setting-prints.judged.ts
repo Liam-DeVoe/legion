@@ -158,10 +158,10 @@ const RESTS = {
     'if err := pgsetting.Refuse("DATABASE_URL", boot.DatabaseURL); err != nil {',
     "cba966fcef60"
   ),
-  misread: basis("packages/envoy/pgsetting/pgsetting.go", "func misread(", "221168d2df5b"),
+  misread: basis("packages/envoy/pgsetting/pgsetting.go", "func misread(", "d3f00ba92f7f"),
   misreadNet: basis("packages/envoy/internal/redact/url.go", "func Misread(", "7a874dfb402f"),
   loopback: basis(`${DISPATCH}main.go`, "func loopbackDatabase(", "654bd6fbf695"),
-  iapAudienceShape: basis(`${DISPATCH}signin.go`, "var iapAudienceShape =", "7eda81402e5d"),
+  iapAudienceShape: basis(`${DISPATCH}signin.go`, "var iapAudienceShape =", "b4da9b601809"),
   iapAudienceCheck: basis(
     `${DISPATCH}main.go`,
     "if !iapAudienceShape.MatchString(iapAudience) {",
@@ -841,7 +841,7 @@ export const JUDGED: readonly Judged[] = [
   {
     file: `${DISPATCH}main.go`,
     text: 'slog.Info("dispatch: naming people from Identity-Aware Proxy',
-    why: "the IAP audience, admitted only when it begins /projects/<project number>/ and holds no white space (iapAudienceShape), a path that no reader takes as a URL, whose refusal names the value by its length; the sign-in domain, admitted only as a lowercase DNS name (checkDomainShape); and the key set's URL, oidc.IAPKeySetURL, a constant no setting changes",
+    why: "the IAP audience, admitted only when it begins /projects/<project number>/ and holds only letters, digits, ., _, - and / after it (iapAudienceShape), so no @ and no : and no user part, a path that no reader takes as a URL, whose refusal names the value by its length; the sign-in domain, admitted only as a lowercase DNS name (checkDomainShape); and the key set's URL, oidc.IAPKeySetURL, a constant no setting changes",
     rests: [RESTS.iapAudienceShape, RESTS.iapAudienceCheck, RESTS.domainShapeCheck],
   },
   ...[
@@ -866,7 +866,7 @@ export const JUDGED: readonly Judged[] = [
   {
     file: `${DISPATCH}main.go`,
     text: "serves a loopback database only: DATABASE_URL names host %q",
-    why: "a host pgx read from DATABASE_URL, named only after resolveBootConfig refused a value whose user part pgx reads apart (pgsetting.Refuse: a raw @ anywhere after the first @, that is more than one @ before the first /, an @ after the first / with none before it, or an @ before the first / and another in the database name or the query), so pgx ends the user part at the one @ the value holds, before that host, and keeps a ?, # or \\ before that @ in the user part; a password that holds a raw @ is refused whatever follows it, so the host pgx reads cannot be a piece of a password",
+    why: "a host pgx read from DATABASE_URL, named only after resolveBootConfig refused a value whose user part pgx reads apart (pgsetting.Refuse: a raw @ anywhere after the first @, that is more than one @ before the first /, an @ after the first / with none before it, or an @ before the first / and another in the database name or the query) and a value that holds :// that pgx would read as keyword=value text (a scheme not in lower case, white space around it), so pgx reads the value as the URL it is, ends the user part at the one @ the value holds, before that host, and keeps a ?, # or \\ before that @ in the user part; a password that holds a raw @ is refused whatever follows it, so the host pgx reads cannot be a piece of a password",
     rests: [RESTS.bootMisread, RESTS.misread, RESTS.loopback],
   },
   {

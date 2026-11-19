@@ -14,11 +14,13 @@ import (
 )
 
 // Each misread form of a Postgres connection string is refused naming its cause, one row per
-// cause: a raw @ anywhere after the first @ among them, in the database name or the query alike.
-// Each honest form with one @, or whose other @ is written %40 in its database name or its query,
-// is read; a value pgx cannot parse is refused by its length too, and a failed connect names no
-// user and no database. No refusal holds a part of the value. The user, the passwords and the
-// token are made for this test.
+// cause: a raw @ anywhere after the first @ among them, in the database name or the query alike,
+// and a value that holds :// but that pgx reads as keyword=value text (a scheme not in lower case,
+// another scheme, white space around the URL, a :// in a keyword's value). Each honest form with
+// one @, or whose other @ is written %40 in its database name or its query, is read, and so is the
+// key=value form with no :// in it; a value pgx cannot parse is refused by its length too, and a
+// failed connect names no user and no database. No refusal holds a part of the value. The user,
+// the passwords and the token are made for this test.
 func TestEachOpenerReadsItsConnectionStringWithNoPartOfItsUserPartPrinted(t *testing.T) {
 	const (
 		user   = "made-up-user-71ce"
@@ -46,6 +48,14 @@ func TestEachOpenerReadsItsConnectionStringWithNoPartOfItsUserPartPrinted(t *tes
 		{"an @ and a / in the password, read as a host and a database name", "postgres://" + user + ":" + first + "@" + second + "/x@127.0.0.1:1/x", pgsetting.AtInDatabaseName},
 		{"an @ in the database name written %40", "postgres://" + user + ":" + first + "@127.0.0.1:1/dis%40patch", ""},
 		{"the key=value form", "host=127.0.0.1 port=1 user=" + user + " password=" + first, ""},
+		{"an upper-case scheme, with an @, a /, a ? and an = in the password", "POSTGRES://" + user + ":" + first + "@" + second + "/x?a=b@127.0.0.1:1/x", pgsetting.SchemeNotRead},
+		{"a scheme with one capital", "Postgres://" + user + ":" + first + "@127.0.0.1:1/x?sslmode=disable", pgsetting.SchemeNotRead},
+		{"postgresql:// in capitals", "POSTGRESQL://" + user + ":" + first + "@127.0.0.1:1/x", pgsetting.SchemeNotRead},
+		{"a space before the URL", " postgres://" + user + ":" + first + "@127.0.0.1:1/x?sslmode=disable", pgsetting.SchemeNotRead},
+		{"a line ending after the URL", "postgres://" + user + ":" + first + "@127.0.0.1:1/x\n", pgsetting.SchemeNotRead},
+		{"another scheme", "mysql://" + user + ":" + first + "@127.0.0.1:1/x", pgsetting.SchemeNotRead},
+		{"a :// in a value of the key=value form", "host=127.0.0.1 port=1 user=" + user + " password=" + first + "://x", pgsetting.SchemeNotRead},
+		{"a :// in a value of the key=value form, written :\\/\\/", "host=127.0.0.1 port=1 user=" + user + " password=" + first + `:\/\/x`, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			want := ""

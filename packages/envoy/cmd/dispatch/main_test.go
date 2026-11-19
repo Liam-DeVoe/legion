@@ -176,14 +176,33 @@ func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
 			t.Errorf("IAP identity with %v: err = %v, want a refusal naming %q", tc.overrides, err, tc.naming)
 		}
 	}
-	// A value of another shape may be a URL pasted into the wrong variable: it is named by its
-	// length, and no part of its user part prints.
-	pasted := "https://made-up-user-5b1e:not-a-secret-7d2a@iap.example/projects/1/x"
-	_, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_IAP_AUDIENCE": pasted})))
-	if want := "DISPATCH_IAP_AUDIENCE, a value of " + strconv.Itoa(len(pasted)) + " characters, is not the audience IAP signs"; err == nil ||
-		!strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "made-up-user") || strings.Contains(err.Error(), "not-a-secret") {
-		t.Errorf("IAP identity with a URL as its audience: err = %v, want %q and no part of its user part", err, want)
+	// A value of another shape may be a URL pasted into the wrong variable, at the start or after
+	// /projects/<project number>/: it is named by its length, and no part of its user part prints,
+	// so the boot line that logs the audience never holds one. The control is each form IAP signs
+	// for, which boots with the audience whole.
+	for _, pasted := range []string{
+		"https://made-up-user-5b1e:not-a-secret-7d2a@iap.example/projects/1/x",
+		"/projects/123456789012/https://made-up-user-5b1e:not-a-secret-7d2a@iap.example/x",
+		"/projects/123456789012/global/backendServices/not-a-secret-7d2a@iap.example",
+		"/projects/123456789012/global/backendServices/made-up-user-5b1e:not-a-secret-7d2a",
+	} {
+		_, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_IAP_AUDIENCE": pasted})))
+		if want := "DISPATCH_IAP_AUDIENCE, a value of " + strconv.Itoa(len(pasted)) + " characters, is not the audience IAP signs"; err == nil ||
+			!strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "made-up-user") || strings.Contains(err.Error(), "not-a-secret") {
+			t.Errorf("IAP identity with a URL in its audience, %d characters: err = %v, want %q and no part of its user part", len(pasted), err, want)
+		}
 	}
+	for _, audience := range []string{
+		testIAPAudience,
+		"/projects/123456789012/apps/made-up-project",
+		"/projects/123456789012/locations/us-central1/services/dispatch",
+		"/projects/123456789012/regions/us-central1/backendServices/9876543210",
+	} {
+		if boot, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_IAP_AUDIENCE": audience}))); err != nil || boot.IAPAudience != audience {
+			t.Errorf("IAP identity with the audience %q: IAPAudience %q, err = %v, want it admitted whole", audience, boot.IAPAudience, err)
+		}
+	}
+	var err error
 	for name, environment := range map[string]map[string]string{
 		"cookie identity": signInEnvironment(map[string]string{"DISPATCH_IAP_AUDIENCE": testIAPAudience}),
 		"header identity": headerIdentityEnvironment(map[string]string{"DISPATCH_IAP_AUDIENCE": testIAPAudience}),

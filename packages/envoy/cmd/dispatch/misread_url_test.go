@@ -239,6 +239,94 @@ func TestADatabaseURLWithAnAtInItsPasswordAndAnotherAfterItsSlashIsRefusedByItsL
 	}
 }
 
+// A DATABASE_URL whose scheme is not in lower case, or with white space around it, holds :// but
+// pgx reads it as keyword=value text: the URL up to its first =, the password among it, becomes the
+// name of a setting pgx sends the server, whose refusal of an unknown setting names it, and pgx
+// dials the local socket, so the refusals for an @ after the first never see it. Each is refused at
+// every boot, under the dev sign-in or not, by the census and by store.Open, by its length and the
+// cause. The boot trims its value, so white space around it reaches only the census and store.Open.
+// The control is the same URL in lower case with no space around it: the boot admits it, and the
+// dev sign-in fence, the census and store.Open each name its host, so each line under test is
+// reached. The user, the password and its piece are made for this test.
+func TestADatabaseURLThatPgxReadsAsKeywordValueTextIsRefusedByItsLength(t *testing.T) {
+	const (
+		user  = "made-up-user-5c1a"
+		first = "not-a-secret-pw5c1a"
+		piece = "not-a-secret-piece-5c1a"
+		cause = "holds :// but does not start with postgres:// or postgresql:// in lower case with no space around it"
+	)
+	control := "postgres://" + user + ":" + first + "@" + piece + "/dispatch?connect_timeout=3"
+	censusText := func(databaseURL string) string {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		var out, errOut bytes.Buffer
+		census(ctx, databaseURL, &out, &errOut)
+		return out.String() + errOut.String()
+	}
+	open := func(databaseURL string) string {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if _, err := store.Open(ctx, databaseURL); err != nil {
+			return err.Error()
+		}
+		return "(opened)"
+	}
+	boot := func(environment func(map[string]string) settingValues) func(string) string {
+		return func(databaseURL string) string {
+			if _, err := resolveBootConfig(environment(map[string]string{"DATABASE_URL": databaseURL})); err != nil {
+				return err.Error()
+			}
+			return "(admitted)"
+		}
+	}
+	if text := boot(bootEnvironment)(control); text != "(admitted)" {
+		t.Fatalf("the control in lower case: %q, want it admitted", strings.NewReplacer(user, "<USER>", first, "<P1>", piece, "<PIECE>").Replace(text))
+	}
+	for _, shape := range []struct {
+		name, value      string
+		trimmedByTheBoot bool
+	}{
+		{"an upper-case scheme and an @, a /, a ? and an = in the password", "POSTGRES://" + user + ":" + first + "@" + piece + "/x?a=b@127.0.0.1:1/dispatch", false},
+		{"a scheme with one capital", "Postgres://" + user + ":" + first + "@" + piece + "/dispatch?connect_timeout=3", false},
+		{"postgresql:// in capitals", "POSTGRESQL://" + user + ":" + first + "@" + piece + "/dispatch?connect_timeout=3", false},
+		{"a space before the URL", " " + control, true},
+		{"a line ending after the URL", control + "\n", true},
+	} {
+		named := fmt.Sprintf("DATABASE_URL, a value of %d characters, %s", len(shape.value), cause)
+		for _, line := range []struct {
+			name    string
+			text    func(string) string
+			control bool
+			atBoot  bool
+		}{
+			{"the boot", boot(bootEnvironment), false, true},
+			{"the boot under the dev sign-in", boot(devSignInEnvironment), true, true},
+			{"the census", censusText, true, false},
+			{"store.Open", open, true, false},
+		} {
+			if line.atBoot && shape.trimmedByTheBoot {
+				continue
+			}
+			t.Run(shape.name+", "+line.name, func(t *testing.T) {
+				if text := line.text(control); line.control && !strings.Contains(text, piece) {
+					t.Fatalf("UNKNOWN: the control names no host, so this row saw nothing: %q", text)
+				}
+				text := line.text(shape.value)
+				shown := strings.NewReplacer(user, "<USER>", first, "<P1>", piece, "<PIECE>").Replace(text)
+				if !strings.Contains(text, named) {
+					t.Errorf("%q, want the refusal %q", shown, named)
+				}
+				for _, part := range []string{user, first, piece} {
+					if strings.Contains(text, part) {
+						t.Errorf("the line names a part of the URL: %q", shown)
+						break
+					}
+				}
+			})
+		}
+	}
+}
+
 // ENVOY_URL and DISPATCH_AGENT_SECRETS_URL are each refused at boot, named by its length and the
 // cause, when an @ is left once net/url takes out its user part. A token written with a raw #, ? or
 // / as the whole user part (http://<a>#<b>@host) is otherwise read with <a> as the host, so the

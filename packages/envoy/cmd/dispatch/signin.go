@@ -36,15 +36,18 @@ const maxDomainLength = 253
 // of the boot log.
 const notALowercaseDomain redact.Misreading = "is not a lowercase domain name such as example.com"
 
-// iapAudienceShape is the start every audience Identity-Aware Proxy signs for shares,
-// /projects/<project number>/ (https://cloud.google.com/iap/docs/signed-headers-howto): a load
-// balancer's backend service, an App Engine app or a Cloud Run service follows it.
-var iapAudienceShape = regexp.MustCompile(`^/projects/[0-9]+/\S+$`)
+// iapAudienceShape is the shape of every audience Identity-Aware Proxy signs for,
+// /projects/<project number>/ (https://cloud.google.com/iap/docs/signed-headers-howto) and then a
+// load balancer's backend service, an App Engine app or a Cloud Run service, named in letters,
+// digits, '.', '_', '-' and '/'. Nothing after the project number may hold an @ or a :, so a URL
+// with a user part written after it (/projects/<n>/https://<user>:<password>@host) is refused like
+// one pasted at the start, and the boot line, which logs the audience, never holds a user part.
+var iapAudienceShape = regexp.MustCompile(`^/projects/[0-9]+/[A-Za-z0-9._/-]+$`)
 
 // notAnIAPAudience is what a refusal of DISPATCH_IAP_AUDIENCE names, after the value's length
 // (redact.Refusal): a value of another shape may be a URL pasted into the wrong variable, user part
 // and all, so it is never echoed.
-const notAnIAPAudience redact.Misreading = "is not the audience IAP signs its assertions for, which begins /projects/<project number>/, such as /projects/<project number>/global/backendServices/<backend service id>"
+const notAnIAPAudience redact.Misreading = "is not the audience IAP signs its assertions for, which begins /projects/<project number>/ and holds only letters, digits, ., _, - and / after it, such as /projects/<project number>/global/backendServices/<backend service id>"
 
 // signInClientSettings are the three settings every Google sign-in takes, each with boot's value:
 // the issuer and Dispatch's confidential client there.
