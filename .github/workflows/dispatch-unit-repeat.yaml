@@ -132,10 +132,11 @@ jobs:
     # over every completed leg of the runs the test step's comment names, took at most 37 s in a
     # web leg (run 44097039165, round 2), 29 s in a web-cold leg (run 44449111716, round 2) and
     # 151 s in a harness leg (run 44473658176, round 3, whose zsh install took 125 s), so 1, 1 and
-    # 3 minutes: 16 + 1 = 17 minutes for a web leg, 2 + 1 = 3 for a web-cold leg and 30 + 3 = 33
+    # 3 minutes: 16 + 1 = 17 minutes for a web leg, 2 + 1 = 3 for a web-cold leg and 47 + 3 = 50
     # for a harness leg, the matrix's job_minutes. The slowest whole jobs took 845 s for a web leg
     # (run 44465013263, round 3), 125 s for a web-cold leg (run 44360597415, round 1) and 1,575 s
-    # for a harness leg (run 44389203951, round 1).
+    # for a harness leg (run 44389203951, round 1), before the harness leg's limit came from the
+    # rows the test step's comment names.
     timeout-minutes: ${{ matrix.job_minutes }}
     strategy:
       # One leg's failure leaves the other legs running, so each one reports its own rows.
@@ -158,8 +159,8 @@ jobs:
             job_minutes: 3
           - lane: harness
             reruns: 20
-            step_minutes: 30
-            job_minutes: 33
+            step_minutes: 47
+            job_minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -222,7 +223,12 @@ jobs:
       # the 78 completed web legs, the most in run 44465013263, round 3, so 821 x 1.15 = 944 s, 16
       # minutes; and 999 to 1,529 s in the 73 completed harness legs, the most in run 44389203951,
       # round 1, so 1,529 x 1.15 = 1,758 s, 30 minutes. The 39 web-cold legs took at most 101 s,
-      # in run 44339340132, round 3, so 101 x 1.15 = 116 s, the two-minute floor.
+      # in run 44339340132, round 3, so 101 x 1.15 = 116 s, the two-minute floor. A harness leg
+      # also reruns harness-postgres-removal.test.ts, harness-postgres-holders.test.ts and
+      # harness-postgres-marks.test.ts 20 times, whose real-time rows wait out bounds of a few
+      # seconds each: the three took 104 to 121 s together in 8 whole runs on one bun worker beside
+      # a shared Linux machine's load of 318 to 336 on 2026-11-19, so 121 x 20 x 1.15 = 2,783 s, 47
+      # minutes, the larger of the two, and the harness leg's budget.
       #
       # GitHub's runners set CI already. The step writes it too, so the environment the rows run
       # under does not rest on the runner's: Bun's test runner reads it, and under it writes no

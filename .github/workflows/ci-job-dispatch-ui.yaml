@@ -111,7 +111,10 @@ jobs:
       # plus 15 per cent rounded up to a whole minute: this step took 116 to 148 s in the 28 green
       # runs of the 40 newest green ci.yaml runs on 2026-11-19, and 129, 138 and 227 s in the
       # branch's three green runs that added those rows' newest forms (44342655660, 44390012817,
-      # 44443452775), so 227 x 1.15 = 261 s, 5 minutes.
+      # 44443452775), so 227 x 1.15 = 261 s, 5 minutes. Those rows wait out bounds of a few seconds
+      # each, which they set through the parameters the start reads its own from: the three files
+      # took 104 to 121 s together in 8 whole runs on one bun worker beside a shared Linux
+      # machine's load of 318 to 336 on 2026-11-19, so 121 x 1.15 = 140 s, 3 minutes, inside the 5.
       - name: Test dispatch dashboard
         timeout-minutes: 5
         run: |
