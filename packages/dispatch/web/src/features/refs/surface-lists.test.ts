@@ -1382,8 +1382,13 @@ function rawDrawsOf(tree: ts.SourceFile, answers: ReadonlyMap<string, ProseAnswe
         return answer.field;
       }
       // Any other call whose answer is drawn draws what it is handed: a text cut, tidied or
-      // worded around by a helper is still that text's characters.
-      return [...leaf.arguments, ...memoAnswers(leaf)]
+      // worded around by a helper is still that text's characters. A portal draws its children
+      // alone: its second argument is the node it draws them into, such as `document.body`.
+      const callee = ts.isPropertyAccessExpression(leaf.expression)
+        ? leaf.expression.name.text
+        : name;
+      const drawn = callee === "createPortal" ? leaf.arguments.slice(0, 1) : leaf.arguments;
+      return [...drawn, ...memoAnswers(leaf)]
         .map((argument) => firstFieldOf(argument))
         .find((field) => field !== undefined);
     }
@@ -2574,6 +2579,25 @@ describe("a stored text drawn as its characters is read from the syntax tree", (
       "fixture.tsx:2 question the title attribute",
       "fixture.tsx:3 body a JSX child",
       "fixture.tsx:4 reason a template literal",
+    ]);
+  });
+
+  // A portal draws its children, the first argument, into the node its second names, which is
+  // the page's own DOM (`document.body`) and no text a writer stored.
+  test("a portal draws its children, and the node it draws them into is no draw", () => {
+    const source = [
+      "export const Sheet = ({ open, x }: Props) => (",
+      "  <>",
+      "    {open",
+      "      ? createPortal(<p>{x.body}</p>, document.body)",
+      "      : null}",
+      "    {createPortal(x.question, document.body)}",
+      "  </>",
+      ");",
+    ].join("\n");
+    expect(draws(source)).toEqual([
+      "fixture.tsx:4 body a JSX child",
+      "fixture.tsx:6 question a JSX child",
     ]);
   });
 
