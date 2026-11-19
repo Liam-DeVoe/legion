@@ -50,6 +50,10 @@ work="${TMPDIR:?TMPDIR is required}/one-inbox-census-$$"
 mkdir -p "$work"
 failures_file="$work/failures"
 : >"$failures_file"
+# The bearer reaches curl from a file the run alone reads, never as an argument every process of
+# the pod can read; printf is a builtin, so the token is in no command line.
+auth_header="$work/auth-header"
+(umask 077 && printf 'Authorization: Bearer %s' "$token" >"$auth_header")
 
 # Every failure is printed on stderr and recorded in a file, so one inside a command substitution
 # - an `expect` whose answer a variable takes - is still printed by the run and still counted.
@@ -256,7 +260,7 @@ agent_request() {
   local method="$1" path="$2" body="${3:-}" out
   out="$work/answer.$$"
   printf '%s' "$(curl -sS -o "$out" -w '%{http_code}' -X "$method" "$base$path" \
-    -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "$body")" >"$work/status"
+    -H @"$auth_header" -H 'Content-Type: application/json' -d "$body")" >"$work/status"
   cat "$out"
 }
 
@@ -624,11 +628,11 @@ inject comment "a comment's write" \
 inject message "an issue message's write" \
   curl -sS -o /dev/null -X POST "$base/api/v1/issues/$inject_issue/messages" -H "X-Dispatch-User: $census_person" -H 'Content-Type: application/json' -d '{"body":"The message the failure takes."}'
 inject direct-reply "a session's direct reply" \
-  curl -sS -o /dev/null -X POST "$base/api/v1/messages/$inject_dm/reply" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d '{"actor":{"kind":"session","id":"census-inject"},"body":"The reply the failure takes."}'
+  curl -sS -o /dev/null -X POST "$base/api/v1/messages/$inject_dm/reply" -H @"$auth_header" -H 'Content-Type: application/json' -d '{"actor":{"kind":"session","id":"census-inject"},"body":"The reply the failure takes."}'
 inject user-threads "the one Go writer of user_threads" \
-  curl -sS -o /dev/null -X POST "$base/api/v1/comments/$inject_comment/reply" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d '{"actor":{"kind":"session","id":"census-inject"},"attempt":1,"target":"session:census-inject","body":"The reply whose thread write the failure takes."}'
+  curl -sS -o /dev/null -X POST "$base/api/v1/comments/$inject_comment/reply" -H @"$auth_header" -H 'Content-Type: application/json' -d '{"actor":{"kind":"session","id":"census-inject"},"attempt":1,"target":"session:census-inject","body":"The reply whose thread write the failure takes."}'
 inject agent-dismissal-clear "the Go writer that clears an Agent dismissal" \
-  curl -sS -o /dev/null -X POST "$base/api/v1/messages/$inject_dm/reply" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d '{"actor":{"kind":"session","id":"census-inject"},"body":"The reply whose clear the failure takes."}'
+  curl -sS -o /dev/null -X POST "$base/api/v1/messages/$inject_dm/reply" -H @"$auth_header" -H 'Content-Type: application/json' -d '{"actor":{"kind":"session","id":"census-inject"},"body":"The reply whose clear the failure takes."}'
 inject thread-read "a thread's read mark" \
   curl -sS -o /dev/null -X PUT "$base/api/v1/me/threads/$inject_comment/read" -H "X-Dispatch-User: $census_person" -H 'Content-Type: application/json' -d "{\"read_through\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
 inject inbox-read "Mark all read" \
