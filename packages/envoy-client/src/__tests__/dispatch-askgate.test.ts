@@ -756,8 +756,8 @@ describe("AskGate at the dispatch entry, across processes", () => {
   /**
    * Each child's environment: the session's, `path` as its PATH, and no transpiler cache. Its HOME
    * is the row's folder (`makeDirectory`), where Bun keeps that cache, about 156 files, and the
-   * folder is removed by an afterEach hook under Bun's 5 s hook limit, which no row's own limit
-   * covers. With the cache off the hook removes what the children themselves wrote.
+   * fixture's afterEach removes the folder. With the cache off the removal reads only what the
+   * children themselves wrote.
    */
   const childEnvironment = (path = process.env.PATH ?? ""): Record<string, string> => ({
     ...(environment(omp) as Record<string, string>),
@@ -792,8 +792,8 @@ describe("AskGate at the dispatch entry, across processes", () => {
     expect(readdirSync(markers())).toEqual([]);
   }, 30_000);
 
-  // The row's folder is each child's HOME, and the file's afterEach removes it under Bun's 5 s hook
-  // limit, which no row's own limit covers: what the children leave there is all that removal reads.
+  // The row's folder is each child's HOME, and the fixture's afterEach removes it: what the
+  // children leave there is all that removal reads.
   test("a child leaves no Bun cache in the row's folder, which is its HOME", async () => {
     const child = Bun.spawn([process.execPath, ENTRY, ...MESSAGE], {
       env: childEnvironment(),

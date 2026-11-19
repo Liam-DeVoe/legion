@@ -40,6 +40,20 @@ export type TemporaryDirectoryOptions = {
 export type TemporaryDirectoryMaker = (suffix?: string) => string;
 
 /**
+ * The bound of each hook this fixture registers, in milliseconds: the time it gives one making or
+ * removal of its directories. A file whose own limits count that removal reads it from here.
+ *
+ * Bun gives a hook 5 s unless the hook names a bound of its own, and a row's own limit does not
+ * cover its hooks. These hooks make and remove trees synchronously, and Bun judges a synchronous
+ * hook only after it returns, so the bound stops no removal: it says how long a removal may take
+ * before it fails the row. On the devbox one removal of a row's folder of a few files ran past
+ * 5 s at a 1-minute load of 476, and failed a row whose assertions had all passed; the removal of
+ * a copy of the role texts, a larger tree than any row here makes, took 36 s at a load of about
+ * 690 (`rule-search.test.ts`). 60 s is past both.
+ */
+export const REMOVAL_BOUND_MS = 60_000;
+
+/**
  * Registers the removal of every directory the returned maker makes, and returns the maker.
  *
  * Call it at the test file's module scope, or in the body of a `describe`: it registers the
@@ -82,7 +96,7 @@ export function temporaryDirectories(
   const made: string[] = [];
   afterEach(() => {
     removeEvery(made.splice(0));
-  });
+  }, REMOVAL_BOUND_MS);
   return (suffix) => {
     const directory = mkdtempSync(join(root, nameTemplate(prefix, suffix)));
     made.push(directory);
@@ -126,10 +140,10 @@ export function temporaryDirectory(
   );
   beforeAll(() => {
     mkdirSync(directory, { mode: 0o700 });
-  });
+  }, REMOVAL_BOUND_MS);
   afterAll(() => {
     removeTree(directory);
-  });
+  }, REMOVAL_BOUND_MS);
   return directory;
 }
 

@@ -12,7 +12,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { temporaryDirectories, temporaryDirectory } from "./temporary-directories";
+import {
+  REMOVAL_BOUND_MS,
+  temporaryDirectories,
+  temporaryDirectory,
+} from "./temporary-directories";
 
 const makeDirectory = temporaryDirectories("test-fixtures-per-test");
 
@@ -330,4 +334,97 @@ test("makes three and seals the root", () => {
     }
     expect(run.exitCode).not.toBe(0);
   });
+});
+
+/**
+ * A busy disk can hold a removal past Bun's 5 s hook limit, and the row whose directory it is
+ * must not fail for it: the hooks run under a limit of their own. This reads a `bun test` of its
+ * own, in which every disk call of the fixture's three hooks takes 5.5 s: the child slows
+ * `node:fs`'s `rmSync`, and its `mkdirSync` of the one-shot directory, with `mock.module` before
+ * it imports the fixture. The hold is a wait on the real clock, since what the row reads is Bun's
+ * own hook timer, which no fake clock drives. With Bun's 5 s each hook fails its row: "a
+ * beforeEach/afterEach hook timed out for this test".
+ *
+ * The child's bound is the bounds of its three hooks, REMOVAL_BOUND_MS each, and bun's own 5 s for
+ * its start; past it the child is killed and the row fails naming it. The row's limit is that
+ * bound, the bound of this file's own removal of the row's folder, and 5 s for the row's reads.
+ */
+const HELD_CHILD_BOUND_MS = 3 * REMOVAL_BOUND_MS + 5_000;
+describe("a removal a busy disk holds", () => {
+  const makeDirectory = temporaryDirectories("test-fixtures-held");
+
+  test(
+    "past 5 s fails no row, in the afterEach, the beforeAll or the afterAll",
+    async () => {
+      const work = makeDirectory("run");
+      writeFileSync(
+        join(work, "held.test.ts"),
+        `import { describe, expect, mock, test } from "bun:test";
+import * as fs from "node:fs";
+import { basename } from "node:path";
+
+const { mkdirSync, rmSync } = fs;
+const hold = () => {
+  const end = Date.now() + 5_500;
+  while (Date.now() < end) {}
+};
+mock.module("node:fs", () => ({
+  ...fs,
+  rmSync: (...args: Parameters<typeof rmSync>) => {
+    hold();
+    return rmSync(...args);
+  },
+  mkdirSync: (...args: Parameters<typeof mkdirSync>) => {
+    if (basename(String(args[0])).startsWith("held-one-shot-")) hold();
+    return mkdirSync(...args);
+  },
+}));
+// Imported after the mock: a static import runs before this file's body, so the fixture would
+// bind the real node:fs.
+const { temporaryDirectories, temporaryDirectory } = await import(
+  ${JSON.stringify(join(import.meta.dir, "temporary-directories"))}
+);
+const make = temporaryDirectories("held-per-test");
+
+test("a row whose directory the afterEach removes", () => {
+  console.log(\`made \${make()}\`);
+});
+
+describe("a describe whose directory the beforeAll makes and the afterAll removes", () => {
+  const one = temporaryDirectory("held-one-shot");
+  test("reads it", () => {
+    expect(fs.existsSync(one)).toBe(true);
+    console.log(\`made \${one}\`);
+  });
+});
+`
+      );
+      const child = Bun.spawnSync([process.execPath, "test", "./held.test.ts"], {
+        cwd: work,
+        env: { ...process.env },
+        timeout: HELD_CHILD_BOUND_MS,
+        killSignal: "SIGKILL",
+      });
+      if (child.exitedDueToTimeout) {
+        throw new Error(
+          `the child bun test did not end within its bound of ${HELD_CHILD_BOUND_MS} ms`
+        );
+      }
+      const code = child.exitCode;
+      const stdout = child.stdout.toString();
+      const stderr = child.stderr.toString();
+      const output = `${stdout}${stderr}`;
+      const made = [...stdout.matchAll(/^made (.+)$/gm)].map((line) => line[1] ?? "");
+
+      expect(output).not.toContain("timed out");
+      expect(output).toMatch(/^ 2 pass$/m);
+      expect(made.map((path) => basename(path).replace(/-[^-]+$/, ""))).toEqual([
+        "held-per-test",
+        "held-one-shot",
+      ]);
+      expect(made.filter((path) => existsSync(path))).toEqual([]);
+      expect(code).toBe(0);
+    },
+    HELD_CHILD_BOUND_MS + REMOVAL_BOUND_MS + 5_000
+  );
 });

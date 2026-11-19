@@ -833,8 +833,8 @@ const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 /**
  * What each channel server this file starts is given beside its own environment: no transpiler
  * cache. Its HOME is a folder of its row (`temporaryHome`), where Bun keeps that cache, about 259
- * files, and the folder is removed by an afterEach hook under Bun's 5 s hook limit, which no row's
- * own limit covers. With the cache off the hook removes what the server itself wrote.
+ * files, and the fixture's afterEach removes the folder. With the cache off the removal reads only
+ * what the server itself wrote.
  */
 const CHILD_BUN = { BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" } as const
 
@@ -961,8 +961,8 @@ test("with CLAUDE_CONFIG_DIR holding no envoy.json the server names the unread o
   expect(exitCode).toBe(0)
 }, 20_000)
 
-// The row's folder is the server's HOME, and the file's afterEach removes it under Bun's 5 s hook
-// limit, which no row's own limit covers: what the server leaves there is all that removal reads.
+// The row's folder is the server's HOME, and the fixture's afterEach removes it: what the server
+// leaves there is all that removal reads.
 test("the channel server leaves no Bun cache in its HOME", async () => {
   const home = temporaryHome("cache")
   const configDirectory = join(home, "claude-config")
