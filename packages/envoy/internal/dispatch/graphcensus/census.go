@@ -903,7 +903,7 @@ var commentWriterPeople = `
 // store's own log, which holds that answer still. Only an answer the store took names anybody so,
 // and an answer a build before the store wrote and took off again names nobody, since the
 // backfill states a row's answer as it stands (graphcensus' asks pass). The log is read from the
-// person's node through graph_tuples_inbound, whose partial predicate the arm states beside its
+// person's node through graph_tuples_as_of_in, whose partial predicate the arm states beside its
 // join, so the planner keys the index rather than reading the table whole. An erase of the ask
 // takes those tuples with it and records the people they named (erasedWriters), which holds them
 // still, until an erase of their own runs.
@@ -1000,7 +1000,7 @@ var inlineAuthors = `(` + storedAuthors + `) stored`
 // answeredHistory is every person an ask's answered_by or decided_by ever named, and every person
 // an ask's removed_by ever named (the person who took the ask's block out of its document, whose
 // node that write makes), asserted or retracted since, as (kind, id, at) (storedAuthors), read
-// from each person's node: the probe of graph_tuples binds graph_tuples_inbound's partial
+// from each person's node: the probe of graph_tuples binds graph_tuples_as_of_in's partial
 // predicate (to_kind <> 'value') beside its join, as graphstore.CurrentIn binds it, so that index
 // is one the probe can take.
 var answeredHistory = `select answered.kind, answered.id, answered.made_at from graph_nodes answered
@@ -1013,7 +1013,7 @@ var answeredHistory = `select answered.kind, answered.id, answered.made_at from 
 // writtenHistory is every person and session a block's decided_by or authored_by ever named,
 // asserted or retracted since, as (kind, id, at) (storedAuthors), read as answeredHistory reads
 // its people, from each writer's node. The join to a writer of either kind gives the planner no
-// constant to prove graph_tuples_inbound's predicate from, so the probe binds it itself.
+// constant to prove graph_tuples_as_of_in's predicate from, so the probe binds it itself.
 var writtenHistory = `select writer.kind, writer.id, writer.made_at
 	from graph_nodes writer
 	where writer.kind in ('` + graphstore.KindPerson + `', '` + graphstore.KindSession + `') and exists (
@@ -1063,11 +1063,9 @@ func currentAuthors(holders string) string {
 //
 // The probe is keyed by the session and names no far end: an alias_of points at a person and at
 // nothing else, since graphstore's aliases is its one writer, so it states graph_tuples_current's
-// predicate (to_kind <> 'value') where it would bind to_kind = 'person'. Bound, that equality fits
-// graph_tuples_inbound too, keyed on its leading to_kind alone, which reads every tuple into a
-// person; over a fixture's empty log the two plans cost within a hundredth of each other (8.17 and
-// 8.18), so either may be taken. Unbound, only an index led by from_kind and from_id keys the
-// probe, whatever the costs.
+// predicate (to_kind <> 'value', and kind <> 'delivered_to', which the kind it binds proves) where
+// it would bind to_kind = 'person'. Only an index led by from_kind and from_id keys the probe:
+// graph_tuples_as_of_in, led by to_kind, holds no from_id to key it by.
 func storedOwners(authors string) string {
 	return `
 	select owner.to_id as login

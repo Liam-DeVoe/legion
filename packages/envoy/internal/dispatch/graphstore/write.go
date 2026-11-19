@@ -404,12 +404,24 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated []Tuple) e
 	`, append(args, mark)...)
 	projects, parties := args[9], args[10]
 	if slices.ContainsFunc(nodes, func(node Node) bool { return node.Project != "" }) {
+		// Each incoming node probes its own row through graph_nodes' primary key, behind an offset
+		// 0 the planner cannot flatten, and binds nothing of graph_nodes_project's predicate
+		// (project_key is not null), so that partial index, keyed on the project and the kind, is
+		// no probe of one node; a node holding no project fails the comparison all the same.
+		// Joined plainly, the nodes this batch's insert has just written are rows the table's
+		// statistics do not count yet, and over a table analyzed near empty the planner walks
+		// graph_nodes and rescans the whole array for each row it holds: a 150,000-block version's
+		// settlement waited 56 minutes on it under the race detector, and over ten minutes without
+		// it. Probed through graph_nodes_project instead, each node reads every node of its kind.
 		b.Queue("write graph nodes", `
 			select incoming.kind, incoming.id, incoming.project_key, held.project_key
 			from unnest($1::text[], $2::text[], $3::text[]) as incoming(kind, id, project_key)
-			join graph_nodes held on held.kind = incoming.kind and held.id = incoming.id
-			where incoming.project_key is not null and held.project_key is not null
-			  and held.project_key <> incoming.project_key
+			cross join lateral (
+				select g.project_key from graph_nodes g
+				where g.kind = incoming.kind and g.id = incoming.id
+				offset 0
+			) held
+			where incoming.project_key is not null and held.project_key <> incoming.project_key
 			order by incoming.kind, incoming.id
 			limit 1
 		`, args[0], args[1], projects).QueryRow(func(row pgx.Row) error {

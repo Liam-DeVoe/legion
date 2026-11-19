@@ -197,7 +197,7 @@ func requireKeyedTupleReads(t *testing.T, keys *explaintest.IndexKeys, what stri
 
 // The census reads the store's log, its largest table, once per run for who wrote or answered a
 // decision, a reading or an ask (readStoredAuthors), and never whole. That one read's plan reads
-// graph_tuples through keyed index scans alone, its history probes stating graph_tuples_inbound's
+// graph_tuples through keyed index scans alone, its history probes stating graph_tuples_as_of_in's
 // predicate (to_kind <> 'value') beside their joins so that index is one they can take. The person
 // and the session row sides read what it read bound as arrays (censusAuthors), so neither reads
 // the history again: the person side's one read of graph_tuples is the proved owners' alias_of,
