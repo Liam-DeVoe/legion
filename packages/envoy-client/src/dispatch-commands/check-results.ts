@@ -3,6 +3,7 @@ import type {
   CheckBasis,
   CheckBlock,
   CheckCI,
+  CheckPassStands,
   CheckResult,
   IssueCheckResults,
 } from "@legion/contracts";
@@ -103,11 +104,9 @@ function checkWordsText(check: CheckBlock, result: CheckResult): string {
  *  subjects, the heads a pass must stand at, says how many of them read yes where the answer is
  *  not yes; each head's own line follows (`subjectLines`). A check compared with a branch names the
  *  newest result that decided it, or the one Dispatch could not place on a branch, whose commit
- *  comes from that result among the check's results. */
-function passStandsText(check: CheckBlock): string {
-  const pass = check.pass_stands;
-  if (pass === undefined)
-    return "Whether a pass stands is not known: this Dispatch server does not say";
+ *  comes from that result among the check's results. A check whose answer names no `pass_stands`
+ *  gets no such words at all (`checkLines`). */
+function passStandsText(check: CheckBlock, pass: CheckPassStands): string {
   const roles = pass.roles ?? [];
   const yes =
     roles.length === 0 ? "A pass stands: yes" : `A pass stands: yes, from ${roles.join(", ")}`;
@@ -205,9 +204,14 @@ const CI_RESULT_ID_PREFIX = "ci-run:";
  *  reading: its conclusion, output and URL. Each other result follows, the derived results at
  *  the other heads and each the CI job recorded, in the order the API serves them, as a recorded
  *  result prints (`resultLines`). */
-function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] {
+function ciCheckLines(
+  check: CheckBlock,
+  ci: CheckCI,
+  pass: CheckPassStands,
+  brief: boolean
+): string[] {
   const results = check.results ?? [];
-  const subjects = check.pass_stands?.subjects ?? [];
+  const subjects = pass.subjects ?? [];
   // `ci` is the read of one head, the open pull request of the highest number; the subject that
   // carries the same read is that head, so the head line names the result derived there.
   const ciHeads = subjects
@@ -220,7 +224,7 @@ function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] 
   );
   const others = results.filter((result) => result !== derived);
   const recorded = others.flatMap((result) => resultLines(check, result, brief));
-  const passStandsLine = `  ${passStandsText(check)}.`;
+  const passStandsLine = `  ${passStandsText(check, pass)}.`;
   const perHead = subjects.some((subject) => subject.ci !== undefined);
   const pullRequestLine =
     perHead || ci.case === "no_head" ? [] : [`  Pull request line: ${ci.line}`];
@@ -256,14 +260,24 @@ function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] 
  *  of each head a pass must stand at (`subjectLines`), the check's own words once, then every
  *  result recorded against it. Where an open pull request's head is a subject, the head line
  *  counts the open pull requests in place of naming each basis, since each head has its own
- *  line and the merged ones have a line of count. */
+ *  line and the merged ones have a line of count.
+ *
+ *  An answer that names no `pass_stands` says nothing of whether a pass stands, and this prints
+ *  nothing of it either: no state on the head line, no line for each head, and no line of a CI
+ *  read, which the server leaves out with it. The head line ends at what the check compared with,
+ *  counting the open pull requests among its bases, and the words and every result follow, so a
+ *  reader judges the results themselves. A run's Dispatch server answers so while its state is
+ *  hidden (`DISPATCH_TEST_HIDE_STATE_FILE`), and so does a server that predates the answer. */
 function checkLines(check: CheckBlock, brief: boolean): string[] {
-  if (check.ci !== undefined) return ciCheckLines(check, check.ci, brief);
+  const pass = check.pass_stands;
+  if (pass !== undefined && check.ci !== undefined) {
+    return ciCheckLines(check, check.ci, pass, brief);
+  }
   const bases = check.compared_with ?? [];
   const reason = check.compared_nothing;
-  const open = (check.pass_stands?.subjects ?? []).filter(
-    (subject) => subject.basis.kind === "pull_request" && subject.basis.merged !== true
-  ).length;
+  const open = (
+    pass === undefined ? bases : (pass.subjects ?? []).map((subject) => subject.basis)
+  ).filter((basis) => basis.kind === "pull_request" && basis.merged !== true).length;
   const compared =
     open > 0
       ? `Compared with the heads of ${open} open ${open === 1 ? "pull request" : "pull requests"}`
@@ -274,7 +288,9 @@ function checkLines(check: CheckBlock, brief: boolean): string[] {
           : `Compared with nothing: ${COMPARISON_REASONS[reason]}`;
   const results = check.results ?? [];
   return [
-    `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check)}.`,
+    pass === undefined
+      ? `- ${check.block_id} (${check.when}). ${compared}.`
+      : `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check, pass)}.`,
     ...subjectLines(check),
     `  The check's words: ${check.text}`,
     ...(results.length === 0

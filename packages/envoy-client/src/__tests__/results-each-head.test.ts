@@ -5,11 +5,11 @@ import { formatCheckResults } from "../dispatch-commands/check-results";
 // results-each-head.test.ts holds `dispatch results` to R9 to R12 and R18 of the spec of several
 // open pull requests: one line for each open head under a `before_merge` check, with its state, its
 // roles and the ids of the results that decide it, and the repository of a pull request of another
-// repository than the issue's beside its number; one line that counts the merged pull requests; the
-// pass and the fail at one head, and what ends that state; and the newest result that decides a
-// check compared with a branch. Each answer is in the wire shape of the server, typed as unknown,
-// so the file builds against a client that predates these fields and fails there on its own
-// assertion.
+// repository than the issue's beside its number; one line that counts the merged pull requests;
+// the pass and the fail at one head, and what ends that state; and the newest result that decides
+// a check compared with a branch. It holds an answer that names no state to no state line at all.
+// Each answer is in the wire shape of the server, typed as unknown, so the file builds against a
+// client that predates these fields and fails there on its own assertion.
 
 /** The lines `dispatch results` prints for answer. */
 function printed(answer: unknown): string[] {
@@ -387,5 +387,76 @@ describe("dispatch results: the state at each head", () => {
       `  - #70 at ${h70}: no, as it holds no result.`,
       `  - acme/infra#9 at ${h9}: yes, from tester. Pass ${pass} decides it.`,
     ]);
+  });
+});
+
+// An answer that names no state: the run's Dispatch server leaves out each check's `pass_stands`
+// and `ci` while its state is hidden (DISPATCH_TEST_HIDE_STATE_FILE), and each result's
+// `currency`. The command then prints no state line, for the check or for a head: the head line
+// ends at what the check compared with, and the check's words and every result follow it.
+describe("dispatch results: an answer that names no state", () => {
+  /** Whether line says something of a state: the check's answer, or the line of a head. */
+  const statesSomething = (line: string) =>
+    /pass stands/i.test(line) || /^ {2}- (?:[\w.-]+\/[\w.-]+)?#\d+(?: \(merged\))? at /.test(line);
+
+  test("prints no state line for the check or for a head", () => {
+    const [h702, h11] = [hex("6"), hex("b")];
+    const [fail, pass] = [
+      "dddddddd-0000-4000-8000-000000000001",
+      "dddddddd-0000-4000-8000-000000000002",
+    ];
+    const at702 = { answer: "at_basis", basis: openHead(702, h702) };
+    const lines = printed(
+      answer(
+        check("k1", "before_merge", {
+          compared_with: [openHead(702, h702), { ...openHead(11, h11), merged: true }],
+          results: [
+            result(fail, "tester", "fail", h702, at702, "2026-11-19T00:02:00Z"),
+            result(pass, "implementer", "pass", h702, at702, "2026-11-19T00:01:00Z"),
+          ],
+        })
+      )
+    );
+    expect(checkBlock(lines, "k1")).toEqual([
+      "- k1 (before_merge). Compared with the heads of 1 open pull request.",
+      "  The check's words: The words of k1.",
+      `  - fail by tester at ${h702}. That commit is the head of pull request #702. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-19T00:02:00Z. Result ${fail}.`,
+      "    Reading: ok",
+      `  - pass by implementer at ${h702}. That commit is the head of pull request #702. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-19T00:01:00Z. Result ${pass}.`,
+      "    Reading: ok",
+    ]);
+    expect(lines.filter(statesSomething)).toEqual([]);
+  });
+
+  // A check CI proves loses its `ci` read with its `pass_stands`, so it prints as any other check:
+  // no line of the run's state at the head, and no pull-request body line, which carries it too.
+  test("prints a check CI proves with no line of its read", () => {
+    const [h702, h703] = [hex("7"), hex("8")];
+    const lines = printed(
+      answer(
+        check("c1", "before_merge", {
+          ci_check: "docs",
+          compared_with: [openHead(703, h703), openHead(702, h702)],
+          results: [
+            result(
+              "ci-run:9001",
+              "ci",
+              "pass",
+              h702,
+              { answer: "at_basis", basis: openHead(702, h702) },
+              "2026-11-19T00:00:00Z"
+            ),
+          ],
+        })
+      )
+    );
+    expect(checkBlock(lines, "c1")).toEqual([
+      "- c1 (before_merge). Compared with the heads of 2 open pull requests.",
+      "  The check's words: The words of c1.",
+      `  - pass by ci at ${h702}. That commit is the head of pull request #702. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-19T00:00:00Z. Result ci-run:9001.`,
+      "    Reading: ok",
+    ]);
+    expect(lines.filter(statesSomething)).toEqual([]);
+    expect(lines.filter((line) => line.includes("Pull request line"))).toEqual([]);
   });
 });
