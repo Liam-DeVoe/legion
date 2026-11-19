@@ -8371,6 +8371,69 @@ describe("executeDispatchTool", () => {
     ]);
   });
 
+  // A reason is the server's to add, so a later server can give one this build has no words for.
+  // The reading then names that reason by its own code, with the repository the answer is about or
+  // without, for a result's commit and for a check that compared with nothing alike, rather than
+  // printing "undefined" or failing the whole read.
+  test("dispatch_results names a reason it has no words for by the reason's own code", async () => {
+    const [check] = threeResults.checks;
+    const implementer = check.results[2];
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42/results") {
+        return response({
+          ...threeResults,
+          checks: [
+            {
+              ...check,
+              results: [
+                {
+                  ...implementer,
+                  id: "res-2",
+                  commit_stands: { answer: "unknown", reason: "rate_limited", repo: "acme/tools" },
+                },
+                { ...implementer, commit_stands: { answer: "unknown", reason: "rate_limited" } },
+              ],
+            },
+            {
+              ...check,
+              block_id: "k2",
+              compared_with: [],
+              compared_nothing: "rate_limited",
+              pass_stands: { answer: "unknown" },
+              results: [],
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const read = await executeDispatchTool({
+      tool: "dispatch_results",
+      args: { issue: "DSP-42" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const lines = read.text.split("\n");
+    expect(
+      lines
+        .filter((line) => line.startsWith("  - pass by implementer"))
+        .map((line) => line.split(". ")[1])
+    ).toEqual([
+      "Where that commit stands is not known: rate_limited",
+      "Where that commit stands is not known: rate_limited",
+    ]);
+    expect(lines).toContain(
+      "- k2 (before_merge). Compared with nothing: rate_limited. A pass stands: not known."
+    );
+  });
+
   // --brief is for an issue holding hundreds of results: it cuts the readings that stand at none
   // of the compared commits, and leaves whole every reading a reader may act on.
   test("dispatch_results --brief cuts only a reading that stands at no compared commit", async () => {
