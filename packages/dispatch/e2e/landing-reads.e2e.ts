@@ -52,7 +52,11 @@
  * Spec has its tab's chunk started there too (`preloadRouteChunk`'s tab arm, through
  * `web/src/features/issue/tab-chunks.ts`), so the tab landing's route chunk is that tab's own:
  * without the start, the tab's panel asks for its chunk only once the page has rendered, after
- * the landing read has answered.
+ * the landing read has answered. A landing that draws a document - the issue page and the
+ * document page - has the document's chunks started there as well (`loadDocumentChunks`: the
+ * editor's library and the Yjs transport, in one call), so its transport chunk is asked for
+ * before the landing read answers too; without that start, the transport comes down only once
+ * the document mounts.
  *
  * Everything here is made up: this repository is public, so nothing names a real person, host or
  * project.
@@ -117,6 +121,9 @@ interface Measurement {
   /** When the page's own route chunk was first asked for, in milliseconds from the navigation;
    *  undefined when it never was before the landing ended. */
   readonly routeChunkAt: number | undefined;
+  /** When the document's transport chunk was first asked for, as `routeChunkAt` is read; undefined
+   *  for a landing that draws no document, or when it never was before the landing ended. */
+  readonly documentChunkAt: number | undefined;
 }
 
 /** One page this row lands on cold. */
@@ -133,6 +140,12 @@ interface Landing {
   /** The page's own route chunk, which the entry starts beside the landing read
    *  (`web/src/app.tsx`, `preloadRouteChunk`). */
   readonly routeChunk: RegExp;
+  /** For a landing that draws a live document, the Yjs transport's chunk, which the entry starts
+   *  beside the landing read with the editor's library (`web/src/app.tsx`, `loadDocumentChunks`).
+   *  It is the one chunk of that start whose name stands whether or not the start is there:
+   *  without it, `features/doc/editor.ts` and `features/doc/connection.ts` fold into
+   *  `ProofDocument`'s chunk, while the transport's library stays a chunk of its own. */
+  readonly documentChunk?: RegExp;
   /** R3's bound on the whole landing, where it sets one. It sets one for the issue page alone. */
   readonly bounds?: { readonly reads: number; readonly waves: number };
 }
@@ -248,8 +261,15 @@ function stamp(ms: number): string {
 }
 
 /** One landing's whole waterfall: a heading, then every read in start order with its wave, then
- *  when the page's route chunk was asked for. */
-function waterfallOf({ landing, reads, routeChunkAt, waves }: Measurement): string {
+ *  when the page's route chunk was asked for, and the document's transport chunk where the page
+ *  draws a document. */
+function waterfallOf({
+  documentChunkAt,
+  landing,
+  reads,
+  routeChunkAt,
+  waves,
+}: Measurement): string {
   const lines = [
     `${landing.name} (${landing.address}): ${reads.length} reads in ${waves.length} wave(s)`,
   ];
@@ -265,6 +285,11 @@ function waterfallOf({ landing, reads, routeChunkAt, waves }: Measurement): stri
   lines.push(
     `  route chunk  asked ${routeChunkAt === undefined ? "    never" : stamp(routeChunkAt)}`
   );
+  if (landing.documentChunk !== undefined) {
+    lines.push(
+      `  document chunk  asked ${documentChunkAt === undefined ? "    never" : stamp(documentChunkAt)}`
+    );
+  }
   return lines.join("\n");
 }
 
@@ -283,9 +308,14 @@ async function land(browser: Browser, landing: Landing): Promise<Measurement> {
     const from = performance.now();
     const { ended, reads } = recordReads(tab, from);
     let routeChunkAt: number | undefined;
+    let documentChunkAt: number | undefined;
     tab.on("request", (request) => {
-      if (routeChunkAt === undefined && landing.routeChunk.test(new URL(request.url()).pathname)) {
+      const { pathname } = new URL(request.url());
+      if (routeChunkAt === undefined && landing.routeChunk.test(pathname)) {
         routeChunkAt = performance.now() - from;
+      }
+      if (documentChunkAt === undefined && landing.documentChunk?.test(pathname)) {
+        documentChunkAt = performance.now() - from;
       }
     });
     await tab.goto(landing.address);
@@ -305,7 +335,7 @@ async function land(browser: Browser, landing: Landing): Promise<Measurement> {
       Promise.all(measured.map((read) => ended.get(read))),
       once(AbortSignal.timeout(ANSWER_SETTLE_MS), "abort"),
     ]);
-    return { landing, reads: measured, routeChunkAt, waves: wavesOf(measured) };
+    return { documentChunkAt, landing, reads: measured, routeChunkAt, waves: wavesOf(measured) };
   } finally {
     await context.close();
   }
@@ -332,6 +362,10 @@ async function seedWorld(): Promise<World> {
   );
   return { document: rollout.artifact.slug, issue: issue.key };
 }
+
+/** The Yjs transport's chunk, which the two landings that draw a document hold the entry to
+ *  starting beside their landing read (`Landing.documentChunk` says why this chunk). */
+const TRANSPORT_CHUNK = /\/assets\/yjs-[\w-]{8}\.js$/u;
 
 /** The landing route, which answers one page's whole cold read: the viewer, the shell, and the
  *  part of the answer the page named by `?page=` draws (`web/src/api/queries.ts`). */
@@ -360,6 +394,7 @@ function landingsOf(world: World): Landing[] {
       bounds: { reads: ISSUE_READ_BOUND, waves: WAVE_BOUND },
       name: "issue page",
       routeChunk: /\/assets\/IssuePage-[\w-]{8}\.js$/u,
+      documentChunk: TRANSPORT_CHUNK,
       ownData: (read) =>
         read.pathname === `/api/v1/issues/${world.issue}` || landingFor(read, "issue"),
     },
@@ -400,6 +435,7 @@ function landingsOf(world: World): Landing[] {
       content: (page) => documentEditor(page).locator("[data-block-id]").first(),
       name: "document page",
       routeChunk: /\/assets\/DocumentPage-[\w-]{8}\.js$/u,
+      documentChunk: TRANSPORT_CHUNK,
       // The read this page gates on: `DocumentPage` holds everything else until
       // `["artifact-ref", "CORE/<slug>"]` answers with the document's id
       // (`web/src/features/document/DocumentPage.tsx`, `web/src/api/useProjectArtifact.ts`), and
@@ -490,6 +526,18 @@ test("a cold landing draws each page from at most two waves of reads", async ({ 
           `after the landing read answered at ${stamp(landingRead.respondedAt)}: the entry no ` +
           "longer starts it beside that read (web/src/app.tsx, preloadRouteChunk)"
       );
+    }
+    if (landing.documentChunk !== undefined && landingRead !== undefined) {
+      if (measurement.documentChunkAt === undefined) {
+        faults.push(`the ${landing.name} never asked for its document's transport chunk`);
+      } else if (measurement.documentChunkAt >= landingRead.respondedAt) {
+        faults.push(
+          `the ${landing.name} asked for its document's transport chunk at ` +
+            `${stamp(measurement.documentChunkAt)}, after the landing read answered at ` +
+            `${stamp(landingRead.respondedAt)}: the entry no longer starts the document's chunks ` +
+            "beside that read (web/src/app.tsx, preloadRouteChunk, loadDocumentChunks)"
+        );
+      }
     }
   }
 
