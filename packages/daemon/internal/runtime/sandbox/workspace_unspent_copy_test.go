@@ -79,16 +79,22 @@ func TestAnUnspentCopyComesBackAfterAnUnregisteredPodEndsAndNotOnceARoleRegister
 
 // withCountedTakes is withSavedWorkspace with every take of the issue's copies counted into
 // takes, which is how a test tells a role start that took the copies, under the issue's copy lock,
-// from one that took nothing.
-func withCountedTakes(st *store.Store, takes *atomic.Int32) rigOption {
-	return withOptions(func(o *Options) { countedTakes(o, st, takes) })
+// from one that took nothing. Each take first pauses for pause, as a take behind the issue's copy
+// lock can, which is what lets starts that run at once meet inside their hops.
+func withCountedTakes(st *store.Store, takes *atomic.Int32, pause time.Duration) rigOption {
+	return withOptions(func(o *Options) { countedTakes(o, st, takes, pause) })
 }
 
 // countedTakes sets o's two halves of a restore over st, as withSavedWorkspace does, with every
-// take counted into takes.
-func countedTakes(o *Options, st *store.Store, takes *atomic.Int32) {
+// take counted into takes and paused for pause.
+func countedTakes(o *Options, st *store.Store, takes *atomic.Int32, pause time.Duration) {
 	o.SavedWorkspaceBundle = func(ctx context.Context, issue, podUID string) (runtime.WorkspaceRestore, error) {
 		takes.Add(1)
+		select {
+		case <-time.After(pause):
+		case <-ctx.Done():
+			return runtime.WorkspaceRestore{}, ctx.Err()
+		}
 		return st.TakeWorkspaceCopyForRestore(ctx, issue, podUID)
 	}
 	o.WorkspaceBundleRestored = st.KeepRestoredWorkspaceCopy
@@ -103,7 +109,7 @@ func unspentCopyPod(t *testing.T) (*rig, *atomic.Int32, *store.Store, string) {
 	t.Helper()
 	st := migratedStore(t)
 	takes := new(atomic.Int32)
-	g := newRig(t, nil, withCountedTakes(st, takes))
+	g := newRig(t, nil, withCountedTakes(st, takes, 0))
 	spec := workerSpec(t)
 	g.spawn(spec)
 	saveRunningCopy(t, st, runningWorkspaceCopy("pod-one"))
@@ -212,6 +218,63 @@ func TestAnUnspentCopyIsTakenAndSentOncePerLauncherProcess(t *testing.T) {
 	})
 }
 
+// The six roles of an issue start in its one pod one at a time, each start's restore hop included:
+// relaunch holds the pod's launch turn (lockPod) from before it reads the pod until its start is
+// answered, and the six share one Sandbox name. So six Spawns released together into a new pod,
+// whose one launcher process serves every role of it, take the issue's copies once, send the copy
+// once and apply it once, although each take pauses long enough for starts outside the turn to
+// meet inside their hops: each start after the first begins only once the one before it was
+// answered, so it finds the process holding the copy the first start sent (heldCopy), and takes
+// and sends nothing.
+//
+// The negative control is the turn given back right before relaunch calls launchers.start, where
+// the six starts meet inside their hops and each takes the copies and sends the copy.
+func TestAnUnspentCopyIsTakenAndSentOnceWhenSixRolesOfOnePodSpawnTogether(t *testing.T) {
+	st := migratedStore(t)
+	saveRunningCopy(t, st, runningWorkspaceCopy("pod-one"))
+	takes := new(atomic.Int32)
+	g := newRig(t, nil, withCountedTakes(st, takes, 100*time.Millisecond))
+	roles := issueRoleTokens(t)
+	type spawned struct {
+		loc runtime.Locator
+		err error
+	}
+	results := make(chan spawned, len(roles))
+	together := make(chan struct{})
+	for i, role := range claim.Roles {
+		spec := testSpec(t, roles[i], role, testTree)
+		go func() {
+			<-together
+			loc, err := g.r.Spawn(g.ctx, spec)
+			results <- spawned{loc, err}
+		}()
+	}
+	close(together)
+
+	// The pod's one launcher process dials the daemon for every role of the pod once the pod is
+	// there, as the rig's launcher of one role does for a pod the controller makes (createPod).
+	name := SandboxName(workerToken)
+	g.eventually("the issue's pod", func() bool { return g.pod(name) != nil })
+	pod := string(g.pod(name).UID)
+	process := g.newLauncherProcess()
+	for _, token := range roles {
+		g.connectToProcess(token, process)
+	}
+	for range roles {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("a spawn of one of the six roles failed: %v", result.err)
+		}
+		if result.loc.Sandbox == nil || result.loc.Sandbox.PodUID != pod {
+			t.Fatalf("%s started in %+v, want the issue's one pod %s", result.loc.Claim, result.loc.Sandbox, pod)
+		}
+	}
+	if n, sent, applied := takes.Load(), copiesSent(g, roles...), process.restores(); n != 1 || sent != 1 || applied != 1 {
+		t.Fatalf("six Spawns of one pod's roles released together took the copies %d times, sent the copy %d times and applied it %d times, want once each",
+			n, sent, applied)
+	}
+}
+
 // A launcher process the daemon did not see hold the copy is sent it as before: a restarted roles
 // container, whose new process brings new launcher ids for every role, and the same process after
 // a daemon restart, whose record of who holds the copy was in memory alone. Neither pod has a
@@ -254,7 +317,7 @@ func TestAnUnspentCopyIsSentAgainToALauncherProcessTheDaemonDidNotSeeHoldIt(t *t
 		g.r.launchers.restoreWorkspace(g.ctx, workerToken, pod)
 
 		restartedTakes := new(atomic.Int32)
-		secondRuntime(t, g, func(o *Options) { countedTakes(o, st, restartedTakes) })()
+		secondRuntime(t, g, func(o *Options) { countedTakes(o, st, restartedTakes, 0) })()
 		for _, token := range roles {
 			g.connectToProcess(token, process)
 		}

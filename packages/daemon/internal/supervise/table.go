@@ -2336,26 +2336,17 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 	return m.revive(ctx, exemptWake(ev), nil)
 }
 
-// register records the session the agent became, once every name of it is held to this claim
-// (holdRecorded): a session another claim recorded first, by its id or by its file, is refused
-// before anything of the registration is recorded or enrolled. The boot intervals end with the
-// registration, but not the deadline: it is armed again at its base bound, and only the agent's
-// ready ends it. A registration whose answer never reached its agent leaves a claim no ready will
-// ever come for, and from here that looks exactly like an agent slow to boot. A registration whose
-// plugin still differs from the daemon's is relaunched at once and refused (staleRegistration): the
-// agent that just registered is not the one that relaunch starts. The pod's registration is
-// recorded after the session is held and before anything of the claim changes
-// (recordPodRegistration), so a registration refused for its session spends no copy of the pod's,
-// and a record that fails refuses the registration with the claim as it was.
+// register records the session the agent became, once holdRegistration has held every name of it
+// to this claim and recorded the pod's registration: a session another claim recorded first, by its
+// id or by its file, is refused before anything of the registration is recorded or enrolled. The
+// boot intervals end with the registration, but not the deadline: it is armed again at its base
+// bound, and only the agent's ready ends it. A registration whose answer never reached its agent
+// leaves a claim no ready will ever come for, and from here that looks exactly like an agent slow
+// to boot. A registration whose plugin still differs from the daemon's is relaunched at once and
+// refused (staleRegistration): the agent that just registered is not the one that relaunch starts.
 func register(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
-	if err := checkSessionNames(r.Session, r.SessionFile); err != nil {
-		return err
-	}
-	if err := m.holdRecorded(ctx, r.Session, r.SessionFile); err != nil {
-		return err
-	}
-	if err := m.recordPodRegistration(ctx); err != nil {
+	if err := m.holdRegistration(ctx, r); err != nil {
 		return err
 	}
 	m.claim.Session, m.claim.SessionFile = r.Session, r.SessionFile
@@ -2380,21 +2371,15 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 
 // reregister is the recorded session registering again: it is issued a new secret, and the deadline
 // stays where the first registration set it, so an agent that keeps registering and never says it
-// is ready is still relaunched. The session is held as register holds it, by every name of it: one
-// the claim recorded before the daemon held sessions is the claim's, unless another claim recorded
-// it too, when it is held for neither (the claim_sessions migration). A registration whose plugin
-// still differs from the daemon's is relaunched at once and refused the same way register's is
-// (staleRegistration). The pod's registration is recorded again after the session is held, as
-// register records it, which keeps the time of the pod's first.
+// is ready is still relaunched. The session is held by every name of it, and the pod's
+// registration recorded again, as register's are (holdRegistration): a name the claim recorded
+// before the daemon held sessions is the claim's, unless another claim recorded it too, when it is
+// held for neither (the claim_sessions migration). The record again keeps the time of the pod's
+// first. A registration whose plugin still differs from the daemon's is relaunched at once and
+// refused the same way register's is (staleRegistration).
 func reregister(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
-	if err := checkSessionNames(r.Session, r.SessionFile); err != nil {
-		return err
-	}
-	if err := m.holdRecorded(ctx, r.Session, r.SessionFile); err != nil {
-		return err
-	}
-	if err := m.recordPodRegistration(ctx); err != nil {
+	if err := m.holdRegistration(ctx, r); err != nil {
 		return err
 	}
 	m.claim.SessionFile = r.SessionFile
@@ -2407,6 +2392,22 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 		return err
 	}
 	return m.staleRegistration(ctx, r.PluginContract)
+}
+
+// holdRegistration is what register and reregister run before anything of the claim changes, in
+// this order: the session's names are checked (checkSessionNames) and held to the claim
+// (holdRecorded), and then the pod's registration is recorded (recordPodRegistration). A session
+// another claim holds is refused before anything is recorded, so a refused registration spends no
+// copy of the workspace sent to its pod; the pod's registration is recorded before anything of the
+// claim changes, so a record that fails refuses the registration with the claim as it was.
+func (m *Machine) holdRegistration(ctx context.Context, r RequestRegister) error {
+	if err := checkSessionNames(r.Session, r.SessionFile); err != nil {
+		return err
+	}
+	if err := m.holdRecorded(ctx, r.Session, r.SessionFile); err != nil {
+		return err
+	}
+	return m.recordPodRegistration(ctx)
 }
 
 // recordPodRegistration records, through Deps.PodRegistered, that a role of the claim's issue has

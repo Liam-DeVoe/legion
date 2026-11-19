@@ -132,9 +132,10 @@ func TestUnspentCopyRegistrationOfAClaimInNoPodRecordsNothing(t *testing.T) {
 }
 
 // A registration refused because another claim holds its session records no registration of the
-// pod: the session check runs before the record (register), so the refused role spends no copy
-// sent to its pod and the pod's next role still restores it. The negative control is the record
-// moved ahead of holdRecorded in register, where the refused registration records the pod.
+// pod: the session check runs before the record (holdRegistration), so the refused role spends no
+// copy sent to its pod and the pod's next role still restores it. The negative control is the
+// record moved ahead of holdRecorded in holdRegistration, where the refused registration records
+// the pod.
 func TestUnspentCopyRegistrationRefusedForItsSessionRecordsNothing(t *testing.T) {
 	h := newHarness(t)
 	recorded := h.withPodRegistrations()
@@ -156,5 +157,39 @@ func TestUnspentCopyRegistrationRefusedForItsSessionRecordsNothing(t *testing.T)
 	}
 	if len(recorded.calls) != 0 {
 		t.Fatalf("a registration refused for its session recorded %+v, want no registration of its pod", recorded.calls)
+	}
+}
+
+// A registration again refused because another claim holds its session records no registration of
+// the pod either: reregister holds the session before it records, as register does
+// (holdRegistration). The claim registered its session in the pod, and the store now holds that
+// session for another claim, as it can for a session a daemon from before the hold recorded (the
+// claim_sessions case reregister names); the daemon's restart drops what the machine held of the
+// session, so the registration again asks the store. The negative control is the record moved
+// ahead of holdRecorded in holdRegistration, where this test and the one above both record the pod.
+func TestUnspentCopyReregistrationRefusedForItsSessionRecordsNothing(t *testing.T) {
+	h := newHarness(t)
+	recorded := h.withPodRegistrations()
+	h.launchInPod("pod-uid-9")
+	h.register()
+	if len(recorded.calls) != 1 {
+		t.Fatalf("the first registration recorded %+v, want one registration of its pod", recorded.calls)
+	}
+	h.store.setHold(sessionID(session), "legion-legion-legion-999-tester")
+	h.restart()
+	h.wantState(StateRegistered)
+	err := h.handle(RequestRegister{
+		Claim:          h.token,
+		Generation:     h.generation(),
+		Session:        session,
+		SessionFile:    sessionFile,
+		CapabilityHash: []byte("capability-again"),
+		PluginContract: h.deps.PluginContract,
+	})
+	if refusal := (claim.Refusal{}); err == nil || !errors.As(err, &refusal) {
+		t.Fatalf("the registration again of a session another claim holds returned %v, want the hold's refusal", err)
+	}
+	if len(recorded.calls) != 1 {
+		t.Fatalf("a registration again refused for its session recorded %+v, want only the first registration's record of its pod", recorded.calls)
 	}
 }
