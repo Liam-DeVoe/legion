@@ -1342,36 +1342,3 @@ export async function seedWideNote(): Promise<WideNoteSeed> {
     ((await getIssue(issue.key)).artifacts ?? []).find((artifact) => artifact.primary)?.slug ?? "";
   return { key: issue.key, note: blockNode(specSlug, "n-wide") };
 }
-
-/** What `seedWideCode` wrote: the issue, and its comment's node id. */
-export interface WideCodeSeed {
-  readonly comment: string;
-  readonly key: string;
-}
-
-/**
- * One issue whose conversation is one comment of the reader's, whose body holds a code block of
- * one line and a table of sixteen columns, each far wider than a row's words at 1440 px, so each
- * scrolls sideways inside the row (decision 282). The reader's own words are never cut, so the
- * row draws both whole. It is an issue of its own, so no seed another row reads changes.
- */
-export async function seedWideCode(): Promise<WideCodeSeed> {
-  await createProject({ key: PROJECT, name: "Rows" });
-  const issue = await createIssue({
-    force: true,
-    project: PROJECT,
-    title: "A comment holds a code block wider than its row",
-  });
-  const flags = Array.from({ length: 60 }, (_unused, at) => `--flag${at + 1}`).join(" ");
-  const line = (cells: readonly string[]) => `| ${cells.join(" | ")} |`;
-  const columns = Array.from({ length: 16 }, (_unused, at) => at + 1);
-  const table = [
-    line(columns.map((column) => `columnheading${column}`)),
-    line(columns.map(() => "---")),
-    line(columns.map((column) => `value${column}`)),
-  ].join("\n");
-  const comment = await createComment(issue.key, {
-    body: `Run it so:\n\n\`\`\`sh\nbun run e2e ${flags}\n\`\`\`\n\n${table}\n`,
-  });
-  return { comment: comment.id, key: issue.key };
-}

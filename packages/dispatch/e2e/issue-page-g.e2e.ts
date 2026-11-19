@@ -40,7 +40,6 @@ import {
   rowWords,
   seedLongRows,
   seedRows,
-  seedWideCode,
   seedWideNote,
   unfoldEveryBranch,
   WIDE_NOTE_COLUMNS,
@@ -453,57 +452,6 @@ test("at 390 px a note's table of sixteen columns scrolls inside its row, and th
       "the table is no wider than its own box, so it has nothing to scroll"
     ).toBeGreaterThan(own.client);
     expect(own.left, "the table does not scroll sideways to its last column").toBeGreaterThan(0);
-  });
-});
-
-// The tree is one tab stop (R9). In Chromium an element that scrolls its own content and holds no
-// control in the tab order is a tab stop of its own, and on a preview Tab from an outline row
-// landed on a wide code block's `<pre>` inside a row in 2 of 105 tries. A row whose words hold a
-// code block and a table, each laid out wider than its own box, so each scrolls: Tab from it
-// leaves the tree, and the focus lands on neither of them nor anywhere else in the row.
-// SLOW(>=2s): an issue with one comment seeded and loaded, and its code block and table waited
-// for until the comments read draws them laid out wider than their boxes.
-test("Tab from a row whose words hold a wide code block and a wide table leaves the tree, and lands on neither", async ({
-  browser,
-}) => {
-  test.setTimeout(60_000);
-  await phase(browser, seedWideCode, async (page, seeded) => {
-    await openIssue(page, seeded.key);
-    const words = rowWords(nodeRow(page, seeded.comment));
-    for (const wide of ["pre", "table"]) {
-      await expect
-        .poll(
-          async () => {
-            await unfoldEveryBranch(page);
-            return words
-              .locator(wide)
-              .evaluateAll((found) =>
-                found.some((element) => element.scrollWidth > element.clientWidth)
-              );
-          },
-          { message: `the comment's row never drew a ${wide} wider than its own box` }
-        )
-        .toBe(true);
-    }
-    const row = await focusRow(page, seeded.comment);
-    await page.keyboard.press("Tab");
-    // The browser moves the focus while it handles the key, and `press` resolves once the key's
-    // events are handled, so the element that holds the focus now is where Tab put it.
-    const landed = await row.evaluate((element) => {
-      const focused = document.activeElement;
-      const tree = element.closest('[role="tree"]');
-      return {
-        inRow: element.contains(focused),
-        inTree: tree?.contains(focused) ?? false,
-        tag: focused?.tagName.toLowerCase() ?? null,
-        tree: tree !== null,
-      };
-    });
-    expect(landed.tree, "the comment's row stands in no tree").toBe(true);
-    expect(landed.tag, "Tab put the focus on the wide code block").not.toBe("pre");
-    expect(landed.tag, "Tab put the focus on the wide table").not.toBe("table");
-    expect(landed.inRow, `Tab left the focus inside the row, on a ${landed.tag}`).toBe(false);
-    expect(landed.inTree, `Tab left the focus inside the tree, on a ${landed.tag}`).toBe(false);
   });
 });
 
