@@ -16,8 +16,9 @@ body: |-
   daemon logs `outbox: released the idle pod of an issue`, not
   `the idle release of an issue's pod did not finish` with hold `overtaken`, and the role starts
   once in the new pod, told that its pod was released, with one resume recorded against that
-  release. A notice, phase-ended message, hook prompt or merge-queue removal message for such a
-  role waits in its outbox row until the release ends.
+  release. A notice, hook prompt, merge-queue removal message or merge-forward message for a
+  released role of a pod that a release is still stopping waits in its outbox row until the
+  release ends.
   A waiting retry logs
   `an intake fact waits and is applied again after its delay` at info.
 time: 2026-11-16T18:39:58Z

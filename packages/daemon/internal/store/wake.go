@@ -143,9 +143,10 @@ func (s *Store) TakePodWake(ctx context.Context, project, issue string, role cla
 }
 
 // TakeDeliveryWake takes the wake of the outbox's delivery wake (internal/daemon's
-// wakeForDelivery) in a transaction of its own. While a release mark of issue stands, it writes
-// nothing and answers inRelease. Otherwise it takes the wake as PodRecords.TakePodWake does and
-// answers whether this call took it.
+// wakeForDelivery) in a transaction of its own: the wake for a notice, a hook prompt, a
+// merge-queue removal or a merge forward's message that found the role it is for released. While
+// a release mark of issue stands, it writes nothing and answers inRelease. Otherwise it takes the
+// wake as PodRecords.TakePodWake does and answers whether this call took it.
 //
 // The delivery wake waits for any release of the issue that still stands, not only for one that
 // recorded the role. Its resume runs in process (supervise.RequestRuleResume), so no `start` row
