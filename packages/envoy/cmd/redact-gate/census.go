@@ -69,6 +69,26 @@ func workRoots(dir string) ([]string, error) {
 	return roots, nil
 }
 
+// moduleWork is the GOWORK module mod of dir loads with, as its own build loads it: the
+// repository's go.work for a module it uses (roots); a nested module's own go.work where it has
+// one (packages/envoy/infra's uses itself and the envoy module beside it, whose code it builds
+// against); and "off", a module of its own, otherwise.
+func moduleWork(dir, mod string, roots []string) string {
+	if set(roots)[mod] {
+		return filepath.Join(dir, "go.work")
+	}
+	if own := filepath.Join(dir, mod, "go.work"); fileExists(own) {
+		return own
+	}
+	return "off"
+}
+
+// fileExists reports whether path names a file that can be read.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
 // goCensus is the Go half of the call census over dir, the snapshot: every reference the change
 // adds or changes whose resolved callee is the rule or a printer built on it (gate.rule,
 // gate.printers), found with go/types, so a receiver call, a method value and a call through an

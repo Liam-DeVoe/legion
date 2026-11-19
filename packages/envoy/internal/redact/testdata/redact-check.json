@@ -153,10 +153,6 @@
         "test": "print-redact.LibraryError"
       },
       {
-        "holder": "packages/broker-client/src/token-client.ts#BrokerRefusedError",
-        "test": "print-broker-client.BrokerRefusedError"
-      },
-      {
         "holder": "packages/broker-client/src/token-client.ts#BrokerTokenClient",
         "test": "print-broker-client.BrokerTokenClient"
       },
@@ -1762,6 +1758,13 @@
       "production": "redact.Remote"
     },
     {
+      "id": "brokertoken-mint-refusal",
+      "requirement": "r3-each-site",
+      "package": "./internal/brokertoken",
+      "test": "TestARefusedMintPrintsNoCredentialItsRefusalEchoes",
+      "production": "brokertoken GoogleAccount.generateIDToken, redact.RemoteText.WithoutTokens"
+    },
+    {
       "id": "boundary-oauth2",
       "requirement": "r2-held",
       "package": "./internal/redact",
@@ -3055,49 +3058,49 @@
       "id": "e2e-ts-pending",
       "requirement": "r3-each-site",
       "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
-      "test": "a registration still pending prints the refusal's words as the rule reads them: user information and a query value",
+      "test": "a registration still pending prints none of the refusal's words: user information and a query value",
       "production": "RegistrationPendingError.constructor"
     },
     {
       "id": "ts-refusal-code-alone",
       "requirement": "r3-each-site",
       "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
-      "test": "a refusal prints the broker's words as the rule reads them: the code, with no description",
-      "production": "BrokerRefusedError.constructor: its rule call is the box's own printer now"
+      "test": "a refusal prints none of the broker's words it does not know: the code, with no description",
+      "production": "undefined: its rule call is the box's own printer now"
     },
     {
       "id": "ts-refusal-code",
       "requirement": "r3-each-site",
       "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
-      "test": "a refusal prints the broker's words as the rule reads them: the code, with a description",
-      "production": "BrokerRefusedError.constructor: its rule call is the box's own printer now"
+      "test": "a refusal prints none of the broker's words it does not know: the code, with a description",
+      "production": "undefined: its rule call is the box's own printer now"
     },
     {
       "id": "ts-refusal-description",
       "requirement": "r3-each-site",
       "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
-      "test": "a refusal prints the broker's words as the rule reads them: the description: user information and a query value",
-      "production": "BrokerRefusedError.constructor: its rule call is the box's own printer now"
+      "test": "a refusal prints none of the broker's words it does not know: the description: user information and a query value",
+      "production": "undefined: its rule call is the box's own printer now"
     },
     {
       "id": "ts-credential-expires-at",
       "requirement": "r3-each-site",
       "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
-      "test": "an answer's credential_expires_at prints as the rule reads it: user information and a query value",
-      "production": "BrokerTokenClient.#read: its rule call is the box's own printer now"
+      "test": "an answer's credential_expires_at is quoted nowhere: user information and a query value",
+      "production": "undefined: its rule call is the box's own printer now"
     },
     {
       "id": "held-ts-refusal",
       "requirement": "r2-held",
       "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
-      "test": "a refusal prints the broker's words as the rule reads them: the description: words the rule cannot read",
+      "test": "a refusal prints none of the broker's words it does not know: the description: words the rule cannot read",
       "production": "BrokerRefusedError, JSON.stringify, Bun.inspect"
     },
     {
       "id": "site-ts-token-answer",
       "requirement": "r3-each-site",
       "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
-      "test": "an answer whose credential_expires_at is not this grant's quotes it only as the rule reads it",
+      "test": "an answer whose credential_expires_at is not this grant's quotes none of it",
       "production": "BrokerTokenClient #read, RemoteText.date"
     },
     {
@@ -3465,13 +3468,6 @@
       "production": "RemoteText: toString, toJSON, Symbol.toPrimitive, inspect.custom"
     },
     {
-      "id": "print-broker-client.BrokerRefusedError",
-      "requirement": "r2-held",
-      "file": "packages/broker-client/src/__tests__/holders-print.test.ts",
-      "test": "box print test: broker-client.BrokerRefusedError prints no secret by any printer at any placement",
-      "production": "packages/broker-client/src/token-client.ts#BrokerRefusedError: every printer at every placement"
-    },
-    {
       "id": "print-broker-client.BrokerTokenClient",
       "requirement": "r2-held",
       "file": "packages/broker-client/src/__tests__/holders-print.test.ts",
@@ -3621,7 +3617,7 @@
     {
       "site": "token-client.ts BrokerRefusedError, held",
       "source": "the review of #4368 at f0d00b1c26",
-      "holder": "packages/broker-client/src/token-client.ts#BrokerRefusedError"
+      "guard": "held-ts-refusal"
     },
     {
       "site": "loadtest seedError's code",

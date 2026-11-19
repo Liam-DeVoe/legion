@@ -11,7 +11,6 @@ import { inspect } from "node:util";
 import { newDpopKey } from "../dpop";
 import type { TokenSource } from "../source";
 import { BrokerTokenClient } from "../token-client";
-import { BrokerRefusedError } from "../token-errors";
 import { SUBJECT_TOKEN_TYPE_KUBERNETES } from "../wire";
 import { refusalOf, stubBroker } from "./stub";
 
@@ -58,10 +57,12 @@ test("a refusal whose description echoes the subject token prints none of it, an
       subject: SUBJECT_SOURCE,
     });
     const refusal = await refusalOf(() => client.token());
-    expect(refusal).toBeInstanceOf(BrokerRefusedError);
+    // Named by its class, so this file runs as it is in the tree its leak row is red at (control
+    // 19), which has no token-errors.
+    expect(refusal?.name).toBe("BrokerRefusedError");
     expect(broker.trades[0]?.form.get("subject_token")).toBe(SUBJECT);
     requireNoSubject("ts.request-echo/description", refusal as Error);
-    expect((refusal as BrokerRefusedError).code).toBe("invalid_grant");
+    expect((refusal as { code?: unknown }).code).toBe("invalid_grant");
   } finally {
     broker.stop();
   }

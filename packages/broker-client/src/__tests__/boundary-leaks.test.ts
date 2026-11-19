@@ -7,14 +7,13 @@
 // cause.
 
 import { afterEach, expect, test } from "bun:test";
+import { randomBytes } from "node:crypto";
 import { inspect } from "node:util";
-import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { type IssuerAnswer, signedIn, stubIssuer } from "../../test/sign-ins";
 import { newDpopKey } from "../dpop";
 import { personIdentity } from "../person-identity";
 import type { TokenSource } from "../source";
 import { BrokerTokenClient } from "../token-client";
-import { SignInEndedError } from "../token-errors";
 import { SUBJECT_TOKEN_TYPE_KUBERNETES } from "../wire";
 import { accepted, refusalOf, stubBroker } from "./stub";
 
@@ -31,7 +30,10 @@ const SECRETS = [USER, PASSWORD, TOKEN, MINTED];
 
 const PERSON = "ada@example.com";
 const CLIENT_ID = "example-device-client";
-const CLIENT_SECRET = fixtureSecret("client");
+// Random, as a real client secret is, so the process's scrub of it takes no word out of a line.
+// Spelled without @legion/test-fixtures and named by its class below, so this file runs as it is
+// in the tree a leak row is red at (control 19), which has neither fixtureSecret nor token-errors.
+const CLIENT_SECRET = randomBytes(18).toString("hex");
 
 const stops: (() => void)[] = [];
 afterEach(() => {
@@ -93,7 +95,7 @@ test.each([
   ["a code", { error: WORDS }],
 ] as const)("an issuer's refusal whose %s quotes a credential's URL prints none of it", async (_what, body) => {
   const refusal = await refusalAt({ status: 400, body });
-  expect(refusal).not.toBeInstanceOf(SignInEndedError);
+  expect(refusal?.name).not.toBe("SignInEndedError");
   expectNoSecret(refusal);
 });
 
@@ -102,6 +104,6 @@ test("a sign-in the issuer ended with words that quote a credential's URL prints
     status: 400,
     body: { error: "invalid_grant", error_description: WORDS },
   });
-  expect(refusal).toBeInstanceOf(SignInEndedError);
+  expect(refusal?.name).toBe("SignInEndedError");
   expectNoSecret(refusal);
 });

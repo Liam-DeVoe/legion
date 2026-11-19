@@ -42,13 +42,8 @@ func (g *gate) wholeUse(dir string) census {
 	for _, mod := range mods {
 		list := exec.Command(bin, "-dir", ".", "./...")
 		list.Dir = filepath.Join(dir, mod)
-		// A module go.work uses loads through it; one nested in such a module (infra) is a
-		// module of its own, which go.work does not name, and loads alone.
-		work := "off"
-		if set(roots)[mod] {
-			work = filepath.Join(dir, "go.work")
-		}
-		list.Env = append(os.Environ(), "GOWORK="+work)
+		// Each module loads as its own build loads it (moduleWork).
+		list.Env = append(os.Environ(), "GOWORK="+moduleWork(dir, mod, roots))
 		out, _ := list.CombinedOutput()
 		c.add(out, mod, "Go module "+mod)
 	}
