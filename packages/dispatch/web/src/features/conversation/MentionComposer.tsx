@@ -868,6 +868,9 @@ export function MentionComposer({
     const form = formRef.current;
     if (form === null || dormant) return;
     const handleEscape = (event: globalThis.KeyboardEvent) => {
+      // A key that ends an IME composition is the input method's, not the composer's: it closes
+      // nothing, cancels no reply and asks nothing, as `NameVersionDialog.tsx`'s Enter does.
+      if (event.isComposing) return;
       if (event.key !== "Escape") return;
       // An open picker takes Escape on the field's own listener and stops it there, so this
       // never sees it: Escape shuts the list, and the one after it reaches the composer.
@@ -1564,6 +1567,9 @@ export function MentionComposer({
                     labelHidden
                     onChange={(change) => updateAskOption(index, "label", change.body)}
                     onKeyDown={(event) => {
+                      // An Enter that ends an IME composition commits the reader's words and
+                      // adds no option.
+                      if (event.nativeEvent.isComposing) return;
                       // With the picker open its own listener took this Enter and stopped it
                       // before this ran: the key takes the row under it rather than adding an
                       // option nobody asked for.

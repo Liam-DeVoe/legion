@@ -1326,6 +1326,29 @@ test("Enter in an ask option takes the picker's row, and adds an option once it 
   }
 });
 
+// A key that ends an IME composition is the input method's: the Enter that commits the reader's
+// words in an ask option adds no option, and the same key once the composition is over does.
+test("an Enter that ends an IME composition in an ask option adds no option", async () => {
+  const user = userEvent.setup();
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
+  const { view } = renderComposer({ agents: [planner], kind: "ask" });
+
+  try {
+    const label = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Option 1 label" });
+    await user.click(label);
+    await user.paste("Left");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(label, { isComposing: true, key: "Enter" });
+    expect(screen.queryByRole("textbox", { name: "Option 2 label" })).toBeNull();
+
+    await user.keyboard("{Enter}");
+    await screen.findByRole("textbox", { name: "Option 2 label" });
+  } finally {
+    view.unmount();
+    listAgents.mockRestore();
+  }
+});
+
 // The rule the "Not running" options follow is the renderer's (`role-holders.ts`): a role a live
 // agent holds is the live options' (never offered twice), every other role the collaborators
 // record is offered, once, by its newest session whatever replaced it - the replaced session is
@@ -1817,6 +1840,52 @@ test("reply mode shows the quote, sends reply_to, and cancels by chip or Escape"
   } finally {
     view.unmount();
     createComment.mockRestore();
+  }
+});
+
+// An Escape that ends an IME composition is the input method's too: it cancels no reply and
+// raises no `Discard draft?` over the reader's words, and the same key once the composition is
+// over does each.
+test("an Escape that ends an IME composition ends no reply and asks nothing", async () => {
+  const user = userEvent.setup();
+  let cancelled = 0;
+  const reply = renderComposer({
+    onCancelReply: () => {
+      cancelled += 1;
+    },
+    replyTo: {
+      actor: plannerAuthor,
+      excerpt: "Once the build is green.",
+      id: "comment-9",
+      parentKind: "comment",
+      to: "/issues/CORE-1/comments/comment-9",
+    },
+  });
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(field, { isComposing: true, key: "Escape" });
+    expect(cancelled).toBe(0);
+    await user.keyboard("{Escape}");
+    expect(cancelled).toBe(1);
+  } finally {
+    reply.view.unmount();
+  }
+
+  const draft = renderComposer();
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Half a thought");
+    fireEvent.keyDown(field, { isComposing: true, key: "Escape" });
+    expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
+    field.focus();
+    await user.keyboard("{Escape}");
+    await screen.findByRole("button", { name: "Discard" });
+  } finally {
+    draft.view.unmount();
   }
 });
 
