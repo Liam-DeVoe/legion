@@ -842,17 +842,23 @@ func (e *Engine) endWokenWait(ctx context.Context, tx pgx.Tx, issue, root record
 
 // WaitHoldsSend answers, in tx, whether the wait the worker of the claim token declared holds the
 // send of d back now, naming that wait when it does: the wait stands (WaitStandsNow) and d hands no
-// new work (HandsNoNewWork) — a task a death in its turn took back, or one of a nonzero entry no
-// higher than the entry the claim had taken. It is supervise.Deps.WaitHolds, which the daemon
-// answers through it.
+// new work — a task a death in its turn took back, or one of a nonzero entry no higher than the
+// entry the claim had taken (HandsNoNewWork), or the daemon's own delivery of a relaunch's record
+// (supervise.Delivery.Relaunch), which hands no work at all. That delivery carries only the
+// sentence of what the last let-go of the claim's process ended (supervise's queueRelaunch, given
+// a claim that holds nothing at its ready), and a relaunch of the same session ends no wait (R3),
+// so it is held and ends nothing, and goes at the first send after the wait ends. It is
+// supervise.Deps.WaitHolds, which the daemon answers through it.
 //
 // Any other task is new work, and its send is R3's third end: the wait ends here, with the cause
 // WaitEndNewWork names and ended by the send of d, and the answer is "", so the send goes on. A
 // delivery carries no resume mark, and needs none: while a wait stands the outbox queues no task
 // that hands no new work, so a task of no entry the claim holds is new work — an operator's, a pod
-// wake's, or one queued before the declaration and never taken. The end is a compare-and-set on
-// the wait's id (record.Store.EndWait), so a fact that ended or replaced the wait meanwhile keeps
-// its own end.
+// wake's, or one queued before the declaration and never taken — unless it is the relaunch's
+// record. A task of new work queued while the record waits takes its place, since no prompt of
+// the record is out (supervise's replaceable), and carries its sentence in front of itself. The
+// end is a compare-and-set on the wait's id
+// (record.Store.EndWait), so a fact that ended or replaced the wait meanwhile keeps its own end.
 //
 // tx is a transaction of the caller's own, and takes no fact lock: the machine asks this holding
 // its own lock, and the lock is not needed, because a claim's send and its declaration never run
@@ -864,7 +870,7 @@ func (e *Engine) WaitHoldsSend(ctx context.Context, tx pgx.Tx, token claim.Token
 	if err != nil || !stands {
 		return "", err
 	}
-	if HandsNoNewWork(wait, d.Entry, false, d.Interrupted) {
+	if d.Relaunch() || HandsNoNewWork(wait, d.Entry, false, d.Interrupted) {
 		return wait.ID, nil
 	}
 	_, err = e.endWait(ctx, tx, wait, WaitEndNewWork(d.ID), "supervise/send:"+d.ID)

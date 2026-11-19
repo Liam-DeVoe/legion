@@ -102,6 +102,8 @@ function inboxIssue(
 /** The narrow `Issue` a PATCH answers with, for an inbox row's issue. */
 function narrowIssueOf(row: InboxRow, assignee: string | null): Issue {
   return {
+    advances: [],
+    advances_revision: 0,
     assignee,
     claim: null,
     components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
@@ -656,6 +658,40 @@ test("a credential request alone is listed and on the banner, and nothing says n
     expect(screen.getByText("Blocked on you: 1 item, oldest 3h")).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Inbox empty state" })).not.toBeInTheDocument();
     expect(screen.queryByText("Nothing needs you")).not.toBeInTheDocument();
+  } finally {
+    unmount();
+    getCredentialCapabilities.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// INFRA-3921: an expired credential request stays in the section until somebody dismisses it, but
+// nobody can decide it, so nothing waits on the reader there: the Inbox still says nothing needs
+// them, with no banner, and lists the expired request above that, marked and with Dismiss.
+test("an expired credential request alone is listed with Dismiss, and the Inbox still says nothing needs you", async () => {
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  mocks.getCredentialPending.mockResolvedValue({
+    pending: [
+      secretRequest({
+        expires_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+        state: "expired",
+      }),
+    ],
+  });
+  const getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    machine_code_page: false,
+  });
+  const { unmount } = renderInbox();
+  try {
+    const emptyState = await screen.findByRole("region", { name: "Inbox empty state" });
+    expect(within(emptyState).getByText("Nothing needs you")).toBeTruthy();
+    expect(screen.queryByText(/Blocked on you:/)).not.toBeInTheDocument();
+    const section = screen.getByRole("region", { name: "Credential requests" });
+    expect(within(section).getByText("Expired")).toBeTruthy();
+    expect(
+      within(section).getByRole("button", { name: "Dismiss expired secret request DEMO_API_KEY" })
+    ).toBeTruthy();
+    expect(within(section).queryByRole("link")).not.toBeInTheDocument();
   } finally {
     unmount();
     getCredentialCapabilities.mockRestore();

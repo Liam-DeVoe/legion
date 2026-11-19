@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,12 +17,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// Fact is a closed vocabulary of observations that can change Legion's workflow record.
-// The unexported method keeps arbitrary external values out of the transaction path.
-type Fact interface{ isFact() }
+// Fact is a closed vocabulary of observations that can change Legion's workflow record. Each fact
+// type says, by its one unexported method, which issue it names: one issue's key and true, or false
+// for a fact that names none or several (a pull request's by its repository and number, a push, a
+// tree's adoption of its children, the controller's tick, the daemon's own sweeps). So a fact type
+// cannot be added without that answer (IssueOf), and the method keeps arbitrary external values out
+// of the transaction path.
+type Fact interface{ namedIssue() (string, bool) }
 
 // DispatchIssue records Dispatch's complete issue observation. Rank is Dispatch's fractional key,
 // compared as bytes — the order rank.Between generates. HandedOver is resolved once at decode
@@ -55,6 +62,15 @@ type DispatchIssue struct {
 	// not yet recorded, and clears this; the workflow fills a recorded issue's from its record, and
 	// never records an issue from a fact still missing it.
 	ResolvedRepoMissing bool
+	// RepositoryRefusal is why the GitHub reads this event's preparation made for a repository no
+	// repository mapping names record the issue on no repository: the role App that is not
+	// installed on it, a repository GitHub does not have, or a name that is no <owner>/<name> at
+	// all. It is read where the fact is applied, in place of what the daemon holds in memory
+	// (workflow.Engine.ResolveIssueRepository), because nothing of such a refusal is kept: the
+	// next preparation of the issue reads GitHub again, so an operator who installs the App is
+	// taken at that preparation with no wait, no restart and no mapping change. Empty for every
+	// other fact, the decode's own among them: only a preparation sets it.
+	RepositoryRefusal string
 	// Ancestry is the keys of the issue's Dispatch parent chain, from its parent upward to the top,
 	// stopping only at a repeated key or back at the issue: the chain release_children's own walk
 	// reads. It is read from Dispatch when the fact is prepared, outside the fact lock, for a
@@ -173,7 +189,7 @@ type Handover struct {
 	Generation uint64
 }
 
-func (Handover) isFact() {}
+func (f Handover) namedIssue() (string, bool) { return f.Issue, true }
 
 // ChildAdoption is an architect's release of children recorded outside its tree Tree, the root
 // key its grant names: each a root that queued in admission before a person made it a child of
@@ -202,9 +218,9 @@ type AdoptedChild struct {
 	Seq       int64
 }
 
-func (ChildAdoption) isFact() {}
+func (ChildAdoption) namedIssue() (string, bool) { return "", false }
 
-func (DispatchIssue) isFact() {}
+func (f DispatchIssue) namedIssue() (string, bool) { return f.Key, true }
 
 // RepoMappingChanged is Dispatch's settings.repo_project.updated on the daemon's own project: a
 // repository was mapped to the project, unmapped, moved or made its default. It is no workflow
@@ -214,7 +230,7 @@ type RepoMappingChanged struct {
 	Project string
 }
 
-func (RepoMappingChanged) isFact() {}
+func (RepoMappingChanged) namedIssue() (string, bool) { return "", false }
 
 // DispatchArtifactKind identifies the three Dispatch artifact observations that affect a gate.
 type DispatchArtifactKind string
@@ -262,14 +278,16 @@ type DispatchArtifact struct {
 	Issue *dispatch.Issue
 }
 
-func (DispatchArtifact) isFact() {}
+func (f DispatchArtifact) namedIssue() (string, bool) { return f.Key, true }
 
 // CarriedApprovalReasonPrefix opens the reason of a carried approval: the review Dispatch writes
 // in a person's name when their answer to a decision block was the whole change since the version
-// they approved, or when a later version's text is the text of the version they approved
-// (packages/envoy/internal/dispatch/docs/approval_carry.go, carryReason and restoreReason, whose
-// format is "Carried forward from the approval of version %d: ..."). The daemon cannot import that
-// package, so it holds the prefix before the version number as a literal of its own.
+// they approved, when a later version's text is the text of the version they approved, or when a
+// later version's text is that text with the questions a reopen opened again
+// (packages/envoy/internal/dispatch/docs/approval_carry.go, carryReason, restoreReason and
+// reopenReason, whose format is "Carried forward from the approval of version %d: ..."). The
+// daemon cannot import that package, so it holds the prefix before the version number as a
+// literal of its own.
 const CarriedApprovalReasonPrefix = "Carried forward from the approval of version"
 
 // CarriedApproval says whether the review is a carried approval, by its reason's prefix
@@ -300,7 +318,7 @@ type GateAboveDispatch struct {
 	Read       DispatchArtifact
 }
 
-func (GateAboveDispatch) isFact() {}
+func (f GateAboveDispatch) namedIssue() (string, bool) { return f.Read.Key, true }
 
 // DispatchAskOpened is an ask a session or a person opened on an issue, with its kind (Kind:
 // record.AskQuestion, record.AskApproval, or "" for a kind this daemon does not know, such as an
@@ -317,7 +335,7 @@ type DispatchAskOpened struct {
 	Mark          record.EventMark
 }
 
-func (DispatchAskOpened) isFact() {}
+func (f DispatchAskOpened) namedIssue() (string, bool) { return f.Key, true }
 
 // DispatchAskRestored is Dispatch's settlement restoring a decision block it retracted: the ask
 // opened again (Open), or closed again with the answer given before the retraction. Nobody acted,
@@ -331,7 +349,7 @@ type DispatchAskRestored struct {
 	Mark     record.EventMark
 }
 
-func (DispatchAskRestored) isFact() {}
+func (f DispatchAskRestored) namedIssue() (string, bool) { return f.Key, true }
 
 // DispatchAskClosed is an answered or resolved ask (State `answered` or `resolved`), its kind and
 // document as DispatchAskOpened names them, the actor who closed it, and where Dispatch recorded
@@ -358,7 +376,7 @@ type DispatchAskClosed struct {
 // (DispatchAskClosed.Decline), which Dispatch writes on its POST /api/v1/asks/{id}/decline.
 const ResolutionDeclined = "declined"
 
-func (DispatchAskClosed) isFact() {}
+func (f DispatchAskClosed) namedIssue() (string, bool) { return f.Key, true }
 
 // DispatchAskReply is a comment on an ask (comment.created, or comment.answered for a reply sent
 // through a delivery's callback), or Dispatch's ask.handed_back of an approval request (Kind
@@ -378,7 +396,7 @@ type DispatchAskReply struct {
 	Comment   string
 }
 
-func (DispatchAskReply) isFact() {}
+func (f DispatchAskReply) namedIssue() (string, bool) { return f.Key, true }
 
 // DispatchApprovalMoved is an approval request of Artifact that a version of its document moved
 // past the version its agent last handed to the person (Dispatch's ask.edited of an approval ask
@@ -391,7 +409,7 @@ type DispatchApprovalMoved struct {
 	Mark     record.EventMark
 }
 
-func (DispatchApprovalMoved) isFact() {}
+func (f DispatchApprovalMoved) namedIssue() (string, bool) { return f.Key, true }
 
 // DispatchClaim is the holder Dispatch records for an issue at Seq, from its issue.claimed or
 // issue.released event: ClaimedBy is `<kind>:<id>`, or "" when the release cleared the claim.
@@ -403,7 +421,7 @@ type DispatchClaim struct {
 	ClaimedBy string
 }
 
-func (DispatchClaim) isFact() {}
+func (f DispatchClaim) namedIssue() (string, bool) { return f.Key, true }
 
 // DispatchConsumerPosition is one measurement of the Dispatch consumer's own position: its ack
 // floor as a stream sequence — the point before which every matching message is acknowledged,
@@ -418,7 +436,7 @@ type DispatchConsumerPosition struct {
 	Idle           bool
 }
 
-func (DispatchConsumerPosition) isFact() {}
+func (DispatchConsumerPosition) namedIssue() (string, bool) { return "", false }
 
 // Reached says whether the consumer at this position has caught up to target, a notification
 // stream sequence: its ack floor is at or past it, or it is idle. Idle covers a target the ack
@@ -430,17 +448,21 @@ func (p DispatchConsumerPosition) Reached(target int64) bool {
 	return p.AckFloorStream >= target || p.Idle
 }
 
-// IssueStatus is one issue of the daemon's project as Dispatch shows it now: its key, its status,
-// the keys it says it is blocked by, its Dispatch parent, and the Dispatch sequence that view
-// stands at. The periodic turn's re-read carries them on its ControllerTick, and blockers.Mirror
-// writes each through the same sequence-fenced write an event's own row takes, so a view older
-// than an event already applied changes nothing — except the parent, which record.PutDispatchIssue
-// also writes for a view at the row's own sequence, the listing that is the only thing to carry
-// the parent of an issue the daemon has never recorded. ClaimedBy and
+// IssueStatus is one issue as Dispatch shows it now: its key, the project that key names, its
+// status, the keys it says it is blocked by, its Dispatch parent, and the Dispatch sequence that
+// view stands at. The periodic turn's re-read carries them on its ControllerTick, and
+// blockers.Mirror writes each through the same sequence-fenced write an event's own row takes, so
+// a view older than an event already applied changes nothing — except the parent, which
+// record.PutDispatchIssue also writes for a view at the row's own sequence, the listing that is
+// the only thing to carry the parent of an issue the daemon has never recorded. ClaimedBy and
 // ClaimKnown are DispatchIssue's: the issue read behind this view shows the claim unless it names
 // no actor.
 type IssueStatus struct {
-	Key        string
+	Key string
+	// Project is the Dispatch project of Key, as the read that saw the issue reports it, since a
+	// turn re-reads blockers of other projects too (workflowRuntime.readObserved) and the mirror
+	// row of such a key is that project's rather than the daemon's (blockers.Mirror.put).
+	Project    string
 	Status     string
 	Blockers   []string
 	Seq        int64
@@ -472,7 +494,7 @@ type ControllerTick struct {
 	Observed []IssueStatus
 }
 
-func (ControllerTick) isFact() {}
+func (ControllerTick) namedIssue() (string, bool) { return "", false }
 
 // EntrySweep is the daemon's periodic convergence of the phase entries, applied as a synthetic
 // fact every entrySweepInterval by the workflow runtime's own ticker (internal/daemon's
@@ -489,7 +511,7 @@ func (ControllerTick) isFact() {}
 // record a transition is in the middle of writing.
 type EntrySweep struct{}
 
-func (EntrySweep) isFact() {}
+func (EntrySweep) namedIssue() (string, bool) { return "", false }
 
 // PullRequestOpened registers a pull request whose branch or body identifies a Dispatch issue.
 type PullRequestOpened struct {
@@ -509,7 +531,7 @@ type PullRequestOpened struct {
 	Reopened bool
 }
 
-func (PullRequestOpened) isFact() {}
+func (PullRequestOpened) namedIssue() (string, bool) { return "", false }
 
 // OpenedRead is the PullRequestOpened a read of GitHub that found pull open on branch of repo
 // stands for, as its webhook would have carried it - a reopen when recorded is the same pull
@@ -554,7 +576,7 @@ type PullRequestSynchronized struct {
 	UpdatedAt time.Time
 }
 
-func (PullRequestSynchronized) isFact() {}
+func (PullRequestSynchronized) namedIssue() (string, bool) { return "", false }
 
 // PullRequestReview is a submitted review on a pull request.
 type PullRequestReview struct {
@@ -596,7 +618,7 @@ type PullRequestReview struct {
 	ReadFromList bool
 }
 
-func (PullRequestReview) isFact() {}
+func (PullRequestReview) namedIssue() (string, bool) { return "", false }
 
 // Decides says whether the review's state can decide a review round: an approval or a request for
 // changes, in whatever case its producer spelled it. A comment decides nothing, whoever writes it.
@@ -608,16 +630,20 @@ func (r PullRequestReview) Decides() bool {
 }
 
 // legionFooterMarker opens the Legion footer every Legion role appends to a pull-request review:
-// a JSON object naming the session and phase that wrote it and the head it read
-// (skills/legion-worker/SKILL.md, the reviewer template prompts/roles/reviewer.md).
+// a JSON object naming the session and phase that wrote it and the head it read, and in the
+// reviewer's review the entry of the round it is of (skills/legion-worker/SKILL.md, the reviewer
+// template prompts/roles/reviewer.md).
 const legionFooterMarker = "<!-- legion:"
 
 // legionFooter is what the daemon reads out of that JSON object: the session that submitted the
-// review (LegionSession) and the head the review says it read (LegionHead). A role writes its
-// phase there too, which nothing here reads.
+// review (LegionSession), the head the review says it read (LegionHead) and the entry of the
+// round it says it is of (LegionEntry). A role writes its phase there too, which nothing here
+// reads. The entry is kept raw and read on its own, so an entry of the wrong JSON type costs the
+// entry alone and never the session and head beside it, which decide the round.
 type legionFooter struct {
-	Session string `json:"session"`
-	Head    string `json:"head"`
+	Session string          `json:"session"`
+	Head    string          `json:"head"`
+	Entry   json.RawMessage `json:"entry"`
 }
 
 // lastLegionFooter decodes the last Legion footer in the review's body: the JSON object between
@@ -669,6 +695,31 @@ func (r PullRequestReview) LegionHead() string {
 	return head
 }
 
+// LegionEntry is the entry of the round the review says it is of: the entry field of the last
+// Legion footer in the review's body (lastLegionFooter), the number the reviewer's task names
+// (reviewround.EntryLabel, record.PhaseRow.Entry). The reviewer's texts write it as a JSON
+// string of digits (`"entry":"<entry>"`), so a placeholder left unfilled keeps the footer JSON,
+// and it is read as a positive whole number written either that way or as a JSON integer. It is
+// 0 when the body carries no footer, the footer's JSON cannot be parsed, it names no entry, or
+// the entry is anything else: an unfilled placeholder, an empty string, a word, a fraction, an
+// exponent, a sign, zero, one past int64, null, a boolean, an array or an object names no entry.
+// Such a footer still names its session and head, so the review decides its round as before;
+// only the commit the reviewer read (record.PhaseRow.ReviewedHead) waits for a review that names
+// the entry that stands (workflow's review).
+func (r PullRequestReview) LegionEntry() int64 {
+	digits := string(r.lastLegionFooter().Entry)
+	if strings.HasPrefix(digits, `"`) {
+		if err := json.Unmarshal([]byte(digits), &digits); err != nil {
+			return 0
+		}
+	}
+	entry, err := strconv.ParseUint(digits, 10, 64)
+	if err != nil || entry > math.MaxInt64 {
+		return 0
+	}
+	return int64(entry)
+}
+
 // fullCommitSHA says whether s is a commit as GitHub names one: exactly 40 lowercase hexadecimal
 // characters. Nothing shorter is compared with a head, since a prefix names a commit only by
 // chance and GitHub spells every head it reports this way.
@@ -700,18 +751,32 @@ type CheckRun = record.AttemptRun
 // a cancellation is a property of the run - a later push can cancel it - where a failure is of the
 // code. What they come to is told to the roles that work the issue, which decide it
 // (workflow's tellChecks).
+//
+// Statuses are the commit statuses the settlement names, each with its context, its state and
+// GitHub's created_at, in context order and with no stamp (record.CommitStatus): entries of their
+// own kind, apart from the check runs, which a context sharing a check run's name never joins. A
+// settlement that names none, a listener's of an earlier release among them, carries an empty
+// list. The pull request keeps the newest status of each context the settlements of the head
+// named (classify.ApplySettlement), so a context a settlement leaves out stays as it is kept.
+// StatusesUnread is a list the decoder could not read (decodeChecks): the rest of the settlement
+// stands, it names no status, and the pull request keeps the statuses it holds for the head, since
+// the merge keeps a context a settlement leaves out (classify.ApplySettlement). The flag's one
+// reader is the task of a role the settlement wakes, which names the failed ones of those kept
+// statuses (workflow's wakeOnSettlement).
 type PullRequestChecks struct {
-	Repo       string
-	Number     int
-	HeadSHA    string
-	CheckRuns  []record.AttemptRun
-	Generation int64
-	Snapshot   string
-	Failing    []string
-	Cancelled  []string
+	Repo           string
+	Number         int
+	HeadSHA        string
+	CheckRuns      []record.AttemptRun
+	Generation     int64
+	Snapshot       string
+	Failing        []string
+	Cancelled      []string
+	Statuses       []record.CommitStatus
+	StatusesUnread bool
 }
 
-func (PullRequestChecks) isFact() {}
+func (PullRequestChecks) namedIssue() (string, bool) { return "", false }
 
 // PullRequestMergeability is GitHub's lazily computed verdict for whether a pull request's head
 // can be merged into Base without a conflict, decoded from GitHub's nullable `mergeable` field on
@@ -731,6 +796,16 @@ func (PullRequestChecks) isFact() {}
 // read fills it, and the engine records the answer only while the record still stands at that
 // head (workflow's mergeability): a read is one round trip to GitHub, a push can land during it,
 // and a verdict about another head's tree says nothing about this one.
+//
+// ReadAt is the moment the reader had GitHub's answer in hand, taken from the reader's own clock
+// rather than from the clock of whoever applies the fact: the engine takes no clock of its own, so
+// what it records is the time of the read rather than the time of the apply, and its tests stay
+// deterministic because every time they record is one their own fact named. It is what
+// record.PullRequest.StateReadAt is written from, and a confirming read moves it exactly as a read
+// that changes something does, since it is the age of the knowledge and not the age of the last
+// change to it. A fact minted by anything that did not read GitHub - every test that states a
+// verdict rather than reading one - leaves it zero, and the engine then writes no stamp and erases
+// none.
 type PullRequestMergeability struct {
 	Repo       string
 	Number     int
@@ -738,18 +813,21 @@ type PullRequestMergeability struct {
 	HeadSHA    string
 	Mergeable  record.Mergeability
 	MergeState record.MergeState
+	ReadAt     time.Time
 }
 
-func (PullRequestMergeability) isFact() {}
+func (PullRequestMergeability) namedIssue() (string, bool) { return "", false }
 
-// PullRequestMerged records GitHub's terminal merged observation.
+// PullRequestMerged records GitHub's terminal merged observation: the merge commit, and HeadSHA,
+// the head the pull request merged at, "" when the observation names none.
 type PullRequestMerged struct {
 	Repo     string
 	Number   int
 	MergeSHA string
+	HeadSHA  string
 }
 
-func (PullRequestMerged) isFact() {}
+func (PullRequestMerged) namedIssue() (string, bool) { return "", false }
 
 // PullRequestClosed records GitHub's unmerged close observation: the head the pull request closed
 // at, and its updated_at, which orders the close against a reopen and the synchronizes before it.
@@ -760,7 +838,35 @@ type PullRequestClosed struct {
 	UpdatedAt time.Time
 }
 
-func (PullRequestClosed) isFact() {}
+func (PullRequestClosed) namedIssue() (string, bool) { return "", false }
+
+// PullRequestDequeued is GitHub's pull_request action `dequeued`: the pull request left the merge
+// queue, and HeadSHA is the head it left the queue at. GitHub's payload names why it left (its
+// `reason`), but the listener drops that field (packages/envoy/internal/contracts/normalize.go,
+// the pull_request payload), so the fact carries no reason.
+type PullRequestDequeued struct {
+	Repo    string
+	Number  int
+	HeadSHA string
+}
+
+func (PullRequestDequeued) namedIssue() (string, bool) { return "", false }
+
+// MergeQueueReadDone is the outbox's merge-queue read (record.MergeQueueRead) finishing with no
+// merge: never decoded from an event. GitHub answered that pull request Number of Issue is open,
+// or closed unmerged, or, with Unread, no read of it succeeded, so the daemon does not know
+// whether GitHub merged it. Head is the head that left the merge queue (PullRequestDequeued). The
+// workflow writes the message that tells the issue's merger, while the issue still stands in
+// merging at Head (workflow's mergeQueueReadDone). A merged answer applies PullRequestMerged
+// instead, as the webhook's merge would.
+type MergeQueueReadDone struct {
+	Issue  string
+	Number int
+	Head   string
+	Unread bool
+}
+
+func (f MergeQueueReadDone) namedIssue() (string, bool) { return f.Issue, true }
 
 // PullRequestMissing is the daemon's per-issue read of GitHub finding no open pull request on
 // Branch, the branch of Issue, whose implementer recorded its handoff at HandoffCommit while Issue
@@ -775,13 +881,14 @@ type PullRequestMissing struct {
 	HandoffCommit string
 }
 
-func (PullRequestMissing) isFact() {}
+func (f PullRequestMissing) namedIssue() (string, bool) { return f.Issue, true }
 
 // Push records a branch push.
 type Push struct {
 	Repo   string
 	Branch string
-	// Before is the head the push replaced, After the head it left.
+	// Before is the head the push replaced, After the head it left. A push that deleted the branch
+	// leaves no head: its After is record.NoCommit, which decodePush makes no fact.
 	Before string
 	After  string
 	// Pusher is the push's pusher login (the listener's `pusher`, GitHub's pusher.name).
@@ -791,7 +898,7 @@ type Push struct {
 	Sender string
 }
 
-func (Push) isFact() {}
+func (Push) namedIssue() (string, bool) { return "", false }
 
 // BasePush is a push to a branch that is no issue's (decodePush), which is the shape of a branch
 // pull requests sit on: a base. GitHub recomputes whether each head on that base still merges into
@@ -807,7 +914,7 @@ type BasePush struct {
 	After string
 }
 
-func (BasePush) isFact() {}
+func (BasePush) namedIssue() (string, bool) { return "", false }
 
 // HandoffComplete is an API-originated phase-completion fact.
 type HandoffComplete struct {
@@ -825,9 +932,10 @@ type HandoffComplete struct {
 	Generation uint64
 	Summary    string
 	Verdict    string
-	// Commit is the commit the completion reports: the implementer's pushed tip for an implementing
-	// round, and the commit retro and merging stand on; none for the planner, the tester or the
-	// reviewer.
+	// Commit is the commit the completion reports: for the planner, the implementer's implementing
+	// round, the tester and the reviewer the head their handoff record names, empty where a
+	// planner's, a tester's or a reviewer's record names none; and the commit retro and merging
+	// stand on.
 	Commit string
 	// HandoffRecord and HandoffVersion name the Dispatch handoff record the completion of a phase
 	// with a handoff ends with (phase.Handoff): the route read it back from Dispatch and held it to
@@ -837,7 +945,7 @@ type HandoffComplete struct {
 	HandoffVersion int
 }
 
-func (HandoffComplete) isFact() {}
+func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
 
 // BackwardMove asks the workflow to return to an earlier phase.
 type BackwardMove struct {
@@ -847,7 +955,7 @@ type BackwardMove struct {
 	Reason    string
 }
 
-func (BackwardMove) isFact() {}
+func (f BackwardMove) namedIssue() (string, bool) { return f.Issue, true }
 
 // RetryOrEscalateDecision is the architect's response to a held phase.
 type RetryOrEscalateDecision string
@@ -867,7 +975,7 @@ type RetryOrEscalate struct {
 	Reason   string
 }
 
-func (RetryOrEscalate) isFact() {}
+func (f RetryOrEscalate) namedIssue() (string, bool) { return f.Issue, true }
 
 // RestartPhase is the operator's retry of one phase worker, from `legion claims retry` of a claim
 // that failed or that an operator stopped (api's retryClaim). The workflow starts Role's phase
@@ -886,12 +994,12 @@ type RestartPhase struct {
 	FreshSession bool
 }
 
-func (RestartPhase) isFact() {}
+func (f RestartPhase) namedIssue() (string, bool) { return f.Issue, true }
 
 // SignOff records the architect's post-production-check approval.
 type SignOff struct{ Issue string }
 
-func (SignOff) isFact() {}
+func (f SignOff) namedIssue() (string, bool) { return f.Issue, true }
 
 // GateRegistered records a design document and its current version, with what register_gate read
 // of Dispatch's approval of it, so a person's review given before the architect registered is
@@ -932,7 +1040,7 @@ type GateRegistered struct {
 	ReviewedBy              dispatch.Actor
 }
 
-func (GateRegistered) isFact() {}
+func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 
 // CloseRoot is a tree root's architect ending its tree before the tree's first phase starts, with
 // the reason it gives: a human decided no change at the design gate, or the issue is moot.
@@ -941,7 +1049,7 @@ type CloseRoot struct {
 	Reason string
 }
 
-func (CloseRoot) isFact() {}
+func (f CloseRoot) namedIssue() (string, bool) { return f.Issue, true }
 
 // Message is what the close posts on the issue: that its architect closed it before its first
 // phase, and the reason it gave.
@@ -976,7 +1084,7 @@ type ClaimFailed struct {
 	Limits  supervise.Limits
 }
 
-func (ClaimFailed) isFact() {}
+func (f ClaimFailed) namedIssue() (string, bool) { return f.Issue, true }
 
 // SessionLost is a claim whose recorded session no session store holds any more: its worker now
 // runs a fresh agent that has read none of its own earlier work (supervise's startFresh). Detail
@@ -988,7 +1096,7 @@ type SessionLost struct {
 	Detail string
 }
 
-func (SessionLost) isFact() {}
+func (f SessionLost) namedIssue() (string, bool) { return f.Issue, true }
 
 // SessionStoreFault is a start that could not reach the session store at all, which is a
 // deployment fault rather than the claim's: nothing of the claim is lost and nothing is charged,
@@ -1001,13 +1109,37 @@ type SessionStoreFault struct {
 	Detail string
 }
 
-func (SessionStoreFault) isFact() {}
+func (f SessionStoreFault) namedIssue() (string, bool) { return f.Issue, true }
+
+// MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
+// was near its memory limit, or, in a microVM pod, one that the pod's own kernel stopped because
+// the pod ran out of memory (the report's Cause, shimwire.MemoryKillCauseKernel, or
+// shimwire.MemoryKillCauseKernelProtected for a process that runs the role's session), as the pod's
+// launcher reported it on the connection of the role whose process it was
+// (shimwire.LauncherMemoryKill). It is never decoded from an event: the launcher's frame reaches
+// the runtime, and the daemon's Kubernetes wiring applies one fact per report under the id
+// `memory-guard-kill:<guard>:<sequence>`, which names the kill once, so a report the launcher sent
+// twice is applied once (INFRA-3557). For the kernel's kill, <guard> is the id of the launcher's
+// guest watch (memoryguard.Guest).
+//
+// Issue, Token and PodUID are the launcher session's own (the issue its pod is of, the claim of
+// the role the connection authenticated for, and that pod), never anything the report says.
+// The workflow tells that role, on its own role topic, which of its processes was ended and why,
+// in the note the report's Cause chooses (workflow's memoryGuardKill).
+type MemoryGuardKill struct {
+	Issue  string
+	Token  claim.Token
+	PodUID string
+	Report shimwire.LauncherMemoryKill
+}
+
+func (f MemoryGuardKill) namedIssue() (string, bool) { return f.Issue, true }
 
 // ClaimReady is a claim ready to be prompted, from either of two sources: the supervision
 // observation of a launch's ready, its agent having taken its Envoy role and said it can be
-// prompted (workflowRuntime.applyTerminal), and a start the outbox runs that finds a tree's root
-// architect already running, whose launch has no second ready (the outbox's start). Launch is the
-// claim's launch generation the ready belongs to, the running one for the second source.
+// prompted (workflowRuntime.applyTerminal), and a start the outbox runs that finds an architect
+// already running, whose launch has no second ready (the outbox's start). Launch is the claim's
+// launch generation the ready belongs to, the running one for the second source.
 type ClaimReady struct {
 	Issue  string
 	Role   claim.Role
@@ -1019,9 +1151,19 @@ type ClaimReady struct {
 	// the same wake. A fact applies once for the row that wrote it (ApplyFact's id), so the turn
 	// is taken once per start row however often the row runs.
 	Paced bool
+	// Relaunch is the sentence that tells the claim's new process what the last let-go of its
+	// process ended (supervise.RelaunchSentence), while the claim's record of it is untold
+	// (supervise.EndedWork.Tells); "" otherwise. A record that still tells is one of the claim's
+	// current session's processes, since abandoning a session ends the record of its process
+	// (supervise's forgetSession). The first source alone sets it, from the claim its ready wrote
+	// (the daemon's applyTerminal): an architect's catch-up opens with it (workflow's
+	// QueueCatchUp), because the first turn of a relaunched architect can be that catch-up's
+	// rather than its prompt's. The catch-up's copy tells nothing: the record is told by the
+	// prompt the claim's machine sends, at that prompt's confirmation.
+	Relaunch string
 }
 
-func (ClaimReady) isFact() {}
+func (f ClaimReady) namedIssue() (string, bool) { return f.Issue, true }
 
 // TaskConfirmed is a role's agent taking the work the daemon gave it: a turn of its pending
 // delivery started (supervise's confirm). The workflow changes nothing on it; admission takes it
@@ -1033,7 +1175,7 @@ type TaskConfirmed struct {
 	Generation uint64
 }
 
-func (TaskConfirmed) isFact() {}
+func (f TaskConfirmed) namedIssue() (string, bool) { return f.Issue, true }
 
 // GateRequestFound is the boot catch-up's read of the approval request Dispatch shows open on a
 // root's registered spec document (dispatch.Approval.AskID), for a gate whose document the asks'
@@ -1052,7 +1194,7 @@ type GateRequestFound struct {
 	Since        int64
 }
 
-func (GateRequestFound) isFact() {}
+func (f GateRequestFound) namedIssue() (string, bool) { return f.Issue, true }
 
 // CatchUpApplied is the boot catch-up of a root finishing: every event of its Dispatch event log
 // up to Through (0 when the catch-up applied nothing and moves no cursor) has been applied. The
@@ -1063,7 +1205,7 @@ type CatchUpApplied struct {
 	Through int64
 }
 
-func (CatchUpApplied) isFact() {}
+func (f CatchUpApplied) namedIssue() (string, bool) { return f.Issue, true }
 
 // LingerExpired records the generation whose post-close linger elapsed.
 type LingerExpired struct {
@@ -1071,7 +1213,7 @@ type LingerExpired struct {
 	Generation uint64
 }
 
-func (LingerExpired) isFact() {}
+func (f LingerExpired) namedIssue() (string, bool) { return f.Issue, true }
 
 // DaemonBooted records a boot of the daemon: every stored claim has its machine again, and the
 // boot replayed what its claims' terminal states owe the workflow. Boot is the boot's record id
@@ -1080,7 +1222,18 @@ type DaemonBooted struct {
 	Boot int64
 }
 
-func (DaemonBooted) isFact() {}
+func (DaemonBooted) namedIssue() (string, bool) { return "", false }
+
+// CutoverMergerRepair is the one-time boot repair of the mergers the `awaiting_merge` cutover
+// left stopped (dispatch://INFRA-3274/spec R2): an earlier build's idle release stopped the
+// merger's pod while its issue waited in `awaiting_merge`, which no role worked, so it armed no
+// backstop, and the migration that moved the issue to `merging` gave the merger no task. It is
+// never decoded from an event. The boot applies it once per Dispatch project, under a fixed
+// event id (`cutover-merger-repair:<project>`), before the consumers start, so processed_events
+// is its once-only record: a later boot's apply is a duplicate, and no handler runs.
+type CutoverMergerRepair struct{}
+
+func (CutoverMergerRepair) namedIssue() (string, bool) { return "", false }
 
 // CheckReport is the checking role's report on one look of its closed issue's production check:
 // the `legion` tool's `handoff_complete` on an issue whose check is open (api/handoff.go),
@@ -1099,7 +1252,7 @@ type CheckReport struct {
 	WakeAt  *time.Time
 }
 
-func (CheckReport) isFact() {}
+func (f CheckReport) namedIssue() (string, bool) { return f.Issue, true }
 
 // CheckWakeDue is the wake of issue Issue's production check coming due (the check_wake row at
 // ProductionCheck.WakeAt): the next look starts, woken by Reason — what the checking agent named
@@ -1115,7 +1268,7 @@ type CheckWakeDue struct {
 	Reason   string
 }
 
-func (CheckWakeDue) isFact() {}
+func (f CheckWakeDue) namedIssue() (string, bool) { return f.Issue, true }
 
 // CheckLookEnded is a look of issue Issue's production check ending with no report: Cause is
 // `look bound` (the check_look row due at the look's bound), `operator hold` (a check start the
@@ -1130,7 +1283,7 @@ type CheckLookEnded struct {
 	OpenedAt time.Time
 }
 
-func (CheckLookEnded) isFact() {}
+func (f CheckLookEnded) namedIssue() (string, bool) { return f.Issue, true }
 
 // CheckBound is the whole production check's bound of issue Issue coming due (the check_bound
 // row at its bound_at): the check's last look starts, or the bound defers while a look is open.
@@ -1138,7 +1291,7 @@ type CheckBound struct {
 	Issue string
 }
 
-func (CheckBound) isFact() {}
+func (f CheckBound) namedIssue() (string, bool) { return f.Issue, true }
 
 // ListenerWake is one report the Envoy listener publishes on notifications.legion.wake, the one
 // subject whose consumer every daemon runs: the listener alone sees a message published to a
@@ -1162,7 +1315,7 @@ type ListenerWake struct {
 	Report string
 }
 
-func (ListenerWake) isFact() {}
+func (ListenerWake) namedIssue() (string, bool) { return "", false }
 
 // The kinds a ListenerWake report carries, as the listener writes them on the wire.
 const (
@@ -1182,7 +1335,7 @@ type PodBackstopDue struct {
 	Role  claim.Role
 }
 
-func (PodBackstopDue) isFact() {}
+func (f PodBackstopDue) namedIssue() (string, bool) { return f.Issue, true }
 
 // WorkerSilent is one claim the daemon's minute sweep read as a silent phase worker: up and
 // between turns, in no update round, its last step older than Bound (config.Config.WorkerSilence),
@@ -1197,7 +1350,7 @@ type WorkerSilent struct {
 	Bound      time.Duration
 }
 
-func (WorkerSilent) isFact() {}
+func (f WorkerSilent) namedIssue() (string, bool) { return f.Issue, true }
 
 // WorkerBackgroundStalled is one claim the daemon's minute sweep read as a phase worker waiting
 // on background work of its own (Kinds) whose session's report, at ReportedAt, is older than
@@ -1213,7 +1366,7 @@ type WorkerBackgroundStalled struct {
 	Bound      time.Duration
 }
 
-func (WorkerBackgroundStalled) isFact() {}
+func (f WorkerBackgroundStalled) namedIssue() (string, bool) { return f.Issue, true }
 
 // WaitDeclared is a phase worker declaring that it waits on something outside its own work
 // until WakeAt (POST /legion/v1/claims/wait, dispatch://INFRA-2040 R2): the claim Token on
@@ -1239,7 +1392,7 @@ type WaitDeclared struct {
 	At         time.Time
 }
 
-func (WaitDeclared) isFact() {}
+func (f WaitDeclared) namedIssue() (string, bool) { return f.Issue, true }
 
 // WaitNews is a phase worker's plugin reporting that news reached its session after the
 // declaration of the wait WaitID (POST /legion/v1/claims/wait-news, dispatch://INFRA-2040 R3's
@@ -1257,7 +1410,7 @@ type WaitNews struct {
 	WaitID string
 }
 
-func (WaitNews) isFact() {}
+func (f WaitNews) namedIssue() (string, bool) { return f.Issue, true }
 
 // WaitDue is a phase worker's wait coming to its time (the wait_due row at the wait's WakeAt,
 // record.WaitDue): the wait WaitID of the claim Token, on Issue. It is never decoded from an
@@ -1272,7 +1425,7 @@ type WaitDue struct {
 	WaitID string
 }
 
-func (WaitDue) isFact() {}
+func (f WaitDue) namedIssue() (string, bool) { return f.Issue, true }
 
 // Handler changes the workflow record inside the caller-owned transaction.
 type Handler interface {
@@ -1377,6 +1530,16 @@ func ChildNotAdoptable(key, tree, reason string) *Refusal {
 	return &Refusal{Status: 409, Code: "CHILD_NOT_ADOPTABLE", Message: fmt.Sprintf("%s cannot join the tree of %s: %s", key, tree, reason)}
 }
 
+// NotCurrentPhase is the 409 HANDOFF_NOT_CURRENT_PHASE refusal of a completion from role, which
+// does not work p, the phase issue stands in: the code every phase worker's prompt names for a
+// completion of a phase it no longer works (prompts/go/worker-common.md). The workflow's handoff
+// answers it for such a completion it does not record (its leftItsPhase), and the completion
+// route's entry fence for one whose entry differs from the role's phases row, before the fact
+// (api's handoffComplete), so a worker reads the same words from either.
+func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
+	return &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf("the %s does not run phase %s of %s; this completion changed nothing", role, p, issue)}
+}
+
 // Pool is the Postgres connection pool the intake applies its facts on, keeps its consumers'
 // positions in and reads what it has already applied from. In the daemon it is always the store's
 // guarded pool (store.Pool), and that is the point of the hand-over: a handler that asks the pool
@@ -1456,6 +1619,7 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 	}
 	ctx, committedHooks := WithCommitHooks(ctx)
 	ctx = WithAppliedFact(ctx, source, eventID)
+	ctx, settle := OpenSettlers(ctx, handlers...)
 	var result Result
 	for _, handler := range handlers {
 		candidate, err := handler.Apply(ctx, tx, fact)
@@ -1467,6 +1631,9 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 		}
 		result.Unspent = result.Unspent || candidate.Unspent
 		result.WaitEnded = result.WaitEnded || candidate.WaitEnded
+	}
+	if err := settle(ctx, tx); err != nil {
+		return Result{}, err
 	}
 	// A refused report of a production check leaves its event unmarked, so a report sent again —
 	// the same look and verdict, which is the same fact id its route mints (api's checkReport) —
@@ -1558,9 +1725,14 @@ func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, erro
 // SerializeFacts takes, for tx's life, the lock every fact applies under (ApplyFact): until tx
 // commits or rolls back, no fact resolves a repository and commits an issue recorded on it. The
 // boot's reconcile, which records issues in its own transaction, takes it, as does a refresh of
-// the repository mapping across its live-record snapshot, its subscription update and its
-// publication, so a repository an admission is recording an issue on is never unsubscribed under
-// it.
+// the repository mapping across its live-record snapshot and its publication, so a repository an
+// admission is recording an issue on is never unsubscribed under it. The subscription update
+// itself is outside this lock and outside any transaction of that pool: a stream call made under
+// either left every connection of the pool idle in a transaction waiting on JetStream
+// (cybermonklabs/legion#3786, dispatch://INFRA-3169), so the mapping's refresh publishes its
+// superset before it takes this lock and narrows after it has let it go, and a recording's own
+// update runs in the commit hook, after the transaction returned its connection and Postgres
+// released this lock (internal/daemon's hearRecorded).
 func SerializeFacts(ctx context.Context, tx pgx.Tx) error {
 	_, err := tx.Exec(ctx, "select pg_advisory_xact_lock(hashtext('legion.apply_fact'))")
 	return err

@@ -67,9 +67,30 @@ const shellHandlers: RequestHandler[] = [
   // no gate, which is what a page with no `api.listProjects` spy drew before, and every row that
   // asserts on project content spies that method above MSW.
   http.get("/api/v1/projects", () => Response.json([])),
+  // The Settings page's daemon section reads every project's Legion daemon with no `enabled` guard
+  // beyond the project being known (`useLegionDaemons`), so the read happens wherever that section
+  // is drawn. `null` is a project that names no daemon, not a failure (`legionDaemonQuery`'s own
+  // doc), and that is what the page drew before MSW: an empty daemon list. Every row that asserts
+  // on a daemon spies `api.getLegionDaemon` above MSW and never reaches this.
+  http.get("/api/v1/projects/:key/legion/daemon", () => Response.json(null)),
   http.get("/api/v1/me/replies", () => Response.json({ rows: [], total: 0, limit: 50, offset: 0 })),
   http.get("/api/v1/credential-requests", () => Response.json({ pending: [] })),
   http.get("/api/v1/me/agents/state", () => Response.json({})),
+  // The navigation rail reads the two fault counts on every page it is drawn on
+  // (`features/sidebar/Sidebar.tsx`, `prioritySummaryQuery`), so every test that renders the
+  // rail or the shell around it makes this read without being about priorities. The answer is
+  // the server's own for a deployment that has written no priority: both counts zero and the
+  // sentence that says why, which is the case where the rail draws no number at all. A test
+  // that asserts on a count spies `api.listPriorities` above MSW.
+  http.get("/api/v1/priorities", () =>
+    Response.json({
+      empty:
+        "No priority is live now, so the list is empty. Write one, then say which work advances it.",
+      priorities: [],
+      priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+      work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+    })
+  ),
 ];
 
 const network = defineNetwork({

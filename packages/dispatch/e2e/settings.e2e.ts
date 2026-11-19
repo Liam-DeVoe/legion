@@ -55,7 +55,7 @@ test("a repository mapping added in Settings assigns a new external issue to its
   }
 });
 
-test("a project's default repository moves with its Default radio, and a mapping an issue names stays", async ({
+test("a project's default repository moves with its Default radio, and a mapping an issue names is deleted", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -96,14 +96,22 @@ test("a project's default repository moves with its Default radio, and a mapping
     await page.reload();
     await expect(radio("acme/gadgets")).toBeChecked();
 
-    // The pinned issue names acme/widgets, so its mapping is not deleted, and the page says why.
+    // The pinned issue names acme/widgets, and that mapping is deleted like any other: nothing
+    // refuses it, the row goes, and the issue keeps the repository it named, which no project
+    // maps now.
+    const deleted = page.waitForResponse(
+      (response) =>
+        response.request().method() === "DELETE" &&
+        new URL(response.url()).pathname === "/api/v1/settings/repo-projects/acme/widgets"
+    );
     await page.getByRole("button", { name: "Delete mapping for acme/widgets" }).click();
-    await expect(
-      page.getByText(
-        "1 issue(s) of CORE name acme/widgets as their repository; change their repo first"
-      )
-    ).toBeVisible();
-    await expect(page.getByRole("cell", { exact: true, name: "acme/widgets" })).toBeVisible();
+    expect((await deleted).status()).toBe(204);
+    await expect(page.getByRole("cell", { exact: true, name: "acme/widgets" })).toHaveCount(0);
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    expect(await getIssue(pinned.key)).toMatchObject({
+      repo: "acme/widgets",
+      resolved_repo: "acme/widgets",
+    });
     const shot = testInfo.outputPath(`repository-default-${testInfo.project.name}.png`);
     await page.screenshot({ fullPage: true, path: shot });
     await testInfo.attach(`repository default (${testInfo.project.name})`, {
@@ -397,7 +405,7 @@ test("a person sets and changes a project's default assignee, and no write clear
   await createProject({ key: "CORE", name: "Core" });
   // Creating OPS as bob makes him a person who has signed in, so he is an option in the control,
   // and OPS names him from the moment it exists: every project names somebody.
-  await createProject({ key: "OPS", name: "Ops" }, "bob");
+  await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -475,7 +483,7 @@ test("a default assignee picked while the last pick is saving waits its turn, an
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   // Creating OPS as bob makes him a person who has signed in, so he is an option in the control.
-  await createProject({ key: "OPS", name: "Ops" }, "bob");
+  await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -544,8 +552,8 @@ test("default assignee picks made when Settings is left and reopened supersede t
   await createProject({ key: "CORE", name: "Core" });
   // Creating OPS as bob and QA as carol makes each a person who has signed in, so both are
   // options in the control.
-  await createProject({ key: "OPS", name: "Ops" }, "bob");
-  await createProject({ key: "QA", name: "Quality" }, "carol");
+  await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
+  await createProject({ key: "QA", name: "Quality" }, { login: "carol" });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -613,9 +621,9 @@ test("default assignee picks made while a save is out are superseded by the newe
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Ops" }, "bob");
-  await createProject({ key: "QA", name: "Quality" }, "carol");
-  await createProject({ key: "ENG", name: "Engineering" }, "dave");
+  await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
+  await createProject({ key: "QA", name: "Quality" }, { login: "carol" });
+  await createProject({ key: "ENG", name: "Engineering" }, { login: "dave" });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -666,7 +674,7 @@ test("a default assignee save refused while Settings is left says so when Settin
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Ops" }, "bob");
+  await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
   await putProjectDefaultAssignee("CORE", { assignee: "alice" });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();

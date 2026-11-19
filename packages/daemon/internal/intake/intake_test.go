@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -400,7 +401,7 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			name:    "pull request merged",
 			subject: "notifications.github.sjawhar.legion.pr.42",
 			file:    "github/pr-merged.json",
-			want:    PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-captured"},
+			want:    PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-captured", HeadSHA: "head-captured"},
 		},
 		{
 			name:    "pull request review",
@@ -530,6 +531,59 @@ func TestASynchronizeFromAListenerWithoutBeforeNamesNoMove(t *testing.T) {
 	}
 	if p, ok := got.Fact.(Push); !ok || p.Sender != "" || p.Pusher != "author" {
 		t.Fatalf("push fact = %#v, want one with no sender and its pusher", got.Fact)
+	}
+}
+
+// GitHub sends the pull_request action `dequeued` when a pull request leaves the merge queue, and
+// the listener publishes it with the keys it writes for every pull_request action (Envoy's
+// normalizer, packages/envoy/internal/contracts/normalize.go): GitHub's reason for the removal is
+// not one of them. On an issue's branch the event is the pull request and the head it left the
+// queue at. One with no head names no head, so it is no fact, as a synchronize with none is no fact.
+// One on a branch that is no issue's is no fact either, as every pull request event there is
+// (decodePullRequest), so it is acknowledged without a transaction.
+func TestDecodeADequeuedPullRequest(t *testing.T) {
+	const subject = "notifications.github.sjawhar.legion.pr.42"
+	envelope := func(branch, head string) []byte {
+		t.Helper()
+		payload, err := json.Marshal(map[string]string{
+			"kind": "pr", "action": "dequeued", "repo": "sjawhar/legion", "number": "42", "title": "Captured GitHub event",
+			"author": "author", "url": "https://github.com/sjawhar/legion/pull/42", "head_sha": head, "before": "",
+			"sender": "github-merge-queue[bot]", "head_ref": branch, "head_repo": "sjawhar/legion", "base_ref": "main",
+			"merged": "false", "merge_commit_sha": "", "merged_by": "", "updated_at": "2026-09-23T00:00:00Z",
+			"body": "Dispatch: LEGION-208",
+		})
+		if err != nil {
+			t.Fatalf("marshal the dequeued payload: %v", err)
+		}
+		data, err := json.Marshal(map[string]any{
+			"event_id": "dequeued-event", "source": "github", "source_event_id": "dequeued-delivery", "topic": subject,
+			"dedupe_key": "github.dequeued-delivery", "issued_at": int64(1_790_124_795_391),
+			"payload_summary": "pr dequeued: sjawhar/legion#42 Captured GitHub event", "payload": string(payload),
+			"trace_id": "dequeued-trace",
+		})
+		if err != nil {
+			t.Fatalf("marshal the dequeued envelope: %v", err)
+		}
+		return data
+	}
+	for _, tc := range []struct {
+		name, branch, head string
+		want               Fact
+	}{
+		{name: "on an issue's branch, with its head", branch: "legion/LEGION-208", head: "head-captured",
+			want: PullRequestDequeued{Repo: "sjawhar/legion", Number: 42, HeadSHA: "head-captured"}},
+		{name: "on an issue's branch, with no head", branch: "legion/LEGION-208"},
+		{name: "on a branch that is no issue's", branch: "feature/faster-builds", head: "head-captured"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := decodeMessage(subject, "CAPTURE", capturedRepositories, envelope(tc.branch, tc.head))
+			if err != nil {
+				t.Fatalf("decode the dequeued event: %v", err)
+			}
+			if !reflect.DeepEqual(got.Fact, tc.want) {
+				t.Fatalf("fact = %#v, want %#v", got.Fact, tc.want)
+			}
+		})
 	}
 }
 
@@ -886,6 +940,10 @@ func TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer(t *testing.T) {
 				}
 				golden.Payload["head_ref"] = issueBranch
 				decoded = decode()
+			case "sub_issue":
+				if decoded.Fact != nil {
+					t.Fatalf("%s's sub-issue event decoded %#v, want no fact: the workflow reads no sub-issue", repository, decoded.Fact)
+				}
 			}
 			if (kind == "pr" || kind == "review" || kind == "push") && decoded.Fact == nil {
 				t.Fatalf("%s's %s event decoded no fact", repository, kind)
@@ -1106,6 +1164,35 @@ func TestConsumeTermsPoisonMessagesOnce(t *testing.T) {
 	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
 }
 
+// A GitHub envelope with no payload, as an Envoy listener published every commit status on its
+// repository's comment topic (testdata/github/status-no-payload.json is such a message's stored
+// bytes, with this test's repository and ids of its own), is terminated once with its ERROR line,
+// and the GitHub durable goes on: the push stored after it is applied, and nothing waits for an
+// acknowledgement.
+func TestConsumeTermsAGitHubEnvelopeWithNoPayloadAndAppliesTheNext(t *testing.T) {
+	pool := migratedPool(t)
+	createWrites(t, pool)
+	js, stream := testJetStream(t)
+	logs := &lockedBuffer{}
+	spec := consumerSpec(logs)
+	stop := startConsume(t, js, spec, pool, writeHandler("push", nil))
+	defer stop()
+
+	poison := publish(t, js, "notifications.github.sjawhar.legion.comment", capturedGitHubEnvelope(t, "status-no-payload.json"))
+	last := publish(t, js, "notifications.github.sjawhar.legion.push.branch.main", capturedGitHubEnvelope(t, "push-base.json"))
+	assertAcknowledgedThrough(t, stream, githubConsumerName(spec.Project), last)
+	if got := writeHandlers(t, pool); !slices.Equal(got, []string{"push"}) {
+		t.Fatalf("handler writes = %q, want the push after the poison applied", got)
+	}
+	requireLogLine(t, logs, "level=ERROR", "poison JetStream message", "Envoy envelope payload is not JSON",
+		"subject=notifications.github.sjawhar.legion.comment", "stream_seq="+strconv.FormatUint(poison.Sequence, 10))
+	time.Sleep(3 * spec.AckWait)
+	if got := strings.Count(logs.String(), "poison JetStream message"); got != 1 {
+		t.Fatalf("poison logs after ack wait = %d, want 1: a terminated message is not delivered again", got)
+	}
+	assertNoAckPending(t, stream, githubConsumerName(spec.Project))
+}
+
 // One NATS stream carries every Dispatch project's issue events. A daemon acts only on its own
 // project's: another project's event is acknowledged and never reaches a handler, as the shipped
 // daemon drops it (events.ts: a subject key outside the configured projects returns).
@@ -1188,11 +1275,15 @@ func TestConsumeAppliesAPushToAnIssuesBranchAndToABase(t *testing.T) {
 // Push the workflow applies to the pull request it records there; a push to a branch of any other
 // shape decodes to the BasePush that says a pull request's base may have moved, since that is the
 // shape of a branch pull requests sit on. A push to a ref that is no branch at all decodes to
-// neither.
+// neither. GitHub's deletion of an issue's branch, a push whose after is record.NoCommit, names no
+// head and decodes to no fact; the deletion of a base is still the BasePush that says the base
+// moved.
 func TestDecodeAPushIsAPushOnAnIssuesBranchAndABasePushOnAnyOther(t *testing.T) {
 	captured := capturedGitHubEnvelope(t, "push.json")
 	for _, tc := range []struct {
 		ref string
+		// after replaces the push's after, head-captured, when it is set.
+		after string
 		// branch is the issue branch the push decodes to a Push on, base the branch it decodes to a
 		// BasePush on; both empty is a ref that decodes to no fact.
 		branch string
@@ -1207,9 +1298,20 @@ func TestDecodeAPushIsAPushOnAnIssuesBranchAndABasePushOnAnyOther(t *testing.T) 
 		{ref: "refs/heads/bot/LEGION-208", base: "bot/LEGION-208"},
 		{ref: "refs/tags/legion/LEGION-208"},
 		{ref: "refs/heads/"},
+		{ref: "refs/heads/legion/LEGION-208", after: record.NoCommit},
+		{ref: "refs/heads/main", after: record.NoCommit, base: "main"},
 	} {
-		t.Run(tc.ref, func(t *testing.T) {
+		t.Run(strings.TrimSpace(tc.ref+" "+tc.after), func(t *testing.T) {
 			data := bytes.ReplaceAll(captured, []byte("refs/heads/legion/LEGION-208"), []byte(tc.ref))
+			after := "head-captured"
+			if tc.after != "" {
+				after = tc.after
+				replaced := bytes.ReplaceAll(data, []byte(`\"after\":\"head-captured\"`), []byte(`\"after\":\"`+after+`\"`))
+				if bytes.Equal(replaced, data) {
+					t.Fatal("the captured push carries no after to replace")
+				}
+				data = replaced
+			}
 			decoded, err := decodeMessage("notifications.github.sjawhar.legion.push.branch.x", "CAPTURE", capturedRepositories, data)
 			if err != nil {
 				t.Fatalf("decode: %v", err)
@@ -1218,11 +1320,11 @@ func TestDecodeAPushIsAPushOnAnIssuesBranchAndABasePushOnAnyOther(t *testing.T) 
 			basePush, isBase := decoded.Fact.(BasePush)
 			switch {
 			case tc.branch == "" && tc.base == "" && decoded.Fact != nil:
-				t.Fatalf("fact = %#v, want none for a ref that is no branch", decoded.Fact)
+				t.Fatalf("fact = %#v, want none for a ref that is no branch or a deletion of an issue's branch", decoded.Fact)
 			case tc.branch != "" && (!isPush || push.Branch != tc.branch):
 				t.Fatalf("fact = %#v, want a push to %s", decoded.Fact, tc.branch)
-			case tc.base != "" && (!isBase || basePush.Branch != tc.base || basePush.After != "head-captured"):
-				t.Fatalf("fact = %#v, want a base push to %s at head-captured", decoded.Fact, tc.base)
+			case tc.base != "" && (!isBase || basePush.Branch != tc.base || basePush.After != after):
+				t.Fatalf("fact = %#v, want a base push to %s at %s", decoded.Fact, tc.base, after)
 			}
 		})
 	}

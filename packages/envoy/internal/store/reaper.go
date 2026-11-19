@@ -172,18 +172,24 @@ type RoleClaimSweep struct {
 // (RoleClaim.HandedBack): a marked claim whose own renewal has lapsed is freed whatever isAlive
 // says. Nothing can move that renewal again, since no registration renews a marked claim
 // (renewRoleClaim), so the lapse is final rather than a holder briefly out of touch. The mark
-// is what makes freeing it safe where a session id would not be: it is the holder's own word
-// that it gave the role up, written by a release only that holder's session could make
-// (Registry.releaseReadRoleClaim, over a claim naming a process that release did not name), and
-// a second process that resumed the session id cannot write it, because such a release states
-// an instance and a release that states one frees the claims of that process and marks nothing.
+// is the session's own word that it gave the role up, written by a hand-back of that role's lane
+// topic that stated no process (Registry.markRoleClaimHandedBack, over a claim of that session
+// the release could not free, whether it names a process or none). Any process of the session
+// can send that release - a client built before a release named its process, or any caller that
+// leaves client_instance_id out of POST /v1/interests/unsubscribe; no current client sends it for
+// a role's lane, since pi-envoy's and claude-envoy's hand-back of a role states its instance - so
+// the mark is not proof that the holder itself gave the role up; it is what the window below is
+// for.
 //
 // A marked claim is freed one live window after its last renewal and not at once, and that
-// window is load-bearing: a holder an older client's hand-back marked wrongly claims the role
-// again at its next heartbeat and has it back, the record that grant writes carrying no mark
-// (SetRoleWithPrevious). The window must stay longer than a heartbeat. Nothing else holds a
-// marked claim: the restart grace is for a holder to register again and no registration renews
-// a marked claim, so the release gives it none (releaseReadExpiredRoleClaim).
+// window is load-bearing: a holder whose claim names its process and a hand-back marked wrongly
+// claims the role again at its next heartbeat and has it back, the record that grant writes
+// carrying no mark (SetRoleWithPrevious). A marked claim that names no process is not granted
+// back to a soft claim inside the window (POST /v1/roles/set weighs it by its renewal); its
+// holder takes it back with an outright claim, or claims it once the reaper has freed it. The
+// window must stay longer than a heartbeat. Nothing else holds a marked claim: the restart grace
+// is for a holder to register again and no registration renews a marked claim, so the release
+// gives it none (releaseReadExpiredRoleClaim).
 //
 // Only a claim neither rule keeps is released (releaseReadExpiredRoleClaim, which weighs
 // sessionTTL, the restart grace, and reads the renewal no second time: this pass has read it
@@ -217,14 +223,14 @@ type RoleClaimSweep struct {
 // revision, and then nothing per role but the deletes it owes: no Get of its own per key. One
 // role's undecodable record, failed delete or failed release costs that one role: it is logged
 // in a line of its own, counted in Skipped, and the pass goes on. This reaper is the backstop
-// for the claim a deregistration left standing - the one its role claim view had not been
-// delivered when the session left, which releaseAllRoleClaims leaves here, and the one that
-// deregistration was not authorised to free (RoleReleaseAuthority) - and a pass that ends
-// at the first transient failure is no backstop at the role count that made the view miss the
-// claim: one failure would leave every role after it unswept until the next interval, and a
-// failure that lasts would leave them unswept for as long as it does. A role counted Skipped for
-// a read is a stored record this build cannot decode (ErrMalformedRoleClaim), which reads the
-// same on every pass.
+// for the claim a deregistration left standing - the one its interest record did not name and its
+// role claim view had not been delivered when the session left, which releaseAllRoleClaims leaves
+// here, and the one that deregistration was not authorised to free (RoleReleaseAuthority) - and a
+// pass that ends at the first transient failure is no backstop at the role count that made the
+// view miss the claim: one failure would leave every role after it unswept until the next
+// interval, and a failure that lasts would leave them unswept for as long as it does. A role
+// counted Skipped for a read is a stored record this build cannot decode (ErrMalformedRoleClaim),
+// which reads the same on every pass.
 //
 // Two failures still end the pass. The scan, because a pass over part of the bucket is not the
 // pass over every role its counts would claim it was, and because there is no per-role read
@@ -250,7 +256,13 @@ type RoleClaimSweep struct {
 // pass's one scan: the release is handed the claim that scan carried
 // (releaseReadExpiredRoleClaim) rather than reading it again, because a pass runs over the whole
 // bucket on every interval.
+//
+// Each pass also prunes this registry's record of the renewals that failed
+// (renewalFailures.prune) at liveWindow, before its scan, so a pass whose scan fails prunes it
+// too: the reaper is the one caller handed the deployment's live window, and a failure older
+// than that window answers no reader of it (RenewalFailedWithin).
 func (r *Registry) ReapRoleClaims(ctx context.Context, isAlive func(string) bool, sessionTTL, liveWindow time.Duration) (RoleClaimSweep, error) {
+	r.renewalFailures.prune(r.now(), liveWindow)
 	claims, err := r.roleClaimsUntil(ctx)
 	if err != nil {
 		return RoleClaimSweep{}, err

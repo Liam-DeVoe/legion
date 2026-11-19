@@ -24,10 +24,11 @@
 #                  production's)
 #   dispatch_actor the session every proof-human write names as its actor, or empty. A bearer caller
 #                  must name one (production Dispatch refuses the write otherwise, ACTOR_KIND); it
-#                  holds no claim, so the daemon sets back its status write on a live root as it does
-#                  any outside session's, and a proof takes a tree out with `legion status` instead.
-#                  Empty, the writes carry none and the human header alone says who wrote (a scratch
-#                  Dispatch's X-Dispatch-User), which the workflow reads as a person's move
+#                  holds no claim, so the daemon sets back its status write on a live root as it
+#                  does any outside session's, and a proof takes a tree out with
+#                  `legion issue status` instead. Empty, the writes carry none and the human header
+#                  alone says who wrote (a scratch Dispatch's X-Dispatch-User), which the workflow
+#                  reads as a person's move
 #   dispatch_token_file
 #                  the file holding the agents' Dispatch bearer, which write_dispatch_header reads
 #                  (Stage 4b's LEGION_E2E_DISPATCH_TOKEN_FILE); only its caller sets it
@@ -177,10 +178,10 @@ smoke_spec() {
 }
 set_status() { dispatch_human PATCH "issues/$1" "$(jq -cn --arg status "$2" '{status:$status}')" >/dev/null; }
 # new_child TITLE PARENT creates a child issue of PARENT in the run's project, sets it todo, and
-# prints its key: a child of a live tree needs no `legion` label, since the daemon enters it under
-# its tree's architect itself once it is todo (the workflow's recordChildUnderLiveTree), and no spec,
-# since a proof's instructions hold its planner until the driver speaks. Both writes are the proof
-# human's (dispatch_human).
+# prints its key: a child of a live tree needs no `legion` label, since the daemon enters it into
+# its tree itself once it is todo (the workflow's recordChildUnderLiveTree) and starts an architect
+# of its own at its first phase start, and no spec, since a proof's instructions hold its planner
+# until the driver speaks. Both writes are the proof human's (dispatch_human).
 new_child() {
   local key
   key=$(new_issue "$1" "$2") || return 1
@@ -307,7 +308,8 @@ wait_for_architect() {
   assert_claim_endpoints "$1" architect
 }
 # architect_registers_gate ISSUE LABEL waits for a root's architect to register its gate on its
-# own. Nobody prompts it: its first turn is the daemon's catch-up notice, from which it writes the
+# own. The proof prompts it with nothing: from the task its start carries and the daemon's
+# catch-up notice it writes the
 # spec (requesting approval when the design gate is armed) and registers the gate. The registration
 # must name the one primary artifact Dispatch created, so a real agent cannot register an unrelated
 # document.
@@ -1017,19 +1019,21 @@ close_unpassed_run_pull_requests() {
 # completion the daemon accepted — for a file-backed phase (planning, implementing, testing,
 # reviewing) the Dispatch handoff record the role wrote with `dispatch handoff-write` under its own
 # session, its id and version, which the daemon read back from Dispatch and held to the claim's
-# session; for the implementer's implementing round also its pushed tip, which the `legion` tool
-# refuses unpushed; for retro and the merger the commit the workspace stands on — emptied when the
-# role's next phase starts, and, on the implementer's row, the review round (its returns to
-# implementing). The issue moves out of every phase but merging on that phase's completion, and out
-# of merging on the daemon's read of the merged pull request, so a checker reads the row right
-# after the transition it follows, before the role's next phase can empty it. A production check's
-# look is no phase: its report moves no phase and writes no handoff (a verdict and a summary, no
-# commit, no record), so it is read from the daemon's state's `check`, below, never from this record.
+# session, and the head that record's body names, which the `legion` tool holds to be the commit
+# the workspace stands on, pushed to `legion/<issue>@origin`, for the implementer's implementing
+# round and which a planner's, a tester's or a reviewer's record naming none leaves out; for retro
+# and the merger the commit the workspace stands on — emptied when the role's next phase starts,
+# and, on the implementer's row, the review round (its returns to implementing). The issue moves
+# out of every phase but merging on that phase's completion, and out of merging on the daemon's
+# read of the merged pull request, so a checker reads the row right after the transition it
+# follows, before the role's next phase can empty it. A production check's look is no phase: its
+# report moves no phase and writes no handoff (a verdict and a summary, no commit, no record), so
+# it is read from the daemon's state's `check`, below, never from this record.
 
 # role_handoff ISSUE ROLE [PHASE...] prints the commit ROLE's `handoff_complete` reported at the
-# completion the daemon accepted (the implementer's and the merger's; the planner, the tester and
-# the reviewer report none), when the issue stands in one of the PHASEs (any phase when none is
-# named).
+# completion the daemon accepted (the head a file-backed role's record names, the commit retro and
+# the merger stand on; nothing for a completion that reported none), when the issue stands in one
+# of the PHASEs (any phase when none is named).
 role_handoff() {
   local issue=$1 role=$2 phases='' p
   shift 2
@@ -1355,8 +1359,8 @@ worker_sessions() {
 }
 # worker_notices SESSIONS prints one line for each workflow notice delivered into a phase-worker
 # session under SESSIONS: the session file, the role it claims, and the delivery's summary. Every
-# notice kind is for the architect that owns its issue, published on that architect's role topic, so
-# a phase worker's session holds none.
+# notice kind is for an architect, the issue's own or the one above it that the daemon routes it
+# to, published on that architect's role topic, so a phase worker's session holds none.
 worker_notices() {
   local f role
   while IFS=$'\t' read -r f role; do

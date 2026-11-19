@@ -140,9 +140,10 @@ type WaitNewsResponse struct {
 // report of the ask sent again after its round has ended is still the ask. Every other report,
 // with any other key or none, is news, whether or not an update round is open.
 //
-// News is applied as intake.WaitNews under `wait-news:<claimToken>:<waitId>`, through
-// intake.ApplyFact, and the route answers whether that fact ended the wait (workflow's
-// waitNews). The event id names the claim beside the wait, since a wait's id is in the record
+// News is applied as intake.WaitNews under `wait-news:<claimToken>:<waitId>`, through the
+// package's one apply (apply, intake.ApplyFact), and the route answers whether that fact ended
+// the wait (workflow's waitNews). The event id names the claim beside the wait, since a wait's id
+// is in the record
 // every role reads (read_record): a report of another claim's wait id changes no wait (EndWait
 // matches the claim too) and marks no event the wait's own claim reports under. A report naming
 // a wait a newer declaration replaced, or one already ended, answers `ended: false` and changes
@@ -180,9 +181,9 @@ func (s *server) waitNews(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, WaitNewsResponse{UpdateAsk: true})
 		return
 	}
-	result, err := intake.ApplyFact(r.Context(), s.pool, "api", "wait-news:"+string(req.ClaimToken)+":"+req.WaitID, intake.WaitNews{
+	result, err := s.apply(r.Context(), "api", "wait-news:"+string(req.ClaimToken)+":"+req.WaitID, intake.WaitNews{
 		Token: req.ClaimToken, Issue: held.Issue, Role: held.Role, WaitID: req.WaitID,
-	}, s.handlers...)
+	})
 	if err != nil {
 		s.log.Error("wait: could not apply a news report", "claim", req.ClaimToken, "wait", req.WaitID, "error", err)
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply the news report")

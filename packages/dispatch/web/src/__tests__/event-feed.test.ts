@@ -11,12 +11,17 @@ import {
 } from "../api/event-feed";
 import { askThreadsIssue, eventRefreshTargets } from "../api/event-refresh";
 import {
+  advancesIssuesQuery,
   architectureSourcesQuery,
   askThreadQuery,
   inboxQuery,
   inboxThreadsQuery,
   issueQuery,
+  issueStepsQuery,
   myRepliesCountQuery,
+  prioritiesQuery,
+  priorityHistoryQuery,
+  prioritySummaryQuery,
   projectArchitectureSourcesQuery,
   projectDefaultAssigneesQuery,
   projectIssuesQuery,
@@ -41,6 +46,26 @@ import {
 // key its own reader builds, for issue CORE-1 (child of CORE-0, grandchild of CORE-00) and for
 // what sits beside it. A rule is what an event marks stale here, through the real scheduler.
 const READS = {
+  // The work under one priority, as a scoped issues table reads it: the Priorities page's open
+  // row and the priority's own page.
+  advancesWork: { key: advancesIssuesQuery({ advances: "linkage-closure" }, true).queryKey },
+  // A fault list of the Priorities page: the work under any priority standing in backlog or
+  // icebox, with its move there, as that page's Issues table reads it.
+  parkedWork: {
+    key: advancesIssuesQuery(
+      { advances: "any", statuses: ["backlog", "icebox"], moved: true },
+      true
+    ).queryKey,
+  },
+  // The other fault list: the work in flight under no priority, which a delete can add to.
+  noPriorityWork: {
+    key: advancesIssuesQuery(
+      { advances: "none", statuses: ["in_progress", "testing", "needs_review", "retro"] },
+      true
+    ).queryKey,
+  },
+  // The work under another priority, which a delete of linkage-closure leaves where it is.
+  otherAdvancesWork: { key: advancesIssuesQuery({ advances: "oss-verify" }, true).queryKey },
   agentsPicker: { key: ["agents", "issue-picker"] },
   answers: { key: ["me", "answers"] },
   architecture: { key: ["architecture", "CORE"] },
@@ -125,6 +150,8 @@ const READS = {
     data: { edges: [], node: { id: "CORE-1/spec#outro", kind: "block" } },
     key: blockQuery("dispatch://CORE-1/spec#b-outro").queryKey,
   },
+  // Another issue's step records, which the Steps tab of CORE-9 reads.
+  otherSteps: { key: issueStepsQuery("CORE-9").queryKey },
   parent: { key: issueQuery("CORE-0").queryKey },
   // CORE-1 is CORE-0's child: CORE-0's panel lists the `child_of` edge from it.
   parentPanel: {
@@ -136,6 +163,12 @@ const READS = {
   },
   parentSummary: { key: issueSummaryQuery("CORE-0").queryKey },
   pinned: { key: ["issues", "pinned"] },
+  // The Priorities page's body and the rail's two counts: one key family, the summary under the
+  // body's prefix.
+  priorities: { key: prioritiesQuery().queryKey },
+  // One priority's page margin, its history, under the same prefix.
+  priorityHistory: { key: priorityHistoryQuery("linkage-closure").queryKey },
+  prioritySummary: { key: prioritySummaryQuery().queryKey },
   projectDefaultAssignees: { key: projectDefaultAssigneesQuery().queryKey },
   projectInbox: { key: ["inbox", "CORE"] },
   projectList: { key: projectIssuesQuery("CORE", []).queryKey },
@@ -164,6 +197,8 @@ const READS = {
     data: { edges: [], node: { id: "artifact-3", kind: "artifact" } },
     key: ["references", "to", "dispatch://CORE-1/artifact/spec"],
   },
+  // The Steps tab's read of CORE-1's step records.
+  steps: { key: issueStepsQuery("CORE-1").queryKey },
   summary: { key: issueSummaryQuery("CORE-1").queryKey },
   // The Reply-thread card's reads (`askThreadQuery`, `GET /asks/{id}`), each cut to the fields
   // the rules read: an open question on CORE-1 nobody handed on, one handed on, one answered, an
@@ -239,9 +274,20 @@ interface PageOptions {
   readonly inboxRows?: readonly Partial<InboxRow>[];
   /** The rows every issue's ask list and the project document's hold, in place of their own. */
   readonly askRows?: readonly Partial<Ask>[];
+  /** The priorities the one issue each named read holds advances, in place of its own data: an
+   *  issue read (`ISSUE_READS`) answers the issue, any other read a list of that one row. */
+  readonly advances?: Readonly<Partial<Record<ReadName, readonly string[]>>>;
 }
 
+/** The reads that answer one issue rather than a list of them. */
+const ISSUE_READS: readonly ReadName[] = ["detail", "parent", "grandparent", "unrelatedDetail"];
+
 function dataFor(name: ReadName, page: PageOptions): unknown {
+  const advanced = page.advances?.[name];
+  if (advanced !== undefined) {
+    const row = { advances: advanced.map((id) => ({ id, inherited: false })), key: "CORE-1" };
+    return ISSUE_READS.includes(name) ? row : [row];
+  }
   if (name === "pinned") {
     return page.pinned ? [{ key: "CORE-1" }] : [{ key: "CORE-5" }];
   }
@@ -416,6 +462,12 @@ const rules: Record<string, Rule> = {
         "architecture",
         "referencePicker",
         "agentsPicker",
+        "priorities",
+        "prioritySummary",
+        "advancesWork",
+        // The Legion daemon moves the status as an issue's phase moves, and the step records of
+        // the phase it left and the phase it entered come with that move.
+        "steps",
       ],
       spares: [
         "inbox",
@@ -426,6 +478,7 @@ const rules: Record<string, Rule> = {
         "parentPanel",
         "referencesTab",
         "parentSummary",
+        "otherSteps",
       ],
     },
   "a reopen refreshes the whole Inbox and the project counts, since its open asks come back": {
@@ -468,8 +521,9 @@ const rules: Record<string, Rule> = {
       })
     ),
     page: { inboxHolds: false },
-    refreshes: ["detail", "parent", "summary", "projects", "replies", "agentsPicker"],
-    spares: ["inbox", "projectInbox", "unrelatedDetail"],
+    // The close is the merge's end, which the merge step's record comes with.
+    refreshes: ["detail", "parent", "summary", "projects", "replies", "agentsPicker", "steps"],
+    spares: ["inbox", "projectInbox", "unrelatedDetail", "otherSteps"],
   },
   "a close that moves someone else's Replies leaves the viewer's alone": {
     event: event(
@@ -500,6 +554,10 @@ const rules: Record<string, Rule> = {
       "components",
       "architecture",
       "referencesTab",
+      "priorities",
+      "prioritySummary",
+      "advancesWork",
+      "parkedWork",
     ],
     spares: ["unrelatedPanel", "issuePanel", "summary", "projects", "inbox", "pinned"],
   },
@@ -541,6 +599,7 @@ const rules: Record<string, Rule> = {
         "referencePicker",
         "agentsPicker",
         "components",
+        "steps",
       ],
     },
   "a write of any field refreshes every ancestor's children, which show the subtree's newest activity":
@@ -557,6 +616,11 @@ const rules: Record<string, Rule> = {
     event: event("issue.updated", issue({ changed: ["priority"] })),
     refreshes: ["detail", "parent", "grandparent", "unrelatedDetail"],
     spares: ["summary", "pinned"],
+  },
+  "a route move refreshes the issue's steps, since the role that holds it changed": {
+    event: event("issue.updated", issue({ ancestors: ["CORE-0"], changed: ["route"] })),
+    refreshes: ["detail", "steps"],
+    spares: ["otherSteps", "summary"],
   },
   // An assignee write moves the questions nobody has handed on from one person to another, and
   // every reader's Inbox read holds every open question of the issue, so a test against the rows
@@ -601,6 +665,17 @@ const rules: Record<string, Rule> = {
       refreshes: ["detail", "unrelatedDetail"],
       spares: ["parent", "grandparent", "summary"],
     },
+  "an advances change refreshes the priorities body, the summary and the work under a priority, and no backlink panel":
+    {
+      event: event("issue.updated", issue({ ancestors: [], changed: ["advances"] })),
+      refreshes: ["detail", "priorities", "prioritySummary", "advancesWork", "parkedWork"],
+      spares: ["issuePanel", "parentPanel", "referencesTab", "summary", "components"],
+    },
+  "an assignee move leaves the work under a priority where it is": {
+    event: event("issue.updated", issue({ ancestors: [], changed: ["assignee"] })),
+    refreshes: ["detail"],
+    spares: ["advancesWork", "parkedWork", "priorities", "prioritySummary"],
+  },
   "a new issue refreshes its ancestors' rollups and the pickers, not every detail or the project counts":
     {
       event: event(
@@ -647,15 +722,25 @@ const rules: Record<string, Rule> = {
     refreshes: ["parent", "parentPanel"],
     spares: ["issuePanel", "detail"],
   },
-  "a claim refreshes the issue, its collaborators and its project list only": {
+  "a claim refreshes the issue, its collaborators, its steps and its project list only": {
     event: event("issue.claimed", {
       claim: { actor: { id: "planner", kind: "session" }, at: "2026-10-26T00:00:00Z" },
       key: "CORE-1",
       reason: "claimed",
       status: "in_progress",
     }),
-    refreshes: ["collaborators", "detail", "log", "projectList"],
+    refreshes: ["collaborators", "detail", "log", "projectList", "steps"],
     spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
+  },
+  "a release refreshes the issue's steps, since a role's run ended": {
+    event: event("issue.released", { claim: null, key: "CORE-1" }),
+    refreshes: ["detail", "steps"],
+    spares: ["otherSteps", "summary", "pinned"],
+  },
+  "a deploy leaves the issue's steps alone": {
+    event: event("issue.deployed", { number: 1, repo: "acme/widgets" }),
+    refreshes: ["detail", "log"],
+    spares: ["steps", "collaborators"],
   },
   "a person's edit notice refreshes the issue's log only, since each edit's version refreshed the rest":
     {
@@ -667,11 +752,12 @@ const rules: Record<string, Rule> = {
       refreshes: ["detail", "log", "projectList"],
       spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
     },
-  "a recorded handoff refreshes the issue's handoff list and its log, and no rollup": {
+  "a recorded handoff refreshes the issue's handoff list, its steps and its log, and no rollup": {
     event: event("handoff.recorded", { handoff_id: "handoff-1", phase: "implement", version: 2 }),
-    refreshes: ["handoffs", "detail", "log", "projectList"],
+    refreshes: ["handoffs", "detail", "log", "projectList", "steps"],
     spares: [
       "otherHandoffs",
+      "otherSteps",
       "parent",
       "grandparent",
       "unrelatedDetail",
@@ -716,7 +802,7 @@ const rules: Record<string, Rule> = {
       thread_logins: [],
     }),
     refreshes: ["comment", "rootComment", "comments"],
-    spares: ["inbox", "projectInbox", "ask", "asks", "answers", "replies"],
+    spares: ["inbox", "projectInbox", "ask", "asks", "answers", "replies", "steps"],
   },
   "a reply on an ask refreshes the ask, its Inbox row and the answers page": {
     event: event("comment.created", { anchor: null, ask_id: "ask-1", id: "comment-2" }),
@@ -1499,6 +1585,99 @@ test("an event that makes a collaborator refreshes the issue's collaborators", (
   expect(refreshesCollaborators(reprioritised)).toBe(false);
 });
 
+/** One write of priority linkage-closure by bob, as the server appends it: ownerless and quiet. */
+function priorityWrite(change: "created" | "updated" | "deleted"): DispatchEvent {
+  return event(
+    "priority.updated",
+    { change, id: "linkage-closure" },
+    { actor: { id: "bob", kind: "user" }, issue_key: null, notify: false, project: undefined }
+  );
+}
+
+/** A page whose reads of CORE-1 - its issue read, a project's list, the pinned list, both pickers,
+ *  the parked fault list and the work under linkage-closure - hold it advancing linkage-closure,
+ *  beside an issue read, a project's list and the work under oss-verify that advance oss-verify
+ *  alone. */
+const HOLDS_LINKAGE: NonNullable<PageOptions["advances"]> = {
+  advancesWork: ["linkage-closure"],
+  agentsPicker: ["linkage-closure"],
+  detail: ["linkage-closure", "oss-verify"],
+  otherAdvancesWork: ["oss-verify"],
+  otherProjectList: ["oss-verify"],
+  parkedWork: ["linkage-closure"],
+  pinned: ["linkage-closure"],
+  projectList: ["linkage-closure"],
+  referencePicker: ["linkage-closure"],
+  unrelatedDetail: ["oss-verify"],
+};
+
+// A create, a rename, a move in the order and a description save move only the priorities reads:
+// an issue row carries a priority by its id alone, so not one issue read refetches, even where
+// every row names the priority. The description autosaves as the person types, so each save
+// would otherwise refetch both fault lists on every open Priorities page.
+test.each([
+  "created",
+  "updated",
+] as const)("a priority.updated of a %s priority refreshes ['priorities'] and no issue read", (change) => {
+  const incoming = priorityWrite(change);
+  expect(eventRefreshTargets(incoming, "alice")).toEqual([{ queryKey: ["priorities"] }]);
+  expect(refreshedReads(incoming, { advances: HOLDS_LINKAGE }).sort()).toEqual([
+    "priorities",
+    "priorityHistory",
+    "prioritySummary",
+  ]);
+});
+
+// A delete takes the priority out of every relation and writes no issue event: the work under it
+// and the work under none read again whatever they hold, and every issue read and issue list
+// whose row advances it reads again too, so an open issue's next whole-set write of `advances`
+// does not send the priority that is gone.
+test("a priority.updated of a deleted priority refreshes its work, the work under none, and every read of an issue advancing it", () => {
+  const incoming = priorityWrite("deleted");
+  const holds = expect.any(Function);
+  expect(eventRefreshTargets(incoming, "alice")).toEqual([
+    { queryKey: ["priorities"] },
+    { queryKey: ["issues", "advances", "linkage-closure"] },
+    { queryKey: ["issues", "advances", "none"] },
+    { queryKey: ["issue"], when: holds },
+    { queryKey: ["issues"], when: holds },
+    { exact: true, queryKey: ["agents", "issue-picker"], when: holds },
+  ]);
+  expect(refreshedReads(incoming, { advances: HOLDS_LINKAGE }).sort()).toEqual([
+    "advancesWork",
+    "agentsPicker",
+    "detail",
+    "noPriorityWork",
+    "parkedWork",
+    "pinned",
+    "priorities",
+    "priorityHistory",
+    "prioritySummary",
+    "projectList",
+    "referencePicker",
+  ]);
+});
+
+// The same delete, on a page where no cached issue advances the priority: the reads that hold an
+// issue advancing another one, the issue's own read among them, stay as they are.
+test("a priority.updated of a deleted priority refetches no issue read that does not advance it", () => {
+  const otherOnly: NonNullable<PageOptions["advances"]> = {
+    agentsPicker: ["oss-verify"],
+    detail: ["oss-verify"],
+    parkedWork: ["oss-verify"],
+    pinned: ["oss-verify"],
+    projectList: ["oss-verify"],
+    referencePicker: ["oss-verify"],
+  };
+  expect(refreshedReads(priorityWrite("deleted"), { advances: otherOnly }).sort()).toEqual([
+    "advancesWork",
+    "noPriorityWork",
+    "priorities",
+    "priorityHistory",
+    "prioritySummary",
+  ]);
+});
+
 /** One event of every type the feed can carry, keyed by type so a new one fails to compile here
  *  until it has a row. */
 const eventsByType: Record<EventType, DispatchEvent> = {
@@ -1564,6 +1743,11 @@ const eventsByType: Record<EventType, DispatchEvent> = {
   "message.answered": event("message.answered", { id: "message-2" }),
   "message.created": event("message.created", { id: "message-2" }),
   "message.delivery": event("message.delivery", { target: "session:planner" }),
+  "priority.updated": event(
+    "priority.updated",
+    { change: "updated", id: "linkage-closure" },
+    { issue_key: null, project: undefined }
+  ),
   "project.created": event("project.created", {}, { issue_key: null }),
   "project.updated": event("project.updated", {}, { issue_key: null }),
   "result.recorded": event("result.recorded", {

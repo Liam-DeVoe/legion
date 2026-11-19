@@ -68,6 +68,10 @@ func listenerGrant(machineID string) Permissions {
 		jsAck + bus.Stream + "." + durable + ".>",
 		jsAPI + "INFO",
 	}
+	// Each bucket named here is granted to every user built on this grant: the listener's own,
+	// the host user a host's sessions share (HostPermissions) and Dispatch's. What that lets a
+	// session on a host write, and where it is narrowed, is the README's to say
+	// (packages/envoy/infra/README.md, "Permission sets").
 	for _, bucket := range bus.ListenerBuckets() {
 		publish = append(publish, bucketPermissions(bucket)...)
 	}
@@ -144,8 +148,8 @@ func ListenerHostPermissions(machineID string) Permissions {
 // redelivery bucket. Beside them is the update of the bucket's stream: a start, and the program's
 // keeper every 30 seconds after it, raises a bucket found with fewer copies than the deployment's
 // replica count (bus.ReplicasEnvVar) with a stream update (bus.EnsureKeyValue,
-// bus.WithKeptBuckets). Without that grant the raise times out and the start stops naming the
-// bucket.
+// bus.WithKeptBuckets). Without that grant the server refuses the raise and the start stops
+// naming the bucket, the setting and the refusal.
 func bucketPermissions(bucket string) []string {
 	stream := kvStream + bucket
 	return []string{
@@ -209,7 +213,9 @@ func DispatchPermissions(machineID string) Permissions {
 // consumer (bus.SessionConsumerName) on, then its agent stream's control subject
 // (contracts.AgentStreamControlSubject), and no other subject. A session subscribes to no
 // notification topic that carries a message: it receives what its consumer delivers, on the
-// relay subject, and nothing else.
+// relay subject, and nothing else. The listener's connection probe (cmd/listener) asks on that
+// same relay subject and is answered on a reply inbox, so it needs no rule of its own; the README
+// names the entries that carry it (packages/envoy/infra/README.md, "Permission sets").
 //
 // A Legion controller session needs nothing added for its project's notice lane
 // (notifications.legion.<project>.controller, the daemon's notify.ControllerTopic): it registers

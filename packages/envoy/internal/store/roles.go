@@ -40,24 +40,33 @@ type RoleClaim struct {
 	// claim is read at the time it was claimed rather than at the epoch: every reader of a
 	// renewal reads it through LastAnsweredAt, which says so.
 	RenewedAt int64 `json:"renewed_at,omitempty"`
+	// RenewedWithoutProcess is the note a registration that states no process leaves on a
+	// claim that names none when it renews it (Registry.renewRoleClaim): the claim's holder
+	// answers for it without saying which process it is, so from then on no registration that
+	// states a process adopts it. It is absent on every other claim. Every grant writes a fresh
+	// record without it (SetRoleWithPrevious), and a claim an earlier build stored has none
+	// either, so the first registration of its session that states a process adopts it: the
+	// one heartbeat in which a claim that names no process is open to any process of its
+	// session. A note rather than a comparison of RenewedAt with ClaimedAt, because a clock
+	// that does not move, and two listeners whose clocks differ, make those two equal or
+	// reversed for a claim that was renewed.
+	RenewedWithoutProcess bool `json:"renewed_without_process,omitempty"`
 	// HandedBack is the mark a hand-back left on this claim: the release named this role's own
 	// lane topic and stated no process, so it was not authorised to free the claim
-	// (RoleReleaseAuthority.frees) and marked it instead (Registry.releaseReadRoleClaim). It is
-	// written by that release alone - never by the administrator's force, which frees the claim
-	// outright, never by the empty-topics deregistration, and never onto a claim that names no
-	// process, which its own session's release frees. Its readers are the renewal, which renews
-	// no marked claim whoever registers (Registry.renewRoleClaim), so the role claim reaper
-	// frees the role once that renewal has lapsed, a live window and up to one reap interval
-	// later, and GET /v1/roles/<role>, which reports it as
-	// handed_back. Absent means no hand-back of that shape has reached this claim: a claim
-	// granted since clears the mark, because every grant writes a fresh record
-	// (SetRoleWithPrevious).
+	// (RoleReleaseAuthority.frees) and marked it instead (Registry.markRoleClaimHandedBack),
+	// whether the claim names a process or none. It is written by that release alone - never by
+	// the administrator's force, which frees the claim outright, and never by the empty-topics
+	// deregistration. Its readers are the renewal, which renews and adopts no marked claim
+	// whoever registers (Registry.renewRoleClaim), so the role claim reaper frees the role once
+	// that renewal has lapsed, a live window and up to one reap interval later, and GET
+	// /v1/roles/<role>, which reports it as handed_back. Absent means no hand-back of that shape
+	// has reached this claim: a claim granted since clears the mark, because every grant writes
+	// a fresh record (SetRoleWithPrevious).
 	HandedBack bool `json:"handed_back,omitempty"`
 	// Revision is the role bucket revision the claim was read at, which RoleClaim stamps on
 	// every claim it decodes and nothing stores: it belongs to the entry, not to the record,
 	// so it is never marshalled back into the bucket. Zero means no claim record was read -
-	// an unclaimed role, a claim built to be written, or the holder-only claim a watched copy
-	// of the bucket gives (roles.ResolveHolderFrom's firstHolder). It is what a conditional
+	// an unclaimed role, or a claim built to be written. It is what a conditional
 	// claim names as its precondition (SetRoleWithPrevious's ifClaimRevision) and what GET
 	// /v1/roles/<role> reports as claim_revision, so a caller can read a role and then claim
 	// it only while no other claim has landed.
@@ -81,12 +90,13 @@ func (c RoleClaim) LastAnsweredAt() int64 {
 // holder's. It is the one strict test of a claim against a process, which every decision that
 // weighs the two reads through: the release (RoleReleaseAuthority.frees), a claim of a role held
 // under the claimant's own session id (POST /v1/roles/set), and the renewal
-// (Registry.renewRoleClaim, which also writes where the claim names no process at all).
+// (Registry.renewRoleClaim, which also adopts a claim that names no process at its first
+// heartbeat).
 //
-// An absent id on either side names no process, so it matches nothing: a claim an earlier build
-// wrote names none, and a caller that states none says nothing about which process it is. That
-// is the opposite of session.InstanceMatches, the loose test the predecessor rule reads, where
-// an absent id on either side is a client predating the field and the claim goes through.
+// An absent id on either side names no process, so it matches nothing: a claim whose claimant
+// stated none names none, and a caller that states none says nothing about which process it is.
+// That is the opposite of session.InstanceMatches, the loose test the predecessor rule reads,
+// where an absent id on either side is a client predating the field and the claim goes through.
 func (c RoleClaim) HeldByProcess(instance string) bool {
 	return instance != "" && c.ClientInstanceID == instance
 }
@@ -231,35 +241,53 @@ func DecodeRoleClaim(value []byte) (RoleClaim, error) {
 
 // newRoleHolderCopy is an empty copy of the role claim bucket, which keeps the session each claim
 // it can read names. A claim this build cannot read (ErrMalformedRoleClaim) gives its role to
-// nobody, so the copy keeps no entry for it, as a delete marker leaves none.
-func newRoleHolderCopy() kvwatch.Copy[string] {
+// nobody, so the copy keeps no entry for it, as a delete marker leaves none. Each entry it removes
+// is handed to r's repair (roleClaimRepair.swept), which counts the ones a repairing read's sweep
+// took out.
+func newRoleHolderCopy(r *Registry) kvwatch.Copy[string] {
 	return kvwatch.NewCopy(kvwatch.Rows[string]{Decode: func(entry kvwatch.Entry) (string, bool, error) {
 		claim, err := DecodeRoleClaim(entry.Value)
 		if err != nil {
 			return "", false, err
 		}
 		return claim.HolderSessionID, true, nil
-	}})
+	}, Removed: r.roleRepair.swept})
 }
 
 // roleCache is the registry as the role claim cache its watcher feeds (kvwatch.Cache). The hooks
-// are its own type's, not the registry's methods, so nothing but the watcher calls them.
+// are its own type's, not the registry's methods, so nothing but the watcher calls them. Beside the
+// copy they count what each whole read of the bucket repaired in it (roleClaimRepair), which
+// RoleClaimRepair reports.
 type roleCache struct{ r *Registry }
 
 // BeginRead starts a read of the role claim bucket (kvwatch.Copy.BeginRead). Every holder stays.
+// Whether the read repairs the copy, and so counts what it repairs, is the repair's to say
+// (roleClaimRepair.begin).
 func (c roleCache) BeginRead(read kvwatch.Read) {
 	r := c.r
 	r.holdersMu.Lock()
 	defer r.holdersMu.Unlock()
 	r.roleHolders.BeginRead(read)
+	r.roleRepair.begin(read)
 }
 
 // Apply takes one record the read delivered (kvwatch.Copy.Delivered), and logs a claim it could
 // not read, which gave its role to nobody, as the interest watcher logs a value it cannot decode.
+// What the record did to the role's entry is handed to the repair while a read that repairs is
+// under way (roleClaimRepair.delivered); a record delivered while the copy follows its bucket
+// costs no look at the entry beside its own write.
 func (c roleCache) Apply(entry kvwatch.Entry, _ kvwatch.Read) {
 	r := c.r
 	r.holdersMu.Lock()
-	malformed := r.roleHolders.Delivered(entry)
+	var malformed error
+	if r.roleRepair.repairing {
+		before, held := r.roleHolders.Get(entry.Key)
+		malformed = r.roleHolders.Delivered(entry)
+		after, holds := r.roleHolders.Get(entry.Key)
+		r.roleRepair.delivered(entry.Key, before, held, after, holds)
+	} else {
+		malformed = r.roleHolders.Delivered(entry)
+	}
 	r.holdersMu.Unlock()
 	if malformed != nil {
 		r.logger().Warn("role claim watcher found a claim it cannot read; it names no holder",
@@ -271,12 +299,26 @@ func (c roleCache) Apply(entry kvwatch.Entry, _ kvwatch.Read) {
 }
 
 // CompleteRead removes every holder and fence entry the read found no evidence of: the bucket no
-// longer holds that role's claim.
-func (c roleCache) CompleteRead(kvwatch.Read) {
+// longer holds that role's claim. The repair runs that sweep (roleClaimRepair.sweep), so a read
+// that repairs counts each holder the sweep removes as taken out (roleClaimRepair.swept), and no
+// removal outside the sweep is counted so. Every completed read, whether it repaired or filled the
+// copy, is recorded as the last on the registry's clock, with what it repaired
+// (roleClaimRepair.complete); a read that repaired anything logs it at INFO, with the counts and
+// the first roleClaimRepairLoggedRoles of the roles it repaired.
+func (c roleCache) CompleteRead(read kvwatch.Read) {
 	r := c.r
 	r.holdersMu.Lock()
-	defer r.holdersMu.Unlock()
-	r.roleHolders.CompleteRead()
+	r.roleRepair.sweep(&r.roleHolders)
+	found := r.roleRepair.complete(read, r.now())
+	r.holdersMu.Unlock()
+	if found.putBack > 0 || found.tookOut > 0 {
+		r.logger().Info(fmt.Sprintf("role claim repair put back %d claims and took out %d", found.putBack, found.tookOut),
+			slog.Int("put_back", found.putBack),
+			slog.Int("took_out", found.tookOut),
+			slog.Any("put_back_roles", found.putBackRoles),
+			slog.Any("took_out_roles", found.tookOutRoles),
+		)
+	}
 }
 
 // setOwnRoleHolder records a claim write this registry made through a handle of epoch
@@ -838,9 +880,9 @@ func (r *Registry) RoleClaim(ctx context.Context, role string) (RoleClaim, error
 }
 
 // RoleHolder returns the authoritative session ID for role, read with no deadline of its own. Only
-// tests call it, to read what a claim left behind; every route and the role lane read RoleClaim
-// within a deadline, through the one resolution (roles.ResolveHolder and roles.ResolveHolderFrom,
-// internal/roles). An unclaimed role returns an empty holder without an error.
+// tests call it, to read what a claim left behind; the listener reads RoleClaim within a deadline,
+// its routes and its role lane through the one resolution (roles.ResolveHolder, internal/roles)
+// and its kept lane directly. An unclaimed role returns an empty holder without an error.
 func (r *Registry) RoleHolder(role string) (string, error) {
 	claim, err := r.RoleClaim(context.Background(), role)
 	if err != nil {

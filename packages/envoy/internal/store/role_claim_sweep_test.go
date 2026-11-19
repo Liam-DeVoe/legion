@@ -1,10 +1,10 @@
-// A deregistration releases the role claims its session holds from two sources: the role topics
-// of the session's own interest record (releaseRoleClaims), and the role claim view
-// (releaseAllRoleClaims), which reads the roles the session holds from the watcher's copy of the
-// bucket and makes no bucket call to find them. The scan of the role bucket that the view
-// replaced is still there as the fallback a view that cannot be served runs
-// (releaseAllRoleClaimsByScan), and it is no longer what answered the route 503 this change was
-// filed on: it is one streamed scan carrying every record's value and revision, and past that
+// A deregistration releases the role claims its session holds from one set drawn from two
+// sources, each role once (releaseAllRoleClaims): the role topics of the session's own interest
+// record, read from the bucket, and the role claim view, which reads the roles the session holds
+// from the watcher's copy of the bucket and makes no bucket call to find them. The scan of the
+// role bucket that the view replaced is still there as the fallback a view that cannot be served
+// runs (releaseAllRoleClaimsByScan), and it is no longer what answered the route 503 this change
+// was filed on: it is one streamed scan carrying every record's value and revision, and past that
 // scan the fallback sends nothing but the deletes it owes, where it once paid a round trip per
 // key of the bucket.
 //
@@ -335,13 +335,12 @@ func assertBucketKeptOnlyTheOtherClaims(t *testing.T, reg *Registry, released []
 // sessions hold, whatever order they run in.
 //
 // The first case's interest record carries no role topic, which is the point of it: Remove
-// releases from the record's role topics first (releaseRoleClaims) and from the view second
-// (releaseAllRoleClaims), so a session whose record names its roles has them released by the
-// first pass, and a case written that way would pass with no view sweep at all. With no role
-// topic on the record, only the view sweep can release these two claims. The second case is the
-// production shape, where the record does name them: every release the record pass makes leaves
-// the view (forgetRoleHolder), so the sweep that follows finds nothing left to do and the counts
-// are the same two Gets and two Deletes.
+// releases the record's roles and the view's together (releaseAllRoleClaims), so a session whose
+// record names its roles has them released from the record, and a case written that way would
+// pass with no view at all. With no role topic on the record, only the view can name these two
+// claims. The second case is the production shape, where the record does name them: the two
+// sources name the same two roles, each is read and released once, and the counts are the same
+// two Gets and two Deletes.
 func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBucket(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
@@ -361,7 +360,7 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 	putRoleClaimsInParallel(t, rawRoles, others, holderOfOther)
 	t.Logf("seeded %d claims held by other sessions in %s", otherRoleClaims, time.Since(seeded).Round(time.Millisecond))
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry over the seeded role bucket: %v", err)
 	}
@@ -372,13 +371,14 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 		t.Fatalf("wait for the caches over %d stored claims: %v", otherRoleClaims, err)
 	}
 
-	// deregister seeds session's claims and its interest record, waits until the view names it
-	// the holder of both roles, and removes it under sweepDeadline with every role bucket call
-	// delayed. It returns the deregistration's own error and the handle that counted its calls.
+	// deregister seeds session's claims, each naming the process the deregistration states
+	// (releasedByItsProcess), and its interest record, waits until the view names it the holder
+	// of both roles, and removes it under sweepDeadline with every role bucket call delayed. It
+	// returns the deregistration's own error and the handle that counted its calls.
 	deregister := func(t *testing.T, session string, roles []string, topics []string) (error, *sweepRoleKeyValue) {
 		t.Helper()
 		for _, role := range roles {
-			putRoleClaim(t, rawRoles, role, session)
+			putRenewedRoleClaim(t, rawRoles, role, session, roleClaimInstance, time.Now())
 		}
 		if _, err := reg.Upsert(Interest{SessionID: session, MachineID: "m1"}, topics); err != nil {
 			t.Fatalf("store %s's interest record: %v", session, err)
@@ -416,9 +416,9 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 		if err != nil {
 			t.Fatalf("Remove(%s) under %s over %d stored claims: %v", session, sweepDeadline, otherRoleClaims+len(roles), err)
 		}
-		// The record pass released both, so each role's single Get and Delete is that pass's;
-		// the view sweep behind it found the view no longer naming the session any role, which
-		// is how the counts stay at two rather than doubling.
+		// The record and the view name the same two roles, and each is weighed once, so each
+		// role's single Get and Delete is the one release of it, which is how the counts stay
+		// at two rather than doubling.
 		assertRoleBucketCalls(t, counting, roles)
 		assertBucketKeptOnlyTheOtherClaims(t, reg, roles)
 		assertInterestMissing(t, reg, session)
@@ -443,7 +443,7 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 			t.Fatalf("the control registry's view refuses with %v, want ErrRoleViewNotReady", viewErr)
 		}
 		for _, role := range roles {
-			putRoleClaim(t, rawRoles, role, session)
+			putRenewedRoleClaim(t, rawRoles, role, session, roleClaimInstance, time.Now())
 		}
 		// The record's only topic is not a role's, so the pass over it releases nothing and
 		// every call the bucket takes below is the fallback's own.
@@ -552,10 +552,11 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 }
 
 // smallRoleBucketRegistry is a registry whose view cannot be served, over a bucket of
-// smallRoleClaims claims: held are the roles session holds, and the rest are held by sessions of
-// their own. It returns the registry, the role bucket's own handle - taken before any counting
-// handle is installed over it, so a case's own writes are not counted as the sweep's - and the
-// roles the other sessions hold.
+// smallRoleClaims claims: held are the roles session holds, each naming the process
+// releasedByItsProcess states, and the rest are held by sessions of their own. It returns the
+// registry, the role bucket's own handle - taken before any counting handle is installed over
+// it, so a case's own writes are not counted as the sweep's - and the roles the other sessions
+// hold.
 func smallRoleBucketRegistry(t *testing.T, session string, held []string) (*Registry, natsgo.KeyValue, []string) {
 	t.Helper()
 	conn, cleanup := connectNATS(t)
@@ -565,7 +566,7 @@ func smallRoleBucketRegistry(t *testing.T, session string, held []string) (*Regi
 	others, holderOfOther := otherSessionsClaims("small-other", smallRoleClaims-len(held))
 	putRoleClaimsInParallel(t, rawRoles, others, holderOfOther)
 	for _, role := range held {
-		putRoleClaim(t, rawRoles, role, session)
+		putRenewedRoleClaim(t, rawRoles, role, session, roleClaimInstance, time.Now())
 	}
 	putInterest(t, rawInterests, Interest{SessionID: session, MachineID: "m1", Topics: []string{"notifications.chat"}})
 	if err := reg.RoleViewErr(); err == nil {

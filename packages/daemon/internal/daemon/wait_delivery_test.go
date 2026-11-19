@@ -47,10 +47,10 @@ const (
 	waitingSecret  = "the secret of ses-tester"
 	// waitOperatorToken is the bearer the operator's routes compare against.
 	waitOperatorToken = "wait-operator-token"
-	// heldLine and quietStartLine are the two lines that say a task waits on a standing wait: the
+	// waitHeldLine and quietStartLine are the two lines that say a task waits on a standing wait: the
 	// machine's, for a task the claim had taken (supervise's waitHolds), and the outbox's, for a
 	// start that hands no new work (startWaits).
-	heldLine       = "supervise: a task the claim had taken waits: the claim's wait stands"
+	waitHeldLine   = "supervise: a task the claim had taken waits: the claim's wait stands"
 	quietStartLine = "outbox start delivered nothing: the claim's wait stands"
 )
 
@@ -407,7 +407,10 @@ func (r *waitDeliveryRig) admissionPasses() {
 // back, and its ready queues the phase's resume task at entry 0 (workflow's readyWorkerTask, the
 // catch-up), which the outbox runs and delivers nothing of, logging the wait it found.
 //
-//   - a relaunch of the same session, after its process died between turns;
+//   - a relaunch of the same session, after its process died between turns, whose record of what
+//     that let-go ended tells, so the relaunched agent's ready gives the claim the daemon's own
+//     delivery of that record (supervise's queueRelaunch), which the wait holds as no new work and
+//     which is sent once the wait ends;
 //   - an update round's relaunch: the round opened over the pod, the pod replaced, the role back
 //     on its own session through the displaced path, and the round ended;
 //   - the resume of a cancelled idle release: the claim suspended as released, and the start row
@@ -415,8 +418,10 @@ func (r *waitDeliveryRig) admissionPasses() {
 //   - a daemon restart: the claim suspended by the daemon, a new daemon restored from the store,
 //     and the boot's resume of that claim by rule, whose resume task delivers nothing either.
 //
-// Each leaves the wait standing, no task was prompted after the declaration, and the admission
-// passes that follow write the waiting claim no new row.
+// Each ends the process that took the task, so each leaves the claim holding the daemon's own
+// delivery of its record of what that let-go ended (supervise's queueRelaunch), unsent: the wait
+// holds it as no new work. Each leaves the wait standing, no task was prompted after the
+// declaration, and the admission passes that follow write the waiting claim no new row.
 func TestAStartThatHandsAWaitingClaimNoNewWorkBringsItBackAndDeliversNothing(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -484,8 +489,13 @@ func TestAStartThatHandsAWaitingClaimNoNewWorkBringsItBackAndDeliversNothing(t *
 				t.Fatalf("the ready queued %+v, want the catch-up's one start: the phase's resume task at entry 0", catchUp)
 			}
 
-			if got := r.machine.Claim(); got.State != supervise.StateReady && got.State != supervise.StateIdle || got.Pending != nil {
-				t.Fatalf("the tester after the come-back = %s holding %+v, want it back, ready, holding nothing", got.State, got.Pending)
+			got := r.machine.Claim()
+			if got.State != supervise.StateReady && got.State != supervise.StateIdle {
+				t.Fatalf("the tester after the come-back = %s, want it back and ready", got.State)
+			}
+			held := got.Pending
+			if held == nil || !held.Relaunch() || !held.DeliveredAt.IsZero() || !got.EndedWork.Tells() {
+				t.Fatalf("the tester after the come-back holds %+v, want the daemon's own delivery of its relaunch's record, not sent", held)
 			}
 			r.wantPrompts(1, "no start that hands no new work prompts a waiting tester")
 			if standing := r.wantStanding(); standing.ID != wait.ID {
@@ -500,6 +510,19 @@ func TestAStartThatHandsAWaitingClaimNoNewWorkBringsItBackAndDeliversNothing(t *
 				t.Fatalf("the admission passes wrote the waiting tester %+v, want no row", starts)
 			}
 			r.wantStanding()
+			// Once the wait ends, the record it held is sent.
+			ended := r.machine.Claim().EndedWork
+			recorder := r.request("/legion/v1/claims/wait-news", api.WaitNewsRequest{ClaimToken: r.token, SessionID: waitingSession,
+				Secret: waitingSecret, WaitID: wait.ID}, "")
+			if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"ended":true`) {
+				t.Fatalf("the news report = %d %s, want 200 ending the wait", recorder.Code, recorder.Body)
+			}
+			r.handle(supervise.RuntimeObservation{Observation: runtime.Observation{Locator: *r.machine.Claim().Locator,
+				Kind: runtime.Alive, At: time.Now()}})
+			sent := r.wantPrompts(2, "the relaunch's record goes once the wait ended")[1]
+			if sent.DeliveryID != held.ID || !strings.Contains(sent.Message, supervise.RelaunchSentence(ended)) {
+				t.Fatalf("once the wait ended the tester was sent %+v, want the relaunch's record %s", sent, held.ID)
+			}
 		})
 	}
 }
@@ -582,7 +605,7 @@ func TestAWaitHoldsTheTaskADeathInItsDeclaringTurnTookBack(t *testing.T) {
 	if starts := r.runStarts(); len(starts) != 0 {
 		t.Fatalf("the relaunched tester's ready queued %+v, want nothing: it holds its task", starts)
 	}
-	if lines := r.lines(heldLine, "claim="+string(r.token), "issue="+r.issue.Key, "role=tester", "delivery="+held.ID,
+	if lines := r.lines(waitHeldLine, "claim="+string(r.token), "issue="+r.issue.Key, "role=tester", "delivery="+held.ID,
 		"wait="+wait.ID); len(lines) != 1 {
 		t.Fatalf("the held task was logged %d times, want once however often a send asked; the log is:\n%s", len(lines), r.logs)
 	}
@@ -601,6 +624,73 @@ func TestAWaitHoldsTheTaskADeathInItsDeclaringTurnTookBack(t *testing.T) {
 	}
 	if taken.ID == held.ID {
 		t.Fatalf("the held task kept the id %s its dead turn ran under", taken.ID)
+	}
+}
+
+// A relaunch of the same session ends no wait (R3), and the daemon's own delivery of what that
+// relaunch ended is no new work. The tester takes its task, declares a wait in that turn and ends
+// the turn; its process then dies between turns, and the claim's record of what that let-go ended
+// tells (supervise.EndedWork.Tells), so the relaunched agent's ready, finding the claim holding
+// nothing, queues the daemon's own delivery of that record (supervise's queueRelaunch), which
+// carries entry 0 and is not interrupted. The wait holds it as it holds a task the claim had taken
+// (workflow.Engine.WaitHoldsSend): the ready and every sweep of the live process after it send
+// nothing, the machine logs once that it waits, the catch-up's resume task delivers nothing, and
+// the wait stands, ended by nothing. News then reaches the session and its report ends the wait,
+// and the next sweep sends the record: the relaunch's sentence, under the record's own delivery.
+func TestAWaitHoldsTheRelaunchsRecordAndSendsItOnceTheWaitEnds(t *testing.T) {
+	r := newWaitDeliveryRig(t)
+	taken := r.working(1, "Test it.")
+	wait := r.declare()
+	r.endTurn(taken.ID)
+	r.wantPrompts(1, "the task the turn took is the one prompt before the wait")
+
+	r.handle(supervise.RuntimeObservation{Observation: runtime.Observation{Locator: *r.machine.Claim().Locator,
+		Kind: runtime.Gone, At: time.Now()}})
+	r.boot()
+	relaunched := r.machine.Claim()
+	ended := relaunched.EndedWork
+	if !ended.Tells() {
+		t.Fatalf("the relaunched tester's record of the let-go = %+v, want one that tells; this test proves nothing", ended)
+	}
+	held := relaunched.Pending
+	if held == nil || !held.Relaunch() || held.Entry != 0 || held.Interrupted || !held.DeliveredAt.IsZero() {
+		t.Fatalf("the relaunched tester holds %+v, want the daemon's own delivery of its relaunch's record, at entry 0, not interrupted and not sent", held)
+	}
+	if catchUp := r.runStarts(); len(catchUp) != 1 || !catchUp[0].request.ResumeTask || catchUp[0].request.Entry != 0 {
+		t.Fatalf("the ready queued %+v, want the catch-up's one start: the phase's resume task at entry 0", catchUp)
+	}
+	for range 2 {
+		r.handle(supervise.RuntimeObservation{Observation: runtime.Observation{Locator: *r.machine.Claim().Locator,
+			Kind: runtime.Alive, At: time.Now()}})
+	}
+	r.wantPrompts(1, "the relaunch's record goes to no process while the wait stands")
+	if got := r.machine.Claim().Pending; got == nil || got.ID != held.ID {
+		t.Fatalf("the tester holds %+v while its wait stands, want the relaunch's record %s still held", got, held.ID)
+	}
+	if lines := r.lines(waitHeldLine, "claim="+string(r.token), "issue="+r.issue.Key, "role=tester", "delivery="+held.ID,
+		"wait="+wait.ID); len(lines) != 1 {
+		t.Fatalf("the relaunch's record was logged as held %d times, want once however often a send asked; the log is:\n%s", len(lines), r.logs)
+	}
+	if lines := r.quietStarts(wait); len(lines) != 1 {
+		t.Fatalf("%d starts were logged as delivering nothing for wait %s, want the catch-up's one; the log is:\n%s", len(lines), wait.ID, r.logs)
+	}
+	if lines := r.lines("wait: ended", "wait="+wait.ID); len(lines) != 0 {
+		t.Fatalf("the relaunch ended the wait: %q", lines)
+	}
+	if standing := r.wantStanding(); standing.ID != wait.ID {
+		t.Fatalf("the standing wait is %s after the relaunch, want the one declared, %s", standing.ID, wait.ID)
+	}
+
+	recorder := r.request("/legion/v1/claims/wait-news", api.WaitNewsRequest{ClaimToken: r.token, SessionID: waitingSession,
+		Secret: waitingSecret, WaitID: wait.ID}, "")
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"ended":true`) {
+		t.Fatalf("the news report = %d %s, want 200 ending the wait", recorder.Code, recorder.Body)
+	}
+	r.handle(supervise.RuntimeObservation{Observation: runtime.Observation{Locator: *r.machine.Claim().Locator,
+		Kind: runtime.Alive, At: time.Now()}})
+	sent := r.wantPrompts(2, "the relaunch's record goes once the wait ended")[1]
+	if sent.DeliveryID != held.ID || !strings.Contains(sent.Message, supervise.RelaunchSentence(ended)) {
+		t.Fatalf("once the wait ended the tester was sent %+v, want the relaunch's record %s carrying %q", sent, held.ID, supervise.RelaunchSentence(ended))
 	}
 }
 
@@ -627,9 +717,7 @@ func TestNewWorkEndsTheWaitAtItsSendAndIsDelivered(t *testing.T) {
 	}{
 		{name: "the owed entry of a claim behind its entry", declared: func(r *waitDeliveryRig, taken supervise.Delivery) (record.ClaimWait, string) {
 			issue := readIssue(r.t, r.pool, r.issue.Key)
-			if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-				return r.w.engine.StartPromotedWorker(r.ctx, tx, *issue, claim.RoleTester)
-			}); err != nil {
+			if err := startPromoted(r.ctx, r.pool, r.w.engine, *issue, claim.RoleTester); err != nil {
 				r.t.Fatalf("raise the tester's second entry: %v", err)
 			}
 			if promoted := r.runStarts(); len(promoted) != 1 || promoted[0].request.Entry != 2 {
@@ -674,7 +762,7 @@ func TestNewWorkEndsTheWaitAtItsSendAndIsDelivered(t *testing.T) {
 			wait, task := tc.declared(r, taken)
 			r.runStarts()
 
-			if lines := r.lines(heldLine); len(lines) != 0 {
+			if lines := r.lines(waitHeldLine); len(lines) != 0 {
 				t.Fatalf("the new work was held as a task the claim had taken: %q", lines)
 			}
 			sent := r.wantPrompts(2, "the new work is delivered")[1]

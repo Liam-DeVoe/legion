@@ -22,14 +22,20 @@
 #     starts is prompted with a task naming that record;
 #   - HANDOFF_NOT_NEW: the implementer completes round 1, the tester fails it, and the implementer's
 #     round-2 completion naming its round-1 record is refused; naming a new record moves it on;
+#   - completion head: the real findHandoffReport (packages/pi-shared/src/handoff-record.ts), run
+#     under bun through scripts/e2e/completion-head.ts against this run's own Dispatch, reports as
+#     a completion's commit the head the phase's newest record names under `head`, with that
+#     record's own id and version, for the tester, the planner and the reviewer alike, each
+#     reading the record of its own phase; control: against records whose bodies name no head the
+#     same three report no commit at all;
 #   - A10: with Dispatch up the first write succeeds; with the Dispatch process stopped
 #     `handoff-write` exits non-zero naming the connection failure and the completion naming the
 #     existing record is refused DISPATCH_READ_FAILED, the phase unchanged; Dispatch restarted on the
 #     same database, the retried write succeeds, the completion is accepted, and GET
 #     /api/v1/issues/<KEY>/handoffs (what Conversation lists) holds it.
 #
-# Run it from a checkout on a Linux host with go, bun (after `bun install` at the checkout's
-# root), awk and python3, as
+# Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
+# to start without them), bun (after `bun install` at the checkout's root), awk and python3, as
 #   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/handoff-records.sh
 # LEGION_TEST_PG_DSN is required and names the PostgreSQL the daemon migrates and runs on; the

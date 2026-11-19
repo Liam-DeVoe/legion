@@ -28,9 +28,9 @@ const makeDirectory = temporaryDirectories("dispatch-who-waits");
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..", "..");
 
 /** The issue's own assignee, whom a question on DSP-1 reaches. */
-const ASSIGNEE = "bob@theorem.dev";
+const ASSIGNEE = "bob@example.com";
 /** The person CORE defaults to, whom a question on an issue nobody holds reaches. */
-const DEFAULT_ASSIGNEE = "dana@theorem.dev";
+const DEFAULT_ASSIGNEE = "dana@example.com";
 
 interface Recorded {
   readonly method: string;
@@ -642,7 +642,7 @@ const OLD_RULE_ALLOWED: readonly (readonly [string, string, string])[] = [
   ],
   // Tests that name the old rule to catch it.
   [
-    "packages/envoy/internal/dispatch/api/who_waits_test.go",
+    "packages/envoy/internal/dispatch/api/one_expression_guard_test.go",
     "a read that reintroduced the two-step `coalesce(a.asked_of, i.assignee)`",
     "the spelling the count beneath it exists to catch",
   ],

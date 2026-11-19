@@ -20,7 +20,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-var _ runtime.Runtime = (*Runtime)(nil)
+var (
+	_ runtime.Runtime            = (*Runtime)(nil)
+	_ runtime.IssuePodReader     = (*Runtime)(nil)
+	_ runtime.LaunchSessionNamer = (*Runtime)(nil)
+)
 
 // Call is one method the caller called, with the arguments it called it with. A method that does
 // not take a given argument leaves it zero.
@@ -40,8 +44,8 @@ type Call struct {
 	Identity runtime.GitIdentity
 	// Tree is CleanupTree's tree.
 	Tree string
-	// Rescue is RescueUnpushed's request.
-	Rescue runtime.RescueRequest
+	// Issue is IssuePod's issue.
+	Issue string
 }
 
 // SpawnResult is one scripted answer to Spawn or Resume.
@@ -89,10 +93,11 @@ type Runtime struct {
 	failures     map[string]error
 	drift        map[claim.Token][]string
 	gone         map[claim.Token]bool
+	issuePods    map[string]string
+	sessions     map[claim.Token]string
 	holdReplace  func()
 	replaceNoPod bool
 	holdResume   func()
-	rescuer      func(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error)
 	queue        []runtime.Observation
 	minted       int
 }
@@ -100,10 +105,12 @@ type Runtime struct {
 // NewRuntime is a fake ready to record: no script, controller launched by the daemon, real time.
 func NewRuntime() *Runtime {
 	fake := &Runtime{
-		Now:      time.Now,
-		failures: map[string]error{},
-		drift:    map[claim.Token][]string{},
-		gone:     map[claim.Token]bool{},
+		Now:       time.Now,
+		failures:  map[string]error{},
+		drift:     map[claim.Token][]string{},
+		gone:      map[claim.Token]bool{},
+		issuePods: map[string]string{},
+		sessions:  map[claim.Token]string{},
 	}
 	fake.pending = sync.NewCond(&fake.mu)
 	return fake
@@ -197,6 +204,39 @@ func (r *Runtime) ScriptPodGone(token claim.Token, gone bool) {
 	r.gone[token] = true
 }
 
+// ScriptIssuePod makes every later IssuePod of issue answer pod, as the Sandbox runtime answers
+// the uid of the pod the issue's Sandbox holds now: "" is a Sandbox that holds no pod, or no
+// Sandbox at all. An issue no call named is one the fake cannot read, which is the uninteresting
+// case for every round whose claims record a pod and the conservative one for a round whose
+// claims record none: such a round waits, as it does where a runtime cannot say.
+func (r *Runtime) ScriptIssuePod(issue, pod string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.issuePods[issue] = pod
+}
+
+// ScriptLaunchSession makes every later LaunchSession of token's claim answer session, as the
+// Sandbox runtime answers the session it chose for a Claude Code role's launch. A claim no call
+// named has no session the runtime chose, which is an Oh My Pi role's case; "" clears it.
+func (r *Runtime) ScriptLaunchSession(token claim.Token, session string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if session == "" {
+		delete(r.sessions, token)
+		return
+	}
+	r.sessions[token] = session
+}
+
+// LaunchSession answers what ScriptLaunchSession set for loc's claim, whatever incarnation loc
+// records.
+func (r *Runtime) LaunchSession(loc runtime.Locator) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	session, named := r.sessions[loc.Claim]
+	return session, named
+}
+
 // FailPodDrift makes every later PodDrift return err; nil clears it.
 func (r *Runtime) FailPodDrift(err error) { r.fail("PodDrift", err) }
 
@@ -235,16 +275,6 @@ func (r *Runtime) HoldResume(hold func()) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.holdResume = hold
-}
-
-// RescueWith makes every later RescueUnpushed answer what rescuer answers, which a test points at
-// the real push check (internal/rescue) over repositories of its own, or at a scripted answer. nil
-// clears it: a RescueUnpushed then answers a disk with no workspace on it, which is nothing to lose.
-// The hook runs with none of the fake's own locks held.
-func (r *Runtime) RescueWith(rescuer func(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error)) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.rescuer = rescuer
 }
 
 func (r *Runtime) fail(method string, err error) {
@@ -488,6 +518,16 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 	return append([]string(nil), r.drift[k.Claim]...), nil
 }
 
+// IssuePod records its call and answers what ScriptIssuePod set for the issue, and read false for
+// an issue no call named.
+func (r *Runtime) IssuePod(issue string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "IssuePod", Issue: issue})
+	pod, read := r.issuePods[issue]
+	return pod, read
+}
+
 // ReplacePod plays the Sandbox runtime's own order: it waits where that runtime waits for the
 // pod's launch turn (HoldReplacePod), answers nil there for a pod it finds no longer there
 // (FindNoPodToReplace), asks due whether the replacement is still due, and only then replaces
@@ -524,19 +564,6 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 	}
 	delete(r.drift, k.Claim)
 	return nil
-}
-
-// RescueUnpushed records its call, with the claim it asked through and the request in Rescue, and
-// answers what RescueWith set; with none, a disk with no workspace on it.
-func (r *Runtime) RescueUnpushed(ctx context.Context, k runtime.Known, request runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
-	r.mu.Lock()
-	r.calls = append(r.calls, Call{Method: "RescueUnpushed", Pod: copyKnown(k), Rescue: request})
-	rescuer := r.rescuer
-	r.mu.Unlock()
-	if rescuer == nil {
-		return nil, nil
-	}
-	return rescuer(ctx, k, request)
 }
 
 // CleanupTree records its call and answers what FailCleanupTree set, nil by default.

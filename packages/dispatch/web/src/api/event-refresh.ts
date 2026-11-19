@@ -1,5 +1,6 @@
-import { askProject, issueProject } from "../features/inbox/list-row";
+import { askProject } from "../features/inbox/list-row";
 import { buildDispatchReference } from "../features/refs/routes";
+import { issueProject } from "../lib/issue-key";
 import {
   agentMessagesQuery,
   architectureSourcesQuery,
@@ -12,7 +13,7 @@ import {
   userAgentStateQuery,
   userStateQuery,
 } from "./queries";
-import { answeredNotFound, type RefreshTarget } from "./query-refresh";
+import { answeredNotFound, type RefreshCheck, type RefreshTarget } from "./query-refresh";
 import type {
   ArchitectureTree,
   ArchitectureTreeComponent,
@@ -733,6 +734,19 @@ function issueWriteTargets(
     }
   }
 
+  // The Priorities page's rows and the rail's two counts (`["priorities"]`, both the full body
+  // and the summary under it), and the work listed under one priority (`["issues", "advances",
+  // <id>]`, every scoped issues table's read). What the work under a priority is moves with the
+  // relation itself, with the status each row counts by, and with the parent, which is what an
+  // issue inherits its priorities down. The scoped listing is refreshed by its prefix rather
+  // than by the priority the event names: an issue carries its own relations and the ones it
+  // inherits, so a write can move the work under a priority the payload never names. The
+  // relation is no edge of the reference graph (`changesReferenceGraph` leaves `advances` out),
+  // so no backlink panel reads it.
+  if (moved("advances") || moved("status") || moved("parent")) {
+    targets.push({ queryKey: ["priorities"] }, { queryKey: ["issues", "advances"] });
+  }
+
   // A `child_of` edge into the parent and a `blocked_by` edge into each blocker are rows of their
   // backlink panels: the new parent and blockers are the payload's, the old ones are the panels
   // that still list an edge from this issue.
@@ -754,6 +768,57 @@ function issueWriteTargets(
       )
     );
   }
+  return targets;
+}
+
+/**
+ * What one write of priority `id` changes, by which of the three writes it was. Every one moves
+ * the priorities reads (`["priorities"]`: the Priorities page's body `["priorities", "full"]`,
+ * the rail's two counts `["priorities", "summary"]`, and the priority page's margin
+ * `["priorities", "history", id]`), which is also where every page reads a priority's title and
+ * its place in the order from. A create, a rename, a move or a description moves nothing else:
+ * an issue row carries a priority by its id alone (`{id, inherited}`), so no issue listing
+ * reads again on them, and the description's autosave refetches no fault list.
+ *
+ * A delete takes the priority out of every relation, and the server writes no issue event for
+ * the issues it leaves, so it also moves:
+ *
+ * - the work listed under it (`["issues", "advances", id]`), which the priority page's work
+ *   table and its scope links read, now empty;
+ * - the work under no priority (`["issues", "advances", "none"]`): an issue that advanced only
+ *   this priority joins it, and the cache cannot tell which issues those are, since no row of
+ *   that listing names the priority;
+ * - every read that holds an issue advancing it, by its own relation or one it inherits
+ *   (`advances` lists both): an issue read (`["issue", key]`; an issue's references or its
+ *   collaborators under that prefix carry no `advances`), and a list of issue rows (every
+ *   `["issues", ...]` listing and the Agents page's issue picker). That is the parked fault list
+ *   (`advances=any`), whose rows under this priority alone leave it and whose other rows drop
+ *   it, every other issue listing that draws the row, and above all each open issue read, whose
+ *   header would otherwise keep naming the priority and send it back in the next whole-set write
+ *   of its `advances`, which the server refuses (`400 ADVANCES_INPUT`, a priority that is gone).
+ *   A row of `advances=any` that does not name it stays, since it still advances another.
+ */
+function priorityWriteTargets(
+  event: Extract<DispatchEvent, { type: "priority.updated" }>
+): RefreshTarget[] {
+  const { change, id } = event.payload;
+  const targets: RefreshTarget[] = [{ queryKey: ["priorities"] }];
+  if (change !== "deleted") {
+    return targets;
+  }
+  const advancesIt = (row: unknown): boolean =>
+    typeof row === "object" &&
+    row !== null &&
+    ((row as Pick<IssueSummary, "advances">).advances ?? []).some((entry) => entry.id === id);
+  const when: RefreshCheck = (data) =>
+    Array.isArray(data) ? data.some(advancesIt) : advancesIt(data);
+  targets.push(
+    { queryKey: ["issues", "advances", id] },
+    { queryKey: ["issues", "advances", "none"] },
+    { queryKey: ["issue"], when },
+    { queryKey: ["issues"], when },
+    { exact: true, queryKey: ["agents", "issue-picker"], when }
+  );
   return targets;
 }
 
@@ -800,6 +865,30 @@ function changesCollaborators(event: DispatchEvent): boolean {
     case "issue.updated": {
       const changes = issueChanges(event);
       return changes === undefined || changes.has("assignee");
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * Whether the event comes with the Legion daemon writing a step record of the issue. A step write
+ * appends no event of its own (packages/envoy/internal/dispatch/api/steps.go), so the Steps tab
+ * is refreshed by what the daemon writes beside it as a phase moves: a claim or a release, as a
+ * role's run starts or ends; a handoff, the report a role writes as its step ends; a close, which
+ * ends the merge; and an issue write that moved the status or the route, or that does not say
+ * what it moved.
+ */
+function changesSteps(event: DispatchEvent): boolean {
+  switch (event.type) {
+    case "handoff.recorded":
+    case "issue.claimed":
+    case "issue.closed":
+    case "issue.released":
+      return true;
+    case "issue.updated": {
+      const changes = issueChanges(event);
+      return changes === undefined || changes.has("status") || changes.has("route");
     }
     default:
       return false;
@@ -969,6 +1058,10 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // thread - and either way every one of the viewer's thread reads is refreshed.
     return isViewer(payloadString(event, "login"), viewer) ? [{ queryKey: myRepliesKey }] : [];
   }
+  if (event.type === "priority.updated") {
+    // A create, a rename, a move, a description or a delete of a priority, by anybody.
+    return priorityWriteTargets(event);
+  }
   if (event.type === "subscription.remove_requested") {
     return [];
   }
@@ -1025,6 +1118,10 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // claim's among them, and a claim is what makes a Legion agent a collaborator.
     targets.push({ exact: true, queryKey: ["issue", key, "collaborators"] });
   }
+  if (changesSteps(event)) {
+    // The Steps tab's read, named here for the same two reasons as the collaborators above.
+    targets.push({ exact: true, queryKey: ["issue", key, "steps"] });
+  }
   if (event.type === "decision.kept") {
     // A Keep moves one decision's row of the issue's Decisions view and nothing else: it writes
     // no document version, no ask and no issue field.
@@ -1046,9 +1143,9 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     event.type === "issue.deployed"
   ) {
     // A claim changes who holds the issue, and its holder is a collaborator from then on: the
-    // detail, the log, the project lists that render the claim, and the collaborators the
-    // branch above named. No rollup, ask count or component attachment moves with it. A deploy
-    // is a line in the issue's log and nothing the lists or rollups read.
+    // detail, the log, the project lists that render the claim, and the collaborators and the
+    // steps the branches above named. No rollup, ask count or component attachment moves with it.
+    // A deploy is a line in the issue's log and nothing the lists or rollups read.
     return targets;
   }
   if (event.type === "artifact.human_edited") {
@@ -1196,7 +1293,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   }
   if (event.type === "handoff.recorded") {
     // A handoff write lands in the issue's handoff list; its log line is the `["events", key]`
-    // target above.
+    // target above, and the step it ended the steps target above.
     targets.push({ queryKey: ["handoffs", key] });
     return targets;
   }
@@ -1262,7 +1359,7 @@ const TRUNCATED_KIND_READS: Readonly<Partial<Record<string, readonly RefreshTarg
 };
 
 /**
- * The reads that carry a changed target's backlinks, which `refs.ReplaceCounted` names in the
+ * The reads that carry a changed target's backlinks, which `refs.CountedChanges` names in the
  * transaction that appends the event: an issue's detail (its count), its references tab and its
  * panel; an ask's read, its thread, the list its row lives in (its issue's asks, or its
  * document's), the Inbox row showing its count, and its panel; a document's panel; a block's

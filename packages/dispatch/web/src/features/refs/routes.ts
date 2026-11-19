@@ -11,6 +11,7 @@ import { matchPath } from "react-router-dom";
 
 import type { ArtifactOwner } from "../../api/client";
 import type { Artifact } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import { INBOX_ROW_TYPES } from "../inbox/list-row";
 import { EVERYONE_FILTER_VALUE } from "../inbox/sections";
 import {
@@ -28,6 +29,7 @@ export type IssueRoute =
   | ({ key: string; kind: "spec" } & BlockTarget)
   | { key: string; kind: "verification" }
   | { key: string; kind: "plan" }
+  | { key: string; kind: "steps" }
   | { key: string; kind: "conversation" }
   | { key: string; kind: "activity" }
   | { key: string; kind: "decisions" }
@@ -139,6 +141,7 @@ export type IssueTab =
   | "spec"
   | "verification"
   | "plan"
+  | "steps"
   | "conversation"
   | "children"
   | "artifacts"
@@ -151,14 +154,15 @@ export const DECISIONS_DOCUMENT_SLUG = "decisions-md";
 
 /** The issue tabs whose whole route is the tab itself: no block, no slug, no id. Each one is
  *  parsed from the segment of its own name, built as `<issue>/<kind>`, shown as `<KEY> <kind>`
- *  and is the tab of its own name, so the chains below hold the six in one arm rather than one
- *  apiece and a seventh tab is this list. The spec, the conversation and the decisions stay out
+ *  and is the tab of its own name, so the chains below hold the seven in one arm rather than one
+ *  apiece and an eighth tab is this list. The spec, the conversation and the decisions stay out
  *  of it: a spec route carries a block, the conversation is written `log` in a reference and
  *  `conversation` in a path, and the Decisions tab is a view of the issue's `decisions.md`, which
  *  a reference names as that document. */
 const PLAIN_ISSUE_TABS = [
   "verification",
   "plan",
+  "steps",
   "activity",
   "children",
   "artifacts",
@@ -540,10 +544,13 @@ export function parseMachinePath(pathname: string): string | undefined {
 }
 
 /** The project a route is about: a project path's own key, or an issue path's key without its
- *  number (an issue key is `<PROJECT>-<n>`, `issueKeyPattern` above); `undefined` elsewhere. */
+ *  number (`issueProject`, the one key-to-project rule); `undefined` elsewhere. */
 export function routeProjectOf(pathname: string): string | undefined {
   const issueKey = parseIssuePath(pathname)?.key;
-  return parseProjectPath(pathname)?.project ?? issueKey?.slice(0, issueKey.lastIndexOf("-"));
+  return (
+    parseProjectPath(pathname)?.project ??
+    (issueKey === undefined ? undefined : issueProject(issueKey))
+  );
 }
 
 /** The reference a `dispatch://` URL or a same-origin dashboard path names as text cites it, as

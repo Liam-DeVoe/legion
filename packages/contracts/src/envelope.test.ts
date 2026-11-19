@@ -3,7 +3,6 @@ import updateAskKey from "../fixtures/daemon-api/update-ask-key.json";
 import dedupeKeys from "../fixtures/dedupe-keys.json";
 import { dedupeKeyNamesItsEvent, EnvelopeSchema } from "./envelope";
 import {
-  agentSubject,
   dispatchDocumentSubject,
   GHOSTWISPR_TOPIC_PREFIX,
   ghostWisprSubject,
@@ -12,6 +11,7 @@ import {
   githubResourceSubject,
   githubSubject,
   githubWorkflowSubject,
+  legacyAgentSubject,
   SUBJECT_MAX_BYTES,
   sanitizeSubjectSegment,
   slackSubject,
@@ -23,7 +23,7 @@ const buildEnvelope = (overrides: Record<string, unknown> = {}) => ({
   event_id: "evt-1",
   source: "agent",
   source_event_id: "src-1",
-  topic: agentSubject("ses_123"),
+  topic: legacyAgentSubject("ses_123"),
   dedupe_key: "agent.ses_123.src-1",
   issued_at: Date.now(),
   payload_summary: "hello",
@@ -50,7 +50,7 @@ describe("EnvelopeSchema", () => {
 
     expect(item).toMatchObject({
       source: "agent",
-      topic: agentSubject("ses_123"),
+      topic: legacyAgentSubject("ses_123"),
       dedupe_key: "agent.ses_123.src-1",
     });
   });

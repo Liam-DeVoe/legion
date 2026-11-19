@@ -116,31 +116,52 @@ func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 // keeps it on the card it hands the session.
 var mintedPublishKey = regexp.MustCompile(`^publish\.[0-9a-f]{32}$`)
 
-// A second row of one ask of one round opening — the sweep enqueues one when it fails to mark the
-// claim after the first (askRound) — publishes under the first row's key, since the key is the
-// claim's, the round's and the opening's, not the row's: the listener and each host drop it as
-// the repeat it is. The same opening read back from the store, to the microsecond, gives the same
-// key, so a daemon restarted between the two rows publishes the second under it too.
-func TestPodUpdateAskOfOneRoundOpeningPublishesEveryRowUnderOneKey(t *testing.T) {
-	publisher := &outboxPublisher{}
+// A retry of one ask publishes under one key, since the key is the claim's, the round's and the
+// opening's, not the row's: the row the sweep enqueues again once an ask reached no session
+// (askRound), and that row's next attempt after a holder that did not confirm it in time, each go
+// under the first publish's key, and the listener and each host drop a repeat of it. The same
+// opening read back from the store, to the microsecond, gives the same key, so a daemon
+// restarted between two rows publishes the later one under it too. Once an attempt reaches the
+// role, the claim is marked asked and a later row of the round publishes nothing.
+func TestPodUpdateAskOfOneRoundOpeningPublishesEveryRetryUnderOneKey(t *testing.T) {
+	publisher := &outboxPublisher{err: fmt.Errorf("publish to the implementer's topic: %w", notify.ErrNoHolder)}
 	runner, _ := askRunner(t, publisher, map[claim.Role]string{claim.RoleImplementer: askedRound})
-	for _, id := range []int64{78, 79} {
-		if err := runner.execute(context.Background(), askRow(t, id, claim.RoleImplementer)); err != nil {
-			t.Fatalf("run row %d of the ask: %v", id, err)
+	if err := runner.execute(context.Background(), askRow(t, 78, claim.RoleImplementer)); err != nil {
+		t.Fatalf("the ask no session holds = %v, want the row finished", err)
+	}
+	notDelivered := notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses_i"}
+	publisher.err = fmt.Errorf("publish to the implementer's topic: %w", notDelivered)
+	again := askRow(t, 79, claim.RoleImplementer)
+	if err := runner.execute(context.Background(), again); !errors.Is(err, notDelivered) {
+		t.Fatalf("the sweep's second row of the ask = %v, want the holder's failure, retried", err)
+	}
+	publisher.err = nil
+	for range 2 {
+		if err := runner.execute(context.Background(), again); err != nil {
+			t.Fatalf("the retry of the sweep's second row of the ask: %v", err)
 		}
+	}
+	if err := runner.execute(context.Background(), askRow(t, 80, claim.RoleImplementer)); err != nil {
+		t.Fatalf("a later row of the ask to a claim it reached: %v", err)
 	}
 	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
 	readBack := askedOpenedAt.Truncate(time.Microsecond).Local()
 	key := record.UpdateAskKey(token, askedRound, &readBack)
 	published := publisher.publishes()
-	if len(published) != 2 || published[0].key != key || published[1].key != key {
-		t.Fatalf("publishes = %#v, want both rows of the ask under %s", published, key)
+	if len(published) != 3 {
+		t.Fatalf("publishes = %#v, want three: the ask no session held, the attempt no holder confirmed and the retry that reached the role", published)
+	}
+	for i, got := range published {
+		if got.key != key {
+			t.Fatalf("publish %d of the ask went under %s, want every one under %s", i, got.key, key)
+		}
 	}
 }
 
 // A role no live session holds — its pod was released, or its session has not registered — is
 // not woken to be asked: the round ends at its bound whether or not the role answers. The row
-// finishes with one Info line and writes no published line.
+// finishes with one Info line and writes no published line. The claim here records no ask mark,
+// and an undelivered ask writes none; podupdate_undelivered_ask_test.go holds the sweep's ask again.
 func TestPodUpdateAskNobodyHoldsFinishesTheRow(t *testing.T) {
 	publisher := &outboxPublisher{err: fmt.Errorf("publish to the tester's topic: %w", notify.ErrNoHolder)}
 	runner, logs := askRunner(t, publisher, map[claim.Role]string{claim.RoleTester: askedRound})

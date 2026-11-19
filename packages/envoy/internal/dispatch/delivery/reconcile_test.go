@@ -668,11 +668,6 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	key := seedHeadIssue(t, ctx, pool, 5)
-	// deliveryTestPool clears every delivery table, but the events are this database's own and
-	// outlive the run, so an earlier run's issue.deployed must not read as this pass's.
-	if _, err := pool.Exec(ctx, `delete from events where issue_key = $1`, key); err != nil {
-		t.Fatalf("clear the events of %s: %v", key, err)
-	}
 
 	const (
 		headWas = "1515151515151515151515151515151515151515"
@@ -745,7 +740,7 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 // judged is offered once more; nothing else ever revisits a merged row, and a recorded result
 // reads through only for a commit no head Dispatch knows — so without this the row keeps no
 // issue for good and every `before_merge` result at that head stands at no basis for ever,
-// which is the defect this issue exists to fix (its own witness, theorem-labs/agent-infra#2131
+// which is the defect this issue exists to fix (its own witness, example-org/deployment#2131
 // for INFRA-1219, merged at 2026-11-05T01:09:12Z with head 0018f0a1af2f, is such a row).
 func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *testing.T) {
 	fastPageRetries(t)

@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -28,8 +29,8 @@ const (
 	finishedRoot = "LEGION-1"
 	planning     = "LEGION-2" // mid-run in its first phases: handed over
 	heldTesting  = "LEGION-3" // held from testing: handed over
-	inRetro      = "LEGION-4" // past an approved review: left for a person
-	awaiting     = "LEGION-5" // its READY out: left for a person
+	inRetro      = "LEGION-4" // in retro, past an approved review: handed over
+	awaiting     = "LEGION-5" // in merging, not merged yet: handed over
 	inAccepting  = "LEGION-6" // waiting on its architect's acceptance: handed over
 	finished     = "LEGION-7" // done: stays
 	parked       = "LEGION-8" // parked by a person: stays
@@ -37,23 +38,24 @@ const (
 	lingerOfRoot = uint64(1)
 )
 
-// A root whose tree stays done through its linger hands each child it left in its first phases
-// (planning through reviewing, or held from one) to Legion as a root of its own: one Dispatch write
-// sets the child todo with the legion label, and that write's event admits the child as an orphan
-// with its own architect, as the label and the todo do when a person sets them. Before, the child
-// stayed suspended, unlabelled and with no architect, and nothing ran it again (LEGION-624). Every
-// phase carries into the new generation: re-planning a merged child or withdrawing a READY would
-// lose completed work. A child that is finished or parked stays with the tree: what a person
-// took out of the workflow is what a closed tree keeps. The child still at admitted is handed
-// over with the rest — its tree closed and it never started, so nothing would start it where it
-// stands — and this one was the daemon's own to hold besides, since the root stands in
-// merging, a phase the daemon has already accepted (record.AcceptedAncestor), and its
-// architect was told it starts once this root closes. The linger keeps that promise whether the
-// close followed the merge or a person made it by hand (the workflow's unfinishedHandOvers).
-// The close itself hands nothing over, so a root that comes back inside its linger resumes its
-// children where they stood and hands none over. The close here is a person's — parked, then
-// closed — where a merged root's close waits for the rest of its tree instead (the workflow's
-// closeMerged) and leaves no child mid-run to hand over.
+// A root whose tree stays done through its linger hands each child it left in the workflow to
+// Legion as a root of its own, whatever phase the child stands in: here planning, held from
+// testing, retro, merging and accepting. One Dispatch write sets the child todo with the legion
+// label, and that write's event admits the child as an orphan with its own architect, as the
+// label and the todo do when a person sets them. Before, the child stayed suspended, unlabelled
+// and with no architect, and nothing ran it again (LEGION-624). Every phase carries into the new
+// generation, since re-planning a child that is past its review would lose completed work. A
+// child that is finished or parked stays with the tree: what a person took out of the workflow
+// is what a closed tree keeps. The child still at admitted is handed over with the rest — its
+// tree closed and it never started, so nothing would start it where it stands — and this one was
+// the daemon's own to hold besides, since the root stands in merging, a phase the daemon has
+// already accepted (record.AcceptedAncestor), and its architect was told it starts once this
+// root closes. The linger keeps that promise whether the close followed the merge or a person
+// made it by hand (the workflow's unfinishedHandOvers). The close itself hands nothing over, so
+// a root that comes back inside its linger resumes its children where they stood and hands none
+// over. The close here is a person's — parked, then closed — where a merged root's close waits
+// for the rest of its tree instead (the workflow's closeMerged) and leaves no child mid-run to
+// hand over.
 func TestAFinishedRootSettlesItsUnfinishedChildrenWhenItsLingerEnds(t *testing.T) {
 	pool, admission, engine := seedFinishingTree(t)
 	apply(t, pool, admission, "root-parked", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
@@ -84,14 +86,14 @@ func TestAFinishedRootSettlesItsUnfinishedChildrenWhenItsLingerEnds(t *testing.T
 	}
 }
 
-// A merged root's close waits for the rest of its tree: the merge leaves the root awaiting it,
-// holding no slot — a root that waits for its merge has no worker with work — and no child
-// disturbed, and the close comes once the last of them leaves — here the architect parking
-// each. That close lingers the tree and opens the root's production check, whose first look its
+// A merged root's close waits for the rest of its tree: the merge leaves the root in merging,
+// holding no slot, since merging is past the root's own review (record.KeepsSlot). No child is
+// disturbed, and the close comes once the last of them leaves — here the architect parking each.
+// That close lingers the tree and opens the root's production check, whose first look its
 // implementer reports, since the tree's close waits for an open check (the workflow's check
 // tests). Nothing is left mid-run by then, so the linger's end hands no child over. A pull
-// request opened from the root's branch while it waits is new work and leaves the merge it
-// waits on standing.
+// request opened from the root's branch while it waits is new work and leaves the merge it waits
+// on standing.
 //
 // One member does not hold the close: the released child that has never started a phase. It
 // stands at admitted beneath a root in merging, which is a root the daemon has already
@@ -107,7 +109,7 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 		t.Fatalf("merge %s = %+v, %v", finishedRoot, result.Refusal, err)
 	}
 	if got := issue(t, pool, finishedRoot); got.Phase != phase.Merging || got.Lingers() {
-		t.Fatalf("the merged root = %#v, want it still awaiting its merge, not lingering", got)
+		t.Fatalf("the merged root = %#v, want it still in merging, not lingering", got)
 	}
 	// A root that waits for its merge stands in merging, which is past its own review, so it
 	// holds none of the cap's rows while it waits. Its tree runs on, which the untouched
@@ -122,7 +124,7 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 		t.Fatalf("open a follow-up pull request from %s's branch = %+v, %v", finishedRoot, result.Refusal, err)
 	}
 	if got := issue(t, pool, finishedRoot); got.Phase != phase.Merging {
-		t.Fatalf("the merged root once a follow-up pull request opened = %#v, want it still awaiting its merge", got)
+		t.Fatalf("the merged root once a follow-up pull request opened = %#v, want it still in merging", got)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
 		pr, err := record.NewStore().PullRequest(context.Background(), tx, finishedRoot)
@@ -179,7 +181,9 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 // role that owns a worked phase. A child in accepting waits on its architect, now its own tree's,
 // which promotion starts with no phase named, and no phase worker. Every phase resumes as itself
 // (workflow.ResumePhase): the merger merges, so a carried merging child's merger is started again
-// to merge.
+// to merge. A child carried in reviewing keeps the commit its reviewer's newest recorded review
+// read (record.PhaseRow.ReviewedHead) on the reviewer's carried row, since readmit's carry returns
+// before the generation's clear, and the promoted reviewer's task names it.
 func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -187,11 +191,15 @@ func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 		resumes phase.Phase
 		prState record.PullRequestState
 		role    claim.Role
+		// reviewed is the commit the reviewer's carried row holds, "" for a case that seeds no
+		// reviewer row.
+		reviewed string
 	}{
 		{name: "planning", phase: phase.Planning, resumes: phase.Planning, prState: record.PullRequestOpen, role: claim.RolePlanner},
 		{name: "implementing", phase: phase.Implementing, resumes: phase.Implementing, prState: record.PullRequestOpen, role: claim.RoleImplementer},
 		{name: "testing", phase: phase.Testing, resumes: phase.Testing, prState: record.PullRequestOpen, role: claim.RoleTester},
-		{name: "reviewing", phase: phase.Reviewing, resumes: phase.Reviewing, prState: record.PullRequestOpen, role: claim.RoleReviewer},
+		{name: "reviewing", phase: phase.Reviewing, resumes: phase.Reviewing, prState: record.PullRequestOpen, role: claim.RoleReviewer,
+			reviewed: "1111111111111111111111111111111111111111"},
 		{name: "retro", phase: phase.Retro, resumes: phase.Retro, prState: record.PullRequestOpen, role: claim.RoleImplementer},
 		{name: "merging", phase: phase.Merging, resumes: phase.Merging, prState: record.PullRequestOpen, role: claim.RoleMerger},
 		{name: "accepting", phase: phase.Accepting, resumes: phase.Accepting, prState: record.PullRequestOpen, role: claim.RoleArchitect},
@@ -205,13 +213,17 @@ func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 			parent := root
 			inTx(t, pool, func(tx pgx.Tx) {
 				records := record.NewStore()
-				for _, put := range []error{
+				puts := []error{
 					records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
 					records.PutIssue(context.Background(), tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: child, Parent: &parent, Phase: tc.phase, Generation: 1, Status: "retro", Rank: "B", LastDispatchSeq: 1}),
 					records.PutGate(context.Background(), tx, record.DesignGate{Issue: root, ArtifactID: artifact, LatestVersion: 2, ApprovedVersion: new(2)}),
 					records.PutPullRequest(context.Background(), tx, record.PullRequest{Issue: child, Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head-42", Generation: 1, State: tc.prState}),
 					records.PutHandover(context.Background(), tx, record.Handover{Issue: child, Tree: root, Generation: 1}),
-				} {
+				}
+				if tc.reviewed != "" {
+					puts = append(puts, records.PutPhase(context.Background(), tx, record.PhaseRow{Issue: child, Role: claim.RoleReviewer, Claim: "reviewer-claim", ReviewedHead: tc.reviewed}))
+				}
+				for _, put := range puts {
 					if put != nil {
 						t.Fatalf("seed: %v", put)
 					}
@@ -254,6 +266,16 @@ func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 					if starts := phaseStarts(t, pool, child, worker, tc.resumes); starts != 0 {
 						t.Fatalf("the %s was started %d times for a child carried in accepting, want nobody but the architect", worker, starts)
 					}
+				}
+			}
+			if tc.reviewed != "" {
+				row := phaseRow(t, pool, child, claim.RoleReviewer)
+				if row.ReviewedHead != tc.reviewed {
+					t.Errorf("the carried reviewer's row reads the reviewed commit %q, want %s: the carry keeps the phase rows", row.ReviewedHead, tc.reviewed)
+				}
+				starts := roleStarts(t, pool, child, claim.RoleReviewer)
+				if want := " " + reviewround.CommitLabel + ": " + tc.reviewed + "."; len(starts) != 1 || !strings.Contains(starts[0].Task, want) {
+					t.Fatalf("the promoted reviewer's starts = %+v, want one whose task names %q", starts, want)
 				}
 			}
 		})
@@ -462,11 +484,24 @@ func TestACarriedRootResumesFromTheApprovedHeadAndTheHold(t *testing.T) {
 	}
 }
 
+// roleStarts is every start of role on issue the outbox holds, in order.
+func roleStarts(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) []record.SuperviseRequest {
+	t.Helper()
+	var starts []record.SuperviseRequest
+	for _, effect := range effects(t, pool) {
+		if request, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == issue && request.Op == "start" && request.Role == role {
+			starts = append(starts, request)
+		}
+	}
+	return starts
+}
+
+// phaseStarts is how many starts of role on issue at phase at the outbox holds.
 func phaseStarts(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role, at phase.Phase) int {
 	t.Helper()
 	starts := 0
-	for _, effect := range effects(t, pool) {
-		if request, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == issue && request.Op == "start" && request.Role == role && request.Phase == at {
+	for _, start := range roleStarts(t, pool, issue, role) {
+		if start.Phase == at {
 			starts++
 		}
 	}

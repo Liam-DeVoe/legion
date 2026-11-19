@@ -116,7 +116,7 @@ func TestAStandingWaitHoldsTheInterruptedTaskUntilItEnds(t *testing.T) {
 	answer.stand(false)
 	h.observe(runtime.Alive)
 	resent := h.wantPrompts(2)[1]
-	if want := interruptedTask(h.claim().LastDeathCause) + "test the head"; resent.DeliveryID != held.ID || resent.Message != want {
+	if want := interruptedTask(h.claim().EndedWork.Cause) + "test the head"; resent.DeliveryID != held.ID || resent.Message != want {
 		t.Fatalf("once the wait ended the claim sent %+v, want %q under the held task's id %s", resent, want, held.ID)
 	}
 	if lines := heldLines(h, held.ID); len(lines) != 1 {

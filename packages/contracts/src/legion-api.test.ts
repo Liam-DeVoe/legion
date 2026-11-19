@@ -533,7 +533,7 @@ test("a backward move rejects future read-only phases", () => {
   ).toBeFalse();
 });
 
-// Contract 40: `awaiting_person`, a root that gave its slot up while its architect waits on a
+// Contract 40: `awaiting_person`, a root that keeps its slot while its architect waits on a
 // person, follows `admitted`, and no backward move reaches it. Contract 33: the architect accepts
 // before the merge, in `accepting`, between `reviewing` and `retro`; the merger merges in
 // `merging`, the daemon closes the issue when it reads that merge (`done`), and the production
@@ -666,6 +666,77 @@ test("the state golden carries each issue's tree memory draw", () => {
   expect(parses()).toBeFalse();
 });
 
+// Contract 141: the state golden carries LEGION-208, a root, and LEGION-209, a child of its
+// tree, each under two experiments — the tree experiment `memory`, whose answer every issue of
+// the tree shows, and the issue experiment `plan-length`, drawn for each issue on its own, so
+// the two stand in different arms of it — and LEGION-210, whose hand-over settled it at no arm:
+// an empty variant, an empty mode and no instant. An issue no experiment holds an answer for
+// carries no key at all, as does every issue of the body served a caller before 141, so the
+// field is optional; a daemon before this contract sent none, and its state must still parse.
+test("the state golden carries the experiments each issue was drawn for", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, Record<string, unknown>>;
+  };
+  const issueOf = (key: string) => {
+    const issue = state.issues[key];
+    if (issue === undefined) {
+      throw new Error(`state fixture lacks ${key}`);
+    }
+    return issue;
+  };
+  const drawn = issueOf("LEGION-208");
+  expect(drawn.assignments).toEqual([
+    {
+      experiment: "memory",
+      variant: "memory",
+      mode: "random",
+      drawnAt: "2026-09-20T11:04:05Z",
+    },
+    {
+      experiment: "plan-length",
+      variant: "short",
+      mode: "random",
+      drawnAt: "2026-09-21T18:42:11Z",
+    },
+  ]);
+  // The issue experiment's arm is the issue's own: the child of that tree stands in the other.
+  expect((issueOf("LEGION-209").assignments as Record<string, unknown>[])[1]?.variant).toBe("long");
+  // The hand-over's answer: an arm and a mode, both empty, and no instant at all.
+  expect(issueOf("LEGION-210").assignments).toEqual([
+    { experiment: "plan-length", variant: "", mode: "" },
+  ]);
+  // An issue no experiment has reached carries no key.
+  expect(issueOf("LEGION-211").assignments).toBeUndefined();
+
+  const parses = () => LegionStateResponse.safeParse(state).success;
+  expect(parses()).toBeTrue();
+
+  // A state from a daemon before contract 141, and one served to a pod below it.
+  const held = drawn.assignments;
+  delete drawn.assignments;
+  expect(parses()).toBeTrue();
+  drawn.assignments = held;
+  expect(parses()).toBeTrue();
+
+  // A row naming no experiment, a variant that is no string, and a draw time that is no time.
+  drawn.assignments = [{ experiment: "", variant: "memory", mode: "random" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [{ experiment: "memory", variant: 1, mode: "random" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [
+    { experiment: "memory", variant: "memory", mode: "random", drawnAt: "the morning" },
+  ];
+  expect(parses()).toBeFalse();
+  // A row that leaves out `variant` or `mode`: both ride the wire whatever they hold, the empty
+  // string included, so a row without one is no row this daemon writes.
+  drawn.assignments = [{ experiment: "memory", mode: "random" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [{ experiment: "memory", variant: "memory" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = held;
+  expect(parses()).toBeTrue();
+});
+
 // The state golden carries LEGION-207, closed by its merge, with its production check open: the
 // repository, pull request and merge commit the check looks for, the role that works it, its
 // looks, the wake that started the latest and when the next look is due. Its role is the
@@ -711,6 +782,59 @@ test("the state golden carries a done issue's open production check", () => {
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 
   closed.check = { ...unwoken, role: "" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+});
+
+// The state golden carries two reviewing issues whose rounds wait on GitHub's merge state for
+// their heads: LEGION-218, waiting for a first answer — the head it waits on, when GitHub last
+// moved that head and no settled check run on it yet, with no state read and no told marks — and
+// LEGION-219, stuck, carrying the state read and both marks the telling left. A round waiting on
+// nothing from GitHub has no `mergeWait` at all, and a merge state no GitHub answer spells, or a
+// state read that is no time, is refused.
+test("the state golden carries the rounds waiting on GitHub's merge state", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { phase: string; mergeWait?: Record<string, unknown> }>;
+  };
+  const first = state.issues["LEGION-218"];
+  const stuck = state.issues["LEGION-219"];
+  if (first?.mergeWait === undefined || stuck?.mergeWait === undefined) {
+    throw new Error("state fixture lacks LEGION-218 or LEGION-219 or their merge waits");
+  }
+  expect(first.phase).toBe("reviewing");
+  expect(stuck.phase).toBe("reviewing");
+
+  // LEGION-218's fixture: no merge state, no read time, and neither told mark.
+  expect(first.mergeWait).toEqual({
+    waitsOn: "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+    headUpdatedAt: "2026-09-22T08:58:40Z",
+    checkRuns: 0,
+  });
+  // Stuck: GitHub holds the head on a check or a review the repository requires, the architect
+  // and the reviewer have been told, and the marks name the head and state told of.
+  expect(stuck.mergeWait).toEqual({
+    waitsOn: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+    mergeState: "blocked",
+    stateReadAt: "2026-09-22T09:16:12Z",
+    headUpdatedAt: "2026-09-20T14:05:33Z",
+    checkRuns: 2,
+    toldHead: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+    toldState: "blocked",
+  });
+
+  const told = stuck.mergeWait;
+  // A round that waits on nothing from GitHub, and the body the route serves a caller below the
+  // contract that added the merge wait (api's mergeWaitContract).
+  first.mergeWait = undefined;
+  stuck.mergeWait = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+
+  stuck.mergeWait = { ...told, mergeState: "stuck", toldState: "stuck" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+
+  stuck.mergeWait = { ...told, stateReadAt: "the morning" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+
+  stuck.mergeWait = { ...told, waitsOn: "" };
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 });
 
@@ -1069,7 +1193,7 @@ test("a claim carries the leak check's cause beside its failure", () => {
     throw new Error("state fixture lacks LEGION-210's implementer");
   }
   const sentence =
-    "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found";
+    "the shared public leak check could not be installed: GitHub answered the read of example-org/deployment at leak-check-v3 with HTTP 404: Not Found";
   expect(refused.leakCheckCause).toBe(sentence);
   expect(
     LegionStateResponse.parse(state).issues["LEGION-210"]?.workers.implementer?.claim.leakCheckCause
@@ -1101,12 +1225,12 @@ test("a claim carries the leak check's cause beside its failure", () => {
   expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
 });
 
-// Contract 125: a claim whose worker declared a wait that stands carries it on its view of the
+// Contract 167: a claim whose worker declared a wait that stands carries it on its view of the
 // state, which is what `read_record` reads an issue's record from: the id the daemon minted, what
 // the wait waits on, its time, and when the daemon recorded the declaration, to the microsecond.
 // The schema must name the key, since a key it does not name is stripped and the seat never sees
 // it: the golden carries it on LEGION-208's implementer alone, and this reads it before the parse
-// and after. A daemon narrows it away for a caller below 125 (`api.withoutWait`), so a claim
+// and after. A daemon narrows it away for a caller below 167 (`api.withoutWait`), so a claim
 // without it parses, and a wait with no text — which the daemon never records — is refused.
 test("a claim carries its standing wait", () => {
   const state = fixture("state.json") as {
@@ -1521,11 +1645,16 @@ test("a Stage 3 issue without its Dispatch status is refused", () => {
 
 // Contract 31: every recorded issue carries the repository it targets and its default branch, its
 // pull request the repository it is in, and the state the project's repository mapping as the
-// daemon serves it, each left-out repository named with the App it lacks. Contract 32: each mapped
+// daemon serves it, each left-out repository named with the App it lacks. Contract 32: each served
 // repository carries its cache under the Kubernetes runtime, Ready with its last health read or
-// the read's failure, and the caches of repositories no longer mapped are listed with when they go.
-// A state without the mapping, or without its caches, is refused.
-test("the state golden carries each issue's repository and the project's mapping", () => {
+// the read's failure, and the caches of repositories no longer served are listed with when they go.
+// Contract 152: the block is every repository the daemon serves, the mapping's and the records'
+// alike, and each entry says which role App is installed on it (`apps`), which is what decides
+// whether the project can work there. A refused entry says what GitHub answered of each App on it
+// wherever GitHub answered both reads, and nothing where a read failed, its reason saying so. A
+// state without the block, or without its caches, is refused. An entry without `apps` is read all
+// the same, with that one answer absent: a daemon of an earlier contract writes none.
+test("the state golden carries each issue's repository and the repositories it serves", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 
   expect(state.issues["LEGION-208"]?.repo).toBe("acme/widgets");
@@ -1533,10 +1662,14 @@ test("the state golden carries each issue's repository and the project's mapping
   expect(state.issues["LEGION-210"]?.defaultBranch).toBe("release/v7.1");
   expect(state.repositories.owners).toEqual(["acme", "zeta"]);
   expect(
-    state.repositories.mapped.map(({ repo, default: isDefault }) => ({ repo, default: isDefault }))
+    state.repositories.mapped.map(({ repo, default: isDefault, apps }) => ({
+      repo,
+      default: isDefault,
+      apps,
+    }))
   ).toEqual([
-    { repo: "acme/widgets", default: true },
-    { repo: "zeta/tools", default: false },
+    { repo: "acme/widgets", default: true, apps: { implement: true, review: true } },
+    { repo: "zeta/tools", default: false, apps: { implement: true, review: true } },
   ]);
   expect(state.repositories.mapped[0]?.cache).toEqual({
     repo: "acme/widgets",
@@ -1556,9 +1689,19 @@ test("the state golden carries each issue's repository and the project's mapping
     reason:
       "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
   });
-  expect(state.repositories.refused[0]?.reason).toBe(
-    "the review App is not installed on acme/gadgets"
-  );
+  expect(state.repositories.refused).toEqual([
+    {
+      repo: "acme/gadgets",
+      reason: "the review App is not installed on acme/gadgets",
+      apps: { implement: true, review: false },
+    },
+    {
+      repo: "zeta/archive",
+      reason:
+        "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again",
+    },
+  ]);
+  expect(state.repositories.refused[1]?.apps).toBeUndefined();
   expect(state.repositories.caches).toEqual([
     {
       repo: "acme/legacy",
@@ -1585,6 +1728,16 @@ test("the state golden carries each issue's repository and the project's mapping
   expect(LegionStateResponse.parse(refused).repositories.caches[0]?.state).toBe("refused");
   Object.assign(refused.repositories.caches[0] ?? {}, { state: "gone" });
   expect(LegionStateResponse.safeParse(refused).success).toBeFalse();
+  // An entry a daemon of an earlier contract wrote carries no `apps`, and the window a roll of
+  // the daemon and the worker image opens is exactly that pairing, so the reader loses that one
+  // answer and keeps the state rather than refusing the whole body.
+  const halfRead = fixture("state.json") as {
+    repositories: { mapped: Array<Record<string, unknown>> };
+  };
+  delete halfRead.repositories.mapped[0]?.apps;
+  const withoutApps = LegionStateResponse.parse(halfRead);
+  expect(withoutApps.repositories.mapped[0]?.apps).toBeUndefined();
+  expect(withoutApps.repositories.mapped[0]?.repo).toBe(state.repositories.mapped[0]?.repo);
 });
 
 // The state's capability report (contract 16): the golden carries a decided row with the operator's
@@ -2012,12 +2165,12 @@ test("the state golden shows a claim's capability report beside its locator", ()
   expect(LegionStateResponse.safeParse(blank.document).success).toBeFalse();
 });
 
-// The claims nothing will wake (contract 23): the golden names LEGION-210's failed implementer,
-// whose issue is held, LEGION-211's released one, whose wake never brought its pod back, and
-// LEGION-212's retired tester, which a close or a stop retired while its tree runs, so only a
-// start of the phase it owns — one no rule the daemon runs queues — would relaunch it (contract
-// 56) — three keys each, neither the released nor the retired one wider than the failed one —
-// and a state with none carries an empty list rather than none.
+// The claims nothing will wake (contract 23): the golden's list is written by hand, one entry for
+// each claim state the rule can name (internal/api's state_golden_test.go says so): LEGION-210's
+// failed implementer, whose issue is held, LEGION-211's suspended one, and LEGION-212's retired
+// tester, which only a start of the phase it owns — one no rule the daemon runs queues — would
+// relaunch (contract 56) — three keys each, neither the suspended nor the retired one wider than
+// the failed one — and a state with none carries an empty list rather than none.
 test("the state golden names the claims nothing will wake, and the list cannot be dropped", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   expect(state.strandedClaims).toEqual([

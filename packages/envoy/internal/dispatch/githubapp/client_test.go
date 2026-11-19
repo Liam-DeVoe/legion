@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/githubtest"
@@ -89,6 +90,11 @@ type fakeGitHub struct {
 	// DeliveryPermissions' tests; a repo absent from one of these maps gets "" (no permission).
 	actionsPermissions      map[string]string
 	pullRequestsPermissions map[string]string
+	// installationStatuses is the Commit statuses permission every installation lookup answers,
+	// and tokenPermissions the permissions every token mint answers: GitHub answers both, and the
+	// two can differ while a token minted before a grant changed lives.
+	installationStatuses string
+	tokenPermissions     map[string]string
 	// appInstallations, when non-nil, backs GET /app/installations, paginated at 100 per page; a
 	// nil value answers an empty list. appInstallationsCalls counts every call made, and
 	// appInstallationsRateLimitOnCall (1-indexed, 0 means never) makes that numbered call answer a
@@ -118,6 +124,9 @@ func (f *fakeGitHub) handler() http.Handler {
 		if pullRequests := f.pullRequestsPermissions[name]; pullRequests != "" {
 			permissions["pull_requests"] = pullRequests
 		}
+		if f.installationStatuses != "" {
+			permissions["statuses"] = f.installationStatuses
+		}
 		response := map[string]any{
 			"id":          f.installationID,
 			"app_slug":    "dispatch-test",
@@ -132,8 +141,9 @@ func (f *fakeGitHub) handler() http.Handler {
 		f.tokenMints++
 		w.WriteHeader(http.StatusCreated)
 		if err := json.NewEncoder(w).Encode(map[string]any{
-			"token":      fmt.Sprintf("ghs_fake_%d_%d", f.installationID, f.tokenMints),
-			"expires_at": f.tokenExpiresAt.Format(time.RFC3339),
+			"token":       fmt.Sprintf("ghs_fake_%d_%d", f.installationID, f.tokenMints),
+			"expires_at":  f.tokenExpiresAt.Format(time.RFC3339),
+			"permissions": f.tokenPermissions,
 		}); err != nil {
 			f.t.Errorf("encode token: %v", err)
 		}
@@ -635,6 +645,9 @@ func TestNilClientAnswersErrNoAppKey(t *testing.T) {
 	if _, err := client.CheckSource(context.Background(), "legion", "arch"); !errors.Is(err, ErrNoAppKey) {
 		t.Fatalf("nil client check: got %v, want ErrNoAppKey", err)
 	}
+	if token, statuses, err := client.RepositoryTokenWithStatuses(context.Background(), "legion", "arch"); token != "" || statuses || !errors.Is(err, ErrNoAppKey) {
+		t.Fatalf("nil client RepositoryTokenWithStatuses: got (%q, %v, %v), want no token, no statuses and ErrNoAppKey", token, statuses, err)
+	}
 }
 
 func TestNewRejectsMalformedKey(t *testing.T) {
@@ -887,19 +900,19 @@ func TestDirFilesBlobVanishingMidFetchFailsTheWholeRead(t *testing.T) {
 // A file at the cap reads whole (base64 wrapping does not eat into the
 // limit); one byte over is refused by its listed size before any blob read.
 func TestDirFilesEnforceMaxFileSize(t *testing.T) {
-	atCap := strings.Repeat("x", MaxFileSize)
+	atCap := strings.Repeat("x", notes.MaxFileSize)
 	fake := &fakeGitHub{t: t, files: map[string]string{".dispatch/architecture/big.md": atCap}}
 	client, token := newReaderFixture(t, fake)
 	_, files, err := readDir(t, client, token)
-	if err != nil || len(files["big.md"]) != MaxFileSize {
+	if err != nil || len(files["big.md"]) != notes.MaxFileSize {
 		t.Fatalf("file at the cap: len=%d err=%v", len(files["big.md"]), err)
 	}
 
-	fake.sizes = map[string]int64{".dispatch/architecture/big.md": MaxFileSize + 1}
+	fake.sizes = map[string]int64{".dispatch/architecture/big.md": notes.MaxFileSize + 1}
 	fake.missingBlobs = map[string]bool{".dispatch/architecture/big.md": true}
 	_, _, err = readDir(t, client, token)
-	if !errors.Is(err, ErrFileTooLarge) || !strings.Contains(err.Error(), ".dispatch/architecture/big.md") {
-		t.Fatalf("oversized listing: err=%v, want ErrFileTooLarge naming the file, refused before the blob read", err)
+	if !errors.Is(err, notes.ErrFileTooLarge) || !strings.Contains(err.Error(), ".dispatch/architecture/big.md") {
+		t.Fatalf("oversized listing: err=%v, want notes.ErrFileTooLarge naming the file, refused before the blob read", err)
 	}
 }
 

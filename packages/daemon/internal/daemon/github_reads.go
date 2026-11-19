@@ -68,7 +68,11 @@ func (w *workflowRuntime) unapplied(ctx context.Context, eventID string) bool {
 // githubPullRequest is one pull request as GitHub answers GET /pulls/{number} and lists it in
 // GET /pulls: its number, state (open or closed), page, body, base branch, head branch and commit,
 // when it last changed, its nullable, lazily computed `mergeable`, which the list leaves out, and
-// `mergeable_state`, GitHub's own merge state for the head, which the list leaves out too.
+// `mergeable_state`, GitHub's own merge state for the head, which the list leaves out too. Merged
+// and MergeCommitSHA are whether GitHub merged it and the commit the merge made, which the
+// merge-queue read applies as the merge (outbox's mergeQueueRead): GitHub answers a merged pull
+// request `closed`, so State alone cannot tell a merge from a close. The list leaves Merged out,
+// and only the read of one pull request names it.
 type githubPullRequest struct {
 	Number  int    `json:"number"`
 	State   string `json:"state"`
@@ -84,6 +88,8 @@ type githubPullRequest struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 	Mergeable      *bool     `json:"mergeable"`
 	MergeableState string    `json:"mergeable_state"`
+	Merged         bool      `json:"merged"`
+	MergeCommitSHA string    `json:"merge_commit_sha"`
 }
 
 // mergeability is the pull request's `mergeable` as the mergeability fact reads it: null
@@ -150,11 +156,12 @@ func (w *workflowRuntime) readPullRequest(ctx context.Context, pr record.PullReq
 }
 
 // implementClient is the client for repository's REST API on the implement App's installation
-// token: the App every read of an issue's own repository is made as, the per-issue reads' and
-// the outbox rows' alike. The mint failure is returned bare, so each caller says in its own
-// words what it was minting the token for.
+// token for that repository's owner account: the App every read of an issue's own repository is
+// made as, the per-issue reads' and the outbox rows' alike. The token names no repository, so one
+// mint serves every repository of the owner the App is installed on. The mint failure is returned
+// bare, so each caller says in its own words what it was minting the token for.
 func implementClient(ctx context.Context, tokens appauth.Tokens, githubAPI string, repository ghrepo.Repository) (githubrest.Client, error) {
-	lease, err := tokens.Token(ctx, appauth.Implement, repository)
+	lease, err := tokens.Token(ctx, appauth.Implement, repository.Owner())
 	if err != nil {
 		return githubrest.Client{}, err
 	}

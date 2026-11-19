@@ -3,12 +3,11 @@ package daemon
 // The round's bound (dispatch://INFRA-2981 R2, R3, R5, R6, R8): a round ends as soon as every
 // claim it asks has answered and no turn runs, and at its bound — pod_update_grace_minutes after
 // it opened — whatever its roles said. An operator's suspension is the one wait the bound does not
-// step over, the push check runs before every replacement the bound makes, and the controller is
-// told only of a round something holds past its bound, once, at the bound. Each test moves the
-// rig's held clock to the moment it decides at, and names that moment in what it asserts.
+// step over, and the controller is told only of a round something holds past its bound, once, at
+// the bound. Each test moves the rig's held clock to the moment it decides at, and names that
+// moment in what it asserts.
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -16,8 +15,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/rescue/rescuetest"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -426,12 +423,12 @@ func TestPodUpdateEndsTheRoundOfAnOperatorsSuspensionWhenItsPodIsGone(t *testing
 // operator suspends the implementer while it is still in the round's pod, and then that pod goes
 // and the displaced path brings the tester back in the pod that replaced it. The claims record
 // that other pod in the round's own place, which says the round's pod went whatever the
-// operator's suspension says, so the round ends there over the pod that went
-// (endRoundOverAGonePod), with nothing lost and nothing told, and nothing is replaced. Read the
-// hold first, the round would wait for the operator's resume over a pod that is gone, and tell
-// the controller of a suspension that holds nothing.
+// operator's suspension says, so the round ends at that sweep before any hold is read
+// (reconcileIssuePodUpdate, dispatch://INFRA-3276 R5), with nothing lost and nothing told, and
+// nothing is replaced. Read the hold first, the round would wait for the operator's resume over a
+// pod that is gone, and tell the controller of a suspension that holds nothing.
 func TestPodUpdateEndsTheRoundOfAnOperatorsSuspensionWhenAnotherPodIsInItsPlace(t *testing.T) {
-	const overAGonePod = "supervise: the pod of this issue's update round is not there, and every claim of the round had answered; nothing was lost and the round is over"
+	const overAGonePod = "supervise: the pod this issue's update round was opened over is gone; the round is over"
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 
@@ -561,139 +558,6 @@ func TestPodUpdateSuspensionInTheLaunchTurnRefusesTheReplacement(t *testing.T) {
 	}
 	if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != podUpdateRound {
 		t.Fatalf("the implementer's round = %q, want it left open", c.UpdateRound)
-	}
-}
-
-// At the bound, over a pod whose workspace holds a commit the remote lacks and whose claims never
-// answered: the push check runs before the replacement the bound makes, pushes the commit to the
-// issue's one rescue branch under the check's own rescue commit, and the issue is told the branch,
-// its tip and the commit (R3).
-func TestPodUpdateBoundRunsThePushCheckBeforeItReplacesThePod(t *testing.T) {
-	d := rescuetest.New(t, podUpdateIssue)
-	d.Write(d.Workspace, "feature.txt", "work nobody pushed before the bound\n")
-	d.JJ("commit", "-m", "work nobody pushed before the bound")
-	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
-	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
-	rig.rescueOn(d)
-	rig.drifts(podUpdateDrift)
-
-	rig.tick()
-	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
-	rig.awaitRound(claim.RoleTester, podUpdateRound)
-	rig.clockAt(podUpdateBound)
-
-	rig.awaitReplacement(1, "at the bound, with no claim answered")
-	check, replace := -1, -1
-	for i, call := range rig.rt.Calls() {
-		switch {
-		case call.Method == "RescueUnpushed" && check < 0:
-			check = i
-		case call.Method == "ReplacePod" && replace < 0:
-			replace = i
-		}
-	}
-	if check < 0 || check > replace {
-		t.Fatalf("the runtime's calls ran the push check at %d and the replacement at %d, want the check first: %+v", check, replace, rig.rt.Calls())
-	}
-	held, rescued := rescuedOver(t, d)
-	if rescued != commit {
-		t.Fatalf("the remote holds %s at %q over %q, want a rescue commit over the commit the disk held %s", podUpdateRescueTarget, held, rescued, commit)
-	}
-	post := rig.rescuePost()
-	for _, want := range []string{"`" + podUpdateRescueTarget + "`", "`" + held + "`", "`" + commit + "`"} {
-		if !strings.Contains(post.Body, want) {
-			t.Errorf("the issue's message does not name %q:\n%s", want, post.Body)
-		}
-	}
-	if bounded := loggedLines(t, rig.logs.String(), podUpdateBoundLine); len(bounded) != 1 {
-		t.Fatalf("the bounded end was logged %d times, want once: %+v", len(bounded), bounded)
-	}
-}
-
-// At the bound, over a pod whose push check fails: the pod is held, and the controller is told
-// once, at the bound — the check does not run before it, since the answers held the round there
-// — naming the failed check. The store takes the row, and later sweeps tell nothing more.
-func TestPodUpdateBoundHoldsAPodWhosePushCheckFails(t *testing.T) {
-	d := rescuetest.New(t, podUpdateIssue)
-	d.Write(d.Workspace, "feature.txt", "work the remote will not take\n")
-	d.JJ("commit", "-m", "work the remote will not take")
-	d.RefuseWrites()
-	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
-	rig.rescueOn(d)
-	rig.drifts(podUpdateDrift)
-
-	rig.tick()
-	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
-	rig.awaitRound(claim.RoleTester, podUpdateRound)
-	rig.clockAt(podUpdateBound.Add(-time.Minute))
-	rig.tick()
-	rig.tick()
-	if checks := rig.rt.CallsOf("RescueUnpushed"); len(checks) != 0 || len(rig.notices()) != 0 {
-		t.Fatalf("at %s, a minute before the bound, the sweep ran %d push checks and told %d notices, want neither", rig.clock.Now(), len(checks), len(rig.notices()))
-	}
-
-	rig.clockAt(podUpdateBound)
-	rig.awaitRescues(1, "at the bound")
-	notices := rig.notices()
-	if len(notices) != 1 {
-		t.Fatalf("at the bound %s the controller was told %d times of a failed push check, want once", rig.clock.Now(), len(notices))
-	}
-	for _, want := range []string{"check for unpushed work", "the remote refuses this push", d.Workspace} {
-		if !strings.Contains(notices[0].Reason, want) {
-			t.Errorf("the notice says %q, want it to name %q", notices[0].Reason, want)
-		}
-	}
-	wantWaiting(t, notices[0], map[claim.Role]bool{claim.RoleImplementer: false, claim.RoleTester: false})
-	wantNoRefusedNotice(t, rig)
-
-	rig.clockAt(podUpdateBound.Add(time.Hour))
-	rig.awaitRescues(len(rig.rt.CallsOf("RescueUnpushed"))+1, "an hour past the bound")
-	if calls := rig.replacements(); len(calls) != 0 {
-		t.Fatalf("the pod was replaced %d times while its push check fails, want none", len(calls))
-	}
-	if notices := rig.notices(); len(notices) != 1 {
-		t.Fatalf("the controller had been told %d times, want once per round", len(notices))
-	}
-}
-
-// At the bound, over a pod whose shim predates the push check (runtime.ErrRescueUnsupported) and
-// whose claims never answered: the check is asked, it cannot run, and that holds nothing. The pod
-// is replaced at the bound, the issue is told that nobody checked the pod's workspaces, and the
-// controller is told nothing, since nothing holds the round.
-//
-// The negative control is a hold on that answer: the round then waits for ever past its bound and
-// the replacement below never comes.
-func TestPodUpdateBoundReplacesAPodWhoseShimPredatesTheCheckAndSaysSo(t *testing.T) {
-	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
-	rig.rt.RescueWith(func(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
-		return nil, fmt.Errorf("worker-stream: %w (its agent answered: Unknown command: rescue-unpushed)", runtime.ErrRescueUnsupported)
-	})
-	rig.drifts(podUpdateDrift)
-
-	rig.tick()
-	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
-	rig.awaitRound(claim.RoleTester, podUpdateRound)
-	rig.clockAt(podUpdateBound.Add(-time.Minute))
-	rig.tick()
-	rig.tick()
-	if checks, calls := rig.rt.CallsOf("RescueUnpushed"), rig.replacements(); len(checks) != 0 || len(calls) != 0 {
-		t.Fatalf("at %s, a minute before the bound, the sweep ran %d push checks and %d replacements, want neither", rig.clock.Now(), len(checks), len(calls))
-	}
-
-	rig.clockAt(podUpdateBound)
-	rig.awaitReplacement(1, "at the bound, over a shim that cannot run the push check")
-	if checks := rig.rt.CallsOf("RescueUnpushed"); len(checks) == 0 {
-		t.Fatal("the pod was replaced at the bound with no push check asked of its shim")
-	}
-	messages := rig.messages()
-	if len(messages) != 1 || !strings.Contains(messages[0], "did not check the pod's workspaces") || !strings.Contains(messages[0], "predates the push check") {
-		t.Fatalf("the issue was told %q, want one message that nobody checked the pod's workspaces", messages)
-	}
-	if bounded := loggedLines(t, rig.logs.String(), podUpdateBoundLine); len(bounded) != 1 {
-		t.Fatalf("the bounded end was logged %d times, want once: %+v", len(bounded), bounded)
-	}
-	if notices := rig.notices(); len(notices) != 0 {
-		t.Fatalf("the controller was told %+v, want nothing: a shim that cannot run the check holds nothing", notices)
 	}
 }
 
@@ -845,7 +709,7 @@ func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T)
 			for range 3 {
 				next.tick()
 			}
-			text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace), podUpdateRescue)
+			text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace))
 			asked := map[claim.Role]int{}
 			for _, ask := range next.asks() {
 				asked[ask.Role]++
@@ -903,7 +767,7 @@ func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *
 	for range 3 {
 		next.tick()
 	}
-	text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace), podUpdateRescue)
+	text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace))
 	asked := map[claim.Role]int{}
 	for _, ask := range next.asks() {
 		asked[ask.Role]++

@@ -141,7 +141,7 @@ func bucketOps(t *testing.T, kv natsgo.KeyValue) map[string]natsgo.KeyValueOp {
 // openRegistry opens the registry on conn and waits for its interest cache.
 func openRegistry(t *testing.T, conn *natsgo.Conn) *Registry {
 	t.Helper()
-	registry, err := Open(conn, WithReplicas(1))
+	registry, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -592,8 +592,9 @@ func TestAPassWhoseScanTimedOutPurgesNothingAndLeavesTheRegistryHealthy(t *testi
 	if err != nil {
 		t.Fatalf("wrap the role bucket: %v", err)
 	}
-	registry := &Registry{roleKV: roles, now: time.Now, index: newSubjectIndex(), roleHolders: newRoleHolderCopy()}
+	registry := &Registry{roleKV: roles, now: time.Now, index: newSubjectIndex()}
 	registry.cache = newInterestCopy(registry)
+	registry.roleHolders = newRoleHolderCopy(registry)
 	handle := bus.NewKeyValue(kv, earlyEndKV{KeyValue: interests.WatchHandle(), after: 2}, interests.Streams())
 	registry.watcher = kvwatch.New("interest registry", handle, interestCache{registry}, kvwatch.WithScanIdleTimeout(idle))
 	registry.roleWatcher = kvwatch.New("role claims", roles, roleCache{registry})
@@ -763,7 +764,7 @@ func startGrantedServer(t *testing.T, deny []string) grantedServer {
 	}
 	seedMarkers(t, kv, 6)
 	seedLive(t, kv, 3)
-	registry, err := Open(conn, WithReplicas(1))
+	registry, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
