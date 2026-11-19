@@ -1843,13 +1843,13 @@ func readEndedPreventionDocuments(ctx context.Context, database *store.Store, af
 }
 
 // writeEndedPreventions retracts, in one transaction, every prevented_by the store asserts now at an
-// ended check of documents, a batch's ref_keys, and answers how many. It takes the owner row of
-// each of the documents that has a row first, each once and in ascending owner key
-// (lockDocumentOwners): the row the index pass that drops a check and the retirement of its
-// document hold while they retract, and which api's lockReasoningOwners takes before it appends a
-// prevented_by at a check, so such a write beside the pass commits first and the read under the
-// lock sees it. It then reads the tuples again under that lock and retracts each, dated now and
-// made by the run (backfillActor), caused by no event, as writeGoneRun moves a run's node.
+// ended check of documents, a batch's ref_keys, and answers how many. It takes the owner lock
+// (store.LockOwner) of each of the documents that has a row first, each once and in ascending
+// owner key (lockDocumentOwners): the lock the index pass that drops a check and the retirement of
+// its document hold while they retract, and which api's lockReasoningOwners takes before it
+// appends a prevented_by at a check, so such a write beside the pass commits first and the read
+// under the lock sees it. It then reads the tuples again under that lock and retracts each, dated
+// now and made by the run (backfillActor), caused by no event, as writeGoneRun moves a run's node.
 func writeEndedPreventions(ctx context.Context, database *store.Store, documents []string) (int64, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {

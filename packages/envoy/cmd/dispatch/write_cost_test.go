@@ -837,7 +837,7 @@ func writeCostStoreWrite(t *testing.T, arm *costArm, nodes, relations int64) (ti
 	for index := range int(nodes) {
 		// Every block carries the supertag block alone, whatever its own type (refs.BlockSupertag):
 		// a type the store holds, as every node write reads before it writes (graphstore's
-		// checkSupertags).
+		// queueSupertagCheck).
 		batch = append(batch, graphstore.Node{
 			Kind: refs.BlockNodeKind, ID: fmt.Sprintf("00000000-0000-4000-9000-%012d", index),
 			Supertag: refs.BlockSupertag, Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,

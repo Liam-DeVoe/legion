@@ -236,7 +236,7 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, "VISIBILITY_NOT_ADMITTED", http.StatusBadRequest, message)
 		return
 	}
-	// A node of a type the store holds no supertag row of (graphstore's checkSupertags): the
+	// A node of a type the store holds no supertag row of (graphstore's queueSupertagCheck): the
 	// refusal's own words name each type, and nothing of the write was stored.
 	if message, refused := refusalWords[*graphstore.SupertagNotHeldError](err, graphstore.ErrSupertagNotHeld); refused {
 		writeError(w, "SUPERTAG_NOT_HELD", http.StatusConflict, message)
@@ -249,7 +249,7 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		return
 	}
 	// A node every reader may see placed under or on one reserved for its author (graphstore's
-	// checkPlacedVisibility): the words name both nodes by address, and nothing was stored.
+	// pointerCheck): the words name both nodes by address, and nothing was stored.
 	if message, refused := widerThanParentWords(err); refused {
 		writeError(w, codeVisibilityWiderThanParent, http.StatusBadRequest, message)
 		return

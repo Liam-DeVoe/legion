@@ -608,8 +608,9 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// event with nothing changed and names no change. Nothing else this route writes reaches the
 	// store, so it writes the issue's node as the create and the backfill write it
 	// (graphstore.IssueNode), made by the issue's creator at its created_at, the two columns of the
-	// issue's row the backfill reads them from (graphcensus/projects.go's objectKinds), and names
-	// it changed now by its writer (graphstore.PlanChangedForRun, which plans nothing for no run).
+	// issue's row the backfill reads them from (graphcensus/projects_backfill.go's objectKinds),
+	// and names it changed now by its writer (graphstore.PlanChangedForRun, which plans nothing for
+	// no run).
 	// The node write is queued here, after every row and document write the patch queued above,
 	// and what it states right after the issue's own event (graphstore.QueueCaused over
 	// graphstore.LatestEvent), as the create's is.

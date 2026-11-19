@@ -67,15 +67,16 @@ func TestAPatchForARunThatChangesNoFieldNamesNoChange(t *testing.T) {
 
 // An issue a pod of the release before created during a roll has no node, and its first PATCH
 // made for a run gives it the node the backfill gives such a row (plan T14): made by the issue's
-// creator at its created_at, which the backfill reads off the issue's row (graphcensus/projects.go's
-// objectKinds), and not by the PATCH's writer at the PATCH's time, while the changed_by_run the
-// PATCH appends is its own, signed by its writer, dated within the request and caused by its
-// event. Alice creates the issue; its node and every tuple out of it are taken away and the
-// backfill is run, which writes the node it gives the row; that node is taken away again, and bob
-// changes the issue's labels under his run. The node and its base attributes then read exactly as
-// the backfill's did, less their cause: the backfill writes at the sentinel, and the PATCH causes
-// what it states by its issue.updated, as every request's write does. A second PATCH of the issue
-// for the run moves nothing of the node and appends no second changed_by_run.
+// creator at its created_at, which the backfill reads off the issue's row
+// (graphcensus/projects_backfill.go's objectKinds), and not by the PATCH's writer at the PATCH's
+// time, while the changed_by_run the PATCH appends is its own, signed by its writer, dated within
+// the request and caused by its event. Alice creates the issue; its node and every tuple out of it
+// are taken away and the backfill is run, which writes the node it gives the row; that node is
+// taken away again, and bob changes the issue's labels under his run. The node and its base
+// attributes then read exactly as the backfill's did, less their cause: the backfill writes at the
+// sentinel, and the PATCH causes what it states by its issue.updated, as every request's write
+// does. A second PATCH of the issue for the run moves nothing of the node and appends no second
+// changed_by_run.
 func TestAPatchForARunGivesAnIssueWithNoNodeTheNodeTheBackfillGivesIt(t *testing.T) {
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
 	server := directServer(deps)

@@ -33,6 +33,7 @@ import (
 // are still held to answering such a node to its author alone, and a test of them seeds the node
 // here, as the rows a writer would have stored, rather than through a writer that refuses it.
 func SeedAuthorOnly(ctx context.Context, tx pgx.Tx, nodes ...graphstore.Node) error {
+	attributes := graphstore.BaseAttributeValues([...]string{`node.visibility`, `node.state`, `node.project_key`, `node.parties_value`})
 	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		for _, node := range nodes {
 			args, err := authorOnlyParams(node)
@@ -66,9 +67,8 @@ func SeedAuthorOnly(ctx context.Context, tx pgx.Tx, nodes ...graphstore.Node) er
 				select node.kind, node.id, attribute.kind, $13::text, attribute.value, node.made_at, node.made_by, node.source_event, null, true
 				from node
 				cross join lateral (values
-					(0, $14::text, node.visibility), (1, $15::text, node.state),
-					(2, $16::text, node.project_key), (3, $17::text, node.parties_value)
-				) as attribute(ordinal, kind, value)
+					`+attributes+`
+				) as attribute(bit, ordinal, kind, value)
 				where attribute.value is not null
 				  and (exists (select 1 from made) or (attribute.ordinal = 0 and exists (select 1 from reserved)))
 				order by attribute.ordinal
@@ -78,9 +78,9 @@ func SeedAuthorOnly(ctx context.Context, tx pgx.Tx, nodes ...graphstore.Node) er
 	})
 }
 
-// authorOnlyParams are the seventeen parameters SeedAuthorOnly's statement binds for node, in its
+// authorOnlyParams are the thirteen parameters SeedAuthorOnly's statement binds for node, in its
 // order: the node's row at visibility author, the value its parties attribute states
-// (graphstore.PartiesValue), and the kinds of value tuple it states.
+// (graphstore.PartiesValue), and the to_kind of a value tuple (graphstore.KindValue).
 func authorOnlyParams(node graphstore.Node) ([]any, error) {
 	node.Visibility = graphstore.VisibilityAuthor
 	madeBy, err := json.Marshal(node.MadeBy.Recorded())
@@ -107,8 +107,7 @@ func authorOnlyParams(node graphstore.Node) ([]any, error) {
 		partiesValue = &value
 	}
 	return []any{node.Kind, node.ID, node.Supertag, node.Visibility, node.State, attributes, node.MadeAt, madeBy,
-		node.SourceEvent, project, parties, partiesValue, graphstore.KindValue,
-		graphstore.AttributeVisibility, graphstore.AttributeState, graphstore.AttributeProject, graphstore.AttributeParties}, nil
+		node.SourceEvent, project, parties, partiesValue, graphstore.KindValue}, nil
 }
 
 // AuthoredFacts is what the reasoning write (api's writeReasoningNodes) states beside node, for a

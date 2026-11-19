@@ -274,28 +274,24 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	// node (comments.node_kind), which a comment left out of the store (commentStored's
 	// unprojected), or one a process of the release before wrote and the backfill has not stated
 	// yet, does not, and has none for a run to name. That column is read here, in the read phase
-	// and for a run alone, under the owner lock every writer of the comment holds. Nothing else
-	// this route writes reaches the comment's node, so it writes that node as the create and the
-	// backfill write it (graphstore.CommentFacts' node): in the project, or between the parties,
-	// of what it belongs to (graphstore.ScopeOf), made by its author at its created_at, and names
-	// it changed at its edited_at by its writer (graphstore.PlanChangedForRun). Its relations stand
-	// as they were stated and are stated again by nobody. The node write is queued after the
-	// row's update, its references and its mark, and what it states right after comment.edited
-	// (graphstore.QueueCaused over graphstore.LatestEvent), as an issue's own field write does
-	// (patchIssue).
+	// and for a run alone, under the owner lock every writer of the comment holds, in the one
+	// statement that reads the scope of what the comment belongs to (graphstore.CommentScopeOf).
+	// Nothing else this route writes reaches the comment's node, so it writes that node as the
+	// create and the backfill write it (graphstore.CommentFacts' node): in that project, or between
+	// those parties, made by its author at its created_at, and names it changed at its edited_at by
+	// its writer (graphstore.PlanChangedForRun). Its relations stand as they were stated and are
+	// stated again by nobody. The node write is queued after the row's update, its references and
+	// its mark, and what it states right after comment.edited (graphstore.QueueCaused over
+	// graphstore.LatestEvent), as an issue's own field write does (patchIssue).
 	var commentNode graphstore.Uncaused
 	if previousBody != comment.Body && store.RunOf(r.Context()) != "" {
-		var stored bool
-		if err := tx.QueryRow(r.Context(), `select node_kind is not null from comments where id = $1`, comment.ID).Scan(&stored); err != nil {
+		stored, project, parties, err := graphstore.CommentScopeOf(r.Context(), tx, comment.ID, comment.IssueKey, comment.ArtifactID)
+		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 		if stored {
 			commentNode, err = graphstore.PlanChangedForRun(r.Context(), editedAt, actor, func() (graphstore.Node, error) {
-				project, parties, err := graphstore.ScopeOf(r.Context(), tx, comment.IssueKey, comment.ArtifactID)
-				if err != nil {
-					return graphstore.Node{}, err
-				}
 				node, _ := graphstore.CommentFacts(nil, comment.ID, comment.Author, comment.CreatedAt, graphstore.NoEvent, "", "", project, parties)
 				return node, nil
 			})

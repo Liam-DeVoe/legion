@@ -66,11 +66,11 @@ var retirementEvents = events.NewBroker()
 // (spec requirement r-constraint-risk; its race with a prevented_by write: api's
 // lockReasoningOwners).
 //
-// It takes the document's owner row first (lockArtifactOwner), then writes the store's lock order
-// as a create writes it: the node, its projection row, the event, and the node's facts under that
-// event, the retractions among them (graphstore.WriteUncaused, graphstore.Caused). A document
-// already retired is refused with ErrDocumentRetired, and a reason that is blank with
-// errRetirementReason.
+// It takes the document's owner lock (store.LockOwner, through lockArtifactOwner) first, then
+// writes the store's lock order as a create writes it: the node, its projection row, the event,
+// and the node's facts under that event, the retractions among them (graphstore.WriteUncaused,
+// graphstore.Caused). A document already retired is refused with ErrDocumentRetired, and a reason
+// that is blank with errRetirementReason.
 func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor model.Actor, reason string) (Retirement, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {

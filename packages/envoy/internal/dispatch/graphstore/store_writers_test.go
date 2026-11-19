@@ -272,7 +272,7 @@ var storeWriteCallSites = map[string]string{
 	"graphstore/write.go#Write":                 "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	"graphstore/write.go#WriteUncaused":         "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// Retarget moves one pointer through Write, after the row of the node it moves it out of
-	// (PlanRetarget, its read phase).
+	// (planRetarget, its read phase).
 	"graphstore/reasoning.go#Retarget": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// AddLensKind adds one kind to the lens catalogue through Write: the kind's constraint and
 	// lens_kind nodes in ascending (kind, id) and the constrained_by tuple between them, at the

@@ -109,6 +109,26 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, refusal)
 		return
 	}
+	// The document's node as the store holds it, and each changed_by_run it states now, read
+	// before the removal's first write, so no transaction id is held across them: the owner's lock
+	// and the room's are held already, and every writer of the node takes the owner's lock first,
+	// so neither moves before the node is stated gone below.
+	fits := graphstore.AddressFits(artifact.RefKey)
+	var held bool
+	var marks []graphstore.Tuple
+	if fits {
+		var err error
+		if _, held, err = graphstore.ReadNode(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if held {
+			if marks, err = graphstore.CurrentOut(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey, []string{graphstore.TupleChangedByRun}); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		}
+	}
 	for _, clear := range artifactRemovalClears(artifact) {
 		if _, err := tx.Exec(r.Context(), clear.statement, clear.args...); err != nil {
 			s.writeHandlerError(w, fmt.Errorf("clear the %s of the removed document: %w", clear.what, err))
@@ -123,12 +143,7 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	// The document's node, stated gone before its row goes; its state tuple waits for the event.
 	var goneNode graphstore.Uncaused
-	if graphstore.AddressFits(artifact.RefKey) {
-		_, held, err := graphstore.ReadNode(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
+	if fits {
 		if !held {
 			made := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), artifact.CreatedBy, artifact.CreatedAt)
 			if err := graphstore.Write(r.Context(), tx, []graphstore.Node{made}, nil); err != nil {
@@ -146,19 +161,11 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		// Each changed_by_run the node states now is retracted with it, by the person who removed
 		// it at the same time: a create that brings the node back live would otherwise be named
 		// changed by the run that made this document. A node no writer had written states none.
-		var retractions []graphstore.Tuple
-		if held {
-			marks, err := graphstore.CurrentOut(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey, []string{graphstore.TupleChangedByRun})
-			if err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-			retractions = make([]graphstore.Tuple, len(marks))
-			for index, mark := range marks {
-				retractions[index] = graphstore.Tuple{
-					FromKind: mark.FromKind, FromID: mark.FromID, Kind: mark.Kind, ToKind: mark.ToKind, ToID: mark.ToID,
-					At: removedAt, Who: actor, Asserted: false,
-				}
+		retractions := make([]graphstore.Tuple, len(marks))
+		for index, mark := range marks {
+			retractions[index] = graphstore.Tuple{
+				FromKind: mark.FromKind, FromID: mark.FromID, Kind: mark.Kind, ToKind: mark.ToKind, ToID: mark.ToID,
+				At: removedAt, Who: actor, Asserted: false,
 			}
 		}
 		if goneNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{gone}, retractions); err != nil {

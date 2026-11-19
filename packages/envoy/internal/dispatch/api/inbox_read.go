@@ -526,21 +526,21 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // takes the lens's graph_nodes row `for no key update`, in a statement of its write phase queued
 // after the node rows it writes and before the append of its tuples (graphstore's pointerCheck),
 // so two writes asserting a kind of one lens queue at that row and the second reads the first's
-// tuple; graphstore.Retarget takes the row of the node whose pointer it moves in its read phase
-// (graphstore.PlanRetarget), before the rest of its write. The reasoning write
-// (writeReasoningNodes) takes its issue's owner lock first, as invariant 1 says (lockIssueOwner),
-// and writes its nodes in one graphstore.Write. A write that asserts a risk's prevented_by - the
-// pointer route's append and retarget, the risk route and the pre-mortem conversion - stands
-// under its issue and under the document of each check it points at, which another issue may
-// own. It takes all of their owner locks before it reads a node, in one events.LockOwnerRows
-// call (api's lockReasoningOwners), so two such writes naming each other's issues take the locks
-// they share in one order, and only then reads the check and whether its document is retired
-// (graphstore's pointerCheck); its writeReasoningNodes or writeReasoningPointer then takes again
-// an issue lock it holds, which returns at once. A retirement (docs.RetireDocument, through
-// lockArtifactOwner) and the index pass that marks a block gone (under the revision fence,
-// invariant 5) take that document's owner lock first too, so an assertion that races either runs
-// wholly before it, and is retracted with the rest, or wholly after it, and reads the document
-// retired or the check gone, and is refused.
+// tuple; graphstore.Retarget takes the row of the node whose pointer it moves first, then reads
+// the pointers that node holds, and only then writes the move in one graphstore.Write. The
+// reasoning write (writeReasoningNodes) takes its issue's owner lock first, as invariant 1 says
+// (lockIssueOwner), and writes its nodes in one graphstore.Write. A write that asserts a risk's
+// prevented_by - the pointer route's append and retarget, the risk route and the pre-mortem
+// conversion - stands under its issue and under the document of each check it points at, which
+// another issue may own. It takes all of their owner locks before it reads a node, in one
+// events.LockOwnerRows call (api's lockReasoningOwners), so two such writes naming each other's
+// issues take the locks they share in one order, and only then reads the check and whether its
+// document is retired (graphstore's pointerCheck); its writeReasoningNodes or
+// writeReasoningPointer then takes again an issue lock it holds, which returns at once. A
+// retirement (docs.RetireDocument, through lockArtifactOwner) and the index pass that marks a
+// block gone (under the revision fence, invariant 5) take that document's owner lock first too,
+// so an assertion that races either runs wholly before it, and is retracted with the rest, or
+// wholly after it, and reads the document retired or the check gone, and is refused.
 //
 // A run of the command bar (api/going.go) owns no issue and no document, so none of its writes
 // takes an owner lock. Its record (recordGoingRequest) writes the run's interaction node, its

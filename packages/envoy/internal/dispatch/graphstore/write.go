@@ -531,6 +531,31 @@ func markedAttributes(row string) string {
 	return `((-` + row + `.source_event) % ` + strconv.Itoa(markAttributes) + `)::integer`
 }
 
+// BaseAttributeValues is the rows of a `values` list that states a node's base attributes, one
+// row for each in mark order (nodeMark): the attribute's mark bit, its ordinal and its tuple kind,
+// read as attribute(bit, ordinal, kind, ...), and then, for each list of columns, the SQL that
+// reads that attribute's value off the row, in baseAttributes' order. baseAttributes is that
+// order, so an attribute's bit is 1 << its index (markVisibility, markState, markProject,
+// markParties). It is the one spelling of that list for every statement that states a node's base
+// attributes off its row: the move of a write that keeps a node's cause (queueNodes), the append's
+// based (queueAppend) and graphstoretest's SeedAuthorOnly.
+func BaseAttributeValues(columns ...[len(baseAttributes)]string) string {
+	rows := make([]string, len(baseAttributes))
+	for ordinal, attribute := range baseAttributes {
+		row := `(` + strconv.Itoa(1<<ordinal) + `, ` + strconv.Itoa(ordinal) + `, '` + attribute + `'`
+		for _, values := range columns {
+			row += `, ` + values[ordinal]
+		}
+		rows[ordinal] = row + `)`
+	}
+	return strings.Join(rows, `,
+			`)
+}
+
+// markedAttributeValues are the values rows the append's based reads each base attribute of a
+// marked node through (BaseAttributeValues), rendered once.
+var markedAttributeValues = BaseAttributeValues([...]string{`marked.visibility`, `marked.state`, `marked.project`, `marked.parties`})
+
 // queueNodes queues the write of nodes, in statements each of whose rows arrive in ascending
 // (kind, id): a write touching several nodes takes its row locks in that order, so two such
 // writes cannot each hold the row the other waits for. The first refuses a node of a type the
@@ -638,24 +663,51 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated []Tuple) e
 	}
 	// The move reads, beside the columns it compares, whether the write restates each node
 	// (Node.Restates): a node the insert made has no stored state or visibility to keep.
-	restates := make([]bool, len(nodes))
-	for index := range nodes {
-		restates[index] = nodes[index].Restates
-	}
+	//
 	// A node already there whose base attribute the caller states itself - a document made where
-	// an orphaned node stands states that node gone and then live in tuples of its own - moves
-	// nothing of its own row's base attributes, but is marked all the same (with no attribute), so
-	// the append moves it onto the cause the caller's statements carry.
+	// an orphaned node stands states that node gone and then live in tuples of its own - is marked
+	// even where its row moves nothing, so the append moves it onto the cause the caller's
+	// statements carry, and neither statement states an attribute the caller states.
+	//
+	// A write that keeps a node's cause binds two arrays more: whether it keeps each node's cause,
+	// and the base attributes of each node the writer states itself, which its move states nothing
+	// of (keptCauseNodeMove).
 	own := statedAttributes(stated)
+	keepsCause := slices.ContainsFunc(nodes, func(node Node) bool { return node.KeepsCause })
+	restates := make([]bool, len(nodes))
 	states := make([]bool, len(nodes))
-	for index, node := range nodes {
-		for _, attribute := range baseAttributes {
-			if _, held := own[baseAttribute{node.Kind, node.ID, attribute}]; held {
-				states[index] = true
-			}
+	var keeps []bool
+	var skips []int32
+	if keepsCause {
+		keeps, skips = make([]bool, len(nodes)), make([]int32, len(nodes))
+	}
+	for index := range nodes {
+		node := &nodes[index]
+		skip := ownedAttributes(own, node.Kind, node.ID)
+		restates[index], states[index] = node.Restates, skip != 0
+		if keepsCause {
+			keeps[index], skips[index] = node.KeepsCause, skip
 		}
 	}
 	moveArgs := []any{args[0], args[1], args[2], args[3], args[4], args[5], restates, mark, projects, parties, states}
+	if !keepsCause {
+		b.Queue("write graph nodes", nodeMove, moveArgs...)
+		return nil
+	}
+	// The time, the writer and the cause the move states a kept node's attributes at are the
+	// node's own, the arrays the insert binds (nodeParams).
+	b.Queue("write graph nodes", keptCauseNodeMove, append(moveArgs, keeps, args[6], args[7], args[8], skips)...)
+	return nil
+}
+
+// nodeMove and keptCauseNodeMove are queueNodes' move, each built once: the move of a write that
+// keeps no node's cause, and the move of one that keeps a node's cause (Node.KeepsCause), which
+// states each base attribute it moved of such a node itself, in the same statement. Both bind the
+// insert's arrays as queueNodes hands them and the mark at $8; the second binds five arrays more,
+// from $12: whether it keeps each node's cause, the time, the writer and the cause each node's
+// attributes are stated at, and the base attributes the writer states itself (ownedAttributes),
+// which the move leaves out, as the append does.
+var nodeMove, keptCauseNodeMove = func() (string, string) {
 	movedMark := markSQL("$8", `case when graph_nodes.visibility is distinct from `+writtenVisibility+` then `+strconv.Itoa(markVisibility)+` else 0 end
 				+ case when graph_nodes.state is distinct from `+writtenState+` then `+strconv.Itoa(markState)+` else 0 end
 				+ case when `+fillsProject+` then `+strconv.Itoa(markProject)+` else 0 end
@@ -678,26 +730,18 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated []Tuple) e
 		       or ` + fillsProject + `
 		       or ` + movesParties + `
 		       or incoming.states)`
-	if !slices.ContainsFunc(nodes, func(node Node) bool { return node.KeepsCause }) {
-		b.Queue("write graph nodes", `
+	return `
 		with incoming as (
 			select kind, id, supertag, visibility, state, attributes, restates, project_key,
 			       string_to_array(parties, ' ') as parties, states
 			from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::jsonb[], $7::boolean[], $9::text[], $10::text[], $11::boolean[])
 				as node(kind, id, supertag, visibility, state, attributes, restates, project_key, parties, states)
-		)`+fmt.Sprintf(move, movedMark, `incoming`), moveArgs...)
-		return nil
-	}
-	keeps, err := keptCauseParams(nodes, own)
-	if err != nil {
-		return err
-	}
-	b.Queue("write graph nodes", `
+		)` + fmt.Sprintf(move, movedMark, `incoming`), `
 		with incoming as (
 			select kind, id, supertag, visibility, state, attributes, restates, project_key,
 			       string_to_array(parties, ' ') as parties, states, keeps_cause, made_at, made_by, cause, skip, position
 			from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::jsonb[], $7::boolean[], $9::text[], $10::text[], $11::boolean[],
-			            `+arrayList(12, "boolean", "timestamptz", "jsonb", "bigint", "integer")+`) with ordinality
+			            ` + arrayList(12, "boolean", "timestamptz", "jsonb", "bigint", "integer") + `) with ordinality
 				as node(kind, id, supertag, visibility, state, attributes, restates, project_key, parties, states,
 				        keeps_cause, made_at, made_by, cause, skip, position)
 		),
@@ -707,57 +751,29 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated []Tuple) e
 			join incoming on incoming.kind = held.kind and incoming.id = held.id
 			where incoming.keeps_cause
 		),
-		moved as (`+fmt.Sprintf(move, `case when incoming.keeps_cause then graph_nodes.source_event else `+movedMark+` end`,
-		`incoming left join kept on kept.kind = incoming.kind and kept.id = incoming.id`)+`
+		moved as (` + fmt.Sprintf(move, `case when incoming.keeps_cause then graph_nodes.source_event else `+movedMark+` end`,
+			`incoming left join kept on kept.kind = incoming.kind and kept.id = incoming.id`) + `
 			returning graph_nodes.kind, graph_nodes.id, graph_nodes.visibility, graph_nodes.state,
 			          graph_nodes.project_key, array_to_string(graph_nodes.parties, ' ') as parties,
 			          incoming.keeps_cause, incoming.made_at, incoming.made_by, incoming.cause, incoming.skip, incoming.position,
 			          kept.visibility as kept_visibility, kept.state as kept_state,
 			          kept.project_key as kept_project, array_to_string(kept.parties, ' ') as kept_parties
 		)
-		insert into graph_tuples (`+tupleWriteColumns+`)
-		select moved.kind, moved.id, attribute.kind, '`+KindValue+`', attribute.value, moved.made_at, moved.made_by,
-		       `+causeOf("moved.cause")+`, null::bigint, true
+		insert into graph_tuples (` + tupleWriteColumns + `)
+		select moved.kind, moved.id, attribute.kind, '` + KindValue + `', attribute.value, moved.made_at, moved.made_by,
+		       ` + causeOf("moved.cause") + `, null::bigint, true
 		from moved
 		cross join lateral (values
-			(`+strconv.Itoa(markVisibility)+`, 0, '`+AttributeVisibility+`', moved.visibility, moved.kept_visibility),
-			(`+strconv.Itoa(markState)+`, 1, '`+AttributeState+`', moved.state, moved.kept_state),
-			(`+strconv.Itoa(markProject)+`, 2, '`+AttributeProject+`', moved.project_key, moved.kept_project),
-			(`+strconv.Itoa(markParties)+`, 3, '`+AttributeParties+`', moved.parties, moved.kept_parties)
+			` + BaseAttributeValues(
+			[...]string{`moved.visibility`, `moved.state`, `moved.project_key`, `moved.parties`},
+			[...]string{`moved.kept_visibility`, `moved.kept_state`, `moved.kept_project`, `moved.kept_parties`}) + `
 		) as attribute(bit, ordinal, kind, value, kept)
 		where moved.keeps_cause and attribute.value is distinct from attribute.kept and attribute.value is not null
 		  and moved.skip & attribute.bit = 0
 		order by moved.position, attribute.ordinal
 		on conflict do nothing
-	`, append(moveArgs, keeps...)...)
-	return nil
-}
-
-// keptCauseParams are the five arrays the move of a write that keeps a node's cause binds beside
-// the move's own (queueNodes), by position: whether it keeps each node's cause (Node.KeepsCause),
-// and the time, the writer and the cause the base attributes it moved of that node are stated at,
-// which are the node's own, and the base attributes the writer states itself, which the move
-// leaves out, as the append does (appendedNodeParams).
-func keptCauseParams(nodes []Node, own map[baseAttribute]struct{}) ([]any, error) {
-	keeps := make([]bool, len(nodes))
-	madeAts := make([]time.Time, len(nodes))
-	madeBys := make([][]byte, len(nodes))
-	causes := make([]int64, len(nodes))
-	skips := make([]int32, len(nodes))
-	for index, node := range nodes {
-		madeBy, err := json.Marshal(node.MadeBy.Recorded())
-		if err != nil {
-			return nil, fmt.Errorf("encode writer of node %s/%s: %w", node.Kind, node.ID, err)
-		}
-		keeps[index], madeAts[index], madeBys[index], causes[index] = node.KeepsCause, node.MadeAt, madeBy, node.SourceEvent
-		for bit, attribute := range baseAttributes {
-			if _, held := own[baseAttribute{node.Kind, node.ID, attribute}]; held {
-				skips[index] |= 1 << bit
-			}
-		}
-	}
-	return []any{keeps, madeAts, madeBys, causes, skips}, nil
-}
+	`
+}()
 
 // fillsProject and movesParties are whether the move gives a row the project it does not hold
 // yet, and the parties it holds otherwise or not at all, read as writtenVisibility is.
@@ -824,9 +840,10 @@ type appending struct {
 // relation as it stands now is read (CurrentTupleRead), through graph_tuples_as_of_in, which keys
 // the run's interaction and then the kind. The tuple is appended once for each node and run, and a
 // write of no run reads nothing for it. The read takes no lock: what orders two writes of one node
-// for one run is the row each takes before this statement runs - the node's own row, which the
-// node write holds until the transaction ends, or the owner row a pointer's writer takes first -
-// so the second reads, in this statement's snapshot, the tuple the first committed.
+// for one run is the lock each takes before this statement runs - the node's own row, which the
+// node write holds until the transaction ends, or the owner lock (store.LockOwner) a pointer's
+// writer takes first - so the second reads, in this statement's snapshot, the tuple the first
+// committed.
 //
 // The tuples carry two repeat keys: one event states one fact once, so a writer that is retried
 // appends the same row again, and the insert drops it. One insert carries both, so it names no
@@ -870,9 +887,7 @@ func queueAppend(b *store.WriteBatch, write appending) error {
 		return err
 	}
 	params = append(params, order)
-	stated := `select ` + tupleSelect + `, major, 0::bigint as minor
-		from unnest(` + tupleArrays(1) + `, $11::bigint[])
-			as tuple(` + tupleWriteColumns + `, major)`
+	stated := orderedTuples(1, len(params))
 	if !nodesMoved && len(write.changes) == 0 {
 		counted(b.Queue("append graph tuples", `
 			insert into graph_tuples (`+tupleWriteColumns+`)
@@ -909,10 +924,7 @@ func queueAppend(b *store.WriteBatch, write appending) error {
 			       `+baseParam+`::bigint as major, marked.position * `+strconv.Itoa(len(baseAttributes))+` + attribute.ordinal as minor
 			from marked
 			cross join lateral (values
-				(`+strconv.Itoa(markVisibility)+`, 0, '`+AttributeVisibility+`', marked.visibility),
-				(`+strconv.Itoa(markState)+`, 1, '`+AttributeState+`', marked.state),
-				(`+strconv.Itoa(markProject)+`, 2, '`+AttributeProject+`', marked.project),
-				(`+strconv.Itoa(markParties)+`, 3, '`+AttributeParties+`', marked.parties)
+				`+markedAttributeValues+`
 			) as attribute(bit, ordinal, kind, value)
 			where marked.attributes & attribute.bit <> 0
 		)`, `settled as (
@@ -926,18 +938,21 @@ func queueAppend(b *store.WriteBatch, write appending) error {
 		arms = append(arms, `select `+tupleWriteColumns+`, major, minor from based`)
 	}
 	if len(write.changes) > 0 {
-		changeArgs, err := changeParams(write.changes, int64(relations))
+		changeArgs, err := tupleParams(write.changes)
 		if err != nil {
 			return err
 		}
+		// Each changed_by_run stands right after the caller's relations, the first at first.
+		majors := make([]int64, len(write.changes))
+		for index := range majors {
+			majors[index] = int64(relations + index)
+		}
 		at := len(params) + 1
-		params = append(params, changeArgs...)
-		runParam := "$" + strconv.Itoa(at+len(changeArgs))
-		params = append(params, write.run)
+		params = append(append(params, changeArgs...), majors, write.run)
+		majorsAt := at + len(changeArgs)
+		runParam := "$" + strconv.Itoa(majorsAt+1)
 		with = append(with, `changes as (
-			select from_kind, from_id, at, who, cause, major
-			from unnest(`+arrayList(at, "text", "text", "timestamptz", "jsonb", "bigint", "bigint")+`)
-				as change(from_kind, from_id, at, who, cause, major)
+			`+orderedTuples(at, majorsAt)+`
 		)`, `changes_held as (
 			select from_kind, from_id from (
 				`+CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
@@ -945,15 +960,10 @@ func queueAppend(b *store.WriteBatch, write appending) error {
 					and (t.from_kind, t.from_id) in (select from_kind, from_id from changes)`)+`
 			) newest
 			where asserted
-		)`, `changed as (
-			select change.from_kind, change.from_id, '`+TupleChangedByRun+`' as kind, '`+KindInteraction+`' as to_kind,
-			       `+runParam+`::text as to_id, change.at, change.who, `+causeOf("change.cause")+` as source_event,
-			       null::bigint as legacy_source_seq, true as asserted, change.major, 0::bigint as minor
-			from changes change
-			where not exists (
-				select 1 from changes_held held where held.from_kind = change.from_kind and held.from_id = change.from_id)
 		)`)
-		arms = append(arms, `select `+tupleWriteColumns+`, major, minor from changed`)
+		arms = append(arms, `select `+tupleWriteColumns+`, major, minor from changes change
+			where not exists (
+				select 1 from changes_held held where held.from_kind = change.from_kind and held.from_id = change.from_id)`)
 	}
 	counted(b.Queue("append graph tuples", `
 		with `+strings.Join(with, `,
@@ -970,25 +980,13 @@ func queueAppend(b *store.WriteBatch, write appending) error {
 	return nil
 }
 
-// changeParams are the six arrays the append binds the changed_by_run tuples of a write through
-// (queueAppend), by position: the node each goes out of, its time, its writer and its cause, and
-// its place in the append, the first at first.
-func changeParams(changes []Tuple, first int64) ([]any, error) {
-	kinds := make([]string, len(changes))
-	ids := make([]string, len(changes))
-	ats := make([]time.Time, len(changes))
-	whos := make([][]byte, len(changes))
-	causes := make([]int64, len(changes))
-	majors := make([]int64, len(changes))
-	for index, change := range changes {
-		who, err := json.Marshal(change.Who.Recorded())
-		if err != nil {
-			return nil, fmt.Errorf("encode writer of %s %s: %w", change.Kind, change.FromID, err)
-		}
-		kinds[index], ids[index], ats[index], whos[index] = change.FromKind, change.FromID, change.At, who
-		causes[index], majors[index] = change.SourceEvent, first+int64(index)
-	}
-	return []any{kinds, ids, ats, whos, causes, majors}, nil
+// orderedTuples is the select of the tuples an append binds from the parameter first on
+// (tupleParams, tupleArrays), each at the place in the append the bigint array bound at majors
+// names, and first among the rows that share that place.
+func orderedTuples(first, majors int) string {
+	return `select ` + tupleSelect + `, major, 0::bigint as minor
+		from unnest(` + tupleArrays(first) + `, $` + strconv.Itoa(majors) + `::bigint[])
+			as tuple(` + tupleWriteColumns + `, major)`
 }
 
 // counted has queued add the rows it inserts to appended, where appended is not nil.
@@ -1033,15 +1031,9 @@ func appendedNodeParams(write appending) ([]any, error) {
 		visibilities[index], states[index] = node.Visibility, node.State
 		projects[index], parties[index] = node.Project, value
 		madeAts[index], madeBys[index] = node.MadeAt, madeBy
-		causes[index] = node.SourceEvent
+		causes[index], skips[index] = node.SourceEvent, ownedAttributes(own, node.Kind, node.ID)
 		if write.cause != nil {
 			causes[index] = *write.cause
-		}
-		// baseAttributes lists the four in mark order: visibility, state, project, parties.
-		for bit, attribute := range baseAttributes {
-			if _, held := own[baseAttribute{node.Kind, node.ID, attribute}]; held {
-				skips[index] |= 1 << bit
-			}
 		}
 	}
 	return []any{kinds, ids, visibilities, states, projects, parties, madeAts, madeBys, causes, skips}, nil
@@ -1064,6 +1056,19 @@ func statedAttributes(tuples []Tuple) map[baseAttribute]struct{} {
 		stated[baseAttribute{tuple.FromKind, tuple.FromID, tuple.Kind}] = struct{}{}
 	}
 	return stated
+}
+
+// ownedAttributes is the base attributes of the node kind/id the writer states itself (own,
+// statedAttributes), each at its bit in mark order, the order baseAttributes lists them in
+// (nodeMark): what a node write's statements state nothing of for that node.
+func ownedAttributes(own map[baseAttribute]struct{}, kind, id string) int32 {
+	var bits int32
+	for bit, attribute := range baseAttributes {
+		if _, held := own[baseAttribute{kind, id, attribute}]; held {
+			bits |= 1 << bit
+		}
+	}
+	return bits
 }
 
 // valueTupleOf is one value tuple of a node as the write that made the node states it, carrying

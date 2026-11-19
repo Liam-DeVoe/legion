@@ -82,8 +82,7 @@ func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.A
 	if !result.marked {
 		return followed, nil
 	}
-	relation := followedBy(askID, sessionID, true, who, result.since, event)
-	relation.Changes = true
+	relation := followChange(askID, sessionID, true, who, result.since, event)
 	if event == graphstore.NoEvent {
 		followed.Uncaused.Tuples = append(followed.Uncaused.Tuples, graphstore.UncausedTuple{Tuple: relation})
 		return followed, nil
@@ -191,6 +190,16 @@ func followedBy(askID, sessionID string, asserted bool, who model.Actor, at time
 	}
 }
 
+// followChange is followedBy marked as changing the ask's node (graphstore.Tuple's Changes): the
+// relation a follow or an unfollow states, which a write made for a run names the ask's node
+// changed by. CatchUpFollower states what another build's follow or unfollow did, which no run
+// made, through followedBy alone.
+func followChange(askID, sessionID string, asserted bool, who model.Actor, at time.Time, event int64) graphstore.Tuple {
+	relation := followedBy(askID, sessionID, asserted, who, at, event)
+	relation.Changes = true
+	return relation
+}
+
 // FollowAuthor follows askID for a session author, at once, and does nothing for a human, so
 // every insert site can call it with the actor it already has. The session's node is made by the
 // author at at and caused by event, as Follow makes it.
@@ -283,8 +292,7 @@ func (p PlannedFollow) Queue(b *store.WriteBatch, event int64) (graphstore.Uncau
 	if err != nil || !p.marks {
 		return held, err
 	}
-	relation := followedBy(p.askID, p.sessionID, true, p.who, p.since, event)
-	relation.Changes = true
+	relation := followChange(p.askID, p.sessionID, true, p.who, p.since, event)
 	if event == graphstore.NoEvent {
 		held.Tuples = append(held.Tuples, graphstore.UncausedTuple{Tuple: relation})
 		return held, nil
@@ -323,8 +331,7 @@ func Unfollow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model
 	}
 	unfollowed := Unfollowed{Removed: true}
 	if marked {
-		retraction := followedBy(askID, sessionID, false, who, at, graphstore.NoEvent)
-		retraction.Changes = true
+		retraction := followChange(askID, sessionID, false, who, at, graphstore.NoEvent)
 		unfollowed.Uncaused.Tuples = []graphstore.UncausedTuple{{Tuple: retraction}}
 	}
 	return unfollowed, nil

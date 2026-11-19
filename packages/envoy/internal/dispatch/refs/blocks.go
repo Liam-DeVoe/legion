@@ -1162,12 +1162,12 @@ func CurrentPreventionsSQL(columns, blocks string) string {
 // writer's transaction tx, before its write phase: each dated at, signed by writer and caused by
 // cause, in the order of its check and then of its risk. It is a writer's read, which answers no
 // reader and so binds no visibility predicate: the one read of the three writers that retract such
-// tuples, each under the owner row of the checks' document it took first - the index pass at the
-// blocks a version drops (retractGonePointers, through the plan's own reader), a retirement at the
-// blocks of the document it retires (docs' retiredPreventions), and the backfill at the checks a
-// process of the release before dropped or retired without retracting them (graphcensus'
-// writeEndedPreventions). Each logs what it retracts in its own words, and appends the retractions
-// in its write phase, after the read.
+// tuples, each under the owner lock (store.LockOwner) of the checks' document it took first - the
+// index pass at the blocks a version drops (retractGonePointers, through the plan's own reader), a
+// retirement at the blocks of the document it retires (docs' retiredPreventions), and the
+// backfill at the checks a process of the release before dropped or retired without retracting
+// them (graphcensus' writeEndedPreventions). Each logs what it retracts in its own words, and
+// appends the retractions in its write phase, after the read.
 func PreventionRetractions(ctx context.Context, tx pgx.Tx, blocks string, args []any, at time.Time, writer model.Actor, cause int64) ([]graphstore.Tuple, error) {
 	return preventionRetractions(ctx, tx, blocks, args, at, writer, cause)
 }
@@ -1207,9 +1207,9 @@ func preventionRetractions(ctx context.Context, q Queryer, blocks string, args [
 // which the writer appends in the same write phase as the node write that states each block gone
 // (graphstore.QueueCaused after Queue's graphstore.QueueNodes), so no result is read back between
 // two statements of that phase. Nothing writes a pointer at those blocks between the read and the
-// write phase: the pass holds the document's owner row from before its read, and a prevented_by
-// write takes the owner row of its check's document before it reads that document (api's
-// lockReasoningOwners).
+// write phase: the pass holds the document's owner lock (store.LockOwner) from before its read,
+// and a prevented_by write takes the owner lock of its check's document before it reads that
+// document (api's lockReasoningOwners).
 //
 // It logs how many it retracts at each block, with the block's address, and answers the number to
 // no reader: the risk a check covered may be one only its author may see, and a count served

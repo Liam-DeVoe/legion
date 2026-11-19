@@ -185,9 +185,9 @@ type pointerRule struct {
 // of its own and a move through cybermonklabs/legion#4180's `/parent` meets the same one; the
 // pointer route reads the kinds it writes from here too (PointerKinds). A route keeps only what no
 // type rule says: api's pointerEnd answers a constraint of another issue as no far end of this
-// one, a 404, and a write that asserts a prevented_by takes the owner row of its check's document
-// before it reads a node (api's lockReasoningOwners). A kind that is not here is let through to
-// any node.
+// one, a 404, and a write that asserts a prevented_by takes the owner lock (store.LockOwner) of its
+// check's document before it reads a node (api's lockReasoningOwners). A kind that is not here is
+// let through to any node.
 //
 // The table rules the types, the place of a triggered_by's far end in the order lenses were
 // invoked, and the project and the document of a risk's prevented_by: a check of any issue of the
@@ -576,22 +576,23 @@ type pointerCheck struct {
 // kinds writes a node again at another visibility (a write of a node's state keeps the row's own),
 // so the visibility it reads is the one each end keeps.
 func planPointerCheck(nodes []Node, tuples []Tuple, written bool) (*pointerCheck, error) {
-	check := &pointerCheck{tuples: tuples}
+	var ruled, placed []int
 	for index := range tuples {
 		tuple := &tuples[index]
 		if tuple.ToKind == KindValue {
 			continue
 		}
 		if pointerRuleOf(tuple.Kind, tuple.FromKind) != nil {
-			check.ruled = append(check.ruled, index)
+			ruled = append(ruled, index)
 		}
 		if tuple.Asserted && placesUnderAuthorOnly(tuple.Kind, tuple.ToKind, tuple.ToID) {
-			check.placed = append(check.placed, index)
+			placed = append(placed, index)
 		}
 	}
-	if len(check.ruled) == 0 && len(check.placed) == 0 {
+	if len(ruled) == 0 && len(placed) == 0 {
 		return nil, nil
 	}
+	check := &pointerCheck{tuples: tuples, ruled: ruled, placed: placed}
 	check.planEnds(nodes)
 	check.planPlaces(nodes, written)
 	if len(check.blocks)+len(check.invoked)+len(check.projectIDs)+len(check.locked)+len(check.lenses)+len(check.visibilityIDs) == 0 {
@@ -842,8 +843,8 @@ func (c *pointerCheck) readInvocations() pointerRead {
 // and no rule that names a block type lets it through. A document no project holds, an agent
 // conversation's file, answers no project. A retired document keeps its document_blocks rows, so
 // its checks are read, and refused, for what they are. A write that asserts a prevented_by reads
-// them holding the owner row of each check's document (its race with a retirement or an index
-// pass: api's lockReasoningOwners).
+// them holding the owner lock (store.LockOwner) of each check's document (its race with a
+// retirement or an index pass: api's lockReasoningOwners).
 func (c *pointerCheck) readBlocks() pointerRead {
 	return pointerRead{
 		what: "read the types of the blocks a pointer names",
@@ -1092,18 +1093,17 @@ func lensKindWords(kinds []pointerTarget) string {
 // is refused with ErrLensKindKept whatever hangs under it. It touches no part_of tuple, and
 // refuses to move one: a node moves to another parent through cybermonklabs/legion#4180's `/parent`.
 //
-// Its read phase is PlanRetarget's, and its write phase one Write of the two tuples that read
-// answers, so a writer that queues its writes on a write phase of its own runs PlanRetarget
-// where it takes its other locks and queues QueueWrite of its answer with its other writes.
+// It reads first (planRetarget), taking the node's row before it reads the pointers the node
+// holds, and then writes the two tuples that read answers in one Write.
 func Retarget(ctx context.Context, tx pgx.Tx, pointer Tuple, toKind, toID string) error {
-	moved, err := PlanRetarget(ctx, tx, pointer, toKind, toID)
+	moved, err := planRetarget(ctx, tx, pointer, toKind, toID)
 	if err != nil || len(moved) == 0 {
 		return err
 	}
 	return Write(ctx, tx, nil, moved)
 }
 
-// PlanRetarget is the read phase of Retarget, which writes nothing: it first takes the node's
+// planRetarget is the read phase of Retarget, which writes nothing: it first takes the node's
 // graph_nodes row `for no key update`, the one node row a retarget takes, so two retargets of one
 // node's pointers queue there and the second reads what the first moved, and then reads the
 // pointers the node holds. A node that does not hold pointer is ErrPointerNotHeld, and a move to
@@ -1111,7 +1111,7 @@ func Retarget(ctx context.Context, tx pgx.Tx, pointer Tuple, toKind, toID string
 // far end and the assertion of the new one, in that order, for the write that moves it. That both
 // far ends exist, are not gone and may be seen by the caller is the route's to check before it
 // calls this (pointerRules).
-func PlanRetarget(ctx context.Context, tx pgx.Tx, pointer Tuple, toKind, toID string) ([]Tuple, error) {
+func planRetarget(ctx context.Context, tx pgx.Tx, pointer Tuple, toKind, toID string) ([]Tuple, error) {
 	if pointer.Kind == TuplePartOf {
 		return nil, errors.New("a part_of tuple is the node's place, which its parent route moves: it is never retargeted")
 	}
