@@ -432,7 +432,8 @@ func (r *inFlightRig) resume(issue *inFlightIssue, role claim.Role) *stepClaiman
 	r.built.mu.Lock()
 	address := r.built.address
 	r.built.mu.Unlock()
-	c := &stepClaimant{r: r.stepRecordsRig, token: token, issue: issue.key, role: role, session: kept.id, model: stepRecordsModel,
+	// Each issue the release before left is a root, its own tree (seedInFlight).
+	c := &stepClaimant{r: r.stepRecordsRig, token: token, issue: issue.key, tree: issue.key, role: role, session: kept.id, model: stepRecordsModel,
 		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: kept.id, OmpSessionFile: kept.file, AgentID: kept.id, PluginContract: api.DaemonAPIVersion,
