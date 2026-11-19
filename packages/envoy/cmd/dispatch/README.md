@@ -1547,7 +1547,7 @@ A process that finds it held tries again
   Its tick records its period in `duty_passes`, so one process serves each period however many run, and `DISPATCH_TEST_CI_RECONCILE_INTERVAL` replaces the 5 minutes for an end-to-end test.
   That interval is the pass's own bound too: a pass that cannot cover every head within it ends there, logs its line and leaves the cursor for the pass after it, so the lease is free when the next pass is due (CI reconcile, above).
 
-- The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends and clears the answer runs the going routes leave behind, deletes the command bar's run records past their thirty days (Answering a question, below), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
+- The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends and clears the answer runs the going routes leave behind, deletes the command bar's run records past their seven days (Answering a question, below), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
   its pass records its period in `duty_passes` like the timers above, so the other process's tick inside a period already served skips.
   `DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL` replaces the minute for an end-to-end test, and a deployment never sets it.
   No notification replaces this timer, which is why it is the one piece of maintenance that stayed one:
@@ -3633,8 +3633,8 @@ A create recorded `unchanged` - the issue route answered it `200` with the issue
 A resolved thread is reopened only while it holds the resolution the turn left (the reopen's condition, `409 COMMENT_CHANGED` otherwise); a thread another writer reopened and resolved again keeps their resolution.
 
 A run asked by a credential that acts as a person keeps a record in `going_runs`, under the run's id: the words, the context chip, the hits, the decision, the proposal, each write and each undo.
-The record stays for thirty days, past the hour its request's rows are kept, so a turn can be undone after a reload and from any page.
-`GET /api/v1/me/going-runs` answers the caller's own runs of those thirty days, newest first, with `?issue=`, `?q=` and `?undoable=true`; the maintenance sweep deletes a record past thirty days, and the writes and undo routes answer `404 GOING_RUN_NOT_FOUND` for it.
+The record stays for seven days, past the hour its request's rows are kept, so a turn can be undone after a reload and from any page.
+`GET /api/v1/me/going-runs` answers the caller's own runs of those seven days, newest first, with `?issue=`, `?q=` and `?undoable=true`; the maintenance sweep deletes a record past seven days, and the writes and undo routes answer `404 GOING_RUN_NOT_FOUND` for it.
 
 ## Keyed writes
 

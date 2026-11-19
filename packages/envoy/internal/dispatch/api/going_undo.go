@@ -116,7 +116,7 @@ type goingUndoAnswer struct {
 }
 
 // undoGoingRun is POST /api/v1/going/runs/{id}/undo. A run that is not the caller's, that the
-// record does not hold, or that is older than thirty days - a run gone with its record - is 404
+// record does not hold, or that is older than seven days - a run gone with its record - is 404
 // GOING_RUN_NOT_FOUND. A run with nothing left to undo answers no line: a write already undone,
 // or whose undo was refused with a verdict that would only repeat (goingUndoSettles), is not tried
 // again. The undo claims every write it is about to undo on the run in one statement

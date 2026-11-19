@@ -283,36 +283,36 @@ func TestGoingRunsUndoableAndWordsFilters(t *testing.T) {
 	}
 }
 
-// A run older than thirty days is not read, even before the sweep deletes it; one inside them is.
-func TestGoingRunsOlderThanThirtyDaysAreNotReturned(t *testing.T) {
+// A run older than seven days is not read, even before the sweep deletes it; one inside them is.
+func TestGoingRunsOlderThanSevenDaysAreNotReturned(t *testing.T) {
 	rig := newGoingRunsRig(t)
-	old := rig.run(t, "alice", "a month and a day ago")
+	old := rig.run(t, "alice", "eight days ago")
 	rig.write(t, old, "alice", statusWrite("w-old", "DEMO-12"), "DEMO-12")
-	rig.age(t, old, 31*24*time.Hour)
-	kept := rig.run(t, "alice", "four weeks ago")
+	rig.age(t, old, 8*24*time.Hour)
+	kept := rig.run(t, "alice", "six days ago")
 	rig.write(t, kept, "alice", statusWrite("w-kept", "DEMO-12"), "DEMO-12")
-	rig.age(t, kept, 29*24*time.Hour)
+	rig.age(t, kept, 6*24*time.Hour)
 
 	for _, query := range []string{"", "?issue=DEMO-12", "?undoable=true"} {
 		if got := goingRunIDs(rig.list(t, "alice", query)); !slices.Equal(got, []string{kept}) {
-			t.Fatalf("alice's runs%s = %v, want the 29-day run alone [%s]", query, got, kept)
+			t.Fatalf("alice's runs%s = %v, want the 6-day run alone [%s]", query, got, kept)
 		}
 	}
 	if _, err := rig.server.readGoingRun(context.Background(), old, "alice"); !errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("reading the 31-day run: %v, want pgx.ErrNoRows", err)
+		t.Fatalf("reading the 8-day run: %v, want pgx.ErrNoRows", err)
 	}
 	if err := rig.server.recordGoingRunUndo(context.Background(), old, "alice", goingRunUndo{WriteID: "w-old"}, ""); !errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("an undo appended to the 31-day run: %v, want pgx.ErrNoRows", err)
+		t.Fatalf("an undo appended to the 8-day run: %v, want pgx.ErrNoRows", err)
 	}
 }
 
-// The maintenance pass deletes a run older than thirty days and keeps one inside them.
-func TestGoingRunsSweepDeletesARunPastThirtyDays(t *testing.T) {
+// The maintenance pass deletes a run older than seven days and keeps one inside them.
+func TestGoingRunsSweepDeletesARunPastSevenDays(t *testing.T) {
 	rig := newGoingRunsRig(t)
-	old := rig.run(t, "alice", "a month and a day ago")
-	rig.age(t, old, 31*24*time.Hour)
-	kept := rig.run(t, "alice", "four weeks ago")
-	rig.age(t, kept, 29*24*time.Hour)
+	old := rig.run(t, "alice", "eight days ago")
+	rig.age(t, old, 8*24*time.Hour)
+	kept := rig.run(t, "alice", "six days ago")
+	rig.age(t, kept, 6*24*time.Hour)
 
 	stored := func(id string) bool {
 		var count int
@@ -325,8 +325,8 @@ func TestGoingRunsSweepDeletesARunPastThirtyDays(t *testing.T) {
 	runSweep(t, func(ctx context.Context) {
 		RunMaintenanceSweep(ctx, rig.database.Pool, maintenanceTestInterval, leases, nil)
 	})
-	waitUntil(t, 30*time.Second, "the 31-day run deleted by a maintenance pass", func() bool { return !stored(old) })
+	waitUntil(t, 30*time.Second, "the 8-day run deleted by a maintenance pass", func() bool { return !stored(old) })
 	if !stored(kept) {
-		t.Fatal("the maintenance pass deleted the 29-day run, want it kept")
+		t.Fatal("the maintenance pass deleted the 6-day run, want it kept")
 	}
 }

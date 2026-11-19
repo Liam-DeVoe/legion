@@ -2,7 +2,7 @@
 // states its undo, each kind of undo puts back what its write changed - or, for a trace, records
 // the turn undone and erases nothing - a field another writer changed since is left as it is now
 // while the rest is undone, a release is taken back only for the caller's own claim,
-// and a run past thirty days takes no undo.
+// and a run past seven days takes no undo.
 package api
 
 import (
@@ -723,9 +723,9 @@ func TestGoingUndoTakesBackAReleaseOnlyWhereTheCallerHeldTheClaim(t *testing.T) 
 	}
 }
 
-// TestGoingUndoOfARunPastThirtyDaysIsRefusedAndOneInsideThemIsUndone: a turn is undone for as long
-// as its run is kept; a run of thirty-one days is gone, and one of twenty-nine is undone.
-func TestGoingUndoOfARunPastThirtyDaysIsRefusedAndOneInsideThemIsUndone(t *testing.T) {
+// TestGoingUndoOfARunPastSevenDaysIsRefusedAndOneInsideThemIsUndone: a turn is undone for as long
+// as its run is kept; a run of eight days is gone, and one of six is undone.
+func TestGoingUndoOfARunPastSevenDaysIsRefusedAndOneInsideThemIsUndone(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	issue := createInteractionIssue(t, rig.mux, "DEMO", "Aged", "The spec.\n").Key
 	age := func(run string, by time.Duration) {
@@ -737,15 +737,15 @@ func TestGoingUndoOfARunPastThirtyDaysIsRefusedAndOneInsideThemIsUndone(t *testi
 	}
 	gone, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{"issue": issue, "labels": []any{"gone"}}, nil)
 	kept, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{"issue": issue, "labels": []any{"kept"}}, nil)
-	age(gone, 31*24*time.Hour)
-	age(kept, 29*24*time.Hour)
+	age(gone, 8*24*time.Hour)
+	age(kept, 6*24*time.Hour)
 	if response := rig.browser(t, "alice", http.MethodPost, "/api/v1/going/runs/"+gone+"/undo", nil); response.Code != http.StatusNotFound ||
 		!strings.Contains(response.Body.String(), codeGoingRunNotFound) {
-		t.Fatalf("the undo of a 31-day run: status=%d body=%s, want 404 %s", response.Code, response.Body.String(), codeGoingRunNotFound)
+		t.Fatalf("the undo of an 8-day run: status=%d body=%s, want 404 %s", response.Code, response.Body.String(), codeGoingRunNotFound)
 	}
 	oneLine(t, rig.undo(t, "alice", kept, nil), true)
 	if labels := rig.issueRead(t, issue).Labels; len(labels) != 1 || labels[0] != "gone" {
-		t.Fatalf("the issue's labels read %v after the 29-day run's undo, want the labels before it", labels)
+		t.Fatalf("the issue's labels read %v after the 6-day run's undo, want the labels before it", labels)
 	}
 }
 

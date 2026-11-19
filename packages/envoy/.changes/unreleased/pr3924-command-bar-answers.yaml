@@ -70,6 +70,6 @@ body: |-
   refuses a body member or multipart field its route does not declare, `400 INVALID_JSON`
   naming it.
   `GET` and `PUT /api/v1/me/going/settings` hold a person's `confirm_writes`,
-  `GET /api/v1/me/going-runs` lists the person's runs of the last 30 days,
+  `GET /api/v1/me/going-runs` lists the person's runs of the last 7 days,
   `POST /api/v1/going/requests/{id}/cancel` stops a run, and
   `GET /api/v1/projects/{key}/activity` counts a project's events per ISO week.

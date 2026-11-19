@@ -244,7 +244,7 @@ type goingWriteLine struct {
 }
 
 // createGoingWrite is POST /api/v1/going/runs/{id}/writes: one write of the caller's own run. A
-// run that is not the caller's, that the record does not hold, or that is older than thirty days
+// run that is not the caller's, that the record does not hold, or that is older than seven days
 // is 404 GOING_RUN_NOT_FOUND, one answer for all three. Each invocation of a run is written once:
 // the write claims its invocation on the run before it reads or sends anything
 // (claimGoingRunWrite), in one statement that holds no lock and no connection past itself, so of
@@ -1016,7 +1016,7 @@ func (c goingWriteClaim) giveBack(taken goingRunWrite, err error) {
 }
 
 // writeGoingRunAppendError answers a write or an undo the record would not take: a run that went
-// past thirty days, or was swept, between the read and the append is the run's own 404.
+// past seven days, or was swept, between the read and the append is the run's own 404.
 func (s *server) writeGoingRunAppendError(w http.ResponseWriter, err error) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeGoingRunNotFound(w)
@@ -1026,7 +1026,7 @@ func (s *server) writeGoingRunAppendError(w http.ResponseWriter, err error) {
 }
 
 // readCallersGoingRun is the caller's run the path names, or the run's 404 written: an id that is
-// no uuid, a run of anyone else's, one the record does not hold and one older than thirty days are
+// no uuid, a run of anyone else's, one the record does not hold and one older than seven days are
 // one answer.
 func (s *server) readCallersGoingRun(w http.ResponseWriter, r *http.Request, login string) (goingRun, bool) {
 	id, err := uuid.Parse(r.PathValue("id"))
@@ -1048,7 +1048,7 @@ func (s *server) readCallersGoingRun(w http.ResponseWriter, r *http.Request, log
 
 func writeGoingRunNotFound(w http.ResponseWriter) {
 	writeError(w, codeGoingRunNotFound, http.StatusNotFound,
-		"no command-bar run of that id is yours within the last thirty days")
+		"no command-bar run of that id is yours within the last seven days")
 }
 
 // goingProposedInvocation is the invocation the write names, held to the run's proposal: an

@@ -280,10 +280,11 @@ const goingPaddedRequests = `(coalesce(e->'requests', '[]'::jsonb) || coalesce((
 
 // step is the commit step a route's transaction takes while the request runs (running): a
 // transaction that wrote - it holds the ROW EXCLUSIVE lock an INSERT, UPDATE, DELETE or MERGE
-// takes, as markRequestKeyCommitted reads it, on any table but request_keys and going_runs, which
-// this statement's own update takes - records the request landed on the claim's element of the
-// run, at the request's own index (goingPaddedRequests), in that same transaction. A transaction
-// that only read records nothing. One whose record finds no such claim - the run is gone, or the
+// takes, as markRequestKeyCommitted reads it, on any table but request_keys, going_runs, which
+// this statement's own update takes, and going_landings, whose rows record landings and are no
+// change of the route's own - records the request landed on the claim's element of the run, at
+// the request's own index (goingPaddedRequests), in that same transaction. A transaction that
+// only read records nothing. One whose record finds no such claim - the run is gone, or the
 // claim was taken off - is refused and rolls back, so no change commits without the record of its
 // landing. A route that commits several transactions records the same landing with each. Where
 // the route handed the request's sink the status and value it is about to answer
@@ -319,7 +320,7 @@ func (landing goingLanding) step(running *atomic.Bool, sink *goingAnswerSink) st
 				select txid_current_if_assigned() is not null and exists (
 					select 1 from pg_locks l join pg_class c on c.oid = l.relation
 					where l.pid = pg_backend_pid() and l.locktype = 'relation' and l.mode = 'RowExclusiveLock'
-					  and c.relkind in ('r', 'p') and c.oid not in ('request_keys'::regclass, 'going_runs'::regclass)
+					  and c.relkind in ('r', 'p') and c.oid not in ('request_keys'::regclass, 'going_runs'::regclass, 'going_landings'::regclass)
 				) as yes
 			), recorded as (
 				update going_runs r set %[1]s = (

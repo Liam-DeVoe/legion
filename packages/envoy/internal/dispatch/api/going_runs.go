@@ -37,7 +37,7 @@ import (
 
 // goingRunsKept is how long a run's record is kept: a row older than this is read by nobody,
 // even before sweepGoingRuns deletes it, and takes no write or undo.
-const goingRunsKept = 30 * 24 * time.Hour
+const goingRunsKept = 7 * 24 * time.Hour
 
 // goingRunColumns is the going_runs select list scanGoingRun reads, in scan order.
 const goingRunColumns = `r.id::text, r.author_login, r.words, r.context, r.hits, r.decision,
