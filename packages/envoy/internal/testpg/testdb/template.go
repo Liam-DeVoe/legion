@@ -47,6 +47,14 @@ func (s Server) Database(t testing.TB, prefix string) string {
 	return DatabaseOn(t, databaseURL(server, "postgres"), prefix)
 }
 
+// AdminURL is the URL of the postgres database of the server s names, for a test that reads or
+// cleans up what spans the cluster (a role, pg_roles) rather than what one database holds. It
+// carries the same connect bound as Database's, and skips t when the variable is unset.
+func (s Server) AdminURL(t testing.TB) string {
+	t.Helper()
+	return databaseURL(s.url(t), "postgres")
+}
+
 // url is the server the variable names, skipping t when it is unset, with connect_timeout set to
 // t's deadline (WithConnectDeadline), so every database, clone and pool made from it carries the
 // binary's deadline as its connect bound. The variable's database path is never used: statements
@@ -244,14 +252,19 @@ type execer interface {
 // So the drop is asked again for as long as Postgres answers object_in_use, through wait: the
 // caller's shared wait, testwait.InMain in Main and testwait.Eventually in a test's cleanup, which
 // gives up only at the test binary's deadline less testwait's margin. Any other answer is final.
+//
+// `if exists`, because a cleanup the test registered later runs first and may have dropped the
+// database already: the cleanup of a role the test created there drops the database before the
+// role, which nothing in the database then holds (internal/dispatch/store's
+// dropRoleAfterTestDatabase).
 func dropDatabase(admin execer, name string, wait func(what string, holds func() bool) error) error {
 	ctx := context.Background()
-	statement := "drop database " + name + " with (force)"
+	statement := "drop database if exists " + name + " with (force)"
 	var err, forced error
 	waited := wait("every backend of database "+name+" to exit, for its drop", func() bool {
 		_, err = admin.Exec(ctx, statement)
 		if forced == nil && sqlState(err) == insufficientPrivilege {
-			forced, statement = err, "drop database "+name
+			forced, statement = err, "drop database if exists "+name
 			_, err = admin.Exec(ctx, statement)
 		}
 		return sqlState(err) != objectInUse

@@ -100,8 +100,8 @@ func waitIn(t *testing.T) func(what string, holds func() bool) error {
 }
 
 const (
-	forcedDrop = "drop database testdb_test_dropped with (force)"
-	plainDrop  = "drop database testdb_test_dropped"
+	forcedDrop = "drop database if exists testdb_test_dropped with (force)"
+	plainDrop  = "drop database if exists testdb_test_dropped"
 )
 
 // A forced drop answers object_in_use while a backend it ended has not exited yet, which a loaded

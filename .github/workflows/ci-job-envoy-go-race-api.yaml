@@ -32,14 +32,16 @@ env:
 jobs:
   envoy-go-race-api:
     runs-on: ubuntu-24.04-arm
-    # The step's -timeout 60m must fire before the runner cancels the job, so a hung test prints
-    # the dump that names it. It is twice and more the slowest over this job's 20 newest green
-    # merge-group runs up to 2026-11-18T07:46Z (runs 44172328284 to 44260382312): the package's
-    # own line at 1521.659 s and the step at 1655 s, both in run 44244144836. The limit is at least
-    # the job's sum over those runs: its other steps at their longest, 168 s, 6 s of its clock over
-    # them, and the step's longest 1655 s plus its 60 minutes: 5429 s, or 91 minutes, which the 90
-    # it had before did not hold.
-    timeout-minutes: 95
+    # The step's -timeout 70m must fire before the runner cancels the job, so a hung test prints
+    # the dump that names it. 70 minutes is twice the longest measured run: the package took 32.6
+    # minutes under the race detector on a dev box, and this job took 32 minutes 48 seconds, past
+    # the 30 minutes it had. Over this job's 20 newest green merge-group runs up to
+    # 2026-11-18T07:46Z (runs 44172328284 to 44260382312) the slowest was the package's own line
+    # at 1521.659 s and the step at 1655 s, both in run 44244144836, with its other steps at most
+    # 168 s and 6 s of its clock over them. The limit is at least the job's sum: its longest run,
+    # 32 minutes 48 seconds, plus the step's 70 minutes, 102.8 minutes, which the 90 it had did not
+    # hold.
+    timeout-minutes: 103
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -69,7 +71,7 @@ jobs:
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Race-test the Dispatch API
-        run: go test -count=1 -race -timeout 60m ./internal/dispatch/api/
+        run: go test -count=1 -race -timeout 70m ./internal/dispatch/api/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

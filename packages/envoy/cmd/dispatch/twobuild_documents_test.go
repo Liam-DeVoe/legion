@@ -606,21 +606,18 @@ func requireApprovalCarriedAcrossBuilds(t *testing.T, writer, reader documentSid
 	reader.process.call(t, http.MethodPost, "/api/v1/asks/"+askID+"/answer",
 		`{"selected":["First"],"expected_edited_at":null}`, http.StatusOK)
 
+	// The carried approval is in the approver's name, and its whole actor crosses the builds, the
+	// proven flag included: neither build may lose the mark when it carries the other's review.
+	// Every release from legion-envoy-v30.44.0 on stores model.Actor.Proven (main's #4281), and
+	// no pair the harness makes holds a build older than that: dispatch-two-builds pairs this tree
+	// with the newest release before it, which only moves forward, and dispatch-two-builds-same
+	// pairs it with its own build. So the comparison holds every field of the actor, the flag too.
 	carried := testwait.Until(t, fmt.Sprintf("the answer on the %s to the decision block of a version the %s wrote and %s approved (version %d) to carry the approval to the next version",
 		reader.name, writer.name, dispatchTestLogin, approval.Version), func() ([]servedReview, bool) {
 		var reviews []servedReview
 		getJSON(t, writer.process, "/api/v1/artifacts/"+artifactID+"/reviews", &reviews)
-		// The carried approval is the person's, and its whole actor crosses the builds but one
-		// field: whether the actor reads proven depends on which of the two builds wrote the carry
-		// and which one lists it (a build that predates the field neither stores nor answers it),
-		// so the comparison leaves that flag out and holds every other field of the actor.
-		var actor model.Actor
-		if len(reviews) > 0 {
-			actor = reviews[0].Actor
-			actor.Proven = false
-		}
 		return reviews, len(reviews) > 1 && reviews[0].State == "approved" && reviews[0].Version > approval.Version &&
-			actor == (model.Actor{Kind: "user", ID: dispatchTestLogin})
+			reviews[0].Actor == (model.Actor{Kind: "user", ID: dispatchTestLogin, Proven: true})
 	})
 	t.Logf("the %s carried the approval of version %d to version %d", reader.name, approval.Version, carried[0].Version)
 }

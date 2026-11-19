@@ -622,17 +622,19 @@ func TestALeaseRenewalThatWaitsLeavesTheNextAtItsFixedRate(t *testing.T) {
 // it once the lock is free. The close settles the issue's documents before its transaction and
 // sweeps them after it (the next test), on a context that must outlive the client; a keyed
 // request's context already does, and context.WithoutCancel on it dropped the bound with the
-// cancellation, so a close held on the issue's row kept its background-work slot, and the
-// shutdown's wait for it, as long as the row stayed held.
-func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *testing.T) {
+// cancellation, so a close held on the issue's owner lock kept its background-work slot, and the
+// shutdown's wait for it, as long as that lock stayed held.
+func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *testing.T) {
 	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	fake := clocktest.New(start)
 	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{clock: fake})
-	issue := createInteractionIssue(t, handler, "TEST", "Closed while its row is held", "Context\n")
+	issue := createInteractionIssue(t, handler, "TEST", "Closed while its owner lock is held", "Context\n")
 	awaitSettled(t, database, issue.PrimaryArtifactID)
 	ctx := context.Background()
 	// The spec owes a settlement, which the close runs before its own transaction, and another
-	// writer holds the issue's row, which that settlement's transaction waits for.
+	// writer holds the issue's owner lock, which that settlement's transaction waits for: an
+	// issue's document is owned by the issue (store.IssueOwner), and every writer of an owner takes
+	// that lock in its read phase, before it writes anything (INFRA-636).
 	if _, err := database.Pool.Exec(ctx,
 		`insert into doc_settlements_pending (artifact_id) values ($1)`, issue.PrimaryArtifactID); err != nil {
 		t.Fatalf("mark the spec owed a settlement: %v", err)
@@ -642,8 +644,8 @@ func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *tes
 		t.Fatalf("begin the holder's transaction: %v", err)
 	}
 	defer func() { _ = holder.Rollback(ctx) }()
-	if _, err := holder.Exec(ctx, `select 1 from issues where key = $1 for no key update`, issue.Key); err != nil {
-		t.Fatalf("hold the issue's row: %v", err)
+	if err := store.LockOwner(ctx, holder, store.IssueOwner(issue.Key)); err != nil {
+		t.Fatalf("hold the issue's owner lock: %v", err)
 	}
 
 	closing := map[string]any{"status": "done"}
@@ -655,13 +657,13 @@ func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *tes
 	bound := start.Add(keyedHandlerLimit)
 	awaitArmedAt(t, fake, "the close's run bound", bound)
 	fake.Set(bound)
-	// The row is still held, so a close the bound did not end never answers.
-	if response := testwait.Receive(t, "the close held on the issue's row to end at its run's bound", answered); response.Code < http.StatusInternalServerError {
+	// The owner lock is still held, so a close the bound did not end never answers.
+	if response := testwait.Receive(t, "the close held on the issue's owner lock to end at its run's bound", answered); response.Code < http.StatusInternalServerError {
 		t.Fatalf("a close held past its run's bound: status=%d body=%s, want a 5xx that releases its key",
 			response.Code, response.Body.String())
 	}
 	if err := holder.Rollback(ctx); err != nil {
-		t.Fatalf("release the issue's row: %v", err)
+		t.Fatalf("release the issue's owner lock: %v", err)
 	}
 	var open bool
 	if err := database.Pool.QueryRow(ctx,
@@ -673,14 +675,14 @@ func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *tes
 	}
 	repeat := keyedRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, closing, "alice", "close-held")
 	if repeat.Code != http.StatusOK || replayed(repeat) {
-		t.Fatalf("the repeat once the row is free: status=%d body=%s, want the key released and the close run",
+		t.Fatalf("the repeat once the owner lock is free: status=%d body=%s, want the key released and the close run",
 			repeat.Code, repeat.Body.String())
 	}
 }
 
 // closeCommitHold is the document service with a pause between a close's commit and its sweep: the
 // sweep's own Join, the first document call it makes, which comes once the close's transaction has
-// committed and before the sweep locks the issue's row (sweepClosedIssueAsksTx), closes committed
+// committed and before the sweep takes the issue's owner lock (sweepClosedIssueAsksTx), closes committed
 // and returns only once release is closed. The close's own transaction joins first, and that join
 // passes straight through: the count of joins since the hold was installed is what tells the two
 // apart, and only the sweep's pauses.
@@ -699,12 +701,12 @@ func (h *closeCommitHold) Join(ctx context.Context, tx pgx.Tx) (context.Context,
 	return h.API.Join(ctx, tx)
 }
 
-// A keyed close whose sweep, after its commit, waits on the issue's row ends at the keyed run's
-// bound too, and answers the close it committed. The sweep takes the issue's row in a transaction
+// A keyed close whose sweep, after its commit, waits on the issue's owner lock ends at the keyed
+// run's bound too, and answers the close it committed. The sweep takes that lock in a transaction
 // of its own (sweepClosedIssueAsksTx); on context.WithoutCancel of the keyed request's context it
-// waited for as long as another writer held the row, past the bound, holding the keyed run's
+// waited for as long as another writer held the lock, past the bound, holding the keyed run's
 // background-work slot all the while.
-func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *testing.T) {
+func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *testing.T) {
 	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	fake := clocktest.New(start)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{clock: fake})
@@ -723,22 +725,22 @@ func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *testing.
 		answered <- keyedRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"status": "done"}, "alice", "close-swept")
 	}()
 	testwait.Receive(t, "the close to commit", hold.committed)
-	// Another writer takes the issue's row between the close's commit and its sweep.
+	// Another writer takes the issue's owner lock between the close's commit and its sweep.
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the holder's transaction: %v", err)
 	}
 	defer func() { _ = holder.Rollback(ctx) }()
-	if _, err := holder.Exec(ctx, `select 1 from issues where key = $1 for no key update`, issue.Key); err != nil {
-		t.Fatalf("hold the issue's row: %v", err)
+	if err := store.LockOwner(ctx, holder, store.IssueOwner(issue.Key)); err != nil {
+		t.Fatalf("hold the issue's owner lock: %v", err)
 	}
 	release()
 	waitForDatabaseLocks(t, holder, 1)
 	bound := start.Add(keyedHandlerLimit)
 	awaitArmedAt(t, fake, "the close's run bound", bound)
 	fake.Set(bound)
-	// The row is still held, so a sweep the bound did not end never lets the close answer.
-	if response := testwait.Receive(t, "the close whose sweep is held on the issue's row to answer at its run's bound", answered); response.Code != http.StatusOK {
+	// The owner lock is still held, so a sweep the bound did not end never lets the close answer.
+	if response := testwait.Receive(t, "the close whose sweep is held on the issue's owner lock to answer at its run's bound", answered); response.Code != http.StatusOK {
 		t.Fatalf("a close whose sweep ended at its run's bound: status=%d body=%s, want the committed close's 200",
 			response.Code, response.Body.String())
 	}

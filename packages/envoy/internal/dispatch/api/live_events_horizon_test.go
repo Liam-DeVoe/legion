@@ -239,6 +239,16 @@ func replacedLogConnection(t *testing.T, since *int64, climbPast bool) {
 	old := eventHead(t, rig.database)
 	expectEventsInOrder(t, first, "events", old)
 
+	// A notification the relay has not answered yet wakes one more read, a coalescing window
+	// later. That read has to run while the old log still stands: one landing between the
+	// truncate below and the event that refills the log would find the log empty, take a cursor
+	// of 0 with nothing left to prove, and so reset before the subscription this test is about
+	// ever finds the relay on the replaced log.
+	testwait.Span(t, eventRelayCoalesce+500*time.Millisecond, "the read a pending notification wakes runs on the "+
+		"relay's own goroutine a coalescing window later, and one that finds nothing new above the cursor reads no "+
+		"page (eventStreamRelay.page), so no state of the test, no synctest bubble (real Postgres) and no later "+
+		"action shows it has run")
+
 	// The reset's first event wakes the relay's reset check, which then waits on the held horizon.
 	release := holdClusterTransactionID(t)
 	if _, err := rig.database.Pool.Exec(t.Context(), `truncate events restart identity cascade`); err != nil {

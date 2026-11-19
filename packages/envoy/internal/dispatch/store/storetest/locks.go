@@ -27,6 +27,50 @@ func CountLockWaits(ctx context.Context, database *store.Store, like string) (in
 	return waiting, nil
 }
 
+// OwnerLockWaiters counts the backends of database waiting on an owner lock (the statements
+// store.LockOwner and LockOwnersShared run, which name their result owner_lock), and how many of
+// them hold a transaction id while they wait: every writer takes its owner's lock in its read
+// phase, before its first write, so a waiter holding a transaction id is holding one open behind
+// the lock. The caller's own backend is left out. It reads through the pool, as CountLockWaits
+// does and for the same reason.
+func OwnerLockWaiters(t testing.TB, database *store.Store) (waiting, holdingXid int) {
+	t.Helper()
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*), count(*) filter (where backend_xid is not null)
+		from pg_stat_activity
+		where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'advisory'
+		  and query like '%owner_lock%' and pid <> pg_backend_pid()
+	`).Scan(&waiting, &holdingXid); err != nil {
+		t.Fatalf("read pg_stat_activity: %v", err)
+	}
+	return waiting, holdingXid
+}
+
+// AwaitOwnerLockWaiter waits for a backend to wait on an owner lock (OwnerLockWaiters) and answers
+// how many of the waiters hold a transaction id. It returns the call's answer and true when the
+// call under test answers on answered before any backend waited, as WaitForQueuedBehind does: such
+// a call never waited for the lock the test holds, and the caller fails with what it answered.
+// what names that call, for the failure when neither happens; the wait has no bound of its own
+// (testwait.Until).
+func AwaitOwnerLockWaiter[T any](t testing.TB, database *store.Store, what string, answered <-chan T) (T, bool, int) {
+	t.Helper()
+	type outcome struct {
+		answer     T
+		answered   bool
+		holdingXid int
+	}
+	got := testwait.Until(t, what+" to wait on an owner lock, or to answer", func() (outcome, bool) {
+		select {
+		case early := <-answered:
+			return outcome{answer: early, answered: true}, true
+		default:
+		}
+		waiting, holdingXid := OwnerLockWaiters(t, database)
+		return outcome{holdingXid: holdingXid}, waiting > 0
+	})
+	return got.answer, got.answered, got.holdingXid
+}
+
 // waitingBehindHolder is the recursive CTE naming, as waiting(pid), every backend queued behind a
 // lock the current transaction owns, directly or behind an earlier waiter.
 const waitingBehindHolder = `

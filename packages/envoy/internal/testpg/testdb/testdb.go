@@ -66,7 +66,9 @@ func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 	// dropDatabase ends every backend attached to the database, which the drop needs because a
 	// database a connection still holds cannot be dropped. That covers a connection the test left
 	// open, so one leaked pool cannot keep a database on a shared server for the rest of the run.
-	// The drop runs in t's cleanup, so t's deadline, the binary's, is its one bound.
+	// The drop runs in t's cleanup, so t's deadline, the binary's, is its one bound. It drops the
+	// database only if it still exists (dropDatabase): a cleanup the test registered later may
+	// have dropped it already.
 	t.Cleanup(func() {
 		conn := adminConnect(t, adminURL, server.Host)
 		defer conn.Close(context.Background())

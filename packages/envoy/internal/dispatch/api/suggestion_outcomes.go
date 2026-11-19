@@ -426,7 +426,7 @@ func suggestionOutcomePass(ctx context.Context, clk clock.Clock, pool *store.Poo
 	if err != nil {
 		return time.Time{}, err
 	}
-	if horizon.Pending() || horizon.Proven() > safe {
+	if horizon.Gap() != events.GapNone || horizon.Proven() > safe {
 		return clk.Now().Add(schedule.minGap), nil
 	}
 	if settlesIn > 0 {

@@ -3,10 +3,12 @@ package docs
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -60,7 +62,17 @@ func TestBackfillAnchorBlocksPinsResolvableLegacyRowsOnce(t *testing.T) {
 // BackfillAnchorBlocks repair pins. The advisory lock holds the settlement in its update of the
 // asks, after it read the rows and before it updates the comments, which is the window a loaded
 // CI runner hit on its own.
-func TestAnchorRefreshKeepsABlockIDPinnedAfterItReadTheRow(t *testing.T) {
+//
+// The shape of the test changed with INFRA-636's ruling that the backfill takes the owner lock of
+// each row it writes. Before it, the backfill wrote on the pool, so it could pin the comment
+// inside that window and the test ran it there, under the name it had then
+// ("...KeepsABlockIDPinnedAfterItReadTheRow"); now both writers take the row's owner lock - the
+// settlement through its version write (lockArtifactOwner), the backfill through
+// refs.LockItemOwner - so the interleaving cannot happen at all and the backfill parks on that
+// lock until the settlement commits. What the test proves is that they serialise on the owner and
+// that both writes stand: the refresh clears the orphan flag, the backfill pins the block, and
+// the row carries both at the end.
+func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 	const holdKey = int64(4815162342)
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -142,17 +154,34 @@ func TestAnchorRefreshKeepsABlockIDPinnedAfterItReadTheRow(t *testing.T) {
 	}()
 	waitForHeldAnchorRefresh(t, service, holdKey)
 
-	backfill, err := service.BackfillAnchorBlocks(context.Background())
-	if err != nil {
-		t.Fatalf("backfill anchor blocks beside the settlement: %v", err)
+	// The backfill runs beside the held settlement, in a goroutine, because it no longer runs
+	// past it: it takes the comment's owner lock, which the settlement's version write holds
+	// (lockArtifactOwner, refs.LockItemOwner), so it parks there until the settlement commits.
+	// Its own wait is the proof, read off pg_locks rather than off a clock.
+	type backfillResult struct {
+		report AnchorBlockBackfill
+		err    error
 	}
-	if backfill.Asks != 0 || backfill.Comments != 1 {
-		t.Fatalf("backfill beside the settlement = %#v, want the comment alone", backfill)
-	}
+	backfilled := make(chan backfillResult, 1)
+	go func() {
+		report, err := service.BackfillAnchorBlocks(context.Background())
+		backfilled <- backfillResult{report: report, err: err}
+	}()
+	waitForHeldOwnerLock(t, service, store.IssueOwner("DOC-1"))
+
 	if err := hold.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the anchor refresh: %v", err)
 	}
 	<-settled
+
+	result := testwait.Receive(t, "the backfill to finish once the settlement released the comment's owner lock", backfilled)
+	if result.err != nil {
+		t.Fatalf("backfill anchor blocks after the settlement: %v", result.err)
+	}
+	backfill := result.report
+	if backfill.Asks != 0 || backfill.Comments != 1 {
+		t.Fatalf("backfill after the settlement = %#v, want the comment alone", backfill)
+	}
 
 	var encoded []byte
 	if err := service.store.Pool.QueryRow(context.Background(), `select anchor from comments where id = $1`, commentID).Scan(&encoded); err != nil {
@@ -183,6 +212,27 @@ func waitForHeldAnchorRefresh(t *testing.T, service *Service, key int64) {
 				and ((classid::bigint << 32) | objid::bigint) = $1
 		`, key).Scan(&waiting); err != nil {
 			t.Fatalf("read the anchor refresh hold: %v", err)
+		}
+		return waiting > 0
+	})
+}
+
+// waitForHeldOwnerLock returns once a transaction is waiting on owner's lock, which is where a
+// writer that takes it parks while another transaction holds it (store.LockOwner). The lock's own
+// wait queue is that writer's observable position, read as waitForHeldAnchorRefresh reads the
+// test's own key, so nothing here waits a fixed length for a step to happen; the shared wait's
+// failure names the lock it waited for.
+func waitForHeldOwnerLock(t *testing.T, service *Service, owner store.Owner) {
+	t.Helper()
+	waitFor(t, fmt.Sprintf("a transaction to wait on %s %s's owner lock", owner.Kind, owner.Key), func() bool {
+		var waiting int
+		if err := service.store.Pool.QueryRow(context.Background(), `
+			select count(*) from pg_locks
+			where locktype = 'advisory' and not granted and objsubid = 2
+				and classid = ($2::bigint & 4294967295)::oid
+				and objid = (hashtext($1)::bigint & 4294967295)::oid
+		`, owner.LockKey(), int64(store.OwnerLockNamespace)).Scan(&waiting); err != nil {
+			t.Fatalf("read the waiters on %s %s's owner lock: %v", owner.Kind, owner.Key, err)
 		}
 		return waiting > 0
 	})

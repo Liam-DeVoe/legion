@@ -47,8 +47,28 @@ func newRepairFixture(t *testing.T) repairFixture {
 // settle.
 func newRepairFixtureSettlingAfter(t *testing.T, settle time.Duration) repairFixture {
 	t.Helper()
+	return newRepairFixtureOn(t, settle, nil)
+}
+
+// repairRoomsNeverIdleOut is the repair fixture's room idle window (docs.Deps.RoomIdleTimeout):
+// the longest duration there is, which ygo's idle sweeper, comparing a room's idle time with it on
+// the real clock, never reaches.
+const repairRoomsNeverIdleOut = time.Duration(1<<63 - 1)
+
+// newRepairFixtureOn is newRepairFixtureSettlingAfter on a pool tracer traces (storetest.Traced),
+// so the repair's xid window can be measured on it (issue_ask_repair_xid_window_test.go); a nil
+// tracer leaves the pool untraced.
+//
+// Its document service never evicts an idle room (repairRoomsNeverIdleOut), so a room of the
+// fixture leaves residency only through a close: the close or reopen the rows commit, which the
+// room-sync lane hears (awaitIssueRoomsClosed waits for it), and the service's own Shutdown.
+func newRepairFixtureOn(t *testing.T, settle time.Duration, tracer pgx.QueryTracer) repairFixture {
+	t.Helper()
 	database := storetest.Open(t)
-	documents := docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: settle})
+	if tracer != nil {
+		database = &store.Store{Pool: storetest.Traced(t, database.Pool, tracer, nil)}
+	}
+	documents := docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: settle, RoomIdleTimeout: repairRoomsNeverIdleOut})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	// A close or reopen reaches the document rooms from its commit (migration 20261101181500's
 	// trigger), whoever wrote it, an older release's SQL below included.
@@ -120,12 +140,12 @@ func reopenWithoutRestoring(t *testing.T, f repairFixture, issue, status string,
 // the issue's documents held, storing what each had taken first (setRoomIssueOpen, then
 // closeRoomForIssue in internal/dispatch/docs/service.go). Nothing here loads one again meanwhile.
 //
-// The ten seconds are a hang guard, not a race against an eviction: the close is asked for before
-// this poll starts, and a notified close closes the room whatever the room's record holds, so the
-// deadline is reached only by a close that never ran, or one that never finished, which is a
-// defect rather than a slow machine. The bound stays so that such a defect fails this test by
-// name, printing the issue's documents and what is still resident, rather than hanging the
-// package's run.
+// The wait has no bound of its own (testwait.Until), and nothing but that close can end it: the
+// fixture's rooms never idle out (repairRoomsNeverIdleOut), the close is asked for before the wait
+// starts, and a notified close closes the room whatever the room's record holds. So a room stays
+// resident only behind a close that never ran, or one that never finished, which is a defect
+// rather than a slow machine. The shared wait fails such a defect by name, printing the issue's
+// documents and what is still resident, rather than hanging the package's run.
 func awaitIssueRoomsClosed(t *testing.T, f repairFixture, issue string) {
 	t.Helper()
 	rows, err := f.database.Pool.Query(store.WithTransactionTracking(context.Background()),
@@ -137,9 +157,10 @@ func awaitIssueRoomsClosed(t *testing.T, f repairFixture, issue string) {
 	if err != nil {
 		t.Fatalf("list the documents of %s: %v", issue, err)
 	}
-	testwait.Eventually(t, fmt.Sprintf("every room of %s's documents %v to leave residency", issue, documents), func() bool {
+	type residency struct{ Resident []string }
+	testwait.Until(t, fmt.Sprintf("every room of %s's documents %v to leave residency", issue, documents), func() (residency, bool) {
 		resident := f.documents.ResidentRooms()
-		return !slices.ContainsFunc(documents, func(document string) bool { return slices.Contains(resident, document) })
+		return residency{Resident: resident}, !slices.ContainsFunc(documents, func(document string) bool { return slices.Contains(resident, document) })
 	})
 }
 

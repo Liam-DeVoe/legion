@@ -27,14 +27,21 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // ───── the previous build ───────────────────────────────────────────────────
@@ -250,4 +257,79 @@ func jsonBody(t *testing.T, value any) string {
 		t.Fatalf("encode a request body: %v", err)
 	}
 	return string(body)
+}
+
+// ───── the previous build's owner lock protocol ─────────────────────────────
+
+// registeredOwnerLockProtocol waits for the one server process database's registry holds
+// (server_processes) and answers the owner lock protocol it registered with (owner_lock_protocol:
+// store.OwnerLockProtocol for this tree, 0, the column's default, for a build before the owner
+// lock, which writes no such column). process is that process, and name what a failure calls it.
+// The read polls, since a build may serve a moment before its registration commits. It fails the
+// test when the registry holds more than one process or when process exits before its row reads;
+// the wait has no bound of its own (testwait.Until).
+func registeredOwnerLockProtocol(t *testing.T, database *store.Store, process *dispatchProcess, name string) int {
+	t.Helper()
+	return testwait.Until(t, "the "+name+" to register its server process", func() (int, bool) {
+		rows, err := database.Pool.Query(context.Background(), `select owner_lock_protocol from server_processes`)
+		if err != nil {
+			t.Fatalf("read the registered server processes: %v", err)
+		}
+		protocols, err := pgx.CollectRows(rows, pgx.RowTo[int])
+		if err != nil {
+			t.Fatalf("read the registered server processes: %v", err)
+		}
+		switch {
+		case len(protocols) == 1:
+			return protocols[0], true
+		case len(protocols) > 1:
+			t.Fatalf("the registry holds %d server processes, at owner lock protocols %v, where the %s's should be its only one",
+				len(protocols), protocols, name)
+		}
+		select {
+		case <-process.Exited:
+			t.Fatalf("the %s exited before it registered:\n%s", name, process.Output.String())
+		default:
+		}
+		return 0, false
+	})
+}
+
+// probedOwnerLockProtocols is the owner lock protocol each previous build registered when
+// previousBuildOwnerLockProtocol booted it, by the build's directory. It lasts as long as the test
+// binary, so the rows that ask boot one probe between them.
+var probedOwnerLockProtocols = struct {
+	sync.Mutex
+	byDir map[string]int
+}{byDir: map[string]int{}}
+
+// previousBuildOwnerLockProtocol answers the owner lock protocol build registers, for a row that
+// must know it before build boots on the row's own database. A probe there would be the very thing
+// such a row tests: a build before the owner lock that boots on a database is an arrival there,
+// which stamps the database's mark of an earlier build (owner_lock_legacy_mark) for an hour
+// (store.OwnerLockMarkWindow) and puts every process of this tree on it in the mode beside an
+// earlier build. So the probe boots build once alone, on a database (storetest.Open) and a NATS
+// server of its own, reads the protocol its process registers (registeredOwnerLockProtocol), and
+// kills the process. The answer is kept by the build's directory for the rest of the test binary,
+// and a later row reads it without a boot.
+func previousBuildOwnerLockProtocol(t *testing.T, build previousBuild) int {
+	t.Helper()
+	probed := &probedOwnerLockProtocols
+	probed.Lock()
+	defer probed.Unlock()
+	if protocol, known := probed.byDir[build.dir]; known {
+		return protocol
+	}
+	name := "probe of the previous build (" + shortCommit(build.commit) + ")"
+	database := storetest.Open(t)
+	_, nats := multiprocessNATS(t)
+	probe := startDispatchProcessWith(t, databaseURLOf(t, database),
+		dispatchOptions{NATSURL: nats, SigningKey: multiprocessSigningKey, Binary: build.path("envoy-dispatch")})
+	protocol := registeredOwnerLockProtocol(t, database, probe, name)
+	if err := probe.Cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill the %s: %v", name, err)
+	}
+	testwait.Receive(t, "the "+name+" to exit once it was killed", probe.Exited)
+	probed.byDir[build.dir] = protocol
+	return protocol
 }
