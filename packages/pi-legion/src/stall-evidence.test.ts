@@ -390,7 +390,7 @@ test("a phase worker's session tells the issue's own live architect, with the ev
   expect(notice).not.toHaveProperty("keep");
   expect("sourceSessionID" in notice && notice.sourceSessionID).toBe("ses_worker");
   expect(rig.asked).toEqual([
-    { claimToken: "claim-token", sessionId: "ses_worker", secret: "claim-secret" },
+    { claimToken: "claim-token", sessionId: "ses_worker", secret: CLAIM_SECRET },
   ]);
 });
 
