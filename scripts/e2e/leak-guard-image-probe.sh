@@ -195,9 +195,6 @@ check "no file at the missing rule file's path" "$([ -e "$missing_rule_file" ] &
 sed 's/^/      the rule file | /' "$rule_file"
 echo "the missing rule file: $missing_rule_file"
 echo "the unparseable rule file: $unparseable_rule_file"
-# What the head's `legion leak-check` prints on standard error, once per command, when no rule
-# file is named (noRulesLine, packages/daemon/cmd/legion/leak_check.go).
-no_rules_line="LEAK CHECK: no private-name rule file is named ($rules_var), so no private-name rule ran"
 
 echo
 echo "== the shapes jj's own help enumerates"
@@ -531,13 +528,12 @@ run_case() { # run_case <shape> <case> <variant>
       ;;
   esac
 
-  # The line that says no private-name rule ran: once on the head, whose one command skipped the
-  # step once, and never on the control, whose `legion` has no such line and ran its own rules.
-  if [ "$variant" = no-rules ]; then
-    local said want_said=0
-    said=$(printf '%s\n' "$out" | grep -cF -- "$no_rules_line")
-    [ "$arm" = control ] || want_said=1
-    check "$id prints the no-rules line" "$said" "$want_said"
+  # With no rule file named the head's guard runs the shared check alone and says nothing of it:
+  # the daemon's boot says once, in its own log, that no rule file is named, and a line on each
+  # command would break a script that reads what the command prints. So the head's push prints no
+  # `LEAK CHECK` line at all. The control refuses this push, so its output holds the refusal.
+  if [ "$variant" = no-rules ] && [ "$arm" = head ]; then
+    check "$id prints no LEAK CHECK line" "$(says "$out" 'LEAK CHECK')" no
   fi
 }
 
@@ -562,10 +558,10 @@ done
 echo
 echo "======== no rule file named: a refusable push, under git push and under each jj shape"
 echo "$rules_var is unset, as in a pod whose daemon hands it no rule file. The head's guard"
-echo "then runs no private-name rule: the push lands, and each command prints, once, the line that"
-echo "says so. The control's legion runs the rules embedded in it, which refuse the push. The"
-echo "added-line case is driven under every shape that sends a commit, and the branch-name case"
-echo "under --deleted, which sends none."
+echo "then runs no private-name rule: the push lands, and no command prints a LEAK CHECK line,"
+echo "since the daemon says once at boot that no rule file is named. The control's legion runs the"
+echo "rules embedded in it, which refuse the push. The added-line case is driven under every shape"
+echo "that sends a commit, and the branch-name case under --deleted, which sends none."
 for shape in git jj-bare jj-all jj-change jj-named; do
   run_case "$shape" line no-rules
 done

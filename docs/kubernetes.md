@@ -3613,14 +3613,9 @@ The sha256 is of the bytes every launch carries, so an operator can tell one ver
 `GET /legion/v1/state` shows the path, and never the rules, as `settings.private_name_rules_file`, and leaves the key out while no file is named.
 
 Where its launch names no rule file, a role's guard runs the shared check alone, reads no visibility and builds no record.
-`legion leak-check pre-push`, `legion leak-check text` and `legion gh` then print this line on standard error, once per command:
-
-```text
-LEAK CHECK: no private-name rule file is named (LEGION_PRIVATE_NAME_RULES_FILE), so no private-name rule ran
-```
-
+`legion leak-check pre-push`, `legion leak-check text` and `legion gh` print nothing of it, on any command, since a line on each would break a script that reads what they print.
+The boot's line above says it once, in the daemon's log.
 `legion gh` logs such a call with the visibility source `no-rules` (`packages/daemon/cmd/legion/gh_reads.go`).
-A gh call that the shared check alone clears as a read has no private-name step to skip, and prints nothing.
 Where `LEGION_PRIVATE_NAME_RULES_FILE` names a file the guard cannot use (missing, unreadable, longer than 256 KiB, or refused above), the guard refuses the write as a setup failure:
 `LEAK CHECK SETUP ERROR: <the write>: the private-name rule file <path>, which LEGION_PRIVATE_NAME_RULES_FILE names, <why>`.
 A deployment that named rules meant them to run, and a guard that ran none in their place would pass what they refuse.
@@ -3636,7 +3631,7 @@ A pod's guard runs the rules its daemon hands it at launch.
 So each project moves its daemon to this release before its pods' image, or with it.
 A rollback goes in the reverse order: the pods' image first, then the daemon.
 A pod of an older image runs the rules its own `legion` binary embeds, whatever its daemon hands it.
-A pod of the new image under an older daemon runs no private-name rule, and says so on each write.
+A pod of the new image under an older daemon runs no private-name rule, and nothing says so: an older daemon logs no line about the rules, and the pod's commands print nothing of it.
 A deployment that may roll back across this release names its file in `LEGION_PRIVATE_NAME_RULES_FILE`, since an older daemon refuses `private_name_rules_file`.
 
 ### Issue pods in microVMs

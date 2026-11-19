@@ -7,8 +7,9 @@
 //     LEGION_PRIVATE_NAME_RULES_FILE (RulesFileVar), or the compiled set a caller hands in
 //     Options.Rules, run in process over the records the write is made of, and only when the
 //     destination repository is one GitHub reports public. A deployment that names no rule file
-//     runs no private-name rule: the guard runs the shared check alone, reads no visibility and
-//     builds no record, and says so once (Options.OnNoRules).
+//     runs no private-name rule: the guard runs the shared check alone, reads no visibility,
+//     builds no record, and says nothing of it, write after write. The daemon says it once, at
+//     boot, in its own log (internal/daemon's privateNameRulesNone).
 //
 // A call site reaches the guard through one of four entry points — Push, GhCall, Text and Rules —
 // and reads one of two answers from a refused write: a *Refusal, which is about the text the write
@@ -37,7 +38,6 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
@@ -54,9 +54,9 @@ const (
 )
 
 // Options are the guard's seams, each of them a field a test fills and a call site leaves alone,
-// and two doors a call site fills: Rules, and OnNoRules. The engine needs no seam: it is linked
-// into this binary, and the rules it runs are the deployment's, so a test names a fixture rule file
-// in Env as a deployment names its own.
+// and one door a call site fills: Rules. The engine needs no seam: it is linked into this binary,
+// and the rules it runs are the deployment's, so a test names a fixture rule file in Env as a
+// deployment names its own.
 type Options struct {
 	// Check is the shared public leak check's path. Empty is the ordinary case, where every call
 	// resolves the check for itself (Resolve); a test fills it with a stand-in of its own.
@@ -85,10 +85,6 @@ type Options struct {
 	// daemon's environment. Nil is the ordinary case for every other caller, which runs the file
 	// its environment names, or no private-name rule where it names none (Guard.rules).
 	Rules *RuleSet
-	// OnNoRules is called the first time a write of this guard skips the private-name step
-	// because no rule is named, and never again for this guard. `legion leak-check` and `legion
-	// gh` say once on standard error that no private-name rule ran; nil says nothing.
-	OnNoRules func()
 }
 
 // Guard runs the two checks. It holds no answer of an earlier call: every call site builds a
@@ -100,8 +96,6 @@ type Guard struct {
 	// noAnswer is the askpass program the children are pointed at, resolved once from the base
 	// environment's PATH.
 	noAnswer string
-	// noRules is OnNoRules' once.
-	noRules sync.Once
 	// curl is the curl the visibility read after a failure of gh's connection runs: curlProgram,
 	// which this package's tests alone point at a stand-in (Guard.curlVisibility).
 	curl string
@@ -207,9 +201,9 @@ func (g *Guard) Rules(ctx context.Context, records ...Record) error {
 
 // rules is the private-name rule set a write of what runs: Options.Rules where the caller handed
 // one; else the rule file RulesFileVar names in the base environment, read at this write
-// (LoadRules compiles each content once per process); else none, which is nil with no error, after
-// OnNoRules has heard of the first such write. An empty RulesFileVar names none, as an unset one
-// does.
+// (LoadRules compiles each content once per process); else none, which is nil with no error. A
+// write that runs no rule says nothing of it, since the daemon's boot has said once that the
+// deployment names no rule file. An empty RulesFileVar names none, as an unset one does.
 //
 // A file named that cannot be used — missing, unreadable, longer than MaxRulesFile, or one
 // LoadRules refuses — is a setup failure naming the file and why, so the write is refused: a
@@ -221,11 +215,6 @@ func (g *Guard) rules(what string) (*RuleSet, error) {
 	}
 	path := value(g.base(), RulesFileVar)
 	if path == "" {
-		g.noRules.Do(func() {
-			if g.opts.OnNoRules != nil {
-				g.opts.OnNoRules()
-			}
-		})
 		return nil, nil
 	}
 	named := "the private-name rule file " + path + ", which " + RulesFileVar + " names, "

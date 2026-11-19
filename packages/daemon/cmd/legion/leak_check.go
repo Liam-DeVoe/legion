@@ -22,24 +22,6 @@ const (
 // pre-push, the text itself for a text: the process's own standard input, which a test replaces.
 var leakCheckStdin io.Reader = os.Stdin
 
-// noRulesLine is what `legion leak-check pre-push`, `legion leak-check text` and `legion gh` print
-// on standard error, once, the first time their guard skips the private-name step because the
-// deployment names no rule file (leakguard.Options.OnNoRules): the guard then runs the shared
-// check alone, reads no visibility and reads nothing of the write itself. No Legion binary
-// carries a rule file of its own, so a role whose launch handed it none — a pod of an image with
-// this guard under a daemon that hands no rule file — runs no private-name rule at all, and this
-// line is what makes that visible on each command that skipped the step. A gh call the shared
-// check alone clears as a read (leakguard.GhAnswer.CheckedOnly) has no private-name step to skip,
-// so it prints nothing.
-const noRulesLine = "LEAK CHECK: no private-name rule file is named (" + leakguard.RulesFileVar + "), so no private-name rule ran"
-
-// saysNoRules is the guard's OnNoRules for a command whose standard error is stderr: it prints
-// noRulesLine there. The guard calls it at most once, so a command prints the line once however
-// many writes its guard skips the step for.
-func saysNoRules(stderr io.Writer) func() {
-	return func() { fmt.Fprintln(stderr, noRulesLine) }
-}
-
 // newLeakCheckCommand is `legion leak-check`, the image's shell door to
 // packages/daemon/internal/leakguard: the guard the daemon runs in process is the one a pod's git
 // hook and a pod's own scripts run here, so one set of rules answers for every write. Its two
@@ -100,7 +82,7 @@ func runLeakCheckPrePush(ctx context.Context, args []string, stderr io.Writer) i
 	if err != nil {
 		return leakCheckReport(ctx, stderr, "", &leakguard.SetupFailure{What: what, Why: "the repository the hook runs in could not be read", Err: err})
 	}
-	guard := leakguard.New(leakguard.Options{OnNoRules: saysNoRules(stderr)})
+	guard := leakguard.New(leakguard.Options{})
 	return leakCheckReport(ctx, stderr, "", guard.Push(ctx, leakguard.PushRequest{
 		Dir:     dir,
 		Remote:  remote,
@@ -121,18 +103,19 @@ func runLeakCheckText(ctx context.Context, args []string, stderr io.Writer) int 
 	if err != nil {
 		return leakCheckReport(ctx, stderr, kind, &leakguard.SetupFailure{What: kind, Why: "the text could not be read", Err: err})
 	}
-	guard := leakguard.New(leakguard.Options{OnNoRules: saysNoRules(stderr)})
+	guard := leakguard.New(leakguard.Options{})
 	return leakCheckReport(ctx, stderr, kind, guard.Text(ctx, leakguard.TextRequest{Text: string(text)}))
 }
 
 // leakCheckReport prints one answer of the guard and is the status to exit with. A cleared write
-// prints nothing here; where no rule file is named, the guard has said so once already
-// (noRulesLine). A refusal prints the guard's own report. One by the private-name rules — the
-// deployment's rule file, which LEGION_PRIVATE_NAME_RULES_FILE names — shows, for each finding,
-// the record, the rule's description, the text that matched and the line it stands on: the agent
-// about to make the write wrote that text, so there is nothing in it to hide from the agent the
-// refusal is shown to. A setup failure prints the guard's own line, which says it is one, so a
-// person reading a log tells a broken pod from a write that names something private.
+// prints nothing here, and so does one cleared with no rule file named: the guard then ran the
+// shared check alone, and the daemon's boot has said once that the deployment names no rule file.
+// A refusal prints the guard's own report. One by the private-name rules — the deployment's rule
+// file, which LEGION_PRIVATE_NAME_RULES_FILE names — shows, for each finding, the record, the
+// rule's description, the text that matched and the line it stands on: the agent about to make
+// the write wrote that text, so there is nothing in it to hide from the agent the refusal is shown
+// to. A setup failure prints the guard's own line, which says it is one, so a person reading a log
+// tells a broken pod from a write that names something private.
 //
 // The statuses are the shared public leak check's own vocabulary, which is what a pre-push hook
 // needs, and they are the guard's exported constants rather than a second copy of the three

@@ -719,10 +719,11 @@ func TestLegionGhGuardsEveryWrite(t *testing.T) {
 // With no rule file named, a write `legion gh` guards gets the shared check alone: the check
 // runs, no visibility is read, gh runs the call with the environment of a call guarded whole
 // (ghRigEnv: none of the pager, browsers and editors the caller set), the call's log line says
-// no-rules, and standard error holds noRulesLine, once, though the body file names the fixture's
-// host, which the fixture's rules refuse. A read the shared check alone clears skips no
-// private-name step, so it prints nothing, and its log line stays checked-only.
-func TestLegionGhRunsAWriteWithNoRuleFileAndSaysSo(t *testing.T) {
+// no-rules, and standard error holds nothing, no guard line among it, though the body file names
+// the fixture's host, which the fixture's rules refuse: a script that reads gh's output reads gh's
+// alone. A read the shared check alone clears skips no private-name step, and its log line stays
+// checked-only.
+func TestLegionGhRunsAWriteWithNoRuleFile(t *testing.T) {
 	run := ghGuardRig(t, "")
 	body := filepath.Join(t.TempDir(), "body.md")
 	if err := os.WriteFile(body, []byte("the runner answers at "+leakguardtest.RulesHost+" today\n"), 0o600); err != nil {
@@ -732,16 +733,15 @@ func TestLegionGhRunsAWriteWithNoRuleFileAndSaysSo(t *testing.T) {
 		name       string
 		args       []string
 		env        string
-		stderr     string
 		visibility string
 	}{
-		{"a write", []string{"pr", "create", "-R", "acme/widgets", "--title", "a title", "--body-file", body}, ghRigEnv, noRulesLine + "\n", ghNoRulesVisibility},
-		{"a read", []string{"pr", "view", "1", "-R", "acme/widgets"}, ghRigReadEnv, "", ghCheckedOnlyVisibility},
+		{"a write", []string{"pr", "create", "-R", "acme/widgets", "--title", "a title", "--body-file", body}, ghRigEnv, ghNoRulesVisibility},
+		{"a read", []string{"pr", "view", "1", "-R", "acme/widgets"}, ghRigReadEnv, ghCheckedOnlyVisibility},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := run(t, ghCheckAt(t, ghCheckPasses), "", tc.args...)
-			if got.code != 7 || got.stderr != tc.stderr {
-				t.Errorf("legion gh %q with no rule file = exit %d, stderr %q; want gh's own 7 and %q", tc.args, got.code, got.stderr, tc.stderr)
+			if got.code != 7 || got.stderr != "" {
+				t.Errorf("legion gh %q with no rule file = exit %d, stderr %q; want gh's own 7 and nothing printed", tc.args, got.code, got.stderr)
 			}
 			if want := "checked gh-guard " + strings.Join(tc.args, " ") + "\n"; got.checked != want {
 				t.Errorf("the shared check recorded %q, want its one run of the call, %q", got.checked, want)

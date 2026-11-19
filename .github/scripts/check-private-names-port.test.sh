@@ -310,8 +310,6 @@ compare_each() {
 
 echo "rule case 1: a clean repository"
 compare clean "Nothing private here."
-check "the engine ran the rule file this suite names, saying no word of having none" \
-  "$(is "$(contains "$door_out" 'no private-name rule file is named')" false)"
 
 echo "rule case 2: every spelling of the deployment repository and its project key"
 mentions=(

@@ -2100,7 +2100,7 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 // Two wrapped calls to one repository reuse its public visibility answer, and their audit entries
 // identify the call without preserving the text that the command would send. The deployment
 // names a rule file (the fixture's), without which the guard reads no visibility at all
-// (TestLegionGhRunsAWriteWithNoRuleFileAndSaysSo).
+// (TestLegionGhRunsAWriteWithNoRuleFile).
 func TestLegionGhKeepsVisibilityAndLogsCalls(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)

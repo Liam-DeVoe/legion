@@ -381,7 +381,8 @@ once at boot, from `private_name_rules_file` in `legion.yaml` or else
 `LEGION_PRIVATE_NAME_RULES_FILE` in its own environment, and hands its bytes to every launch. A
 pane keeps the copy its launch was handed, so a changed file reaches a pane after the daemon
 restarts and that pane launches again. Where neither setting names a file, no launch carries the
-secret, and a pane's `legion gh` runs no private-name rule and says so once on standard error.
+secret, and a pane's `legion gh` runs no private-name rule and prints nothing of it; the daemon
+logs once, at boot, that the deployment names no rule file.
 `legion controller start` passes the operator's own environment to its controller, so an operator
 who wants that controller's guard to run the rules exports `LEGION_PRIVATE_NAME_RULES_FILE` there.
 `docs/kubernetes.md`, "The deployment's private-name rules", has the rest.

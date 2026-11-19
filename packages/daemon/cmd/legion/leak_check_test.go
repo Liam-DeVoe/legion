@@ -353,25 +353,25 @@ func TestLeakCheckTextRefusalShowsMatch(t *testing.T) {
 
 // With no rule file named — LEGION_PRIVATE_NAME_RULES_FILE unset, as in a pod whose launch handed
 // it none — the guard runs the shared check alone, so a write naming the fixture's host, which the
-// fixture's rules refuse, is cleared: exit 0, and standard error holds one line saying that no
-// private-name rule ran, once. The line is spelled out here rather than read from noRulesLine,
-// so that its words, the variable's name among them, are what this test holds.
-func TestLeakCheckWithNoRuleFileSaysSoOnce(t *testing.T) {
-	const want = "LEAK CHECK: no private-name rule file is named (LEGION_PRIVATE_NAME_RULES_FILE), so no private-name rule ran\n"
+// fixture's rules refuse, is cleared: exit 0, and standard error holds nothing at all. The command
+// says nothing of the rule it did not run: a script that reads what it prints reads the guard's
+// answer alone, and the daemon's boot has said once, in its own log, that the deployment names no
+// rule file.
+func TestLeakCheckWithNoRuleFileRunsNoRuleSilently(t *testing.T) {
 	t.Run("pre-push", func(t *testing.T) {
 		dir, update := aPushFixture(t, "moved the run to "+leakguardtest.RulesHost+" this morning")
 		t.Chdir(dir)
 		t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes))
 		fixtureenv.Unset(t, leakguard.RulesFileVar)
-		if code, printed := leakCheck(t, update, "pre-push", "origin", dir+".git"); code != 0 || printed != want {
-			t.Errorf("legion leak-check pre-push with no rule file = exit %d, stderr %q; want exit 0 and %q", code, printed, want)
+		if code, printed := leakCheck(t, update, "pre-push", "origin", dir+".git"); code != 0 || printed != "" {
+			t.Errorf("legion leak-check pre-push with no rule file = exit %d, stderr %q; want exit 0 and nothing printed", code, printed)
 		}
 	})
 	t.Run("text", func(t *testing.T) {
 		t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes))
 		fixtureenv.Unset(t, leakguard.RulesFileVar)
-		if code, printed := leakCheck(t, "a title\nthe runner answers at "+leakguardtest.RulesHost+" today\n", "text", "the pull request body"); code != 0 || printed != want {
-			t.Errorf("legion leak-check text with no rule file = exit %d, stderr %q; want exit 0 and %q", code, printed, want)
+		if code, printed := leakCheck(t, "a title\nthe runner answers at "+leakguardtest.RulesHost+" today\n", "text", "the pull request body"); code != 0 || printed != "" {
+			t.Errorf("legion leak-check text with no rule file = exit %d, stderr %q; want exit 0 and nothing printed", code, printed)
 		}
 	})
 }

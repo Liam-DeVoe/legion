@@ -79,9 +79,9 @@ func TestANamedRuleFileRefusesAFixtureName(t *testing.T) {
 
 // A deployment that names no rule file runs no private-name rule: the same three writes pass, and
 // so does the branch create's rule pass. The shared check runs for each of them, as it does
-// today; the visibility seam is never asked, the push's commits are never read (the stand-in git
-// on PATH, which would be asked for the commit the push names, never runs), and OnNoRules hears
-// of it once for a guard that made every write. An empty pointer names no file either.
+// today; the visibility seam is never asked, and the push's commits are never read (the stand-in
+// git on PATH, which would be asked for the commit the push names, never runs). An empty pointer
+// names no file either.
 func TestNoRuleFileRunsNoPrivateNameRule(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -95,12 +95,10 @@ func TestNoRuleFileRunsNoPrivateNameRule(t *testing.T) {
 			checked, gitRan := filepath.Join(records, "checked"), filepath.Join(records, "git")
 			writeProgram(t, bin, "git", recordsItsCall(gitRan)+"exit 1\n")
 			var asked []string
-			told := 0
 			guard := New(Options{
 				Check:      leakguardtest.Write(t, t.TempDir(), leakguardtest.Recording(leakguardtest.Passes)),
 				Visibility: answers(Public, &asked),
 				Env:        append(append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "LEAK_CHECK_RECORD="+checked), tc.pointer...),
-				OnNoRules:  func() { told++ },
 			})
 			writes := writesNamingTheHost(t, strings.Repeat("1", 40))
 			for _, write := range writes {
@@ -123,9 +121,6 @@ func TestNoRuleFileRunsNoPrivateNameRule(t *testing.T) {
 			}
 			if got := countLines(t, gitRan); got != 0 {
 				t.Errorf("git ran %d times, want none: a push with no rule to run reads no commit", got)
-			}
-			if told != 1 {
-				t.Errorf("OnNoRules was called %d times, want once for the guard", told)
 			}
 		})
 	}

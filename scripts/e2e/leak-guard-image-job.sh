@@ -37,8 +37,9 @@
 #
 #   - No rule file named, as in a pod whose daemon hands it none: the added-line case under
 #     `git push` and under each jj shape that sends a commit, and the branch-name case under
-#     `--deleted`. The head's guard then runs no private-name rule, so each push lands, and each
-#     command prints, once, the line that says no private-name rule ran.
+#     `--deleted`. The head's guard then runs no private-name rule, so each push lands, and no
+#     command prints a `LEAK CHECK` line: the daemon says once, at its boot, that no rule file is
+#     named, and nothing says it again on each write.
 #
 #   - k7's four setup failures at those same call sites, each on the clean case, so the only
 #     reason to refuse is the failure itself: the shared-check stand-in removed, so no check
@@ -91,8 +92,8 @@
 #
 #   0  every check of every arm held: on the head's image the four refusable cases were refused
 #      under the Job's rule file, each naming its class and what matched, the clean case landed,
-#      the refusable push landed with no rule file named and each command said once that no rule
-#      ran, and all four setup failures refused under both commands; on the control's image, if
+#      the refusable push landed with no rule file named and no command printed a `LEAK CHECK`
+#      line, and all four setup failures refused under both commands; on the control's image, if
 #      one was given, the refusable cases were refused under the Job's file and under none, each
 #      naming its class alone, the clean case landed under the Job's file and under a missing or
 #      an unparseable one, and both shared-check failures refused under both commands.

@@ -65,15 +65,16 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // refuses, and one whose checks could not be made to run, are refused here, exit 2, with the
 // guard's own message, and gh never runs. Its private-name pass runs the deployment's rule file,
 // the one LEGION_PRIVATE_NAME_RULES_FILE names; where none is named, the guard runs the shared
-// check alone and reads no visibility, and this command says so once on standard error
-// (noRulesLine). A call that writes nothing, by the rule ghWritesNothing holds and under the
-// shared check that rule was proven against (ghReadsProvenCheck), is read by that check alone
-// and gets no read of a repository's visibility and no private-name pass. Three calls pass
-// unchecked: `legion gh auth git-credential`, which answers above before any of this, the exact
-// `gh api rate_limit` (ghRateLimitRead), and the guard's own visibility reads
-// (ghVisibilityRead). The shared check's visibility read this command answers itself
-// (sharedCheckVisibilityRead), before it reads anything else of the call. gh runs the rate-limit
-// read, the guard's own visibility reads and each call the shared check alone read with no pager.
+// check alone and reads no visibility, and this command prints nothing of it, since the daemon's
+// boot has said once that the deployment names no rule file. A call that writes nothing, by the
+// rule ghWritesNothing holds and under the shared check that rule was proven against
+// (ghReadsProvenCheck), is read by that check alone and gets no read of a repository's visibility
+// and no private-name pass. Three calls pass unchecked: `legion gh auth git-credential`, which
+// answers above before any of this, the exact `gh api rate_limit` (ghRateLimitRead), and the
+// guard's own visibility reads (ghVisibilityRead). The shared check's visibility read this command
+// answers itself (sharedCheckVisibilityRead), before it reads anything else of the call. gh runs
+// the rate-limit read, the guard's own visibility reads and each call the shared check alone read
+// with no pager.
 //
 // gh runs with an environment built from an allowlist (ghChildEnviron), never the caller's whole:
 // the proxy variables are kept, since a deployment that reaches GitHub through a proxy names it
@@ -272,8 +273,8 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// the visibility read and the private-name pass included, where the deployment names its
 	// rule file (LEGION_PRIVATE_NAME_RULES_FILE, leakguard.RulesFileVar). Where it names none,
 	// the guard runs the shared check alone, reads no visibility and no file the call sends, and
-	// says so (leakguard.GhAnswer.NoRules): this command prints noRulesLine once on standard
-	// error, through the guard's OnNoRules, and the log line says no-rules.
+	// says so (leakguard.GhAnswer.NoRules): the log line says no-rules, and standard error holds
+	// nothing of it, so that a script reading gh's output reads gh's alone.
 	//
 	// A *leakguard.Refusal and a *leakguard.SetupFailure each refuse the call: a check that did
 	// not run has cleared nothing. Both exit 2, this command's status for a refusal made before
@@ -303,7 +304,6 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 			OnVisibility: func(source leakguard.VisibilitySource) {
 				visibilitySource = string(source)
 			},
-			OnNoRules: saysNoRules(stderr),
 		})
 		answer, err := guard.GhCall(beforeGh, leakguard.GhRequest{
 			Args:          args,
