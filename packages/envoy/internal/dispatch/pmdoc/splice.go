@@ -385,7 +385,7 @@ func insertAt(doc *Node, pos int, with *Node) (*Node, error) {
 	for index := len(boundaries) - 1; index >= 0; index-- {
 		boundary := boundaries[index]
 		parent := nodeAtPath(doc, boundary.path)
-		replacement, fits := fitReplacement(parent, with, enclosingListItem(doc, boundary.path), false)
+		replacement, fits := fitReplacement(parent, with, enclosingListItem(doc, boundary.path), parent.Children[:boundary.index])
 		if !fits {
 			continue
 		}
@@ -505,7 +505,11 @@ func fitContent(parent *Node, selection spliceSelection, path []int, r Range, wi
 	if err != nil {
 		return nil, false, err
 	}
-	replacement, fits := fitReplacement(parent, with, openingItem, preservedParagraph(before, parent))
+	var kept []*Node
+	if before != nil {
+		kept = before.Children
+	}
+	replacement, fits := fitReplacement(parent, with, openingItem, kept)
 	if !fits {
 		return nil, false, nil
 	}
@@ -792,7 +796,11 @@ func EmptyDocument(doc *Node) bool {
 	return len(doc.Children) == 1 && doc.Children[0].Type == "paragraph" && len(doc.Children[0].Children) == 0
 }
 
-func fitReplacement(parent, with, openingListItem *Node, hasPrefixParagraph bool) ([]*Node, bool) {
+// fitReplacement is with's blocks as parent holds them, where they land after kept, the children
+// of parent the splice keeps ahead of them: an insert's are the children before its boundary, and
+// a range replacement's the fragment of parent before the range (sliceBoundaries). It reports
+// false where parent holds no such blocks, so the fit climbs to the parent above.
+func fitReplacement(parent, with, openingListItem *Node, kept []*Node) ([]*Node, bool) {
 	var source []*Node
 	if !EmptyDocument(with) {
 		source = make([]*Node, 0, len(with.Children))
@@ -823,7 +831,12 @@ func fitReplacement(parent, with, openingListItem *Node, hasPrefixParagraph bool
 		}
 		return items, true
 	case "list_item":
-		if len(source) == 0 || source[0].Type == "paragraph" || hasPrefixParagraph {
+		// A list item opens with its text, a paragraph, and holds any block after it (paragraph
+		// block*). Blocks that land after that text, which kept opens with, are written as they
+		// are: an empty paragraph ahead of them would stand between the text and them, written
+		// as a line of indentation alone that a read of the markdown drops (INFRA-341). Only blocks
+		// that open the item need a paragraph ahead of a first block that is none.
+		if len(source) == 0 || source[0].Type == "paragraph" || len(kept) > 0 && kept[0].Type == "paragraph" {
 			return source, true
 		}
 		return append([]*Node{{Type: "paragraph"}}, source...), true
@@ -868,10 +881,6 @@ func listItemAttrs(item *Node) Attrs {
 		return cloneAttrs(item.Attrs)
 	}
 	return Attrs{"label": "•", "listType": "bullet", "spread": false}
-}
-
-func preservedParagraph(fragment, parent *Node) bool {
-	return parent.Type == "list_item" && fragment != nil && len(fragment.Children) > 0 && fragment.Children[0].Type == "paragraph"
 }
 
 func normalizeFragment(node *Node) *Node {

@@ -2,6 +2,7 @@ package docs
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -370,6 +371,145 @@ func TestABlockInsertedAfterAListItemsTextWritesNoEmptyParagraph(t *testing.T) {
 	}
 }
 
+// insertParentsFixture holds a callout, a requirement, a list item and a blockquote, each holding
+// two paragraphs, and a paragraph at the document's own level.
+const insertParentsFixture = ":::callout{#c1 kind=\"note\"}\nFirst.\n\nSecond.\n:::\n\n" +
+	":::requirement{#r1}\nThe read succeeds.\n\nWithin a second.\n:::\n\n" +
+	"- one\n\n  more\n- two\n\n" +
+	"> Quoted.\n>\n> Again.\n\n" +
+	"After.\n"
+
+// An insert anchored on a child of a block that holds blocks - a typed block, a list item, a
+// blockquote - writes the blocks its markdown holds and nothing else, before the first child,
+// after it or after a later one: that block's children grow by exactly the blocks the markdown
+// holds, in the place the anchor names; no empty paragraph stands anywhere; and the stored
+// markdown holds no line of indentation alone and reads back as itself. A block the parent's
+// content rule cannot hold there is refused as it was: anything but a paragraph in a
+// requirement, whose rule is paragraph+, and anything but a paragraph ahead of a list item's
+// text, whose rule is paragraph block* (INFRA-341).
+func TestAnInsertIntoATypedBlockAListItemOrAQuoteWritesOnlyItsBlocks(t *testing.T) {
+	parents := []struct {
+		name string
+		// children are the texts of the parent's two paragraphs, which the anchors name.
+		children [2]string
+		// broken is what a refusal names as breaking the parent's rule for blocks landing at index
+		// among its children, the first of them that is no paragraph being noun ("" for paragraphs
+		// alone), or "" where the rule holds them there.
+		broken func(index int, noun string) string
+	}{
+		{name: "a callout", children: [2]string{"First.", "Second."}, broken: func(int, string) string { return "" }},
+		{name: "a requirement", children: [2]string{"The read succeeds.", "Within a second."}, broken: func(_ int, noun string) string { return noun }},
+		{name: "a list item", children: [2]string{"one", "more"}, broken: func(index int, noun string) string {
+			if index > 0 || noun == "" {
+				return ""
+			}
+			return noun + " before its text"
+		}},
+		{name: "a blockquote", children: [2]string{"Quoted.", "Again."}, broken: func(int, string) string { return "" }},
+	}
+	blocks := []struct {
+		name, markdown string
+		kinds          []string
+		// noun names the first of kinds that is no paragraph, as a refusal names it, or is "" for
+		// paragraphs alone.
+		noun string
+	}{
+		{name: "a paragraph", markdown: "Noted.", kinds: []string{"paragraph"}},
+		{name: "a heading", markdown: "## Heading", kinds: []string{"heading"}, noun: "a heading"},
+		{name: "a code block", markdown: "```\ncode here\n```", kinds: []string{"code_block"}, noun: "a code block"},
+		{name: "a quote", markdown: "> Quoted aside.", kinds: []string{"blockquote"}, noun: "a blockquote"},
+		{name: "a table", markdown: "| a | b |\n|---|---|\n| 1 | 2 |", kinds: []string{"table"}, noun: "a table"},
+		{name: "a heading and a paragraph", markdown: "## Heading\n\nNoted.", kinds: []string{"heading", "paragraph"}, noun: "a heading"},
+	}
+	places := []struct {
+		name string
+		// child is the index of the parent's child the anchor names, and index the place among the
+		// parent's children the blocks take.
+		child, index int
+		after        bool
+	}{
+		{name: "before the first child", child: 0, index: 0},
+		{name: "after the first child", child: 0, index: 1, after: true},
+		{name: "after a later child", child: 1, index: 2, after: true},
+	}
+	for _, parent := range parents {
+		for _, place := range places {
+			for _, block := range blocks {
+				t.Run(parent.name+", "+place.name+", "+block.name, func(t *testing.T) {
+					tree, err := parseInput(insertParentsFixture)
+					if err != nil {
+						t.Fatal(err)
+					}
+					childID := blockIDOfText(t, tree, parent.children[place.child])
+					anchor, holderID := "block:"+childID, parentIDOfBlock(t, tree, childID)
+					var kinds []string
+					for _, child := range blockByID(tree, holderID).Children {
+						kinds = append(kinds, child.Type)
+					}
+					if len(kinds) != 2 {
+						t.Fatalf("%s holds %v in the fixture, want two paragraphs", parent.name, kinds)
+					}
+					op, field := model.EditOp{Op: "insert", Before: anchor, Markdown: block.markdown}, "before"
+					if place.after {
+						op, field = model.EditOp{Op: "insert", After: anchor, Markdown: block.markdown}, "after"
+					}
+					out, err := applyAlone(tree, op)
+					if broken := parent.broken(place.index, block.noun); broken != "" {
+						var refusal *ErrInsertDoesNotFit
+						if !errors.As(err, &refusal) {
+							t.Fatalf("insert of %s: error = %v, want ErrInsertDoesNotFit", block.name, err)
+						}
+						if refusal.Field != field || refusal.Anchor != anchor || refusal.HolderID != holderID || refusal.Broken != broken {
+							t.Fatalf("refusal = %+v, want %s %q in %q, broken by %s", refusal, field, anchor, holderID, broken)
+						}
+						return
+					}
+					if err != nil {
+						t.Fatalf("insert of %s: %v", block.name, err)
+					}
+					want := append(append(append([]string(nil), kinds[:place.index]...), block.kinds...), kinds[place.index:]...)
+					holder := blockByID(out, holderID)
+					if holder == nil {
+						t.Fatalf("the document holds no block %q after the insert", holderID)
+					}
+					var got []string
+					for _, child := range holder.Children {
+						got = append(got, child.Type)
+					}
+					if !slices.Equal(got, want) {
+						t.Errorf("%s holds %v after the insert, want %v: its %d children and the %d blocks the markdown holds", parent.name, got, want, len(kinds), len(block.kinds))
+					}
+					empty := false
+					pmdoc.Walk(out, func(node *pmdoc.Node) bool {
+						empty = empty || node.Type == "paragraph" && strings.TrimSpace(textOf(node)) == ""
+						return !empty
+					})
+					if empty {
+						t.Errorf("the document holds an empty paragraph: %s holds %v", parent.name, got)
+					}
+					markdown, err := renderTree(out)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, line := range strings.Split(markdown, "\n") {
+						if line != "" && strings.TrimSpace(line) == "" {
+							t.Errorf("the stored markdown holds a line of indentation alone: %q", markdown)
+							break
+						}
+					}
+					reread, err := parseInput(markdown)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if again, err := renderTree(reread); err != nil || again != markdown {
+						t.Errorf("a read of the stored markdown renders %q, %v; want the same %q", again, err, markdown)
+					}
+				})
+			}
+		}
+	}
+}
+
 func firstNodeOfType(node *pmdoc.Node, kind string) *pmdoc.Node {
 	if node.Type == kind {
 		return node
@@ -389,4 +529,22 @@ func textOf(node *pmdoc.Node) string {
 		b.WriteString(textOf(child))
 	}
 	return b.String()
+}
+
+// parentIDOfBlock is the id of the block whose children hold the block carrying childID.
+func parentIDOfBlock(t *testing.T, tree *pmdoc.Node, childID string) string {
+	t.Helper()
+	var id string
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		for _, child := range node.Children {
+			if child.Attrs[pmdoc.BlockIDAttr] == childID {
+				id, _ = node.Attrs[pmdoc.BlockIDAttr].(string)
+			}
+		}
+		return id == ""
+	})
+	if id == "" {
+		t.Fatalf("no block carrying an id holds the block %q", childID)
+	}
+	return id
 }
