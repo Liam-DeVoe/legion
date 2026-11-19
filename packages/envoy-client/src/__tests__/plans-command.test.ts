@@ -10,6 +10,7 @@ import {
   PROJECT_KEY_RULE,
   type ProjectPlans,
 } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   type FakeDispatchServer,
@@ -28,6 +29,9 @@ import { forgetKeyedLayerMemory } from "../dispatch-http";
 // cases drive `executeDispatchTool` over the shared fake Dispatch (`test/fake-dispatch.ts`) as a
 // fetch, so each reads the text and the details a host is handed; the command-line cases drive
 // the real CLI against that fake on a loopback port, and read its exit code and output.
+
+/** The Dispatch bearer each command-line case is handed. */
+const TOKEN = fixtureSecret("dsp");
 
 /** The plan node `id` Legion writes for `issue` when it runs the issue on its default steps; each
  *  issue's node is its own, under an id of its own. */
@@ -516,7 +520,7 @@ describe("dispatch plans on the command line", () => {
         DISPATCH_HOST: "omp",
         DISPATCH_SESSION_ID: "ses-1",
         DISPATCH_URL: server.url,
-        DISPATCH_TOKEN: "test-token",
+        DISPATCH_TOKEN: TOKEN,
         DISPATCH_STATE_DIR: stateDir,
         ...session,
       },
