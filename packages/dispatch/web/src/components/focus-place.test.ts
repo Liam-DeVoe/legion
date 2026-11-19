@@ -1670,3 +1670,63 @@ test("the same field taken away while focused, a microtask after the event, hand
     });
   }
 });
+
+/** An Inbox drawer - a modal dialog portalled to the end of the body - holding a box of rows, as
+ *  the drawer draws its threads, with the trigger of `Hand this question to` in its first row and
+ *  that trigger's list opened. */
+function drawerRows(): {
+  box: HTMLElement;
+  list: ListPanel;
+  rows: { mark: HTMLInputElement; row: HTMLElement }[];
+  trigger: HTMLButtonElement;
+} {
+  const drawer = document.createElement("div");
+  drawer.setAttribute("role", "dialog");
+  drawer.setAttribute("aria-modal", "true");
+  document.body.append(drawer);
+  const { box, rows } = rowBoxIn(drawer, "One", "Two", "Three");
+  const { list, trigger } = rowList((rows[0] as { row: HTMLElement }).row);
+  return { box, list, rows, trigger };
+}
+
+// (bc) INFRA-3135 round 16, the tester's, from the class search of review round 2's second
+// finding: Tab pressed on the trigger a pick's write holds is no press the held control takes
+// without a write - it moves the focus off the trigger, to the next row's mark. A live update
+// that takes that row away while the write is still out is no doing of the reader's: the pick's
+// answer is its own row's, not another row's going. So, as in (aw) once the hold has ended, the
+// focus goes into no other row and nothing scrolls, by Chromium's `focusout` as by none. At
+// 90fa8211 the Tab is passed over (`notePress`, `onHeldControl`), the pick stays the cause, and a
+// press's place in a dialog is the whole dialog (`pressPlaces`): on Chromium's path the focus is
+// walked into row Three and scrolled to it; with no `focusout` the detached mark reaches no
+// dialog, so it lands on the box, and the two engines disagree.
+test("Tab off a control a pick's write holds ends the pick as the cause of another row's going", async () => {
+  for (const withFocusout of [true, false]) {
+    const scrolls = spyOn(Element.prototype, "scrollIntoView");
+    try {
+      await withRescue(async () => {
+        const { box, list, rows, trigger } = drawerRows();
+        const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+        await pickAndHold(list, trigger);
+        expect(trigger).toHaveFocus();
+        // The reader's Tab on the held trigger, and the engine's move of the focus to the next
+        // control, the second row's mark.
+        trigger.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Tab" }));
+        second.mark.focus();
+        placeAt(second.mark, 260);
+        box.dispatchEvent(new Event("scroll"));
+        second.mark.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Tab" }));
+        await settled();
+        expect(trigger).toHaveAttribute("aria-disabled", "true");
+        if (withFocusout) lose(second.mark, () => second.row.remove());
+        else second.row.remove();
+        await settled();
+        expect(box).toHaveFocus();
+        expect(document.activeElement?.closest("[data-inbox-row]")).toBeNull();
+        expect(rows[2]?.mark).not.toHaveFocus();
+      });
+      expect(scrolls).not.toHaveBeenCalled();
+    } finally {
+      scrolls.mockRestore();
+    }
+  }
+});

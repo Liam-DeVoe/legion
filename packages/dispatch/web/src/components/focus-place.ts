@@ -1220,10 +1220,15 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
      *  after it, or on anything inside that control (`onHeldControl`) - a double click, a repeated
      *  Enter, any other key or pointer press on that control or on a span or an icon of it: the
      *  held control takes the act without a write, so the act before it stays the cause, with its
-     *  release and its write deadline as they were (`noteRelease`). */
+     *  release and its write deadline as they were (`noteRelease`). Tab, with Shift or without, is
+     *  the one key that is no such act: it moves the focus off the held control to another, and an
+     *  act is the cause only of the loss of its own control and of what it takes away, so the Tab
+     *  ends the act before it and is noted as a new act, and a loss of the control it moved the
+     *  focus to is judged on its own. */
     const notePress = (event: Event) => {
       if (!(event.target instanceof Element)) return;
-      if (lastPress?.live === true && onHeldControl(lastPress, event.target)) return;
+      const movesOff = event instanceof KeyboardEvent && event.key === "Tab";
+      if (!movesOff && lastPress?.live === true && onHeldControl(lastPress, event.target)) return;
       lastPress?.stop();
       const region = event.target.closest(DIALOG);
       const opener = region === null ? null : (openedFrom.get(region) ?? null);
