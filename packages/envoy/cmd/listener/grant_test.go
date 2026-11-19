@@ -140,11 +140,11 @@ func hasKeyWithPrefix(keys []string, prefix string) bool {
 
 // One machine's grant writes its own delivery lease as the lease does (Create, a read back by key,
 // Update) and its own clean-hand-back mark, and reads that mark back as the pod taking the record
-// does; it is refused a write to another machine's lease key, hand-back mark or delivery ledger:
-// no machine's user can take or clear another machine's lease, or vouch for another machine's
-// hand-over. A refused Create draws two refusals, since nats.go reads the key after any failed
-// create (nats.go@v1.53.1 kv.go:729-737): its write, and the direct get of the same key, which the
-// grant refuses too
+// does; it is refused a write to another machine's lease key, hand-back mark or delivery ledger,
+// so no machine's user writes another machine's keys by a key write (what every listener user can
+// still do to the whole bucket is natsgrant.ListenerState's to say). A refused Create draws two
+// refusals, since nats.go reads the key after any failed create (nats.go@v1.53.1 kv.go:729-737):
+// its write, and the direct get of the same key, which the grant refuses too
 // (TestAMachinesGrantRefusesAReadOfAnotherMachinesLeaseMarkAndLedgerAndReadsEveryLastSeen). Each
 // row waits for every refusal its write draws, and fails on any other answer.
 func TestAMachinesGrantRefusesAnotherMachinesLeaseMarkAndLedger(t *testing.T) {
@@ -245,12 +245,13 @@ func awaitRefusals(t *testing.T, errs <-chan error, what string, subjects ...str
 	}
 }
 
-// A listener under its machine's grant cannot read another machine's delivery lease,
+// A listener under its machine's grant cannot request a read of another machine's delivery lease,
 // clean-hand-back mark or delivery ledger: the direct get of each of those keys is refused, so a
-// machine's user learns nothing of another machine's lease or deliveries. It still reads every
-// session's last-seen record, whichever machine's listener wrote it: a role claim names its holder
-// session and no machine, and any listener answers a lapsed holder's last_seen out of that record
-// (GET /v1/roles/<role>).
+// machine's user cannot ask the bucket for another machine's lease or deliveries (its _INBOX.>
+// subscription still receives every reply: natsgrant.ListenerState says what that leaves). It
+// still reads every session's last-seen record, whichever machine's listener wrote it: a role
+// claim names its holder session and no machine, and any listener answers a lapsed holder's
+// last_seen out of that record (GET /v1/roles/<role>).
 func TestAMachinesGrantRefusesAReadOfAnotherMachinesLeaseMarkAndLedgerAndReadsEveryLastSeen(t *testing.T) {
 	seedA, publicA := testnats.User(t)
 	seedB, publicB := testnats.User(t)

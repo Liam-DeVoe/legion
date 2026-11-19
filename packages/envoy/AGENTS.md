@@ -1633,7 +1633,7 @@ The outbox counts such an attempt live for the `model.DeliveryClaimLapse` after 
 past that lease it counts it resumed, holds that session's copy as a `comment_fallback_copies` row and publishes the comment's event, and the fallback pass settles that row with nothing published once the lane's send lands, or publishes the copy when that send fails.
 A Retry that overtook the queued attempt and was sent takes the mention over:
 the lane settles that attempt superseded without sending it (`MentionAttemptDeliveredLaterSQL`), and a Retry that is still in flight when the lane reaches the attempt it overtook decides it either way - the lane leaves it `pending` and unclaimed, for the sweep to send should the Retry fail and for the Retry's own sender to settle superseded should it land.
-The lane's own send takes its process's claim over (`model.DeliveryClaimMineSQL`) and refuses another sender's.
+The lane's own send takes over the claim its process recorded (`model.DeliveryClaimSinceSQL`) and refuses another sender's.
 A send past the queue's bound gives that claim back, so its attempt stays `pending` and unclaimed.
 Once the server's lifetime ends nothing more is queued - a comment that commits during the HTTP drain is answered, its refused send logged at WARN and its attempt's claim given back - no queued send starts, no claim is written again, and the sends in flight get 10 s (`mentionDrainTimeout`) before their context is cancelled;
 the drain then gives back the claim of every send it never started.
@@ -2680,7 +2680,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - The listing's three time bounds.
   `closed_since` (inclusive) and `closed_before` (exclusive) are RFC3339 bounds on `closed_at`, so an open issue matches neither, and a reader of the issues closed in a window reads those alone rather than the whole listing;
   `listIssues` (`api/issue_queries.go`) refuses a malformed one as `400 INVALID_CLOSED_SINCE` or `400 INVALID_CLOSED_BEFORE`, as it refuses a malformed `updated_since` (`400 INVALID_UPDATED_SINCE`), and a `closed_before` at or before `closed_since` as `400 INVALID_CLOSED_WINDOW`.
-  The three bounds reach the statement rounded up to the next microsecond (`microsecondCeiling`), since Postgres stores a time to the microsecond and pgx would otherwise truncate a finer bound and move `>=` and `<` onto a time stored before it;
+  The three bounds reach the statement rounded up to the next microsecond (`store.MicrosecondCeiling`), since Postgres stores a time to the microsecond and pgx would otherwise truncate a finer bound and move `>=` and `<` onto a time stored before it;
   the window refusal judges the bounds as the caller wrote them.
 
 - The listing's paging, which is `GET /api/v1/issues`' own.

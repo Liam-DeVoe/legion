@@ -13,8 +13,11 @@ body: |-
     pod that took its lease reads), `delivery.<u>.*.*` (the delivery ledger's attempt, record and
     clear) and `seen.*` (every session's last-seen record, written at each registration and read
     for a lapsed session). It grants no stream message get, watch, consumer create or delete, or
-    flow-control reply on the bucket, so one machine's user cannot take, clear or read another
-    machine's lease or delivery ledger, or vouch for another machine's hand-over. The listener
+    flow-control reply on the bucket, so one machine's user cannot write or delete another
+    machine's lease, hand-back marks or delivery ledger by a key write, nor request a read of one
+    by a direct get. That is a subject's reach and does not make the bucket a machine's own: what
+    every listener user of the fleet can still do to the whole bucket, and so the trust the bucket
+    places in them, is in `packages/envoy/infra/README.md` ("Permission sets"). The listener
     reads every write back by key, which a grant
     rendered before this scoping allows too. Deploy the grant before a second listener pod of a
     machine id: a listener whose grant refuses the bucket does not exit but logs one ERROR, `listener

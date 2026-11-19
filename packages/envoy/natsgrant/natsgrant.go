@@ -64,11 +64,13 @@ const inboxes = nats.InboxPrefix + ">"
 //     get and a write of each key family it uses, which are the machine's own keys alone - its
 //     delivery lease (bus.ListenerLeaseKey), the clean-hand-back marks of its stopping pods
 //     (bus.ListenerHandBackPrefix) and its delivery ledger (bus.ListenerLedgerPrefix), so one
-//     machine's user cannot take, clear or read another machine's lease or ledger, or vouch for
-//     another machine's hand-over - beside every session's last-seen record (bus.LastSeenPrefix),
-//     which is read across machines and so stays fleet-wide. A listener whose grant lacks this
-//     bucket does not exit: it logs an ERROR naming the bucket and delivers without a lease,
-//     receiving from its durable only while no other subscriber holds it;
+//     machine's user cannot write or delete another machine's lease, marks or ledger by a key
+//     write, nor request a read of one by a direct get - beside every session's last-seen record
+//     (bus.LastSeenPrefix), which is read across machines and so stays fleet-wide. What every
+//     listener user of the fleet can still do to the whole bucket is ListenerState's to say. A
+//     listener whose grant lacks this bucket does not exit: it logs an ERROR naming the bucket
+//     and delivers without a lease, receiving from its durable only while no other subscriber
+//     holds it;
 //   - the purge of the interest bucket, which its delete-marker collection sends.
 //
 // Subscribe: reply inboxes, then the role lanes in the machine's queue group (bus.ListenerQueue),
@@ -188,57 +190,82 @@ func KVWrite(bucket string) []string {
 // ListenerState is the listener state bucket's part of listenerGrant for machine machineID: the
 // eleven subjects the listener's own calls on bus.ListenerStateBucket send, each no wider than its
 // call. Below, <u> is the machine's durable (bus.ListenerDurable), one subject token for any
-// listener that binds it, since nats.go refuses a consumer name holding a '.'
-// (nats.go@v1.53.1 jsm.go:588-594); paths are packages/envoy's and nats.go's at v1.53.1. The
-// listener opens the bucket once (cmd/listener/lease_bucket.go:82), on its lease's connection, and
-// the lease (cmd/listener/main.go:1320), the delivery ledger (main.go:1462), the last-seen records
-// (main.go:1946) and the bus client's keeper (main.go:1827) share that handle.
+// listener that binds it, since nats.go refuses a consumer name holding a '.' (nats.go@v1.53.1
+// jsm.go, checkConsumerName). Each call is named by its function: paths are packages/envoy's, and
+// nats.go's at v1.53.1 where the text says nats.go. The listener opens the bucket once
+// (cmd/listener/lease_bucket.go, openListenerState), on its lease's connection, and the lease
+// (cmd/listener/main.go, openDeliveryLease), the delivery ledger (main.go, newDeliveryLedger), the
+// last-seen records (main.go's main, session.WithLastSeenBucket) and the bus client's keeper
+// (main.go's main, bus.Client.KeepBucket) share that handle.
 //
-//   - $JS.API.STREAM.INFO.KV_envoy_listener: the open's lookups (internal/bus/kv_ensure.go:143,
-//     :182) and its read of a found bucket (:205), the copy and leader waits (start_wait.go:167,
-//     from kv_ensure.go:223, :230, :247), the handle's open (kv.go:148-149), the age raise's read
-//     (kv_ensure.go:457, from cmd/listener/lease_bucket.go:90), an update's read-back
-//     (stream.go:1239) and the keeper's raise (kv_ensure.go:302, from keeper.go:146): nats.go's
-//     js.StreamInfo (jsm.go:1004) and jetstream's Stream (jetstream/jetstream.go:817).
-//   - $JS.API.STREAM.CREATE.KV_envoy_listener: the create of an absent bucket (kv_ensure.go:167,
-//     from lease_bucket.go:82), nats.go's AddStream (kv.go:525, jsm.go:923).
-//   - $JS.API.STREAM.UPDATE.KV_envoy_listener: the copy raise (kv_ensure.go:210 to
-//     stream.go:1230), the age raise (lease_bucket.go:90 to kv_ensure.go:469 to stream.go:1230), the
-//     keeper's raise (kv_ensure.go:306) and nats.go's update of a bucket another pod created first
-//     (kv.go:542): UpdateStream (jsm.go:1138).
+//   - $JS.API.STREAM.INFO.KV_envoy_listener: the open's lookups and its read of a found bucket
+//     (internal/bus/kv_ensure.go, ensureKeyValue: its lookUpBucket, which awaitBucketApplied
+//     takes again, and its js.StreamInfo), the copy and leader waits (internal/bus/start_wait.go,
+//     awaitStream, from ensureKeyValue's awaitReplicasCurrent and awaitStreamLeader), the handle's
+//     open (internal/bus/kv.go, wrapKeyValue), the age raise's read (bus.RaiseMaxAge, from
+//     openListenerState), an update's read-back (internal/bus/stream.go, updateStream) and the
+//     keeper's raise (kv_ensure.go, raiseReplicas, from internal/bus/keeper.go,
+//     bus.Client.keepPass): nats.go's (*js).StreamInfo in jsm.go and jetstream's
+//     (*jetStream).Stream in jetstream/jetstream.go.
+//   - $JS.API.STREAM.CREATE.KV_envoy_listener: the create of an absent bucket (ensureKeyValue's
+//     js.CreateKeyValue, from openListenerState's bus.EnsureKeyValue): nats.go's AddStream in
+//     jsm.go, from (*js).CreateKeyValue in nats.go's kv.go.
+//   - $JS.API.STREAM.UPDATE.KV_envoy_listener: the copy raise (ensureKeyValue to raiseStream to
+//     updateStream), the age raise (openListenerState to bus.RaiseMaxAge to updateStream), the
+//     keeper's raise (raiseReplicas to raiseStream) and nats.go's update of a bucket another pod
+//     created first (nats.go's CreateKeyValue): UpdateStream in nats.go's jsm.go.
 //   - $JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.<key>, one subject for each key family
 //     below: every Get, a direct get of the key's last message with no body, since every bucket
-//     nats.go creates allows direct gets (kv.go:488, :647-660; jsm.go:1266-1269), and the read
-//     nats.go's Create makes of its key after a write that failed (kv.go:737).
+//     nats.go creates allows direct gets (nats.go's CreateKeyValue sets AllowDirect, (*kvs).get
+//     reads by it, and (*js).getMsg in jsm.go sends the get), and the read nats.go's (*kvs).Create
+//     makes of its key after a write that failed.
 //   - $KV.envoy_listener.<key>, one subject for each key family below: every write, a publish to
-//     the key's subject - Put (kv.go:700-716), Create and Update (kv.go:729-739, :779-799) and
-//     Delete (kv.go:810-849).
+//     the key's subject - nats.go's (*kvs).Put, Create and Update (both through (*kvs).update) and
+//     Delete, in nats.go's kv.go.
 //
 // The four key families, each read and written by these calls:
-//   - lease.<u> (bus.ListenerLeaseKey), the machine's delivery lease: read by Get at
-//     cmd/listener/lease.go:426 (Successor), :771 (ownRevision), :795 (poll) and :896 (acquire's
-//     read-back), and after a failed Create; written by Create at lease.go:884 (acquire) and by
-//     Update at :529 (writeRelease), :688 (renew) and :886 (acquire).
+//   - lease.<u> (bus.ListenerLeaseKey), the machine's delivery lease: read by Get in
+//     cmd/listener/lease.go's lease.Successor, lease.ownRevision, lease.poll and lease.acquire
+//     (its read-back), and after a failed Create; written by Create in lease.acquire and by Update
+//     in lease.writeRelease, lease.renew and lease.acquire.
 //   - handback.<u>.* (bus.ListenerHandBackPrefix), one token after the prefix, the revision a mark
-//     vouches for (cmd/listener/lease_handback.go:39-41): written by Put at lease_handback.go:67
-//     (MarkHandBack), read by Get at :87 (HandBackMarked).
+//     vouches for (cmd/listener/lease_handback.go, lease.handBackKey): written by Put in
+//     lease.MarkHandBack, read by Get in lease.HandBackMarked.
 //   - delivery.<u>.*.* (bus.ListenerLedgerPrefix), two tokens after the prefix, the digest and the
-//     session token (internal/dedupe/kv.go:154-156): written by Create at dedupe/kv.go:182, Update
-//     at :199 (attempt), Put at :305 (Record) and Delete at :322 (Clear), read by Get at :189
-//     (attempt) and after a failed Create.
+//     session token (internal/dedupe/kv.go, dedupe.KV.Key): written by Create and Update in
+//     dedupe.KV.attempt, Put in dedupe.KV.Record and Delete in dedupe.KV.Clear, read by Get in
+//     dedupe.KV.attempt and after a failed Create.
 //   - seen.* (bus.LastSeenPrefix), one token after the prefix, the session token
-//     (internal/session/lastseen.go:110-112): written by Put at lastseen.go:140 (recordSeen), read
-//     by Get at :154 (readSeen), for every session whichever machine registered it.
+//     (internal/session/lastseen.go, lastSeenKey): written by Put in
+//     session.SessionRegistry.recordSeen, read by Get in session.SessionRegistry.readSeen, for
+//     every session whichever machine registered it.
 //
 // The listener makes no other call on this bucket. bus.KeyValue offers no Watch, WatchAll,
-// History, Keys or ListKeys (internal/bus/kv.go:26-39), and the listener calls none of its
+// History, Keys or ListKeys (its doc, internal/bus/kv.go), and the listener calls none of its
 // GetRevision (a direct get on the stream's bare subject), WatchKeys, WatchFilteredKeys and
 // ReadHistory (a consumer create) or GetFromLeader (a STREAM.MSG.GET with a request body) on it. So
 // this set holds none of the stream message get, consumer create and delete or flow-control
 // replies KVWrite grants for every other bucket, and no direct get of a key outside the four
 // families: every read but seen.* is of a key this machine writes. The two other calls the open
-// needs are listenerGrant's own: JetStream's account info, which a create sends first
-// (kv.go:432), and the reply inboxes every answer arrives on.
+// needs are listenerGrant's own: JetStream's account info, which a create sends first (nats.go's
+// CreateKeyValue), and the reply inboxes every answer arrives on.
+//
+// What this set holds is a subject's reach, and a NATS grant acts on subjects alone, not on a
+// message's headers or on what a stream update changes. So a machine's user cannot write, delete
+// or request a read of another machine's keys by a key write or a direct get, and the bucket is
+// still no machine's own: every listener user of the fleet can purge it, change its configuration
+// and read every answer it sends another machine. A write to the user's own key may carry the
+// header Nats-Rollup: all, which the bucket's stream takes, since nats.go creates every bucket
+// with AllowRollup set and DenyPurge unset (nats.go's CreateKeyValue), and answers by purging
+// every key of every machine (nats-server v2.15.1 server/stream.go,
+// processJetStreamMsgWithRollup). The STREAM.UPDATE the raises need carries a whole
+// configuration, and no subject narrows it to the field a raise changes, so it can change the
+// bucket's limits or any other setting. And the _INBOX.> subscription of listenerGrant receives
+// every reply any client gets, another machine's direct-get answer included: the refused direct
+// get stops a machine's user asking for another machine's key, not reading the answer. The bucket
+// therefore trusts all listener users of the fleet, as that shared _INBOX.> subscription already
+// trusts them with every reply. dispatch://INFRA-840's plan replaces the shared reply subscription
+// and the update grant.
 func ListenerState(machineID string) []string {
 	stream := kvStream + bus.ListenerStateBucket
 	durable := bus.ListenerDurable(machineID)

@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // sessionConsumerRig is a listener's /v1 routes and durable handler over the in-process server,
@@ -1118,7 +1119,8 @@ func TestSessionConsumerMessageRaisesNoExceptionOnTheDurablePath(t *testing.T) {
 }
 
 // listenerGrantBeforeSessionConsumers is the listener's grant as a hub carries it before session
-// consumers (infra/core ListenerPermissions without their entries) for machine test-machine.
+// consumers, for machine test-machine: natsgrant.listenerGrant, the part of natsgrant.Listener
+// without the session consumers' calls, over the buckets a hub carried then (bucketGrant).
 func listenerGrantBeforeSessionConsumers() []string {
 	durable := bus.ListenerDurable("test-machine")
 	allow := []string{
@@ -1137,22 +1139,9 @@ func listenerGrantBeforeSessionConsumers() []string {
 	}
 	// The listener state bucket is part of every listener's grant, before session consumers as
 	// after: the machine's delivery lease, its pods' clean-hand-back marks, its delivery ledger
-	// and every session's last-seen record (infra/core listenerGrant).
-	stateStream := "KV_" + bus.ListenerStateBucket
-	allow = append(allow,
-		"$JS.API.STREAM.INFO."+stateStream,
-		"$JS.API.STREAM.CREATE."+stateStream,
-		"$JS.API.STREAM.UPDATE."+stateStream,
-		"$JS.API.DIRECT.GET."+stateStream+".>",
-		"$JS.API.STREAM.MSG.GET."+stateStream,
-		"$KV."+bus.ListenerStateBucket+"."+bus.ListenerLeaseKey("test-machine"),
-		"$KV."+bus.ListenerStateBucket+"."+bus.ListenerHandBackPrefix(durable)+">",
-		"$KV."+bus.ListenerStateBucket+"."+bus.ListenerLedgerPrefix(durable)+">",
-		"$KV."+bus.ListenerStateBucket+"."+bus.LastSeenPrefix+">",
-		"$JS.API.CONSUMER.CREATE."+stateStream+".>",
-		"$JS.API.CONSUMER.DELETE."+stateStream+".>",
-		"$JS.FC."+stateStream+".>",
-	)
+	// and every session's last-seen record, as the eleven subjects natsgrant.ListenerState builds,
+	// so this grant is no wider there than a rendered one.
+	allow = append(allow, natsgrant.ListenerState("test-machine")...)
 	return append(allow, "$JS.API.STREAM.PURGE.KV_"+bus.InterestBucket)
 }
 
