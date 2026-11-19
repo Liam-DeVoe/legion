@@ -679,9 +679,6 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.check_ci_filters_test == 'true'
         run: .github/scripts/check-ci-filters.test.sh
 
-      # After setup-go: the check that every module a required job builds is tidy, under the real
-      # go, over a module proxy on disk the harness writes and module caches of its own, so it
-      # fetches nothing from the network and reads nothing the fetch above fetched.
       - name: Test the Go module tidy check
         if: inputs.changes-result != 'success' || inputs.check_go_tidy_test == 'true'
         run: .github/scripts/check-go-tidy.test.sh

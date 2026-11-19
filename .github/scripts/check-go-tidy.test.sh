@@ -1,19 +1,4 @@
 #!/usr/bin/env bash
-# Tests for `check-go-tidy.sh`: every module a required job builds is tidy. A tidy module passes; a
-# module whose go.sum lacks a line, or whose go.mod lacks an indirect requirement, fails, named,
-# with tidy's diff; each module of the workspace a fetch file line runs in is read, and a go.mod no
-# fetch file line reaches is not; a module the module cache lacks fails naming the fetch line that
-# fills it; and a tree in which the check finds no module reports UNKNOWN.
-#
-# Each case runs the real script, copied into a fixture repository so the root it derives from its
-# own path is the fixture's, under the real go, with no network: two modules, dep1, which requires
-# and imports dep2, are written as a file proxy under the harness's own directory and downloaded
-# from there into a module cache of its own, as a job's fetch step fills its cache; the check then
-# runs against that cache with the proxy off. The check is given an unreachable module proxy and
-# checksum database, so a case would show it if the check asked either.
-#
-# Run from anywhere: .github/scripts/check-go-tidy.test.sh
-# CI runs it in ci.yaml's test job.
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -60,13 +45,9 @@ proxy_module example.com/dep1 v1.0.0 "$work/src/dep1"
 # go-offline: the harness's own file proxy under $work is its one source; it reaches no network.
 (cd "$work" && GOPROXY="file://$work/proxy" go mod download example.com/dep1@v1.0.0 example.com/dep2@v1.0.0)
 
-# The template every fixture module copies: a module that imports dep1, made tidy by tidy itself
-# from that cache, so its go.mod requires dep2 as an indirect requirement and its go.sum holds
-# the four lines of dep1 and dep2.
 printf 'module example.com/app\n\ngo 1.21\n\nrequire example.com/dep1 v1.0.0\n' > "$work/template/go.mod"
 printf 'package app\n\nimport "example.com/dep1"\n\nfunc Three() int { return dep1.One() + 2 }\n' > "$work/template/app.go"
 (cd "$work/template" && GOPROXY=off go mod tidy)
-# The fixtures below are only what they claim when the template is: stop here if it is not.
 if ! grep -q '^require example.com/dep2 v1.0.0 // indirect$' "$work/template/go.mod" ||
   [ "$(grep -c '^example.com/dep[12] v1.0.0' "$work/template/go.sum")" != 4 ]; then
   echo "FAIL: the template module is not the tidy module the cases need:" >&2
@@ -74,7 +55,6 @@ if ! grep -q '^require example.com/dep2 v1.0.0 // indirect$' "$work/template/go.
   exit 1
 fi
 
-# fixture NAME: an empty repository holding a copy of the check where this repository holds it.
 fixture() {
   local root="$work/trees/$1"
   if [ -e "$root" ]; then
@@ -86,21 +66,15 @@ fixture() {
   echo "$root"
 }
 
-# module ROOT DIR [PATH]: a copy of the tidy template at ROOT/DIR, its module path PATH if given.
 module() {
   mkdir -p "$1/$2"
   cp "$work/template/go.mod" "$work/template/go.sum" "$work/template/app.go" "$1/$2/"
   [ -z "${3:-}" ] || sed -i "s|^module .*|module $3|" "$1/$2/go.mod"
 }
 
-# untidy_sum ROOT DIR: the module at ROOT/DIR with dep2's zip hash gone from its go.sum.
 untidy_sum() { sed -i '/^example.com\/dep2 v1.0.0 h1:/d' "$1/$2/go.sum"; }
-# untidy_mod ROOT DIR: the module at ROOT/DIR with its indirect requirement of dep2 gone.
 untidy_mod() { sed -i '/example.com\/dep2 v1.0.0 \/\/ indirect/d' "$1/$2/go.mod"; }
 
-# run_check ROOT: the check of ROOT, from a directory outside it, with a module proxy and a
-# checksum database that refuse every connection. Leaves its output in `out`, its status in
-# `status`.
 run_check() {
   set +e
   out=$(cd "$work" && GOPROXY=https://127.0.0.1:1 GOSUMDB='sum.golang.org https://127.0.0.1:1' \

@@ -162,10 +162,6 @@ list_deps() {
   retry go list -deps "$@" > /dev/null
 }
 
-# tidy_module DIR: download what `go mod tidy` of the module in DIR reads, tidy run on a copy of
-# the module's go.mod and go.sum in a directory of its own, removed after (the header's `tidy
-# DIR`). Each attempt copies them afresh. Run in a subshell of its own: it moves to DIR and sets
-# a trap.
 tidy_module() {
   local dir=$1
   [ -f "$dir/go.mod" ] || { echo "go-fetch: no go.mod in $dir" >&2; exit 2; }
@@ -191,8 +187,6 @@ tidy_on_copy() {
 # The settings a fetch FILE line may put in front of `deps`, and what each may be set to.
 PLATFORM_SETTING='^(GOOS|GOARCH)=[a-z0-9]+$|^CGO_ENABLED=[01]$|^GOWORK=off$'
 
-# run_file FILE: every line of FILE read and checked first, then each run in its turn, each
-# `deps` and `tidy` in a subshell of its own so its cd and its settings reach no other line.
 run_file() {
   local file=$1 line text n=0 i
   local -a words settings commands=() where=()

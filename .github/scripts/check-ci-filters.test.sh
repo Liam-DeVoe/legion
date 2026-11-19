@@ -2949,6 +2949,7 @@ check "names both orders" \
 echo "case: a ci-caches.yaml with no race build at all"
 root=$(fixture race-fill-gone)
 cache_workflow "$root"
+# go-offline: this test fixture's quoted workflow text starts no command.
 replace "$root/.github/workflows/ci-caches.yaml" $'      - if: steps.go-app.outputs.cache-hit != \'true\'\n        run: go test -c -o /dev/null -race ./lib/\n        working-directory: mod\n' ""
 run_check "$root"
 check "fails" "$(is "$status" 1)"

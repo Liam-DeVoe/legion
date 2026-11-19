@@ -290,7 +290,6 @@ check "exits 1" "$(is "$rc" 1)"
 check "names the command that failed" "$(contains "$err" 'failed 2 times: go list -deps ./cmd/x')"
 check "installs nothing after it" "$(is "$(grep -c ' install ' <<< "$calls")" 0)"
 
-# sha FILE: the sha256 of FILE, as the stand-in records it.
 sha() { sha256sum < "$1" | cut -d' ' -f1; }
 tidy_mod=$(sha "$repo/tidymod/go.mod") tidy_sum=$(sha "$repo/tidymod/go.sum")
 printf 'tidy tidymod  # what check-go-tidy.sh reads\n' > "$repo/fetch/tidy.txt"

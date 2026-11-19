@@ -29,16 +29,6 @@ name: CI job text-checks
 # docs/, a skill under skills/, the committed extract beside the code it pins - and Go's test
 # cache keys on neither, so a cached pass would say nothing about the text as it now stands.
 #
-# The last step holds the Go module files to the code: every module a required job builds is tidy
-# (.github/scripts/check-go-tidy.sh), so none builds in CI only because another module's go.mod or
-# go.sum covers what its own lack. It runs here, where it costs least. Its cost is the modules
-# `go mod tidy` reads that this job's builds do not, which the fetch file's tidy lines add to the
-# entry the job restores: this job's entry already holds the three modules' text checks and the
-# Dispatch server, so they add 387 MB to it as actions/cache stores it (376 MB to 763 MB), where
-# they would add 694 MB to lint's 50 MB go-fetch-lint entry (measured 2026-11-19). And
-# go-fetch-text-checks is restored by this job alone, so no other job restores more, while its key
-# already hashes the module files of both workspaces.
-#
 # The job restores no build cache. The six Go cache families ci.yaml's header lists that hold
 # one are each filled for a job that builds a whole module's binaries or test binaries, and this
 # job builds five packages: measured here, the four calls this job ran before the supervise pins

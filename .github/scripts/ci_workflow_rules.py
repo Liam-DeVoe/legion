@@ -718,9 +718,6 @@ FETCH_COMMAND = re.compile(r"(?:GOOS=\S+\s+)?(?:GOARCH=\S+\s+)?(?:CGO_ENABLED=[0
 
 @cache
 def fetch_file_commands(path: str):
-    """A fetch file's commands, as ([(line number, 'deps', 'tools' or 'tidy', its directory or
-    file as a repository path)], [(line number, a line that is none of them)]), or None when the
-    repository has no such file."""
     if not (REPO / path).is_file():
         return None
     commands, faults = [], []
@@ -779,11 +776,7 @@ def module_files(directory: str) -> list:
     return []
 
 
-def replace_dirs(text: str) -> list:
-    """The directories a go.mod's replace directives name (`replace X [v] => ../y`), in the order
-    they name them: each replacement that is a path relative to the go.mod's own directory. A
-    module path with a version, and an absolute path, which names no file of this repository,
-    are left out."""
+def relative_replace_dirs(text: str) -> list:
     dirs, block = [], False
     for raw in text.split("\n"):
         line = raw.split("//", 1)[0].strip()
@@ -814,18 +807,12 @@ def tidy_files(directory: str) -> list:
     if not (REPO / directory / "go.mod").is_file():
         return []
     files = [repository_path(directory, "go.mod"), repository_path(directory, "go.sum")]
-    for target in replace_dirs(read_repository_text(REPO / directory / "go.mod")):
+    for target in relative_replace_dirs(read_repository_text(REPO / directory / "go.mod")):
         files.append(repository_path(directory, target, "go.mod"))
     return files
 
 
 def family_files(family: str, readers: list, filled: bool, problems: list) -> set:
-    """The files every key of `family` must hash: GO_FETCH, each fetch file its readers run after
-    their restores, each tools file those name, the module files of each deps line's workspace and
-    those of each tidy line's module. A fetch file the repository does not have, or a line of one
-    that is no command, is refused. A reader's `deps`, `tools` or unreadable go-fetch.sh line is
-    rule 21's refusal for a family ci-caches.yaml fills (`filled`) and this rule's for any other
-    (go-docs)."""
     files = {GO_FETCH}
     for reader in readers:
         if not filled:

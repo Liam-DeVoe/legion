@@ -37,13 +37,11 @@
 # CI runs it in ci.yaml's text-checks job, after that job's fetch step.
 set -euo pipefail
 
-# The repository root, two directories above this script, whose fetch files and modules it reads.
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 export GOPROXY=off GOSUMDB=off
 
 problems=0
-declare -A seen=()
-modules=()
+declare -A seen=() dirs_by_input=()
 files=0
 shopt -s nullglob
 for fetch in "$root"/.github/go-fetch/*.txt; do
@@ -62,39 +60,41 @@ for fetch in "$root"/.github/go-fetch/*.txt; do
       *) continue ;;
     esac
     where=${fetch#"$root"/}:$n
-    if [ ! -d "$root/${words[1]}" ]; then
+    input=${words[1]}
+    if [ -n "${dirs_by_input[$input]:-}" ]; then
+      dirs=${dirs_by_input[$input]}
+      why=""
+    elif [ ! -d "$root/$input" ]; then
       why="no such directory"
-    elif ! dirs=$(cd "$root/${words[1]}" && go list -m -f '{{.Dir}}' 2>&1 </dev/null); then
+    elif ! dirs=$(cd "$root/$input" && go list -m -f '{{.Dir}}' 2>&1 </dev/null); then
       why=$dirs
     elif ! grep -q '^/' <<<"$dirs"; then
       # Outside every module and workspace, go list -m names command-line-arguments and no
       # directory, and exits 0.
       why="go list -m names no module directory there"
     else
+      dirs_by_input[$input]=$dirs
       why=""
     fi
     if [ -n "$why" ]; then
-      echo "::error file=${fetch#"$root"/},line=$n::$where runs ${words[0]} in ${words[1]}, where go places no module: $why"
+      echo "::error file=${fetch#"$root"/},line=$n::$where runs ${words[0]} in $input, where go places no module: $why"
       problems=$((problems + 1))
       continue
     fi
     while IFS= read -r dir; do
       [ -n "$dir" ] || continue
       rel=${dir#"$root"/}
-      if [ -z "${seen[$rel]:-}" ]; then
-        seen[$rel]=$where
-        modules+=("$rel")
-      fi
+      seen[$rel]=1
     done <<<"$dirs"
   done <"$fetch"
 done
 
-if [ "${#modules[@]}" -eq 0 ]; then
+if [ "${#seen[@]}" -eq 0 ]; then
   echo "UNKNOWN: check-go-tidy found no module to read: no deps or tidy line in the $files fetch files under .github/go-fetch/ places one"
   exit 2
 fi
 
-mapfile -t modules < <(printf '%s\n' "${modules[@]}" | sort)
+mapfile -t modules < <(printf '%s\n' "${!seen[@]}" | sort)
 echo "check-go-tidy: ${#modules[@]} modules a required job builds (the deps and tidy lines of $files fetch files): ${modules[*]}"
 untidy=0
 for rel in "${modules[@]}"; do
