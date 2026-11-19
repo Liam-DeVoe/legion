@@ -699,14 +699,26 @@ The broker evaluates every name
 - Otherwise it is **pending**: the request carries a reason, and the broker writes a
   credential-request record for the approver to
   decide. A session has at most one pending request for each secret: an identical request from the
-  same session while one is pending (the same names and the same lifetime, or none) joins it rather
-  than asking twice, and any other
-  request naming one of its secrets, with or without `--ttl`, is refused `REQUEST_PENDING`, naming
-  the pending request. The session waits for that request to be decided, or cancels it
-  (`agent-secrets cancel`) and asks again. The broker's answer names the approver the record names
-  and the request's page on the broker (`approve_url`), and `agent-secrets` prints both, so the
-  agent can tell that person where to approve it; while the [model judge](#the-model-judge)
-  decides a request, its answer carries `judge_deciding: true` in place of a page. The record
+  same session while one is pending (the same names and the same lifetime, or none) joins it
+  rather than asking twice, and any other request naming one of its secrets, with or without
+  `--ttl`, is refused `REQUEST_PENDING`, naming the pending request. The session waits for that
+  request to be decided, or cancels it (`agent-secrets cancel`) and asks again. The one exception
+  is a pending request whose record is signed for another broker address, another
+  `BROKER_PUBLIC_URL`, such as a broker the session's box asked before it moved to this one: no
+  person and no judge here can decide it, so when its session asks this broker again for one of
+  its names, the broker ends it, cancelled by the broker with a detail that says the broker moved,
+  whatever its age. That end holds for an ask that waits for a decision, the judge's or a
+  person's, for an ask the broker decides at once and for one a live grant answers, and for an ask
+  that waits for a decision the rule then applies to what is left. A request whose deadline has
+  passed is expired rather than pending, whichever broker address it is signed for: the ask
+  neither joins it nor is refused for it, and the broker's sweep ends it. An ask refused before
+  the broker writes a request (an unknown name, a lifetime over the secret's maximum, two
+  approvers) ends nothing, and a request signed for another broker address that no such ask
+  reaches waits for its expiry.
+  The broker's answer names the approver the record names and the request's page on the broker
+  (`approve_url`), and `agent-secrets` prints both, so the agent can tell that person where to
+  approve it; while the [model judge](#the-model-judge) decides a request, its answer carries
+  `judge_deciding: true` in place of a page. The record
   fixes its approver when the request is made, and the request stays in that
   person's Inbox after the secret's tags change, though they may then be unable to approve it
   ([what an owner change does](#approvals)).
@@ -1241,7 +1253,11 @@ exchange's reads of a person's project access are the last, at `BROKER_PROJECT_A
 ([Operating the broker](/legion/broker/operate/)). The broker writes nothing there — no
 ask, no comment, no status — and reads nothing that belongs to a person. It reaches its model at
 the endpoint its settings name, presenting the broker machine's own Google identity token for the
-audience they name. Those settings are all-or-none, and the
+audience they name, or, where `BROKER_JUDGE_MODEL_ACCOUNT` names a Google service account, that
+account's identity token for the same audience, which the broker mints at IAM Service Account
+Credentials with the pod's own credential. A mint that fails hands the request to its person, and
+the broker never presents its own token in that account's place. The judge's other settings are
+all-or-none, and the
 [configuration reference](/legion/broker/reference/config/) gives each one.
 
 ## The audit record
@@ -1276,10 +1292,10 @@ answers this row to the accounts that read the grant log),
 the secrets an operator's revoke withheld from the session, and, on each other grant of the session
 that revoke ended, the withheld secrets that grant held), `grant.withheld` (an operator's revoke of
 a grant already revoked, naming under `withheld` the secrets it withheld from the session),
-`request.judged` (one row for every judge run that reached a verdict, its referrals and the runs
-a check stopped included: each check and its result, the model, whether the model was asked, the
-verdict, the reason, the token counts, that it priced nothing, and the raw answer where it did
-not parse) and
+`request.judged` (one row for every judge run that reached a verdict, its hand-overs to a person
+and the runs a check stopped included: each check and its result, the model, whether the model was
+asked, the verdict, the reason, the token counts, that it priced nothing, and the raw answer where
+it did not parse) and
 `launcher_credential.revoked` (naming the machine login's `credential_id`, its `host`, its
 `service` for a service's login, and under `enrollments` the sessions the revoke ended) and
 `launcher_credential.token_login` (a service's token login: the `credential_id`, its `service`, the
