@@ -377,6 +377,10 @@ type relayRun struct {
 	// lost is the error of the request whose connection the run lost (relayLost), which the
 	// relay's wait for that connection reads (bus.Reconnected). Only the run's goroutine touches it.
 	lost error
+	// lockedAt is when the run's latest restart took the session's lock, after its waits for a
+	// restart turn and for that lock: a loss is quick (relay) when it comes within relayRetryFirst
+	// of it, however long the restart waited in line. Only the run's goroutine touches it.
+	lockedAt time.Time
 }
 
 // wake has a paused run, or one waiting to retry, restart at once: the session registered. A wake
@@ -763,22 +767,35 @@ func (m *sessionRelays) start(sessionID string, previous <-chan struct{}) {
 // pull whose connection was lost (relayLost) waits for that connection instead, holding nothing,
 // and restarts the moment it is back, with the retry backoff left where it was; a wait whose dial
 // ends unconnected (bus.Reconnected names each way it does) waits out the retry backoff first, and
-// so does a second loss in a row that came within relayRetryFirst of its restart, so a connection
-// that reads back but loses every restart at once is retried at the backoff, not in a loop.
+// so does a second loss in a row that came within relayRetryFirst of the time its restart took the
+// session's lock (relayRun.lockedAt), so a connection that reads back but loses every restart at
+// once is retried at the backoff, not in a loop. A run that served at least relayRetryMax starts
+// the retry backoff from relayRetryFirst again.
 //
 // The pause is logged once an episode: the line is written for the first pause since the session
 // last answered a frame, not for each probe that found it silent again.
 func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 	retry, pause, paused := relayRetryFirst, m.pauseFirst, false
 	// lostAgain is whether the last run ended relayLost: a restart that is lost again within
-	// relayRetryFirst of its start, though Reconnected had found the connection back, met a probe's
-	// false "down" (a box loaded past the bus's 100 ms budget) or a link flapping faster than a
-	// restart, and waits the retry backoff before the next, rather than restarting in a loop.
+	// relayRetryFirst of taking the session's lock, though Reconnected had found the connection
+	// back, met a probe's false "down" (a box loaded past the bus's 100 ms budget) or a link flapping
+	// faster than a restart, and waits the retry backoff before the next, rather than restarting in
+	// a loop.
 	lostAgain := false
 	for {
 		began := time.Now()
 		outcome := m.relayNATS(ctx, run)
-		quickLoss := outcome == relayLost && time.Since(began) < relayRetryFirst
+		from := began
+		if run.lockedAt.After(from) {
+			from = run.lockedAt
+		}
+		ran := time.Since(from)
+		quickLoss := outcome == relayLost && ran < relayRetryFirst
+		if ran >= relayRetryMax {
+			// A run that served this long ends the episode its backoff counted: the next failure
+			// waits from the first again.
+			retry = relayRetryFirst
+		}
 		switch outcome {
 		case relayEnded:
 			return
@@ -870,6 +887,7 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 	if listed := run.listed; listed != nil {
 		run.listed = nil
 		unlock := m.delivery.locks.lock(sessionID)
+		run.lockedAt = time.Now()
 		callCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 		defer cancel()
 		filter, _, err := m.storedFilter(callCtx, sessionID)
@@ -904,6 +922,7 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 	}
 	defer func() { <-m.restarts }()
 	unlock := m.delivery.locks.lock(sessionID)
+	run.lockedAt = time.Now()
 	at := m.delivery.mark()
 	callCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
