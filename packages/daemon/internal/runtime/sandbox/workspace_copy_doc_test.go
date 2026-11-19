@@ -66,7 +66,7 @@ const (
 	copyKindsStart = "An issue therefore holds up to two kinds of copy"
 	copyKindsEnd   = "and both stay through a linger and a park."
 
-	podEndReadingsStart = "The daemon reads what ended each watched pod once"
+	podEndReadingsStart = "The daemon reads what ended each watched pod where"
 	podEndReadingsEnd   = "would be relaunched for ever."
 
 	karpenterStart = "`" + doNotDisruptAnnotation + "` is the AWS scheduler's annotation"

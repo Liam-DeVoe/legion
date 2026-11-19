@@ -5128,14 +5128,14 @@ The four of the library name themselves in their `FAIL` line; a step of the proo
 
 This change of the daemon makes the second step fail while the first passes, which shows the proof can see the fault it is for.
 In `packages/daemon/internal/workflow/plan.go`, in `planRatingRefusal`, delete the `case endsRetro && fact.PlanRating == nil && fact.MustRate:` case and its return, so the workflow takes a completion that ends the retro and carries no rating from any plugin, as it does from one of the release before.
-Run on 2026-11-19 on a loaded host, it failed after 46 s with these lines, the project's key, the times and the line of the driver's call aside:
+Run on 2026-11-19 on a loaded host, it failed after 46 s with these lines, the project's key, the times, the line of the driver's call and the plugin contract aside (the claim's contract is the daemon's own, `DaemonAPIVersion`):
 
 ```sh
 LEGION_TEST_PG_DSN=… bash scripts/e2e/plan-ratings.sh
 # → ok three-finished-issues-each-rated (<n>s)
 #   == a-retro-with-no-rating-is-refused
 #      planning, implementing, testing, an approving review and the architect's sign-off walked SR<6 hex>-4 to its retro
-#       plan_ratings_live_test.go:<line of l.unratedRetroRefused(c)>: the retro's completion of SR<6 hex>-4 with no rating from the implementer at plugin contract 168 = 200 {}
+#       plan_ratings_live_test.go:<line of l.unratedRetroRefused(c)>: the retro's completion of SR<6 hex>-4 with no rating from the implementer at plugin contract <DaemonAPIVersion> = 200 {}
 #           , want 400 PLAN_RATING_REQUIRED
 #   --- FAIL: TestPlanRatingsLive (<n>s)
 #   FAIL proof: the proof's driver failed; see <evidence>/proof.log and <evidence>/daemon.log

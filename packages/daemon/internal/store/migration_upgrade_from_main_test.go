@@ -25,8 +25,8 @@ import (
 // paragraph keeps no list of main's versions to drift at each merge. Not every version of this
 // branch's stands below main's newest: a migration's version is a timestamp rather than a place in
 // a line, and the ones above it are the phase entry's own (20261111225552, dispatch://INFRA-2800),
-// which this branch wrote after main's claim-failure cause, and the others the paragraphs below
-// name.
+// which this branch wrote after main's claim-failure cause, t-e-54's claim_sessions
+// (20261116144907, thisBranchsClaimSessions below), and the others the paragraphs below name.
 //
 // A branch migration this list forgets would be applied as one of main's, which is a database no
 // deployment ever has, so the test below holds the list against the embedded set: every version
@@ -147,9 +147,9 @@ var mainsOutboxKinds = []string{
 // them, and a list that leaves a kind out is refused by the constraint over the row that carries it
 // (SQLSTATE 23514), which fails Migrate and leaves the daemon unable to boot.
 //
-// The database this test upgrades is main's: every migration up to and including main's own
-// 20261108000545 except the two this branch adds below it, which is what main has recorded and
-// what it leaves unrecorded. The negative control is the fix's own absence: with `claim_release`
+// The database this test upgrades is main's: every embedded migration up to and including
+// mainsNewestMigration except the ones thisBranchsMigrations names, which is what main has recorded
+// and what it leaves unrecorded. The negative control is the fix's own absence: with `claim_release`
 // out of either list, the Migrate below fails on the pending release row.
 func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	ctx := context.Background()
@@ -234,8 +234,8 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 // (f27003af63): the update ask mark's cutover. It and the other migrations main numbered after
 // this branch's claim_sessions (20261116144907) — the role-holders publication (20261116165926),
 // the reviewer's reviewed commit (20261116234034), the step records' three (20261117000528,
-// 20261117004117, 20261117064152) and the pull request statuses (20261117112334) — stand above
-// it. A deployment of main applies them first, so this branch's daemon finds a database whose
+// 20261117004117, 20261117064152), the plan record's kind list (20261117023932) and the pull
+// request statuses (20261117112334) — stand above it. A deployment of main applies them first, so this branch's daemon finds a database whose
 // newest recorded version stands above its own new migration.
 const todaysMainsNewestMigration = 20261117200337
 

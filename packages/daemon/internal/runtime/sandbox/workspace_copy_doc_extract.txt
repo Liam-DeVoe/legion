@@ -51,9 +51,9 @@ A pod carrying it gets a node of its own on Autopilot whenever possible, so on t
 A `Burstable` issue pod carries it not at all:
 `issue: {memory: 32Gi, memory_request: 8Gi}` requests 8Gi under a 32Gi limit, asks for no extended run time, and so shares a node and bursts into that node's burstable capacity rather than into a node of its own.
 
-from: The daemon reads what ended each watched pod once
+from: The daemon reads what ended each watched pod where
 to: would be relaunched for ever.
-The daemon reads what ended each watched pod once, where its informer delivers the end, and writes one line for it (`capturePodEnd`, `internal/runtime/sandbox/pod_end.go`):
+The daemon reads what ended each watched pod where its informer delivers the end, and writes one line for each reading it keeps (`capturePodEnd`, `internal/runtime/sandbox/pod_end.go`):
 `sandbox runtime: read what ended a watched pod`, naming the pod, the reading, the words that reading was made from, the reason the cluster gave, and, as `ended`, every role of the pod whose process the end ended.
 The line is written before any claim is decided and says what ended, nothing of what any claim got for it: each claim writes its own line for that (below).
 Two readings say something outside the pod ended it:

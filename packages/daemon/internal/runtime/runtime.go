@@ -612,7 +612,7 @@ const (
 // was before this reading existed.
 //
 // It is one value with three states rather than a pair of bools because one charging policy takes
-// it as a row (INFRA-3136): an end is read once, in one place, and what the policy charges for it
+// it as a row (INFRA-3136): an end is read in one place, and what the policy charges for it
 // is chosen by this value. Its members are named for the reading itself and never for what the
 // daemon does about it — a name like "uncharged" or "waived" would have to be renamed the first
 // time such an end is charged differently.

@@ -6225,7 +6225,7 @@ Every end of an issue pod is therefore the end of that pod's disk, and the ends 
   The daemon continues the roles of such a pod uncharged where it read the end as one from outside the pod, and counts the end as a stop of each role's process where it did not (below).
 
 **An end from outside the pod.**
-The daemon reads what ended each watched pod once, where its informer delivers the end, and writes one line for it (`capturePodEnd`, `internal/runtime/sandbox/pod_end.go`):
+The daemon reads what ended each watched pod where its informer delivers the end, and writes one line for each reading it keeps (`capturePodEnd`, `internal/runtime/sandbox/pod_end.go`):
 `sandbox runtime: read what ended a watched pod`, naming the pod, the reading, the words that reading was made from, the reason the cluster gave, and, as `ended`, every role of the pod whose process the end ended.
 The line is written before any claim is decided and says what ended, nothing of what any claim got for it: each claim writes its own line for that (below).
 Two readings say something outside the pod ended it:
