@@ -214,10 +214,13 @@ jobs:
       # no database, so they run in .github/workflows/ci-job-text-checks.yaml beside the other
       # tests whose subject is text, where they wait behind no fixture, and a test run twice is
       # a test whose second run tells nobody anything. The three other tests of
-      # internal/supervise/table_test.go drive a machine and run here. The names are written in
-      # .github/scripts/ci_job_reads.py (SUPERVISE_TABLE_TESTS), which builds this step's text
-      # and the other job's from the one list and holds each step to it, so the skip and the run
-      # cannot come to name different tests.
+      # internal/supervise/table_test.go drive a machine and run here. Beside them it is the kind
+      # job's tests, which KIND_TESTS names and the race step below skips too: they run on a kind
+      # cluster in .github/workflows/ci-job-kind.yaml, so that the rig's library, Agent Sandbox's
+      # manifest and the worker image they run are that job's inputs. The names are written in
+      # .github/scripts/ci_job_reads.py (SUPERVISE_TABLE_TESTS, KIND_TESTS), which builds this
+      # step's text and the other jobs' from the lists and holds each step to it, so the skip and
+      # the runs cannot come to name different tests.
       #
       # LEGION_TEST_DRAIN_MEASURE=1 turns on the bound of internal/intake's
       # TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent: a backlog of 5,000 events
@@ -230,7 +233,7 @@ jobs:
           LEGION_TEST_DRAIN_MEASURE: "1"
         run: |
           set -o pipefail
-          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/textcheck)$' | xargs go test -v -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
+          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/textcheck)$' | xargs go test -v -count=1 -timeout 15m -skip '^(TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub|TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
         working-directory: packages/daemon
 
       # The outbox's lane registry, lease renewal and held clock are the daemon's first goroutines
@@ -252,7 +255,7 @@ jobs:
       # slowest run.
       #
       # The -skip is the tests of internal/daemon that jobs of their own run, in one pattern
-      # ci_job_reads.py builds from the four lists. The plugin-pack job's three, which
+      # ci_job_reads.py builds from the five lists. The plugin-pack job's three, which
       # ci_job_reads.py's PLUGIN_PACK_TESTS names, a fourth test of that package loading a plugin
       # on the real Oh My Pi and staying in this step (TestThePromptReferenceProbeOnTheRealOhMyPi):
       # they run in .github/workflows/ci-job-plugin-pack.yaml, so that their reads — bun.lock and
@@ -260,18 +263,20 @@ jobs:
       # eight whole-daemon live tests, which DAEMON_LIVE_TESTS names: they run in
       # .github/workflows/ci-job-daemon-live.yaml, so that the bun install and the `dispatch`
       # CLI two of them run are that job's inputs, and none of them holds this step's package
-      # time for the minutes each takes. And the agent-harness job's five live proofs that drive
+      # time for the minutes each takes. The agent-harness job's five live proofs that drive
       # real Oh My Pi panes, which AGENT_HARNESS_TESTS names, and its Claude Code backend proof on
       # tmux, which AGENT_HARNESS_TMUX_TESTS names: they run in
       # .github/workflows/ci-job-agent-harness.yaml, so that the plugin packs they make, and
       # bun.lock and skills/ with them, and the tmux and Claude Code the second needs, are that
-      # job's inputs, and the minutes each takes are spent in the merge queue. A test run twice is
+      # job's inputs, and the minutes each takes are spent in the merge queue. And the kind job's
+      # tests, which KIND_TESTS names and the plain step above skips too, whichever package each is
+      # in: they run on a kind cluster in .github/workflows/ci-job-kind.yaml. A test run twice is
       # a test whose second run tells nobody anything. The names are written in
       # .github/scripts/ci_job_reads.py, which builds this step's text and the other jobs' from
-      # the four lists and holds each step to it, so the skip and the runs cannot come to name
+      # the five lists and holds each step to it, so the skip and the runs cannot come to name
       # different tests.
       - name: Test the concurrent packages under the race detector
-        run: go test -v -count=1 -race -timeout 30m -skip '^(TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive|TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive|TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive|TestAPhaseEntryConvergesOnARunningDaemonLive|TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive|TestAQueuedRootUnderALiveTreeJoinsItLive|TestEveryChildThatStartsRunsUnderItsOwnArchitectLive|TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive|TestHandoffRecordsLive|TestLateCompletionsThroughTheRealLegionToolLive|TestReviewRangeLive|TestTheAgentModelCheckOnTheRealOhMyPi|TestTheClaudeCodeImplementerRegistersCompletesThroughItsStopHookAndResumesLive|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive|TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
+        run: go test -v -count=1 -race -timeout 30m -skip '^(TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive|TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub|TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive|TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive|TestAPhaseEntryConvergesOnARunningDaemonLive|TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive|TestAQueuedRootUnderALiveTreeJoinsItLive|TestEveryChildThatStartsRunsUnderItsOwnArchitectLive|TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive|TestHandoffRecordsLive|TestLateCompletionsThroughTheRealLegionToolLive|TestReviewRangeLive|TestTheAgentModelCheckOnTheRealOhMyPi|TestTheClaudeCodeImplementerRegistersCompletesThroughItsStopHookAndResumesLive|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive|TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
         working-directory: packages/daemon
 
       # What the race step's packages hold that the race build cannot run, run plain by name, one

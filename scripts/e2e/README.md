@@ -5618,31 +5618,51 @@ The watchdog runs under the caller's `errexit`, so every command on that path th
 
 ## lib/kind-sandbox.sh
 
-A throwaway kind cluster running Agent Sandbox's controller under gVisor, for a live proof of the Sandbox runtime on an amd64 Linux host.
+A throwaway kind cluster running Agent Sandbox's controller under gVisor, for a test of the Sandbox runtime on an amd64 Linux host.
+The kind job of `ci.yaml` drives it from Go: `packages/daemon/internal/kindtest` runs each function in a bash of its own.
 `burstable-kind.sh`, `controller-sweep-kind.sh` and `share-volumes-kind.sh` source it.
 
 ```sh
 . "$root/scripts/e2e/lib/kind-sandbox.sh"     # sourced, never run
 ```
 
-The caller defines `note` and `fail`, which exits, and calls `kind_sandbox_teardown` from its `EXIT` trap.
-`LEGION_E2E_KIND` names the kind binary when it is not on `PATH`.
+The caller defines `note` and `fail`, which exits, and calls `kind_sandbox_teardown` when it ends, from its `EXIT` trap or its test's cleanup.
+`LEGION_E2E_KIND` names the kind binary when `kind_sandbox_install_kind` has not run in the same shell.
+
+Every pin of the rig is in the file.
+kind is v0.33.0, built with `go install`, and `kind_sandbox_create` refuses another version.
+The node image, the local registry, busybox and the NFS server are named by the digests of their rows of `.github/ci-images.yaml`.
+Agent Sandbox is its v1.0.3 manifest, vendored in `packages/daemon/internal/runtime/sandbox/testdata` beside the CRD the runtime's schema tests read; the manifest's header says how it differs from the release.
+gVisor is its dated release, pinned by sha512.
 
 Each item below names a function, then what it does.
 
-- `kind_sandbox_create NAME WORK`
+- `kind_sandbox_install_kind DIR`
 
-  creates the cluster `NAME`, its kubeconfig a file of `WORK` (`kind_kubeconfig`) and its context `kind-NAME` (`kind_context`);
+  builds the pinned kind into `DIR` and makes it `kind_bin`
+
+- `kind_sandbox_use NAME WORK`
+
+  names the cluster `NAME` and its files in `WORK` for the functions below, and makes no cluster: a caller that runs each function in a shell of its own calls it first in each
+
+- `kind_sandbox_create NAME WORK [API_PORT]`
+
+  creates the cluster `NAME` on the pinned node image, its kubeconfig a file of `WORK` (`kind_kubeconfig`) and its context `kind-NAME` (`kind_context`);
   labels its one node (`kind_node`) `legion.dev/pool=legion`, the pool the runtime places every pod on;
-  creates the `legion` namespace and checks kind's `standard` storage class
+  creates the `legion` namespace and checks kind's `standard` storage class.
+  With `API_PORT`, the API server listens on `127.0.0.1:API_PORT`, and its service-account issuer is `https://127.0.0.1:API_PORT`, whose discovery document and keys anyone may read, so a process of the host verifies a pod's service-account token
 
 - `kind_k ARGS…`
 
   `kubectl` against that kubeconfig and context alone, so the caller's kubeconfig and its current context are never read
 
-- `kind_sandbox_install_agent_sandbox WORK`
+- `kind_sandbox_start_registry PORT`
 
-  applies Agent Sandbox v1.0.3's release manifest, pinned by sha256, and waits for its controller's rollout
+  starts a registry container on the kind network (`kind_registry`), published on the host at `127.0.0.1:PORT`, and has the node pull `localhost:PORT/<image>` from it, so an image pushed there has a registry digest, which `runtime.kubernetes.image` requires
+
+- `kind_sandbox_install_agent_sandbox`
+
+  applies Agent Sandbox's CRD and its vendored manifest, and waits for its controller's rollout
 
 - `kind_sandbox_install_gvisor WORK`
 
@@ -5652,14 +5672,23 @@ Each item below names a function, then what it does.
 
   pulls `IMAGE`, which must be named by digest, into the node's containerd, so a pod's start never waits on a registry
 
+- `kind_sandbox_route_github ADDRESS PORT`
+
+  sends the cluster's pods to `ADDRESS:PORT` for `github.com` and `api.github.com`: a Service on port 443 with no selector, whose one endpoint is `ADDRESS:PORT`, and a CoreDNS `hosts` rule naming its cluster IP (`kind_github_address`).
+  The rule reaches pods alone: the node, and containerd's pulls, resolve through Docker's DNS
+
+- `kind_sandbox_start_nfs_server SEED`
+
+  starts an NFS-Ganesha server in the `nfs` namespace, exporting `/team`, which holds `seed.txt` with `SEED`, and `/scratch`, and sets `kind_nfs_server` to its Service's cluster IP once the node itself mounts `/team` and reads the seed
+
 - `kind_sandbox_internal_kubeconfig FILE`
 
   writes the kubeconfig a container on the kind network reads, whose server is the node's address on that network
 
 - `kind_sandbox_teardown STATUS EVIDENCE`
 
-  when `STATUS` is not 0, writes the cluster's pods, the `legion` namespace's Sandboxes, volume claims, events and container logs to `EVIDENCE/cluster-at-failure.txt`; then deletes the cluster.
-  It does nothing before `kind_sandbox_create` named a cluster, or once the cluster is gone
+  when `STATUS` is not 0, writes the cluster's nodes and pods, the `legion` namespace's Sandboxes and volume claims, the descriptions and container logs of the `legion` and `nfs` namespaces' pods and every event to `EVIDENCE/cluster-at-failure.txt`, and the Agent Sandbox controller's log to `EVIDENCE/agent-sandbox-controller.log`; then deletes the cluster and the registry.
+  It does nothing before `kind_sandbox_use` or `kind_sandbox_create` named a cluster, and deletes no cluster once it is gone
 
 ## lib/secret-leaks.ts
 

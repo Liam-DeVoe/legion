@@ -104,7 +104,8 @@ fixture() {
     "$root/packages/envoy/internal/tests3" "$root/packages/envoy/cmd/agent-secrets" \
     "$root/packages/envoy-client/src/__tests__" \
     "$root/scripts/e2e/lib" "$root/packages/dispatch/e2e" \
-    "$root/packages/pi-legion/scripts/skill-scenarios"
+    "$root/packages/pi-legion/scripts/skill-scenarios" \
+    "$root/packages/daemon/internal/runtime/sandbox/testdata"
   ln -s "$check_script" "$root/.github/scripts/check-ci-images.sh"
   ln -s "$script_dir/workflow_paths.py" "$root/.github/scripts/workflow_paths.py"
   ln -s "$script_dir/ci_images.py" "$root/.github/scripts/ci_images.py"
@@ -229,6 +230,32 @@ YAML
 #!/usr/bin/env bash
 docker run -d --name pg --cpus 2 --memory 2g \\
   -e POSTGRES_DB=legion $REGISTRY@$NATS >/dev/null
+YAML
+  # The kind rig's library, which names its images by assignment and starts its registry with a
+  # docker run of one of them, and the Agent Sandbox manifest it applies, a Kubernetes manifest
+  # whose controller's image is read from the parsed YAML.
+  cat > "$root/scripts/e2e/lib/kind-sandbox.sh" <<YAML
+# shellcheck shell=bash
+kind_registry_image=$REGISTRY@$NATS
+docker run -d --name kind-registry --network kind "\$kind_registry_image" >/dev/null
+YAML
+  cat > "$root/packages/daemon/internal/runtime/sandbox/testdata/agent-sandbox-v1.0.3.yaml" <<YAML
+---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: agent-sandbox-system
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: agent-sandbox-controller
+spec:
+  template:
+    spec:
+      containers:
+      - name: agent-sandbox-controller
+        image: $REGISTRY@$NATS
 YAML
   echo "$root"
 }
@@ -693,6 +720,24 @@ run_check tree "$root"
 check "a container on a digest outside the file fails" "$(is "$status" 1)"
 check "names the container it read" \
   "$(contains "$out" "this job's container image names a digest no row of .github/ci-images.yaml holds")"
+
+echo "case: an image of a Kubernetes manifest CI's reach names"
+# A manifest is read document by document from the parsed YAML, every image: at any depth, so the
+# controller the kind rig applies is held to the rows as a workflow's service is.
+root=$(fixture manifest-image)
+sed -i "s|image: $REGISTRY@$NATS|image: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v1.0.3|" \
+  "$root/packages/daemon/internal/runtime/sandbox/testdata/agent-sandbox-v1.0.3.yaml"
+run_check tree "$root"
+check "a manifest's image on another registry fails" "$(is "$status" 1)"
+check "names the manifest's image, its file and line" \
+  "$(contains "$out" "agent-sandbox-v1.0.3.yaml:16: this manifest's image names registry.k8s.io/agent-sandbox/agent-sandbox-controller")"
+root=$(fixture manifest-image-unknown)
+sed -i "s|image: $REGISTRY@$NATS|image: $REGISTRY@$UNKNOWN|" \
+  "$root/packages/daemon/internal/runtime/sandbox/testdata/agent-sandbox-v1.0.3.yaml"
+run_check tree "$root"
+check "a manifest's image on a digest outside the file fails" "$(is "$status" 1)"
+check "names the manifest's image" \
+  "$(contains "$out" "this manifest's image names a digest no row of .github/ci-images.yaml holds")"
 
 echo "case: rule 7 — a reference on a golang row at another version than ARG GO_VERSION"
 # A bump's first commit lands the next Go's row beside the pinned one, and rule 3 admits it. A

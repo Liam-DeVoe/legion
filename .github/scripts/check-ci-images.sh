@@ -150,7 +150,13 @@
 #     reference. Every string, not only a `const`: nats-stream.test.ts writes its image as one
 #     argument of a `docker("run", …)` call. reads_as_reference says which values are read as
 #     one and which written-alike things (a Go import path, a TypeScript module specifier, a
-#     host and port) are not.
+#     host and port) are not;
+#   * every `image:` of a Kubernetes manifest REACH names (a `.yaml` file of the list that is no
+#     workflow and no action), read from each document of the parsed YAML, never grepped, at any
+#     depth: a Deployment's container and a Pod's init container are both one. The kind rig
+#     applies Agent Sandbox's vendored manifest, whose controller is such an image.
+#     A value that is no string is refused, since an image this check cannot read is an image no
+#     row has to hold.
 # A line this check cannot read is a refusal that names it, never a silent pass.
 #
 # THE EXCEPTION LIST. Besides the reach, this check sweeps every text file of the repository and
@@ -344,6 +350,8 @@ REACH = (
     "packages/dispatch/e2e/visual-run.sh",
     "packages/pi-legion/scripts/skill-scenarios/rig.sh",
     "scripts/e2e/stage1-skeleton.sh",
+    "scripts/e2e/lib/kind-sandbox.sh",
+    "packages/daemon/internal/runtime/sandbox/testdata/agent-sandbox-v1.0.3.yaml",
 )
 
 # A docker command whose image is a variable, and where that variable's value comes from. The
@@ -397,7 +405,6 @@ EXCEPTIONS = {
     "scripts/e2e/claude-backend-sandbox.sh": NO_CI_JOB,
     "scripts/e2e/controller-sweep-kind.sh": NO_CI_JOB,
     "scripts/e2e/lib/bridge-tunnel.sh": NO_CI_JOB,
-    "scripts/e2e/lib/kind-sandbox.sh": NO_CI_JOB,
     "scripts/e2e/parked-decision-devbox.sh": NO_CI_JOB,
     "scripts/e2e/share-volumes-kind.sh": NO_CI_JOB,
     "scripts/e2e/stage3-devbox-workflow.sh": NO_CI_JOB,
@@ -931,6 +938,7 @@ for stray in sorted(Path(".github/workflows").glob("*.yml")) + sorted(
         f"two globs in this check."
     )
 reach: list[Path] = list(workflows) + list(actions)
+workflow_files = set(reach)
 for name in REACH:
     path = Path(name)
     if not path.is_file():
@@ -1236,6 +1244,37 @@ def scan_workflow(path: Path, lines: list[str]) -> None:
                 scan_shell(path, script, key_line(step, "run"), lines)
 
 
+def scan_manifest(path: Path, lines: list[str]) -> None:
+    """Rules 4, 5 and 6 over a Kubernetes manifest of the reach: every `image:` of every document
+    of it, at any depth, read from the parsed YAML, as a container of a Deployment, a Pod or an
+    init container holds one."""
+    try:
+        documents = list(yaml.load_all("\n".join(lines), Loader=LineLoader))
+    except yaml.YAMLError as error:
+        problems.append(f"{path}:1: this file is not valid YAML: {one_line(error)}")
+        return
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key != "image":
+                    walk(value)
+                elif isinstance(value, str):
+                    note(path, key_line(node, "image"), value, "this manifest's image")
+                else:
+                    problems.append(
+                        f"{path}:{key_line(node, 'image')}: this manifest's image is {one_line(value)}, "
+                        f"which this check cannot read. Write {REGISTRY}@<digest>, naming a digest "
+                        f"{CI_IMAGES} holds."
+                    )
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    for document in documents:
+        walk(document)
+
+
 for path in reach:
     text = read_text(path)
     if text is None:
@@ -1243,7 +1282,11 @@ for path in reach:
         continue
     lines = text.splitlines()
     if path.suffix in {".yaml", ".yml"}:
-        scan_workflow(path, lines)
+        # The two globs' files are workflows and actions; a YAML file REACH names is a manifest.
+        if path in workflow_files:
+            scan_workflow(path, lines)
+        else:
+            scan_manifest(path, lines)
     elif path.name == "Dockerfile" or path.name.endswith(".Dockerfile"):
         scan_dockerfile(path, lines)
     elif path.suffix in {".go", ".ts"}:

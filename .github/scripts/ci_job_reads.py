@@ -54,9 +54,12 @@ import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
-from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, run
+import yaml
+
+from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, flatten, repo_files, run
 from ci_filter_coverage import at as at_in, gate as gate_in
 from go_build_tags import go_skips_dir, tag_sets
+from workflow_paths import PathsFilter, glob_regex
 
 ENVOY = "packages/envoy"
 DAEMON = "packages/daemon"
@@ -1410,7 +1413,7 @@ hold_plugin_pack_tests()
 
 
 # ---------------------------------------------------------------- tests jobs of their own take whole by file
-def hold_whole_files(job, package, files, tests, files_name, tests_name):
+def hold_whole_files(job, package, files, tests, files_name, tests_name, both_steps=False):
     """Refuse a list of tests that is no longer the truth about the test files of `package` a job
     of its own takes whole and runs by name, and that the daemon-go race step skips by the same
     names: a file of `files` that is gone or carries a //go:build line, a name `tests` holds that
@@ -1428,9 +1431,15 @@ def hold_whole_files(job, package, files, tests, files_name, tests_name):
     run these tests, as the plugin-pack tests' does: the daemon-go plain step leaves the race
     step's packages to it, so the race step is the one other step that runs them, and a package
     moved out of it while these tests stayed would run them in a step with no skip of theirs.
+    A list both daemon-go steps skip (both_steps, KIND_TESTS) may be in any package either step
+    runs, which is every package of the module but the text checks', whose own job runs them all.
     What this guard does not see is a new test of the job's kind in a file the list does not name:
     it runs in the daemon-go race step until a reader adds the file here."""
-    if package not in DAEMON_RACE_PACKAGES:
+    if both_steps:
+        if package == TEXT_CHECK_PACKAGE:
+            raise ValueError(f"the {job} tests are in {package}, whose tests the text-checks job runs whole and "
+                             f"neither daemon-go step runs, so nothing skips them; move them to a package of their own")
+    elif package not in DAEMON_RACE_PACKAGES:
         raise ValueError(f"the {job} tests are in {package}, which the race step does not run, so nothing "
                          f"skips them there; name that package's step here, or move the -skip to the step that "
                          f"runs them")
@@ -1694,12 +1703,82 @@ PLUGIN_SMOKE_RUNS = [
                ENVOY, ["./cmd/dispatch"], mode="build"),
 ]
 
+# ---------------------------------------------------------------- the kind rig
+# The kind job's tests (.github/workflows/ci-job-kind.yaml): Go tests that run on the kind rig
+# internal/kindtest brings up on the runner - a kind cluster with Agent Sandbox's controller and
+# gVisor, the fake GitHub of internal/fakegithub, which the cluster's pods reach as github.com,
+# and the worker image of this commit - and which every piece of comes from
+# scripts/e2e/lib/kind-sandbox.sh. Today that is the rig's own measuring test, which the job's rig
+# part runs. Each file of KIND_FILES is taken whole, as AGENT_HARNESS_FILES are, and
+# hold_whole_files() holds KIND_TESTS to them. Both of daemon-go's steps skip KIND_TESTS by name,
+# built from this one list as the rig part's -run is - the plain step runs internal/kindtest, and
+# the race step the package a kind test of internal/daemon is in - so a kind test runs once per
+# run of the router, in the kind job, where its reads are that job's inputs: the rig's library,
+# Agent Sandbox's manifest and CRD, and every file the worker image is built from
+# (worker_image_reads below), none of which daemon-go's filter needs to name.
+KIND_FILES = ["rig_test.go"]
+KIND_TESTS = ["TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub"]
+KIND_PACKAGE = "internal/kindtest"
+KIND_JOB = "kind"
+KIND_WORKFLOW = job_file(KIND_JOB)
+KIND_IMAGE = "image"
+KIND_IMAGE_STEP = "Build the worker image into a docker archive"
+KIND_RIG = "rig"
+KIND_STEP = "Run the rig's measuring test"
+KIND_PATTERN = f"'^({'|'.join(sorted(KIND_TESTS))})$'"
+KIND_SCRIPT = f"go test -v -count=1 -timeout 35m -run {KIND_PATTERN} ./{KIND_PACKAGE}/"
+hold_whole_files(KIND_JOB, KIND_PACKAGE, KIND_FILES, KIND_TESTS, "KIND_FILES", "KIND_TESTS", both_steps=True)
+# The rig's own files beside the worker image's: the library every piece of it is a function of,
+# and the Agent Sandbox CRD and manifest kind_sandbox_install_agent_sandbox applies.
+KIND_LIB = "scripts/e2e/lib/kind-sandbox.sh"
+KIND_TESTDATA = f"{DAEMON}/internal/runtime/sandbox/testdata"
+
+
+def at_kind_rig(step):
+    """A citation of a step of the kind job's rig part."""
+    return at(KIND_RIG, step, KIND_WORKFLOW)
+
+
+WORKER_IMAGE_FILTER = "worker_image"
+
+
+def worker_image_reads(why):
+    """The files the worker image is built from, as ci.yaml's worker_image filter names them: the
+    reads of a gate whose job runs that image, which worker-image.yaml's build or a build of the
+    same Dockerfile and context made. EXCLUDED leaves that filter to check-image-trigger-paths.sh,
+    which holds it to every file the build reads and to nothing the build does not, so it is the
+    one written list of those files, and this reads it back rather than write a second. Each of
+    its patterns is a read where none of its `!` patterns leaves part of what it matches out, and
+    where one does each file it keeps is, so the gate declares what the build reads and not what
+    the .dockerignore keeps out of the context. The filter's step reads it under
+    some-with-excludes, as every paths-filter step of the changes job does."""
+    document = yaml.safe_load(Path(CI).read_text(encoding="utf-8"))
+    patterns = None
+    for step in document["jobs"]["changes"]["steps"]:
+        text = (step.get("with") or {}).get("filters")
+        filters = yaml.safe_load(text) if isinstance(text, str) else None
+        if isinstance(filters, dict) and WORKER_IMAGE_FILTER in filters:
+            patterns = flatten(filters[WORKER_IMAGE_FILTER])
+    if not patterns:
+        raise ValueError(f"{CI}'s changes job declares no {WORKER_IMAGE_FILTER} filter, the list of the files the worker "
+                         f"image is built from, which a gate of a job that runs that image reads")
+    selected = PathsFilter(patterns, "some-with-excludes")
+    files = repo_files()
+    out = []
+    for pattern in patterns:
+        if pattern.startswith("!"):
+            continue
+        regex = glob_regex(pattern)
+        matched = [f for f in files if regex.fullmatch(f)]
+        kept = [f for f in matched if selected.covers(f)]
+        out += [Read(pattern, why)] if kept == matched else [Read(f, why) for f in kept]
+    return out
 
 
 # The daemon-go race step's -skip: the tests of its package that jobs of their own run, the
-# plugin-pack job's, the daemon-live job's and the agent-harness job's two parts', in one pattern
-# built from the four lists.
-DAEMON_RACE_SKIP = f"'^({'|'.join(sorted(PLUGIN_PACK_TESTS + DAEMON_LIVE_TESTS + AGENT_HARNESS_TESTS + AGENT_HARNESS_TMUX_TESTS))})$'"
+# plugin-pack job's, the daemon-live job's and the agent-harness job's two parts', and the kind
+# job's, in one pattern built from the five lists.
+DAEMON_RACE_SKIP = f"'^({'|'.join(sorted(PLUGIN_PACK_TESTS + DAEMON_LIVE_TESTS + AGENT_HARNESS_TESTS + AGENT_HARNESS_TMUX_TESTS + KIND_TESTS))})$'"
 DAEMON_RACE_SCRIPT = f"go test -v -count=1 -race -timeout 30m -skip {DAEMON_RACE_SKIP} " + " ".join(DAEMON_RACE_PKGS)
 
 
@@ -1736,9 +1815,12 @@ if SUPERVISE_TABLE_PACKAGE in DAEMON_RACE_PACKAGES + [TEXT_CHECK_PACKAGE]:
     raise ValueError(f"the table pins are in {SUPERVISE_TABLE_PACKAGE}, which the plain step leaves out, so "
                      f"nothing skips them there; name that package's step here, or move the -skip to the step "
                      f"that runs them")
+# The plain step's -skip: those two pins, and the kind job's tests (KIND_TESTS), which both of
+# daemon-go's steps skip by name, in one pattern built from the two lists.
+DAEMON_PLAIN_SKIP = f"'^({'|'.join(sorted(SUPERVISE_TABLE_TESTS + KIND_TESTS))})$'"
 DAEMON_PLAIN_SCRIPT = f"""\
 set -o pipefail
-go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs go test -v -count=1 -timeout 15m -skip {SUPERVISE_TABLE_PATTERN}"""
+go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs go test -v -count=1 -timeout 15m -skip {DAEMON_PLAIN_SKIP}"""
 
 
 def hold_supervise_table_tests():
@@ -2705,7 +2787,9 @@ GATES = [
     # (SUPERVISE_TABLE_TESTS), which the text-check job runs by name: they read that package's
     # source and the source of everything it imports, which their type-checker reads from source
     # too (table_test.go:99) and which of this repository is packages/daemon's own packages, so no
-    # read leaves this job with them.
+    # read leaves this job with them. Both steps leave the kind job's tests out (KIND_TESTS), whose
+    # gate is below: with them go the rig's library, Agent Sandbox's manifest and every file the
+    # worker image is built from.
     gate("daemon_go_tests", "daemon-go", runs=[
         script_run("scripts/e2e/stage1-skeleton.sh", 'go build -o "$work/legion" ./cmd/legion',
                    at("daemon-go", "Stage 1 live proof"), DAEMON, ["./cmd/legion"], mode="build"),
@@ -2726,16 +2810,16 @@ GATES = [
         pinned_step("daemon-go", DAEMON_PLAIN_STEP, DAEMON, DAEMON_PLAIN_SCRIPT, [
             (DAEMON, packages_kept(DAEMON, DAEMON_PLAIN_PATTERN),
              "go list ./... piped into go test, counted as go test over the packages its grep -Ev keeps, the "
-             "supervise table's two pure pins skipped by name", {}),
+             "supervise table's two pure pins and the kind job's tests skipped by name", {}),
         ]),
         # The race step carries a -skip, which is no form check-ci-filters.sh reduces either, so
         # its script is pinned too. What it compiles is every test file of the three packages,
         # the skipped tests' included: -skip leaves a test out of the run, never out of the
         # build, so the closure here is the step's whole closure and only those tests' own reads
-        # (the plugin-pack, daemon-live and agent-harness gates below) leave this job.
+        # (the plugin-pack, daemon-live, agent-harness and kind gates below) leave this job.
         pinned_step("daemon-go", DAEMON_RACE_STEP, DAEMON, DAEMON_RACE_SCRIPT, [
             (DAEMON, DAEMON_RACE_PKGS, "go test -race over the three concurrent packages, the plugin-pack, "
-                                       "daemon-live and agent-harness tests skipped by name", {"race": True}),
+                                       "daemon-live, agent-harness and kind tests skipped by name", {"race": True}),
         ]),
         pinned_step("daemon-go", DAEMON_RACE_IMPOSSIBLE_STEP, DAEMON, DAEMON_RACE_IMPOSSIBLE_SCRIPT, [
             (DAEMON, [f"./{under}"], f"go test -run of what the race build cannot run in ./{under}", {})
@@ -3025,6 +3109,34 @@ GATES = [
       + setup_go(AGENT_HARNESS_PLUGIN_SMOKES, f"{ENVOY}/go.mod", AGENT_HARNESS_WORKFLOW)
       + bun_job(AGENT_HARNESS_PLUGIN_SMOKES, AGENT_HARNESS_WORKFLOW)
       + CI_SELF + job_self(AGENT_HARNESS_JOB), workflow=CI),
+
+    # The kind job: its rig part runs the tests of KIND_TESTS, which both daemon-go steps skip by
+    # name, and compiles the package they are in to do it, so this filter is that package's whole
+    # test closure - internal/kindtest and the fake GitHub it serves, internal/fakegithub - as
+    # well as what the rig reads beyond it: scripts/e2e/lib/kind-sandbox.sh, whose functions are
+    # every piece of the rig, and the Agent Sandbox CRD and manifest its install applies, and every
+    # file the worker image under test is built from. The image job builds that image from the
+    # worker_image filter's files when the run's worker-image job did not, and the parts take
+    # worker-image.yaml's build of them when it did, so the image the rig runs is a read of the
+    # job either way, and check-image-trigger-paths.sh holds this filter to the image job's build
+    # as it holds worker_image to worker-image.yaml's. Those reads are declared here, keyed on the
+    # job, rather than in a RULES row of internal/kindtest's test file, which the daemon-go plain
+    # step compiles and runs none of. The called file's jobs carry ids of their own, so this gate
+    # keeps `workflow=CI`, as agent_harness does.
+    gate("kind", KIND_JOB, exact=[
+        pinned_step(KIND_RIG, KIND_STEP, DAEMON, KIND_SCRIPT, [
+            (DAEMON, [f"./{KIND_PACKAGE}/"], "go test -run over the package the rig's tests are in", {}),
+        ], workflow=KIND_WORKFLOW),
+    ], reads=reads(
+        (KIND_LIB, f"{at_kind_rig(KIND_STEP)}: packages/daemon/internal/kindtest/kindtest.go:319 sources it for each "
+                   "piece of the rig, and :480 for its teardown"),
+        (f"{KIND_TESTDATA}/sandboxes.agents.x-k8s.io.yaml", f"{KIND_LIB}:160 kind_sandbox_install_agent_sandbox applies it"),
+        (f"{KIND_TESTDATA}/agent-sandbox-v1.0.3.yaml", f"{KIND_LIB}:162 kind_sandbox_install_agent_sandbox applies it"),
+    ) + worker_image_reads(f"{at(KIND_IMAGE, KIND_IMAGE_STEP, KIND_WORKFLOW)} builds packages/daemon/docker/worker.Dockerfile "
+                           f"from it, as .github/workflows/worker-image.yaml's build does, whose image a pull request's "
+                           f"run hands {at_kind_rig(KIND_STEP)} instead")
+      + setup_go(KIND_RIG, f"{DAEMON}/go.mod", KIND_WORKFLOW)
+      + CI_SELF + job_self(KIND_JOB), workflow=CI),
 
     # The private-name port harness, in a job of its own: one step, which builds the `legion`
     # binary of this head and holds the rules that binary carries to the frozen shell script's

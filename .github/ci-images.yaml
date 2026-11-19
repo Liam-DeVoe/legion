@@ -8,9 +8,9 @@
 # from, and it holds `tag:` and `digest:` besides:
 #
 #   upstream  where the image comes from: the image's own reference at its own registry. Every
-#             row that carries one but the playwright row and the Agent Sandbox controller row
-#             below names Docker Hub, which is why the rest of this file says Docker Hub where
-#             it means the upstream registry.
+#             row that carries one but the playwright row, the Agent Sandbox controller row and
+#             the NFS server row below names Docker Hub, which is why the rest of this file says
+#             Docker Hub where it means the upstream registry.
 #             .github/scripts/mirror-ci-images.sh copies the repository of this reference at the
 #             row's digest, and never the tag it names, so the bytes it lands are this row's
 #             bytes whatever upstream did since. That script copies only a row the package does
@@ -151,7 +151,7 @@ images:
   # decide every pixel of it: the container is what makes one taken by a person and one taken by
   # CI the same image. Its upstream tag carries the Playwright release bun.lock resolves, and
   # .github/scripts/check-playwright-version.sh refuses a head where the two disagree. It is one
-  # of the two rows whose upstream is not Docker Hub: Microsoft publishes this image on its own
+  # of the three rows whose upstream is not Docker Hub: Microsoft publishes this image on its own
   # registry alone, and the copy below is what every build and every CI job reads.
   - upstream: mcr.microsoft.com/playwright:v1.64.1-noble
     tag: playwright-v1.64.1-noble-2f05f8a7
@@ -165,11 +165,13 @@ images:
     tag: browser-69c3a316
     digest: sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
 
-  # The kind job's cluster, four images: the node image of every kind cluster it creates
-  # (Kubernetes v1.37.0), the local registry the worker image under test is pushed to, the Agent
-  # Sandbox v1.0.3 controller its vendored sandbox.yaml runs, and the busybox its test pods and
-  # the go test -exec wrapper's container run. The Agent Sandbox controller's upstream is the
-  # Kubernetes project's own registry, where it is published alone.
+  # The kind job's cluster, five images, each named by scripts/e2e/lib/kind-sandbox.sh: the node
+  # image of every kind cluster it creates (Kubernetes v1.37.0, the default of kind v0.33.0), the
+  # local registry the images under test are pushed to, the Agent Sandbox v1.0.3 controller its
+  # vendored manifest runs, the busybox of its gVisor check pod, and the NFS server
+  # (NFS-Ganesha, as the Kubernetes SIG Storage's nfs-provisioner v4.0.8 ships it) a gVisor pod
+  # mounts a share of. The Agent Sandbox controller's and the NFS server's upstream is the
+  # Kubernetes project's own registry, where each is published alone.
   - upstream: docker.io/kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
     tag: node-v1.37.0-a1ed56cf
     digest: sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
@@ -185,3 +187,7 @@ images:
   - upstream: docker.io/library/busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
     tag: busybox-1.37-a7dbc319
     digest: sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+
+  - upstream: registry.k8s.io/sig-storage/nfs-provisioner:v4.0.8@sha256:c825f3d5e28bde099bd7a3daace28772d412c9157ad47fa752a9ad0baafc118d
+    tag: nfs-provisioner-v4.0.8-c825f3d5
+    digest: sha256:c825f3d5e28bde099bd7a3daace28772d412c9157ad47fa752a9ad0baafc118d
