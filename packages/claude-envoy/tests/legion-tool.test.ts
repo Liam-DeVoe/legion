@@ -290,11 +290,12 @@ test("read_record answers the issue's record, and request_backward_move posts wi
   ])
 })
 
-// Contract 159 marks a claim Envoy cannot reach on its claim view (`unreachable`), and the daemon
-// serves that mark only to a caller at 159 or above, holding it back from a caller below
-// (`api.stateFor`). So this plugin reads both shapes of a claim view: read_record hands on the mark
-// as the daemon wrote it, and reads a view without it, the one a caller below 159 is served, as it
-// did before. A mark the schema does not take is refused, never dropped in silence.
+// The daemon contract that added `unreachable` (the daemon's `api.unreachableContract`) marks a
+// claim Envoy cannot reach on its claim view, and the daemon serves that mark only to a caller at
+// that contract or above, holding it back from a caller below (`api.stateFor`). So this plugin
+// reads both shapes of a claim view: read_record hands on the mark as the daemon wrote it, and
+// reads a view without it, the one a caller below that contract is served, as it did before. A
+// mark the schema does not take is refused, never dropped in silence.
 test("read_record hands on a claim's unreachable mark, reads a claim view without one, and refuses a malformed one", async () => {
   /** LEGION-207's record, down to the implementer's claim view, which carries the mark. */
   interface MarkedRecord {

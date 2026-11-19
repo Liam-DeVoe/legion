@@ -233,10 +233,11 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 // which every executor already answers its own way — a notice is held for its architect, a
 // merge-queue removal and a controller notice wait, and a role message, a phase's end, a hook's
 // prompt and an update ask finish undelivered (heldDelivery holds a role message or a hook's
-// prompt only while the listener has no holder, never for this refusal) — so an operator's settle of the name lets a held
-// row's next attempt through (a notice, a merge-queue removal, a controller notice), while a row
-// that finished undelivered is not sent again (review round 13 of #4220, note 36). A store that
-// does not answer publishes nothing and fails the attempt, which the row's backoff retries.
+// prompt only while the listener has no holder, never for this refusal) — so an operator's settle
+// of the name lets a held row's next attempt through (a notice, a merge-queue removal, a
+// controller notice), while a row that finished undelivered is not sent again (review round 13 of
+// #4220, note 36). A store that does not answer publishes nothing and fails the attempt, which the
+// row's backoff retries.
 //
 // HoldsItsSession takes no machine lock, so no publish waits out a decision in flight, a launch or
 // relaunch in the runtime included (LEGION-650). The gate is here rather than in the publisher
@@ -1886,9 +1887,9 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 			return fmt.Errorf("publish %s's message to role %s: %w", row.Issue, payload.Role, err)
 		}
 		return nil
-	}, func() {
+	}, func(err error) {
 		r.log.Info("outbox role message finished undelivered: its role has no live holder, or its claim records a session it does not hold",
-			"row", row.ID, "issue", row.Issue, "role", payload.Role)
+			"row", row.ID, "issue", row.Issue, "role", payload.Role, "error", err)
 	})
 }
 
@@ -2047,8 +2048,8 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 			return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, err)
 		}
 		return err
-	}, func() {
-		r.log.Info("outbox hook prompt finished undelivered: no live session holds the role", fields...)
+	}, func(err error) {
+		r.log.Info("outbox hook prompt finished undelivered: no live session holds the role", append(fields, "error", err)...)
 	})
 }
 
@@ -2063,7 +2064,7 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // process that holds that session is another claim's, so the row finishes undelivered, as every
 // row the gate refuses does. Every other failure publish answers keeps the row's retry, a publish
 // the listener stored for a holder as that stored copy (storedAnswer), so the retry records it.
-func (r *outbox) heldDelivery(ctx context.Context, row record.OutboxRow, token claim.Token, what string, moved func(record.Issue) bool, publish func() error, undelivered func()) error {
+func (r *outbox) heldDelivery(ctx context.Context, row record.OutboxRow, token claim.Token, what string, moved func(record.Issue) bool, publish func() error, undelivered func(error)) error {
 	if ended, err := r.holdEnded(ctx, row, token, what, moved); err != nil || ended {
 		return err
 	}
@@ -2078,7 +2079,7 @@ func (r *outbox) heldDelivery(ctx context.Context, row record.OutboxRow, token c
 				return held
 			}
 		}
-		undelivered()
+		undelivered(err)
 		return nil
 	}
 	if err != nil {
