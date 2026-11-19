@@ -51,7 +51,8 @@ export function runDaemonPane(module: string, args: readonly string[], input?: s
 }
 
 /** The claim a pane is launched for and the rig's stand-ins for what the daemon knows at boot
- * (daemon-pane.go's paneRequest). `ghToken` stands in for the claim's GitHub App token: it is
+ * (daemon-pane.go's paneRequest). `repository` and `defaultBranch` are the world's (`PaneWorld`).
+ * `ghToken` stands in for the claim's GitHub App token: it is
  * rendered into the claim's gh bundle under `<stateDir>/secrets/<claim>-gh`, the pane's
  * `LEGION_GH_OWNERS_DIR`, whose one owner's directory is its `GH_CONFIG_DIR`, and its
  * `LEGION_GH_PATH` is `ghPath` when the rig names one (its recording stand-in), else the real gh as
@@ -67,6 +68,8 @@ interface PaneRequest {
   readonly envoyUrl: string;
   readonly natsUrls: readonly string[];
   readonly bootTokenFile: string;
+  readonly repository: string;
+  readonly defaultBranch: string;
   readonly ghToken?: string;
   readonly path: string;
   readonly ghPath?: string;
@@ -101,6 +104,15 @@ export interface WorkerClaim {
   readonly role: LegionRole;
 }
 
+/** The world the pane's issue is on: its repository (`owner/name`) and the branch its pull request
+ * merges into, as the run's world.json holds them (rig.sh's world_repository, their one source).
+ * The pane's addressing and its gh bundle's one owner come from them, so the addressing, the
+ * world's Dispatch issue and its pull request name one repository and one default branch. */
+export interface PaneWorld {
+  readonly repository: string;
+  readonly defaultBranch: string;
+}
+
 /** Where a pane's daemon is read from: a checkout's daemon module (`DAEMON_MODULE` for this one),
  * whose embedded role prompts compose the pane's system prompt when `systemPrompt` is set. */
 export interface PaneSource {
@@ -111,20 +123,22 @@ export interface PaneSource {
   readonly ghPath?: string;
 }
 
-/** The pane the Legion daemon's tmux runtime gives a phase worker for `claim`, pointed at the
- * scratch state directory and the stand-in daemon, over the caller's own environment. Everything
- * the daemon tells the pane comes from the daemon's own functions in `source`'s module
+/** The pane the Legion daemon's tmux runtime gives a phase worker for `claim` on `world`, pointed
+ * at the scratch state directory and the stand-in daemon, over the caller's own environment.
+ * Everything the daemon tells the pane comes from the daemon's own functions in `source`'s module
  * (`daemon-pane.go`): the claim's identity, the daemon URL, the state directory and workspace,
  * Envoy (the listener and NATS the pane's own extension reaches from the caller's environment and
  * the profile's envoy.json, `envoySettings`, which reads no Envoy from the workspace's
  * `.envoy/envoy.json`; the default listener and no NATS when that Envoy is off), the claim's gh
- * bundle, which holds `RIG_GH_TOKEN` (`LEGION_GH_OWNERS_DIR`, `GH_CONFIG_DIR` and `LEGION_GH_PATH`,
+ * bundle, which holds `RIG_GH_TOKEN` under the directory of the world's owner
+ * (`LEGION_GH_OWNERS_DIR`, `GH_CONFIG_DIR` and `LEGION_GH_PATH`,
  * `source.ghPath`, or the first `gh` on the inherited PATH, which must be no script), with
  * `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` set empty,
  * `PI_SHELL_PREFIX`, the four XDG base directories, the boot token pointer
  * (`<state>/secrets/boot`, the file the stand-in checks), and PATH with the launcher directory
  * first; no grant file, since the `legion` tool mints its grants in-process and no agent runs
- * `legion` from bash; and, with `systemPrompt`, the system prompt argument. An inherited
+ * `legion` from bash; and, with `systemPrompt`, the system prompt argument, whose addressing names
+ * the world's repository and default branch. An inherited
  * `ANTHROPIC_API_KEY`, every `LEGION_*` and `DISPATCH_*` value and the caller's own GitHub
  * variables are dropped first. The profile's agent directory, and so its envoy.json, is under the
  * inherited `HOME`. Throws `envoy: <why>` when that Envoy is off with an error, or on with inbound
@@ -134,6 +148,7 @@ export function workerPane(
   launch: WorkerLaunch,
   inherited: NodeJS.ProcessEnv,
   claim: WorkerClaim,
+  world: PaneWorld,
   source: PaneSource
 ): DaemonPane {
   const env: Record<string, string> = {};
@@ -160,6 +175,7 @@ export function workerPane(
   if (envoy.enabled && "off" in envoy.inbound) throw new Error(`envoy: ${envoy.inbound.off}`);
   const request: PaneRequest = {
     ...claim,
+    ...world,
     stateDir,
     workspace,
     daemonUrl: `http://127.0.0.1:${launch.port}`,

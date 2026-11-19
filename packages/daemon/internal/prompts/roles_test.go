@@ -593,8 +593,25 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// R6: the role that holds the phase re-runs a red at the head once, after it writes the
 		// failure down, so a red the change did not cause costs the tree no extra lap
 		// (dispatch://INFRA-1303). The whole rule is in the worker skill's red-at-the-head page,
-		// which this mode-neutral part may not name.
+		// which this mode-neutral part names in words alone: its `skill://` path names the worker
+		// skill, which headlessOnly keeps out of a core.
 		{"core/tester.md", "The role that holds the issue's phase re-runs a red at the head of the pull request that the change did not cause"},
+		// Which red is the change's is the page's reading, and a pass in the role's own pod does not
+		// move it: a tester that never opened the page took a local pass for a red the change did
+		// not cause and re-ran the change's own test (dispatch://INFRA-1303, trial-d-head-2 of the
+		// batch of record at 6a643564: "Local `bun test` passes 2/2 deterministically … Per
+		// red-at-the-head: write the failure down, then re-run").
+		{"core/tester.md", "as *Which red is the change's* on the worker skill's red-at-the-head page decides, and a pass of the test in your own pod does not move that decision."},
+		// The failure is written down in the phase's handoff record, before the re-run is pressed:
+		// two runs of that batch read "writes the failure down" as a note and pressed first
+		// (trial-c-head-2: `echo "failure recorded: …" && gh run rerun 7001002 --failed`).
+		{"core/tester.md", "It writes the failure down first, in a handoff record of its own phase written with `dispatch handoff-write`, before the `gh run rerun` call"},
+		// A green re-run owes the page's three disposal steps before the phase completes.
+		{"core/tester.md", "The round goes on when the re-run is green, after the three steps of that page's *What becomes of the record*."},
+		// The wait holds for a red the counted set does not report, however the role learned of it:
+		// three runs of world l read a failed job off the run's own status while the counted set did
+		// not report the check, and pressed (trial-l-head-3, -4 and -5).
+		{"core/tester.md", "and a red the counted set does not yet report `completed`, however you learned of it."},
 		// A tester whose issue has no `ci_check` check read "a check CI runs is recorded from CI's
 		// job" and "by hand you drive only the changed behaviour" beside "except a `ci_check` job" as
 		// no CI to read, and passed a red head without seeing it (dispatch://INFRA-1303,
@@ -607,6 +624,16 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// sentence is in the reviewer's Go overlay alone, so its row names the part by its go/ path,
 		// which the loop reads through goPart.
 		{"go/reviewer.md", "A check the base does not require you neither wait for nor re-run for the approval: you approve over a red of it that the change did not make and record it as that page says, and a red of it whose log shows that the change breaks something is a finding like any other, as `skill://legion-worker/references/merge-gate.md` says."},
+		// The reviewer's round order carries the same record before the press and the same disposal
+		// steps after a green re-run (trial-i-head-2 and i-nos1-5 approved after green with no
+		// occurrence), and its wait is the tester's.
+		{"go/reviewer.md", "record the failure in a `review` handoff record with `dispatch handoff-write` before the `gh run rerun` call"},
+		{"go/reviewer.md", "and once that re-run is green, run the three steps of that page's *What becomes of the record*"},
+		{"go/reviewer.md", "and a red the counted set does not yet report `completed`, however you learned of it"},
+		// The worker part names the same record, and the implementer's overlay the same reading of
+		// whose red it is.
+		{"go/worker-common.md", "after it records the failure in a handoff record of its own phase with `dispatch handoff-write`"},
+		{"go/implementer.md", "(*Which red is the change's* in `skill://legion-worker/references/red-at-the-head.md` decides which of the two it is, and a pass in your own pod does not move that)"},
 		// A check CI proves: a check carrying `ci_check` is proved by the CI run it names, so no
 		// role runs it or records its result, and `dispatch results` derives that result
 		// (dispatch://INFRA-3204, R5 of its spec). Each part that orders a check run, recorded or

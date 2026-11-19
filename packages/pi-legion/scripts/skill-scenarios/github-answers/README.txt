@@ -49,6 +49,10 @@ repo-404-pulls-list        gh api repos/cybermonklabs/no-such-repo-infra-1303/pu
 (repo-404-rules was answered byte for byte the same with --paginate, and repo-404-pulls-list with a ?state=all&head= query.)
 repo-404-pull-patch   gh api -X PATCH repos/cybermonklabs/no-such-repo-infra-1303/pulls/1 -f title=x
 repo-404-review-post  gh api -X POST repos/cybermonklabs/no-such-repo-infra-1303/pulls/1/reviews -f event=COMMENT -f body=x
+Measured the same way on 2026-11-19 (gh 2.98.0 against api.github.com, through INFRA-1303 fold13's
+read-only measure-gh.sh, which logs each request it sends to its requests.log before sending it):
+contents-404   gh api repos/cybermonklabs/legion/contents/.github/no-such-dir-infra-1303   (exit 1; requests.log line 63)
+compare-404    gh api repos/cybermonklabs/legion/compare/no-such-ref-infra-1303...b2cf98a035b469bb6eb1d5314a106c18d754f451   (exit 1; requests.log line 69)
 GraphQL requests GitHub refuses before it reads anything (gh prints the body and its message, exit 1;
 gh-graphql.ts writes these errors for the call's own query, in this shape):
 graphql-variable-null     gh api graphql -f query='query($n:Int!){repository(owner:"cybermonklabs",name:"legion"){pullRequest(number:$n){number}}}'   (no n given)
@@ -98,3 +102,54 @@ answers follow (no file: each is stated here and in the comment of the code that
     of cybermonklabs/legion lists one; run 44457284390 (event workflow_dispatch, head 38c89d64...
     on legion/INFRA-3135, which is the current head of the open #3729) lists #3729 in the minimal
     shape, and the check runs of its check suite (120342313542) list #3729 too.
+- Measured on 2026-11-19 for INFRA-1303 fold13, gh 2.98.0 against api.github.com through the
+  fold's read-only measure-gh.sh; each label is the one the rig's comments cite, and each line
+  number the request's line in that measure-gh.sh's requests.log. The in-progress reads are of
+  cybermonklabs/legion run 44586483868 (the CI of #3514 at 36155e1a) while it ran.
+  - gh 2.98.0's own source, each `gh api repos/cli/cli/contents/<path>?ref=v2.98.0` read raw:
+    pkg/cmd/run/rerun/rerun.go (line 1), pkg/cmd/run/view/view.go (49),
+    pkg/cmd/pr/checks/checks.go (51), pkg/cmd/pr/checks/output.go (53), pkg/cmd/run/list/list.go
+    (55), pkg/cmd/workflow/shared/shared.go (57), cmd/gh/main.go (59), internal/ghcmd/cmd.go (61),
+    pkg/cmd/run/shared/shared.go (81).
+  - ip-run `gh api repos/cybermonklabs/legion/actions/runs/44586483868` (7): status `queued` while
+    a job of it was queued, conclusion null.
+  - ip-jobs `.../actions/runs/44586483868/jobs?per_page=100` (9), ip-job `.../actions/jobs/
+    135780822636` (11) and ip-job-queued `.../actions/jobs/135783168595` (13): a job in progress
+    has status in_progress, conclusion and completed_at null, its steps in_progress (completed_at
+    null) or pending (started_at null); a queued job has no step and no runner.
+  - ip-joblog `.../actions/jobs/135780822636/logs` (15): `gh: HTTP 404`, exit 1, while the job runs.
+  - ip-runview `gh run view 44586483868` (17), ip-runview-v with `-v` (19), ip-runview-job
+    `gh run view --job 135780822636` (21): the first line names the pull request of the run's
+    branch after the workflow (`* legion/INFRA-1303 CI cybermonklabs/legion#3514 · 44586483868`);
+    a run, job or step not completed is marked `*`, a job not completed has no time.
+  - ip-runview-logfailed `gh run view 44586483868 --log-failed` (23) and ip-runview-joblog
+    `gh run view --job 135780822636 --log` (25): `run <id> is still in progress; logs will be
+    available when it is complete`, and `job <id> is still in progress; …` for the job, exit 1.
+  - ip-runview-json `gh run view 44586483868 --json attempt,conclusion,status,updatedAt,jobs`
+    (27): each job and each step with its startedAt and completedAt, `0001-01-01T00:00:00Z` where
+    not yet reached, conclusion "" where none.
+  - ip-runlist `gh run list --commit 36155e1a... --limit 5` (29) and ip-runlist-json with `--json
+    attempt,conclusion,status,databaseId,workflowName,updatedAt,startedAt` (31): a run in progress
+    prints the time since it started.
+  - ip-prchecks `gh pr checks 3514` (33): the rows `<name>\t<bucket>\t<elapsed>\t<link>\t<description>`,
+    `0` where a check started and completed in the same second, exit 8 while a check is pending;
+    ip-prchecks-json `--json name,state,bucket,link` (35), prchecks-json-bogus `--json bogus` (37,
+    gh's field list, exit 1) and prchecks-json-all `--json bucket,completedAt,description,event,
+    link,name,startedAt,state,workflow` (71): the fields' values, exit 0 whatever the checks say.
+  - ip-prview-rollup `gh pr view 3514 --json statusCheckRollup` (39) and ip-graphql, the page's
+    rollup query of 36155e1a with --paginate (47): a check run not yet completed has its status in
+    capitals, conclusion "" and the zero time of Go; the rollup with one pending and none failing
+    is PENDING.
+  - ip-checkruns `.../commits/36155e1a.../check-runs?check_name=lint%20/%20lint` (41): a check run
+    in progress has status in_progress, conclusion and completed_at null. ip-checkruns-queued
+    `...?check_name=claude-envoy%20/%20private-names` (43) had completed by the time it was read,
+    and ip-checksuites `.../commits/36155e1a.../check-suites` (45) is the head's suites.
+  - contents-dir-workflows `.../contents/.github/workflows?ref=b2cf98a0...` (73), contents-dir-
+    github `.../contents/.github?ref=b2cf98a0...` (75) and contents-dir-noref
+    `.../contents/.github/workflows` (79): a directory's listing, one entry per file or directory
+    by name, its URLs naming the ref the call gave (the default branch where it gave none).
+  - gittree-root `.../git/trees/b2cf98a0...` (77): the top level of a tree alone, each entry's
+    path, mode, type, sha, size (blobs) and url, `truncated:false`.
+  - compare `.../compare/5f3d552e...b2cf98a0...` (67, its base read as main's head's parent at 65):
+    the comparison's keys in GitHub's order, status ahead, ahead_by 1, behind_by 0, the merge base,
+    the commits and the files.

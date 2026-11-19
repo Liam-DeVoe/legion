@@ -220,8 +220,9 @@ file one issue per test, with its occurrences counted on it, never one issue per
 you reopen or replace a closed one:
 `skill://legion-controller/references/finding-asks.md#a-test-a-role-re-ran-green`. That filing is
 a named exception to the rule above, because a test that fails for a cause outside the change
-belongs to no tree's work, and the evidence is already measured: the role wrote down the job, the
-head and both results before it pressed the re-run. The issue carries the same `Filed for Legion
+belongs to no tree's work, and the evidence is already measured: before it pressed the re-run, the
+role wrote the job and the head into a handoff record of its phase, and its occurrence names both
+results. The issue carries the same `Filed for Legion
 from <role> on <issue>:` line as every issue you file.
 
 ## Daily report

@@ -367,7 +367,7 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
       "there spends the head's one re-run on a run nobody counted. The wait ends three ways: the",
       "counted set reports that check, and the role acts on it; the counted set settles with every",
       "check it holds `completed` and that one absent, or the head moves, and the role then records",
-      "what it was told and what the counted set carries, re-runs",
+      "where it learned of it and what the counted set carries, re-runs",
       "nothing, goes on with its round and tells the architect.",
     ],
   ],
@@ -448,7 +448,8 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
     "worker-common.md's \"only the role that holds the issue's phase re-runs one the change did not make\"",
     [
       "A red check is information, not a verdict: only the role that holds the issue's phase re-runs",
-      "one the change did not make, once at that head and after it records the failure — the tester",
+      "one the change did not make, once at that head and after it records the failure in a handoff",
+      "record of its own phase with `dispatch handoff-write` — the tester",
       "in `testing`, the reviewer in `reviewing` or the implementer while it holds `implementing`,",
       "never the merger — a red the change made is the implementer's to fix, and whether the pull",
       "request merges is GitHub's.",
@@ -459,8 +460,9 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
     [
       "  issue's current phase and the implementer, and judges none of them. The tester in `testing`,",
       "  the reviewer in `reviewing` or the implementer while it holds `implementing` re-runs a check",
-      "  that failed on itself once at that head, after it records the failure, and no other role",
-      "  re-runs one; the implementer fixes code that is at fault; and GitHub holds the merge.",
+      "  that failed on itself once at that head, after it records the failure in a handoff record of",
+      "  its phase (`dispatch handoff-write`), and no other role re-runs one; the implementer fixes",
+      "  code that is at fault; and GitHub holds the merge.",
     ],
   ],
   [

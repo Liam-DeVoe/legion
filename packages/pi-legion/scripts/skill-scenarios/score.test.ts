@@ -4363,7 +4363,9 @@ const redDeclined = (at: string, summary: string) => [
 ];
 /** The turn of a role that followed the page: it read the page, read the failing attempt's log,
  * wrote the red down, pressed the one re-run, subscribed to the pull request's topic, and put the
- * occurrence where findings.md sends it. `parts` replaces what follows the subscription. */
+ * occurrence where findings.md sends it: it searched by the test's full name, found no issue that
+ * tracks the test (the world holds none) and said so to the controller, naming the test.
+ * `parts` replaces what follows the subscription. */
 const redTurn = (parts: object[] = [], read = redLine) => [
   ...header,
   turn[0],
@@ -4375,7 +4377,9 @@ const redTurn = (parts: object[] = [], read = redLine) => [
   redSearch,
   result("call-s", "No issues found."),
   redComment,
-  redTold(`Clear defect from tester. ${redTest} failed at the head and passed on the re-run.`),
+  redTold(
+    `Clear defect from tester. No issue tracks ${redTest}: it failed at the head and passed on the re-run.`
+  ),
   ...parts,
 ];
 /** A red-at-the-head run: the world-`a` tester that followed the rule, with `files` over what it
@@ -4521,7 +4525,9 @@ redRun("trial-a-base-1", {}, [
   redSearch,
   result("call-s", "No issues found."),
   redComment,
-  redTold(`Clear defect from tester. ${redTest} failed at the head and passed on the re-run.`),
+  redTold(
+    `Clear defect from tester. No issue tracks ${redTest}: it failed at the head and passed on the re-run.`
+  ),
   ...redComplete("pass", "The re-run of test (notify) passed."),
 ]);
 // The act before the record: the re-run was pressed at 17:27:50, and Dispatch recorded the record
@@ -4593,7 +4599,9 @@ redRun("trial-a-head-18", {}, [
   redSearch,
   result("call-s", "No issues found."),
   redComment,
-  redTold(`Clear defect from tester. ${redTest} failed at the head and passed on the re-run.`),
+  redTold(
+    `Clear defect from tester. No issue tracks ${redTest}: it failed at the head and passed on the re-run.`
+  ),
   ...redComplete("pass", "The re-run of test (notify) passed."),
 ]);
 // Re-ran and waited, but subscribed to nothing.
@@ -4607,7 +4615,9 @@ redRun("trial-a-head-6", {}, [
   redSearch,
   result("call-s", "No issues found."),
   redComment,
-  redTold(`Clear defect from tester. ${redTest} failed at the head and passed on the re-run.`),
+  redTold(
+    `Clear defect from tester. No issue tracks ${redTest}: it failed at the head and passed on the re-run.`
+  ),
   ...redComplete("pass", "The re-run of test (notify) passed."),
 ]);
 // Waited inside the turn, in a sleep loop.
@@ -4632,7 +4642,7 @@ redRun("trial-a-head-8", {
 });
 // The round did not go on: no completion the daemon accepted.
 redRun("trial-a-head-9", { "daemon.log": "" });
-// Never searched for the test's issue.
+// Never searched, and told the controller nothing of a missing issue: the occurrence went nowhere.
 redRun("trial-a-head-10", {}, [
   ...header,
   turn[0],
@@ -4643,6 +4653,39 @@ redRun("trial-a-head-10", {}, [
   redSubscribe,
   redComment,
   redTold(`Clear defect from tester. ${redTest} failed at the head and passed on the re-run.`),
+  ...redComplete("pass", "The re-run of test (notify) passed."),
+]);
+// INFRA-1303 D6: k-head-1 of the batch of record at 6a643564, whose search paraphrased the test's
+// name (`retry` for `retries`) and whose message to the controller said no issue tracks it, by its
+// full name. The occurrence landed where the page sends it, so the run is told.
+redRun("trial-a-head-30", {}, [
+  ...header,
+  turn[0],
+  redPage,
+  ...redRead(redLine),
+  writeHandoff,
+  toolCall("call-rr", "bash", { command: "gh run rerun 7001001 --failed" }),
+  redSubscribe,
+  toolCall("call-s", "bash", { command: "dispatch search --query 'notify refused send retry'" }),
+  result("call-s", 'No results for "notify refused send retry".'),
+  redTold(
+    `Clear defect from tester. No tracking issue exists for the flake: ${redTest} failed at the head and passed on the re-run.`
+  ),
+  ...redComplete("pass", "The re-run of test (notify) passed."),
+]);
+// A search that names another test, and a message that says no issue tracks that other test: the
+// occurrence of the world's test went nowhere.
+redRun("trial-a-head-31", {}, [
+  ...header,
+  turn[0],
+  redPage,
+  ...redRead(redLine),
+  writeHandoff,
+  toolCall("call-rr", "bash", { command: "gh run rerun 7001001 --failed" }),
+  redSubscribe,
+  toolCall("call-s", "bash", { command: "dispatch search --query 'greet trims the name'" }),
+  result("call-s", "No issues found."),
+  redTold("Clear defect from tester. No issue tracks greet.test.ts > trims the name."),
   ...redComplete("pass", "The re-run of test (notify) passed."),
 ]);
 // Searched, but posted the occurrence nowhere and said nothing of a missing issue.
@@ -4759,7 +4802,9 @@ redRun(
     redSearch,
     result("call-s", "No issues found."),
     redComment,
-    redTold(`Clear defect from tester. ${redTest} failed at the head and passed on the re-run.`),
+    redTold(
+      `Clear defect from tester. No issue tracks ${redTest}: it failed at the head and passed on the re-run.`
+    ),
     ...redComplete("pass", "The re-run of test (notify) passed."),
   ]
 );
@@ -4792,6 +4837,21 @@ const redRunsCall = (at: string) => ({
 redRun("trial-a-head-25", redReread(redRunsCall("2026-09-30T17:28:45.000Z")));
 // The same read in the turn the settlement woke: no poll.
 redRun("trial-a-head-26", redReread(redRunsCall("2026-09-30T17:29:30.000Z")));
+/** The turns of a world-`a` run whose settlement never came: the assignment's turn, which pressed
+ * the re-run at 17:28:30 and ended at 17:29:00, then a turn the phase reminder woke. The rig
+ * records no `reminder` wake (record_turn, rig.sh:2732-2736), so this file is written. */
+const redReminderTurns =
+  "1 assignment 2026-09-30T17:29:00Z exit=0\n2 reminder 2026-09-30T17:31:50Z exit=0\n";
+// The counted set read once on the reminder's wake: the page's bound, no poll.
+redRun("trial-a-head-27", {
+  "calls.jsonl": calls([redLogCall, redRerunCall(), redCountedCall("2026-09-30T17:29:30.000Z", 0)]),
+  "turns.txt": redReminderTurns,
+});
+// The same read in the turn that pressed the re-run, a reminder turn after it: still a poll.
+redRun("trial-a-head-28", {
+  "calls.jsonl": calls([redLogCall, redRerunCall(), redCountedCall("2026-09-30T17:28:45.000Z", 1)]),
+  "turns.txt": redReminderTurns,
+});
 
 /** A run of another world: its world.json, over the world-`a` defaults. */
 function redWorldRun(
@@ -5437,12 +5497,48 @@ test("a read of the head's runs after the re-run, in the turn that pressed it, i
   expect(rowOf("trial-a-head-26")).toContain("polled=false");
 });
 
+// INFRA-1303 D6, the architect's ruling of 2026-11-19 19:33Z. Catches: a read of the counted set
+// on the phase reminder's wake, after the turn that pressed the re-run, left uncounted as the
+// page's bound (turns.txt's wake field, which redTurns now keeps).
+test("a read on the phase reminder's wake after the pressing turn is the bound, not a poll", () => {
+  expect(rowOf("trial-a-head-27")).toMatch(/^trial-a-head-27\tpass=true\t.* waited=true /);
+  expect(rowOf("trial-a-head-27")).toContain(
+    "polled=false verdict=pass accepted=true review=none bound=1"
+  );
+});
+
+// Catches: a reminder turn in the record taken as leave for a read in the turn that pressed the
+// re-run: that read is a poll, and is no bound.
+test("a read in the pressing turn stays a poll when a reminder turn follows it", () => {
+  redFails(
+    "trial-a-head-28",
+    "waited=false",
+    "polled=true verdict=pass accepted=true review=none bound=0"
+  );
+});
+
 test("a cleared red whose round never went on fails the outcome", () => {
   redFails("trial-a-head-9", "outcome=false", "verdict=pass accepted=false");
 });
 
-test("a run that searched for no issue of the test fails what became of the record", () => {
-  redFails("trial-a-head-10", "told=false", "searched=false posted=true controller=true");
+test("a run that neither searched nor said no issue tracks the test fails what became of the record", () => {
+  redFails("trial-a-head-10", "told=false", "searched=false posted=false controller=true");
+});
+
+// INFRA-1303 D6, the architect's ruling of 2026-11-19: the occurrence is scored by where it landed,
+// not by the words of the search. Catches: a paraphrased search (k-head-1's `notify refused send
+// retry`) failing a run whose message to the controller says no issue tracks the test by its full
+// name, as Dispatch's English stemming reads `retry` and `retries` alike.
+test("a paraphrased search scores by its outcome: the message says no issue tracks the test", () => {
+  expect(rowOf("trial-a-head-30")).toMatch(/^trial-a-head-30\tpass=true\t.* told=true /);
+  expect(rowOf("trial-a-head-30")).toContain("searched=false posted=true controller=true");
+});
+
+// Catches: a scorer that stops judging the test once it stops judging the query: a run that searched
+// for another test and told the controller no issue tracks that other one put the world's
+// occurrence nowhere.
+test("a search that names the wrong test still fails what became of the record", () => {
+  redFails("trial-a-head-31", "told=false", "searched=false posted=false controller=true");
 });
 
 test("a run that neither posted the occurrence nor said there is no issue fails", () => {
@@ -5450,7 +5546,7 @@ test("a run that neither posted the occurrence nor said there is no issue fails"
 });
 
 test("a run that told no controller fails what became of the record", () => {
-  redFails("trial-a-head-12", "told=false", "posted=true controller=false");
+  redFails("trial-a-head-12", "told=false", "posted=false controller=false");
 });
 
 test("a run that filed the issue itself fails what became of the record", () => {

@@ -62,14 +62,16 @@ that owns the issue, the worker of the issue's current phase and the implementer
 them. That message is the implementer's to act on while it holds `implementing`: a red that failed
 on its own, once the head's counted set reports that check `completed` and the run that holds it has
 ended, is re-run once (`gh run rerun <run-id> --failed`), woken by the pull request's checks event
-(`skill://envoy`, *Wait for CI or a merge*: subscribe, then end the turn) and never by a sleep loop;
+(`skill://envoy`, *Wait for CI or a merge*: subscribe, then end the turn) and never by a sleep loop
+(where no settlement comes, the bound is the phase reminder or the daemon's backstop: it reads the
+counted set once then, and waits again on a re-run still queued or in progress);
 a red at the code is fixed, which the reviewer asks for anyway, since it reads the
 head's checks on GitHub before it approves; and a red only GitHub can settle is GitHub's, which
 holds the merge for it under the base branch's own rules.
-`skill://legion-worker/references/red-at-the-head.md` holds the rest of that rule: that the
-counted set must report the check before any re-run, since a task naming a red is not that set;
-the test of whether the head's one re-run is already spent; and the record the role writes
-before it re-runs.
+`skill://legion-worker/references/red-at-the-head.md` holds the rest of that rule: which red is
+the change's, which a pass in the implementer's own pod does not move; that the counted set must
+report the check before any re-run, however the role learned of the red; the test of whether the
+head's one re-run is already spent; and the record the role writes before it re-runs.
 A merge-group run is never re-run: the implementer finishes its round instead, and the pull request
 is tested again when it is queued again.
 
@@ -204,11 +206,13 @@ and decides there, the only gate on such an issue.
   issue carries `ci_check`. A lane GitHub shows
   `queued` or `in progress` is read as such, and the tester waits for none of them but the three
   `skill://legion-worker/references/red-at-the-head.md` gives it: the run that holds a red, until
-  it ends; the re-run; and a red it was told of that the counted set does not yet report
-  `completed`, since the reviewer reads
+  it ends; the re-run; and a red the counted set does not yet report `completed`, however the
+  tester learned of it, since the reviewer reads
   the head's checks before it approves. A red at the head
   that the change did not make is the tester's to re-run once, and
   `skill://legion-worker/references/red-at-the-head.md` holds the rule.
+  That page's *Which red is the change's* decides whose red it is, and a pass in the tester's own
+  pod does not move it.
   A `before_merge` check the implementer left with no pass standing at the head is a test failure, not a gap
   for the tester to fill: record it in `failures` (each `{check, evidence}`, `check` the block id)
   with `implementerProof.verdict: "rejected"`, complete the phase with

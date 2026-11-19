@@ -193,6 +193,35 @@ test("a route that follows another advances on that route's calls, never on its 
   expect([pressed.stdout, pressed.exit]).toEqual([`${GREEN.stdout}\n`, 0]);
 });
 
+// Catches (INFRA-1303 D4): a body edit made after the press that never reaches the reply the rig
+// puts in place once it settles the re-run (`settled`), so the pull request read after the
+// settlement would answer the body from before the edit.
+test("a body edit reaches a route's settled reply as it reaches its replies", async () => {
+  const view = (body: string) => ({ stdout: { body, number: 1000 } });
+  const { gh, fixtures } = world([
+    {
+      match: "^gh pr view",
+      replies: [view("before"), view("running")],
+      settled: view("settled"),
+      follows: "^gh run rerun",
+    },
+    { match: "^gh run rerun", stdout: "" },
+    { match: "^gh pr edit", stdout: "https://github.com/example/widgets/pull/1000" },
+  ]);
+
+  await gh("run", "rerun", "17420", "--failed");
+  await gh("pr", "edit", "1000", "--body", "edited");
+  const route = fixtures().routes[0] as unknown as {
+    replies: { stdout: { body: string } }[];
+    settled: { stdout: { body: string } };
+  };
+
+  expect({
+    replies: route.replies.map((reply) => reply.stdout.body),
+    settled: route.settled.stdout.body,
+  }).toEqual({ replies: ["edited", "edited"], settled: "edited" });
+});
+
 /** How many times each row below runs its calls at once: the lost update they pin was measured
  * at 6 of 20 trials of one re-run beside three reads of the head. Each row's bound is its own,
  * sized to its time alone in a Legion pod on 2026-11-19: 16.6 s and 17.7 s for the first row,

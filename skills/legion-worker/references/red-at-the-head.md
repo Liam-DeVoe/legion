@@ -5,7 +5,8 @@ request and a phase of that issue is open. Every path it cites is in cybermonkla
 
 A red the change did not make costs the tree a whole lap today: an implementing round, a new CI
 pass, a new testing round, and often a new review round. The role that already reads that head
-clears such a red where it stands. It writes the failure down, then re-runs the failed jobs once.
+clears such a red where it stands. It writes the failure down in a handoff record of its own phase
+(`dispatch handoff-write`) before the `gh run rerun` call that re-runs the failed jobs once.
 
 ## Who may re-run
 
@@ -16,9 +17,8 @@ clears such a red where it stands. It writes the failure down, then re-runs the 
   did not make and names the red in its `redAtTheHead` record and its review body, and nowhere else:
   with no re-run, nothing shows the test fails at random, so the red is no occurrence for the
   census. The tester and the implementer still re-run such a red once.
-- The merger, the architect in `accepting` and an implementer that runs retro re-run nothing.
-  The merger's own rule for a `failed_checks` ejection is in
-  `skill://legion-worker/references/merge-gate.md`, where the guard pins it.
+- The merger, the architect in `accepting` and an implementer that runs retro re-run nothing. The
+  merger's `failed_checks` ejection rule is in `skill://legion-worker/references/merge-gate.md`.
 - A role that is told of a red whose phase it does not hold re-runs nothing.
 
 ## The record comes first, never after
@@ -42,10 +42,11 @@ other lanes of its workflow run still run. Until that run ends, `gh run view <ru
 answers `run <id> is still in progress; logs will be available when it is complete` and exits 1, and
 GitHub refuses `gh run rerun` (measured on run 43686474806). So before the log read the role reads
 the run's own status, `gh run view <run-id> --json status --jq .status`, and reads the log and
-presses the re-run only on `completed`. Until then it waits for the pull request's checks event, as
-*The act and the wait* says: that settlement comes once every check run of the head has ended. A
-re-run GitHub refuses all the same starts no attempt, so it spends nothing: the role records
-GitHub's answer and presses it again on the next wake.
+presses the re-run only on `completed`. The run's own `completed` is no leave to press while the
+counted set does not report that check `completed`. Until then it waits for the pull request's
+checks event, as *The act and the wait* says: that settlement comes once every check run of the head
+has ended. A re-run GitHub refuses all the same starts no attempt, so it spends nothing: the role
+records GitHub's answer and presses it again on the next wake.
 
 The role reads that first line with `gh run view <run-id> --log-failed`. A read that fails is
 recorded as failed, with the error, and the role makes the re-run all the same. Where the log
@@ -176,56 +177,57 @@ means GitHub counts no context at that head. A check with no counted run there h
 spend: there is nothing to re-run. Measured at `ebb186ba575924b3a341769ad2168387d056724f`, where the
 commit endpoint answers 55 runs of a by-hand `workflow_dispatch` and the rollup is `null`.
 
-**An unread counted set is not an empty one.** After a push the counted set can lag, so a role
-that reads it at once may find the failing check pending, queued, in progress or absent. The
-spend test is decided only where the counted set reports that check `completed`. In every other
-state nothing is decided yet: the role waits for the pull request's checks event, as it waits for
-a re-run below, and reads the counted set again when the wake brings it back.
+**An unread counted set is not an empty one.** After a push the counted set can lag, so a role that
+reads it at once may find the failing check pending, queued, in progress or absent. The spend test
+is decided only where the counted set reports that check `completed`. In every other state nothing
+is decided yet, and the role waits as *The act and the wait* says.
 
 ## The act and the wait
 
-**A red the role has only been told of is not yet a red to act on.** A task that names a failing
-check, a notice, or another role's word is not the counted set. Until the counted set reports
-that check `completed`, the role presses no re-run and ends no round on it: it subscribes to the
-pull request's topic and ends the turn, as below, and reads the counted set again when the wake
+**A red the counted set does not yet report `completed` is not yet a red to act on, however the role
+learned of it.** A task that names a failing check, a notice, another role's word or the role's own
+read of the runs, the jobs or the check-runs endpoint is not the counted set. Until the counted set
+reports that check `completed`, the role presses no re-run and ends no round on it: it subscribes to
+the pull request's topic and ends the turn, as below, and reads the counted set again when the wake
 brings it back. GitHub fills a head's checks over seconds and minutes, so a counted set that is
-silent about a check it has been told of is one that has not caught up, and a re-run pressed
-there spends the head's one re-run on a run nobody counted. The wait ends one of three ways:
+silent about a check the role knows of is one that has not caught up, and a re-run pressed there
+spends the head's one re-run on a run nobody counted. The wait ends one of three ways:
 
 - The counted set reports that check: the role acts on it.
 - The counted set settles with every check it holds `completed` and that one absent, or the head
-  moves. This ends the wait only once the role has waited at least once. The first read of a turn
-  never ends the wait, since a counted set read seconds after the task looks the same whether it
-  has settled without the check or has not reached it yet. When it does end the wait, the role
-  records what it was told and what the counted set carries, re-runs nothing, goes on with its
-  round, and tells the architect, as the last bullet of this section says.
-- No wake comes at all: the bound is the role's own next turn. While its process runs (under
-  `runtime: tmux`, and under `runtime: kubernetes` with idle release off), a phase worker that
-  ended its turn with a WAITING line gets the phase reminder 15 minutes later
+  moves. This ends the wait only once the role has waited at least once, since a counted set read
+  seconds after the role learned of the red looks the same whether it has settled without the check
+  or has not reached it yet. Then the role records the red, where it learned of it and what the
+  counted set carries, re-runs nothing, goes on with its round, and tells the architect.
+- No wake comes at all: the bound is the phase reminder or the daemon's backstop. While its
+  process runs (under `runtime: tmux`, and under `runtime: kubernetes` with idle release off), a
+  phase worker that ended its turn with a WAITING line gets the phase reminder 15 minutes later
   (`LEGION_STALL_WAITING_MS`). Where idle release is on, the pod goes first, and the bound is the
   daemon's backstop about an hour after it went idle. The role then reads the counted set once
   more and takes whichever of the first two the reading gives.
 
-The role runs `gh run rerun <run id> --failed` in the head's own `pull_request` run. Then, in the
-same turn:
+The role runs `gh run rerun <run id> --failed` in the head's own `pull_request` run. In that turn:
 
 1. It subscribes to the pull request's own topic, `github.<owner>.<repo>.pr.<n>.>`, with the Envoy
    subscribe tool its host gives it (`skill://envoy`, *Wait for CI or a merge*).
 2. It may go on with work that reads none of the head's checks or runs, subagents included.
 3. It ends the turn, with a last line that starts WAITING and names the re-run it waits on.
 
-The wait is the end of the turn, never time inside it: the role reads the counted set again only
-on the wake the settlement brings. A read of the head's checks or runs in the turn that pressed
-the re-run is the poll this forbids, whatever work came between, and so are `gh run watch` and
-`gh pr checks --watch`. Under `runtime: kubernetes` the daemon may release the issue's pod while
-the role waits, and the wake brings it back with its session, its phase and its task kept.
+The wait is the end of the turn, never time inside it: the role reads the counted set again only on
+the wake the settlement brings. Any other wake, a subagent's result or a message, is no leave to
+read: the role finishes that work and ends the turn WAITING again. Where no settlement comes, the
+bound is the same as before a press: on the phase reminder or the daemon's backstop the role reads
+the counted set once. A re-run still queued or in progress then is waited on again, with the turn
+ended WAITING, and a completed one is read as the settlement would be. A read of the head's checks
+or runs in the turn that pressed the re-run is the poll this forbids, and so are `gh run watch` and
+`gh pr checks --watch`. Under `runtime: kubernetes` the daemon may release the issue's pod while the
+role waits, and the wake brings it back with its session, its phase and its task kept.
 
-The settlement wakes the role in that same session. One read of the head's checks then is the
-result of the wait and no poll at all:
+The settlement wakes the role in that session, and one read of the head's checks then is no poll:
 
 - Green: the round goes on, and the role records that it re-ran, with the run and the attempt.
-- Red again: the round fails, or the reviewer requests changes, and the check is named. A test
-  that fails twice is this case, never the external cause below.
+  Before it completes its phase, it runs the three steps of *What becomes of the record* below.
+- Red again: the round fails, or the reviewer requests changes, and the check is named.
 - Where no run at the head holds the failing check, the role re-runs nothing and tells the
   architect.
 
@@ -236,17 +238,17 @@ that refused, a runner that ended: on its first red each of these takes its one 
 red is the change's* says, and most clear there. This section takes over in two cases: the re-run
 came back red at a step that ran **before any test of the change** — a setup or install step, a
 toolchain, a runner, a registry — or the lane's own output already shows the defect is in a file
-another tree owns. A test that fails and fails again is neither: it is the round's failure, as
-*Red again* above says, never an external cause.
+another tree owns. A failing test is never the second case, whatever package holds it: one that is
+not the change's takes the one re-run on its first red, and on its second red it is the round's
+failure, as *Red again* above says, never an external cause.
 
 In both cases a further run of the lane meets the same defect, so no re-run ends it. The role
 records the external cause in the same record this page already asks for — the lane, the error,
-the head, and the change it waits on — tells the architect, and ends its round where it stands:
-a tester completes its phase with a failing verdict, and a reviewer submits the
-`REQUEST_CHANGES` naming the red, since that is how a reviewer's round ends. It waits for
-nothing here. The daemon moves no phase on a red, and the fix is another tree's: it reaches this
-head only through a forward merge, which is the architect's to arrange. A role that waits holds
-its phase and its pod for that, and the architect, who arranges it, has not seen the record.
+the head, and the change it waits on — tells the architect, and ends its round where it stands: a
+tester completes its phase with a failing verdict, and a reviewer submits the `REQUEST_CHANGES`
+naming the red, since that is how a reviewer's round ends. It waits for nothing here. The fix is
+another tree's: it reaches this head only through a forward merge. A role that waits holds its phase
+and its pod for that, and the architect, who arranges it, has not seen the record.
 
 No role pushes a commit to make a new head for its own sake, and no role patches another tree's
 file to clear its own lane. The work waits until the repository's default branch carries the
@@ -262,10 +264,9 @@ give the same empty log and no exit status tells them apart. For a commit: the e
 compare, so fetch and read again. Two repositories of one fleet carry the same pull request
 numbers, so a key is no answer and a file read is a date.
 
-The case is live: on theorem-labs/agent-infra#3160 at head `8fc15cf3`, the `route-tests` lane
-failed on the runner with `unable to write file spend/README.md`, exit 128, before a test of the
-change had run, and the required aggregate was red only because of it. The implementer had
-nothing of its own to change. A red again of the same test is not that case.
+The case is live: on theorem-labs/agent-infra#3160 at head `8fc15cf3`, the `route-tests` lane failed
+on the runner with `unable to write file spend/README.md`, exit 128, before a test of the change had
+run, and the required aggregate was red only because of it.
 
 ## What the daemon does with a red
 
@@ -275,10 +276,9 @@ so only the role ends a round such a red would hold, and it ends it by this page
 
 ## What becomes of the record
 
-After the re-run settles green, and before it completes its phase, the role runs these three
-commands in this order. A red cleared and never written up is a flaky test nobody fixes, which is
-the cost this page is paid to stop. A re-run that comes back red is the round's failure (*Red
-again* above) and owes no occurrence.
+After a green re-run, and before it completes its phase, the role runs these three commands in this
+order. A red cleared and never written up is a flaky test nobody fixes, which is the cost this page
+is paid to stop. A re-run that comes back red is the round's failure and owes no occurrence.
 
 1. `dispatch search --query '<the failing test's full name>'`, which finds the issue that tracks
    that test. An issue a record of an earlier red already cites is read again before it is cited

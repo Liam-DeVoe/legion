@@ -63,6 +63,10 @@
 //   the moment the re-run is pressed. The head's state changes when the role acts, never when it
 //   reads, so a role that reads the head twice in one turn reads the same state twice. A `follows`
 //   that names no route's `match` is refused, with the rest of a file Fixtures does not parse.
+//   `settled` is the reply that takes the place of a route's last reply once the rig settles the
+//   re-run, after the turn that pressed it has ended (rig.sh's rerun_settle): until then a read
+//   that follows the press answers the re-run's attempt still running. A body edit reaches it as
+//   it reaches every reply.
 //   `spends` is how many matching calls the route answers. After that many it matches nothing, and
 //   the call falls through to the next route whose pattern matches it, or to the refusal.
 // A route's answer can name what the call asked for: `$<name>` in its stdout or its stderr is the
@@ -174,6 +178,7 @@ const Fixtures = z
         counts_as: z.string().optional(),
         program: z.string().optional(),
         spends: z.number().optional(),
+        settled: Reply.optional(),
         answered: z.number().optional(),
         publish: z.unknown().optional(),
         review: ReviewTemplate.optional(),
@@ -227,7 +232,7 @@ const FLAGS: Record<string, Record<string, Flag>> = {
     ...flag("--slurp", false),
   ]),
   "pr view": Object.fromEntries([...REPO, ...JSON_OUT]),
-  "pr checks": Object.fromEntries([...REPO, ...flag("--required", false)]),
+  "pr checks": Object.fromEntries([...REPO, ...JSON_OUT, ...flag("--required", false)]),
   "pr diff": Object.fromEntries([...REPO, ...flag("--name-only", false)]),
   "pr list": Object.fromEntries([
     ...REPO,
@@ -392,9 +397,24 @@ const RUN_FIELDS = [
   "workflowDatabaseId",
   "workflowName",
 ];
+/** gh 2.98.0's fields of `gh pr checks --json`, measured with `--json bogus` on
+ * cybermonklabs/legion#3514 (2026-11-19, prchecks-json-bogus, requests.log line 37;
+ * github-answers/README.txt). */
+const PR_CHECK_FIELDS = [
+  "bucket",
+  "completedAt",
+  "description",
+  "event",
+  "link",
+  "name",
+  "startedAt",
+  "state",
+  "workflow",
+];
 const JSON_FIELDS: Record<string, string[]> = {
   "pr view": PR_FIELDS,
   "pr list": PR_FIELDS,
+  "pr checks": PR_CHECK_FIELDS,
   "run view": RUN_FIELDS,
   "run list": RUN_FIELDS.filter((field) => field !== "jobs"),
   "repo view": [
@@ -1079,6 +1099,10 @@ const edited = fixtures.routes.map((candidate) => ({
           ...reply,
           stdout: withBody(reply.stdout, edit),
         })),
+        settled:
+          candidate.settled === undefined
+            ? undefined
+            : { ...candidate.settled, stdout: withBody(candidate.settled.stdout, edit) },
       }),
 }));
 // The rename is what makes the write atomic: the temporary file is a sibling, in the run

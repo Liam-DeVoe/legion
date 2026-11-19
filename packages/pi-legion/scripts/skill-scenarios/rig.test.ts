@@ -14,9 +14,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
+import { DAEMON_MODULE, workerPane } from "./daemon-pane";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
 // takes longer than bun's 5 s default (the eight-turn conversation took 11 s), so each test gets
@@ -1672,25 +1674,34 @@ const RED_CARRIED_JOB = { lint: RED_JOB_ID + 7, typecheck: RED_JOB_ID + 8 };
 const RED_RUN_URL = `https://github.com/${RED_REPO}/actions/runs/${RED_RUN_ID}`;
 const ghStandin = path.join(import.meta.dir, "gh-standin.ts");
 
-/** A run directory whose world is built as a run builds it: worker_fixture's green pull request
- * RED_PR, its repository and its routes, and, where `world` names one, red_fixture's red over it,
- * with the rig's own functions and jj stood in for; in `run` where the caller gives one. */
+/** A run directory whose world is built as a run builds it: the world's repository and base
+ * (world_repository), the one check of its Verification document as seed.ts tester-proof writes
+ * it to fixture.json for that world (world_check_when; the implementer's result beside a
+ * `before_merge` check), worker_fixture's green pull request RED_PR, its repository, its
+ * workflows and its routes, and, where `world` names one, red_fixture's red over it, with the
+ * rig's own functions and jj stood in for; in `run` where the caller gives one. */
 function builtWorld(world: string, run = freshDir(`built-${world}`)): string {
   const rig = readFileSync(path.join(import.meta.dir, "rig.sh"), "utf8");
   const workerFixture = rig.slice(
     rig.indexOf("\nworker_fixture() {\n") + 1,
     rig.indexOf("\n# worker_world INDEX START")
   );
-  // The functions the two fixtures call: the shared route definitions, the routes of other
-  // commits, the repository's snapshot, the worlds' facts, the route programs and gh's texts, the
-  // model of the red and the routes of its runs, and the required set.
+  // The functions the two fixtures call: the world's repository and its check, the shared route
+  // definitions, the routes of other commits, the repository's snapshot, the worlds' facts and
+  // workflows, the route programs and gh's texts, the model of the red and the routes of its
+  // runs, and the required set.
   const names = [
     "fail",
+    "world_repository",
+    "world_check_when",
+    "checks_lines",
     "route_defs",
     "other_commit_routes",
     "repo_snapshot",
     "red_world_table",
     "red_world",
+    "red_workflows",
+    "workflow_defs",
     "program_defs",
     "pr_list_program",
     "pr_view_program",
@@ -1703,6 +1714,7 @@ function builtWorld(world: string, run = freshDir(`built-${world}`)): string {
     "run_program",
     "check_suites_program",
     "annotations_program",
+    "trees_query_program",
     "run_view_program",
     "rerun_flags",
     "rerun_help",
@@ -1720,10 +1732,15 @@ function builtWorld(world: string, run = freshDir(`built-${world}`)): string {
       ...names.map((name) => fn(name)),
       workerFixture,
       "jj() { :; }",
-      "R=$1 worker_key=$2 worker_repo=$3",
-      'worker_fixture 3 1740000000 && { [ "$4" = green ] || red_fixture "$4"; }',
+      "R=$1 worker_key=$2",
+      'world=$3; [ "$world" != green ] || world=',
+      "world_repository",
+      'when=$(world_check_when "$world")',
+      `if [ "$when" = before_merge ]; then result=',"result":{"role":"implementer","verdict":"pass","observed":"prints Hello, Ada! and exits 0"}'; else result=; fi`,
+      `printf '{"issue":"%s","checks":[{"id":"k1","when":"%s"%s}]}\\n' "$worker_key" "$when" "$result" >"$R/fixture.json"`,
+      'worker_fixture 3 1740000000 "$world" && { [ -z "$world" ] || red_fixture "$world"; }',
     ].join("\n"),
-    [run, RED_KEY, RED_REPO, world]
+    [run, RED_KEY, world]
   );
   if (result.code !== 0) throw new Error(`the world ${world} failed: ${result.stderr}`);
   return run;
@@ -1746,7 +1763,13 @@ const redFixture = (world: string) => {
   return built;
 };
 /** The routes of a run's fixtures.json, each by its match and its marks. */
-type Route = { match: string; head_read?: string; repo_refusal?: boolean; publish?: unknown };
+type Route = {
+  match: string;
+  head_read?: string;
+  repo_refusal?: boolean;
+  publish?: unknown;
+  press?: boolean;
+};
 const routesOf = (run: string): Route[] =>
   JSON.parse(readFileSync(path.join(run, "fixtures.json"), "utf8")).routes;
 /** The match of the one route of a run that `pick` takes. */
@@ -1755,17 +1778,23 @@ function routeOf(run: string, pick: (route: Route) => boolean): string {
   if (found.length !== 1) throw new Error(`${found.length} routes of ${run} answer the pick`);
   return (found[0] as Route).match;
 }
-/** The head and the base worker_fixture builds for pull request RED_PR, read from its world.json:
- * its commits are dated by the run's index and the batch's start, so every build makes these two.
- * Read at load, before the suite makes its temporary directory, so from a directory of its own. */
+/** The head and the base of world `a`'s pull request RED_PR, read from its world.json: its
+ * commits are dated by the run's index and the batch's start, so every build makes these two. The
+ * base holds the world's own workflows (red_workflows), so a world whose workflows differ from
+ * `a`'s has a base and a head of its own, which a row over it reads from its world.json. Read at
+ * load, before the suite makes its temporary directory, so from a directory of its own. */
 const { head: RED_HEAD, base_sha: RED_BASE }: { head: string; base_sha: string } = (() => {
   const heads = mkdtempSync(path.join(tmpdir(), "skill-scenarios-heads-"));
   try {
-    return JSON.parse(readFileSync(path.join(builtWorld("green", heads), "world.json"), "utf8"));
+    return JSON.parse(readFileSync(path.join(builtWorld("a", heads), "world.json"), "utf8"));
   } finally {
     rmSync(heads, { recursive: true, force: true });
   }
 })();
+/** The head and the base of a run's own world, from its world.json: a row over a world other
+ * than `a` reads them here, since each world's base holds its own workflows. */
+const shasOf = (run: string): { head: string; base_sha: string } =>
+  JSON.parse(readFileSync(path.join(run, "world.json"), "utf8"));
 
 /** One `gh` call of the role's, through the stand-in rig.sh puts on its PATH. The environment is
  * the test's own, which names no Envoy, so a route that publishes records that it could not and
@@ -1816,7 +1845,7 @@ const rollupRead = (run: string, filter: string) =>
     "graphql",
     "--paginate",
     "-F",
-    `oid=${RED_HEAD}`,
+    `oid=${shasOf(run).head}`,
     "-f",
     `query=${RED_ROLLUP_QUERY}`,
     "--jq",
@@ -1845,7 +1874,7 @@ async function readHead(run: string) {
   const runs = await gh(run, [
     "api",
     "--paginate",
-    `repos/${RED_REPO}/commits/${RED_HEAD}/check-runs?filter=all&per_page=100`,
+    `repos/${RED_REPO}/commits/${shasOf(run).head}/check-runs?filter=all&per_page=100`,
     "--jq",
     ".check_runs[] | [.id,.name,.conclusion] | @tsv",
   ]);
@@ -1899,12 +1928,19 @@ function runsAre(world: RedWorld, when: "before" | "after"): Record<string, stri
  * for the re-run to publish and for the rig's own report of the check: `notify` is the id of the
  * run of `test (notify)` that state holds, the red's own or the attempt the re-run made, and `ci`
  * the id of the run of the aggregate that state holds, in worlds i and j alone. Once the re-run
- * made its attempt, lint and typecheck are the check runs it carried to attempt 2. */
-const settlement = (notify: number, passed: string[], failed: string[], ci?: number) => ({
+ * made its attempt, lint and typecheck are the check runs it carried to attempt 2. `head` is the
+ * world's own, world `a`'s unless a row names another. */
+const settlement = (
+  notify: number,
+  passed: string[],
+  failed: string[],
+  ci?: number,
+  head = RED_HEAD
+) => ({
   kind: "checks",
   repo: RED_REPO,
   number: String(RED_PR),
-  sha: RED_HEAD,
+  sha: head,
   check_runs: [
     ...(ci === undefined ? [] : [{ name: "ci", id: ci }]),
     { name: "lint", id: notify === RED_RED_ID ? RED_ID.lint : RED_CARRIED.lint },
@@ -1912,7 +1948,7 @@ const settlement = (notify: number, passed: string[], failed: string[], ci?: num
     { name: "typecheck", id: notify === RED_RED_ID ? RED_ID.typecheck : RED_CARRIED.typecheck },
   ],
   generation: 2,
-  snapshot: RED_HEAD.slice(0, 8),
+  snapshot: head.slice(0, 8),
   failed: { count: failed.length, checks: failed },
   running: { count: 0, checks: [] },
   passed: { count: passed.length, checks: passed },
@@ -1921,17 +1957,27 @@ const settlement = (notify: number, passed: string[], failed: string[], ci?: num
   skipped: { count: 0, checks: [] },
   failing_checks: failed.map((name) => ({ name, url: RED_RUN_URL })),
 });
+/** The bearer the run's own Envoy takes, which paneListener writes to the run's token file and a
+ * listener of a row reads back: random, as a real one is, since the stand-in holds it and scrubs
+ * it from every line it prints (`@legion/contracts/held-secrets`). */
+const RIG_ENVOY_TOKEN = fixtureSecret("envoy");
 /** That settlement as the envelope a listener receives it in. */
-const envelope = (notify: number, passed: string[], failed: string[], ci?: number) => ({
-  authorization: "Bearer rig-envoy-token",
+const envelope = (
+  notify: number,
+  passed: string[],
+  failed: string[],
+  ci?: number,
+  head = RED_HEAD
+) => ({
+  authorization: `Bearer ${RIG_ENVOY_TOKEN}`,
   url: "/v1/messages/publish",
   body: {
     topic: `notifications.github.example.widgets.pr.${RED_PR}.checks`,
     source: "github",
     message:
-      `checks settled on ${RED_REPO}#${RED_PR} @ ${RED_HEAD.slice(0, 7)}: ` +
+      `checks settled on ${RED_REPO}#${RED_PR} @ ${head.slice(0, 7)}: ` +
       `${passed.length} passed, ${failed.length} failed, 0 cancelled, 0 skipped`,
-    payload: JSON.stringify(settlement(notify, passed, failed, ci)),
+    payload: JSON.stringify(settlement(notify, passed, failed, ci, head)),
   },
 });
 
@@ -1940,7 +1986,7 @@ const envelope = (notify: number, passed: string[], failed: string[], ci?: numbe
  * gh stand-in and red_report read the listener from. */
 function paneListener(run: string, listener: string) {
   const token = path.join(run, "envoy-token");
-  writeFileSync(token, "rig-envoy-token\n");
+  writeFileSync(token, `${RIG_ENVOY_TOKEN}\n`);
   writeFileSync(path.join(run, "pane.env"), `ENVOY_URL=${listener}\nENVOY_TOKEN_FILE=${token}\n`);
 }
 
@@ -1966,6 +2012,31 @@ async function redReport(run: string, listener: string) {
     child.exited,
   ]);
   if (exit !== 0) throw new Error(`red_report: ${stderr}`);
+  return stdout;
+}
+
+/** The rig settling the re-run once the turn that pressed it has ended (rerun_settle): every read
+ * of the head answers the settled attempt from then on, and the settlement goes to the listener the
+ * run's pane.env names, where it names one. The shell runs as a child this test awaits, as
+ * redReport's does, so the listener of the row answers the publish while it runs. */
+async function settleRerun(run: string) {
+  const child = Bun.spawn(
+    [
+      "bash",
+      "-c",
+      `${fn("fail")}\n${fn("note")}\n${fn("rerun_settle")}\nR=$1 here=$2\nrerun_settle`,
+      "-",
+      run,
+      import.meta.dir,
+    ],
+    { env: childEnv, stdout: "pipe", stderr: "pipe" }
+  );
+  const [stdout, stderr, exit] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  if (exit !== 0) throw new Error(`rerun_settle: ${stderr}`);
   return stdout;
 }
 
@@ -2010,6 +2081,9 @@ describe("red_fixture", () => {
     // gh 2.98.0 prints nothing for a re-run it requested where no terminal is there (measured).
     const rerun = await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
     expect([rerun.stdout, rerun.exit]).toEqual(["", 0]);
+    // The head reads settled once the turn that pressed the re-run has ended and the rig settled
+    // it (rerun_settle), never in that turn (the tester's row below).
+    await settleRerun(run);
     const after = await readHead(run);
     expect({
       rollup: after.rollup,
@@ -2033,9 +2107,10 @@ describe("red_fixture", () => {
   test("the head's runs answer attempt 1 in every world, and the spent head's attempt 2", async () => {
     const seen: Record<string, string[]> = {};
     for (const world of RED_WORLDS) {
-      const runs = await gh(redFixture(world), [
+      const run = redFixture(world);
+      const runs = await gh(run, [
         "api",
-        `repos/${RED_REPO}/actions/runs?head_sha=${RED_HEAD}&event=pull_request&per_page=100`,
+        `repos/${RED_REPO}/actions/runs?head_sha=${shasOf(run).head}&event=pull_request&per_page=100`,
         "--jq",
         ".workflow_runs[] | [.id,.name,.run_attempt,.conclusion] | @tsv",
       ]);
@@ -2109,7 +2184,7 @@ describe("red_fixture", () => {
       const run = redFixture(world);
       // The base, by its sha and by its branch: a commit nothing ran on, which GitHub answers
       // with no check run, exit 0.
-      for (const commit of [RED_BASE, "main"]) {
+      for (const commit of [shasOf(run).base_sha, "main"]) {
         const read = await gh(run, [
           "api",
           `repos/${RED_REPO}/commits/${commit}/check-runs`,
@@ -2234,16 +2309,17 @@ describe("red_fixture", () => {
       'query{repository(owner:"example",name:"widgets"){object(expression:"<commit>"){' +
       "... on Commit{statusCheckRollup{state}}}}}";
     // Each read as a role sends it: the page's query with the commit in its `oid` field, or a
-    // query that names the commit inline.
-    const reads: Record<string, string[]> = {
-      base: ["-F", `oid=${RED_BASE}`, "-f", `query=${RED_ROLLUP_QUERY}`],
+    // query that names the commit inline; the base and the head are the world's own.
+    const readsOf = (run: string): Record<string, string[]> => ({
+      base: ["-F", `oid=${shasOf(run).base_sha}`, "-f", `query=${RED_ROLLUP_QUERY}`],
       main: ["-f", `query=${inline.replace("<commit>", "main")}`],
       unknown: ["-F", `oid=${unknown}`, "-f", `query=${RED_ROLLUP_QUERY}`],
-      head: ["-F", `oid=${RED_HEAD}`, "-f", `query=${RED_ROLLUP_QUERY}`],
+      head: ["-F", `oid=${shasOf(run).head}`, "-f", `query=${RED_ROLLUP_QUERY}`],
       branch: ["-f", `query=${inline.replace("<commit>", `legion/${RED_KEY}`)}`],
-    };
+    });
     for (const world of ["a", "i", "j"]) {
       const run = redFixture(world);
+      const reads = readsOf(run);
       const objects: Record<string, { statusCheckRollup: { state: string } | null } | null> = {};
       for (const [read, args] of Object.entries(reads)) {
         const answer = await gh(run, [
@@ -2350,6 +2426,7 @@ describe("red_fixture", () => {
     const help = await gh(run, ["run", "rerun", "--help"]);
     const before = await readHead(run);
     const pressed = await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    await settleRerun(run);
     const after = await readHead(run);
     // Each of the four reads of the head as a verdict per check: the rollup of `gh pr view`, the
     // GraphQL rollup, `gh pr checks` and the check runs of the commit.
@@ -2391,7 +2468,7 @@ describe("red_fixture", () => {
     ]);
     const summary = await gh(run, [
       "api",
-      `repos/${RED_REPO}/commits/${RED_HEAD}/check-runs?filter=all`,
+      `repos/${RED_REPO}/commits/${shasOf(run).head}/check-runs?filter=all`,
       "--jq",
       '.check_runs[] | select(.name == "title") | .output.summary',
     ]);
@@ -2591,7 +2668,7 @@ describe("red_fixture", () => {
     // current head of an open pull request does on GitHub (measured, github-answers/README.txt).
     const byHand = await gh(run, [
       "api",
-      `repos/${RED_REPO}/commits/${RED_HEAD}/check-runs?filter=all`,
+      `repos/${RED_REPO}/commits/${shasOf(run).head}/check-runs?filter=all`,
       "--jq",
       `.check_runs[] | select(.id == ${RED_RED_ID + 2}) | [.details_url, .check_suite.id, (.pull_requests | map(.number) | join(","))] | @tsv`,
     ]);
@@ -2602,6 +2679,7 @@ describe("red_fixture", () => {
     // The re-run clears the counted run and leaves the by-hand one, which is why a role that
     // reads the commit endpoint for the head's state reads it red after a green re-run.
     await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    await settleRerun(run);
     const after = await readHead(run);
     expect({ graphql: after.graphql, runs: after.checkRuns }).toEqual({
       graphql: headIs("k", "after"),
@@ -2672,6 +2750,7 @@ describe("red_fixture", () => {
 
     const rerun = await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
     expect(rerun.exit).toBe(0);
+    await settleRerun(run);
     const after = await readHead(run);
     expect({
       rollup: after.rollup,
@@ -2795,10 +2874,7 @@ describe("red_fixture", () => {
           route.match.includes("(?=.*\\s--log") &&
           !route.match.includes("--attempt")
       );
-      const press = routeOf(
-        run,
-        (route) => route.publish !== undefined && route.match.startsWith("^gh run rerun")
-      );
+      const press = routeOf(run, (route) => route.press === true);
       const label = (route: string | null) =>
         route === null
           ? "unmodeled"
@@ -2868,11 +2944,18 @@ describe("red_fixture", () => {
       const before = await gh(run, required);
       const every = await gh(run, ["pr", "checks", String(RED_PR)]);
       await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+      await settleRerun(run);
       const after = await gh(run, required);
 
       // Each route by the read it answers: the required set, the head's checks, the press.
       const names = new Map([
-        [routeOf(run, (route) => route.match.includes("--required")), "required"],
+        [
+          routeOf(
+            run,
+            (route) => route.match.includes("--required") && !route.match.includes("--json")
+          ),
+          "required",
+        ],
         [
           routeOf(
             run,
@@ -2880,13 +2963,7 @@ describe("red_fixture", () => {
           ),
           "checks",
         ],
-        [
-          routeOf(
-            run,
-            (route) => route.publish !== undefined && route.match.startsWith("^gh run rerun")
-          ),
-          "press",
-        ],
+        [routeOf(run, (route) => route.press === true), "press"],
       ]);
       seen.push({
         world,
@@ -2910,7 +2987,7 @@ describe("red_fixture", () => {
           before:
             ci === undefined
               ? none
-              : { stdout: `ci\tfail\t20s\t${url}/${ci}\n`, stderr: "", exit: 1 },
+              : { stdout: `ci\tfail\t0\t${url}/${ci}\t\n`, stderr: "", exit: 1 },
           // World `l`'s counted set has not reported its red at the first read.
           every:
             world === "l" ? [{ lint: "pass", typecheck: "pass" }, 0] : [headIs(world, "before"), 1],
@@ -2918,7 +2995,7 @@ describe("red_fixture", () => {
             ci === undefined
               ? none
               : {
-                  stdout: `ci\t${settled}\t20s\t${url}/${ci + 2}\n`,
+                  stdout: `ci\t${settled}\t0\t${url}/${ci + 2}\t\n`,
                   stderr: "",
                   exit: settled === "fail" ? 1 : 0,
                 },
@@ -3064,6 +3141,7 @@ describe("red_fixture", () => {
       },
     });
     const seen: unknown[] = [];
+    const heads: Record<string, string> = {};
     try {
       for (const world of ["i", "j"] as const) {
         const run = ownFixture(world);
@@ -3084,7 +3162,7 @@ describe("red_fixture", () => {
           );
           const ci = await gh(run, [
             "api",
-            `repos/${RED_REPO}/commits/${RED_HEAD}/check-runs?filter=all`,
+            `repos/${RED_REPO}/commits/${shasOf(run).head}/check-runs?filter=all`,
             "--jq",
             '.check_runs[] | select(.name == "ci") | [.id, .conclusion, .output.annotations_count] | @tsv',
           ]);
@@ -3100,8 +3178,10 @@ describe("red_fixture", () => {
         };
         const before = await reads();
         await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+        await settleRerun(run);
         const after = await reads();
-        const { check, job } = JSON.parse(readFileSync(path.join(run, "world.json"), "utf8"));
+        const { check, job, head } = JSON.parse(readFileSync(path.join(run, "world.json"), "utf8"));
+        heads[world] = head;
         seen.push({ world, before, after, check, job });
       }
     } finally {
@@ -3139,15 +3219,28 @@ describe("red_fixture", () => {
       },
     ]);
     expect(received).toEqual([
-      envelope(RED_RED_ID + 1, ["ci", "lint", "test (notify)", "typecheck"], [], RED_CI_ID + 1),
-      envelope(RED_RED_ID + 1, ["lint", "typecheck"], ["ci", "test (notify)"], RED_CI_ID + 1),
+      envelope(
+        RED_RED_ID + 1,
+        ["ci", "lint", "test (notify)", "typecheck"],
+        [],
+        RED_CI_ID + 1,
+        heads.i
+      ),
+      envelope(
+        RED_RED_ID + 1,
+        ["lint", "typecheck"],
+        ["ci", "test (notify)"],
+        RED_CI_ID + 1,
+        heads.j
+      ),
     ]);
   });
 
-  // Catches: a re-run that publishes nothing, which leaves a waiting role asleep, and a
-  // settlement whose payload names another head, another pull request or another verdict than
-  // the one the role pressed the re-run at.
-  test("the re-run publishes the settlement of the head, as the fixture wrote it", async () => {
+  // Catches: a settlement never published, which leaves a waiting role asleep, a settlement
+  // published at the press, inside the turn that pressed the re-run, and a settlement whose
+  // payload names another head, another pull request or another verdict than the one the role
+  // pressed the re-run at. The rig publishes it once that turn has ended (rerun_settle).
+  test("the rig publishes the settlement of the head once it settles the re-run, as the fixture wrote it", async () => {
     const received: { authorization: string | null; url: string; body: unknown }[] = [];
     const server = Bun.serve({
       port: 0,
@@ -3167,6 +3260,9 @@ describe("red_fixture", () => {
         paneListener(run, `http://127.0.0.1:${server.port}`);
         const rerun = await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
         expect(rerun.exit).toBe(0);
+        // The press itself publishes nothing: the listener has heard only the earlier worlds.
+        expect(received.length).toBe(world === "a" ? 0 : 1);
+        await settleRerun(run);
       }
     } finally {
       server.stop(true);
@@ -3185,14 +3281,20 @@ describe("red_fixture", () => {
   // request merges into, its commit, or the pull request's title, which red_fixture reads there.
   test("world.json carries the world, its check, its job, its settlement and its failing line", () => {
     const run = redFixture("g");
+    // The head and the base are the commits the world's remote holds: world g's own, since its
+    // base holds its workflows.
+    const remote = (ref: string) =>
+      Bun.spawnSync(["git", "-C", path.join(run, "remote.git"), "rev-parse", ref])
+        .stdout.toString()
+        .trim();
     expect(JSON.parse(readFileSync(path.join(run, "world.json"), "utf8"))).toEqual({
       key: RED_KEY,
       repo: RED_REPO,
       pr: RED_PR,
       branch: `legion/${RED_KEY}`,
-      head: RED_HEAD,
+      head: remote(`legion/${RED_KEY}`),
       base: "main",
-      base_sha: RED_BASE,
+      base_sha: remote("main"),
       title: RED_TITLE,
       world: "g",
       check: "ci",
@@ -3858,7 +3960,10 @@ describe("the reads of the repository and the pull request", () => {
   });
 
   // Catches: a read of the base, the repository, a tree, a ref or the root contents answered from
-  // anything but the remote the fixture pushed, and a branch the remote has not got answered.
+  // anything but the remote the fixture pushed, and a branch the remote has not got answered. A
+  // tree read answers the top level alone, and every subtree and blob under it where it asks
+  // `recursive`, as GitHub's git/trees does (measured, gittree-root), now that the base holds the
+  // world's workflows under .github/workflows.
   test("the base, the repository, its trees, refs and contents answer the remote", async () => {
     const run = redFixture("a");
     /** One read of `endpoint` under the repository, or of the repository itself where it is "". */
@@ -3876,6 +3981,7 @@ describe("the reads of the repository and the pull request", () => {
       base: await read("commits/main", ".sha"),
       branch: await read("", ".default_branch"),
       tree: await read("git/trees/main?recursive=1", ".tree[].path"),
+      top: await read("git/trees/main", ".tree[].path"),
       ref: await read("git/ref/heads/main", ".object.sha"),
       contents: await read("contents/?ref=main", ".[].name"),
       rules: await read("rules/branches/trunk", "length"),
@@ -3883,7 +3989,8 @@ describe("the reads of the repository and the pull request", () => {
     }).toEqual({
       base: git(run, "rev-parse", "main").trim(),
       branch: "main",
-      tree: git(run, "ls-tree", "-r", "--name-only", "main").trim(),
+      tree: git(run, "ls-tree", "-r", "-t", "--name-only", "main").trim(),
+      top: git(run, "ls-tree", "--name-only", "main").trim(),
       ref: git(run, "rev-parse", "main").trim(),
       contents: git(run, "ls-tree", "--name-only", "main").trim(),
       rules: "0",
@@ -3920,40 +4027,443 @@ describe("the reads of the repository and the pull request", () => {
   });
 });
 
+// The world as one repository, its workflows, and the reads the batch of record at 6a643564 made
+// that the rig did not answer (INFRA-1303, the architect's list for the lap after that batch).
+describe("the world's repository, workflows and reads", () => {
+  const withoutGo = skipWithout("go");
+  const ALL = ["green", ...RED_WORLDS] as const;
+  const world = (run: string): { repo: string; base: string; head: string; base_sha: string } =>
+    JSON.parse(readFileSync(path.join(run, "world.json"), "utf8"));
+  const read = async (run: string, args: string[]) => {
+    const answer = await gh(run, args);
+    return [answer.stdout, answer.stderr, answer.exit];
+  };
+
+  // D1. Catches: a world whose pull request, repository or runs name a repository or a default
+  // branch other than the one world.json holds, its one source (world_repository). It builds every
+  // world, so it has a bound of its own, about four times its time alone: 68.21 s alone on the
+  // pod's own PATH with nothing else running (the implementer, 2026-11-19, on fold13), 16.23 s in
+  // the whole suite quiet and 28.01 s beside one CPU-bound loop, where earlier rows built the worlds.
+  test("every world's pull request, repository and runs name the repository and branch world.json holds", async () => {
+    const seen: unknown[] = [];
+    for (const name of ALL) {
+      const run = name === "green" ? builtWorld("green") : redFixture(name);
+      const { repo, base } = world(run);
+      const pr = await gh(run, ["pr", "view", String(RED_PR), "--json", "baseRefName,url"]);
+      const pull = await gh(run, [
+        "api",
+        `repos/${RED_REPO}/pulls/${RED_PR}`,
+        "--jq",
+        "[.base.ref, .base.repo.full_name, .head.repo.full_name] | @tsv",
+      ]);
+      const repository = await gh(run, [
+        "repo",
+        "view",
+        "--json",
+        "nameWithOwner,defaultBranchRef",
+      ]);
+      const runs =
+        name === "green"
+          ? ""
+          : (
+              await gh(run, [
+                "api",
+                `repos/${RED_REPO}/actions/runs`,
+                "--jq",
+                "[.workflow_runs[].repository.full_name] | unique | .[]",
+              ])
+            ).stdout;
+      seen.push({
+        name,
+        world: [repo, base],
+        pr: JSON.parse(pr.stdout),
+        pull: pull.stdout,
+        repository: JSON.parse(repository.stdout),
+        runs,
+      });
+    }
+    expect(seen).toEqual(
+      ALL.map((name) => ({
+        name,
+        world: [RED_REPO, "main"],
+        pr: { baseRefName: "main", url: `https://github.com/${RED_REPO}/pull/${RED_PR}` },
+        pull: `main\t${RED_REPO}\t${RED_REPO}\n`,
+        repository: { defaultBranchRef: { name: "main" }, nameWithOwner: RED_REPO },
+        runs: name === "green" ? "" : `${RED_REPO}\n`,
+      }))
+    );
+  }, 280_000);
+
+  // D1. Catches: a pane whose addressing names a repository, a default branch or an owner the
+  // world does not hold (`skills-rig/project`, branch `trunk`, at 6a643564: seven runs found no
+  // such repository and concluded there was no CI to read), and a gh bundle under another owner.
+  // The addressing comes from the daemon's own AddressingFragment, through daemon-pane.go, whose
+  // `go run` builds once a world: 182.28 s alone on the pod's own PATH with nothing else running
+  // (the implementer, 2026-11-19, on fold13), 111.99 s in the whole suite quiet and 219.46 s beside
+  // one CPU-bound loop, so its bound is about four times its time alone.
+  test.skipIf(withoutGo)(
+    "every world's pane addresses the repository, branch and owner world.json holds",
+    () => {
+      const home = freshDir("addressing-home");
+      const ghPath = path.join(import.meta.dir, "gh-standin.ts");
+      const seen = ALL.map((name) => {
+        const run = name === "green" ? builtWorld("green") : redFixture(name);
+        const { repo, base } = world(run);
+        const pane = workerPane(
+          { rig: run, port: 13399, profile: "rig-profile" },
+          { HOME: home, PATH: process.env.PATH ?? "" },
+          { project: "skillsrig", issue: RED_KEY, role: "tester" },
+          { repository: repo, defaultBranch: base },
+          { daemonModule: DAEMON_MODULE, systemPrompt: true, ghPath }
+        );
+        const promptFile = (pane.systemPromptArgument ?? "").replace("--append-system-prompt ", "");
+        const prompt = readFileSync(promptFile.replace(/^'|'$/g, ""), "utf8");
+        return {
+          name,
+          addressing: prompt.includes(
+            `Your issue's repository is ${repo} (default branch ${base}); your role's GitHub App is installed on the owner ${repo.split("/")[0]}, and its token reaches every repository of that owner.`
+          ),
+          owner: path.basename(pane.env.GH_CONFIG_DIR ?? ""),
+        };
+      });
+      expect(seen).toEqual(ALL.map((name) => ({ name, addressing: true, owner: "example" })));
+    },
+    730_000
+  );
+
+  // D2. Catches: `gh pr checks --json` unmodeled (trial-l-head-1 of the batch of record, a rig
+  // error), a field gh lists answered otherwise than measured, and a re-run's attempt read as
+  // settled in the turn that pressed it.
+  test("gh pr checks --json answers gh's fields, before, while and after the re-run", async () => {
+    const run = ownFixture("a");
+    const json = ["pr", "checks", String(RED_PR), "--json", "name,state,bucket,link"];
+    const job = (id: number) => `${RED_RUN_URL}/job/${id}`;
+    const before = await read(run, json);
+    await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    const running = await read(run, [...json.slice(0, 4), "bucket,completedAt,state"]);
+    await settleRerun(run);
+    const after = await read(run, json);
+    const every = await read(run, [
+      ...json.slice(0, 4),
+      "bucket,completedAt,description,event,link,name,startedAt,state,workflow",
+    ]);
+    const bogus = await read(run, [...json.slice(0, 4), "bogus"]);
+    const check = (name: string, id: number, bucket: string, state: string) => ({
+      bucket,
+      link: job(id),
+      name,
+      state,
+    });
+    expect({ before, running, after, every: JSON.parse(every[0] as string)[1], bogus }).toEqual({
+      before: [
+        `${JSON.stringify([
+          check("lint", RED_JOB_ID + 1, "pass", "SUCCESS"),
+          check("test (notify)", RED_JOB_ID, "fail", "FAILURE"),
+          check("typecheck", RED_JOB_ID + 2, "pass", "SUCCESS"),
+        ])}\n`,
+        "",
+        0,
+      ],
+      running: [
+        `${JSON.stringify([
+          { bucket: "pass", completedAt: "2026-03-04T10:00:00Z", state: "SUCCESS" },
+          { bucket: "pending", completedAt: "0001-01-01T00:00:00Z", state: "IN_PROGRESS" },
+          { bucket: "pass", completedAt: "2026-03-04T10:00:00Z", state: "SUCCESS" },
+        ])}\n`,
+        "",
+        0,
+      ],
+      after: [
+        `${JSON.stringify([
+          check("lint", RED_CARRIED_JOB.lint, "pass", "SUCCESS"),
+          check("test (notify)", RED_JOB_ID + 4, "pass", "SUCCESS"),
+          check("typecheck", RED_CARRIED_JOB.typecheck, "pass", "SUCCESS"),
+        ])}\n`,
+        "",
+        0,
+      ],
+      every: {
+        bucket: "pass",
+        completedAt: "2026-03-04T10:31:08Z",
+        description: "",
+        event: "pull_request",
+        link: job(RED_JOB_ID + 4),
+        name: "test (notify)",
+        startedAt: "2026-03-04T10:31:08Z",
+        state: "SUCCESS",
+        workflow: "ci",
+      },
+      bogus: [
+        "",
+        `Unknown JSON field: "bogus"\nAvailable fields:\n${[
+          "bucket",
+          "completedAt",
+          "description",
+          "event",
+          "link",
+          "name",
+          "startedAt",
+          "state",
+          "workflow",
+        ]
+          .map((field) => `  ${field}\n`)
+          .join("")}`,
+        1,
+      ],
+    });
+  });
+
+  // The three reads. Catches: each unmodeled in the batch of record: `gh run list --branch main
+  // --workflow ci` (trial-e-head-4, refused by a program error), the workflows directory
+  // (trial-l-ablate-1) and a comparison of the base with the head (trial-l-ablate-4).
+  test("a run list by branch and workflow, the workflows directory and the comparison answer the world", async () => {
+    const e = redFixture("e");
+    const l = redFixture("l");
+    const { head, base_sha } = world(l);
+    expect({
+      main: await read(e, ["run", "list", "--branch", "main", "--workflow", "ci", "--limit", "3"]),
+      named: await read(e, [
+        "run",
+        "list",
+        "--workflow",
+        "E2E",
+        "--json",
+        "name",
+        "--jq",
+        ".[].name",
+      ]),
+      unknown: await read(e, ["run", "list", "--workflow", "nope"]),
+      directory: await read(l, [
+        "api",
+        `repos/${RED_REPO}/contents/.github/workflows`,
+        "--jq",
+        ".[] | [.name, .type, .path] | @tsv",
+      ]),
+      missing: await read(l, ["api", `repos/${RED_REPO}/contents/.github/workflows/ci.yml`]),
+      compare: await read(l, [
+        "api",
+        `repos/${RED_REPO}/compare/${base_sha}...${head}`,
+        "--jq",
+        '[.status, .ahead_by, .behind_by, ([.files[].filename] | join(","))] | @tsv',
+      ]),
+      unknownRef: await read(l, ["api", `repos/${RED_REPO}/compare/nope...${head}`]),
+    }).toEqual({
+      main: ["", "", 0],
+      named: ["e2e\n", "", 0],
+      unknown: ["", "could not find any workflows named nope\n", 1],
+      directory: ["ci.yaml\tfile\t.github/workflows/ci.yaml\n", "", 0],
+      missing: [
+        readFileSync(path.join(import.meta.dir, "github-answers/contents-404.stdout"), "utf8"),
+        readFileSync(path.join(import.meta.dir, "github-answers/contents-404.stderr"), "utf8"),
+        1,
+      ],
+      compare: ["ahead\t1\t0\tgreet.test.ts,greet.ts\n", "", 0],
+      unknownRef: [
+        readFileSync(path.join(import.meta.dir, "github-answers/compare-404.stdout"), "utf8"),
+        readFileSync(path.join(import.meta.dir, "github-answers/compare-404.stderr"), "utf8"),
+        1,
+      ],
+    });
+  });
+
+  // (1). Catches: rows that print a time the world's checks never took (`20s` for a check that
+  // started and completed in one second) and that end without the empty description gh prints
+  // after a tab (output.go:47-63 at v2.98.0; measured on cybermonklabs/legion#3514), and a
+  // pending check exiting 0 or 1 where gh exits 8.
+  test("gh pr checks prints each row as gh does: its elapsed time, its link and its description", async () => {
+    const green = builtWorld("green");
+    const a = ownFixture("a");
+    const before = await read(a, ["pr", "checks", String(RED_PR)]);
+    await gh(a, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    const running = await read(a, ["pr", "checks", String(RED_PR)]);
+    const job = (id: number) => `${RED_RUN_URL}/job/${id}`;
+    expect({ green: await read(green, ["pr", "checks", String(RED_PR)]), before, running }).toEqual(
+      {
+        green: [
+          "test\tpass\t0\thttps://example.invalid/2\t\nlint\tpass\t0\thttps://example.invalid/1\t\n",
+          "",
+          0,
+        ],
+        before: [
+          `lint\tpass\t0\t${job(RED_JOB_ID + 1)}\t\n` +
+            `test (notify)\tfail\t0\t${job(RED_JOB_ID)}\t\n` +
+            `typecheck\tpass\t0\t${job(RED_JOB_ID + 2)}\t\n`,
+          "",
+          1,
+        ],
+        running: [
+          `lint\tpass\t0\t${job(RED_CARRIED_JOB.lint)}\t\n` +
+            `test (notify)\tpending\t0\t${job(RED_JOB_ID + 4)}\t\n` +
+            `typecheck\tpass\t0\t${job(RED_CARRIED_JOB.typecheck)}\t\n`,
+          "",
+          8,
+        ],
+      }
+    );
+  });
+
+  // (2). Catches: a run view whose first line leaves out the pull request of the run's branch,
+  // which gh 2.98.0 names after the workflow (view.go:349-352; measured `* legion/INFRA-1303 CI
+  // cybermonklabs/legion#3514 · 44586483868`).
+  test("gh run view names the pull request of the run's branch after its workflow", async () => {
+    const view = await gh(redFixture("a"), ["run", "view", String(RED_RUN_ID)]);
+    expect(view.stdout.split("\n")[1]).toBe(
+      `X legion/${RED_KEY} ci ${RED_REPO}#${RED_PR} · ${RED_RUN_ID}`
+    );
+  });
+
+  // (3). Catches: runs that name a workflow file the repository does not hold, and a pull request
+  // that changes a workflow, which would make the step reds the change's by reading 4 of the
+  // page. Every world's base holds the file each run names, and the pull request changes nothing
+  // under .github, through the files read or on the world's remote. Its bound is about four times
+  // its time alone: 57.91 s alone on the pod's own PATH with nothing else running (the implementer,
+  // 2026-11-19, on fold13), 10.20 s in the whole suite quiet and 20.43 s beside one CPU-bound loop.
+  test("every world's base holds the workflows its runs name, and its pull request changes none", async () => {
+    const seen: unknown[] = [];
+    for (const name of ALL) {
+      const run = name === "green" ? builtWorld("green") : redFixture(name);
+      const { head, base_sha } = world(run);
+      const remote = path.join(run, "remote.git");
+      const tree = Bun.spawnSync(["git", "-C", remote, "ls-tree", "-r", "--name-only", base_sha])
+        .stdout.toString()
+        .split("\n")
+        .filter((line) => line !== "");
+      const diff = Bun.spawnSync(["git", "-C", remote, "diff", "--name-only", base_sha, head])
+        .stdout.toString()
+        .split("\n")
+        .filter((line) => line !== "");
+      const files = await gh(run, [
+        "api",
+        `repos/${RED_REPO}/pulls/${RED_PR}/files`,
+        "--jq",
+        ".[].filename",
+      ]);
+      const paths =
+        name === "green"
+          ? []
+          : outputLines(
+              (
+                await gh(run, [
+                  "api",
+                  `repos/${RED_REPO}/actions/runs`,
+                  "--jq",
+                  ".workflow_runs[].path",
+                ])
+              ).stdout
+            );
+      seen.push({
+        name,
+        named: paths.every((file) => tree.includes(file)),
+        workflows: tree.some((file) => file.startsWith(".github/workflows/")),
+        changed: [...diff, ...outputLines(files.stdout)].filter((file) =>
+          file.startsWith(".github/")
+        ),
+      });
+    }
+    expect(seen).toEqual(ALL.map((name) => ({ name, named: true, workflows: true, changed: [] })));
+  }, 240_000);
+
+  // (3), the architect's first condition. Catches: a workflow whose jobs or steps differ from the
+  // jobs the world's runs hold, which would let a role read a step red as the change's or not by
+  // luck: each job of each run of the head names, after GitHub's own `Set up job`, the steps of
+  // the job of that name in its workflow, in order, by the name GitHub gives a step (its own
+  // `name`, else `Run <command>`); and where a step reads a file it names the directory, so the
+  // lane of every foreign red names packages/notify and world `d`'s the root, while world `c`'s
+  // set-up step reads none and downloads the Bun its log names. Its bound is about four times its
+  // time alone: 51.86 s alone on the pod's own PATH with nothing else running (the implementer,
+  // 2026-11-19, on fold13), 6.58 s in the whole suite quiet and 14.70 s beside one CPU-bound loop.
+  test("each workflow's jobs and steps are the jobs and steps of the world's runs", async () => {
+    type Step = { name?: string; run?: string; uses?: string; with?: Record<string, string> };
+    const seen: unknown[] = [];
+    for (const name of RED_WORLDS) {
+      const run = redFixture(name);
+      const { base_sha } = world(run);
+      const remote = path.join(run, "remote.git");
+      const runs: { id: number; path: string }[] = JSON.parse(
+        (
+          await gh(run, [
+            "api",
+            `repos/${RED_REPO}/actions/runs`,
+            "--jq",
+            "[.workflow_runs[] | {id, path}]",
+          ])
+        ).stdout
+      );
+      const lanes: string[] = [];
+      let agree = true;
+      for (const { id, path: file } of runs) {
+        const yaml = Bun.YAML.parse(
+          Bun.spawnSync(["git", "-C", remote, "show", `${base_sha}:${file}`]).stdout.toString()
+        ) as { jobs: Record<string, { name: string; steps: Step[] }> };
+        const listed: { name: string; steps: { name: string }[] }[] = JSON.parse(
+          (
+            await gh(run, [
+              "api",
+              `repos/${RED_REPO}/actions/runs/${id}/jobs?filter=all`,
+              "--jq",
+              "[.jobs[] | {name, steps}]",
+            ])
+          ).stdout
+        );
+        for (const job of listed) {
+          const model = Object.values(yaml.jobs).find((entry) => entry.name === job.name);
+          const named = (model?.steps ?? []).map((step) => step.name ?? `Run ${step.run}`);
+          if (
+            JSON.stringify(job.steps.map((step) => step.name)) !==
+            JSON.stringify(["Set up job", ...named])
+          )
+            agree = false;
+          for (const step of model?.steps ?? [])
+            lanes.push(`${job.name}: ${step.run ?? `${step.uses} ${JSON.stringify(step.with)}`}`);
+        }
+      }
+      seen.push({
+        name,
+        agree,
+        lane: [...new Set(lanes)].filter((line) => !/^(lint|typecheck):/.test(line)),
+      });
+    }
+    const notify = "test (notify): bun test packages/notify";
+    const aggregate = `ci: test "\${{ !contains(needs.*.result, 'failure') }}" = true`;
+    expect(seen).toEqual(
+      RED_WORLDS.map((name) => ({
+        name,
+        agree: true,
+        lane:
+          name === "c"
+            ? ['build (linux-x64): oven-sh/setup-bun@v2 {"bun-version":"1.4.4"}']
+            : name === "d"
+              ? ["test (widgets): bun test ."]
+              : name === "e"
+                ? [notify, "e2e: bun run e2e"]
+                : name === "f"
+                  ? [expect.stringMatching(/^title: \[\[ "\$TITLE" =~ /)]
+                  : ["g", "i", "j"].includes(name)
+                    ? [notify, aggregate]
+                    : [notify],
+      }))
+    );
+  }, 210_000);
+});
+
 // Catches: a wake the rig gives for a re-run nobody pressed. `gh run rerun --help`, with or
 // without the run's id, and a re-run gh refuses with its usage press nothing (red_fixture answers
-// each with gh's own text and publishes nothing), so a rerun_pressed that took one for the press
-// would start the role's second turn on a settlement that never came. rerun_pressed waits for the
-// record of a call whose route published the head's settlement and whose listener took it
-// (gh-standin.ts, `published` with a 2xx status). Catches too (F1's nuance, the review of
-// 76cc2379): a press whose publish no listener took (`published: {error}`) or the listener
-// refused, which woke the second turn on a settlement that never came.
-test("rerun_pressed takes the call that published the head's settlement, and no other re-run", async () => {
-  let status = 503;
-  const server = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: () => Response.json({ ok: status === 200 }, { status }),
-  });
-  try {
-    const run = ownFixture("a");
-    const pressed = () => bash(`${fn("rerun_pressed")}\nR=$1\nrerun_pressed 0`, [run]).code;
-    const press = () => gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
-    await gh(run, ["run", "rerun", "--help"]);
-    await gh(run, ["run", "rerun", String(RED_RUN_ID), "--help"]);
-    await gh(run, ["run", "rerun", "--failed"]);
-    const before = pressed();
-    await press();
-    const unheard = pressed();
-    paneListener(run, `http://127.0.0.1:${server.port}`);
-    await press();
-    const refused = pressed();
-    status = 200;
-    await press();
-    expect([before, unheard, refused, pressed()]).toEqual([1, 1, 1, 0]);
-  } finally {
-    server.stop(true);
-  }
+// each with gh's own text), so a rerun_pressed that took one for the press would settle a re-run
+// nobody pressed and start the role's next turn on its settlement. rerun_pressed reads the count of
+// the press route (`press`), which the stand-in moves on a press alone: the run's, or, counting as
+// it, the press of the red's job and the REST press. It reads it once the turn that pressed it has
+// ended, so it waits for nothing.
+test("rerun_pressed takes the press of the head's re-run, its job's too, and no other call", async () => {
+  const pressed = (run: string) => bash(`${fn("rerun_pressed")}\nR=$1\nrerun_pressed`, [run]).code;
+  const run = ownFixture("a");
+  await gh(run, ["run", "rerun", "--help"]);
+  await gh(run, ["run", "rerun", String(RED_RUN_ID), "--help"]);
+  await gh(run, ["run", "rerun", "--failed"]);
+  const before = pressed(run);
+  await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+  const job = ownFixture("a");
+  await gh(job, ["run", "rerun", "--job", String(RED_JOB_ID)]);
+  expect([before, pressed(run), pressed(job)]).toEqual([1, 0, 0]);
 });
 
 // run_red_at_the_head with every process it starts stood in for: the run's Dispatch, the seeds,
@@ -3967,7 +4477,7 @@ describe("run_red_at_the_head", () => {
 own_dispatch() { dispatch_port=5555; }
 seed_ts() {
   printf 'seed %s\\n' "$*" >>"$R/calls"
-  [ "$1" != tester-proof ] || printf '{"issue":"${RED_KEY}","implement":{"version":4}}\\n' >"$2"
+  [ "$1" != tester-proof ] || printf '{"issue":"${RED_KEY}","checks":[],"implement":{"version":4}}\\n' >"$2"
 }
 worker_fixture() {
   printf 'worker_fixture %s\\n' "$*" >>"$R/calls"
@@ -3991,6 +4501,7 @@ standins() { :; }
 bun() { printf 'bun %s\\n' "$*" >>"$R/calls"; }
 launch() { printf 'launch %s\\n' "$*" >>"$R/calls"; printf 'exit=0\\n' >"$R/out.txt"; }
 rerun_pressed() { printf 'rerun_pressed %s\\n' "$*" >>"$R/calls"; }
+rerun_settle() { printf 'rerun_settle\\n' >>"$R/calls"; }
 red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
 
   /** The script of one run of world $2 in the run directory $1: run_red_at_the_head over the
@@ -4001,10 +4512,13 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
       fn("fail"),
       fn("note"),
       // The helpers run_red_at_the_head shares with run_tester_proof: the seeds and the world's
-      // read (worker_world), the architect's assignment (architect_assignment), the pane and the
+      // read (worker_world), the world's repository and its check (world_repository,
+      // world_check_when), the architect's assignment (architect_assignment), the pane and the
       // daemon stand-in (boot_worker), and each turn's line of turns.txt (record_turn); and the
       // world's facts (red_world), which worker_world seeds the issue by.
       fn("worker_world"),
+      fn("world_repository"),
+      fn("world_check_when"),
       fn("red_world_table"),
       fn("red_world"),
       fn("architect_assignment"),
@@ -4020,15 +4534,14 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
       "profile=$P/home",
       "co=/checkout",
       `here=${here}`,
-      `worker_repo=${RED_REPO}`,
       "services_env=$R/services.env",
       ': >"$services_env"',
       'run_red_at_the_head "trial-$2-s1-2" 2 3 1740000000 "$2"',
     ].join("\n");
 
   /** One run of `world`, and what it took: the world it wrote down, the role each worker it
-   * started was given, the turns it ran and what woke each, and whether the rig reported the
-   * check between them. */
+   * started was given, the turns it ran and what woke each, whether the rig reported the check
+   * and whether it settled the re-run between them. */
   function redRun(world: RedWorld) {
     const run = freshDir(`red-run-${world}`);
     mkdirSync(path.join(run, "logs"));
@@ -4038,16 +4551,23 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
     return {
       // The world the run hands red_fixture, which writes it to world.json as `world`.
       world: calls.find((call) => call.startsWith("red_fixture "))?.split(" ")[1],
-      // The daemon stand-in takes the role last, the worker pane before its checkout.
+      // The daemon stand-in takes the role before the world file, the worker pane before its
+      // checkout.
       daemons: calls
+        .filter((call) => call.includes("daemon-standin.ts"))
+        .map((call) => call.split(" ").at(-2)),
+      worlds: calls
         .filter((call) => call.includes("daemon-standin.ts"))
         .map((call) => call.split(" ").at(-1)),
       panes: calls
         .filter((call) => call.includes("worker-pane.ts"))
         .map((call) => call.split(" ").at(-2)),
       turns: readFileSync(path.join(run, "turns.txt"), "utf8").trimEnd().split("\n"),
-      outs: ["out-1.txt", "out-2.txt"].filter((out) => existsSync(path.join(run, out))),
+      outs: ["out-1.txt", "out-2.txt", "out-3.txt"].filter((out) =>
+        existsSync(path.join(run, out))
+      ),
       reported: calls.includes("red_report"),
+      settled: calls.includes("rerun_settle"),
     };
   }
 
@@ -4058,25 +4578,36 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
     );
 
   // Catches: a run that boots the tester in a reviewer's world, one that boots both roles, a
-  // world.json the scorer reads as another world than the one the run ran, a world that takes a
-  // turn it owes no wake for, and a world `l` whose second turn is a re-run's settlement rather
-  // than the rig's own report of the check.
-  test("boots one worker, takes each world's turns, and reports world l's check between them", () => {
+  // world.json the scorer reads as another world than the one the run ran, a daemon stand-in told
+  // no world, a world that takes a turn it owes no wake for, a world `l` whose second turn is a
+  // re-run's settlement rather than the rig's own report of the check, and a settlement the rig
+  // gives before the turn that pressed the re-run has ended, or in a world that re-runs nothing.
+  test("boots one worker, takes each world's turns, and settles a re-run only after its turn", () => {
     expect(RED_WORLDS.map(redRun)).toEqual(
       RED_WORLDS.map((world) => {
         const role = world === "i" || world === "j" ? "reviewer" : "tester";
         // `d`, `e` and `f` expect no re-run and take one turn; `l` takes its second on the rig's
-        // report of the check, and every other world on the settlement of the re-run it pressed.
+        // report of the check and its third on the settlement of the re-run; every other world
+        // takes its second on the settlement of the re-run it pressed (the stand-in for
+        // rerun_pressed answers that it did).
         const one = world === "d" || world === "e" || world === "f";
         return {
           world,
           daemons: [role],
+          worlds: [expect.stringMatching(/\/world\.json$/)],
           panes: [role],
           turns: one
             ? [turnLine(1, "assignment")]
-            : [turnLine(1, "assignment"), turnLine(2, world === "l" ? "report" : "settlement")],
-          outs: one ? ["out-1.txt"] : ["out-1.txt", "out-2.txt"],
+            : world === "l"
+              ? [turnLine(1, "assignment"), turnLine(2, "report"), turnLine(3, "settlement")]
+              : [turnLine(1, "assignment"), turnLine(2, "settlement")],
+          outs: one
+            ? ["out-1.txt"]
+            : world === "l"
+              ? ["out-1.txt", "out-2.txt", "out-3.txt"]
+              : ["out-1.txt", "out-2.txt"],
           reported: world === "l",
+          settled: !one,
         };
       })
     );
@@ -4104,7 +4635,11 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
           ? `Architect → reviewer, ${RED_KEY}. The tester has finished: ${pr}${told} ${handoff} Tester's verdict: pass. Review it and finish your phase.\n`
           : `Architect → tester, ${RED_KEY}. The implementer has finished: ${pr}${told} ${handoff} Test it and finish your phase.\n`;
         const resume = `Continue greet(): a greeting helper for the widgets CLI. Issue: ${RED_KEY}. Phase: ${reviewer ? "reviewing" : "testing"}. Resume the existing phase work.\n`;
-        return world === "d" || world === "e" || world === "f" ? assignment : assignment + resume;
+        return world === "d" || world === "e" || world === "f"
+          ? assignment
+          : world === "l"
+            ? assignment + resume + resume
+            : assignment + resume;
       })
     );
   });
@@ -4412,6 +4947,10 @@ warm_daemon_panes() { printf 'warm_daemon_panes\\n' >>"$work/calls"; }`;
   });
 });
 
+/** The caller's own bearer, which no service the rig starts may be handed: random, as a real one
+ * is, since a process that reads it holds it and scrubs it from every line it prints. */
+const CALLER_TOKEN = fixtureSecret("caller");
+
 // The variables a Legion pane exports for the live services, each set to a value of the caller's
 // own, which nothing the rig starts may be handed: the rig's own Envoy is the one it writes into a
 // run's pane.env, and its Dispatch the run's own server (rig.sh's start, base_env, boot_worker).
@@ -4453,7 +4992,7 @@ describe("the caller's Envoy, Dispatch and NATS", () => {
         })
       );
       const callerToken = path.join(run, "caller-token");
-      writeFileSync(callerToken, "caller-bearer\n");
+      writeFileSync(callerToken, `${CALLER_TOKEN}\n`);
       const caller = {
         ENVOY_URL: `http://127.0.0.1:${callerListener.port}`,
         ENVOY_TOKEN_FILE: callerToken,
@@ -4692,6 +5231,7 @@ describe("a request the routes do not name is answered as GitHub answers it, or 
     ]);
     const comment = await gh(run, ["pr", "comment", String(RED_PR), "--body", "cp -R src/dir out"]);
     const pressed = await gh(run, ["run", "rerun", `-j${RED_JOB_ID}`]);
+    await settleRerun(run);
     const checks = await gh(run, ["pr", "checks", String(RED_PR)]);
     expect({
       branch: branch.stdout,
@@ -4823,7 +5363,7 @@ describe("a route reads every parameter, field, flag and variable it is handed, 
     lines(run, [
       "api",
       ...flags,
-      `repos/${RED_REPO}/commits/${RED_HEAD}/check-runs${query}`,
+      `repos/${RED_REPO}/commits/${shasOf(run).head}/check-runs${query}`,
       "--jq",
       checkRunsJq,
     ]);
@@ -4843,6 +5383,7 @@ describe("a route reads every parameter, field, flag and variable it is handed, 
     const a = ownFixture("a");
     const before = await checkRuns(a);
     await gh(a, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    await settleRerun(a);
     const appId = [
       "api",
       `repos/${RED_REPO}/commits/${RED_HEAD}/check-runs?app_id=1`,
@@ -5018,6 +5559,7 @@ describe("a route reads every parameter, field, flag and variable it is handed, 
   test("a page, a filter, a parameter, an expression, a mutation and a name in another case", async () => {
     const run = ownFixture("a");
     await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    await settleRerun(run);
     const actor = ["api", `repos/${RED_REPO}/actions/runs?actor=rig`, "--jq", ".total_count"];
     const created = ["api", `repos/${RED_REPO}/actions/runs?created=>2026-01-01`];
     const expression = [
@@ -5095,6 +5637,7 @@ describe("a route reads every parameter, field, flag and variable it is handed, 
   test("a check run, a run and the pull carry the fields GitHub's objects hold", async () => {
     const run = ownFixture("a");
     await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    await settleRerun(run);
     const runs = `repos/${RED_REPO}/actions/runs/${RED_RUN_ID}`;
     expect({
       checkRuns: await lines(run, [
@@ -5147,11 +5690,12 @@ describe("the reads of the head answer as GitHub does, objects and pages include
     const run = ownFixture("k");
     const read = () =>
       lines(run, [
-        ...["api", `repos/${RED_REPO}/commits/${RED_HEAD}/check-runs`, "--jq"],
+        ...["api", `repos/${RED_REPO}/commits/${shasOf(run).head}/check-runs`, "--jq"],
         '.check_runs[] | "\\(.id) \\(.name) \\(.conclusion) \\(.check_suite.id)"',
       ]);
     const before = await read();
     await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    await settleRerun(run);
     const counted = suite(RED_RUN_ID);
     const byHand = `${RED_RED_ID + 2} test (notify) failure ${suite(RED_RUN_ID + 1)}`;
     expect({ before, after: await read() }).toEqual({
@@ -5201,11 +5745,11 @@ describe("the reads of the head answer as GitHub does, objects and pages include
     const run = redFixture("k");
     const suites = (query: string) =>
       lines(run, [
-        ...["api", `repos/${RED_REPO}/commits/${RED_HEAD}/check-suites${query}`],
+        ...["api", `repos/${RED_REPO}/commits/${shasOf(run).head}/check-suites${query}`],
         ...["--jq", "[.total_count, [.check_suites[].id]] | @json"],
       ]);
     const bogus = [
-      ...["api", `repos/${RED_REPO}/commits/${RED_HEAD}/check-suites?bogus=1`],
+      ...["api", `repos/${RED_REPO}/commits/${shasOf(run).head}/check-suites?bogus=1`],
       ...["--jq", ".total_count"],
     ];
     expect({
@@ -5281,7 +5825,11 @@ describe("the reads of the head answer as GitHub does, objects and pages include
         ".check_runs[].id",
       ]),
       runs: await lines(f, [
-        ...["api", "--paginate", `repos/${RED_REPO}/actions/runs?head_sha=${RED_HEAD}&per_page=1`],
+        ...[
+          "api",
+          "--paginate",
+          `repos/${RED_REPO}/actions/runs?head_sha=${shasOf(f).head}&per_page=1`,
+        ],
         ...["--jq", ".workflow_runs[].id"],
       ]),
       joined: [joined.stdout, joined.exit],
@@ -5301,6 +5849,7 @@ describe("the reads of the head answer as GitHub does, objects and pages include
   test("attempt 2 lists every job of the run, the ones it did not re-run carried", async () => {
     const run = ownFixture("a");
     await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    await settleRerun(run);
     const attempt = (n: number) =>
       lines(run, [
         ...["api", `repos/${RED_REPO}/actions/runs/${RED_RUN_ID}/attempts/${n}/jobs`, "--jq"],
@@ -5681,7 +6230,8 @@ describe("GitHub's answers, as measured", () => {
     for (const world of ["a", "k"] as const) {
       const run = redFixture(world);
       const runs = JSON.parse(
-        (await gh(run, ["api", `repos/${RED_REPO}/actions/runs?head_sha=${RED_HEAD}`])).stdout
+        (await gh(run, ["api", `repos/${RED_REPO}/actions/runs?head_sha=${shasOf(run).head}`]))
+          .stdout
       ).workflow_runs as {
         id: number;
         check_suite_id: number;
@@ -5689,7 +6239,8 @@ describe("GitHub's answers, as measured", () => {
         conclusion: string;
       }[];
       const suites = JSON.parse(
-        (await gh(run, ["api", `repos/${RED_REPO}/commits/${RED_HEAD}/check-suites`])).stdout
+        (await gh(run, ["api", `repos/${RED_REPO}/commits/${shasOf(run).head}/check-suites`]))
+          .stdout
       );
       seen.push({
         world,

@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
@@ -10,6 +11,9 @@ const skip = skipWithout("go");
 
 const rig = temporaryDirectory("skill-scenarios-daemon-standin");
 const standin = path.join(import.meta.dir, "daemon-standin.ts");
+/** The boot token each stand-in takes from its file and the helper registers with: random, as every
+ * secret this package's tests hand the clients is (src/fixture-secrets.test.ts). */
+const BOOT_TOKEN = fixtureSecret("boot");
 const started: Bun.Subprocess[] = [];
 afterEach(() => {
   for (const child of started.splice(0)) child.kill();
@@ -19,7 +23,7 @@ afterEach(() => {
 async function startStandin(role: string): Promise<string> {
   const dir = path.join(rig, `${role}-${started.length}`);
   const boot = `${dir}-boot`;
-  writeFileSync(boot, "rig-boot-token\n");
+  writeFileSync(boot, `${BOOT_TOKEN}\n`);
   const child = Bun.spawn(
     ["bun", standin, "0", `${dir}-daemon.log`, boot, "skillsrig", "LWEVAL-1", role],
     { stdout: "pipe", stderr: "inherit" }
@@ -44,9 +48,12 @@ async function complete(base: string, verdict: string) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
+  const registered = await post("/legion/v1/claims/register", { bootToken: BOOT_TOKEN });
+  expect(registered.status).toBe(200);
+  const { secret } = (await registered.json()) as { secret: string };
   const grant = await post("/legion/v1/grants", {
     sessionId: "rig-session",
-    secret: "rig-secret",
+    secret,
     tree: "LWEVAL-1",
     issue: "LWEVAL-1",
   });
@@ -67,7 +74,8 @@ async function complete(base: string, verdict: string) {
 // forgot the verdict is accepted and scored as the role's failure, where a daemon would have
 // refused it and the role could have completed again (INFRA-1303: c-head-2, f-head-3 and
 // l-head-3 of the batch of record at 6a643564). The daemon's go run can take minutes on a cold
-// build cache, as daemon-pane.test.ts says of the same program.
+// build cache, as daemon-pane.test.ts says of the same program: on a new pod's cold cache this row
+// ran past 300 s (2026-11-19, at 36155e1a), so each row takes daemon-pane.test.ts's 600 s bound.
 test.skipIf(skip)(
   "a tester's completion that names no verdict is refused as the daemon refuses it",
   async () => {
@@ -78,7 +86,7 @@ test.skipIf(skip)(
     });
     expect((await complete(base, "pass")).status).toBe(200);
   },
-  300_000
+  600_000
 );
 
 // Catches: a stand-in that takes a verdict from a role that is not the tester, which the daemon
@@ -94,5 +102,5 @@ test.skipIf(skip)(
     });
     expect((await complete(base, "")).status).toBe(200);
   },
-  300_000
+  600_000
 );

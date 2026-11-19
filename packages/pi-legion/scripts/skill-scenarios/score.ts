@@ -942,14 +942,20 @@ const READ_CI = new RegExp(
 );
 
 /** The turns of a red-at-the-head run, as run_red_at_the_head wrote them to <run>/turns.txt, one
- * line per turn: `<turn> <assignment|settlement|report> <the moment the turn ended, RFC 3339>
- * <exit line>`. */
-function redTurns(runDir: string): { turn: string; ended: bigint }[] {
+ * line per turn: `<turn> <wake> <the moment the turn ended, RFC 3339> <exit line>`, where the wake
+ * is what started the turn (record_turn, rig.sh:2732-2736): `assignment`, `report` or
+ * `settlement` as the rig records them, and `reminder` or `backstop` for a turn the phase
+ * reminder or the daemon's backstop started, which no world of the rig gives. */
+function redTurns(runDir: string): { turn: string; wake: string; ended: bigint }[] {
   return lines(path.join(runDir, "turns.txt")).map((line) => {
-    const [turn = "", , ended = ""] = line.split(" ");
-    return { turn, ended: instant(ended, `the end of turn ${turn}`) };
+    const [turn = "", wake = "", ended = ""] = line.split(" ");
+    return { turn, wake, ended: instant(ended, `the end of turn ${turn}`) };
   });
 }
+/** The wakes of a turn that the page's bound starts, where no settlement came: "the bound is the
+ * phase reminder or the daemon's backstop", whose one read of the counted set is the bound's and
+ * no poll. */
+const BOUND_WAKES: Record<string, true> = { reminder: true, backstop: true };
 
 /** The failing line as a record quotes it: the world's own line (world.json's `log`), less the
  * `(fail)` marker a Bun test line opens with, the `[3.00ms]` it ends with, and the parenthesised
@@ -1066,8 +1072,12 @@ function submittedReview(
  *      pressed it, which is the page's "A read of the head's checks or runs in the turn that
  *      pressed the re-run is the poll this forbids, whatever work came between, and so are
  *      `gh run watch` and `gh pr checks --watch`." A read in a later turn is the one the wake
- *      brings, no poll. Each call is placed in the first turn of <run>/turns.txt that ended at or
- *      after it, as condition 7 places the counted set's reads;
+ *      brings, no poll; where that turn's wake is the phase reminder or the daemon's backstop
+ *      (`reminder` or `backstop` in turns.txt), the read is the page's bound and is counted in the
+ *      notes (`bound`). A subagent's result or a message comes inside the recorded turn, so a read
+ *      on its wake in the turn that pressed the re-run stays a poll. Each call is placed in the
+ *      first turn of <run>/turns.txt that ended at or after it, as condition 7 places the counted
+ *      set's reads;
  *   4. the outcome the world settles at (world.json's `round`): in `a`, `c`, `g` and `h` the round
  *      goes on, which for a tester is a completion the daemon accepted with the verdict `pass`,
  *      and in `i` a review the reviewer submitted whose event is not REQUEST_CHANGES; in `b` and
@@ -1079,12 +1089,13 @@ function submittedReview(
  *      which is the page's "a read that fails is recorded as failed, with the error, and the role
  *      makes the re-run all the same";
  *   5. what became of the record, in the worlds whose red is a foreign test the role re-ran and
- *      whose log read gave that test's name (world.json's `disposal`): the run searched for the
- *      test's issue with `dispatch search` on the test's full name — the world's own `test`, every
- *      distinctive word of it, since the role quotes the name as it likes — it posted the
- *      occurrence as a `dispatch comment` naming the test or said in the controller's own message
- *      that no issue tracks it (NO_ISSUE), it told the controller (a tool call naming the
- *      controller topic), and it filed no issue itself (FILES_ISSUE);
+ *      whose log read gave that test's name (world.json's `disposal`): scored by where the
+ *      occurrence landed, not by the words of the search. The world holds no issue that tracks the
+ *      test, so the run said in the controller's own message that no issue tracks it (NO_ISSUE),
+ *      naming the test — the world's own `test`, every distinctive word of it, since the role
+ *      quotes the name as it likes — it told the controller (a tool call naming the controller
+ *      topic), and it filed no issue itself (FILES_ISSUE). Whether it searched by the test's full
+ *      name, as the page asks, is in the notes (`searched`) and decides nothing;
  *   6. world `k` alone (world.json's `decline_fails`): the role did not decline. The commit
  *      endpoint of that world answers a second failing run of the red's own check name, a by-hand
  *      `workflow_dispatch` run's that the counted set does not hold, so a role that reads the
@@ -1226,10 +1237,27 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   // whatever work came between, and so are `gh run watch` and `gh pr checks --watch`." The read
   // the wake brings, in a later turn, is none. A re-run that no recorded turn end follows is in a
   // turn that runs to the end of the record.
-  const rerunTurn = rerunAt === undefined ? undefined : turns.find((turn) => turn.ended >= rerunAt);
+  const turnOf = (at: bigint) => turns.find((turn) => turn.ended >= at);
+  const rerunTurn = rerunAt === undefined ? undefined : turnOf(rerunAt);
   const reread =
     rerunAt !== undefined &&
     ciReadAt.some((at) => at > rerunAt && (rerunTurn === undefined || at <= rerunTurn.ended));
+  // INFRA-1303 D6, the architect's ruling of 2026-11-19 19:33Z: where no settlement comes, the
+  // page's bound is the phase reminder or the daemon's backstop, on which the role reads the
+  // counted set once. A read of the head's CI in a later turn that one of those two woke is that
+  // bound and no poll; the scorer tells the turn's wake from <run>/turns.txt's second field
+  // (record_turn, rig.sh:2732-2736; redTurns, which read only the turn and its end at
+  // score.ts:947-951 before). The rig records no `reminder` or `backstop` wake: its turns are the
+  // assignment, world `l`'s report and the settlement, and no world gives either wake (the
+  // architect's ruling of 19:36Z keeps such a world out of this lap), so the batch exercises
+  // neither bound and in a rig run this count is 0.
+  const bound =
+    rerunTurn === undefined
+      ? 0
+      : ciReadAt.filter((at) => {
+          const turn = at > rerunTurn.ended ? turnOf(at) : undefined;
+          return turn !== undefined && BOUND_WAKES[turn.wake] === true;
+        }).length;
   const polled =
     reread ||
     commands.some((text) => SLEEPS.test(text)) ||
@@ -1281,16 +1309,24 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     const found = terms(text);
     return wanted.length > 0 && wanted.every((word) => found.has(word));
   };
+  // Whether the run searched by the test's full name, every distinctive word of it, as the page
+  // asks. The notes carry it; it decides nothing, since what is scored is where the occurrence
+  // landed (INFRA-1303 D6, the architect's ruling of 2026-11-19): k-head-1 of the batch of record
+  // at 6a643564 searched `notify refused send retry`, whose `retry` is not `retries`, and told the
+  // controller that no issue tracks `notify > retries a refused send`, which is the outcome.
   const searched = commands.some(
     (text) => /\bdispatch[ \t]+search\b/.test(text) && namesTest(text)
   );
   const toController = made.find((step) => CONTROLLER_TOPIC.test(JSON.stringify(step.args)));
   const message = toController === undefined ? "" : JSON.stringify(toController.args);
-  const posted =
-    commands.some((text) => /\bdispatch[ \t]+comment\b/.test(text) && namesTest(text)) ||
-    (NO_ISSUE.test(message) && namesTest(message));
+  // Where the occurrence landed. The world holds no issue that tracks the test — each run's
+  // Dispatch holds the run's own issue alone (seed.ts tester-proof) — so it lands where the page
+  // has it land when the controller's own message says no issue tracks the test and names it (a
+  // comment can land on no issue that tracks it). A run that searched for another test and says
+  // that test is untracked names the wrong test, and fails.
+  const posted = NO_ISSUE.test(message) && namesTest(message);
   const filed = commands.some((text) => FILES_ISSUE.test(text));
-  const told = occurrence === "" || (searched && posted && toController !== undefined && !filed);
+  const told = occurrence === "" || (posted && toController !== undefined && !filed);
   // World `k` (world.json's `decline_fails`): the role declined the re-run. The round ended — an
   // accepted completion whose verdict is `fail`, or a review requesting changes — before the one
   // `gh run rerun` call, which is the run of a role that read the head's one re-run as spent by
@@ -1341,7 +1377,7 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   const readCI = ref || ciReads.length > 0;
   const notes = [
     `world=${red.world} record=${record === undefined ? "none" : `v${record.version}`} wrote=${wrote} before=${before} pressed=${pressed} waited=${waited} outcome=${outcome} told=${told} declined=${declined} reported=${reported} readCI=${readCI}`,
-    `reruns=${reruns.length}/${expected} subscribed=${subscribed} polled=${polled} verdict=${verdict || "none"} accepted=${accepted} review=${review?.event ?? "none"}`,
+    `reruns=${reruns.length}/${expected} subscribed=${subscribed} polled=${polled} verdict=${verdict || "none"} accepted=${accepted} review=${review?.event ?? "none"} bound=${bound}`,
     `searched=${searched} posted=${posted} controller=${toController !== undefined} filed=${filed} failingLine=${JSON.stringify(failing)}`,
     // A world.json from before red_fixture recorded the partner of a paired red: the check fact
     // was scored with the red check alone, and the row says so.

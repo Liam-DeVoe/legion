@@ -43,7 +43,8 @@ A fix you are not sure of is not step 1: hand it over, or ask when a person must
   ask (`dispatch comment --issue <REPORT KEY> --reply-to-ask '<ask id>' --body-file -`, the
   evidence on stdin) and open no second one.
 - A test you re-ran green (`skill://legion-worker/references/red-at-the-head.md`) is one
-  occurrence of a known failure, not a new finding. Post the occurrence as a `dispatch comment`
+  occurrence of a known failure, not a new finding. Before you complete your phase, post the
+  occurrence as a `dispatch comment`
   on the issue that tracks that test, unless it reads `done`, found with `dispatch search` on the
   test's full name. Then tell the controller as that page's *What becomes of the record* says: one
   `envoy_publish`, and the report-issue comment only when no controller takes it and no issue

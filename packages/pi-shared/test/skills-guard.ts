@@ -753,6 +753,47 @@ const REVIEWER_LEAVES_AN_UNREQUIRED_CHECK =
   "The reviewer neither waits for a check the base does not require nor re-runs it for the approval, as `skill://legion-worker/references/merge-gate.md` says.";
 
 /**
+ * The sentences INFRA-1303's batch of record at 6a643564 showed a role misreading, each pinned
+ * whole and literally in the words the architect ruled on 2026-11-19. A reader of the page that
+ * lost one acts as a run of that batch did:
+ *
+ * - `RECORD_BEFORE_THE_PRESS`: the record is the phase's handoff record, before the press. Two
+ *   runs read "It writes the failure down, then re-runs the failed jobs once." as a note and
+ *   pressed first, one as `echo "failure recorded: …" && gh run rerun 7001002 --failed`.
+ * - `RUN_STATUS_IS_NO_LEAVE` and `A_RED_HOWEVER_LEARNED_WAITS`: a red the counted set does not
+ *   report is waited for whatever showed it. Three runs read "presses the re-run only on
+ *   `completed`" off the run's own status, saw the check absent from the counted set, and pressed.
+ * - `THE_BOUND_IS_THE_REMINDER` and `NO_OTHER_WAKE_READS`: only the settlement's wake reads the
+ *   counted set. Three runs read the checks when the thermonuclear pair's results woke them, before
+ *   any settlement; one wrote "Now a new turn (thermo wake) — I may read the counted set once".
+ * - `NO_SETTLEMENT_IS_BOUNDED` (the architect's ruling of 2026-11-19 19:33Z): the re-run's wait has
+ *   the same bound, and a re-run still running at the bound is waited on again. A role that lost
+ *   it waits forever for a settlement that never comes, or, with only the bound, judges a lane
+ *   that runs past the 15-minute reminder before it ends.
+ * - `GREEN_RUNS_THE_DISPOSAL`: a green re-run owes the three steps of *What becomes of the
+ *   record* before the phase completes. Two runs approved after green and posted nothing.
+ * - `A_FAILING_TEST_IS_NO_EXTERNAL_CAUSE`: a failing test of a package the change does not touch
+ *   takes the one re-run like any other red the change did not make. Two runs read such a test's
+ *   first red as another tree's defect and requested changes with no re-run.
+ */
+const RECORD_BEFORE_THE_PRESS =
+  "It writes the failure down in a handoff record of its own phase (`dispatch handoff-write`) before the `gh run rerun` call that re-runs the failed jobs once.";
+const RUN_STATUS_IS_NO_LEAVE =
+  "The run's own `completed` is no leave to press while the counted set does not report that check `completed`.";
+const A_RED_HOWEVER_LEARNED_WAITS =
+  "**A red the counted set does not yet report `completed` is not yet a red to act on, however the role learned of it.** A task that names a failing check, a notice, another role's word or the role's own read of the runs, the jobs or the check-runs endpoint is not the counted set.";
+const THE_BOUND_IS_THE_REMINDER =
+  "No wake comes at all: the bound is the phase reminder or the daemon's backstop.";
+const NO_OTHER_WAKE_READS =
+  "Any other wake, a subagent's result or a message, is no leave to read: the role finishes that work and ends the turn WAITING again.";
+const NO_SETTLEMENT_IS_BOUNDED =
+  "Where no settlement comes, the bound is the same as before a press: on the phase reminder or the daemon's backstop the role reads the counted set once. A re-run still queued or in progress then is waited on again, with the turn ended WAITING, and a completed one is read as the settlement would be.";
+const GREEN_RUNS_THE_DISPOSAL =
+  "Green: the round goes on, and the role records that it re-ran, with the run and the attempt. Before it completes its phase, it runs the three steps of *What becomes of the record* below.";
+const A_FAILING_TEST_IS_NO_EXTERNAL_CAUSE =
+  "A failing test is never the second case, whatever package holds it: one that is not the change's takes the one re-run on its first red, and on its second red it is the round's failure, as *Red again* above says, never an external cause.";
+
+/**
  * The merger's merge-queue rule, its two sentences pinned whole and literally. The first is the
  * one re-queue: a role that lost it sends the work back to `implementing` on the first
  * `failed_checks` ejection of a head GitHub itself may queue again, which is the lap this change
@@ -778,11 +819,29 @@ const SKILL_LINKS_THE_PAGE =
 const MERGE_GATE_POINTS_AT_THE_PAGE =
   "A required check that is red at the head is a different case, which `skill://legion-worker/references/red-at-the-head.md` decides.";
 const NEVER_WAITING_POINTS_AT_THE_PAGE =
-  "`skill://legion-worker/references/red-at-the-head.md` holds the rest of that rule: that the counted set must report the check before any re-run, since a task naming a red is not that set; the test of whether the head's one re-run is already spent; and the record the role writes before it re-runs.";
+  "`skill://legion-worker/references/red-at-the-head.md` holds the rest of that rule: which red is the change's, which a pass in the implementer's own pod does not move; that the counted set must report the check before any re-run, however the role learned of the red; the test of whether the head's one re-run is already spent; and the record the role writes before it re-runs.";
 const TESTER_EVIDENCE_POINTS_AT_THE_PAGE =
   "A red at the head that the change did not make is the tester's to re-run once, and `skill://legion-worker/references/red-at-the-head.md` holds the rule.";
 const TESTER_READS_THE_HEAD =
   "The tester reads the head's checks on GitHub before any verdict, whether or not a check of the issue carries `ci_check`.";
+
+/**
+ * The same rulings where the reviewer and the tester read them outside the page, each pinned
+ * whole and literally: the merge gate's round order, which names the record before the press and
+ * the three disposal steps after a green re-run, and the tester's evidence bullet, whose wait is
+ * for a red the counted set does not report however the tester learned of it, and whose red is
+ * the change's by the page's reading, whatever a run in the tester's own pod shows; and the
+ * implementer's re-run in `## Never waiting on CI`, whose wait has the page's bound where no
+ * settlement comes.
+ */
+const REVIEWER_ORDER_RECORDS_AND_DISPOSES =
+  "record the failure in a `review` handoff record with `dispatch handoff-write` before the `gh run rerun` call (`skill://legion-worker/references/red-at-the-head.md`), and once that re-run is green, run the three steps of that page's *What becomes of the record*;";
+const TESTER_WAITS_HOWEVER_IT_LEARNED =
+  "and a red the counted set does not yet report `completed`, however the tester learned of it,";
+const TESTER_LOCAL_PASS_MOVES_NOTHING =
+  "That page's *Which red is the change's* decides whose red it is, and a pass in the tester's own pod does not move it.";
+const IMPLEMENTER_WAIT_IS_BOUNDED =
+  "(where no settlement comes, the bound is the phase reminder or the daemon's backstop: it reads the counted set once then, and waits again on a re-run still queued or in progress);";
 
 /**
  * What the four files INFRA-1303 wrote or changed get wrong about a red at the head: the worker
@@ -821,6 +880,46 @@ export function redAtTheHeadFaults(pages: {
           because:
             "a reviewer reaches the limit on a check the base does not require only through this sentence",
         },
+        {
+          sentence: RECORD_BEFORE_THE_PRESS,
+          because:
+            "a role that reads the record as a note presses the re-run before Dispatch holds the failure",
+        },
+        {
+          sentence: RUN_STATUS_IS_NO_LEAVE,
+          because:
+            "a role that reads the run's own `completed` as leave presses while the counted set does not report the check",
+        },
+        {
+          sentence: A_RED_HOWEVER_LEARNED_WAITS,
+          because:
+            "a role that learned of the red from its own read of the runs takes the wait for one it was only told of",
+        },
+        {
+          sentence: THE_BOUND_IS_THE_REMINDER,
+          because:
+            "a role that reads its own next turn as the bound reads the counted set on any wake",
+        },
+        {
+          sentence: NO_OTHER_WAKE_READS,
+          because:
+            "a role woken by a subagent's result or a message reads the checks before the settlement comes",
+        },
+        {
+          sentence: NO_SETTLEMENT_IS_BOUNDED,
+          because:
+            "a role whose settlement never comes waits forever, or judges a lane still running at the reminder",
+        },
+        {
+          sentence: GREEN_RUNS_THE_DISPOSAL,
+          because:
+            "a role that reads only the Green bullet completes its phase with the occurrence unposted",
+        },
+        {
+          sentence: A_FAILING_TEST_IS_NO_EXTERNAL_CAUSE,
+          because:
+            "a role that finds a failing test in another tree's package skips the one re-run",
+        },
       ]
     ),
     ...prosePinFaults("skills/legion-worker/references/merge-gate.md", pages.mergeGate, null, [
@@ -839,12 +938,17 @@ export function redAtTheHeadFaults(pages: {
         because:
           "a reviewer reading the merge gate reaches the re-run rule only through this pointer",
       },
+      {
+        sentence: REVIEWER_ORDER_RECORDS_AND_DISPOSES,
+        because:
+          "a reviewer that follows the round order presses before the record and approves after green with no occurrence",
+      },
     ]),
     ...prosePinFaults("skills/legion-worker/references/pr-body.md", pages.prBody, null, [
       {
         sentence: NEVER_WAITING_POINTS_AT_THE_PAGE,
         because:
-          "an implementer reading `## Never waiting on CI` reaches the spent-re-run test only through this pointer",
+          "an implementer reading `## Never waiting on CI` reaches the spent-re-run test and the reading of whose red it is only through this pointer",
       },
       {
         sentence: TESTER_EVIDENCE_POINTS_AT_THE_PAGE,
@@ -855,6 +959,20 @@ export function redAtTheHeadFaults(pages: {
         sentence: TESTER_READS_THE_HEAD,
         because:
           "a tester whose issue has no `ci_check` check read 'by hand it drives only the changed behaviour' beside 'except a `ci_check` job' as no CI to read, and passed a red head it never saw",
+      },
+      {
+        sentence: TESTER_WAITS_HOWEVER_IT_LEARNED,
+        because:
+          "a tester that read a failed job off the run's own status presses while the counted set does not report it",
+      },
+      {
+        sentence: TESTER_LOCAL_PASS_MOVES_NOTHING,
+        because: "a tester whose test passes in its own pod re-runs a red the change made",
+      },
+      {
+        sentence: IMPLEMENTER_WAIT_IS_BOUNDED,
+        because:
+          "an implementer whose settlement never comes waits forever, or judges a lane still running at the reminder",
       },
     ]),
   ];
