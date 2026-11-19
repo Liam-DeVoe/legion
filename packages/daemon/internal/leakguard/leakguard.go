@@ -208,7 +208,7 @@ func (g *Guard) Rules(ctx context.Context, records ...Record) error {
 // OnNoRules has heard of the first such write. An empty RulesFileVar names none, as an unset one
 // does.
 //
-// A file named that cannot be used — missing, unreadable, longer than maxRulesFile, or one
+// A file named that cannot be used — missing, unreadable, longer than MaxRulesFile, or one
 // LoadRules refuses — is a setup failure naming the file and why, so the write is refused: a
 // deployment that named rules meant them to run, and a guard that ran none in their place would
 // pass what they refuse.

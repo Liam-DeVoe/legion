@@ -316,7 +316,8 @@ var settingsForbiddenKeys = []string{
 // carries each of these paths, which the rule below holds it to: an exemption no document
 // exercises is an exemption nobody has read.
 var settingsPathKeys = map[string]string{
-	"settings.hooks[].prompt_file": "the file a hook's words are read from, the deployment's own prose for its agents, carried as a path exactly as `instructions` is",
+	"settings.hooks[].prompt_file":     "the file a hook's words are read from, the deployment's own prose for its agents, carried as a path exactly as `instructions` is",
+	"settings.private_name_rules_file": "the deployment's private-name rule file, carried as a path alone and never its rules, exactly as `instructions` is",
 }
 
 // The maximal kubernetes file resolves to a settings block whose top-level, runtime.kubernetes and
@@ -333,7 +334,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	// under runtime kubernetes.
 	wantTop := []string{
 		"project", "port", "bind", "advertise_host", "state_dir", "runtime", "admission_cap", "daemon_url",
-		"worker_stream_port", "omp_launch_prefix", "provider_keys", "instructions",
+		"worker_stream_port", "omp_launch_prefix", "provider_keys", "instructions", "private_name_rules_file",
 		"worker_boot_timeout_seconds", "worker_rpc_timeout_seconds", "worker_stop_timeout_seconds",
 		"tree_stop_timeout_seconds", "slow_command_timeout_seconds", "probe_interval_seconds",
 		"controller_wake_interval_seconds", "worker_boot_registration_deadline_intervals",

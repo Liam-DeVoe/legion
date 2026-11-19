@@ -34,11 +34,18 @@ const (
 	RulesFileVar = RulesSecret + "_FILE"
 )
 
-// maxRulesFile is the most of a rule file the guard reads. A rule file is a page of regular
-// expressions: a deployment's runs to a few kilobytes. A mebibyte is far past any of them, so no
-// rule file meets the bound, and a pointer to a log or an image by mistake is refused rather than
-// read into memory whole.
-const maxRulesFile = 1 << 20
+// MaxRulesFile is the most of a rule file the guard reads, and the most of the deployment's the
+// daemon reads at boot (internal/daemon's readPrivateNameRulesFile). A rule file is a page of
+// regular expressions: a deployment's runs to a few kilobytes. The bound is also one a launch must
+// be able to carry. The daemon hands the file's bytes to every launch as the launch secret
+// RulesSecret, and under `runtime: kubernetes` that secret rides the launch's start command: one
+// frame, which a launcher refuses past shimwire.MaxFrameBytes (internal/runtime/sandbox's
+// checkStartFrame), shared with the role's system prompt and the launch's other files, all of it
+// JSON-encoded, where each backslash of a regular expression doubles. A file near the frame's bound
+// would fail every launch (runtime.PromptTooLarge). 256 KiB is far past any deployment's file and
+// leaves that frame room, so no rule file meets the bound, and a pointer to a log or an image by
+// mistake is refused rather than read into memory whole.
+const MaxRulesFile = 256 << 10
 
 // The bounds of a rule pass's report (RuleSet.scan), so that a report stays a page whatever the
 // write is: a body can be a mebibyte of one line and a push thousands of added lines, and the
@@ -79,7 +86,7 @@ var loaded sync.Map
 // LoadRules compiles content, a gitleaks rule file, into a rule set. It refuses what would
 // otherwise lose a rule without a word:
 //
-//   - content past maxRulesFile;
+//   - content past MaxRulesFile;
 //   - content that is no TOML;
 //   - a key gitleaks' rule format does not have, named in the error: gitleaks' own read ignores an
 //     unknown key, so a misspelt `[[rule]]` would compile to no rule at all;
@@ -97,8 +104,8 @@ var loaded sync.Map
 // It asks for no rule of any id: the file is the deployment's, and what it holds is the whole of
 // what the guard detects.
 func LoadRules(content []byte) (*RuleSet, error) {
-	if len(content) > maxRulesFile {
-		return nil, fmt.Errorf("the rules are longer than %d bytes", maxRulesFile)
+	if len(content) > MaxRulesFile {
+		return nil, fmt.Errorf("the rules are longer than %d bytes", MaxRulesFile)
 	}
 	sum := sha256.Sum256(content)
 	key := hex.EncodeToString(sum[:])
@@ -164,7 +171,7 @@ func compileRules(content []byte, sum string) (set *RuleSet, err error) {
 }
 
 // ReadRulesFile reads the rule file at path and compiles it (LoadRules). A file that cannot be
-// opened or read, one longer than maxRulesFile, and one LoadRules refuses are each an error that
+// opened or read, one longer than MaxRulesFile, and one LoadRules refuses are each an error that
 // names the file.
 func ReadRulesFile(path string) (*RuleSet, error) {
 	set, bad := readRulesFile(path)
@@ -203,12 +210,12 @@ func readRulesFile(path string) (*RuleSet, *rulesFileError) {
 	defer file.Close()
 	// One byte past the bound, so a file at the bound reads whole and a longer one is known to be
 	// longer without reading it.
-	content, err := io.ReadAll(io.LimitReader(file, maxRulesFile+1))
+	content, err := io.ReadAll(io.LimitReader(file, MaxRulesFile+1))
 	if err != nil {
 		return nil, &rulesFileError{path: path, why: "could not be read", err: withoutPath(err)}
 	}
-	if len(content) > maxRulesFile {
-		return nil, &rulesFileError{path: path, why: fmt.Sprintf("is longer than %d bytes", maxRulesFile)}
+	if len(content) > MaxRulesFile {
+		return nil, &rulesFileError{path: path, why: fmt.Sprintf("is longer than %d bytes", MaxRulesFile)}
 	}
 	set, err := LoadRules(content)
 	if err != nil {

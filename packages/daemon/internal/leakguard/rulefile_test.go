@@ -131,10 +131,16 @@ func TestNoRuleFileRunsNoPrivateNameRule(t *testing.T) {
 	}
 }
 
+// paddedTo is content followed by one TOML comment line that brings it to exactly size bytes.
+func paddedTo(content string, size int) string {
+	return content + "# " + strings.Repeat("x", size-len(content)-len("# \n")) + "\n"
+}
+
 // A rule file the guard cannot use refuses the write as a setup failure that names the file,
 // before any visibility is read: a deployment that named rules meant them to run. Each way the
 // file can fail is one case, and ReadRulesFile, the daemon's read of the same file, names the file
-// in its error too.
+// in its error too. A file one byte past MaxRulesFile is refused for its length, and one at the
+// bound is read whole, so what refuses it is what it holds.
 func TestARuleFileTheGuardCannotReadRefusesTheWrite(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -145,9 +151,14 @@ func TestARuleFileTheGuardCannotReadRefusesTheWrite(t *testing.T) {
 	}{
 		{name: "a missing file", says: "could not be opened: no such file or directory"},
 		{
-			name:    "a file over 1 MiB",
-			content: leakguardtest.Rules + "# " + strings.Repeat("x", maxRulesFile) + "\n",
-			says:    "is longer than 1048576 bytes",
+			name:    "a file one byte past the bound",
+			content: paddedTo(leakguardtest.Rules, MaxRulesFile+1),
+			says:    "is longer than 262144 bytes",
+		},
+		{
+			name:    "a file at the bound with no rule",
+			content: paddedTo("title = \"no rules here\"\n", MaxRulesFile),
+			says:    "hold no rule",
 		},
 		{name: "text that is no TOML", content: "this is = = no TOML [\n", says: "are not TOML"},
 		{name: "an unknown key", content: "severity = \"high\"\n" + leakguardtest.Rules, says: "invalid keys: severity"},
