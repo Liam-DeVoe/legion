@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
 import type { LegionRole } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -13,6 +13,14 @@ import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { IssueCollaboratorList } from "./IssueCollaboratorList";
 import { PROPERTY_LABELS } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, EMPTY_STATE_LINES, STATE_LINES } from "./page-words";
+
+// The list says how long ago each one last wrote here and when each Legion agent started, and a
+// live agent's last heartbeat is dated now (`live` below). Each case runs at one fixed midday, so
+// none reads the wall clock. `setSystemTime` holds `Date` alone; the timers the cases wait on
+// (React Query's, `waitFor`'s) run on the real clock as before.
+const NOON = new Date(2026, 10, 19, 12, 0, 0, 0);
+beforeEach(() => setSystemTime(NOON));
+afterEach(() => setSystemTime());
 
 function legionAgent(
   sessionId: string,

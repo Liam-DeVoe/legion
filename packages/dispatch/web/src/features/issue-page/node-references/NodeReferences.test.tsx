@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -100,6 +100,14 @@ const COMMENTS: readonly CommentWithTrees[] = [
     turn: null,
   },
 ];
+
+// A reference's day is drawn without its year when it is the reader's year (`node-time.ts`), so
+// "14 Nov" reads the clock. Each case runs at one fixed midday of the fixtures' year, so none
+// reads the wall clock and the days the cases read hold after that year ends. `setSystemTime`
+// holds `Date` alone; the timers the cases wait on run on the real clock as before.
+const NOON = new Date(2026, 10, 19, 12, 0, 0, 0);
+beforeEach(() => setSystemTime(NOON));
+afterEach(() => setSystemTime());
 
 let restore: (() => void) | undefined;
 afterEach(() => {

@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -17,6 +17,15 @@ import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./o
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
 const KEY = "CORE-1";
+
+// The history draws every day before the reader's today folded, and these cases date what it
+// reads some seconds, minutes or days before now. Each case runs at one fixed midday, so none
+// reads the wall clock: one started just after midnight would put its entries on yesterday.
+// `setSystemTime` holds `Date` alone; the timers the cases wait on (React Query's, `waitFor`'s,
+// the animation frames) run on the real clock as before.
+const NOON = new Date(2026, 10, 19, 12, 0, 0, 0);
+beforeEach(() => setSystemTime(NOON));
+afterEach(() => setSystemTime());
 
 /** A claim of the issue, which the history draws as one line (`history-model.ts`), made
  *  `20 - seq` seconds ago, so a higher sequence is newer and every one is today's, its day open. */

@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -45,6 +45,16 @@ import {
 } from "./page-words";
 
 const KEY = "CORE-1";
+
+// These cases date the events, messages and delivery attempts Details reads some seconds, a
+// minute or days before now, and Details reads them against the clock: its history draws every
+// day before the reader's today folded, and an attempt keeps its Retry only for a while after it
+// was made. Each case runs at one fixed midday, so none reads the wall clock: one started just
+// after midnight would put its history's entries on yesterday. `setSystemTime` holds `Date`
+// alone; the timers the cases wait on (React Query's, `waitFor`'s) run on the real clock.
+const NOON = new Date(2026, 10, 19, 12, 0, 0, 0);
+beforeEach(() => setSystemTime(NOON));
+afterEach(() => setSystemTime());
 
 const issue = {
   artifacts: [],
@@ -1185,13 +1195,14 @@ test("the line that says what is new holds across a close and an open of Details
 });
 
 /** A thread only an agent wrote in, one message written a minute ago: no row of the outline,
- *  an entry of the history (`agents-only.ts`). */
+ *  an entry of the history (`agents-only.ts`). It is built when the file loads, before any case
+ *  sets the clock, so it is dated from the cases' midday rather than from `Date.now()`. */
 const AGENTS_THREAD: MessageRead = {
   message: {
     author: { id: "planner", kind: "session" },
     body: "The agents' own words.",
     broadcast_id: null,
-    created_at: new Date(Date.now() - 60_000).toISOString(),
+    created_at: new Date(NOON.getTime() - 60_000).toISOString(),
     deliveries: [],
     id: "message-agents",
     in_reply_to: null,

@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -36,6 +36,14 @@ import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 const REFERENCE = buildDispatchReference({ key: "CORE-1", kind: "issue" });
 const CREATED_AT = "2026-11-16T10:00:00Z";
+
+// Each reference says how long ago it was made ("3 days ago"), which reads the clock. Each case
+// runs at one fixed midday after `CREATED_AT`, so none reads the wall clock. `setSystemTime`
+// holds `Date` alone; the timers the cases wait on (React Query's, `waitFor`'s) run on the real
+// clock as before.
+const NOON = new Date(2026, 10, 19, 12, 0, 0, 0);
+beforeEach(() => setSystemTime(NOON));
+afterEach(() => setSystemTime());
 
 const OWN_COMMENT = "11111111-1111-4111-8111-111111111111";
 const OWN_ASK = "22222222-2222-4222-8222-222222222222";
