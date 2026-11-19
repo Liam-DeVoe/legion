@@ -328,10 +328,14 @@ proportion to the body, on the shapes named in them: each row parses its shape a
 a caller may write and at an eighth of its growing dimension, asserts the document or the refusal,
 and holds the work the parse counts to a cost a character and to a linear growth. The counts are
 the patches' counters above, the scans of `src/block-nesting.ts` and `src/directive-container.ts`,
-Milkdown's runner calls (`milkdownRunnerCalls()` of `src/lib-headless.ts`), and the steps each
-stage no patch reaches takes through a counting `Proxy`: each mdast transform,
-`micromark-util-subtokenize`, the GFM and front matter extensions, and the compile's reads of the
-events. `tests/parse-work.ts` says what each count is, what bounds it, and what no count sees.
+Milkdown's runner calls and the marks its runners open (`milkdownRunnerCalls()` and
+`milkdownMarkOpens()` of `src/lib-headless.ts`), the HTML (flow) resolver's steps
+(`htmlFlowResolveSteps()`, `src/html-flow.ts`), the two walks of the ProseMirror document every
+headless parse ends with (`blockIdWalkSteps()` and `leafMarkWalkSteps()`,
+`src/editor/schema/block-ids.ts` and `leaf-marks.ts`), and the steps each stage no patch reaches
+takes through a counting `Proxy`: each mdast transform, `micromark-util-subtokenize`, the GFM and
+front matter extensions, and the compile's reads of the events. `tests/parse-work.ts` says what
+each count is, what bounds it, and what no count sees.
 `micromark-extension-gfm-footnote@2.1.0` is held by nothing here: neither file has a footnote
 shape.
 
