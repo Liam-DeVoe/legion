@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  A grant the model judge decided now ends for good when any key it holds is tagged as an administrator's, a key its session got at once beside the judged ones included, at the release and at the next request that would reuse it. Such a grant used to be refused only, and released again once the tag was taken off.
+  An edit to an airlock entry now ends the grants it affects at the next request that would reuse one too, and before the grant's approval chain and policy are checked again. A judged grant whose key's entry lost its `judge`, had it lowered below the grant's lifetime, or was dropped used to be refused only, and released again once the old rules file was booted again. A broker booted on such a file now answers its release `403 GRANT_NOT_LIVE` where it answered `403 GRANT_CHAIN_INVALID`.
+time: 2026-11-19T15:53:07.000000000Z
+custom:
+  Issue: pr4521
