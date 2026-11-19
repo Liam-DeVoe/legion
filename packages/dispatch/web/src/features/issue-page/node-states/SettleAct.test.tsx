@@ -133,14 +133,21 @@ function liveFeedOn(client: QueryClient): () => void {
   };
 }
 
-/** The focused proposed row `node`, drawn in the tree of `KEY` as `IssueTree` draws its rows
- *  (`SettleIssueProvider`), its settle answered by `answer` at each attempt, the first
+/** How a case draws its row: the node, `PROPOSED` where none is given, and the live feed, up
+ *  where none is said, as the shell's event feed holds it. */
+interface RowOptions {
+  readonly feed?: "up" | "down";
+  readonly node?: TreeNode;
+}
+
+/** The focused proposed row `options.node`, drawn in the tree of `KEY` as `IssueTree` draws its
+ *  rows (`SettleIssueProvider`), its settle answered by `answer` at each attempt, the first
  *  `failedCoverage` reads of the coverage failing, and each other read of it answered `covered`. */
 function drawRow(
   answer: (attempt: number) => Promise<unknown>,
   failedCoverage = 0,
   covered: unknown = { requirements: [] },
-  node: TreeNode = PROPOSED
+  options: RowOptions = {}
 ): DrawnRow {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -176,7 +183,7 @@ function drawRow(
     keys.push(bounds.key);
     return answer(sent.length);
   }) as typeof api.send);
-  const endFeed = liveFeedOn(client);
+  const endFeed = options.feed === "down" ? () => undefined : liveFeedOn(client);
   const unsubscribe = subscribeTreeFreshness(client, KEY);
   const view = render(
     <QueryClientProvider client={client}>
@@ -194,7 +201,7 @@ function drawRow(
               focused
               isClosed={false}
               level={1}
-              node={node}
+              node={options.node ?? PROPOSED}
               onFocus={() => {}}
               onPin={() => {}}
               onToggle={() => {}}
@@ -370,7 +377,7 @@ test("a 200 that changes the coverage reads the coverage, the tree and the open 
 test("a settle of another issue's node holds the reads of the tree it is drawn in", async () => {
   const user = userEvent.setup();
   const landing = Promise.withResolvers<unknown>();
-  const drawn = drawRow(() => landing.promise, 0, { requirements: [] }, OTHER_ISSUE);
+  const drawn = drawRow(() => landing.promise, 0, { requirements: [] }, { node: OTHER_ISSUE });
   try {
     await user.click(drawn.settle());
     await waitFor(() => expect(drawn.sent).toHaveLength(1));
@@ -388,10 +395,10 @@ test("a settle of another issue's node holds the reads of the tree it is drawn i
   }
 });
 
-// A refusal sends no read, leaves the row as drawn, its mark included, and draws one
-// sentence after the act with the role `status`, read from the refusal's status and code and
-// never from its text: the 403 with no code says, in its text, what a `SETTLE_NOT_PERMITTED`
-// would, and draws the sentence of every other refusal.
+// With the live feed up a refusal sends no read, leaves the row as drawn, its mark included, and
+// draws one sentence after the act with the role `status`, read from the refusal's status and
+// code and never from its text: the 403 with no code says, in its text, what a
+// `SETTLE_NOT_PERMITTED` would, and draws the sentence of every other refusal.
 test("each refusal says its sentence and leaves the mark", async () => {
   const user = userEvent.setup();
   const refusals: readonly (readonly [ApiError, string])[] = [
@@ -423,6 +430,29 @@ test("each refusal says its sentence and leaves the mark", async () => {
       expect(drawn.reads, "a refusal sent a read").toEqual([]);
       expect(drawn.client.getQueryData<IssueTreeAnswer>(HELD_VIEW)).toEqual(treeAnswer());
     }
+  } finally {
+    drawn.unmount();
+  }
+});
+
+// With the live feed down nothing tells what a write did, so the tree read's hold reads the tree
+// and its views at the settle of every write, a refused one's included (`subscribeTreeFreshness`).
+// The refusal still leaves the row as drawn, its mark included, and its sentence stands.
+test("with the live feed down a refusal leaves the row and its mark as drawn", async () => {
+  const user = userEvent.setup();
+  const refused = new ApiError(403, { code: "SETTLE_NOT_PERMITTED", error: "not permitted" });
+  const drawn = drawRow(() => Promise.reject(refused), 0, { requirements: [] }, { feed: "down" });
+  try {
+    await user.click(drawn.settle());
+    await waitFor(() => expect(drawn.sentence()?.textContent).toBe(SETTLE_ANSWERS.not_permitted));
+    await waitFor(() =>
+      expect(drawn.reads, "the hold read nothing at the settle").toContain("tree")
+    );
+    expect(drawn.reads).not.toContain("coverage");
+    expect(drawn.sentence()?.getAttribute("role")).toBe("status");
+    expect(drawn.sentence()?.textContent).toBe(SETTLE_ANSWERS.not_permitted);
+    expect(drawn.settle().textContent).toBe(CONTROL_LABELS.settle);
+    expect(drawn.row().querySelector('[data-node-mark="proposed"]')).not.toBeNull();
   } finally {
     drawn.unmount();
   }
