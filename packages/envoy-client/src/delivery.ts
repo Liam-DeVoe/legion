@@ -1723,7 +1723,9 @@ export function renderInbound(
     const note = `body names session ${foreignSession}`;
     fields = encode({ envoy: { ...shownFields, note, ...issues } });
   }
-  const card = blocks.length === 0 ? fields : `${fields}\n${wordsBlocks(blocks)}`;
+  // Each block's tag is chosen against the fields as well as the words of every block: the fields
+  // hold other authors' words too (an ask's question, an issue's title in a catch-up).
+  const card = blocks.length === 0 ? fields : `${fields}\n${wordsBlocks(fields, blocks)}`;
   return {
     skip: false,
     content: trailer === "" ? card : `${card}\n\n${trailer}`,

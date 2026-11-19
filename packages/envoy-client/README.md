@@ -50,18 +50,25 @@ every field. A role message the daemon publishes as text (the hook prompt) follo
 that its summary or payload names and its fields do not, other than the sender, the reader and
 the author of an ask. Unknown sources or fields are marked with `unrecognised`.
 
-A block (`@legion/envoy-client/words-block`) applies the rule of the daemon's texts (`texts.Block`
-and `texts.Render`, `packages/daemon/internal/texts`): an opening tag, the words exactly as
+A block (`@legion/envoy-client/words-block`) applies the rule of the daemon's texts (`texts.Render`
+and `texts.InFront`, `packages/daemon/internal/texts`): an opening tag, the words exactly as
 written, and the closing tag, each on lines of their own. A block's tag is the first of `name`,
 `name-1`, `name-2` and on, where `name` is the name of the field that holds the words, whose
-opening tag `<tag` and closing tag `</tag` the words of no block of the card hold, and that no
-earlier block of the card took. So no words open or close an element of any block's tag, and two
-blocks never share a tag. `wordsBlocks` draws all the blocks of a text by that rule in one pass,
-in time linear in the words' length; `wordsBlock` draws a text of one block. The opening tag
-carries `by`, `at`, `field`, `rest` and `more`, in that order and escaped, each only where it is
-set; a card sets `by` and `at` only where its own fields do not name the author and the time.
-`splitWordsBlocks` splits a card, or a daemon text, into the part before its blocks, which TOON's
-`decode` reads, and the blocks, and checks each tag against the rule.
+opening tag `<tag` and closing tag `</tag` neither the card's fields before the blocks nor the
+words of any block of the card hold, and that no earlier block of the card took. The fields hold
+other authors' words too (an ask's question, an issue's title in a catch-up), so nothing in the
+card opens or closes an element of a block's tag but that block, and two blocks never share a tag.
+`wordsBlocks(before, blocks)` draws all the blocks that follow `before` by that rule in one pass,
+in time linear in the text's length. `inFront(parts, text)` is what a host hands on when it puts
+lines or other messages in front of a card (the Codex inbox's hook text, claude-envoy's prompt at
+the rows a turn never read): the parts and the card joined by blank lines, with the card's blocks
+drawn again, attributes and words unchanged, under the tags the rule gives them against everything
+in front of them as well. Where nothing in front holds such a tag, and for a text with no block,
+that is the two joined as they are. The opening tag carries `by`, `at`, `field`, `rest` and `more`,
+in that order and escaped, each only where it is set; a card sets `by` and `at` only where its own
+fields do not name the author and the time. `splitWordsBlocks` splits a card, or a daemon text,
+into the part before its blocks, which TOON's `decode` reads, and the blocks, and checks each tag
+against the rule.
 
 Malformed input is safe: a non-JSON frame becomes a TOON block naming its topic and an
 `unrecognised` parse failure. The renderer never emits raw frame bytes. Dispatch envelopes

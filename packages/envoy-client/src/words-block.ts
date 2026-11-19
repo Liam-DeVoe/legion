@@ -1,22 +1,24 @@
 /**
  * A words block: the words of another author, drawn after a text's fields in a block of their
  * own. The block names the author and the time where the fields of the text do not, nothing else
- * shares it, and no words of the text can open or close an element of its tag. The Legion daemon
- * draws the blocks of its texts by the same rule (`Block` and `Render`,
- * `packages/daemon/internal/texts`), so one reader reads the blocks of a card and of a daemon
- * text:
+ * shares it, and nothing else in the text can open or close an element of its tag. The Legion
+ * daemon draws the blocks of its texts by the same rule (`Render`, and `InFront` for notes put in
+ * front of a text, `packages/daemon/internal/texts`), so one reader reads the blocks of a card and
+ * of a daemon text:
  *
  *     <answer by="user:sami" at="2026-11-14T22:44:10Z">
  *     Use a structured message here, not prose.
  *     </answer>
  *
  * The tag of a block is the first of `name`, `name-1`, `name-2` and on, where `name` is the name
- * of the field that holds the words, such that the words of no block of the text hold its opening
- * tag `<tag` or its closing tag `</tag`, and no earlier block of the text took it. The test is on
- * the plain text, so words that hold `<answers` or `<answer-12` also move the tag of `answer` on,
- * past `answer-1` and `answer-12` too. A text of one block takes the first tag its own words hold
- * neither of. The opening tag carries the attributes `by`, `at`, `field`, `rest` and `more`, in
- * that order, each only where it is set. Each value escapes `&`, `<`, `>`, `"` and each control
+ * of the field that holds the words, such that neither the text before the blocks nor the words
+ * of any block of the text hold its opening tag `<tag` or its closing tag `</tag`, and no earlier
+ * block of the text took it. The text before the blocks is a card's fields, which hold other
+ * authors' words too: an ask's question, an issue's title. So nothing in the text opens or closes
+ * the tag of a block but that block's own lines. The test is on the plain text, so text that
+ * holds `<answers` or `<answer-12` also moves the tag of `answer` on, past `answer-1` and
+ * `answer-12` too. The opening tag carries the attributes `by`, `at`, `field`, `rest` and `more`,
+ * in that order, each only where it is set. Each value escapes `&`, `<`, `>`, `"` and each control
  * character below U+0020 as an XML character reference, so no value ends its attribute or its
  * tag. A new line, the words exactly as given, a new line and the closing tag follow the opening
  * tag, and one new line joins a block to the next.
@@ -64,34 +66,128 @@ export interface SplitText {
   readonly blocks: readonly ReadBlock[];
 }
 
-/** The block of `words`, which the field `name` holds, as the one block of its text. */
-export function wordsBlock(name: string, words: Words): string {
-  return wordsBlocks([{ name, words }]);
-}
-
-/** The blocks of one text, in their order, each joined to the next by one new line, each with the
- *  tag the rule gives it against the words of every block of the text (`blockTags`). */
-export function wordsBlocks(blocks: readonly NamedWords[]): string {
-  const tags = blockTags(blocks.map(({ name, words }) => ({ name, text: words.text })));
+/** The blocks of one text, in their order, each joined to the next by one new line, that follow
+ *  `before`: the whole of the text ahead of them, such as a card's fields, which the caller joins
+ *  to the first block with one new line. Each block takes the tag the rule gives it against
+ *  `before` and the words of every block (`blockTags`). */
+export function wordsBlocks(before: string, blocks: readonly NamedWords[]): string {
+  const tags = blockTags(
+    [before],
+    blocks.map(({ name, words }) => ({ name, text: words.text }))
+  );
   return blocks
     .map(({ words }, index) => {
-      const tag = tags[index] ?? "";
-      let open = `<${tag}`;
-      if (words.by !== undefined && words.by !== "") open += attribute("by", words.by);
-      if (words.at !== undefined && words.at !== "") open += attribute("at", words.at);
-      if (words.field !== undefined && words.field !== "") open += attribute("field", words.field);
-      if (words.rest !== undefined && words.rest > 0) open += attribute("rest", String(words.rest));
-      if (words.more === true) open += attribute("more", "true");
-      return `${open}>\n${words.text}\n</${tag}>`;
+      let attributes = "";
+      if (words.by !== undefined && words.by !== "") attributes += attribute("by", words.by);
+      if (words.at !== undefined && words.at !== "") attributes += attribute("at", words.at);
+      if (words.field !== undefined && words.field !== "") {
+        attributes += attribute("field", words.field);
+      }
+      if (words.rest !== undefined && words.rest > 0) {
+        attributes += attribute("rest", String(words.rest));
+      }
+      if (words.more === true) attributes += attribute("more", "true");
+      return drawBlock(tags[index] ?? "", attributes, words.text);
     })
     .join("\n");
 }
 
-/** The tag of each of `blocks`, in their order: the first of `name`, `name-1`, `name-2` and on whose
- *  `<tag` and `</tag` the words of no block hold, and that no earlier block took. */
-function blockTags(blocks: readonly { readonly name: string; readonly text: string }[]): string[] {
-  const texts = blocks.map(({ text }) => text);
-  // No tag can take a suffix above this: each suffix the words hold takes a character of them,
+/**
+ * `parts` and then `text`, each joined to the next by a blank line: what a host puts in front of
+ * a card it hands on (a line that says where messages came from, a label, the messages before
+ * it), and the card. A part can hold another author's words, so the blocks of `text`
+ * (`drawnBlocks`) are drawn again, each with its attributes as written and its words as they
+ * were, under the tag the rule gives it against the whole of what is sent: the parts, the text of
+ * `text` before and after its blocks, and the words of every block. Nothing in front of a block
+ * then opens or closes its tag, as nothing does in the card alone (`wordsBlocks`). Where neither
+ * the parts nor the text after the blocks hold a tag the blocks could take, each block keeps its
+ * tag and the result is the parts and `text` joined as they are; so is a text with no drawn
+ * block. The Legion daemon puts notes in front of a task by the same rule (`InFront`,
+ * `packages/daemon/internal/texts/words.go`).
+ */
+export function inFront(parts: readonly string[], text: string): string {
+  if (parts.length === 0) return text;
+  const front = `${parts.join("\n\n")}\n\n`;
+  const found = drawnBlocks(text);
+  const first = found[0];
+  const last = found[found.length - 1];
+  if (first === undefined || last === undefined) return front + text;
+  const head = text.slice(0, first.start);
+  const tail = text.slice(last.end);
+  const tags = blockTags([...parts, head, tail], found);
+  const blocks = found.map(({ attributes, text: words }, index) =>
+    drawBlock(tags[index] ?? "", attributes, words)
+  );
+  return `${front}${head}${blocks.join("\n")}${tail}`;
+}
+
+/** One block of a text as `drawnBlocks` found it: where its opening line starts and where its
+ *  closing tag ends, the name of the field that holds the words (its tag without the `-n` a step
+ *  past held tags added), the attributes of its opening tag as written, and its words. */
+interface DrawnBlock {
+  readonly start: number;
+  readonly end: number;
+  readonly name: string;
+  readonly attributes: string;
+  readonly text: string;
+}
+
+/**
+ * The blocks of `text`, a card `wordsBlocks` drew, in their order. No line of a card ahead of its
+ * blocks starts with `<`, since its fields are TOON lines, so its first such line opens its first
+ * block. A block closes on the first line after its opening that is its closing tag, since no
+ * words of a block hold that tag (`blockTags`), and the next block opens on the line after. The
+ * run ends at the first line that opens no block. It is empty where the first line that starts
+ * with `<` opens none, or opens a block that never closes, as in a text no card drew, which
+ * `inFront` then joins as it is. One pass over `text`.
+ */
+function drawnBlocks(text: string): DrawnBlock[] {
+  let at = 0;
+  if (!text.startsWith("<")) {
+    const line = text.indexOf("\n<");
+    if (line < 0) return [];
+    at = line + 1;
+  }
+  const blocks: DrawnBlock[] = [];
+  while (text[at] === "<") {
+    const opened = text.indexOf("\n", at);
+    if (opened < 0) break;
+    const opening = OPENING.exec(text.slice(at, opened));
+    if (opening === null) break;
+    const name = opening[1] ?? "";
+    const closing = `\n</${opening[2] === undefined ? name : `${name}-${opening[2]}`}>`;
+    const closed = text.indexOf(closing, opened + 1);
+    if (closed < 0) break;
+    const end = closed + closing.length;
+    if (end < text.length && text[end] !== "\n") break;
+    blocks.push({
+      start: at,
+      end,
+      name,
+      attributes: opening[3] ?? "",
+      text: text.slice(opened + 1, closed),
+    });
+    at = end + 1;
+  }
+  return blocks;
+}
+
+/** The block of `text` under `tag`: the opening tag with `attributes` as written, a new line, the
+ *  words, a new line and the closing tag. */
+function drawBlock(tag: string, attributes: string, text: string): string {
+  return `<${tag}${attributes}>\n${text}\n</${tag}>`;
+}
+
+/** The tag of each of `blocks`, the blocks of one text in their order, where `before` is the rest
+ *  of the text: the first of `name`, `name-1`, `name-2` and on whose `<tag` and `</tag` neither a
+ *  part of `before` nor the words of any block hold, and that no earlier block took. A part is
+ *  scanned on its own, which finds what the joined text holds, since a tag holds no new line. */
+function blockTags(
+  before: readonly string[],
+  blocks: readonly { readonly name: string; readonly text: string }[]
+): string[] {
+  const texts = [...before, ...blocks.map(({ text }) => text)];
+  // No tag can take a suffix above this: each suffix the texts hold takes a character of them,
   // and each block takes one suffix.
   const cap = texts.reduce((length, text) => length + text.length, blocks.length) + 1;
   // For each name, the suffixes held or taken (0 is the bare name), and the least that may be
@@ -177,9 +273,9 @@ const NAMED_REFERENCES: Readonly<Record<string, string>> = {
  * opens at the first line that is an opening tag. From there the text holds blocks alone, each
  * joined to the next by one new line, to its end. A block closes at the first closing tag of its
  * tag after its opening, since no words of the text hold one. Each block's tag is the tag the
- * rule gives it against the words of every block of the text (`blockTags`), and its attributes
- * are the rule's, in the rule's order. A text that breaks one of these throws an error that names
- * the break.
+ * rule gives it against the text before the blocks and the words of every block (`blockTags`),
+ * and its attributes are the rule's, in the rule's order. A text that breaks one of these throws
+ * an error that names the break.
  */
 export function splitWordsBlocks(text: string): SplitText {
   let start = -1;
@@ -218,13 +314,14 @@ export function splitWordsBlocks(text: string): SplitText {
     if (after >= text.length) break;
     line = after + 1;
   }
-  const tags = blockTags(blocks);
+  const head = start === 0 ? "" : text.slice(0, start - 1);
+  const tags = blockTags([head], blocks);
   for (const [index, { tag }] of blocks.entries()) {
     if (tags[index] !== tag) {
       throw new Error(`block <${tag}> has a tag the rule does not give it: <${tags[index]}>`);
     }
   }
-  return { head: start === 0 ? "" : text.slice(0, start - 1), blocks };
+  return { head, blocks };
 }
 
 /** The end of the line that starts at `start`: the index of its new line, or the text's end. */

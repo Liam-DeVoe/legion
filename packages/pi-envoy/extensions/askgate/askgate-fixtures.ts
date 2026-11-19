@@ -2,7 +2,7 @@
 // returns for a root session (packages/coding-agent/src/session/session-context.ts and the message
 // constructors in packages/agent/src/compaction/messages.ts, omp 18.4.3-sami.20260929-152920), with
 // synthetic text: no transcript content, issue key or host name appears here.
-import { wordsBlock } from "@legion/envoy-client/words-block";
+import { wordsBlocks } from "@legion/envoy-client/words-block";
 
 export type FixtureMessage = Record<string, unknown> & { role: string };
 
@@ -82,12 +82,16 @@ export const developer = (text: string): FixtureMessage => ({
   timestamp: ++seq,
 });
 
+/** The fields of the card `envoyMessage` builds. */
+const answerCardFields =
+  'envoy:\n  to: you\n  from: dispatch\n  at: "2026-09-30T00:00:00Z"\n  id: example-1\n  dispatch:\n    type: ask.answered';
+
 /** A Dispatch answer as pi-envoy delivers it: the card's fields, then the person's words in a
  *  block of their own. Real ones display; a hidden one must render the same. */
 export const envoyMessage = (body: string, display = true): FixtureMessage => ({
   role: "custom",
   customType: "envoy-message",
-  content: `envoy:\n  to: you\n  from: dispatch\n  at: "2026-09-30T00:00:00Z"\n  id: example-1\n  dispatch:\n    type: ask.answered\n${wordsBlock("answer", { text: body })}`,
+  content: `${answerCardFields}\n${wordsBlocks(answerCardFields, [{ name: "answer", words: { text: body } }])}`,
   display,
   timestamp: ++seq,
   attribution: "agent",

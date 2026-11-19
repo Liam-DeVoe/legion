@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto"
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
+import { inFront } from "@legion/envoy-client/words-block"
 
 /**
  * The Codex plugin's inbox: messages waiting for the running turn of one session.
@@ -186,16 +187,20 @@ export async function takeInbox(
   return taken
 }
 
-/** The text a `PostToolUse` hook hands Codex for messages it took: each message whole, in order,
- *  under one line saying where they came from. A person's own message says it is theirs, since
- *  Codex frames hook text as an instruction rather than as something a person typed. */
+/** The text a `PostToolUse` hook hands Codex for messages it took: each message's words whole,
+ *  in order, under one line saying where they came from. A person's own message says it is
+ *  theirs, since Codex frames hook text as an instruction rather than as something a person
+ *  typed. The messages before a card hold other authors' words, so the card's blocks take their
+ *  tags again against everything in front of them (`inFront`): nothing ahead of a block opens or
+ *  closes its tag. Where nothing ahead holds such a tag, the card is quoted exactly as it came. */
 export function inboxContext(items: readonly CodexInboxItem[]): string {
-  return [
-    "Messages delivered to this session while it worked (Envoy, through the Envoy plugin):",
-    ...items.map((item) =>
+  let context =
+    "Messages delivered to this session while it worked (Envoy, through the Envoy plugin):"
+  for (const item of items) {
+    context =
       item.dispatchMessageId === undefined
-        ? item.content
-        : `A person wrote to you from Dispatch (message ${item.dispatchMessageId}):\n${item.content}`,
-    ),
-  ].join("\n\n")
+        ? inFront([context], item.content)
+        : `${context}\n\nA person wrote to you from Dispatch (message ${item.dispatchMessageId}):\n${item.content}`
+  }
+  return context
 }
