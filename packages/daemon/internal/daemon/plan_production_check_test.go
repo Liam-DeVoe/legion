@@ -138,7 +138,7 @@ func (r *ownerStepsRig) reattach(c *stepClaimant) {
 	c.mu.Unlock()
 	sh := dialShimUntilAcked(t, address, launch.BootToken)
 	c.mu.Lock()
-	c.sh, c.bootToken, c.open = sh, launch.BootToken, nil
+	c.sh, c.bootToken, c.open, c.inTurn = sh, launch.BootToken, nil, false
 	c.mu.Unlock()
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: file, AgentID: c.session, PluginContract: api.DaemonAPIVersion,
