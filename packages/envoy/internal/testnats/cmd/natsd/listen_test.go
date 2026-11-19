@@ -134,3 +134,33 @@ func TestNatsdTakesTheLoopbackAddressItIsGivenAndRefusesAnyOther(t *testing.T) {
 		require.ErrorContains(t, err, "no loopback address", "-a %s", refused)
 	}
 }
+
+// With -claim-for, the claim is that process's and outlasts natsd: a script starts natsd with
+// -claim-for $$, stops it, and restarts it with -a on the address it read and its old port, while
+// the claim keeps every other stack off that address. A second natsd started in the gap, as a
+// second stack starts one, is given another address, so its port cannot be the restart's.
+func TestARestartWithClaimForKeepsTheAddressAndThePort(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("off Linux every natsd shares 127.0.0.1")
+	}
+	store := t.TempDir()
+	first, address := startNatsd(t, "-claim-for", fmt.Sprint(os.Getpid()), "-p", "-1", "-store_dir", store)
+	host, port, err := net.SplitHostPort(address)
+	require.NoError(t, err)
+	claim := filepath.Join(loopback.ClaimDir(), host)
+	require.NoError(t, first.Process.Signal(syscall.SIGTERM))
+	require.NoError(t, first.Wait())
+	raw, err := os.ReadFile(claim)
+	require.NoError(t, err, "the claim on %s went with the first natsd", host)
+	require.Equal(t, fmt.Sprint(os.Getpid()), strings.TrimSpace(string(raw)))
+
+	_, other := startNatsd(t, "-p", port, "-store_dir", t.TempDir())
+	otherHost, _, err := net.SplitHostPort(other)
+	require.NoError(t, err)
+	require.NotEqual(t, host, otherHost, "a second stack's natsd took the claimed %s", host)
+
+	_, again := startNatsd(t, "-a", host, "-p", port, "-store_dir", store)
+	require.Equal(t, address, again, "the restart came back elsewhere")
+	require.True(t, natsInfo(again))
+	require.NoError(t, loopback.Release(loopback.ClaimDir(), host, os.Getpid()))
+}

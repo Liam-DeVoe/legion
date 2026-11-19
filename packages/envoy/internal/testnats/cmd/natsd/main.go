@@ -20,11 +20,12 @@
 // script's sake.
 //
 // Every listener it has binds one loopback address of its own (testnats.ListenOn): the address -a
-// names, which must be a loopback address, or else one loopback.Claim picks and claims for this
-// process, released when it exits. A caller reads the address from the log, on the line that
-// already named the port (`Listening for client connections on <address>:<port>`), and dials that,
-// never 127.0.0.1. A caller that restarts natsd on its old port passes the address back with -a
-// and keeps it for its whole run, best claimed for itself (cmd/loopbackhost), so that no other
+// names, which must be a loopback address, or else one loopback.Claim picks and claims. A caller
+// reads the address from the log, on the line that already named the port (`Listening for client
+// connections on <address>:<port>`), and dials that, never 127.0.0.1. The claim is natsd's own,
+// released when it exits, unless -claim-for names another process: a script that restarts natsd on
+// its old port starts it the first time with `-claim-for $$`, so the claim is the script's and
+// outlasts the restart, and passes the address it read back with -a at every restart, so no other
 // stack's server takes the address and the port while this one is down. Off Linux the address is
 // 127.0.0.1, which every server there shares.
 package main
@@ -60,11 +61,12 @@ func main() {
 }
 
 // run parses args as nats-server parses its own command line (-a for the address, -p for the
-// client port, -store_dir for the JetStream store) and -callout-keys, starts the server with
-// JetStream and its log on stdout, and returns once a signal has shut it down.
+// client port, -store_dir for the JetStream store), -callout-keys and -claim-for, starts the server
+// with JetStream and its log on stdout, and returns once a signal has shut it down.
 func run(args []string) error {
 	flags := flag.NewFlagSet("natsd", flag.ContinueOnError)
 	calloutDir := flags.String("callout-keys", "", "run behind an auth callout whose keys are in (or are made in) this directory")
+	claimFor := flags.Int("claim-for", 0, "with no -a, claim the address for this process id (a script's own, which outlasts a restart) rather than for natsd's own")
 	help := func() { flags.PrintDefaults() }
 	opts, err := natsserver.ConfigureOptions(flags, args, help, help, help)
 	if err != nil {
@@ -74,7 +76,7 @@ func run(args []string) error {
 		// -v, -h or -help_tls: ConfigureOptions has printed what was asked for.
 		return nil
 	}
-	host, release, err := listenHost(opts.Host)
+	host, release, err := listenHost(opts.Host, *claimFor)
 	if err != nil {
 		return err
 	}
@@ -115,9 +117,11 @@ func run(args []string) error {
 
 // listenHost is the address natsd listens on, and what releases it: requested, the address -a
 // gave, when it is a loopback address, released by nobody since the caller owns it; or, when -a
-// gave none, an address loopback.Claim claims for this process, released on its way out. Any
-// other -a is refused: natsd listens on loopback only.
-func listenHost(requested string) (string, func(), error) {
+// gave none, an address loopback.Claim claims for claimFor, else for this process. natsd releases
+// only a claim of its own, on its way out; a claim for another process is that process's, and is
+// free again once that process has exited (loopback.Claim). Any other -a is refused: natsd
+// listens on loopback only.
+func listenHost(requested string, claimFor int) (string, func(), error) {
 	if requested != "" {
 		if ip := net.ParseIP(requested); ip == nil || !ip.IsLoopback() {
 			return "", nil, fmt.Errorf("-a %s is no loopback address; natsd listens on loopback only", requested)
@@ -125,9 +129,18 @@ func listenHost(requested string) (string, func(), error) {
 		return requested, func() {}, nil
 	}
 	dir, owner := loopback.ClaimDir(), os.Getpid()
+	if claimFor < 0 {
+		return "", nil, fmt.Errorf("-claim-for %d names no process", claimFor)
+	}
+	if claimFor != 0 {
+		owner = claimFor
+	}
 	host, err := loopback.Claim(dir, owner)
 	if err != nil {
 		return "", nil, err
+	}
+	if owner != os.Getpid() {
+		return host, func() {}, nil
 	}
 	return host, func() {
 		if err := loopback.Release(dir, host, owner); err != nil {

@@ -100,6 +100,27 @@ func TestAClaimSkipsALiveOwnerAndTakesADeadOnes(t *testing.T) {
 	}
 }
 
+// Claim removes every claim whose owner has exited, and leaves a live owner's.
+func TestClaimSweepsTheClaimsOfExitedOwners(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("off Linux Claim claims nothing")
+	}
+	dir := t.TempDir()
+	stale := filepath.Join(dir, "127.5.5.5")
+	live := filepath.Join(dir, "127.4.4.4")
+	writeClaim(t, stale, deadPid(t))
+	writeClaim(t, live, os.Getpid())
+	if _, err := Claim(dir, os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("Claim left the claim of an exited owner: %v", err)
+	}
+	if _, err := os.Stat(live); err != nil {
+		t.Fatalf("Claim removed a live owner's claim: %v", err)
+	}
+}
+
 // Release removes its owner's claim, and leaves one another process holds.
 func TestReleaseRemovesOnlyItsOwnersClaim(t *testing.T) {
 	dir := t.TempDir()

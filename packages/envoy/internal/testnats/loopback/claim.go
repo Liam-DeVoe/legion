@@ -24,9 +24,10 @@ func ClaimDir() string {
 // claimed for owner, a process id: the file dir/<address> holds owner's id. NewHost's registry
 // keeps one process from giving an address twice; a claim keeps two processes, two script stacks
 // that each start a server, from both taking one. An address whose claim names a process that no
-// longer runs is free again, so a claim a killed script never released costs nothing. Before it
-// claims an address, Claim binds port 0 on it, so an address that is not up fails here and names
-// itself rather than at the server's start.
+// longer runs is free again, so a claim a killed script never released costs nothing, and each
+// Claim first removes every such claim in dir (sweep), so the directory holds the live claims
+// alone. Before it claims an address, Claim binds port 0 on it, so an address that is not up fails
+// here and names itself rather than at the server's start.
 //
 // Off Linux it is 127.0.0.1, the address NewHost gives there, and nothing is claimed: every server
 // there shares it.
@@ -40,6 +41,7 @@ func Claim(dir string, owner int) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("make the loopback claims directory: %w", err)
 	}
+	sweep(dir)
 	for {
 		host := NewHost()
 		listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
@@ -53,6 +55,21 @@ func Claim(dir string, owner int) (string, error) {
 		}
 		if claimed {
 			return host, nil
+		}
+	}
+}
+
+// sweep removes every claim in dir whose process no longer runs. It is housekeeping: an entry it
+// cannot read or remove is left for a later sweep, and claim takes a stale claim it meets anyway.
+func sweep(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if entry.Type().IsRegular() && !holderRuns(path) {
+			_ = os.Remove(path)
 		}
 	}
 }
