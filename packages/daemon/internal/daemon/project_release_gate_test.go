@@ -354,13 +354,14 @@ func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T
 		record.OutboxKindGatedStepsPublish:  {{"the gated steps' publish", record.GatedStepsPublish{}, false}},
 		record.OutboxKindDesignGatesPublish: {{"an issue's design gates' publish", record.DesignGatesPublish{}, false}},
 		record.OutboxKindRoleHoldersPublish: {{"an issue's role holders' publish", record.RoleHoldersPublish{}, false}},
+		record.OutboxKindStepRecord:         {{"a step record's write", record.StepRecord{}, false}},
 		record.OutboxKindIssueSuspend:       {{"a closed issue's pod deleted", record.IssueSuspend{}, false}},
 		record.OutboxKindLingerClose:        {{"a linger's close", record.LingerClose{}, false}},
 		record.OutboxKindWorkspaceRemove:    {{"a workspace's removal", record.WorkspaceRemove{}, false}},
 		record.OutboxKindGateSeed:           {{"a gate's seed", record.GateSeed{}, false}},
 		record.OutboxKindIssueBranch:        {{"an issue's branch", record.IssueBranch{}, false}},
 	}
-	for _, lane := range []record.OutboxLane{record.LaneLifecycle, record.LaneBoard, record.LaneRoleMessage, record.LaneClaim} {
+	for _, lane := range record.OutboxLanes() {
 		for _, kind := range record.LaneKinds(lane) {
 			rows, ok := cases[kind]
 			if !ok {
