@@ -457,10 +457,12 @@ stop)
 	# whether the server still runs (launcher.CheckTestPostgres). The data directory is all
 	# pg_ctl needs, so `stop` reads LEGION_TESTPG_DIR alone, not the DSN.
 	bin=$(bindir)
+	left=
+	[ -z "$deadline" ] || left=$((deadline - $(date +%s)))
 	if [ -z "$deadline" ]; then
 		"$bin/pg_ctl" --pgdata "$data" --mode fast --wait --timeout "$unbounded" stop
-	elif [ "$((deadline - $(date +%s)))" -gt 0 ]; then
-		"$bin/pg_ctl" --pgdata "$data" --mode fast --wait --timeout "$((deadline - $(date +%s)))" stop
+	elif [ "$left" -gt 0 ]; then
+		"$bin/pg_ctl" --pgdata "$data" --mode fast --wait --timeout "$left" stop
 	else
 		"$bin/pg_ctl" --pgdata "$data" --mode fast --no-wait stop
 	fi
