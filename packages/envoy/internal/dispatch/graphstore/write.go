@@ -432,7 +432,10 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated []Tuple) e
 	// A node already there whose base attribute the caller states itself - a document made where
 	// an orphaned node stands states that node gone and then live in tuples of its own - moves
 	// nothing of its own row's base attributes, but is marked all the same (with no attribute), so
-	// the append moves it onto the cause the caller's statements carry.
+	// the append moves it onto the cause the caller's statements carry. A node the insert above
+	// just made carries the insert's mark (markMade) already, which names every base attribute it
+	// carries, so it takes no second mark: an empty one over it would leave its visibility, its
+	// project and its parties stated by nothing.
 	own := statedAttributes(stated)
 	states := make([]bool, len(nodes))
 	for index, node := range nodes {
@@ -468,7 +471,7 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated []Tuple) e
 		       or graph_nodes.attributes is distinct from incoming.attributes
 		       or `+fillsProject+`
 		       or `+movesParties+`
-		       or incoming.states)
+		       or (incoming.states and not `+markedBy("graph_nodes", "$8")+`))
 	`, args[0], args[1], args[2], args[3], args[4], args[5], restates, mark, projects, parties, states)
 	return nil
 }
