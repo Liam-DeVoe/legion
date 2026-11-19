@@ -16,8 +16,9 @@ const (
 )
 
 // Each listing of a /proc the launcher makes refuses the machine's in a test that gave it no /proc
-// of its own: the sweep's holder read, the reaper's pass and role-init's pass. A test process is
-// never PID 1 of the machine's PID namespace, so none of them is the namespace's own listing.
+// of its own: the sweep's holder read, the reaper's two passes (the drain's and the orphan
+// reaper's), its signal of the namespace and role-init's pass. A test process is never PID 1 of
+// the machine's PID namespace, so none of them is the namespace's own listing.
 func TestEachLauncherListingRefusesTheMachinesProc(t *testing.T) {
 	discard := func(string, ...any) {}
 	t.Run("the git lock sweep, built as the launcher builds it", func(t *testing.T) {
@@ -27,6 +28,9 @@ func TestEachLauncherListingRefusesTheMachinesProc(t *testing.T) {
 	})
 	t.Run("the reaper's pass", func(t *testing.T) {
 		hostproctest.Refused(t, reaperScanner, func() { _, _ = (&pidGuard{}).reap() })
+	})
+	t.Run("the orphan reaper's pass", func(t *testing.T) {
+		hostproctest.Refused(t, reaperScanner, func() { _ = (&pidGuard{}).reapOrphans() })
 	})
 	t.Run("the reaper's signal of the namespace", func(t *testing.T) {
 		hostproctest.Refused(t, reaperScanner, func() {
@@ -45,6 +49,9 @@ func TestEachLauncherListingRefusesTheMachinesProc(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, err := (&pidGuard{proc: procRoot(t, os.Getpid())}).reap(); err != nil {
+				t.Fatal(err)
+			}
+			if err := (&pidGuard{proc: procRoot(t, os.Getpid())}).reapOrphans(); err != nil {
 				t.Fatal(err)
 			}
 		})
