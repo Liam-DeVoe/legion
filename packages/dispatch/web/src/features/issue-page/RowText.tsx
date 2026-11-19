@@ -62,11 +62,16 @@ import {
  * keeps them in the tab order, the links a later pass makes included.
  */
 export function RowText({
+  focused = false,
   markdown,
   source,
   tabStops = false,
   tree,
 }: {
+  /** Whether the row drawing the text holds the focus: out of the tab order, its scrollers keep
+   *  their tab stop, named, so the keyboard can scroll them (decision 317, `useOutOfTabOrder`'s
+   *  `keepScrollers`). */
+  focused?: boolean;
   /** The text as stored: drawn as it is where `tree` is absent. */
   markdown: string;
   /** The record the text is (`MarkdownBody`'s `source`). */
@@ -77,10 +82,17 @@ export function RowText({
   /** The server's reading of `markdown`, where its read sent one. */
   tree?: DisplayTree;
 }): ReactNode {
+  // A text drawn as stored is one paragraph of words and links, which holds no scroller.
   return tree === undefined ? (
     <StoredText markdown={markdown} tabStops={tabStops} />
   ) : (
-    <DrawnText markdown={markdown} source={source} tabStops={tabStops} tree={tree} />
+    <DrawnText
+      focused={focused}
+      markdown={markdown}
+      source={source}
+      tabStops={tabStops}
+      tree={tree}
+    />
   );
 }
 
@@ -291,15 +303,20 @@ function scrolls(element: Element): boolean {
   return [overflowX, overflowY].some((overflow) => overflow === "auto" || overflow === "scroll");
 }
 
-/** The name a scroller carries while it keeps its tab stop, by what it scrolls: a code block, or
- *  a table, itself or the one its wrapper holds. Undefined for any other scroller, which the page
- *  names no word for. */
-function scrollerName(scroller: HTMLElement): string | undefined {
+/** The class `mermaid-diagrams.ts`'s `drawBlock` gives a drawn diagram's preview, which scrolls
+ *  sideways when the diagram is wider than the words (`styles.css`). */
+const DIAGRAM_PREVIEW = "dispatch-mermaid-preview";
+
+/** The name a scroller carries while it keeps its tab stop, by what it scrolls: a code block; a
+ *  table, itself or the one its wrapper holds; a drawn diagram; and anything else by the page's
+ *  word for content. */
+function scrollerName(scroller: HTMLElement): string {
   if (scroller.localName === "pre") return CONTROL_LABELS.scrolls_code;
   if (scroller.localName === "table" || scroller.querySelector(":scope > table") !== null) {
     return CONTROL_LABELS.scrolls_table;
   }
-  return undefined;
+  if (scroller.classList.contains(DIAGRAM_PREVIEW)) return CONTROL_LABELS.scrolls_diagram;
+  return CONTROL_LABELS.scrolls_content;
 }
 
 /**
@@ -310,11 +327,11 @@ function scrollerName(scroller: HTMLElement): string | undefined {
  * row's controls (R9); a view that no tree's keys reach passes `out` false and leaves them where
  * they are.
  *
- * `keepScrollers` keeps each code block and table that scrolls in the tab order, named by what it
- * scrolls (`scrollerName`), so a reader on the keyboard can scroll it sideways: the focused row's
- * (decision 317). A `pre` or a table's wrapper takes a name only with a role (`region`); a table
- * has its own. When it turns off, each such scroller leaves the tab order again, and the name and
- * role it was given go back to what they were.
+ * `keepScrollers` keeps every scroller in the tab order, named by what it scrolls
+ * (`scrollerName`), so a reader on the keyboard can scroll it sideways: the focused row's
+ * (decision 317). A scroller other than a table takes a name only with a role (`region`); a table
+ * has its own. When it turns off, each scroller leaves the tab order again, and the name and role
+ * it was given go back to what they were.
  */
 export function useOutOfTabOrder(
   box: RefObject<HTMLElement | null>,
@@ -329,11 +346,11 @@ export function useOutOfTabOrder(
     const untab = (): void => {
       // Every style is read before any tab index is written, so the reads cost one style pass.
       const scrollers = [...element.querySelectorAll<HTMLElement>("*")].filter(scrolls);
-      const kept = new Map<HTMLElement, string>();
-      for (const scroller of keepScrollers ? scrollers : []) {
-        const name = scrollerName(scroller);
-        if (name !== undefined) kept.set(scroller, name);
-      }
+      const kept = new Map<HTMLElement, string>(
+        keepScrollers
+          ? scrollers.map((scroller) => [scroller, scrollerName(scroller)] as const)
+          : []
+      );
       for (const control of element.querySelectorAll<HTMLElement>(FOCUSABLE)) {
         if (!kept.has(control) && control.tabIndex !== -1) control.tabIndex = -1;
       }
@@ -380,11 +397,13 @@ export function useOutOfTabOrder(
  *  `tabStops` holds: the ones it is drawn with, and the ones the reading puts in after - a
  *  reference's link once its target answers, a picture once it loads - as they arrive. */
 function DrawnText({
+  focused,
   markdown,
   source,
   tabStops,
   tree,
 }: {
+  focused: boolean;
   markdown: string;
   source: TextSource | undefined;
   tabStops: boolean;
@@ -416,7 +435,7 @@ function DrawnText({
     }
   }, [ambiguous, names, tabStops]);
   useLayoutEffect(link, [link]);
-  useOutOfTabOrder(drawn, !tabStops);
+  useOutOfTabOrder(drawn, !tabStops, { keepScrollers: focused });
   const follow = useFollowInPlace();
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: the press is the links' own, followed in place.

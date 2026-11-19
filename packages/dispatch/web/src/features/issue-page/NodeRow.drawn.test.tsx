@@ -77,9 +77,9 @@ const NOBODY_RECORDED: Author = {
 
 /** One row, drawn with its body open, as the focused row draws it, unless `body` is false;
  *  `author` is who made it, as the tree names them (`AgentText.author`); `answerer` the person
- *  whose answer an ask carries; `expanded` and `folded` its fold, for a node that holds any.
- *  It is drawn inside `NoTooltips`, as the page's slots draw every row, so an author is named
- *  as the page names one. */
+ *  whose answer an ask carries; `expanded` and `folded` its fold, for a node that holds any;
+ *  `focused` whether it holds the tree's focus. It is drawn inside `NoTooltips`, as the page's
+ *  slots draw every row, so an author is named as the page names one. */
 function renderRow(
   drawn: TreeNode,
   {
@@ -87,12 +87,14 @@ function renderRow(
     author = NOBODY_RECORDED,
     body = true,
     expanded,
+    focused = false,
     folded,
   }: {
     answerer?: string;
     author?: Author;
     body?: boolean;
     expanded?: boolean;
+    focused?: boolean;
     folded?: number;
   } = {}
 ) {
@@ -108,7 +110,7 @@ function renderRow(
             context={false}
             {...(expanded === undefined ? {} : { expanded })}
             {...(folded === undefined ? {} : { folded })}
-            focused={false}
+            focused={focused}
             isClosed={false}
             level={1}
             node={drawn}
@@ -634,6 +636,50 @@ test("a table and a code block in a row's words each scroll sideways on their ow
     }
   } finally {
     view.unmount();
+  }
+});
+
+// Decision 317: the outline is one tab stop, and only the focused row's scrollers keep a tab stop
+// of their own, each named, so a reader on the keyboard can scroll a wide code block or table
+// sideways; every other row's stay out of the tab order. The row hands its focus to its words.
+test("out of the tab order, a focused row's code block and table keep their tab stop, named, and an unfocused row's do not", () => {
+  const text = "| One | Two |\n| --- | --- |\n| 1 | 2 |\n\n```\nconst wide = true;\n```";
+  // The rules that make each block scroll, which the hook reads through the computed style.
+  const sheet = document.createElement("style");
+  sheet.textContent = sidewaysScrollRules()
+    .map((selectors) => `${selectors} { overflow-x: auto; }`)
+    .join("\n");
+  document.head.append(sheet);
+  const drawn = (focused: boolean) => {
+    const view = renderRow(
+      node({ id: "notes-md#b-n1", text, tree: displayTree(text), type: "callout" }),
+      { body: false, focused }
+    );
+    try {
+      return ["pre", "table"].map((block) => {
+        const scroller = view.container.querySelector(`[data-node-words] ${block}`);
+        if (scroller === null) throw new Error(`the row's words draw no ${block}`);
+        return {
+          label: scroller.getAttribute("aria-label"),
+          role: scroller.getAttribute("role"),
+          tabIndex: scroller.getAttribute("tabindex"),
+        };
+      });
+    } finally {
+      view.unmount();
+    }
+  };
+  try {
+    expect(drawn(true)).toEqual([
+      { label: CONTROL_LABELS.scrolls_code, role: "region", tabIndex: "0" },
+      { label: CONTROL_LABELS.scrolls_table, role: null, tabIndex: "0" },
+    ]);
+    expect(drawn(false)).toEqual([
+      { label: null, role: null, tabIndex: "-1" },
+      { label: null, role: null, tabIndex: "-1" },
+    ]);
+  } finally {
+    sheet.remove();
   }
 });
 

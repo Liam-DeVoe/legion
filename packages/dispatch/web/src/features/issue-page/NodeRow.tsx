@@ -315,6 +315,7 @@ export function NodeRow({
                 <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
               ) : node.child === undefined ? (
                 <RowText
+                  focused={focused}
                   markdown={node.text}
                   source={node.source}
                   tabStops={tabStops}

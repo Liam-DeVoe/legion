@@ -378,7 +378,8 @@ test("RowText with tabStops leaves its wide code block and table in the tab orde
 });
 
 /** A box `useOutOfTabOrder` keeps out of the tab order, with `keepScrollers` as given: a code
- *  block and a table's wrapper, each scrolling sideways. */
+ *  block, a table's wrapper, a drawn diagram's preview (the class `mermaid-diagrams.ts`'s
+ *  `drawBlock` gives it) and a box of another kind, each scrolling. */
 function KeptScrollers({ keepScrollers }: { keepScrollers: boolean }): ReactNode {
   const box = useRef<HTMLDivElement>(null);
   useOutOfTabOrder(box, true, { keepScrollers });
@@ -396,6 +397,10 @@ function KeptScrollers({ keepScrollers }: { keepScrollers: boolean }): ReactNode
           </tbody>
         </table>
       </div>
+      <div className="dispatch-mermaid-preview" data-diagram="" style={{ overflowX: "auto" }} />
+      <div data-other="" style={{ overflowY: "scroll" }}>
+        Twelve lines of output
+      </div>
     </div>
   );
 }
@@ -407,9 +412,12 @@ interface ScrollerState {
   readonly tabIndex: string | null;
 }
 
-/** The tab index, name and role of the box's code block and table wrapper, as drawn. */
-function keptState(container: HTMLElement): ScrollerState[] {
-  return ["[data-code]", "[data-table]"].map((selector) => {
+/** Every scroller of `KeptScrollers`, by the mark it carries. */
+const KEPT_SCROLLERS = ["[data-code]", "[data-table]", "[data-diagram]", "[data-other]"];
+
+/** The tab index, name and role of each scroller `selectors` names, as drawn. */
+function keptState(container: HTMLElement, selectors: readonly string[]): ScrollerState[] {
+  return selectors.map((selector) => {
     const scroller = container.querySelector(selector);
     return {
       label: scroller?.getAttribute("aria-label") ?? null,
@@ -425,7 +433,7 @@ function keptState(container: HTMLElement): ScrollerState[] {
 test("useOutOfTabOrder with keepScrollers keeps a code block and a table's wrapper in the tab order, each named by what it scrolls", () => {
   const view = draw(<KeptScrollers keepScrollers />);
   try {
-    expect(keptState(view.container)).toEqual([
+    expect(keptState(view.container, ["[data-code]", "[data-table]"])).toEqual([
       { label: CONTROL_LABELS.scrolls_code, role: "region", tabIndex: "0" },
       { label: CONTROL_LABELS.scrolls_table, role: "region", tabIndex: "0" },
     ]);
@@ -434,17 +442,46 @@ test("useOutOfTabOrder with keepScrollers keeps a code block and a table's wrapp
   }
 });
 
-// A row that loses the focus stops passing `keepScrollers`, and its scrollers leave the tab order
-// again, with no name or role left of the ones they carried while it held the focus.
-test("useOutOfTabOrder takes a kept code block and table's wrapper out of the tab order, unnamed, once keepScrollers turns off", () => {
+// Decision 317 covers every scroller of the focused row, so none stays out of reach: a drawn
+// diagram's preview is named as a diagram, with a role, since a `div` takes a name only with one.
+test("useOutOfTabOrder with keepScrollers keeps a drawn diagram's preview in the tab order, named as a diagram", () => {
   const view = draw(<KeptScrollers keepScrollers />);
   try {
-    expect(keptState(view.container).map((state) => state.tabIndex)).toEqual(["0", "0"]);
-    view.redraw(<KeptScrollers keepScrollers={false} />);
-    expect(keptState(view.container)).toEqual([
-      { label: null, role: null, tabIndex: "-1" },
-      { label: null, role: null, tabIndex: "-1" },
+    expect(keptState(view.container, ["[data-diagram]"])).toEqual([
+      { label: CONTROL_LABELS.scrolls_diagram, role: "region", tabIndex: "0" },
     ]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A scroller of a kind the page has no word of its own for takes the word for content.
+test("useOutOfTabOrder with keepScrollers keeps a scroller of any other kind in the tab order, named as content", () => {
+  const view = draw(<KeptScrollers keepScrollers />);
+  try {
+    expect(keptState(view.container, ["[data-other]"])).toEqual([
+      { label: CONTROL_LABELS.scrolls_content, role: "region", tabIndex: "0" },
+    ]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A row that loses the focus stops passing `keepScrollers`, and its scrollers leave the tab order
+// again, with no name or role left of the ones they carried while it held the focus.
+test("useOutOfTabOrder takes every kept scroller out of the tab order, unnamed, once keepScrollers turns off", () => {
+  const view = draw(<KeptScrollers keepScrollers />);
+  try {
+    expect(keptState(view.container, KEPT_SCROLLERS).map((state) => state.tabIndex)).toEqual([
+      "0",
+      "0",
+      "0",
+      "0",
+    ]);
+    view.redraw(<KeptScrollers keepScrollers={false} />);
+    expect(keptState(view.container, KEPT_SCROLLERS)).toEqual(
+      KEPT_SCROLLERS.map(() => ({ label: null, role: null, tabIndex: "-1" }))
+    );
   } finally {
     view.unmount();
   }
