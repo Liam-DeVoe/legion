@@ -12,6 +12,9 @@
 #                                                  label (SKILL_SCENARIOS_PARALLEL at once), and
 #                                                  stops the services
 #   rig.sh score     [<scenario>]                  one row per run, then counts per label
+#   rig.sh hidden-proof [<scenario>]               the proof that each run of a -hidden label had
+#                                                  Dispatch's computed state hidden from its agent
+#                                                  (hidden-proof.ts)
 #   rig.sh judge     <run dir>...                  the judge's prompts on each spec-writing or
 #                                                  spec-rewrite run (judge.ts run), each in a fresh
 #                                                  Oh My Pi session with no Dispatch
@@ -39,14 +42,27 @@
 #                                    askgate and reviewer-own-head); score.ts reads runs here
 #   <work>/maps/profiles/<label>     a link to the label's profile
 #   <work>/maps/built-from/<run>     the run's label's built-from, as the run started
+#   <work>/maps/quiet/<id>...        a run of a -hidden label: its switch, the rig's reads of the
+#                                    results just before and just after the switch went on, and
+#                                    its results-before.txt while its agent works (hide_state_on)
 # A run's Dispatch database (run_<id>), its Legion project (p<12 hex digits of id>), its tmux
 # session (<tag>-<id>) and its Oh My Pi profile (`skills`, the same for every label) name nothing
 # either. visible-world.ts lists each place in a run's world that still names one.
+#
+# A label whose name ends in `-hidden` hides Dispatch's computed state from its agent. From the
+# rig's own reads of a run's results until its agent ends, the run's Dispatch leaves each check's
+# `pass_stands` and `ci` and each result's `currency` out of its results answer, so `dispatch
+# results` prints no state line for the check or for a head (hide_state_on). Each result keeps every
+# other field. Only a heads scenario runs such a label. Its checkout is a copy of the checkout of the
+# label without that end (label-checkouts.sh --hidden), never the same one, since score.ts leaves
+# unscored a run that reads inside another label's checkout.
 #
 # The tools of this directory (each one's header has its own usage):
 #   seed.ts               seeds a batch's scratch Dispatch and each run's issue, and reads back what
 #                         the run left there (rig.sh runs it)
 #   score.ts              scores each run from its transcript and what seed.ts read back
+#   hidden-proof.ts       proves the hiding of each run of a -hidden label from the rig's own reads,
+#                         and scans every transcript of the run for a line of the state
 #   judge.ts              the person stand-in that answers a spec run's asks (`answer <run dir>
 #                         <turn>`), and the judge's prompts on a finished run (`run <run dir>...`)
 #   judge-prompts.ts      the ten prompts judge.ts gives the judge, the stand-in's among them
@@ -204,6 +220,9 @@
 #   SKILL_SCENARIOS_FIXTURE_ONLY  reviewer-own-head, reviewer-pass-and-fail and
 #                                 architect-pass-and-fail: 1 stops each run once its Dispatch knows
 #                                 #702's head (fixture_heads), with <run>/fixture-only and no agent
+#   SKILL_SCENARIOS_OWNER     a label `owner=<value>` on the batch's Postgres and NATS containers,
+#                             for a machine whose rules name each container's owner; each
+#                             container's id is in <work>/services/containers either way
 # For spec-writing and spec-rewrite:
 #   SKILL_SCENARIOS_SOURCE      `batch`: a directory name under $SKILL_SCENARIOS_WORK/sources
 #   SKILL_SCENARIOS_SUPERPOWERS `profile`: the superpowers plugin's directory; its writing-plans
@@ -341,6 +360,8 @@ tmux() { command tmux -S "$tmux_socket" "$@"; }
 # pids lib/rig.sh's start_process sets (a run's own Dispatch server among them, and a heads run's
 # own natsd and GitHub stand-in), and the services' ports and directory.
 R='' session='' daemon_pid='' listener_pid='' dispatch_pid='' runs_pid='' batch_scenario=''
+# A run of a -hidden label: its switch (hide_state_on). Empty for every other run.
+hide_state_file=''
 natsd_pid='' fake_github_pid=''
 S='' envoy_port='' dispatch_port='' pg_port='' nats_port='' github_port='' run_nats_url=''
 
@@ -905,14 +926,15 @@ stop_panes() {
   for pid in $(tmux list-panes -s -t "=$1" -F '#{pane_pid}' 2>/dev/null || true); do stop_tree "$pid" "$server"; done
 }
 
-# A run's or a live read's exit: its daemon stand-in, its own Dispatch server, a heads run's own
-# natsd and GitHub stand-in, its agent's session, and every process that carries its
-# SKILL_SCENARIO_RUN. The run's database stays in the batch's Postgres container, which
-# services_down removes. The services are this shell's own jobs, so each is waited for once it is
-# killed: bash otherwise prints a `Killed` notice for it on stderr.
+# A run's or a live read's exit: the switch of a -hidden run turned off (hide_state_off), its daemon
+# stand-in, its own Dispatch server, a heads run's own natsd and GitHub stand-in, its agent's
+# session, and every process that carries its SKILL_SCENARIO_RUN. The run's database stays in the
+# batch's Postgres container, which services_down removes. The services are this shell's own jobs,
+# so each is waited for once it is killed: bash otherwise prints a `Killed` notice for it on stderr.
 # shellcheck disable=SC2329 # on_exit's trap runs it
 stop_run() {
   local pid
+  hide_state_off
   for pid in "$daemon_pid" "$dispatch_pid" "$natsd_pid" "$fake_github_pid"; do
     [ -z "$pid" ] || { stop_tree "$pid" && wait "$pid" 2>/dev/null || true; }
   done
@@ -991,11 +1013,14 @@ listener_answers() {
 # broker. With no DISPATCH_E2E_PORT, run-server.sh serves Dispatch on a port the kernel chose, held
 # until the server serves on it, and the server reports it (`msg="dispatch: listening"
 # addr=127.0.0.1:<port>`), which sets dispatch_port. Each run has an evidence directory of its own,
-# and the log is emptied first, so the line read is this run's own start.
+# and the log is emptied first, so the line read is this run's own start. In a run of a -hidden
+# label, DISPATCH_TEST_HIDE_STATE_FILE names the run's switch, which run-server.sh passes to the
+# server: its results answer leaves out the computed state while that file exists (hide_state_on).
 start_dispatch() {
   local url=$1 log=$evidence/logs/dispatch.log
   : >"$log"
   DATABASE_URL=$url FAKE_ENVOY_PORT=1 FAKE_GITHUB_PORT=${github_port:-1} DISPATCH_E2E_NATS_URL=${run_nats_url:-} \
+    DISPATCH_TEST_HIDE_STATE_FILE=$hide_state_file \
     DISPATCH_E2E_AGENT_SECRETS_URL='' start_process dispatch bash "$root/packages/dispatch/e2e/run-server.sh"
   await_start dispatch "$dispatch_pid" 300 "Dispatch to report its port" \
     report_port "$log" 'msg="dispatch: listening" addr=127\.0\.0\.1:'
@@ -1016,20 +1041,23 @@ lock_services() {
 # Each run's Dispatch server opens at most 30 connections to the batch's Postgres: its shared pool
 # (16), loop leases (8), document rooms (4), health probe (1) and listener (1), the sizes in
 # packages/envoy/internal/dispatch/store/pool.go. Postgres admits 100 by default, too few for 5
-# servers at once, so max_connections is 30 for each concurrent run and 20 more for psql.
+# servers at once, so max_connections is 30 for each concurrent run and 20 more for psql. Each
+# container's id goes to $S/containers, and SKILL_SCENARIOS_OWNER labels it.
 services_up() {
+  local owner=()
   evidence=$S
+  [ -z "${SKILL_SCENARIOS_OWNER:-}" ] || owner=(--label "owner=$SKILL_SCENARIOS_OWNER")
   # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
-  docker run -d --name "$tag-pg" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+  docker run -d --name "$tag-pg" "${owner[@]}" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
     -e POSTGRES_PASSWORD=ci -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
-    -c max_connections=$((30 * ${SKILL_SCENARIOS_PARALLEL:-5} + 20)) >/dev/null
+    -c max_connections=$((30 * ${SKILL_SCENARIOS_PARALLEL:-5} + 20)) >>"$S/containers"
   pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
   [ -n "$pg_port" ] || fail "docker assigned Postgres no host port"
   # The hub's nats-server (lib/nats-image.sh reads testnats.HubImage): the listener and the daemon
   # refuse a nats-server below the floor packages/envoy/natsversion holds, every 2.10 among them.
   # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/nats-image.sh
   . "$root/scripts/e2e/lib/nats-image.sh"
-  docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
+  docker run -d --name "$tag-nats" "${owner[@]}" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >>"$S/containers"
   nats_port=$(docker port "$tag-nats" 4222/tcp | sed -n '1s/.*://p')
   [ -n "$nats_port" ] || fail "docker assigned NATS no host port"
   until_true 60 "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
@@ -1972,6 +2000,51 @@ reviewer_prompt() {
     "$title" "$worker_key" "$version" "$worker_key" "$version" >"$R/prompt.txt"
 }
 
+# A run of a -hidden label (cmd_run sets hide_state_file, a file in the map that no agent sees):
+# its Dispatch leaves each check's pass_stands and ci and each result's currency out of the results
+# answer while that file exists (start_dispatch). quiet_reads WHEN writes the three reads of the
+# results an agent can make, the label's `dispatch results`, the same with --json, and the route
+# itself with curl, to $hide_state_file.WHEN-text, -json and -curl: the rig's own record, which
+# hidden-proof.ts compares.
+quiet_reads() {
+  local cli=(env "DISPATCH_URL=http://127.0.0.1:$dispatch_port" "DISPATCH_TOKEN_FILE=$work/services/dispatch-token"
+    DISPATCH_HOST=omp DISPATCH_SESSION_ID=rig-fixture-heads bun "$co/packages/envoy-client/bin/dispatch.ts" results --issue "$worker_key")
+  "${cli[@]}" >"$hide_state_file.$1-text" 2>&1 || true
+  "${cli[@]}" --json >"$hide_state_file.$1-json" 2>&1 || true
+  curl -sS -H "Authorization: Bearer $(<"$work/services/dispatch-token")" \
+    "http://127.0.0.1:$dispatch_port/api/v1/issues/$worker_key/results" >"$hide_state_file.$1-curl" 2>&1 || true
+}
+
+# hide_state_on turns the switch on after the rig's own reads (fixture_heads, heads_routes) and
+# before the agent starts, with quiet_reads just before and just after, and moves
+# results-before.txt, which the run's directory and so the agent's view holds, into the map.
+# hide_state_off turns it off once the agent has ended and puts results-before.txt back for
+# score.ts; stop_run runs it too, so a run that fails with the switch on still ends with it off. In
+# a run of any other label there is no switch, and both do nothing.
+hide_state_on() {
+  [ -n "$hide_state_file" ] || return 0
+  quiet_reads before
+  : >"$hide_state_file"
+  quiet_reads after
+  mv -- "$R/results-before.txt" "$hide_state_file.results-before.txt"
+}
+hide_state_off() {
+  [ -n "$hide_state_file" ] || return 0
+  rm -f -- "$hide_state_file"
+  [ ! -e "$hide_state_file.results-before.txt" ] || mv -- "$hide_state_file.results-before.txt" "$R/results-before.txt"
+}
+
+# hidden_needs_heads LABEL SCENARIO fails when LABEL ends in -hidden and SCENARIO is not a heads
+# scenario: only a heads scenario turns the switch on (hide_state_on), so a run of another would
+# show its agent all that Dispatch computes and still carry the hidden label's name.
+hidden_needs_heads() {
+  case $1 in *-hidden) ;; *) return 0 ;; esac
+  case $2 in
+  reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail) ;;
+  *) fail "the label $1 hides Dispatch's computed state, which only reviewer-own-head, reviewer-pass-and-fail and architect-pass-and-fail hide; $2 is none of them" ;;
+  esac
+}
+
 # reviewer-own-head: a reviewer reviews #702 of an issue whose #703 is open too, with the case's
 # results recorded at the two heads (seed.ts heads-events). Scored by headsReview.
 run_reviewer_own_head() {
@@ -1980,7 +2053,9 @@ run_reviewer_own_head() {
   [ ! -e "$R/fixture-only" ] || return 0
   heads_routes reviewer-own-head "$scenario_case"
   reviewer_prompt
+  hide_state_on
   legion_session reviewer
+  hide_state_off
 }
 
 # reviewer-pass-and-fail: a reviewer reviews #702, at whose head the tester recorded a pass, its
@@ -1991,7 +2066,9 @@ run_reviewer_pass_and_fail() {
   [ ! -e "$R/fixture-only" ] || return 0
   heads_routes reviewer-pass-and-fail
   reviewer_prompt
+  hide_state_on
   legion_session reviewer
+  hide_state_off
 }
 
 # architect-pass-and-fail: the tree's root architect, in a session of the daemon's catch-up of a tree
@@ -2007,7 +2084,9 @@ run_architect_pass_and_fail() {
   version=$(jq -r .review.version "$R/fixture.json")
   printf 'the tree of %s at generation 1 as the daemon records it now; start or resume it as your role says; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move). Handoff: review version %s (dispatch handoff-read --issue %s --phase review --version %s). Pull request: #702.\n' \
     "$worker_key" "$worker_key" "$version" "$worker_key" "$version" >"$R/prompt.txt"
+  hide_state_on
   legion_session architect accepting
+  hide_state_off
 }
 
 cmd_run() {
@@ -2015,6 +2094,7 @@ cmd_run() {
   [ $# = 5 ] || { [ $# = 6 ] && [ "$1" = reviewer-own-head ]; } || fail "$usage"
   local scenario=$1 label=$2 n=$3 index=$4 start=$5 scenario_case=${6:-} name old
   load_label "$label"
+  hidden_needs_heads "$label" "$scenario"
   [[ $n =~ ^[0-9]+$ ]] || fail "run number '$n' is not a number"
   [[ $index =~ ^[0-9]+$ && $start =~ ^[0-9]+$ ]] || fail "run index '$index' or batch start '$start' is not a number"
   [ -f "$services_env" ] || fail "a run needs its batch's services: run \`rig.sh batch $scenario 1 $2\`"
@@ -2049,6 +2129,13 @@ cmd_run() {
   mkdir -p "$R/bin" "$R/sessions" "$R/cwd" "$R/logs" "$maps/runs" "$maps/built-from"
   ln -s -- "../../runs/${R##*/}" "$maps/runs/$name"
   cp "$P/built-from" "$maps/built-from/$name"
+  # A run of a -hidden label: the switch of hide_state_on, a file in the map named after the run's
+  # directory, which start_dispatch hands to the run's Dispatch.
+  case $label in *-hidden)
+    mkdir -p "$maps/quiet"
+    hide_state_file=$maps/quiet/${R##*/}
+    ;;
+  esac
   case $scenario in
   ask-on-message) run_ask_on_message ;;
   measure-before-ask) run_measure_before_ask ;;
@@ -2105,7 +2192,10 @@ cmd_batch() {
     ;;
   esac
   shift 2
-  for label in "$@"; do load_label "$label"; done
+  for label in "$@"; do
+    load_label "$label"
+    hidden_needs_heads "$label" "$batch_scenario"
+  done
   # A spec run reads its source and the label's superpowers skills: refused here, before any
   # service starts. Its number is one above the label's highest, so no batch removes an earlier run.
   local first=1
@@ -2147,6 +2237,7 @@ live-read) shift && cmd_live_read "$@" ;;
 batch) shift && cmd_batch "$@" ;;
 run) shift && cmd_run "$@" ;;
 score) shift && bun "$here/score.ts" runs "$maps/runs" "$@" ;;
+hidden-proof) shift && bun "$here/hidden-proof.ts" "$maps" "$@" ;;
 judge) shift && cmd_judge "$@" ;;
 judge-omp) shift && cmd_judge_omp "$@" ;;
 *) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' && exit 2 ;;

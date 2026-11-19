@@ -1611,6 +1611,179 @@ if (n >= Number(process.env.HEADS_LINE_AT)) console.log("  - #702 at ${"2".repea
   });
 });
 
+// A run of a -hidden label turns its Dispatch's switch on after the rig's own reads and off once
+// its agent has ended (hide_state_on, hide_state_off). Stand-ins for the label checkout's
+// `dispatch` (its packages/envoy-client/bin/dispatch.ts) and for curl print whether the switch's
+// file existed when each ran, and a stand-in agent records whether it saw the switch on and
+// results-before.txt in its run's directory.
+describe("hide_state_on and hide_state_off", () => {
+  function hiddenRun(hidden: boolean, ending: "ends" | "fails") {
+    const run = freshDir("hide-run");
+    const co = freshDir("hide-checkout");
+    const rigWork = freshDir("hide-work");
+    const quiet = path.join(rigWork, "maps", "quiet");
+    mkdirSync(quiet, { recursive: true });
+    mkdirSync(path.join(rigWork, "services"));
+    writeFileSync(path.join(rigWork, "services", "dispatch-token"), "e2e-token\n");
+    const bin = path.join(co, "packages", "envoy-client", "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      path.join(bin, "dispatch.ts"),
+      `import { existsSync } from "node:fs";
+const on = (process.env.SWITCH ?? "") !== "" && existsSync(process.env.SWITCH ?? "");
+console.log(\`dispatch \${process.argv.slice(2).join(" ")} at \${process.env.DISPATCH_URL} as \${process.env.DISPATCH_HOST}: switch \${on ? "on" : "off"}\`);
+`
+    );
+    writeFileSync(path.join(run, "results-before.txt"), `  - #702 at ${"2".repeat(40)}: yes\n`);
+    const sw = hidden ? path.join(quiet, path.basename(run)) : "";
+    const result = bash(
+      [
+        fn("quiet_reads"),
+        fn("hide_state_on"),
+        fn("hide_state_off"),
+        fn("stop_run"),
+        "stop_tree() { :; }",
+        "stop_panes() { :; }",
+        "stop_env_processes() { :; }",
+        `curl() { printf 'curl %s: switch %s\\n' "$*" "$([ -e "$SWITCH" ] && echo on || echo off)"; }`,
+        `agent() { { [ -e "$SWITCH" ] && echo switch=on || echo switch=off; [ -e "$R/results-before.txt" ] && echo before=seen || echo before=unseen; } >"$R/agent-saw"; }`,
+        "R=$1 co=$2 work=$3 maps=$3/maps dispatch_port=4567 worker_key=ACME-1 hide_state_file=$SWITCH",
+        "session='' daemon_pid='' dispatch_pid='' natsd_pid='' fake_github_pid=''",
+        "trap stop_run EXIT",
+        "hide_state_on",
+        "agent",
+        ending === "ends" ? "hide_state_off" : "exit 1",
+      ].join("\n"),
+      [run, co, rigWork],
+      { SWITCH: sw }
+    );
+    const read = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : "");
+    return { ...result, run, sw, quiet, read };
+  }
+
+  // Catches: a switch turned on before the rig's own reads, or after the agent starts; one left on
+  // after the agent; a results-before.txt the agent's view still holds, or one not put back for
+  // score.ts; and reads of the results the rig does not keep.
+  test("a hidden run's agent sees the switch on and no results-before.txt, between the rig's reads before and after", () => {
+    const { code, stderr, run, sw, read } = hiddenRun(true, "ends");
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(read(path.join(run, "agent-saw"))).toBe("switch=on\nbefore=unseen\n");
+    expect(read(`${sw}.before-text`)).toBe(
+      "dispatch results --issue ACME-1 at http://127.0.0.1:4567 as omp: switch off\n"
+    );
+    expect(read(`${sw}.after-text`)).toBe(
+      "dispatch results --issue ACME-1 at http://127.0.0.1:4567 as omp: switch on\n"
+    );
+    expect(read(`${sw}.before-json`)).toBe(
+      "dispatch results --issue ACME-1 --json at http://127.0.0.1:4567 as omp: switch off\n"
+    );
+    expect(read(`${sw}.after-json`)).toContain("--json at http://127.0.0.1:4567 as omp: switch on");
+    expect(read(`${sw}.before-curl`)).toBe(
+      "curl -sS -H Authorization: Bearer e2e-token http://127.0.0.1:4567/api/v1/issues/ACME-1/results: switch off\n"
+    );
+    expect(read(`${sw}.after-curl`)).toContain("/api/v1/issues/ACME-1/results: switch on");
+    expect(existsSync(sw)).toBe(false);
+    expect(existsSync(`${sw}.results-before.txt`)).toBe(false);
+    expect(read(path.join(run, "results-before.txt"))).toContain("#702");
+  });
+
+  // Catches: a run that fails with the switch on and leaves it on, or keeps results-before.txt in
+  // the map, where score.ts does not read it.
+  test("a hidden run whose agent fails ends with the switch off and results-before.txt back", () => {
+    const { code, run, sw, read } = hiddenRun(true, "fails");
+    expect(code).toBe(1);
+    expect(read(path.join(run, "agent-saw"))).toBe("switch=on\nbefore=unseen\n");
+    expect(existsSync(sw)).toBe(false);
+    expect(read(path.join(run, "results-before.txt"))).toContain("#702");
+  });
+
+  // Catches: a switch that a run of any other label turns on.
+  test("a run of another label reads nothing more, and its agent sees what it saw before", () => {
+    const { code, stderr, run, quiet } = hiddenRun(false, "ends");
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(readFileSync(path.join(run, "agent-saw"), "utf8")).toBe("switch=off\nbefore=seen\n");
+    expect(readdirSync(quiet)).toEqual([]);
+  });
+
+  // Catches: a switch the run's Dispatch never learns of.
+  test("start_dispatch names the run's switch to run-server.sh, and an empty one for any other run", () => {
+    const started = (sw: string) => {
+      const run = freshDir("hide-dispatch");
+      mkdirSync(path.join(run, "logs"));
+      const result = bash(
+        [
+          fn("start_dispatch"),
+          `start_process() { printf '%s|%s\\n' "\${DISPATCH_TEST_HIDE_STATE_FILE-unset}" "$*" >"$evidence/started"; }`,
+          "await_start() { :; }",
+          "report_port() { echo 4567; }",
+          "evidence=$1 root=/checkout hide_state_file=$2",
+          "start_dispatch postgres://db",
+        ].join("\n"),
+        [run, sw]
+      );
+      return { code: result.code, started: readFileSync(path.join(run, "started"), "utf8") };
+    };
+    expect(started("/w/maps/quiet/0123456789abcdef")).toEqual({
+      code: 0,
+      started:
+        "/w/maps/quiet/0123456789abcdef|dispatch bash /checkout/packages/dispatch/e2e/run-server.sh\n",
+    });
+    expect(started("").started).toBe(
+      "|dispatch bash /checkout/packages/dispatch/e2e/run-server.sh\n"
+    );
+  });
+});
+
+// services_up with a stand-in docker, which records each call and answers each `run` with an id:
+// each container's id goes to <work>/services/containers, and SKILL_SCENARIOS_OWNER labels both.
+describe("services_up", () => {
+  function up(owner: string | undefined) {
+    const dir = freshDir("services-up");
+    mkdirSync(path.join(dir, "services"));
+    mkdirSync(path.join(dir, "root", "packages", "envoy"), { recursive: true });
+    mkdirSync(path.join(dir, "root", "scripts", "e2e", "lib"), { recursive: true });
+    writeFileSync(
+      path.join(dir, "root", "scripts", "e2e", "lib", "nats-image.sh"),
+      "nats_image=nats:rig\n"
+    );
+    const result = bash(
+      [
+        fn("fail"),
+        fn("services_up"),
+        `docker() { printf '%s\\n' "$*" >>"$S/calls"; case $1 in run) n=$((n + 1)) && echo "id-$n" ;; port) echo 127.0.0.1:5555 ;; esac; }`,
+        "until_true() { :; }",
+        "go() { :; }",
+        "start_listener() { envoy_port=1; }",
+        "note() { :; }",
+        "n=0 S=$1/services root=$1/root tag=t services_env=$1/services/env",
+        "services_up",
+      ].join("\n"),
+      [dir],
+      owner === undefined ? {} : { SKILL_SCENARIOS_OWNER: owner }
+    );
+    const read = (name: string) => readFileSync(path.join(dir, "services", name), "utf8");
+    const runs = read("calls")
+      .split("\n")
+      .filter((line) => line.startsWith("run "));
+    return { code: result.code, stderr: result.stderr, containers: read("containers"), runs };
+  }
+
+  // Catches: a container no record names, so nothing can remove it by its id; and an owner label
+  // missing from one of the two.
+  test("each container's id is recorded, and SKILL_SCENARIOS_OWNER labels each one", () => {
+    const labelled = up("rig-agent");
+    expect({ code: labelled.code, stderr: labelled.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(labelled.containers).toBe("id-1\nid-2\n");
+    expect(labelled.runs.map((line) => line.split(" ").slice(0, 6).join(" "))).toEqual([
+      "run -d --name t-pg --label owner=rig-agent",
+      "run -d --name t-nats --label owner=rig-agent",
+    ]);
+    const plain = up(undefined);
+    expect(plain.containers).toBe("id-1\nid-2\n");
+    expect(plain.runs.every((line) => !line.includes("--label"))).toBe(true);
+  });
+});
+
 // cmd_batch of reviewer-own-head runs each of its four cases <runs> times for each label, each
 // as a run of its own. A stand-in rig.sh records each run's arguments, which cmd_batch hands to
 // `rig.sh run` through xargs, and a stand-in go records the build of the runs' natsd.
@@ -1624,6 +1797,7 @@ describe("cmd_batch", () => {
     const result = bash(
       [
         fn("fail"),
+        fn("hidden_needs_heads"),
         fn("cmd_batch"),
         "load_label() { :; }",
         'lock_services() { S=$work/services; mkdir -p "$S"; }',
@@ -1661,6 +1835,7 @@ describe("cmd_batch", () => {
     writeFileSync(path.join(rigWork, "services", "env"), "");
     const script = [
       fn("fail"),
+      fn("hidden_needs_heads"),
       fn("cmd_run"),
       'load_label() { P=$work/profiles/0000000000000001; mkdir -p "$P"; echo "checkout /c/$1" >"$P/built-from"; }',
       "on_exit() { :; }",
@@ -1691,6 +1866,61 @@ describe("cmd_batch", () => {
     expect(refused.stderr).toContain(
       "'frobnicate' is not sibling-fails, ci-only, no-implementer or no-tester"
     );
+  });
+
+  // Catches: a -hidden label whose run has no switch (its agent then sees all Dispatch computes,
+  // under the hidden label's name), a switch inside the run's directory, which the agent's view
+  // holds, and a switch for a run of another label.
+  test("cmd_run gives a run of a -hidden label a switch in the map named after its directory, and no other run one", () => {
+    const rigWork = realpathSync(freshDir("hidden-run-work"));
+    mkdirSync(path.join(rigWork, "services"), { recursive: true });
+    writeFileSync(path.join(rigWork, "services", "env"), "");
+    const script = [
+      fn("fail"),
+      fn("hidden_needs_heads"),
+      fn("cmd_run"),
+      'load_label() { P=$work/profiles/0000000000000001; mkdir -p "$P"; echo "checkout /c/$1" >"$P/built-from"; }',
+      "on_exit() { :; }",
+      `run_architect_pass_and_fail() { printf '%s\\n' "$hide_state_file" >"$R/switch"; echo exit=0 >"$R/out.txt"; }`,
+      "work=$1 maps=$1/maps services_env=$1/services/env hide_state_file=''",
+      'cmd_run architect-pass-and-fail "$2" 1 1 1700000000',
+    ].join("\n");
+    expect(bash(script, [rigWork, "head-hidden"])).toMatchObject({ code: 0, stderr: "" });
+    const hiddenRun = realpathSync(
+      path.join(rigWork, "maps", "runs", "architect-pass-and-fail-head-hidden-1")
+    );
+    expect(readFileSync(path.join(hiddenRun, "switch"), "utf8")).toBe(
+      `${path.join(rigWork, "maps", "quiet", path.basename(hiddenRun))}\n`
+    );
+    expect(bash(script, [rigWork, "head"])).toMatchObject({ code: 0, stderr: "" });
+    const run = realpathSync(path.join(rigWork, "maps", "runs", "architect-pass-and-fail-head-1"));
+    expect(readFileSync(path.join(run, "switch"), "utf8")).toBe("\n");
+  });
+
+  // Catches: a -hidden label run in a scenario that never turns the switch on, so its agent sees
+  // all that Dispatch computes; and a refusal that comes only after the batch started its services.
+  test("a -hidden label is refused by any scenario but the heads scenarios, before a batch starts anything", () => {
+    const here = freshDir("hidden-batch-here");
+    const rigWork = freshDir("hidden-batch-work");
+    const result = bash(
+      [
+        fn("fail"),
+        fn("hidden_needs_heads"),
+        fn("cmd_batch"),
+        "load_label() { :; }",
+        `lock_services() { echo started >>"$here/started"; }`,
+        "on_exit() { :; }",
+        "services_up() { :; }",
+        "here=$1 work=$2 root=/checkout",
+        "cmd_batch measure-before-ask 1 head ablate-x-hidden",
+      ].join("\n"),
+      [here, rigWork]
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(
+      "the label ablate-x-hidden hides Dispatch's computed state, which only reviewer-own-head, reviewer-pass-and-fail and architect-pass-and-fail hide; measure-before-ask is none of them"
+    );
+    expect(existsSync(path.join(here, "started"))).toBe(false);
   });
 });
 
