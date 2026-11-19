@@ -127,6 +127,17 @@ func (f *fakeDialer) failWith(err error) {
 // build is the Config.NewDialer a test passes: the proxy gets this very fake.
 func (f *fakeDialer) build(context.Context, string) (Dialer, error) { return f, nil }
 
+// timeoutOnStopDialer holds each dial until its context ends and then answers with an i/o timeout,
+// as a connector whose own bound on the instance ran out as the stop came does.
+type timeoutOnStopDialer struct{}
+
+func (timeoutOnStopDialer) Dial(ctx context.Context, _ string) (net.Conn, error) {
+	<-ctx.Done()
+	return nil, &net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}
+}
+
+func (timeoutOnStopDialer) Close() error { return nil }
+
 // socketPath is this package's socket path: a socket named session.sock in a directory of the
 // test's own, placed by TMPDIR and falling back to /tmp for the socket path's length alone, so
 // that the bind holds within the 107 bytes a unix socket path takes (docs/testing.md).
@@ -512,6 +523,12 @@ func TestOnlyAProofDialTheDatabaseRefusedOrNeverAnsweredIsErrUnreachable(t *test
 		"a start stopped during its proof dial": {stop: true, cfg: func(t *testing.T, socket string) Config {
 			dialer := &stallingDialer{addr: silentUpstream(t)}
 			return Config{Socket: socket, Instance: testInstance, NewDialer: dialer.build, ProofTimeout: testProofTimeout}
+		}},
+		// A connector can answer a stopped dial with an error of its own that reads as a timeout,
+		// its own bound on the instance having run out as the stop came: the stop decides.
+		"a start stopped during a proof dial that answers in a timeout's words": {stop: true, cfg: func(_ *testing.T, socket string) Config {
+			return Config{Socket: socket, Instance: testInstance, ProofTimeout: testProofTimeout,
+				NewDialer: func(context.Context, string) (Dialer, error) { return timeoutOnStopDialer{}, nil }}
 		}},
 		"a socket something else holds": {cfg: func(t *testing.T, socket string) Config {
 			held, err := net.Listen("unix", socket)
