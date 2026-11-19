@@ -219,7 +219,33 @@
 #      go-tagged-tests.sh:51 and release-envoy-listener.yaml:480, in `Create the image index`,
 #      each rewritten to test the first name its glob gives with `[ -e … ]`, which runs as it did;
 #      the tree's 14 `shopt -s inherit_errexit` and its `set -euo pipefail` and `set -o pipefail`
-#      are outside the class. And a route
+#      are outside the class. ROUND 42 CLOSES FOUR ROUTES TO SUCH A SETTING AS ROUTES, NOT AS
+#      SPELLINGS, each measured on the tree at 96dde7f1 before its refusal was written
+#      (dispatch://INFRA-1545, round 42). A command word is read by its name, its directory gone,
+#      wherever it is matched against a list of commands, PASSTHROUGH, WRAPPER_OPTIONS,
+#      `timeout`, INTERPRETERS and the verbs (program_name), so `/usr/bin/env bash -O
+#      nocaseglob -c …` and `/bin/env bash -O …` are refused as `env bash -O …` is, and
+#      `/usr/bin/env -S …` as `env -S` is; no line of the tree names a wrapper by its path. A `.`
+#      or a `source` of anything but a literal path to a file of the tree is refused by name,
+#      /dev/stdin, /dev/fd/0 and /proc/self/fd/0 fed a here-string or a heredoc among them, since
+#      the text it reads runs in this shell and no rule reads it (tree_sources, NO_TREE_SOURCE);
+#      the tree wrote two, download-retry-proof.sh's sources of `"$state_dir/$name.state"`, each
+#      rewritten to read that file as data (its state_read), which gives each variable what the
+#      source gave it. A write into `$GITHUB_ENV`, whose lines set a variable for every later
+#      step of the job, is read as the literal lines it holds, a heredoc's body and a
+#      here-string by their lines, `echo`'s words and a `printf` of a literal format or of
+#      `%s\n`, and refused where a line names a variable of the list above; one whose lines this
+#      check cannot read so, a `printf` whose format builds each line, a file `cat` prints, a
+#      name holding an expansion or the output of any other command, a group's or a loop's, is
+#      refused by name whatever it writes (env_file_writes, ENV_FILE_UNREAD). Of the tree's ten
+#      writes nine were read so, none naming such a variable, and ci-tools-proof.sh's `printf
+#      '%s\n' "$line"` was rewritten to spell each name out, printing and writing the same bytes.
+#      And BASH_ENV, the file a non-interactive bash runs before its text, and ENV, sh's, join
+#      that list, read through every route it is read by: a word assigning one before a command,
+#      alone or after `env`, a declaration, an `env:` key of the file, a job or a step, and a
+#      `$GITHUB_ENV` line (STARTUP_VARIABLES); the tree sets neither. Until round 42 each of the
+#      tester's 19 shapes of these four routes passed r38-fetch.sh's 1050 s under a 17-minute
+#      key. And a route
 #      from text to a program is refused whatever the text: `eval`; a shell reading its program
 #      from its standard input, a here-string, a file redirected into it or a process
 #      substitution, and a `.` or `source` of a process substitution; output piped into a shell
@@ -240,8 +266,10 @@
 #      is what SCRIPT_CALL reads, so `"$HOME/.local/bin/mise"` is a tool and
 #      `"$script_dir/ci-retry.sh"` is that script; a
 #      last element holding an expansion that is no `.sh` outside .github/scripts/, a data file
-#      such as `"$state_dir/$name.state"`; a literal directory outside .github/scripts/, `bash
-#      "scripts/e2e/$SCRIPT"`, the second limit below; the arguments a wrapper hands on, `"$@"`,
+#      such as `"$state_dir/$name.state"`, though since round 42 a `.` or a `source` of one is
+#      refused as no file of the tree (tree_sources); a literal directory outside
+#      .github/scripts/, `bash "scripts/e2e/$SCRIPT"`, the second limit below; the arguments a
+#      wrapper hands on, `"$@"`,
 #      `"${@}"` and `"${cmd[@]}"`; a command word that is one variable's value in a text that
 #      can see a function that fetches, a call through a variable, which the declarations below
 #      read at the call; and one inside a function's body whose value the function's callers
@@ -396,12 +424,18 @@
 #     whatever the command holds, in a step, a script, the text of a shell's `-c` and a
 #     Dockerfile RUN: this check reads no fetch and no run of a script after either, and until
 #     round 38 it read the option, or `busybox`, as the program that runs and so the fetch behind
-#     it as none (odd_command; dispatch://INFRA-1545, round 38);
+#     it as none (odd_command; dispatch://INFRA-1545, round 38); a wrapper is read by its name
+#     whatever directory names it, so `/usr/bin/env -S` is `env -S` (program_name; round 42);
 #   - a setting that changes how bash expands a word, a `shopt`, a `set`, a shell's options, a
-#     variable such as GLOBIGNORE, an `env:` or a `shell:`, wherever written in a step, a
-#     composite action, a script, the text of a shell's `-c` or a `trap`'s action, whatever the
-#     text holds, since every pattern is read as bash reads it with its default options
-#     (expansion_settings, and the reach under item 1; dispatch://INFRA-1545, round 41);
+#     variable such as GLOBIGNORE, BASH_ENV or ENV, an `env:` or a `shell:`, wherever written in a
+#     step, a composite action, a script, the text of a shell's `-c` or a `trap`'s action,
+#     whatever the text holds, since every pattern is read as bash reads it with its default
+#     options (expansion_settings, and the reach under item 1; dispatch://INFRA-1545, rounds 41
+#     and 42);
+#   - a `.` or a `source` of anything but a literal path to a file of the tree, and a write into
+#     `$GITHUB_ENV` that sets such a variable or whose lines this check cannot read as literal
+#     text, wherever written and whatever the text holds (tree_sources, env_file_writes, and the
+#     reach under item 1; dispatch://INFRA-1545, round 42);
 #   - a `timeout-minutes` of a step or a job written as anything but a whole number with no
 #     leading zero or an expression, and a line of text below a pricing comment that reads as
 #     `timeout-minutes: <n>` and is no key, wherever written;
@@ -482,6 +516,19 @@
 # it, while a file put anywhere else under that directory, in a subdirectory or with no `.sh`
 # suffix, is refused by name rather than left unread, but a top-level `.py` or `.jq`
 # (dispatch://INFRA-1545, round 37).
+#
+# THE REACH OF THIS CHECK ENDS AT THE FORMS THE TREE WRITES, as
+# dispatch://INFRA-1310/artifact/decisions-md decides under "The download gate's reach ends at
+# the forms the tree writes". A program that reads shell text cannot know every route by which
+# that text runs a program, so the guarantee is this: the check holds every form that a line of
+# the tree writes, every form on its read list, and every route that it refuses by name (round
+# 42 refuses wrappers by their basename, a source that is not a literal file of the tree, a
+# `GITHUB_ENV` write that it cannot read as literal lines, and `BASH_ENV` and `ENV`). An
+# undercount is a finding when a line of the tree, at the head under test, writes its form, or
+# when it reaches a fetching script through a literal path or a bare command that the check
+# misreads. Any other undercount is a stated limit, such as a deliberately obscured spelling, a
+# route that only a contrived form reaches, or a path that a step builds at run time, recorded
+# with its shape in dispatch://INFRA-1545/artifact/r37-accepted-refusals-md.
 #
 # A heredoc's body is blanked before any rule reads the step (without_heredocs), so a path
 # written in it is a path something prints rather than runs, a later run of what it printed
@@ -574,8 +621,10 @@
 # The wrappers stripped before the command is read are an assignment, a shell keyword, `sudo`,
 # `env`, `exec`, `command`, `nice`, `nohup`, `time`, `timeout <seconds>`, `retry_fetch <what>
 # <bound> --` and a Dockerfile's `retry <bound> <what>`. The last three are also what says a
-# fetch is retried and bounded. A command that answers about itself (`--version`, `--help`) reads
-# nothing from the network and is no fetch, whatever its verb.
+# fetch is retried and bounded. A wrapper and a verb are read by their name whatever directory
+# names them, `/usr/bin/env` as `env` (program_name; dispatch://INFRA-1545, round 42). A command
+# that answers about itself (`--version`, `--help`) reads nothing from the network and is no
+# fetch, whatever its verb.
 #
 # Two verbs are deliberately outside the subject, because R1's subject is a tool, a toolchain or a
 # dependency: `git clone` and `git fetch`, which move this repository's own refs rather than
@@ -1370,7 +1419,10 @@ def ansi_c_escape(text: str, i: int) -> tuple[str, int]:
     return "\\", i + 1
 
 
-# Transparent in command position: the command after them is the one that runs.
+# Transparent in command position: the command after them is the one that runs. Each is read by
+# its name, whatever directory the word writes it in (program_name), so `/usr/bin/env bash -O …`
+# is `env bash -O …` and `/usr/bin/env -S …` is refused as `env -S …` is
+# (dispatch://INFRA-1545, round 42).
 PASSTHROUGH = {"sudo", "exec", "command", "builtin", "nice", "ionice", "nohup", "time", "env",
                "stdbuf", "setsid", "doas", "xvfb-run"}
 # The options of a PASSTHROUGH wrapper this check reads, each with the number of words after it
@@ -1509,6 +1561,17 @@ def heredocs_of(text: str) -> list[tuple[int, re.Match, list[str], bool]]:
             index += 1
             found.append((number, match, body, re.search(r"['\"\\]", match.group(1)) is not None))
     return found
+
+
+def heredoc_bodies(text: str, first_line: int) -> dict[tuple[int, int], list[tuple[str, bool]]]:
+    """Each heredoc body of a shell text by where its operator stands, its line counted from
+    `first_line` and its column, as its lines, each with whether its text is literal as written,
+    which a quoted terminator makes it, and a `<<-` body's leading tabs gone, as bash reads it
+    (heredocs_of; env_file_writes; dispatch://INFRA-1545, round 42)."""
+    return {(first_line + number, match.start()):
+            [(line.lstrip("\t") if match.group(0).startswith("<<-") else line, quoted)
+             for line in body]
+            for number, match, body, quoted in heredocs_of(text)}
 
 
 def without_heredocs(text: str) -> tuple[str, list[tuple[int, str]]]:
@@ -2200,6 +2263,9 @@ class Loops:
         # Each heredoc body a shell runs as its program (commands_of; dispatch://INFRA-1545,
         # round 41).
         self.programs: list[tuple[int, list[str], int, str]] = []
+        # Each heredoc body of the body by where its operator stands, which the reading of what a
+        # body writes into `$GITHUB_ENV` reads (heredoc_bodies; dispatch://INFRA-1545, round 42).
+        self.bodies: dict[tuple[int, int], list[tuple[str, bool]]] = {}
         # Whether a step runs this body in another directory than the repository's root, its
         # own `working-directory` or its job's or its workflow's default one (runs_elsewhere),
         # which moves where a path of the tree a run names is read from (unread_file;
@@ -2609,6 +2675,17 @@ def structure(commands: list[Command], text: str) -> Loops:
     return read
 
 
+def program_name(word: str) -> str:
+    """The name of the program a command word runs, its directory gone, which is the name each
+    list of commands this check holds a word to is read by: PASSTHROUGH, WRAPPER_OPTIONS and
+    `timeout` here, and INTERPRETERS, RUNNERS and the verbs where those readings take a word's
+    last path element, so `/usr/bin/env` and `/bin/env` are `env` and `/bin/bash` is `bash`.
+    Until round 42 a wrapper was read as written, so `/usr/bin/env bash -O nocaseglob -c …` read
+    as a program named `/usr/bin/env`, and the shell's option behind it as nothing
+    (dispatch://INFRA-1545, round 42)."""
+    return PROGRAM.sub("", word).rsplit("/", 1)[-1]
+
+
 def wrapper_option(wrapper: str, rest: list[str]) -> str | None:
     """Takes off the front of `rest`, the words after the PASSTHROUGH `wrapper`, each option of it
     WRAPPER_OPTIONS reads with the words that option takes, and returns the first option word it
@@ -2639,14 +2716,15 @@ def reduce_words(words: list[str]) -> tuple[list[str], str | None, bool, int | N
     words = list(words)
     while words:
         first = words[0]
+        name = program_name(first)
         if ASSIGNMENT.match(first) or first in KEYWORDS:
             words.pop(0)
             continue
-        if first in PASSTHROUGH:
+        if name in PASSTHROUGH:
             words.pop(0)
-            wrapper_option(first, words)
+            wrapper_option(name, words)
             continue
-        if first == "timeout":
+        if name == "timeout":
             # timeout(1)'s options, `-k <duration>` and `-s <signal>` taking the word after them,
             # then its duration, which is the word after the options whatever it is. A duration
             # this check cannot read as a whole number of seconds above 0 — a `0`, which is no
@@ -2710,18 +2788,20 @@ def odd_command(words: list[str]) -> tuple[str, bool, bool] | None:
     wrapper: str | None = None
     while rest:
         first = rest[0]
+        name = program_name(first)
         if ASSIGNMENT.match(first) or first in KEYWORDS:
             rest.pop(0)
             continue
-        if first in PASSTHROUGH:
+        if name in PASSTHROUGH:
             rest.pop(0)
-            option = wrapper_option(first, rest)
+            option = wrapper_option(name, rest)
             if option is not None:
                 return WRAPPER_OPTION.format(wrapper=first, option=option), False, True
+            # The reserved word `time` runs a function, and the program /usr/bin/time does not.
             if first != "time":
                 wrapper = first
             continue
-        if PROGRAM.sub("", first).rsplit("/", 1)[-1] == "busybox":
+        if name == "busybox":
             # `busybox --help`, `--list` and `--list-full` print busybox's own text and run no
             # applet, as `command -v` runs no command; the worker image's version check writes
             # the first (cybermonklabs/legion#4377). Every other word names an applet it runs.
@@ -2739,7 +2819,7 @@ def odd_command(words: list[str]) -> tuple[str, bool, bool] | None:
             wrapper = "retry_fetch"
             del rest[:4]
             continue
-        if first == "timeout":
+        if name == "timeout":
             rest.pop(0)
             while rest and rest[0].startswith("-") and rest[0] != "--":
                 option = rest.pop(0)
@@ -3865,6 +3945,9 @@ def commands_of(body: str, first_line: int) -> tuple[list[Command], Loops,
     loops.programs = [(first_line + number, consumer, first_line + number + 1, held)
                       for number, held, _sentence, program, consumer
                       in unread_heredocs(EXPRESSION.sub("EXPR", body)) if program]
+    # Only a body naming `$GITHUB_ENV` can write into it (env_file_writes; round 42).
+    loops.bodies = (heredoc_bodies(EXPRESSION.sub("EXPR", body), first_line)
+                    if "GITHUB_ENV" in body else {})
     return commands, loops, probe_spans(text)
 
 
@@ -6079,13 +6162,20 @@ UNNAMED_RUN = (
     "that fetches may run there, and its attempts would be charged to no budget. {cure}")
 # The cure covers what the run can be: the refusal stands where a script of this repository
 # could run, and until round 37's class search it told every such run to write that script's
-# path, where what runs may as well be a tool or a data file, whose literal path or bare name is
-# a run this check sees is none of its scripts (unnamed_target; dispatch://INFRA-1545, round 37).
+# path, where what runs may as well be a tool, whose literal path or bare name is a run this check
+# sees is none of its scripts (unnamed_target; dispatch://INFRA-1545, round 37), or a file a `.`
+# or a `source` reads. That one it told to write a data file's literal path or bare name until
+# round 42, which refuses a `.` or a `source` of any file but one of the tree (NO_TREE_SOURCE), so
+# its part of the cure is SOURCE_CURE's (dispatch://INFRA-1545, round 42).
+SOURCE_CURE = ("source a library of this repository by its literal path, "
+               "`. .github/scripts/<name>.sh`, and read a data file as data, `while IFS='=' read "
+               "-r key value; do …; done < \"$file\"`, rather than run it as shell text")
 UNNAMED_CURE = ("Where a script of this repository runs there, write its literal path at the "
                 "run, `.github/scripts/<name>.sh …`, and hand it what varies as its arguments; "
-                "where a tool or a data file runs there, write its literal path, "
+                "where a tool runs there, write its literal path, "
                 "`\"$HOME/.local/bin/mise\"`, or its bare name, `mise`, so this check can see it "
-                "is not one of this repository's scripts")
+                "is not one of this repository's scripts; and where a `.` or a `source` reads a "
+                "file there, " + SOURCE_CURE)
 UNNAMED_CALL_CURE = ("Hand `{name}` the script or the command it runs by its literal name, "
                      "`{name} .github/scripts/<name>.sh …` or `{name} grep …`, and what varies as "
                      "the arguments after it")
@@ -6141,6 +6231,16 @@ MOVED_RUN = ("the name of a file this text writes elsewhere, which a `cd` or a `
              "does not follow may make the file it runs")
 NO_DIRECTORY_RUN = ("which names a script with no directory, so the shell finds it through the "
                     "working directory or `PATH`, neither of which this check follows")
+# A `.` or a `source` of anything but a literal path to a file of the tree (tree_sources;
+# dispatch://INFRA-1545, round 42): /dev/stdin, /dev/fd/0 or /proc/self/fd/0 fed a here-string
+# or a heredoc, a file another step or this text wrote, a file outside the tree, or one whose name
+# holds an expansion. Its text runs in this shell, a setting that changes how bash expands a word
+# among it, and no rule here reads that text. Until round 42 `. /dev/stdin <<<'shopt -s
+# nocaseglob'` and then `flock /tmp/l .github/scripts/R38-FE[T]CH.SH` passed r38-fetch.sh's 1050 s
+# under a 17-minute key.
+NO_TREE_SOURCE = ("which is no literal path to a file of this tree, and the text a `.` or a "
+                  "`source` reads runs in this shell, a setting that changes how bash expands a "
+                  "word among it")
 # A word that is no literal path, its globs, braces, quotes, backslashes and expansions read as
 # bash reads them with every expansion a wildcard, which could name a CI script that fetches or a
 # file under .github/scripts/ this check does not read (pattern_words; dispatch://INFRA-1545,
@@ -6250,13 +6350,27 @@ EXPANSION_LETTERS = {letter: name for name, letter in EXPANSION_SET.items() if l
 # LC_COLLATE and LC_CTYPE, which change what a class or a collating symbol matches, each no plain
 # set (plain_set), and a range only where globasciiranges is off; and HOME, which tilde expansion
 # reads, and which no path of .github/scripts/ this check reads starts from.
+# And, since round 42, the variables that name a file the shell runs before its text: BASH_ENV,
+# which every non-interactive bash runs, the runner's own `bash --noprofile --norc -eo pipefail
+# {0}` among them, and ENV, the same file for an interactive sh, bash started as sh among them.
+# What that file holds runs before any line this check reads, a setting that changes how bash
+# expands a word among it, so each is refused by name through every route that sets one of the
+# list: a word assigning it before a command, alone or after `env`, a declaration, an `env:` key
+# of the file, a job or a step, and a line written into `$GITHUB_ENV` (env_file_writes;
+# dispatch://INFRA-1545, round 42). Until round 42 a step's `BASH_ENV: ${{ runner.temp }}/settings`
+# naming a file an earlier step wrote `shopt -s nocaseglob` into passed r38-fetch.sh's 1050 s
+# under a 17-minute key. The tree sets neither.
+STARTUP_VARIABLES = frozenset({"BASH_ENV", "ENV"})
 EXPANSION_VARIABLES = frozenset({"GLOBIGNORE", "BASHOPTS", "SHELLOPTS", "BASH_COMPAT",
-                                 "POSIXLY_CORRECT"})
+                                 "POSIXLY_CORRECT"}) | STARTUP_VARIABLES
 # What the refusal says of the setting it found, after naming the step or the script and, inside a
 # shell's `-c` text, that text, and before the cure REASON_CURES writes for it.
 EXPANSION_SETTING = ("{setting}, which {changes} how bash expands a word, and this check reads "
                      "every pattern as bash does with its default options, so it cannot tell "
                      "which file a word of this text names")
+# What the cure adds where the setting names a startup file (STARTUP_VARIABLES).
+STARTUP_CURE = ("; and name no startup file in `BASH_ENV` or `ENV`: write the commands of the "
+                "file it names in the step itself, where this check reads them")
 REASON_CURES = {
     WRITTEN_RUN: (
         "Run no file this text writes: write its commands in the step itself, or move them "
@@ -6286,7 +6400,23 @@ REASON_CURES = {
         "Write each path the text runs or names literally, `.github/scripts/<name>.sh`, and "
         "leave bash's expansion options at their defaults; where a glob may match no file, test "
         "the name it gives, `[ -e \"$file\" ] || continue`, rather than set `nullglob`"),
+    NO_TREE_SOURCE: SOURCE_CURE[0].upper() + SOURCE_CURE[1:],
 }
+# THE FILE A JOB'S LATER STEPS TAKE THEIR ENVIRONMENT FROM (env_file_writes; dispatch://INFRA-1545,
+# round 42). A line `NAME=value` or `NAME<<DELIMITER` written into `$GITHUB_ENV` sets NAME for
+# every later step of the job, as an `env:` key of each of them would, so one naming a variable
+# of EXPANSION_VARIABLES is refused by name as that key is, and a write whose lines this check
+# cannot read as literal text is refused by name too, since any of them may name one. A write is
+# a redirect of a command's output to a word naming `$GITHUB_ENV`, or a `tee` naming it.
+ENV_FILE = re.compile(r"\$\{?GITHUB_ENV\b")
+ENV_FILE_UNREAD = (
+    "writes into `$GITHUB_ENV` {how}, which this check cannot read as literal lines. The runner "
+    "sets the variable each line there names for every later step of the job, and a variable "
+    "that changes how bash expands a word or names a file bash runs first, `BASHOPTS` or "
+    "`BASH_ENV` among them, would then reach each of those steps with no rule here reading it. "
+    "Write each line with its name spelled out: `echo \"NAME=$value\" >> \"$GITHUB_ENV\"`, "
+    "`printf '%s\\n' \"NAME=$value\" … >> \"$GITHUB_ENV\"`, or a heredoc or a here-string of "
+    "such lines fed to `cat >> \"$GITHUB_ENV\"` (dispatch://INFRA-1545, round 42).")
 
 
 def runners_of(loops: Loops) -> dict[str, tuple[int, bool]]:
@@ -7073,27 +7203,28 @@ def variable_settings(words: list[str], start: int) -> list[tuple[str, str]]:
 
 
 def expansion_settings(text: str, first_line: int, within: str = "",
-                       depth: int = 0) -> list[tuple[int, int, str, str]]:
+                       depth: int = 0) -> list[tuple[int, int, str, str, bool]]:
     """Each command of a body that changes how bash expands a word, as (the first and the last
     line of the command, what it sets or unsets, `changes` or `may change`), EXPANSION_SETTING's
-    two parts (dispatch://INFRA-1545, round 41). Every pattern this check reads is read as bash
-    reads it with its default options, so each such setting is refused by name wherever it is
-    written and whatever the text holds, rather than read: a `shopt` setting or unsetting an
-    option of EXPANSION_SHOPT, or of EXPANSION_SET with `-o`, or naming its options with a word
-    that is no literal text; a `set` turning on or off an option of EXPANSION_SET, by its letter
-    or after `-o` or `+o`, or holding such a word among its options; a shell started with one of
-    them, by its letter, `-o`, `-O`, `--posix` or `-i`, where it runs text or a file this check
-    reads, its `-c` text or its operand (shell_operand); and a word that sets or unsets a
-    variable of EXPANSION_VARIABLES (variable_settings). Each is read once the wrappers
-    reduce_words strips are gone, `builtin shopt` and `env bash -f` included, in the step, in
-    the text of a shell's `-c` and in a `trap`'s action, text the shell runs when the trap fires,
-    a DEBUG trap's before every command, in turn. A shell reading its program from its standard
-    input is left to the refusals of that route, since this check reads no pattern there: a
-    heredoc's body is data, refused by name where it fetches (unread_heredocs), and a pipe, a
-    here-string, a file or a process substitution is refused whatever it carries (unnamed_runs).
-    Until round 41 `shopt -s nocaseglob` and then `cd .github/scripts && ./R38-FE[T]CH.SH` or
-    `flock /tmp/l .github/scripts/R38-FE[T]CH.SH`, which bash fills in with r38-fetch.sh, passed
-    its 1050 s under a 17-minute key."""
+    two parts, and whether it sets a startup file (STARTUP_VARIABLES, round 42), which may hold
+    such a setting or none (dispatch://INFRA-1545, round 41). Every pattern this check reads is
+    read as bash reads it with its default options, so each such setting is refused by name
+    wherever it is written and whatever the text holds, rather than read: a `shopt` setting or
+    unsetting an option of EXPANSION_SHOPT, or of EXPANSION_SET with `-o`, or naming its options
+    with a word that is no literal text; a `set` turning on or off an option of EXPANSION_SET, by
+    its letter or after `-o` or `+o`, or holding such a word among its options; a shell started
+    with one of them, by its letter, `-o`, `-O`, `--posix` or `-i`, where it runs text or a file
+    this check reads, its `-c` text or its operand (shell_operand); and a word that sets or unsets
+    a variable of EXPANSION_VARIABLES (variable_settings). Each is read once the wrappers
+    reduce_words strips are gone, `builtin shopt`, `env bash -f` and `/usr/bin/env bash -f`
+    included, in the step, in the text of a shell's `-c` and in a `trap`'s action, text the shell
+    runs when the trap fires, a DEBUG trap's before every command, in turn. A shell reading its
+    program from its standard input is left to the refusals of that route, since this check reads
+    no pattern there: a heredoc's body is data, refused by name where it fetches
+    (unread_heredocs), and a pipe, a here-string, a file or a process substitution is refused
+    whatever it carries (unnamed_runs). Until round 41 `shopt -s nocaseglob` and then `cd
+    .github/scripts && ./R38-FE[T]CH.SH` or `flock /tmp/l .github/scripts/R38-FE[T]CH.SH`, which
+    bash fills in with r38-fetch.sh, passed its 1050 s under a 17-minute key."""
     commands = CallScanner(first_line).scan(text)
     reads = {index for index, _command, _after_bar in commands_read(commands, text)}
     found = []
@@ -7118,9 +7249,11 @@ def expansion_settings(text: str, first_line: int, within: str = "",
                      else words)
             ends = [span[1] for span in command.spans if span]
             last_line = first_line + text.count("\n", 0, max(ends)) if ends else command.line
+            # A startup file may hold such a setting or none (STARTUP_VARIABLES).
+            startup = any(name in STARTUP_VARIABLES for _verb, name in settings)
             found.append((command.line, max(last_line, command.line),
                           f"{within}{said} (`{' '.join(shown)}`)",
-                          "may change" if unread is not None else "changes"))
+                          "may change" if unread is not None or startup else "changes", startup))
         if kind == "text" and target and depth < 3:
             found += expansion_settings(target, command.line,
                                         f"in the text `{head} -c` runs, ", depth + 1)
@@ -7134,12 +7267,249 @@ def expansion_settings(text: str, first_line: int, within: str = "",
     return found
 
 
-def expansion_refusal(setting: str, changes: str) -> str:
+def expansion_refusal(setting: str, changes: str, startup: bool = False,
+                      rounds: str = "round 41") -> str:
     """What the refusal of a setting expansion_settings finds says after naming the step, the
     script, the job or the file holding it: EXPANSION_SETTING and its cure (dispatch://INFRA-1545,
-    round 41)."""
+    round 41), with STARTUP_CURE where the setting names a startup file, which round 42 refuses
+    (STARTUP_VARIABLES), and the rounds that refuse it."""
     return (EXPANSION_SETTING.format(setting=setting, changes=changes) + ". "
-            + REASON_CURES[EXPANSION_SETTING] + " (dispatch://INFRA-1545, round 41).")
+            + REASON_CURES[EXPANSION_SETTING] + (STARTUP_CURE if startup else "")
+            + f" (dispatch://INFRA-1545, {'round 42' if startup else rounds}).")
+
+
+def inner_texts(reduced: list[str]) -> list[tuple[str, str]]:
+    """The shell text a command, its words once the wrappers are gone, hands to a shell to run
+    in turn, each with what a refusal calls it: a shell's `-c` text and a `trap`'s action, as
+    expansion_settings reads them (dispatch://INFRA-1545, round 42)."""
+    head = program_name(reduced[0]) if reduced else ""
+    if head in INTERPRETERS:
+        kind, target = shell_operand(reduced)
+        return [(target, f"in the text `{head} -c` runs, ")] if kind == "text" and target else []
+    if head == "trap":
+        action = reduced[2:] if reduced[1:2] == ["--"] else reduced[1:]
+        if len(action) > 1 and not action[0].startswith("-"):
+            return [(action[0], "in the text `trap` runs, ")]
+    return []
+
+
+def tree_source(word: str, action: str | None) -> bool:
+    """Whether the operand of a `.` or a `source`, `word`, is a literal path to a file of the
+    tree (NO_TREE_SOURCE; dispatch://INFRA-1545, round 42): a path holding no expansion and a
+    `/` that names a file the tree holds once normalised, `$GITHUB_WORKSPACE/` written as the
+    root and, in a composite action, `$GITHUB_ACTION_PATH/` as its directory (target_parts), or
+    that reaches a script of .github/scripts/ from another directory, `../../.github/scripts/x.sh`;
+    or a path whose directory holds an expansion and whose last element is literal and names a
+    script of .github/scripts/, `"$script_dir/ci-retry.sh"`, which SCRIPT_CALL reads by that
+    name as every reading of a call here does. The helper, HELPER, is such a file where a tree
+    lacks it, as a harness's tree does: this check reads `retry_fetch` as its function whatever
+    that file holds. A path naming a file outside the tree, /dev/stdin, /dev/fd/0 or
+    /proc/self/fd/0 among them, a name with no `/`, which bash looks for on PATH, and a last
+    element holding an expansion, `"$state_dir/$name.state"`, are none."""
+    normal, spans, cut, _patterns = target_parts(word, action)
+    last = normal[cut + 1:]
+    known = script_files | {HELPER}
+    if not last or expansions_in(last):
+        return False
+    if spans:
+        named = SCRIPT_CALL.fullmatch("/" + last)
+        return named is not None and str(SCRIPTS / named.group(1)) in known
+    path = os.path.normpath(normal)
+    reached = f"/{path}"
+    at = reached.find(f"/{SCRIPTS}/")
+    return "/" in normal and (path in tree_files | {HELPER}
+                              or (at >= 0 and reached[at + 1:] in known))
+
+
+def tree_sources(text: str, first_line: int, action: str | None, within: str = "",
+                 depth: int = 0) -> list[tuple[int, int, str]]:
+    """Each `.` or `source` of a body whose operand is no literal path to a file of the tree
+    (tree_source), as (the first and the last line of its command, what it does), UNNAMED_RUN's
+    `does` for the reason NO_TREE_SOURCE (dispatch://INFRA-1545, round 42), read in the text of
+    a shell's `-c` and a `trap`'s action in turn. Its text runs in this shell, a setting that
+    changes how bash expands a word among it, and no rule here reads that text: `. /dev/stdin
+    <<<'shopt -s nocaseglob'` and `source /dev/fd/0 <<'EOF'` are refused, whatever a here-string
+    or a heredoc feeds them, and so is a file another step wrote, `. "$RUNNER_TEMP/settings"`. A
+    `.` given no operand runs nothing, and one given a process substitution is unnamed_runs's.
+    Measured at 96dde7f1, the tree wrote two such sources, download-retry-proof.sh's `.
+    "$state_dir/$name.state"`, each rewritten to read the file as data; its other 141 sources
+    each name a script of .github/scripts/."""
+    commands = CallScanner(first_line).scan(text)
+    found = []
+    for _index, command, after_bar in commands_read(commands, text):
+        reduced = reduce_words(command.words)[0]
+        if not reduced or after_bar:
+            continue
+        if program_name(reduced[0]) in (".", "source") and not expansions_in(reduced[0]):
+            kind, target = shell_operand(reduced)
+            if kind == "script" and not tree_source(target, action):
+                ends = [span[1] for span in command.spans if span]
+                last = first_line + text.count("\n", 0, max(ends)) if ends else command.line
+                found.append((command.line, max(last, command.line),
+                              f"{within}sources `{target}`"))
+        for inner, said in inner_texts(reduced) if depth < 3 else ():
+            found += tree_sources(inner, command.line, action, said, depth + 1)
+    return found
+
+
+def stdin_lines(command: Command, text: str, first_line: int,
+                bodies: dict[tuple[int, int], list[tuple[str, bool]]]
+                ) -> list[tuple[str, bool]] | None:
+    """The lines a command reads on its standard input where its last redirect of it is a
+    here-string or a heredoc, each with whether its text is literal as written, or None where it
+    reads a file or no redirect gives it any (env_file_writes; dispatch://INFRA-1545, round 42).
+    A redirect is told by the operator written in front of its word."""
+    fed = None
+    for word, span in zip(command.redirected, command.redirected_spans):
+        before = text[:span[0]].rstrip(" \t'\"$")
+        if before.endswith("<<<"):
+            fed = [(line, False) for line in word.split("\n")]
+        elif re.search(r"<<-?$", before):
+            start = text.rfind("\n", 0, span[0]) + 1
+            fed = bodies.get((first_line + text.count("\n", 0, span[0]),
+                              text.rfind("<<", start, span[0]) - start))
+        elif before.endswith("<"):
+            fed = None
+    return fed
+
+
+def printed_lines(commands: list[Command], index: int, text: str, first_line: int,
+                  bodies: dict[tuple[int, int], list[tuple[str, bool]]], depth: int = 0
+                  ) -> tuple[list[tuple[str, bool]] | None, str]:
+    """The lines the command at `index` prints, each with whether its text is literal as
+    written, or None with what prints them where this check cannot read them as literal lines
+    (env_file_writes; dispatch://INFRA-1545, round 42). Read: `echo`'s words; a `printf` whose
+    format is literal text, `printf 'NAME=value\\n'`, or `%s\\n`, which prints each argument as a
+    line of its own; what `cat` or `tee` reads on its standard input, from a heredoc, a
+    here-string or the command a pipe feeds them from; and `:` and `true`, which print nothing.
+    Anything else is read as no literal lines: a `printf` whose format builds each line from its
+    arguments, `printf '%s=%s\\n' NAME value`, a file `cat` prints, and the output of any other
+    command, a function, a group, a loop or a subshell among them."""
+    command = commands[index]
+    reduced = reduce_words(command.words)[0]
+    head = program_name(reduced[0]) if reduced else ""
+    shown = " ".join(command.words)
+    if head in ("cat", "tee"):
+        if head == "cat" and any(word != "-" and not word.startswith("-")
+                                 for word in reduced[1:]):
+            return None, f"the text of a file `cat` prints (`{shown}`)"
+        fed = stdin_lines(command, text, first_line, bodies)
+        if fed is not None:
+            return fed, ""
+        feeder = next((at for at in range(index - 1, -1, -1)
+                       if commands[at].context == command.context), None)
+        if not command.input and feeder is not None and commands[feeder].piped and depth < 5:
+            return printed_lines(commands, feeder, text, first_line, bodies, depth + 1)
+        return None, f"what `{head}` reads on its standard input (`{shown}`)"
+    if head == "echo":
+        words, escapes = reduced[1:], False
+        while words and re.fullmatch(r"-[neE]+", words[0]):
+            escapes = words[0].replace("E", "").count("e") > 0
+            words = words[1:]
+        printed = " ".join(words)
+        printed = printed.replace("\\n", "\n") if escapes else printed
+        return [(line, False) for line in printed.split("\n")], ""
+    if head == "printf":
+        words = reduced[2:] if reduced[1:2] == ["--"] else reduced[1:]
+        if not words or words[0].startswith("-v"):
+            return [], ""
+        form, arguments = words[0], words[1:]
+        if form in ("%s\\n", "%s\n"):
+            return [(line, False) for argument in arguments or [""]
+                    for line in argument.split("\n")], ""
+        if "%" not in form.replace("%%", ""):
+            return [(line, False) for line in
+                    form.replace("%%", "%").replace("\\n", "\n").split("\n")], ""
+        return None, f"a `printf` whose format builds each line from its arguments (`{shown}`)"
+    if head in (":", "true"):
+        return [], ""
+    if not reduced:
+        return None, f"the output of what `{command.words[0]}` closes (`{shown}`)"
+    return None, f"the output of `{reduced[0]}` (`{shown}`)"
+
+
+def env_file_names(lines: list[tuple[str, bool]]) -> tuple[list[tuple[str, str]], str | None]:
+    """The variables lines written into `$GITHUB_ENV` set, each with its line, as GitHub reads
+    that file: `NAME=value`, or `NAME<<DELIMITER` and the lines of the value up to one that is
+    DELIMITER, whichever of the `=` and the `<<` comes first; and the first line whose name this
+    check cannot read, one holding an expansion before its `=` or `<<` where its text is not
+    literal as written, or None (env_file_writes; dispatch://INFRA-1545, round 42)."""
+    names: list[tuple[str, str]] = []
+    unread = None
+    delimiter = None
+    for line, literal in lines:
+        if delimiter is not None:
+            delimiter = None if line == delimiter else delimiter
+            continue
+        marks = [at for at in (line.find("="), line.find("<<")) if at >= 0]
+        cut = min(marks) if marks else len(line)
+        if not literal and expansions_in(line[:cut]):
+            unread = line if unread is None else unread
+            continue
+        if not marks:
+            continue
+        if line.find("=") != cut:
+            delimiter = line[cut + 2:]
+        names.append((line[:cut].strip(), line))
+    return names, unread
+
+
+def env_file_writes(text: str, first_line: int,
+                    bodies: dict[tuple[int, int], list[tuple[str, bool]]], within: str = "",
+                    depth: int = 0) -> list[tuple[int, int, str]]:
+    """Each write into `$GITHUB_ENV` of a body this check refuses by name, as (the first and the
+    last line of its command, what the refusal says after naming the step or the script)
+    (ENV_FILE; dispatch://INFRA-1545, round 42). Each write is read as the literal lines it
+    holds (printed_lines), a heredoc's body or a here-string by its lines, and refused where a
+    line names a variable of EXPANSION_VARIABLES, as the same variable in an `env:` key is; a
+    write whose lines this check cannot read so, a `printf` whose format builds each line, a file
+    `cat` prints, a line whose name holds an expansion or the output of any other command, is
+    refused by name whatever it writes (ENV_FILE_UNREAD). `bodies` are the text's heredoc bodies
+    (heredoc_bodies). The text of a shell's `-c` and a `trap`'s action are read in turn. Until
+    round 42 `cat >> "$GITHUB_ENV" <<'EOF'` around `BASHOPTS=nocaseglob`, and `printf '%s=%s\\n'
+    BASHOPTS nocaseglob >> "$GITHUB_ENV"`, passed r38-fetch.sh's 1050 s, named in a later step
+    under a 17-minute key. Measured at 96dde7f1, the tree wrote ten lines into `$GITHUB_ENV`, nine
+    of them read so, none naming such a variable, and one it could not read, ci-tools-proof.sh's
+    `printf '%s\\n' "$line"`, rewritten to spell each name out."""
+    if "GITHUB_ENV" not in text:
+        return []
+    scanner = CallScanner(first_line)
+    commands = scanner.scan(text)
+    found = []
+    # A redirect written where no command is, `} >> "$GITHUB_ENV"` or `) >> "$GITHUB_ENV"`, writes
+    # the output of a group or a subshell.
+    held = {span for command in commands for span in command.redirected_spans}
+    for span in scanner.redirects:
+        if (span not in held and ENV_FILE.search(text[span[0]:span[1] + 1])
+                and re.search(r">\|?\s*\$?['\"]?$", text[:span[0]])):
+            line = first_line + text.count("\n", 0, span[0])
+            found.append((line, line, within + ENV_FILE_UNREAD.format(
+                how="the output of a group or a subshell, `{ …; }` or `( … )`")))
+    for index, command in enumerate(commands):
+        reduced = reduce_words(command.words)[0]
+        head = program_name(reduced[0]) if reduced else ""
+        if (any(ENV_FILE.search(word) for word in command.writes)
+                or (head == "tee" and any(ENV_FILE.search(word) for word in reduced[1:]))):
+            ends = [span[1] for span in command.spans if span]
+            last = max(first_line + text.count("\n", 0, max(ends)) if ends else command.line,
+                       command.line)
+            lines, how = printed_lines(commands, index, text, first_line, bodies)
+            names, unread = env_file_names(lines) if lines is not None else ([], None)
+            if lines is None or unread is not None:
+                found.append((command.line, last, within + ENV_FILE_UNREAD.format(
+                    how=how or f"a line whose name is built as the step runs, `{unread}`")))
+            listed = [(name, line) for name, line in names if name in EXPANSION_VARIABLES]
+            if listed:
+                startup = any(name in STARTUP_VARIABLES for name, _line in listed)
+                found.append((command.line, last, within + expansion_refusal(
+                    "sets " + " and ".join(f"`{name}`" for name, _line in listed)
+                    + " for every later step of the job, writing "
+                    + ", ".join(f"`{line}`" for _name, line in listed) + " into `$GITHUB_ENV`",
+                    "may change" if startup else "changes", startup, "round 42")))
+        for inner, said in inner_texts(reduced) if depth < 3 else ():
+            found += env_file_writes(without_heredocs(inner)[0], command.line,
+                                     heredoc_bodies(inner, command.line), said, depth + 1)
+    return found
 
 
 def text_globs(text: str, action: str | None, depth: int = 0) -> tuple[str, str] | None:
@@ -7540,14 +7910,18 @@ for path, line, who, sentence, waits, targets, names, sources in unread_shapes:
 # the file's or a job's `defaults.run.shell`, change how each `run:` under them expands its
 # words, and are refused by name as the same settings written in a `run:` are
 # (expansion_settings; dispatch://INFRA-1545, round 41). GitHub runs a step's `run:` as the file
-# its shell's `{0}` names, so the shell's options are read as those of a run of a script. The
-# tree writes no `env:` of them, and no `shell:` but `bash`.
+# its shell's `{0}` names, so the shell's options are read as those of a run of a script. A key
+# naming a startup file, BASH_ENV or ENV, is refused the same way since round 42
+# (STARTUP_VARIABLES). The tree writes no `env:` of them, and no `shell:` but `bash`.
 for path, owner, holder in expansion_holders:
     env = holder.get("env")
     for key in env if isinstance(env, Mapping) else ():
         if key in EXPANSION_VARIABLES:
+            startup = key in STARTUP_VARIABLES
             problem(path, env.lines.get(key, 0),
-                    f"{owner} " + expansion_refusal(f"sets `{key}` in its `env:`", "changes"))
+                    f"{owner} " + expansion_refusal(f"sets `{key}` in its `env:`",
+                                                    "may change" if startup else "changes",
+                                                    startup))
     defaults = holder.get("defaults")
     for key, shell_holder in (("shell", holder),
                               ("defaults.run.shell",
@@ -7555,10 +7929,11 @@ for path, owner, holder in expansion_holders:
         shell = shell_holder.get("shell") if isinstance(shell_holder, Mapping) else None
         if not isinstance(shell, str):
             continue
-        for line, _last, setting, changes in expansion_settings(shell,
-                                                                shell_holder.lines.get("shell", 0)):
+        for line, _last, setting, changes, startup in expansion_settings(
+                shell, shell_holder.lines.get("shell", 0)):
             problem(path, line,
-                    f"{owner} " + expansion_refusal(f"{setting} in its `{key}:`", changes))
+                    f"{owner} " + expansion_refusal(f"{setting} in its `{key}:`", changes,
+                                                    startup))
 
 # The library calls each body makes more than once, as (file, step name or "-", the step's
 # Budget or None, what a refusal calls the body, {library: (line, the functions called)}).
@@ -7715,6 +8090,18 @@ for path, name, (who, loops, found, called), owner in body_reads:
                                                                    cure=REASON_CURES[why])
                         + " (dispatch://INFRA-1545, "
                         + ("round 38" if why == PATTERN_RUN else "rounds 39 and 40") + ").")
+    # A `.` or a `source` of anything but a literal path to a file of the tree is refused by name
+    # (tree_sources; dispatch://INFRA-1545, round 42), where no refusal above names its command
+    # already: a pattern there is pattern_words's, which names what it could reach, and an
+    # operand built from data is unnamed_runs's.
+    for read_text, read_line, within in readings:
+        for line, last, does in tree_sources(read_text, read_line, action, within):
+            named_at = tuple(f"::error file={path},line={at}::{who} "
+                             for at in range(line, last + 1))
+            if not any(earlier.startswith(named_at) for earlier in problems):
+                problem(path, line, f"{who} " + UNNAMED_RUN.format(
+                    does=does, why=NO_TREE_SOURCE, cure=REASON_CURES[NO_TREE_SOURCE])
+                    + " (dispatch://INFRA-1545, round 42).")
     # A setting that changes how bash expands a word is refused by name wherever it is written,
     # whatever the text holds, since every pattern above is read as bash reads it with its
     # default options (expansion_settings; dispatch://INFRA-1545, round 41), where no refusal
@@ -7724,11 +8111,12 @@ for path, name, (who, loops, found, called), owner in body_reads:
     # body holds a word that is no literal text, which the option may change: `bash -O extglob
     # <<'EOF'` around `echo "nothing to fetch"` passes.
     for read_text, read_line, within in readings:
-        for line, last, setting, changes in expansion_settings(read_text, read_line, within):
+        for line, last, setting, changes, startup in expansion_settings(read_text, read_line,
+                                                                        within):
             named_at = tuple(f"::error file={path},line={at}::{who} "
                              for at in range(line, last + 1))
             if not any(earlier.startswith(named_at) for earlier in problems):
-                problem(path, line, f"{who} " + expansion_refusal(setting, changes))
+                problem(path, line, f"{who} " + expansion_refusal(setting, changes, startup))
     for operator, consumer, _start, held in loops.programs:
         if PROGRAM.sub("", consumer[0]).rsplit("/", 1)[-1] not in INTERPRETERS or all(
                 literal_word(word, places)
@@ -7745,6 +8133,21 @@ for path, name, (who, loops, found, called), owner in body_reads:
             problem(path, operator, f"{who} " + expansion_refusal(
                 f"{said} (`{' '.join(consumer)} <<…`)",
                 "may change" if unread is not None else "changes"))
+    # A write into `$GITHUB_ENV` is read as the literal lines it holds and refused where a line
+    # names a variable of EXPANSION_VARIABLES, and one whose lines this check cannot read so is
+    # refused whatever it writes (env_file_writes; dispatch://INFRA-1545, round 42), where no
+    # refusal above names its command already, as the reading of settings names `echo
+    # BASHOPTS=… >> "$GITHUB_ENV"`.
+    env_readings = [(readings[0][0], loops.first_line, "", loops.bodies)] + [
+        (read_text, read_line, within, heredoc_bodies(held, start))
+        for (read_text, read_line, within), (_operator, _consumer, start, held)
+        in zip(readings[1:], loops.programs)]
+    for read_text, read_line, within, bodies in env_readings:
+        for line, last, sentence in env_file_writes(read_text, read_line, bodies, within):
+            named_at = tuple(f"::error file={path},line={at}::{who} "
+                             for at in range(line, last + 1))
+            if not any(earlier.startswith(named_at) for earlier in problems):
+                problem(path, line, f"{who} {sentence}")
     for command, word in variable_calls(loops) if owed else ():
         entry = next((entry for entry in DECLARED_CALLS
                       if name == "-" and (entry.path, entry.word) == (path, word)), None)

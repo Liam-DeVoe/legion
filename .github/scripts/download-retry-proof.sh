@@ -139,6 +139,35 @@ state_file() {
   printf '%s/%s.state\n' "$state_dir" "$1"
 }
 
+# state_read <file> <key>…: each named key of a proxy's state file, read as data into the
+# caller's variable of that name, which the caller declares local. `start` writes the file as
+# name=value lines and `probe` appends two, its probe_pair in single quotes, which are taken off
+# here, so each variable holds what running the file as shell text gave it; a later line of a key
+# wins, as it did then. A key the caller does not name, and a line of any other key, is passed
+# over. The file is read rather than sourced because .github/scripts/check-download-retry.sh
+# refuses a `.` or a `source` of any file but one of the tree, which a file written as the job
+# runs is not (dispatch://INFRA-1545, round 42).
+state_read() {
+  local file=$1 key value
+  shift
+  while IFS='=' read -r key value; do
+    case " $* " in
+      *" $key "*) ;;
+      *) continue ;;
+    esac
+    case $key in
+      mode) mode=$value ;;
+      hosts) hosts=$value ;;
+      log) log=$value ;;
+      proxy) proxy=$value ;;
+      pid) pid=$value ;;
+      started) started=$value ;;
+      probe_lines) probe_lines=$value ;;
+      probe_pair) value=${value#\'}; probe_pair=${value%\'} ;;
+    esac
+  done < "$file"
+}
+
 # The docker bridge's gateway, which is the runner as a `RUN` of a build sees it: the build
 # container's default route. Named rather than written as 172.17.0.1, which is only the usual
 # value of a daemon's default pool.
@@ -271,8 +300,7 @@ probe() {
   file=$(state_file "$name")
   [ -f "$file" ] || die "probe: no proxy named $name was started"
   local mode hosts log proxy
-  # shellcheck disable=SC1090 # the file this verb's own `start` wrote, seven name=value lines
-  . "$state_dir/$name.state"
+  state_read "$file" mode hosts log proxy
 
   local faulted control
   if [ -n "$hosts" ]; then
@@ -375,8 +403,7 @@ report() {
   file=$(state_file "$name")
   [ -f "$file" ] || die "report: no proxy named $name was started"
   local mode log pid started probe_pair probe_lines
-  # shellcheck disable=SC1090 # the file this verb's own `start` and `probe` wrote, name=value lines
-  . "$state_dir/$name.state"
+  state_read "$file" mode log pid started probe_pair probe_lines
   [ -n "${probe_pair:-}" ] ||
     die "report: no probe ran before $name's site, so this result would carry no reading of its own. Every fault drive records the pair a probe read through the proxy before the site (dispatch://INFRA-1545, the Verification document's proxy clauses): run \`download-retry-proof.sh probe $name\` in the step that starts the proxy."
   local now elapsed

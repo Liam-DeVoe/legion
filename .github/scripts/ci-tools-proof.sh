@@ -1090,16 +1090,18 @@ shorten_ladder() {
 # It goes through $GITHUB_ENV rather than a step `env:` map because GitHub refuses a map that
 # holds two spellings of one name, and the workflow would then not start at all.
 # Off a runner there is no $GITHUB_ENV, and the lines are printed and written nowhere.
+# Each line is written with its name spelled out, so .github/scripts/check-download-retry.sh reads
+# every variable this hands the later steps: it refuses a write into $GITHUB_ENV whose lines it
+# cannot read as literal text (dispatch://INFRA-1545, round 42).
 fault_env() {
-  local proxy=$1 line
-  local -a lines=(
-    "http_proxy=$proxy" "https_proxy=$proxy" "HTTP_PROXY=$proxy" "HTTPS_PROXY=$proxy"
-  )
-  [ -z "$proxy" ] || lines+=("no_proxy=" "NO_PROXY=")
-  for line in "${lines[@]}"; do
-    [ -z "${GITHUB_ENV:-}" ] || printf '%s\n' "$line" >> "$GITHUB_ENV"
-    printf '  %s\n' "$line"
-  done
+  local proxy=$1
+  if [ -n "${GITHUB_ENV:-}" ]; then
+    printf '%s\n' "http_proxy=$proxy" "https_proxy=$proxy" \
+      "HTTP_PROXY=$proxy" "HTTPS_PROXY=$proxy" >> "$GITHUB_ENV"
+    [ -z "$proxy" ] || printf '%s\n' 'no_proxy=' 'NO_PROXY=' >> "$GITHUB_ENV"
+  fi
+  printf '  %s\n' "http_proxy=$proxy" "https_proxy=$proxy" "HTTP_PROXY=$proxy" "HTTPS_PROXY=$proxy"
+  [ -z "$proxy" ] || printf '  %s\n' 'no_proxy=' 'NO_PROXY='
 }
 
 # start_fault: the proxy over FAULT_HOSTS, and every variable that routes this job's later steps

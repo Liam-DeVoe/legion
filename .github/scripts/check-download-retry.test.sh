@@ -9311,10 +9311,13 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+# Round 42 reads a wrapper by its name whatever directory names it, so `/usr/bin/env bash` feeds
+# the heredoc to `bash`, the consumer the refusal at line 22 names (dispatch://INFRA-1545, round
+# 42).
 for refusal in \
   "10	Feed it to a shell named by a variable	.\\\$SHELL." \
   "16	Feed it to the shell ssh runs	.ssh." \
-  "22	Feed it to bash through env by its path	./usr/bin/env." \
+  "22	Feed it to bash through env by its path	.bash." \
   "28	Pipe a printed copy into bash	.cat., whose output a pipe on the operator's line hands to a shell" \
   "34	Substitute a run in an unquoted body	.cat. unquoted, and the body holds a command substitution, which the step's own shell runs before that command reads the body"; do
   IFS=$'\t' read -r line step consumer <<<"$refusal"
@@ -12701,6 +12704,212 @@ for r41_case in "${r41_steps[@]}"; do
   check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 done
 
+# R42. Round 42 closes the four routes T9 to T12 took as routes, not as spellings
+# (dispatch://INFRA-1545, round 42), and each case below is a sibling of the tester's shapes that
+# the route's rule implies, each running r38-fetch.sh's 1050 s under a 17-minute key with
+# nocaseglob set: (a) a command word is read by its name whatever directory names it, so a
+# wrapper behind `command`, or `timeout` written by its path, hands on a shell's option the gate
+# reads; (b) a `.` or a `source` of anything but a literal path to a file of the tree is refused
+# by name, /dev/fd/0 and /proc/self/fd/0 and a file an earlier step wrote among them; (c) a write
+# into $GITHUB_ENV is read as the literal lines it holds and refused where a line names a
+# variable of the list, and one whose lines cannot be read so is refused whatever it writes;
+# (d) BASH_ENV and ENV are on that list, through each route the list is read by. Beside them, a
+# literal source, a wrapper by its path with no setting and a $GITHUB_ENV heredoc of ordinary
+# lines pass.
+echo "case: r42 a wrapper named by its path is read by its name, its shell's option with it"
+root=$(fixture r42-wrapper-path)
+cp "$work/r38-x2-python-runs-script/.github/scripts/r38-fetch.sh" "$root/.github/scripts/r38-fetch.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run it under bash -O nocaseglob through command and env by its path
+        timeout-minutes: 17
+        run: |
+          command /usr/bin/env bash -O nocaseglob -c 'flock /tmp/l .github/scripts/R38-FE[T]CH.SH'
+      - name: Run it under bash -O nocaseglob through timeout by its path
+        timeout-minutes: 17
+        run: |
+          /usr/bin/timeout 600 bash -O nocaseglob -c 'flock /tmp/l .github/scripts/R38-FE[T]CH.SH'
+      - name: Run a shell through env by its path with no setting
+        timeout-minutes: 1
+        run: |
+          /usr/bin/env bash -c 'echo "nothing to fetch"'
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the option behind command and /usr/bin/env by name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=10::step 'Run it under bash -O nocaseglob through command and env by its path' of job 'build' sets .nocaseglob. (.command /usr/bin/env bash -O nocaseglob -c ")"
+check "refuses the option behind /usr/bin/timeout by name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=14::step 'Run it under bash -O nocaseglob through timeout by its path' of job 'build' sets .nocaseglob. (./usr/bin/timeout 600 bash -O nocaseglob -c ")"
+check "passes a shell through env by its path with no setting" \
+  "$(is "$(contains "$out" "step 'Run a shell through env by its path with no setting'")" false)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+
+echo "case: r42 a source that is no literal file of the tree is refused by name"
+root=$(fixture r42-sources)
+cp "$work/r38-x2-python-runs-script/.github/scripts/r38-fetch.sh" "$root/.github/scripts/r38-fetch.sh"
+printf '#!/usr/bin/env bash\necho "nothing to fetch"\n' > "$root/.github/scripts/r42-quiet.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Source the setting from /dev/fd/0
+        timeout-minutes: 17
+        run: |
+          . /dev/fd/0 <<<'shopt -s nocaseglob'
+          flock /tmp/l .github/scripts/R38-FE[T]CH.SH
+      - name: Source the setting from /proc/self/fd/0
+        timeout-minutes: 17
+        run: |
+          source /proc/self/fd/0 <<'EOS'
+          shopt -s nocaseglob
+          EOS
+          flock /tmp/l .github/scripts/R38-FE[T]CH.SH
+      - name: Source a file an earlier step wrote
+        timeout-minutes: 17
+        run: |
+          . "$RUNNER_TEMP/settings"
+          flock /tmp/l .github/scripts/R38-FE[T]CH.SH
+      - name: Source a script of the tree by its literal path
+        timeout-minutes: 1
+        run: |
+          . .github/scripts/r42-quiet.sh
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for refusal in "10	Source the setting from /dev/fd/0	sources ./dev/fd/0." \
+  "15	Source the setting from /proc/self/fd/0	sources ./proc/self/fd/0." \
+  "22	Source a file an earlier step wrote	sources .\\\$RUNNER_TEMP/settings."; do
+  IFS=$'\t' read -r line step says <<<"$refusal"
+  check "refuses '$step' by name, as no literal path to a file of the tree" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' $says, which is no literal path to a file of this tree, and the text a .\.. or a .source. reads runs in this shell")"
+done
+check "tells each to source a library by its literal path and read a data file as data" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "no literal path to a file of this tree.*Source a library of this repository by its literal path, .\. \.github/scripts/<name>\.sh., and read a data file as data")" 3)"
+check "passes a script of the tree sourced by its literal path" \
+  "$(is "$(contains "$out" "step 'Source a script of the tree by its literal path'")" false)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
+
+echo "case: r42 a write into GITHUB_ENV is read as its literal lines, and one it cannot read so is refused by name"
+root=$(fixture r42-env-file)
+cp "$work/r38-x2-python-runs-script/.github/scripts/r38-fetch.sh" "$root/.github/scripts/r38-fetch.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Write GLOBIGNORE through a pipe into tee
+        timeout-minutes: 1
+        run: |
+          cat <<'EOE' | tee -a "$GITHUB_ENV"
+          GLOBIGNORE=x
+          EOE
+      - name: Write the setting from a group
+        timeout-minutes: 1
+        run: |
+          { printf '%s=%s\n' BASHOPTS nocaseglob; } >> "$GITHUB_ENV"
+      - name: Write a line whose name is built
+        timeout-minutes: 1
+        run: |
+          echo "$name=nocaseglob" >> "$GITHUB_ENV"
+      - name: Run it under the settings the steps above wrote
+        timeout-minutes: 17
+        run: |
+          flock /tmp/l .github/scripts/R38-FE[T]CH.SH
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the GLOBIGNORE line a pipe hands tee by name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=10::step 'Write GLOBIGNORE through a pipe into tee' of job 'build' sets .GLOBIGNORE. for every later step of the job, writing .GLOBIGNORE=x. into .\\\$GITHUB_ENV., which changes how bash expands a word")"
+check "refuses a group's output into GITHUB_ENV by name, as no literal lines" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=16::step 'Write the setting from a group' of job 'build' writes into .\\\$GITHUB_ENV. the output of a group or a subshell, .{ …; }. or .( … )., which this check cannot read as literal lines")"
+check "refuses a line whose name is built by name, as no literal lines" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=20::step 'Write a line whose name is built' of job 'build' writes into .\\\$GITHUB_ENV. a line whose name is built as the step runs, .\\\$name=nocaseglob., which this check cannot read as literal lines")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
+
+echo "case: r42 a write into GITHUB_ENV of ordinary lines passes"
+root=$(fixture r42-env-file-ordinary)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Write ordinary lines into GITHUB_ENV
+        timeout-minutes: 1
+        run: |
+          cat >> "$GITHUB_ENV" <<EOE
+          IMAGE=ghcr.io/example/worker
+          PLUGIN_DOWNLOAD_URL=$url
+          NOTES<<EOV
+          BASHOPTS=nocaseglob is a line of this value, which sets nothing
+          EOV
+          EOE
+          echo "LEGION_TEST_UV=$dir/uv" >> "$GITHUB_ENV"
+          printf '%s\n' 'no_proxy=' 'NO_PROXY=' >> "$GITHUB_ENV"
+          printf 'TOOL_ROW=crane\n' >> "$GITHUB_ENV"
+          echo "ELAN_HOME=$RUNNER_TEMP/elan" | tee -a "$GITHUB_ENV" > /dev/null
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+echo "case: r42 BASH_ENV and ENV are refused by name through each route the list is read by"
+root=$(fixture r42-startup-files)
+cp "$work/r38-x2-python-runs-script/.github/scripts/r38-fetch.sh" "$root/.github/scripts/r38-fetch.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      ENV: /tmp/settings
+    steps:
+      - name: Write the setting into a startup file
+        timeout-minutes: 1
+        run: printf 'shopt -s nocaseglob\n' > "$RUNNER_TEMP/settings"
+      - name: Run it under sh with that startup file in ENV
+        timeout-minutes: 17
+        run: sh -c 'flock /tmp/l .github/scripts/R38-FE[T]CH.SH'
+      - name: Export BASH_ENV naming that startup file
+        timeout-minutes: 17
+        run: |
+          export BASH_ENV="$RUNNER_TEMP/settings"
+          bash -c 'flock /tmp/l .github/scripts/R38-FE[T]CH.SH'
+      - name: Write BASH_ENV into GITHUB_ENV in a heredoc
+        timeout-minutes: 1
+        run: |
+          cat >> "$GITHUB_ENV" <<EOE
+          BASH_ENV=$RUNNER_TEMP/settings
+          EOE
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the job's ENV key by name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=7::job 'build' sets .ENV. in its .env:., which may change how bash expands a word")"
+check "refuses BASH_ENV through export by name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=18::step 'Export BASH_ENV naming that startup file' of job 'build' sets .BASH_ENV. (.export BASH_ENV=\\\$RUNNER_TEMP/settings.), which may change how bash expands a word")"
+check "refuses BASH_ENV in a GITHUB_ENV heredoc by name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=23::step 'Write BASH_ENV into GITHUB_ENV in a heredoc' of job 'build' sets .BASH_ENV. for every later step of the job, writing .BASH_ENV=\\\$RUNNER_TEMP/settings. into .\\\$GITHUB_ENV., which may change how bash expands a word")"
+check "tells each to name no startup file, citing round 42" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "name no startup file in .BASH_ENV. or .ENV.: write the commands of the file it names in the step itself, where this check reads them (dispatch://INFRA-1545, round 42)")" 3)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
+
 # W10 and W11. W1, W2, W6 and W9 above share one cure: the gate reads the `.sh` scripts directly
 # in .github/scripts/ and no other file there, so every other file under that directory, at any
 # depth, is refused by name at its line 1, whatever its name, its first line or its text, but a
@@ -14116,9 +14325,11 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 # assignment the gate already refused (12e), whose run is refused now too, and printf, tee, a
 # concatenated variable, sed piped into bash and a source through a variable beside them. The gate
 # at 2fa366e0 refused none of those runs: it passed every step but 12e's assignment. A path whose
-# last element is literal and no `.sh`, a tool or a data file; a variable path under a literal
-# directory outside .github/scripts/, which this check does not read; and the arguments a wrapper
-# hands on, which the reading of calls through a variable owns, pass.
+# last element is literal and no `.sh`, a tool; a variable path under a literal directory outside
+# .github/scripts/, which this check does not read; and the arguments a wrapper hands on, which
+# the reading of calls through a variable owns, pass. A data file a `.` sources,
+# `"$state_dir/$name.state"`, passed too until round 42, which refuses a `.` or a `source` of any
+# file but a literal path to one of the tree (dispatch://INFRA-1545, round 42).
 echo "case: r37 E1 a run whose script this check cannot name is refused by name"
 root=$(fixture r37-unnamed-runs)
 cat > "$root/.github/scripts/r37-c.sh" <<'SH'
@@ -14233,18 +14444,22 @@ check "tells each run of a file the step wrote to run no file the text writes" \
   "$(is "$(printf '%s\n' "$out" | grep -c "a file this text writes before it runs it, so this check cannot name the script that runs there.*Run no file this text writes")" 4)"
 check "still refuses 12e's path in its assignment" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=34::step 'Assign it to a variable and run the variable' of job 'build' names .github/scripts/r37-c.sh in a variable assignment")"
-for step in "Run a tool by its literal path" "Run a script outside .github/scripts by a variable" \
-  "Hand a wrapper its command"; do
+for step in "Run a script outside .github/scripts by a variable" "Hand a wrapper its command"; do
   check "passes '$step'" "$(is "$(contains "$out" "step '$step'")" false)"
 done
-check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 12)"
+check "refuses the data file 'Run a tool by its literal path' sources, which is no file of the tree" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=68::step 'Run a tool by its literal path' of job 'build' sources .\\\$state_dir/\\\$name\.state., which is no literal path to a file of this tree")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 13)"
 
-# The advice of a refusal of a run this check cannot name covers a tool and a data file as well
-# as a script (dispatch://INFRA-1545, round 37). The refusal stands where a script of this
-# repository could run, and it told every run to write that script's literal path, where what
-# runs here is a tool and a data file. It names their literal path or their bare name now, and
-# the step written either way passes.
-echo "case: a run of a tool or a data file named by a variable is told to write its literal path or bare name"
+# The advice of a refusal of a run this check cannot name covers a tool as well as a script, and a
+# file a `.` or a `source` reads (dispatch://INFRA-1545, rounds 37 and 42). The refusal stands
+# where a script of this repository could run, and it told every run to write that script's
+# literal path, where what runs here is a tool and a data file. It names a tool's literal path or
+# its bare name, and the step written either way passes; and since round 42, which refuses a `.`
+# or a `source` of any file but a literal path to one of the tree, it tells a source to name a
+# library of this repository by its literal path and to read a data file as data, so a data file
+# sourced by its literal path or its bare name is refused by name.
+echo "case: a run of a tool named by a variable is told to write its literal path or bare name, and a sourced data file to be read as data"
 root=$(fixture r37-unnamed-tool)
 write_tool_case() {
   cat > "$root/.github/workflows/case.yaml" <<YAML
@@ -14270,15 +14485,23 @@ check "refuses the tool's run by name" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=9::step 'Run the installed tool' of job 'build' runs .\\\$tool. as a command, whose last path element is an expansion")"
 check "refuses the data file's source by name" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=12::step 'Read the state the last step wrote' of job 'build' sources .\\\$state_file., whose last path element is an expansion")"
-check "tells each run to write a tool's or a data file's literal path or bare name" \
-  "$(is "$(printf '%s\n' "$out" | grep -c "so this check cannot name the script that runs there.*where a tool or a data file runs there, write its literal path, ...HOME/\.local/bin/mise.., or its bare name, .mise., so this check can see it is not one of this repository.s scripts")" 2)"
+check "tells each run to write a tool's literal path or bare name, and a source to read a data file as data" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "so this check cannot name the script that runs there.*where a tool runs there, write its literal path, ...HOME/\.local/bin/mise.., or its bare name, .mise., so this check can see it is not one of this repository.s scripts; and where a .\.. or a .source. reads a file there, source a library of this repository by its literal path, .\. \.github/scripts/<name>\.sh., and read a data file as data")" 2)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
 write_tool_case '"$HOME/.local/bin/mise"' '"$RUNNER_TEMP/build.state"'
 run_check "$root"
-check "with the literal paths written, passes" "$(is "$status" 0)"
+check "with the literal paths written, exits 1" "$(is "$status" 1)"
+check "refuses the data file's literal path by name, as no file of the tree" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=12::step 'Read the state the last step wrote' of job 'build' sources .\\\$RUNNER_TEMP/build\.state., which is no literal path to a file of this tree")"
+check "and refuses nothing else, the tool's literal path passing" \
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 write_tool_case mise build.state
 run_check "$root"
-check "with the bare names written, passes" "$(is "$status" 0)"
+check "with the bare names written, exits 1" "$(is "$status" 1)"
+check "refuses the data file's bare name by name, as no file of the tree" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=12::step 'Read the state the last step wrote' of job 'build' sources .build\.state., which is no literal path to a file of this tree")"
+check "and refuses nothing else, the tool's bare name passing" \
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
 # E2. A function whose body runs one of its positional parameters runs the word its caller hands
 # it in that place, so a call handing it a word built from data is a run this check cannot name,
