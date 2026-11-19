@@ -6561,7 +6561,7 @@ The boot then starts each claim the release stopped, once, at the daemon's wake 
 
 A claim that admission's pass or the cutover's repair starts at the same boot gets no second start.
 A claim of an issue that left the workflow, or of a tree that lingers or waits in the line, is left to the close, the re-admission or the promotion that starts it, as the boot's resume by rule leaves it.
-A claim that records a session name it does not hold, which only a daemon from before the session hold can leave, is suspended by the same boot with the operator's suspend before that start, which takes it over from the release, so the boot does not start it ([Operator configuration](#operator-configuration) says how to settle it).
+A claim whose current session records a name it does not hold, which only a daemon from before the session hold can leave, is suspended by the same boot with the operator's suspend before that start, which takes it over from the release, so the boot does not start it ([Operator configuration](#operator-configuration) says how to settle it); a name only its abandoned session records suspends nothing, and the boot starts it.
 The release's ask is no task, and no daemon sends it again.
 Each new pod builds its workspace from the issue's pushed branch, and the release gives it no bundle.
 A delivery that waited reaches its claim after the start: a role message, a phase-ended message and a hook prompt wait on until the start's session holds the claim's role again.

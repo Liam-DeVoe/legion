@@ -247,7 +247,7 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 // newest recorded version stands above its own new migration.
 const todaysMainsNewestMigration = 20261117200337
 
-// thisBranchsClaimSessions is this branch's one daemon migration main has not recorded.
+// thisBranchsClaimSessions is claim_sessions (#4220), which main had not recorded at f27003af63.
 const thisBranchsClaimSessions = 20261116144907
 
 // A database today's main migrated has recorded every migration up to main's newest,
