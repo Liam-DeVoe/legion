@@ -257,11 +257,7 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID strin
 func registeredPlan(given plan.Plan) RegisteredPlan {
 	tasks := make([]RegisteredTask, len(given.Tasks))
 	for i, task := range given.Tasks {
-		steps := make([]string, len(task.Steps))
-		for j, step := range task.Steps {
-			steps[j] = step.String()
-		}
-		tasks[i] = RegisteredTask{ID: task.ID, Steps: steps}
+		tasks[i] = RegisteredTask{ID: task.ID, Steps: stepWordsOf(task.Steps)}
 	}
 	return RegisteredPlan{Version: given.Version, Tasks: tasks}
 }
