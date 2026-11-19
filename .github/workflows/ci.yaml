@@ -1322,8 +1322,10 @@ jobs:
               # src/dispatch-block-ref.test.ts:98-102 reads this table of the same directory and
               # asserts set equality against it, so the two halves are one corpus.
               - 'packages/envoy/internal/dispatch/text/testdata/dispatch-block-id-encodings.json'
-              # src/dispatch-api.test.ts:293-300 reads the daemon's own intake fixture.
+              # src/dispatch-api.test.ts:406-410 and :425-426 read the daemon's own intake fixtures.
               - 'packages/daemon/internal/intake/testdata/dispatch/server-started.json'
+              - 'packages/daemon/internal/intake/testdata/dispatch/issue-updated-every-field.json'
+              - 'packages/daemon/internal/intake/testdata/dispatch/issue-claimed-every-field.json'
               - 'packages/envoy/internal/dispatch/pmdoc/testdata/block-pointer-values.json'
               - 'packages/envoy/internal/dispatch/pmdoc/testdata/typed-block-id-spellings.json'
               - 'packages/envoy/internal/contracts/generated.go'
@@ -3595,6 +3597,11 @@ jobs:
               # TestTheBuiltEnvelopeIsTheSharedFixture holds this package's build to it, so a
               # change to that one file must start this job as well as the daemon's.
               - 'packages/daemon/internal/intake/testdata/dispatch/server-started.json'
+              # The issue.updated and issue.claimed envelopes the same intake decodes:
+              # internal/dispatch/outbox/shared_issue_envelopes_test.go:97 reads each and
+              # TestTheBuiltIssueEnvelopesAreTheSharedFixtures holds the outbox's build to it.
+              - 'packages/daemon/internal/intake/testdata/dispatch/issue-updated-every-field.json'
+              - 'packages/daemon/internal/intake/testdata/dispatch/issue-claimed-every-field.json'
               # internal/dispatch/text/whitespace_fixture_test.go holds unicode.IsSpace to this
               # list, which packages/envoy-client holds goBlankPattern to: an edit of the list
               # alone must start both jobs, or the side it disagrees with stays green.

@@ -817,6 +817,15 @@ RULES = {
         ("packages/contracts/src/dispatch-api*.ts",
          "internal/dispatch/outbox/expects_reply_never_false_test.go:137-138 globs ../../../../contracts/src/dispatch-api*.ts "
          "and :149 reads each module the glob finds (the .test.ts files :146 skips apart)")),
+    # The issue.updated and issue.claimed envelopes packages/daemon's intake decodes and
+    # packages/contracts parses, which this package's TestTheBuiltIssueEnvelopesAreTheSharedFixtures
+    # holds the outbox's build to: read from another module, as startup/started_test.go below reads
+    # the server.started one, so the envoy_go filter names both files.
+    f"{ENVOY}/internal/dispatch/outbox/shared_issue_envelopes_test.go": reads(
+        (f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated-every-field.json",
+         "internal/dispatch/outbox/shared_issue_envelopes_test.go:97 os.ReadFile (issueUpdatedFixture :20)"),
+        (f"{DAEMON}/internal/intake/testdata/dispatch/issue-claimed-every-field.json",
+         "internal/dispatch/outbox/shared_issue_envelopes_test.go:97 os.ReadFile (issueClaimedFixture :21)")),
     f"{ENVOY}/internal/dispatch/pmdoc/update_test.go": [
         Read(g, "internal/dispatch/pmdoc/update_test.go:236-238 bun run gen/<script> (imports @legion/proof-editor)") for g in PMDOC_GEN],
     f"{ENVOY}/internal/dispatch/pmdoc/render_readback_test.go": [
@@ -824,8 +833,8 @@ RULES = {
     f"{ENVOY}/internal/dispatch/specgraph/imports_test.go": [
         run(f"{ENVOY}/internal/dispatch/specgraph", ["."], "internal/dispatch/specgraph/imports_test.go:15 go list -deps .", mode="build")],
     # The server.started envelope packages/daemon's intake decodes, which this package's
-    # TestTheBuiltEnvelopeIsTheSharedFixture holds its own build to: the one read here of a file
-    # of another module, and the one the envoy_go filter had to grow a pattern for, since it
+    # TestTheBuiltEnvelopeIsTheSharedFixture holds its own build to: the first read here of a file
+    # of another module, and the first the envoy_go filter had to grow a pattern for, since it
     # matched no file under packages/daemon and a change to that fixture alone therefore ran the
     # daemon's jobs and not this one (dispatch://INFRA-1413).
     f"{ENVOY}/internal/dispatch/startup/started_test.go": reads(
@@ -2558,7 +2567,9 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-href-references.json", "packages/contracts/src/dispatch-href.test.ts:51-55"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-text-references.json", "packages/contracts/src/dispatch-text-references.test.ts:10-14"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-block-id-encodings.json", "packages/contracts/src/dispatch-block-ref.test.ts:98-102 reads the Go side's own table by relative path and asserts set equality against it, so the two halves are one corpus"),
-        (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "packages/contracts/src/dispatch-api.test.ts:370 (the new URL at :366-369)"),
+        (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "packages/contracts/src/dispatch-api.test.ts:410 (the URL at :406-409)"),
+        (f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated-every-field.json", "packages/contracts/src/dispatch-api.test.ts:426 (the URL at :425, the file named at :428)"),
+        (f"{DAEMON}/internal/intake/testdata/dispatch/issue-claimed-every-field.json", "packages/contracts/src/dispatch-api.test.ts:426 (the URL at :425, the file named at :446)"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/block-pointer-values.json", "packages/contracts/src/dispatch-block-ref.test.ts:129-133 reads pmdoc's own JSON copy of the block pointer table by relative path"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/typed-block-id-spellings.json", "packages/contracts/src/dispatch-block-ref.test.ts:146-150 reads pmdoc's own JSON copy of the typed block id spellings by relative path"),
         (f"{ENVOY}/internal/contracts/generated.go", "packages/contracts/scripts/gen-go.test.ts:63 reads it for the envelope aliases, :81 reads every file of generated (:20-26, this one :7), and gen-go.ts's outputs list holds it (--check compares the committed file)"),
