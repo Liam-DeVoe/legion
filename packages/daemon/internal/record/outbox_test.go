@@ -1042,6 +1042,14 @@ func TestMergeForwardHoldsOnlyTheRolesItsHoldReachesAtItsHeadAndPhaseUntilItLand
 			t.Errorf("an ask of the head made in %s holds the %s, want no hold: the hold does not reach it", named.at, named.role)
 		}
 	}
+	// Admitted is the phase phase.RoleFor answers the architect for, and no merge forward is asked
+	// there (MergeForwardPhases). An ask the record names at admitted holds no role, the architect
+	// included, since the hold reaches the tester, the reviewer and the merger alone.
+	for _, role := range roles {
+		if MergeForwardHolds(asked(head, phase.Admitted), phase.Admitted, role) {
+			t.Errorf("an ask of the head made in admitted holds the %s, want no hold: the hold reaches no role that works admitted", role)
+		}
+	}
 	if len(held) != 3 {
 		t.Fatalf("the table holds %d pairings, want the three the hold reaches", len(held))
 	}
