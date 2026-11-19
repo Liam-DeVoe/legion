@@ -273,14 +273,40 @@ var boundaryReadings = []struct{ what, reading, want string }{
 	},
 }
 
+// joinedPictographs is 100 stop signs joined by zero-width joiners, 199 characters that UAX #29
+// keeps in one word (WB3c).
+var joinedPictographs = strings.Repeat("🛑\u200d", 99) + "🛑"
+
+// firstWordReadings are readings that decide what the line keeps of a first word and what leaving
+// a character out is. A first word of 110 characters after a bracket, a parenthesis, a double or
+// a single quote, as a test's name is written, is kept whole with what leads into it; a long word
+// after a first word that ends inside the budget is left out, with a bracket that leads into it.
+// Marks alone after the last word kept are left out with `…`. A chain of joined pictographs is one
+// word: kept whole as the first word, and left out after a first word. A backtick is the
+// pull-request line's own row, since markdown makes a code span of a check's backticks.
+var firstWordReadings = []struct{ what, reading, want string }{
+	{what: "a first word of 110 characters after [", reading: "[" + longFirstWord + "] passed 20 of 20 runs.", want: "[" + longFirstWord + "…"},
+	{what: "a first word of 110 characters after (", reading: "(" + longFirstWord + ") passed 20 of 20 runs.", want: "(" + longFirstWord + "…"},
+	{what: `a first word of 110 characters after "`, reading: `"` + longFirstWord + `" passed 20 of 20 runs.`, want: `"` + longFirstWord + "…"},
+	{what: "a first word of 110 characters after '", reading: "'" + longFirstWord + "' passed 20 of 20 runs.", want: "'" + longFirstWord + "…"},
+	{what: "a word of 110 characters after a first word inside the budget", reading: "Run " + longFirstWord + " now.", want: "Run…"},
+	{what: "a word of 110 characters after a first word and a (", reading: "Run (" + longFirstWord + ") now.", want: "Run…"},
+	{what: "marks alone after the last word", reading: "Every run passed. " + strings.Repeat("\u0301", 100), want: "Every run passed.…"},
+	{what: "100 joined pictographs alone", reading: joinedPictographs, want: joinedPictographs},
+	{what: "100 joined pictographs before more words", reading: joinedPictographs + " and more", want: joinedPictographs + "…"},
+	{what: "100 joined pictographs after a first word", reading: "Log " + joinedPictographs, want: "Log…"},
+}
+
 // The pull-request body line carries the reading the role recorded, because that is the record
 // a reader of the pull request cannot see anywhere else: the check's own words are on the
 // issue, and a pass and a fail would carry them alike. A reading over the budget is cut at a
 // word boundary and marked, a short one prints whole, and a result with no reading says so. A
 // word that ends at the budget's last character is kept, and a reading of exactly the budget
 // prints whole. A first word longer than the budget is never cut in two, at any length: the line
-// keeps it whole, marked as cut only where more words follow it. A reading in which UAX #29 puts
-// a word boundary at no space is cut inside the budget at that boundary.
+// keeps it whole with what leads into it, such as a backtick, marked as cut only where more of the
+// reading follows it. A reading in which UAX #29 puts a word boundary at no space is cut inside
+// the budget at that boundary. A URL is one word, kept whole or left out, and the ellipsis after a
+// URL stands after a space, since GitHub's markdown would take it into the link's address.
 func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESL", "Line", "A spec\n")
@@ -289,6 +315,11 @@ func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 	long := "The rig drove the command against a local Dispatch and the refusal named the flag it wanted, which is the whole of the case."
 	// fifteen is fifteen words of four characters, 74 characters before the word after them.
 	fifteen := strings.TrimSuffix(strings.Repeat("word ", 15), " ")
+	// urlPast, after "Log: ", ends at the 82nd character; urlInside at the 76th, and the word
+	// after it at the 82nd; urlFirst is 110 characters.
+	urlPast := "https://ci.example.com/acme/widgets/actions/runs/44602054328/job/135835989540"
+	urlInside := "https://ci.example.com/acme/widgets/actions/runs/44602054328/job/135835"
+	urlFirst := "https://ci.example.com/" + wordOfLength(87)
 	type lineRow struct {
 		name     string
 		observed string
@@ -330,6 +361,42 @@ func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 			observed: "",
 			want:     "The role recorded no reading.",
 		},
+		{
+			name:     "a first word of 110 characters after a backtick is kept whole with it",
+			observed: "`" + longFirstWord + "` passed 20 of 20 runs.",
+			want:     "`" + longFirstWord + "…",
+		},
+		{
+			name:     "a word of 110 characters after a first word is left out with the backtick before it",
+			observed: "Run `" + longFirstWord + "` passed 20 of 20 runs.",
+			want:     "Run…",
+		},
+		{
+			// "`short` " is 8 characters, so the 14th of the fifteen words ends at the 77th.
+			name:     "a first word after a backtick that ends inside the budget is cut at a word boundary as before",
+			observed: "`short` " + fifteen + " more words follow.",
+			want:     "`short` " + strings.TrimSuffix(strings.Repeat("word ", 14), " ") + "…",
+		},
+		{
+			name:     "a URL across the 80th character is left out, and the line ends before it",
+			observed: "Log: " + urlPast + " shows the failing step.",
+			want:     "Log:…",
+		},
+		{
+			name:     "a URL that ends inside the budget is kept whole, with a space before the ellipsis",
+			observed: "Log: " + urlInside + " shows the failing step.",
+			want:     "Log: " + urlInside + " …",
+		},
+		{
+			name:     "a first word that is a URL of 110 characters is kept whole, with a space before the ellipsis",
+			observed: urlFirst + " shows the failing step.",
+			want:     urlFirst + " …",
+		},
+		{
+			name:     "a URL of 110 characters that is the whole reading prints whole",
+			observed: urlFirst,
+			want:     urlFirst,
+		},
 	}
 	for _, length := range []int{81, 110, 161, 1000} {
 		word := wordOfLength(length)
@@ -348,6 +415,13 @@ func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 	for _, reading := range boundaryReadings {
 		rows = append(rows, lineRow{
 			name:     "a reading of " + reading.what + " is cut inside the budget at a word boundary",
+			observed: reading.reading,
+			want:     reading.want,
+		})
+	}
+	for _, reading := range firstWordReadings {
+		rows = append(rows, lineRow{
+			name:     "a reading of " + reading.what + " is cut as the first word decides",
 			observed: reading.reading,
 			want:     reading.want,
 		})
@@ -3274,8 +3348,8 @@ func TestCIResultIsTheRunOfTheHighestID(t *testing.T) {
 // a reading (TestThePullRequestLineCarriesTheReading): at the last word boundary inside the
 // budget, where UAX #29 puts one at no space too, as beside a character in a script written
 // without spaces between its words; words of exactly the budget print whole; a first word longer
-// than the budget is kept whole, marked as cut where more words follow it, and printed whole
-// where it is all the check says.
+// than the budget is kept whole with what leads into it, marked as cut where more words follow
+// it, and printed whole where it is all the check says.
 func TestTheCILineCutsTheCheckWordsAtAWord(t *testing.T) {
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCW", "acme/widgets", "Check words cut at a word")
@@ -3294,6 +3368,11 @@ func TestTheCILineCutsTheCheckWordsAtAWord(t *testing.T) {
 	for _, reading := range boundaryReadings {
 		rows = append(rows, struct{ name, words, want string }{
 			name: "check words of " + reading.what + " are cut inside the budget at a word boundary", words: reading.reading, want: reading.want,
+		})
+	}
+	for _, reading := range firstWordReadings {
+		rows = append(rows, struct{ name, words, want string }{
+			name: "check words of " + reading.what + " are cut as the first word decides", words: reading.reading, want: reading.want,
 		})
 	}
 	var document strings.Builder

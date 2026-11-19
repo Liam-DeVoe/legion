@@ -77,6 +77,36 @@ func joinsBefore(value wordBreak) bool {
 	return value == wbExtend || value == wbFormat || value == wbZWJ
 }
 
+// runeClass is what a rune is to a word, in the order a segment's runes raise it: white space;
+// a rune WB4 joins to the rune before it (a mark, a format character or a joiner); any other
+// character, such as punctuation, a symbol or an emoji; and a letter or a number.
+type runeClass uint8
+
+const (
+	classSpace runeClass = iota
+	classJoiner
+	classSymbol
+	classLetter
+)
+
+// classOf is the class of r, whose Word_Break value is value: the one rule of what a word is,
+// which both the choice of the prefix and the ellipsis read. A segment that holds a rune above
+// classJoiner is a word, and one that holds a classLetter rune (unicode.IsLetter or
+// unicode.IsNumber) is a word that can be a first word (HeadWords). A cut leaves a character of
+// the value out where what it leaves out holds a rune above classSpace (leftOut). White space is
+// what unicode.IsSpace reports, where strings.Fields parts a string.
+func classOf(r rune, value wordBreak) runeClass {
+	switch {
+	case unicode.IsSpace(r):
+		return classSpace
+	case joinsBefore(value):
+		return classJoiner
+	case unicode.IsLetter(r) || unicode.IsNumber(r):
+		return classLetter
+	}
+	return classSymbol
+}
+
 // lineBreak reports whether a rune of this value breaks a line: CR, LF and Newline.
 func lineBreak(value wordBreak) bool {
 	return value == wbCR || value == wbLF || value == wbNewline
@@ -117,10 +147,9 @@ type wordSegments struct {
 }
 
 // segment reads the next segment and returns the byte offset of its end, the number of runes it
-// holds, and whether it holds a word: a rune that is no white space (unicode.IsSpace, where
-// strings.Fields parts a string) and that WB4 does not join to the rune before it. It returns 0
-// runes when the string is read to its end.
-func (w *wordSegments) segment() (end, runes int, word bool) {
+// holds, and its class: the highest class of a rune it holds (classOf). It returns 0 runes when
+// the string is read to its end.
+func (w *wordSegments) segment() (end, runes int, class runeClass) {
 	for w.next < len(w.s) {
 		r, size := utf8.DecodeRuneInString(w.s[w.next:])
 		value, pictographic := wordBreakOf(r)
@@ -130,11 +159,9 @@ func (w *wordSegments) segment() (end, runes int, word bool) {
 		w.read(value)
 		w.next += size
 		runes++
-		if !word && !joinsBefore(value) && !unicode.IsSpace(r) {
-			word = true
-		}
+		class = max(class, classOf(r, value))
 	}
-	return w.next, runes, word
+	return w.next, runes, class
 }
 
 // read takes in the next rune, of Word_Break value value.

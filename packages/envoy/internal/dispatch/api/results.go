@@ -998,15 +998,21 @@ func checkResultLine(check resolvedCheck, result model.CheckResult) string {
 // cut, so a reader can tell a cut line from a short one (text.HeadWords). The boundaries are those
 // of Unicode's default word rules (UAX #29): in a script written without spaces between its words,
 // such as Chinese, one falls beside each character, and one falls beside each emoji, symbol and
-// punctuation mark, so such text, or a URL's path, is cut inside the budget. A first word longer
-// than the budget, such as a long name of letters, digits and underscores, is kept whole, since
-// no boundary falls inside the budget, and is marked only where more words follow it.
+// punctuation mark, so such text, or a path, is cut inside the budget. A URL is one word, so the
+// line keeps it whole or ends before it. A first word longer than the budget, such as a long name
+// of letters, digits and underscores, is kept whole with what leads into it, such as a backtick,
+// since no boundary falls inside the budget, and is marked only where more of s follows it. The
+// ellipsis after a URL stands after a space (text.EndsInURL), since GitHub's markdown would take
+// it into the link's address.
 func cutWords(s string) string {
 	head, cut := text.HeadWords(s, checkResultReadingRunes)
-	if cut {
-		head += "…"
+	if !cut {
+		return head
 	}
-	return head
+	if text.EndsInURL(head) {
+		head += " "
+	}
+	return head + "…"
 }
 
 // sessionOf is the session a result was recorded by, empty for a person's.
