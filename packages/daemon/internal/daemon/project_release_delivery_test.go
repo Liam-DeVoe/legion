@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -34,16 +35,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// releaseDeliveries is the three rows that publish to a role's own topic and that the outbox ends
+// releaseDeliveries is the two rows that publish to a role's own topic and that the outbox ends
 // when nobody holds it: each names its recipient and builds its row for that recipient's claim.
 var releaseDeliveries = []struct {
 	name    string
 	role    claim.Role
 	payload func(claim.Token) record.OutboxPayload
 }{
-	{"a phase-ended message", claim.RoleTester, func(claim.Token) record.OutboxPayload {
-		return record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"}
-	}},
 	{"a role message", claim.RoleImplementer, func(token claim.Token) record.OutboxPayload {
 		return record.RoleMessage{Role: string(token), Body: "CI settled at the head"}
 	}},
@@ -193,13 +191,13 @@ func (r *releaseDeliveryRig) endsUndelivered(t *testing.T, when string, attempts
 	}
 }
 
-// A role message, a phase-ended message and a hook prompt for a claim the boot found stopped by
-// the project release each wait while that claim has not come back: before the boot's start of it
-// has run, and while the start's process is launching, connected and registered, when no session
-// holds the role's topic and a publish would end the row undelivered. Once the claim has stood
-// ready past the first-turn bound its session holds the role, and the row is published to it. The
-// claim is then out of the set, so when its process dies later and it is relaunching, a new row
-// nobody holds ends undelivered, as it does for any other claim.
+// A role message and a hook prompt for a claim the boot found stopped by the project release each
+// wait while that claim has not come back: before the boot's start of it has run, and while the
+// start's process is launching, connected and registered, when no session holds the role's topic
+// and a publish would end the row undelivered. Once the claim has stood ready past the first-turn
+// bound its session holds the role, and the row is published to it. The claim is then out of the
+// set, so when its process dies later and it is relaunching, a new row nobody holds ends
+// undelivered, as it does for any other claim.
 func TestADeliveryHeldThroughAProjectReleaseReachesItsClaimAfterItsStart(t *testing.T) {
 	for _, tc := range releaseDeliveries {
 		t.Run(tc.name, func(t *testing.T) {
@@ -354,15 +352,63 @@ func TestADeliveryHeldThroughAProjectReleaseWaitsForTheRoleAfterTheClaimIsReady(
 	}
 }
 
+// A merge forward's message (record.MergeForwardMessage) is held for its role as a merge-queue
+// removal is (deliverHeld): while nobody holds the role the row waits rather than ending. For a
+// claim the boot found stopped by the project release it also publishes nothing until that claim
+// has come back, as the role message and the hook prompt above do (wakeForDelivery's
+// awaitsBootStart): before the boot's start of it has run, and while the start's process is
+// launching and registered. Once the claim has stood ready past the first-turn bound its session
+// holds the role, and the ask is published to it once, under its row's key. The negative control
+// is deliverHeld without that wait: each of those attempts then publishes to the topic nobody
+// holds yet, and the row counts publishes the test wants none of.
+func TestAMergeForwardMessageHeldThroughAProjectReleaseWaitsForTheBootsStart(t *testing.T) {
+	ctx := context.Background()
+	stored := stoppedByRelease(t, claim.RoleImplementer)
+	rig := newReleaseDeliveryRig(t, stored)
+	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+		return rig.records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
+			Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1", HeadUpdatedAt: rig.clock.Now(), Failing: []string{},
+			CheckRuns: []record.AttemptRun{}, Base: "main", MergeForward: &record.MergeForward{Head: "sha-1", Base: "main",
+				Phase: phase.Implementing, Why: record.ConflictCheckNotGreen, AskedAt: rig.clock.Now()}})
+	}); err != nil {
+		t.Fatalf("seed the pull request and the merge forward it holds: %v", err)
+	}
+	ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: "sha-1", Base: "main",
+		Phase: phase.Implementing, PullRequest: 86, Why: record.ConflictCheckNotGreen}
+	machine := rig.supervise(t, stored)
+	topic := notify.RoleTopicPrefix + string(stored.Token)
+	rig.publisher.setAbsent(topic)
+	rig.enqueue(t, ask)
+	id := noticeRowID(t, rig.pool)
+
+	rig.waits(t, "before the boot's start of the claim has run")
+	rig.start(t, machine, stored)
+	rig.waits(t, "while the claim launches")
+	rig.register(t, machine, stored)
+	rig.waits(t, "while the claim is registered")
+
+	rig.ready(t, machine, stored)
+	rig.publisher.setAbsent()
+	rig.run(t)
+	attempts, delivered := rig.publisher.snapshot()
+	if attempts != 1 || len(delivered) != 1 || delivered[0].topic != topic || delivered[0].keep ||
+		delivered[0].key != record.OutboxKey(id) || delivered[0].message != ask.Message("LEGION-208", "acme/widgets") {
+		t.Fatalf("once the claim holds its role: %d publish attempts delivered %+v, want the ask published once to %s under its row's key, unkept",
+			attempts, delivered, topic)
+	}
+	if left := outboxRows(t, rig.pool); left != 0 {
+		t.Fatalf("once the claim holds its role: outbox rows left = %d, want the row finished", left)
+	}
+}
+
 // The wake pacing can hold the boot's start of a claim the project release stopped for longer than
-// an hour over a wave, the claim launching with no process all that time. A role message, a
-// phase-ended message and a hook prompt held for it each wait for that start as a delivery waits
-// for any launch the pacing parked (launchParked): the row runs again at the start's turn or
-// parkedWakeBound on, whichever comes first, on a routine wait, rather than climbing its backoff
-// to 64 s and warning at every attempt from the seventh for as long as the park lasts. The
-// negative control is awaitsBootStart without its read of the park: each delivery, which reads
-// the park of such a claim through awaitsBootStart alone, then waits on its backoff with the
-// start's own sentence.
+// an hour over a wave, the claim launching with no process all that time. A role message and a
+// hook prompt held for it each wait for that start as a delivery waits for any launch the pacing
+// parked (launchParked): the row runs again at the start's turn or parkedWakeBound on, whichever
+// comes first, on a routine wait, rather than climbing its backoff to 64 s and warning at every
+// attempt from the seventh for as long as the park lasts. The negative control is awaitsBootStart
+// without its read of the park: each delivery, which reads the park of such a claim through
+// awaitsBootStart alone, then waits on its backoff with the start's own sentence.
 func TestADeliveryHeldThroughAProjectReleaseWaitsOutThePacingOfItsStart(t *testing.T) {
 	for _, tc := range releaseDeliveries {
 		t.Run(tc.name, func(t *testing.T) {
@@ -544,9 +590,9 @@ func TestABootStartOfAStoppedPhaseOwnerStartsItAfterItsIssueLeftThePhase(t *test
 }
 
 // The boot writes no start for a phase owner a queued start already covers, and that start can be
-// taken out before a lane runs it, by a later start of another role written in its place: a head
-// that starts conflicting moves a tester's issue back to implementing, and the implementer's start
-// takes out the tester's start the release held (workflow.StartOrOwe, record.Store.EnqueueStart).
+// taken out before a lane runs it, by a later start of another role written in its place: a
+// tester's fail moves its issue back to implementing, and the implementer's start takes out the
+// tester's start the release held (workflow.StartOrOwe, record.Store.EnqueueStart).
 // That start was the stopped tester's one start, so the same write leaves the tester a start of
 // its own, and the claim launches, resumed by rule and with no task, as the outbox's phase fence
 // would have started it, while the implementer's start waits for the issue's slot.
@@ -559,14 +605,14 @@ func TestAStartTakenOutByAnotherRolesStartStillStartsTheClaimTheProjectReleaseSt
 	if err := rig.st.PutClaim(ctx, stored); err != nil {
 		t.Fatalf("store the tester's claim as the release left it: %v", err)
 	}
-	// The record stands in implementing, where the conflict moved it. The tester's start was
+	// The record stands in implementing, where the tester's fail moved it. The tester's start was
 	// written when the issue entered testing and held through the release; the implementer's is
 	// the move back.
 	for _, start := range []record.SuperviseRequest{
 		{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 1, Phase: phase.Testing,
 			Task: "Test the change at its head.", Entry: 1},
 		{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1, Phase: phase.Implementing,
-			Task: "Merge main into the branch and resolve the conflict.", Entry: 2},
+			Task: "Fix what the tester found.", Entry: 2},
 	} {
 		if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
 			return workflow.StartOrOwe(ctx, tx, rig.records, "LEGION-208", start, rig.clock.Now())
@@ -591,7 +637,7 @@ func TestAStartTakenOutByAnotherRolesStartStillStartsTheClaimTheProjectReleaseSt
 	if err != nil {
 		t.Fatalf("read the rows left: %v", err)
 	}
-	if want := []string{"implementer: Merge main into the branch and resolve the conflict."}; !slices.Equal(left, want) {
+	if want := []string{"implementer: Fix what the tester found."}; !slices.Equal(left, want) {
 		t.Fatalf("the rows left = %q, want %q: the implementer's start waits for the issue's slot", left, want)
 	}
 }
@@ -701,9 +747,13 @@ func TestARowTheProjectReleaseHoldsSpendsNoAttempt(t *testing.T) {
 		return &outbox{pool: pool, dispatchProject: "LEGION", records: records, project: "legion", release: release,
 			log: slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})),
 			now: func() time.Time { return at },
-			readPullRequest: func(context.Context, record.PullRequest) (githubPullRequest, error) {
+			readPullRequest: func(context.Context, record.PullRequest) (githubrest.Client, githubPullRequest, error) {
 				reads++
-				return githubPullRequest{}, errors.New("GitHub answered 502")
+				return githubrest.Client{}, githubPullRequest{}, errors.New("GitHub answered 502")
+			},
+			// Every read fails, so the row applies no answer of GitHub's.
+			applyMergeability: func(context.Context, githubrest.Client, record.PullRequest, githubPullRequest, time.Time, string) error {
+				return errors.New("a failed read applies no mergeability")
 			},
 			mergeStateWait: func() time.Duration { return time.Second }}
 	}

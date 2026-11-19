@@ -13,8 +13,8 @@ body: |-
   A pod that holds a claim an operator suspended, or whose ask to its roles could not be written
   before the bound or reached no session of them by it, is left with its disk, and the claims that
   ran there stay held for an operator.
-  A role message, phase-ended message or hook prompt held through the release reaches its claim
-  once the next boot's start of it holds its role again.
+  A notice, role message, hook prompt, merge-queue removal message or merge-forward message held
+  through the release reaches its claim once the next boot's start of it holds its role again.
   The command prints one line for each Sandbox and each stopped claim, and exits 0 once the
   release finished and left no Sandbox of the project. `--dry-run` shows what a release would do
   now and changes nothing. `POST` and `GET /legion/v1/operator/project/release` start and read the

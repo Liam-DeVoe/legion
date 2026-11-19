@@ -56,13 +56,13 @@ const moveRefusal = "Unknown command: read-unpushed"
 // (notice_routing.go's holdsRole).
 const moveDeliveryText = "the move test's delivery, which arrived during the release"
 
-// moveEndedReason is the reason of the phase-ended message that arrives for a stopped worker
-// during the first release. The outbox ends a role message, a phase-ended message or a hook
-// prompt undelivered when no session holds its role, and has each wait instead for a claim the
-// boot starts after a release (outbox's awaitsBootStart). The phase-ended message is the one of
-// the three that keeps a worker off a workspace that is another phase's now
-// (record.PhaseEnded), so it is the one the move reads.
-const moveEndedReason = "the head started conflicting with main while the move test's release ran"
+// moveHookWords is the words of the hook prompt that arrives for a stopped worker during the
+// first release. The outbox ends a role message or a hook prompt undelivered when no session holds
+// its role, and has each wait instead for a claim the boot starts after a release (outbox's
+// awaitsBootStart). The hook prompt is the one of the two that the daemon wakes a released role
+// for and publishes with keep (wakeForDelivery, publishKeptToRole), so it is the one the move
+// reads.
+const moveHookWords = "Read what the move test's release left in the workspace before you write anything."
 
 // projectMove is one project the move tests move, on the idle rig: its issues, one for each case
 // of dispatch://INFRA-3583 R9, and the `legion` the operator runs.
@@ -77,7 +77,7 @@ type projectMove struct {
 	//   - clean: only a working-copy commit with no change, holding the tree's architect, a role
 	//     of an earlier phase (the planner) and its phase's owner level with its entry; during
 	//     the first release a notice arrives for its architect, which is the delivery, and a
-	//     phase-ended message for its implementer;
+	//     hook prompt for its implementer;
 	//   - turn: a role in a turn at the bound;
 	//   - stopped: a pod in which no role process runs, since an operator stopped its one role,
 	//     whose claim retired;
@@ -938,8 +938,8 @@ func (m *projectMove) checkLeft(t *testing.T, cluster *issueSandboxAPI) {
 //   - a release that leaves the claims of a pod it leaves in their update round fails on the
 //     operator's pod's claim, read before the restart (checkLeft);
 //   - an outbox that waits for a claim the release stopped only until the boot has started it,
-//     and not until its session holds its role again, fails on the phase-ended message, which
-//     it ends undelivered (checkPhaseEnded);
+//     and not until its session holds its role again, fails on the hook prompt, which it ends
+//     undelivered (checkHookPrompt);
 //   - a machine that holds the release's suspension of a claim whose launch that suspension cut
 //     short, where it suspends the claim at once, fails on the pod no role process started in
 //     and on the pod whose role starts again, each of which the release then leaves
@@ -958,13 +958,12 @@ func TestAProjectMovesToAnotherClusterAndBack(t *testing.T) {
 		{"the first release in the first cluster and the restart on the second cluster's configuration move the project", func(t *testing.T) {
 			rd := m.release(t, "first", func(rd *moveRelease) {
 				// The deliveries arrive during the release, once the clean pod is gone: a notice for
-				// its tree's architect, as the workflow writes one of a child's status, and a
-				// phase-ended message for its implementer, as the workflow writes one when a head
-				// that starts conflicting with its base ends a role's phase. The claim that stands
-				// behind its entry at the boot has that entry raised, and the outbox holds the
-				// start it is owed.
+				// its tree's architect, as the workflow writes one of a child's status, and a hook
+				// prompt for its implementer, as the workflow writes one when a hook of the
+				// deployment fires on a move back. The claim that stands behind its entry at the
+				// boot has that entry raised, and the outbox holds the start it is owed.
 				m.deliverNotice(t)
-				m.deliverPhaseEnded(t)
+				m.deliverHookPrompt(t)
 				rd.entryTask = m.raiseEntry(t, m.silent)
 			})
 			m.checkMove(t, rd, []idleRigIssue{m.held}, true)
@@ -976,12 +975,12 @@ func TestAProjectMovesToAnotherClusterAndBack(t *testing.T) {
 			m.awaitHeldStart(t, rd)
 			m.awaitHeldMessage(t)
 			// An operator's restart comes minutes after the release, by when each row the release
-			// held is due again (releaseHoldSpacing). This one comes within seconds, so the
-			// phase-ended message is made due while the daemon is down, and runs as the boot's
-			// outbox starts, before its claim has come back.
+			// held is due again (releaseHoldSpacing). This one comes within seconds, so the hook
+			// prompt is made due while the daemon is down, and runs as the boot's outbox starts,
+			// before its claim has come back.
 			r.stopDaemon()
-			if due := r.dueNow(m.clean.key, record.OutboxKindPhaseEnded); due != 1 {
-				t.Fatalf("the outbox holds %d phase-ended rows for %s as the daemon stopped, want the one the release held", due, m.clean.key)
+			if due := r.dueNow(m.clean.key, record.OutboxKindHookPrompt); due != 1 {
+				t.Fatalf("the outbox holds %d hook-prompt rows for %s as the daemon stopped, want the one the release held", due, m.clean.key)
 			}
 			// The pod no role process started in is gone, so the rig holds its role back no
 			// longer: the boot's start of its claim runs its first role process.
@@ -991,7 +990,7 @@ func TestAProjectMovesToAnotherClusterAndBack(t *testing.T) {
 			m.checkStartedAgain(t, second, rd, m.unstarted)
 			m.checkStartedAgain(t, second, rd, m.restarting)
 			m.checkDelivery(t, rd)
-			m.checkPhaseEnded(t, rd)
+			m.checkHookPrompt(t, rd)
 			m.checkLeft(t, first)
 			if names := first.sandboxNames(); !slices.Equal(names, []string{m.held.pod}) {
 				t.Errorf("the first cluster holds %v after the move, want only the left pod %s", names, m.held.pod)
@@ -1057,21 +1056,20 @@ func (m *projectMove) awaitHeldStart(t *testing.T, rd *moveRelease) {
 	})
 }
 
-// awaitHeldMessage waits until the outbox has read the phase-ended message's row under the
-// release and put it back unrun: the row stands with the release's hold as its last error and no
-// attempt counted (outbox.holdForRelease). The outbox finds a row the test wrote at its next
-// sweep, which comes within outboxLease, so the row is waited for rather than read at the
-// release's end.
+// awaitHeldMessage waits until the outbox has read the hook prompt's row under the release and
+// put it back unrun: the row stands with the release's hold as its last error and no attempt
+// counted (outbox.holdForRelease). The outbox finds a row the test wrote at its next sweep, which
+// comes within outboxLease, so the row is waited for rather than read at the release's end.
 func (m *projectMove) awaitHeldMessage(t *testing.T) {
 	t.Helper()
 	r := m.rig
 	var rows []idleRigOutboxRow
-	idleRigEventually(t, idleRigRecordWait, "the outbox holding the phase-ended message for the release", func() bool {
-		rows = r.outboxRowsOf(m.clean.key, record.OutboxKindPhaseEnded)
+	idleRigEventually(t, idleRigRecordWait, "the outbox holding the hook prompt for the release", func() bool {
+		rows = r.outboxRowsOf(m.clean.key, record.OutboxKindHookPrompt)
 		return len(rows) != 1 || strings.Contains(rows[0].lastError, api.ProjectReleaseHeldSentence)
 	})
 	if len(rows) != 1 || rows[0].attempts != 0 {
-		t.Fatalf("the outbox holds the phase-ended rows %+v for %s under the release, want the one row, held with no attempt counted", rows, m.clean.key)
+		t.Fatalf("the outbox holds the hook-prompt rows %+v for %s under the release, want the one row, held with no attempt counted", rows, m.clean.key)
 	}
 }
 
@@ -1090,22 +1088,20 @@ func (m *projectMove) deliverNotice(t *testing.T) {
 	}
 }
 
-// deliverPhaseEnded writes into the outbox the phase-ended message for the clean pod's
-// implementer, a claim the release has stopped by then: the row the workflow writes when a head
-// that starts conflicting with its base sends an issue back from retro into implementing, which
-// tells the implementer that its retro phase ended and that its implementing task follows
-// (workflow's phaseEnded).
-func (m *projectMove) deliverPhaseEnded(t *testing.T) {
+// deliverHookPrompt writes into the outbox the hook prompt for the clean pod's implementer, a
+// claim the release has stopped by then: the row the workflow writes when a hook of the
+// deployment fires on a move back into implementing (workflow's fireHook).
+func (m *projectMove) deliverHookPrompt(t *testing.T) {
 	t.Helper()
 	r := m.rig
 	ctx := context.Background()
-	row, err := record.NewOutboxRow(m.clean.key, record.PhaseEnded{Role: m.clean.role, From: phase.Retro, To: phase.Implementing,
-		Reason: moveEndedReason, TaskFollows: true}, time.Now())
+	row, err := record.NewOutboxRow(m.clean.key, record.HookPrompt{Hook: "back-to-implementing", Role: m.clean.role,
+		From: phase.Testing, To: phase.Implementing, Count: 1, Counts: map[string]int{"testing-implementing": 1}, Prompt: moveHookWords}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error { return r.records.Enqueue(ctx, tx, row) }); err != nil {
-		t.Fatalf("write the phase-ended message for %s's %s: %v", m.clean.key, m.clean.role, err)
+		t.Fatalf("write the hook prompt for %s's %s: %v", m.clean.key, m.clean.role, err)
 	}
 }
 
@@ -1134,37 +1130,37 @@ func (m *projectMove) checkDelivery(t *testing.T, rd *moveRelease) {
 	}
 }
 
-// checkPhaseEnded holds the phase-ended message that arrived during the release to
-// dispatch://INFRA-3583 R8: its row left the outbox delivered, and the message reached its claim
-// after the boot's start, on the process that start ran, once. The outbox ends such a row
-// undelivered when it runs while no session holds the role, which is how the claim stands from
-// the boot until the process its start runs holds the role, so the row has to wait that out.
-func (m *projectMove) checkPhaseEnded(t *testing.T, rd *moveRelease) {
+// checkHookPrompt holds the hook prompt that arrived during the release to dispatch://INFRA-3583
+// R8: its row left the outbox delivered, and the prompt reached its claim after the boot's start,
+// on the process that start ran, once. The outbox ends such a row undelivered when it runs while
+// no session holds the role, which is how the claim stands from the boot until the process its
+// start runs holds the role, so the row has to wait that out.
+func (m *projectMove) checkHookPrompt(t *testing.T, rd *moveRelease) {
 	t.Helper()
 	r := m.rig
 	role := string(m.clean.role)
 	// The row waits on its backoff while its claim comes back, whose steps climb to 64 seconds
 	// (retryBackoff), so its last run comes up to that long after the claims run again.
-	idleRigEventually(t, idleRigRecordWait+time.Minute, "the phase-ended message's row leaving the outbox", func() bool {
-		return len(r.outboxRowsOf(m.clean.key, record.OutboxKindPhaseEnded)) == 0
+	idleRigEventually(t, idleRigRecordWait+time.Minute, "the hook prompt's row leaving the outbox", func() bool {
+		return len(r.outboxRowsOf(m.clean.key, record.OutboxKindHookPrompt)) == 0
 	})
-	if ended := r.logged("outbox phase-ended message finished undelivered: no live session holds the role", map[string]string{"issue": m.clean.key}); ended != 0 {
-		t.Errorf("the daemon ended the phase-ended message for %s's %s undelivered %d times, want it delivered once its claim held its role again",
+	if ended := r.logged("outbox hook prompt finished undelivered: no live session holds the role", map[string]string{"issue": m.clean.key}); ended != 0 {
+		t.Errorf("the daemon ended the hook prompt for %s's %s undelivered %d times, want it delivered once its claim held its role again",
 			m.clean.name, role, ended)
 		return
 	}
 	// The row leaves the outbox once the listener has answered the publish, and the role process
-	// records the message as its session's consumer relays it, so that record is waited for.
-	idleRigEventually(t, idleRigRecordWait, "the phase-ended message reaching "+m.clean.name+"'s "+role, func() bool {
-		return idleRigCount(r.agents.messages(m.clean.key, role), moveEndedReason) > 0
+	// records the prompt as its session's consumer relays it, so that record is waited for.
+	idleRigEventually(t, idleRigRecordWait, "the hook prompt reaching "+m.clean.name+"'s "+role, func() bool {
+		return idleRigCount(r.agents.messages(m.clean.key, role), moveHookWords) > 0
 	})
 	seen := r.agents.role(m.clean.key, role)
-	if got := idleRigCount(seen.Messages, moveEndedReason); got != 1 {
-		t.Errorf("the phase-ended message reached %s's %s %d times, want once", m.clean.name, role, got)
+	if got := idleRigCount(seen.Messages, moveHookWords); got != 1 {
+		t.Errorf("the hook prompt reached %s's %s %d times, want once", m.clean.name, role, got)
 	}
 	for _, message := range seen.Messages {
-		if strings.Contains(message.Text, moveEndedReason) && (message.At.Before(rd.restarted) || message.At.Before(seen.RegisteredAt)) {
-			t.Errorf("the phase-ended message reached %s's %s at %s, before the restart at %s or before its process registered at %s",
+		if strings.Contains(message.Text, moveHookWords) && (message.At.Before(rd.restarted) || message.At.Before(seen.RegisteredAt)) {
+			t.Errorf("the hook prompt reached %s's %s at %s, before the restart at %s or before its process registered at %s",
 				m.clean.name, role, message.At, rd.restarted, seen.RegisteredAt)
 		}
 	}
