@@ -677,6 +677,7 @@ jobs:
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testnats/loopback/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
               - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/listenerwire/*'
@@ -1123,6 +1124,7 @@ jobs:
               - 'packages/envoy/natsgrant/*'
               - 'packages/envoy/dispatchbody/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testnats/loopback/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/sessiontiming/*'
               - 'packages/envoy/subjectforms/*'
@@ -2798,6 +2800,7 @@ jobs:
               # that requires a credential verifies.
               - 'packages/envoy/internal/oidc/oidctest/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testnats/loopback/*'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testport/*'
@@ -2925,6 +2928,7 @@ jobs:
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testnats/loopback/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               # The step takes the memory tag's test list from this script at run time.
@@ -2962,6 +2966,7 @@ jobs:
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testnats/loopback/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               # The step takes the multiprocess tag's test list from this script at run time.
@@ -3007,6 +3012,7 @@ jobs:
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testnats/loopback/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - '.github/scripts/go-tagged-tests.sh'
@@ -3107,6 +3113,7 @@ jobs:
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testnats/loopback/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - '.github/scripts/go-tagged-tests.sh'
@@ -3289,6 +3296,7 @@ jobs:
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testnats/loopback/*'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testport/*'
@@ -3335,6 +3343,7 @@ jobs:
               # e2e-local.sh:148-149 builds ./cmd/listener and ./internal/testnats/cmd/natsd.
               - *listener_command
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testnats/loopback/*'
               - 'packages/envoy/internal/testnats/cmd/natsd/*'
               # natsd reads testnats, whose Gate reserves its port with internal/testport.
               - 'packages/envoy/internal/testport/*'

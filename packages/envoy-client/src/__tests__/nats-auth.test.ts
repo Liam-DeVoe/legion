@@ -97,7 +97,9 @@ describe.skipIf(process.env.LEGION_E2E !== "1")("natsAuthOptions against a real 
       reconnectTimeWait: 50,
     });
     try {
-      await expect(server.stop()).rejects.toThrow(/still had 1 client\(s\) connected .*leftover-client/);
+      await expect(server.stop()).rejects.toThrow(
+        /still had 1 client\(s\) connected .*leftover-client/
+      );
     } finally {
       await leftover.close();
     }
