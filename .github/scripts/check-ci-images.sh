@@ -396,7 +396,6 @@ EXCEPTIONS = {
     "scripts/e2e/burstable-kind.sh": NO_CI_JOB,
     "scripts/e2e/claude-backend-sandbox.sh": NO_CI_JOB,
     "scripts/e2e/controller-sweep-kind.sh": NO_CI_JOB,
-    "scripts/e2e/dispatch-user-turns.sh": NO_CI_JOB,
     "scripts/e2e/lib/bridge-tunnel.sh": NO_CI_JOB,
     "scripts/e2e/lib/kind-sandbox.sh": NO_CI_JOB,
     "scripts/e2e/parked-decision-devbox.sh": NO_CI_JOB,

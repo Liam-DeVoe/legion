@@ -25,8 +25,8 @@ name: E2E proofs
 # No hosted proof here needs a secret, and none may: Sami answered that no API key goes into
 # cybermonklabs/legion, and that a smoke test which calls a model runs in the deployment repository on
 # workload identity federation (sjawhar/legion#2512).
-# dispatch-session-settings.sh, which drives two real models, is therefore in the refused list
-# with that reason, not in the hosted one.
+# The scripts that once drove real models (dispatch-session-settings.sh among them) now run on
+# model stand-ins as steps of ci.yaml's agent-harness job, and are in the refused list naming it.
 #
 # Every job uploads its evidence directory as an artifact, `if: always()`, so a failed run
 # uploads its evidence too. A reader takes the result with `gh run view` and the directory with

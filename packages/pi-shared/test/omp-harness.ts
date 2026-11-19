@@ -271,15 +271,30 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
   }
 }
 
-/** One provider the stand-in serves and the models it offers under it. Every provider is the same
- * stand-in at the same base URL, so a case that needs two models tells them apart by the `model`
- * of the Messages request it is answering. */
+/** One provider the stand-in serves and the models it offers under it. Every provider of one wire
+ * protocol is the same stand-in at the same base URL, so a case that needs two models tells them
+ * apart by the `model` of the request it is answering. */
 export interface StandinProvider {
   /** The provider key, as a selector's first half (`standin` in `standin/standin-model`). */
   readonly provider: string;
   /** The model ids, in the order the profile lists them; the first of the first provider is what
    * every model role names. */
   readonly models: readonly string[];
+  /** The wire protocol its models speak, and so where the stand-in answers them: Anthropic
+   * Messages (`anthropic-messages`, the default) under `<base>/anthropic`, OpenAI Chat
+   * Completions (`openai-completions`) under `<base>/openai/v1`. */
+  readonly api?: "anthropic-messages" | "openai-completions";
+  /** A base URL of the case's own in place of the stand-in's: a port nothing answers on, for a
+   * provider whose every request must fail. */
+  readonly baseUrl?: string;
+  /** The key the profile names for it: `standin-key` when absent, the placeholder every other
+   * case's stand-in takes. `null` names none, as for an OAuth provider no account signed in to,
+   * so no `get_available_models` lists its models and a switch to one is refused for want of a
+   * key. */
+  readonly apiKey?: string | null;
+  /** The thinking levels its models offer, which `/effort` lists after `off` and `auto`; when
+   * absent, its models have no adjustable thinking level. */
+  readonly efforts?: readonly string[];
 }
 
 /** What `writeStandinProfile` writes when a caller names no providers: the one model every pane
@@ -290,10 +305,11 @@ export const DEFAULT_STANDIN_PROVIDERS: readonly StandinProvider[] = [
 
 /**
  * Writes the profile under `home`: the stand-in at `base` as its providers, each keyed by a
- * literal like a plain API-key caller, every model role on the first model of the first provider,
- * and every provider a devbox or runner could answer from without it disabled, so no turn reaches
- * a real model. `config` lines are appended to config.yml. `providers` names what the case's own
- * models are — a fallback chain needs a second model to step to — and defaults to the single
+ * literal like a plain API-key caller unless it names none, every model role on the first model of
+ * the first provider, and every provider a devbox or runner could answer from without it disabled,
+ * so no turn reaches a real model. `config` lines are appended to config.yml. `providers` names
+ * what the case's own models are — a fallback chain needs a second model to step to, a model
+ * switch two protocols' models with thinking levels of their own — and defaults to the single
  * `standin/standin-model` every other case runs on.
  */
 export async function writeStandinProfile(
@@ -314,23 +330,32 @@ export async function writeStandinProfile(
     path.join(agent, "models.yml"),
     [
       "providers:",
-      ...providers.flatMap(({ provider, models }) => [
-        `  ${provider}:`,
-        `    baseUrl: ${base}/anthropic`,
-        "    auth: apiKey",
-        "    api: anthropic-messages",
-        "    apiKey: standin-key",
-        "    models:",
-        ...models.flatMap((id) => [
-          `      - id: ${id}`,
-          `        name: Stand-in ${id}`,
-          "        reasoning: false",
-          "        input: [text]",
-          "        contextWindow: 200000",
-          "        maxTokens: 8000",
-          "        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}",
-        ]),
-      ]),
+      ...providers.flatMap(
+        ({ provider, models, api = "anthropic-messages", baseUrl, apiKey, efforts }) => [
+          `  ${provider}:`,
+          `    baseUrl: ${baseUrl ?? (api === "anthropic-messages" ? `${base}/anthropic` : `${base}/openai/v1`)}`,
+          ...(apiKey === null ? ["    auth: oauth"] : ["    auth: apiKey"]),
+          `    api: ${api}`,
+          ...(apiKey === null ? [] : [`    apiKey: ${apiKey ?? "standin-key"}`]),
+          "    models:",
+          ...models.flatMap((id) => [
+            `      - id: ${id}`,
+            `        name: Stand-in ${id}`,
+            ...(efforts === undefined
+              ? ["        reasoning: false"]
+              : [
+                  "        reasoning: true",
+                  // The pin's own mode for each protocol: a token budget for Anthropic's,
+                  // an effort name for OpenAI's.
+                  `        thinking: {mode: ${api === "anthropic-messages" ? "budget" : "effort"}, efforts: [${efforts.join(", ")}]}`,
+                ]),
+            "        input: [text]",
+            "        contextWindow: 200000",
+            "        maxTokens: 8000",
+            "        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}",
+          ]),
+        ]
+      ),
       "",
     ].join("\n")
   );

@@ -550,9 +550,10 @@ It needs `bun`, `curl`, `jq`, `go` and `nats-server`
 (`go install github.com/nats-io/nats-server/v2@v2.15.1`, the hub's version: the listener refuses a
 nats-server below v2.11.12, v2.12.4 or v2.14.0), and no Claude authentication: the two
 hook payloads are written by the script, and that the field arrives at all rests on Claude Code's
-documentation. Claude Code is not installed in an issue pod's image, though it runs there from
-`bunx --package @anthropic-ai/claude-code@<version> claude`, as
-`scripts/e2e/envoy-session-delivery.sh` runs it. Like the other two, it is never a CI step:
+documentation. Claude Code is not installed in an issue pod's image; `bun add` of
+`@anthropic-ai/claude-code@<version>` into a directory of one's own installs it, as
+`.github/actions/install-claude-code` does for the CI jobs that run it. Like the other two, this
+smoke is never a CI step:
 
 ```bash
 bash packages/claude-envoy/scripts/smoke-session-title.sh

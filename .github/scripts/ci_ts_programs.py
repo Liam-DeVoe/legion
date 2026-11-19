@@ -83,6 +83,23 @@ BUNDLES = [
      "ci-job-agent-harness.yaml's tmux-scripts job: Stage 2's supervision on tmux and The daemon's clean stop of a "
      "dead role's session (scripts/e2e/stage2-tmux-supervision.sh:324 and clean-session-stop-tmux.sh:660 run "
      "`bun scripts/e2e/lib/messages-standin.ts`, the model stand-in)"),
+    # Its session-settings and session-scripts parts run a driver and a model stand-in under bun
+    # from each of their three scripts.
+    *[("agent_harness", f"scripts/e2e/lib/{entry}",
+       f"ci-job-agent-harness.yaml's {part} job: {step} (scripts/e2e/{script} runs "
+       f"`bun scripts/e2e/lib/{entry}`, {what})")
+      for entry, part, script, step, what in (
+          ("dispatch-session-settings.ts", "session-settings", "dispatch-session-settings.sh",
+           "The live view's model and thinking switch", "the driver"),
+          ("session-settings-model.ts", "session-settings", "dispatch-session-settings.sh",
+           "The live view's model and thinking switch", "the model stand-in"),
+          ("dispatch-user-turns.ts", "session-scripts", "dispatch-user-turns.sh",
+           "A person's direct turns from Dispatch's page", "the page and the bus"),
+          ("user-turns-model.ts", "session-scripts", "dispatch-user-turns.sh",
+           "A person's direct turns from Dispatch's page", "the model stand-in"),
+          ("session-delivery-model.ts", "session-scripts", "envoy-session-delivery.sh",
+           "Every Envoy event reaches both sessions once", "the model stand-in"),
+      )],
     # The postgres-rows job of dispatch-browser.yaml runs three files of packages/dispatch's
     # e2e/__tests__ with `bun test`. dispatch_ui's tsc program compiles them and its job runs none
     # of them, so what they load is this filter's to hold, and each file is built as an entry.

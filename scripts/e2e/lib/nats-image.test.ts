@@ -78,7 +78,6 @@ const drivers = gitNames(["ls-files", "-z", "--", "*.sh"]).filter(
 const knownDrivers = [
   "scripts/e2e/stage3-devbox-workflow.sh",
   "scripts/e2e/claude-backend-sandbox.sh",
-  "scripts/e2e/dispatch-user-turns.sh",
   "scripts/e2e/parked-decision-devbox.sh",
   "scripts/e2e/verifiers-staging-token.sh",
   "docs/site/media/walkthroughs/legion-operator/record-casts.sh",
@@ -198,7 +197,6 @@ const knownPins = [
   "packages/claude-envoy/README.md",
   "packages/claude-envoy/scripts/smoke-session-title.sh",
   "docs/solutions/testing/the-daemons-nats-tests-run-in-a-docker-less-pod-against-a-local-nats-server-named-by-two-variables-INFRA-388.md",
-  "scripts/e2e/dispatch-session-settings.sh",
 ];
 
 describe("lib/nats-image.sh", () => {

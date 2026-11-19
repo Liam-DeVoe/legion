@@ -2959,11 +2959,12 @@ jq -r '.[].jsonPayload | tojson' <log export>.json | jq -R -s -f scripts/e2e/lib
 ## dispatch-user-turns.sh
 
 LEGION-394's acceptance: a person's direct Send or Aside from Dispatch's conversation page is the session's own user turn, and everything else keeps its Envoy card.
-One real session — the pinned Oh My Pi (`.omp-pin`, run as a mise tool spec) with this checkout's Envoy plugin in an isolated profile, launched with `controller-start-tmux.sh`'s `operator_env` line, its cwd under `/tmp` — registers with a real Envoy listener and NATS.
+One real session — the Oh My Pi `LEGION_TEST_OMP` names (the build `.omp-pin` pins) with this checkout's Envoy plugin in an isolated profile, in a tmux pane, its cwd under `/tmp` — registers with a real Envoy listener and natsd, built from this checkout.
 The profile's model route shuts Oh My Pi's first-run setup wizard ([`omp_setup_wizard_off`](#libomp-homesh)), which a fresh profile's first launch otherwise sits in.
-Dispatch, built from the checkout with NATS on and its trusted identity header, serves the SPA this checkout builds, and Playwright drives the conversation page as the person the header names.
-The session's model turns go through the route `LEGION_E2E_MODEL_ROUTE` names:
-the model gateway on the operator's own hawk login ([`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh)), or a local key file ([`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh)).
+Dispatch, built from the checkout with NATS on and its trusted identity header and on a database of the run's own in `LEGION_TEST_PG_DSN`, serves the SPA this checkout builds, and Playwright drives the conversation page in its own Chromium as the person the header names.
+The session's model is [`lib/user-turns-model.ts`](lib/user-turns-model.ts), a stand-in on [`lib/messages-standin.ts`](lib/messages-standin.ts) whose scripted answers make the tool calls the spec-edit checks need (`dispatch issue`, then `dispatch doc-edit` after the person's edit) and name the code word each prompt carries.
+The session reaches it through the key-file route ([`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh) `--base-url`), keyed by a placeholder of the run's own.
+The agent-harness job's `session-scripts` part runs it as a step.
 
 The rig serves the checkout's built `packages/dispatch/web/dist` live.
 Do not run `bun run build:web` or `bun run e2e` in this checkout while a run is live:
@@ -2974,23 +2975,20 @@ Each slash-command check waits until the session is idle before it sends, since 
 a stopped answer with no message or custom message after it and no background job the model started still owed its result.
 
 ```bash
-LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic bash scripts/e2e/dispatch-user-turns.sh     # → "dispatch user turns e2e: PASS", exit 0
-LEGION_E2E_MODEL_ROUTE=key-file LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file> bash scripts/e2e/dispatch-user-turns.sh   # the same, for a devbox with no Hawk gateway
-LEGION_E2E_MODEL_ROUTE=key-file LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file> DISPATCH_USER_TURNS_ONLY=spec-edit bash scripts/e2e/dispatch-user-turns.sh   # the spec-edit checks alone
+LEGION_TEST_OMP=<omp> LEGION_TEST_PG_DSN=<loopback dsn> bash scripts/e2e/dispatch-user-turns.sh     # → "dispatch user turns e2e: PASS", exit 0
+LEGION_TEST_OMP=<omp> LEGION_TEST_PG_DSN=<loopback dsn> DISPATCH_USER_TURNS_ONLY=spec-edit bash scripts/e2e/dispatch-user-turns.sh   # the spec-edit checks alone
 ```
 
 | input | default | meaning |
 | :--- | :--- | :--- |
-| `LEGION_E2E_MODEL_ROUTE` | `gateway` | `gateway` or `key-file`: how the session reaches Anthropic |
-| `LEGION_E2E_MODEL_GATEWAY_URL` | required under `gateway` | the model gateway's Anthropic endpoint; checked by [`lib/model-gateway-url.sh`](#libmodel-gateway-urlsh) |
-| `LEGION_E2E_ANTHROPIC_KEY_FILE` | required under `key-file` | a 0600 file holding a plaintext Anthropic key, read by the key command on every call; the key command is written under the run's scratch directory, which every exit removes |
+| `LEGION_TEST_OMP` | required | the Oh My Pi the session runs |
+| `LEGION_TEST_PG_DSN` | required | a loopback PostgreSQL with pgvector; the run creates Dispatch's database there and drops it on every exit |
 | `DISPATCH_USER_TURNS_ONLY` | unset, every check | `spec-edit`: `session-registers` and the two spec-edit checks alone, then PASS; `spec-edit-card`: `session-registers` and `a-persons-spec-edit-reaches-its-writer` alone, then PASS |
-| `DISPATCH_USER_TURNS_OMP` | the pinned build, `.omp-pin`'s mise tool spec (`github:cybermonklabs/oh-my-pi@<version>`) | another Oh My Pi, as a mise tool spec |
-| `DISPATCH_USER_TURNS_EVIDENCE_DIR` | a fresh `/tmp/legion-e2e-user-turns-evidence.XXXXXXXX` | kept on every outcome and printed at exit: `logs/` (the listener, Dispatch and the SPA build), `checks/` (the page's screenshots, the session's pane at exit, `extension-command-args` and `message-starts.jsonl`) and `session.jsonl`, the session's transcript |
+| `DISPATCH_USER_TURNS_EVIDENCE_DIR` | a fresh `/tmp/legion-e2e-user-turns-evidence.XXXXXXXX` | kept on every outcome and printed at exit: `logs/` (the listener, Dispatch, natsd, the stand-in and its requests, and the SPA build), `checks/` (the page's screenshots, the session's pane at exit, `extension-command-args` and `message-starts.jsonl`) and `session.jsonl`, the session's transcript |
 
-Each check prints `== <name>`, what it observed, and `ok <name>`.
-The first check that fails ends the run non-zero and names itself.
-On any exit the run removes its scratch directory, the isolated profile under the HOME it gives Oh My Pi, its tmux server, its listener and Dispatch, and its Postgres and NATS containers;
+Each check prints `== <name>`, what it observed, and `CHECK <name>: PASS`.
+The first check that fails prints `CHECK <name>: FAIL: <why>` and ends the run with exit 1.
+On any exit the run removes its scratch directory, the isolated profile under the HOME it gives Oh My Pi, its tmux server, the stand-in, natsd, its listener and Dispatch, and drops Dispatch's database;
 a run that finds another's leftovers refuses to start ([`lib/leftovers.sh`](#libleftoverssh)).
 
 | check | what it holds |
@@ -3028,15 +3026,16 @@ a run that finds another's leftovers refuses to start ([`lib/leftovers.sh`](#lib
 
 ## dispatch-session-settings.sh
 
-INFRA-195's local-stack proof.
+The local-stack proof of the live view's settings.
 Dispatch's live view shows a real Oh My Pi session's current model and thinking level and switches them from its header.
-The stack is real: Oh My Pi with this checkout's Envoy plugin, an Envoy listener, NATS, Postgres, Dispatch built from the checkout, and its page driven in Chromium.
+The stack is real: Oh My Pi with this checkout's Envoy plugin, an Envoy listener, natsd, Postgres, Dispatch built from the checkout, and its page driven in Playwright's own Chromium.
+Only the models are stand-ins, and the agent-harness job's `session-settings` part runs it as a step.
 The rig never takes the page as its own oracle.
 Each value the header shows is compared with what the session reports without the page:
 RPC `get_state` (the model) and `get_available_models`, the `Thinking:` and `Available:` lines an `/effort` prompt prints (RPC `command_output`), the session file's `model_change`, `thinking_level_change`, card and user-message entries, and Dispatch's stored messages, read with the person's header.
 
 ```bash
-LEGION_TEST_PG_DSN='postgres://postgres@127.0.0.1:5433/postgres?sslmode=disable' \
+LEGION_TEST_OMP=<omp> LEGION_TEST_PG_DSN='postgres://postgres@127.0.0.1:5433/postgres?sslmode=disable' \
   bash scripts/e2e/dispatch-session-settings.sh     # → "dispatch session settings e2e: PASS in <n>s", exit 0
 ```
 
@@ -3047,21 +3046,19 @@ The parts it drives are its siblings in `lib/`:
 
 It differs from [`dispatch-user-turns.sh`](#dispatch-user-turnssh) in these ways:
 
-- **It runs in an issue pod.**
-  It needs no docker, tmux, mise or root.
-  It uses `go`, `bun`, `jq`, `curl`, `psql`, `tar` and `python3`.
+- **It needs no docker, tmux, mise or root.**
+  It uses `go`, `bun`, `jq`, `curl`, `psql`, `tar` and `python3`, and Playwright's Chromium, which `bunx playwright install chromium` in `packages/dispatch` downloads.
 
 - **Oh My Pi runs in `--mode rpc`, as a Legion pane runs it, not as the TUI in tmux.**
   The command is `omp --extension <pi-envoy> --mode rpc`, with the plugin packed by [`lib/pack-plugin.sh`](#libpack-pluginsh) and unpacked as the worker image unpacks `/opt/legion/pi-envoy`.
   The driver reads and writes the RPC protocol on the process's stdin and stdout.
-  The profile is an isolated `PI_CODING_AGENT_DIR` under a `HOME` of the run's own.
+  The profile is the agent directory under a `HOME` of the run's own, which the driver writes with `writeStandinProfile` (`packages/pi-shared/test/omp-harness.ts`).
   That `HOME` links `.omp/natives` to the caller's cache, as [`lib/omp-home.sh`](#libomp-homesh) does.
   The Oh My Pi is `LEGION_TEST_OMP`, not a mise tool spec.
 
-- **The model turns use the caller's own provider keys, not the Hawk gateway.**
-  The script takes `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` out of its environment before it starts anything, so no build, install, service or log of the run inherits them, and gives them back to the driver alone, which takes them off its own environment at once and passes them to each Oh My Pi it starts and to no other process (Chromium included).
-  It sets no key of its own, and prints only each key's length.
-  A key is needed only for a model of its provider.
+- **Every model is a stand-in.**
+  [`lib/session-settings-model.ts`](lib/session-settings-model.ts), on [`lib/messages-standin.ts`](lib/messages-standin.ts), serves an Anthropic-shaped provider and an OpenAI-shaped one, keyed by a placeholder of the run's own that the profile names.
+  It answers each one-word prompt with its word and the long prompt of `picker-during-turn` with a call of the session's bash tool.
 
 - **Postgres is a loopback server the caller names**, in `LEGION_TEST_PG_DSN`.
   The script creates a database of its own in it with `psql` and force-drops it with `psql` on any exit.
@@ -3070,9 +3067,8 @@ It differs from [`dispatch-user-turns.sh`](#dispatch-user-turnssh) in these ways
   psql is libpq, and Dispatch reads that rebuilt string with pgx (`pgxpool.ParseConfig`), which reads the keyword/value form as libpq does: the pinned `github.com/jackc/pgx/v5 v5.11.0` carries a port of libpq's parser, and `lib/loopback-dsn.sh` says what a raise of that pin moves.
   In a pod, start one without root as `docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md` says.
 
-- **NATS is a pinned `nats-server`**: `LEGION_E2E_NATS_BIN`, or v2.15.1, which the rig installs once with `go install`.
-  In an issue pod it installs into `/legion/scratch/bin`, on the issue's volume, and otherwise into the run's own directory.
-  The server starts with JetStream on a port the kernel picks.
+- **NATS is natsd** (`packages/envoy/internal/testnats/cmd/natsd`), built from this checkout.
+  It starts with JetStream on a port the kernel picks.
 
 - **No variable of the caller's shell named `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `OMP*`, `PI_*`, `PGHOSTADDR`, `PGSERVICE` or `PGSERVICEFILE` reaches any process of the run.**
   A Legion pane's own Dispatch, Envoy and profile stay out of it, and the three `PG` variables stay out of every psql and every client the run starts.
@@ -3081,17 +3077,16 @@ It differs from [`dispatch-user-turns.sh`](#dispatch-user-turnssh) in these ways
 The check makes the session refuse a model because it has no key for that model's provider.
 Under the run's keys, the session lists no such model, so its header cannot offer one.
 A bare NATS client publishes a `settings` frame on `agentstream.<session>.frames`.
-The frame's `seq` is above the session's own, and it lists the session's own models plus `google/gemini-2.5-flash`, a catalog model of a provider the run has no key for.
+The frame's `seq` is above the session's own, and it lists the session's own models plus `standin-unkeyed/unkeyed-model`, a model of a provider the profile holds no key for.
 The person picks that model.
 The refusal comes from the real session, and the page shows it.
 The check then reloads the page, so that the session's next replay puts its real frame back.
 Any process that can reach NATS can publish this frame.
 That is the frames subject's existing exposure, the one `dispatch-user-turns.sh`'s `a-forged-command-list-changes-nothing-on-the-page` drives.
 
-The default models are the cheapest reasoning models of each provider that the pinned host's `get_available_models` lists under a pod's keys:
-`anthropic/claude-haiku-5-5` and `openai/gpt-5-nano`.
+The two models are `standin-anthropic/standin-claude`, the profile's default and the fallback target, and `standin-openai/standin-gpt`.
 Their `/effort` lists differ, and the preflight refuses two models whose lists are the same.
-`anthropic/claude-haiku-5-5` offers `off, auto, low, medium, high, xhigh, max`, and `openai/gpt-5-nano` offers `off, auto, minimal, low, medium, high`.
+The first offers `off, auto, low, medium, high, xhigh`, and the second `off, auto, minimal, low, medium, high`.
 Before any check, the preflight runs a one-word prompt on each model, in a session with no plugin.
 
 The rig serves the checkout's built `packages/dispatch/web/dist` live.
@@ -3103,29 +3098,10 @@ Each item below names an input and its default, then what it means.
 
   a loopback PostgreSQL with pgvector; the run makes and drops its own database there, and takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it
 
-- `LEGION_E2E_NATS_BIN` — the pinned `nats-server` v2.15.1, installed as above
-
-  another `nats-server`
-
-- `LEGION_TEST_OMP` — the `omp` on `PATH`, else the worker image's `/opt/omp/bin/omp`
+- `LEGION_TEST_OMP` — required
 
   the Oh My Pi to run.
   The rig refuses a host whose first replay has no `commands` frame, because that host cannot run typed input from Dispatch
-
-- `SESSION_SETTINGS_MODELS` — `anthropic/claude-haiku-5-5 openai/gpt-5-nano`
-
-  two `provider/id` models the caller's keys serve.
-  The first is the profile's default model (every `modelRoles` entry) and the fallback target.
-  Two Anthropic models run every check but `fallback`:
-  Oh My Pi skips a same-provider fallback candidate after a turn with another Anthropic model's signed thinking, and only retries (dispatch://INFRA-309)
-
-- `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` — required for a model of that provider
-
-  passed through to Oh My Pi only
-
-- `SESSION_SETTINGS_CHROMIUM` — `/usr/bin/chromium`
-
-  the Chromium Playwright launches (`executablePath`); a pod has no Playwright browser of its own
 
 - `SESSION_SETTINGS_EVIDENCE_DIR` — a fresh directory under `TMPDIR`
 
@@ -3264,15 +3240,14 @@ Each item below names a check, then what it holds.
   The header shows the first model within 20 s of that entry, with no further user message.
   The check prints how each request of the run ended, including the retry on the fallback model
 
-- `older-plugin-notice`
-
-  a session on `@sjawhar/pi-envoy` 10.24.0, a release before the settings frame (pinned in the script, since the newest release reports its settings once this one ships), installed with `bun add` into the run's directory, runs one prompt.
-  Its live view shows that turn's model, no picker, and the restart notice
-
 - `attribution`
 
   `bob` sends a switch with `X-Dispatch-User: bob`, the header's own body (`/model <id>` as a steer).
   Dispatch stores it as `bob`'s, the session answers it, and `alice`'s held-open page shows `bob` beside it in the thread
+
+The page's notice for a session that sends no `settings` frame, a pi-envoy older than the frame, has no check here.
+This checkout's listener refuses every pi-envoy release before 14.1.0, the first that asks for a session consumer (`consumerPluginMinimumVersion` in `packages/envoy/cmd/listener/session_delivery.go`), and every release from 14.1.0 on sends the frame (`packages/pi-envoy/CHANGELOG.md`), so no session this stack serves can show the notice.
+`packages/dispatch/e2e/agent-view-settings.e2e.ts` holds the page to it.
 
 ## verifiers-staging-token.sh
 
@@ -4108,11 +4083,11 @@ Two arms over a few runs are a reproduction and a control, not a rate.
 
 ## envoy-session-delivery.sh
 
-INFRA-594's live proof: every Envoy event reaches a real Oh My Pi session and a real Claude Code session exactly once, also when it was published while the session, its NATS connection, either listener or Dispatch was down, and when it was stored for a session before that session first registered (INFRA-771).
-Manual: it needs a model provider and is never wired into CI.
+The live proof of session delivery: every Envoy event reaches a real Oh My Pi session and a real Claude Code session exactly once, also when it was published while the session, its NATS connection, either listener or Dispatch was down, and when it was stored for a session before that session first registered.
+The agent-harness job's `session-scripts` part runs it as a step.
 
 ```bash
-LEGION_TEST_PG_DSN='postgres://postgres@127.0.0.1:<port>/postgres?sslmode=disable' \
+LEGION_TEST_OMP=<omp> LEGION_TEST_CLAUDE=<claude> LEGION_TEST_PG_DSN='postgres://postgres@127.0.0.1:<port>/postgres?sslmode=disable' \
   bash scripts/e2e/envoy-session-delivery.sh     # → "ENVOY SESSION DELIVERY: PASS …", exit 0
 
 # Negative controls: the listener and both plugins of an earlier revision.
@@ -4129,13 +4104,11 @@ LEGION_TEST_PG_DSN='postgres://postgres@127.0.0.1:<port>/postgres?sslmode=disabl
 … bash scripts/e2e/envoy-session-delivery.sh --disruptions a --resume-plugins-from origin/main
 ```
 
-The sessions' model key is read from a file, `/var/run/model-gateway-key/key` by default, where every role pod mounts the model gateway's key (no process of the pod carries it in its environment);
-`SESSION_DELIVERY_MODEL_KEY_FILE` names another.
-The script reads it into a shell variable it never exports and hands it to the two sessions alone, as their `ANTHROPIC_API_KEY`, beside `ANTHROPIC_BASE_URL` when the caller sets it;
-it never prints it, and refuses (exit 2) a file it cannot read or one that is empty.
-A caller's own `ANTHROPIC_API_KEY` reaches nothing the run starts.
+Both sessions' model is [`lib/session-delivery-model.ts`](lib/session-delivery-model.ts), a stand-in on [`lib/messages-standin.ts`](lib/messages-standin.ts) that answers the setup prompt with its two Envoy tool calls (through Claude Code's ToolSearch where Claude Code defers them) and every other turn `ok`.
+The sessions reach it through `ANTHROPIC_BASE_URL`, keyed by a placeholder of the run's own as their `ANTHROPIC_API_KEY`, and it refuses a request without that key.
+No caller's `ANTHROPIC_*` variable reaches anything the run starts.
 
-It runs in an issue pod: no Docker, tmux or root.
+It needs no Docker, tmux or root.
 It needs `go`, `bun`, `jq`, `curl`, `socat` 1.8.0 or later (its `ACCEPT-FD` address), `setsid`, `psql`, `git`, `tar`, `pgrep`, `mkfifo` and `python3` (for [`lib/held-port.py`](#libheld-portpy)), and the checkout's `node_modules` (`bun install`).
 Everything is built from the checkout:
 
@@ -4153,7 +4126,7 @@ Everything is built from the checkout:
   configured as `packages/daemon/internal/runtime/tmux/claude.go` configures a Legion pane:
   an MCP config that runs claude-envoy's `dist/envoy-channel.js`, both plugin directories, `LEGION_CLAUDE_INBOX` from the bridge.
   The claude-envoy plugin is the run's own copy, built from this checkout into its work directory (`packages/claude-envoy/scripts/build.ts --out`), since a pull request's tree carries no fresh `dist/` or `legion/`.
-  Claude Code is `bunx --package @anthropic-ai/claude-code@<version> claude`.
+  Claude Code is the binary `LEGION_TEST_CLAUDE` names.
 
 Each session reads an `envoy.json` naming listener `shared` and, as its only NATS server, a `socat` proxy of its own, which the script can cut, with Dispatch off.
 Dispatch reaches NATS through a proxy of its own too.
@@ -4219,6 +4192,7 @@ It then reads the followed issue's comments back from the stream and checks that
 Dispatch's outbox decides that order.
 When it differs from the order the comments were written in, the run prints a `note:` line and does not judge it:
 after a Dispatch process dies holding an outbox claim, the claimed event waits out the outbox's one-minute claim window while later events of the issue are published (`packages/envoy/internal/dispatch/outbox/publisher.go`, `claimWindow`), and window e shows this.
+Each step prints `CHECK <step>: PASS` or `CHECK <step>: FAIL: <why>`: prerequisites, build, services, sessions, consumer-delivery, then one line per window from the table (`window-<letter>-<disruption>`), `issue-order` and `sessions-stop`.
 The run exits 0 only when every count is the expected one and the order holds.
 For each wrong count, `wrong-counts.txt` lists every transcript line that carries the marker.
 
@@ -4246,20 +4220,17 @@ It says so only on the evidence of its own `events.jsonl`, read back and holding
 | input | default | meaning |
 | :--- | :--- | :--- |
 | `LEGION_TEST_PG_DSN` | required | a loopback Postgres with pgvector; the run creates and force-drops a database of its own there with `psql`, gives Dispatch the connection string [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `run_database_url` rebuilds for that database, and refuses the DSN in `setup`, before any build or service, when [`lib/loopback-dsn.py`](#libloopback-dsnpy) refuses the host or the rebuild |
-| `SESSION_DELIVERY_MODEL_KEY_FILE` | `/var/run/model-gateway-key/key` | the file holding the sessions' model key, handed to Oh My Pi and Claude Code alone as their `ANTHROPIC_API_KEY` and never printed; the default is where every role pod mounts its model gateway's key |
-| `ANTHROPIC_BASE_URL` | unset | when set, passed to Oh My Pi and Claude Code only, beside the key: a model gateway whose key the key file holds; an issue pod has no Anthropic key of its own; its `ANTHROPIC_BASE_URL` names its model gateway, and `/var/run/model-gateway-key/key` holds that gateway's key |
-| `SESSION_DELIVERY_OMP` | `omp` on `PATH`, else `/opt/omp/bin/omp` | the Oh My Pi to run |
-| `SESSION_DELIVERY_MODEL` | `claude-haiku-4-5` | both sessions' model (Oh My Pi gets `anthropic/<model>`) |
-| `SESSION_DELIVERY_CLAUDE_CODE` | the worker image's pin (`packages/daemon/docker/claude-code/package.json`) | the Claude Code version `bunx` runs |
+| `LEGION_TEST_OMP` | required | the Oh My Pi the pi session runs |
+| `LEGION_TEST_CLAUDE` | required | the Claude Code the cc session runs |
+| `SESSION_DELIVERY_MODEL` | `claude-haiku-4-5` | both sessions' model name (Oh My Pi gets `anthropic/<model>`), which the stand-in answers whatever it is |
 | `SESSION_DELIVERY_HEARTBEAT_MS` | `10000` | the sessions' `ENVOY_HEARTBEAT_MS` |
 | `SESSION_DELIVERY_SETTLE_S`, `SESSION_DELIVERY_HOLD_S` | `60`, `15` | the per-window waits above; window e waits 60 s longer, the outbox's claim window |
-| `SESSION_DELIVERY_EVIDENCE_DIR` | a fresh directory under `TMPDIR` | kept and printed: `table.txt`, `events.jsonl` (each event's marker, window, kind, the publisher's answer and the expected count), `logs/` (the builds, natsd, both listeners, Dispatch, the proxies and each port's keeper, `keep-<server>.log`), `ports/` (the keepers' port files and sockets) and `sessions/<pi\|cc>/` (each launch's RPC output and stderr, and the transcripts) |
+| `SESSION_DELIVERY_EVIDENCE_DIR` | a fresh directory under `TMPDIR` | kept and printed: `table.txt`, `events.jsonl` (each event's marker, window, kind, the publisher's answer and the expected count), `logs/` (the builds, natsd, both listeners, Dispatch, the proxies, the stand-in and its requests, and each port's keeper, `keep-<server>.log`), `ports/` (the keepers' port files and sockets) and `sessions/<pi\|cc>/` (each launch's RPC output and stderr, and the transcripts) |
 
-No `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `OMP*`, `PI_*`, `LEGION_*`, `CLAUDE_*`, `PGHOSTADDR`, `PGSERVICE` or `PGSERVICEFILE` variable of the caller reaches anything the run starts.
-`ANTHROPIC_BASE_URL` reaches the sessions alone, and `BUN_INSTALL_CACHE_DIR`, when the caller sets it, reaches `bunx`.
+No `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `OMP*`, `PI_*`, `LEGION_*` (but the three `LEGION_TEST_*` inputs), `CLAUDE_*`, `ANTHROPIC_*`, `PGHOSTADDR`, `PGSERVICE` or `PGSERVICEFILE` variable of the caller reaches anything the run starts.
 On any exit the run stops everything it started by the pid it was started as (a session or proxy by its process group, and each keeper after the servers) and drops its database.
 Exit status: 0 pass, or the negative control holds;
-1 a wrong count, an order break or a failed step (`FAIL <step>: …`); 2 refused (an input or tool is missing).
+1 a check failed, a missing input or tool among them.
 Do not edit the script while a run is going: bash reads it as it runs.
 
 ## lib/loopback-dsn.py

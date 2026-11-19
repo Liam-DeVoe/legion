@@ -1584,6 +1584,59 @@ TMUX_SCRIPT_RUNS = [
 ]
 
 
+# The agent-harness job's session-settings and session-scripts parts: three more scripts of
+# scripts/e2e, each itself the test and a step of its own, keyed by the part and step that run it
+# (dispatch-session-settings.sh alone in session-settings, the other two in session-scripts). Each
+# builds the Envoy listener, Dispatch and natsd from this checkout, and envoy-session-delivery.sh
+# `legion` too, whose claude-bridge runs its Claude Code session; those are their go commands,
+# which SESSION_SCRIPT_RUNS pins to each script's own line.
+AGENT_HARNESS_SESSION_SETTINGS = "session-settings"
+AGENT_HARNESS_SESSION_SCRIPTS = "session-scripts"
+AGENT_HARNESS_SETTINGS = "scripts/e2e/dispatch-session-settings.sh"
+AGENT_HARNESS_USER_TURNS = "scripts/e2e/dispatch-user-turns.sh"
+AGENT_HARNESS_DELIVERY = "scripts/e2e/envoy-session-delivery.sh"
+AGENT_HARNESS_SESSION_SCRIPT_STEPS = {
+    AGENT_HARNESS_SETTINGS: (AGENT_HARNESS_SESSION_SETTINGS, "The live view's model and thinking switch"),
+    AGENT_HARNESS_USER_TURNS: (AGENT_HARNESS_SESSION_SCRIPTS, "A person's direct turns from Dispatch's page"),
+    AGENT_HARNESS_DELIVERY: (AGENT_HARNESS_SESSION_SCRIPTS, "Every Envoy event reaches both sessions once"),
+}
+
+
+def at_session_scripts(step):
+    """A citation of a step of the agent-harness job's session-scripts part."""
+    return at(AGENT_HARNESS_SESSION_SCRIPTS, step, AGENT_HARNESS_WORKFLOW)
+
+
+def at_session_script(script):
+    """A citation of the step that runs one of the three scripts, in the part that runs it."""
+    part, step = AGENT_HARNESS_SESSION_SCRIPT_STEPS[script]
+    return at(part, step, AGENT_HARNESS_WORKFLOW)
+
+
+SESSION_SCRIPT_RUNS = [
+    run_
+    for script in (AGENT_HARNESS_SETTINGS, AGENT_HARNESS_USER_TURNS)
+    for run_ in (
+        script_run(script, 'go -C "$root/packages/envoy" build -o "$work/envoy-listener" ./cmd/listener',
+                   at_session_script(script), ENVOY, ["./cmd/listener"], mode="build"),
+        script_run(script, 'go -C "$root/packages/envoy" build -o "$work/dispatch" ./cmd/dispatch',
+                   at_session_script(script), ENVOY, ["./cmd/dispatch"], mode="build"),
+        script_run(script, 'go -C "$root/packages/envoy" build -o "$work/natsd" ./internal/testnats/cmd/natsd',
+                   at_session_script(script), ENVOY, ["./internal/testnats/cmd/natsd"], mode="build"),
+    )
+] + [
+    script_run(AGENT_HARNESS_DELIVERY, 'go -C "$repo_root/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd',
+               at_session_script(AGENT_HARNESS_DELIVERY), ENVOY, ["./internal/testnats/cmd/natsd"], mode="build"),
+    script_run(AGENT_HARNESS_DELIVERY, 'go -C "$repo_root/packages/envoy" build -o "$work/bin/envoy-dispatch" ./cmd/dispatch',
+               at_session_script(AGENT_HARNESS_DELIVERY), ENVOY, ["./cmd/dispatch"], mode="build"),
+    script_run(AGENT_HARNESS_DELIVERY, 'go -C "$tree/packages/envoy" build -o "$work/bin/envoy-listener" ./cmd/listener',
+               at_session_script(AGENT_HARNESS_DELIVERY), ENVOY, ["./cmd/listener"], mode="build"),
+    script_run(AGENT_HARNESS_DELIVERY, 'go -C "$tree/packages/daemon" build -o "$work/bin/legion" ./cmd/legion',
+               at_session_script(AGENT_HARNESS_DELIVERY), DAEMON, [LEGION_BUILD], mode="build"),
+]
+
+
+
 # The daemon-go race step's -skip: the tests of its package that jobs of their own run, the
 # plugin-pack job's, the daemon-live job's and the agent-harness job's two parts', in one pattern
 # built from the four lists.
@@ -2734,13 +2787,18 @@ GATES = [
     # and the Claude Code test both run with bun, and the model stand-in two scripts run under
     # bun, whose loads .github/scripts/ci_ts_programs.py's BUNDLES holds to this filter; and the
     # Claude Code test of AGENT_HARNESS_TMUX_TESTS, whose package is the pane drivers' one.
+    # The session-settings and session-scripts parts add their own: the three scripts of
+    # AGENT_HARNESS_SESSION_SCRIPT_STEPS, the lib files they source and run, their go commands
+    # (SESSION_SCRIPT_RUNS), the pi-envoy they pack through the same scripts/e2e/lib/pack-plugin.sh,
+    # the claude-envoy build, the SPA two of them build, and the drivers and model stand-ins they
+    # run under bun, whose loads .github/scripts/ci_ts_programs.py's BUNDLES holds to this filter.
     gate("agent_harness", AGENT_HARNESS_JOB, runs=[
         script_run(f"{DAEMON}/internal/daemon/live_agent_proof_test.go",
                    'build := exec.Command("go", "build", "-o", binary, "./cmd/legion")',
                    f"buildProofLegion, which the five tests {at_pane_drivers(AGENT_HARNESS_STEP)} runs and the one "
                    f"{at_tmux_scripts(AGENT_HARNESS_TMUX_STEP)} runs call",
                    DAEMON, [LEGION_BUILD], mode="build"),
-    ] + TMUX_SCRIPT_RUNS, exact=[
+    ] + TMUX_SCRIPT_RUNS + SESSION_SCRIPT_RUNS, exact=[
         pinned_step(AGENT_HARNESS_PANE_DRIVERS, AGENT_HARNESS_STEP, DAEMON, AGENT_HARNESS_SCRIPT, [
             (DAEMON, [f"./{AGENT_HARNESS_PACKAGE}/"], "go test -run over the package the five tests are in", {}),
         ], workflow=AGENT_HARNESS_WORKFLOW),
@@ -2812,6 +2870,62 @@ GATES = [
       + install_omp(AGENT_HARNESS_TMUX_SCRIPTS, AGENT_HARNESS_WORKFLOW)
       + setup_go(AGENT_HARNESS_TMUX_SCRIPTS, f"{DAEMON}/go.mod", AGENT_HARNESS_WORKFLOW)
       + bun_job(AGENT_HARNESS_TMUX_SCRIPTS, AGENT_HARNESS_WORKFLOW)
+      + reads(*[(script, at_session_script(script)) for script in AGENT_HARNESS_SESSION_SCRIPT_STEPS])
+      + reads(
+        ("scripts/e2e/lib/transcript.sh", "dispatch-session-settings.sh:62 sources it"),
+        ("scripts/e2e/lib/rig.sh", "dispatch-session-settings.sh:86 and dispatch-user-turns.sh:96 source it"),
+        ("scripts/e2e/lib/leftovers.sh", "dispatch-user-turns.sh:98 sources it"),
+        ("scripts/e2e/lib/omp-home.sh", "dispatch-user-turns.sh:100 sources it"),
+        ("scripts/e2e/lib/loopback-dsn.sh", "envoy-session-delivery.sh:302 sources it, and scripts/e2e/lib/rig.sh:93"),
+        ("scripts/e2e/lib/loopback-dsn.py", "scripts/e2e/lib/loopback-dsn.sh:175 runs it with python3"),
+        ("scripts/e2e/lib/port-file.sh", "envoy-session-delivery.sh:304 sources it, and scripts/e2e/lib/rig.sh:102"),
+        ("scripts/e2e/lib/held-port.py", "envoy-session-delivery.sh:293 and scripts/e2e/lib/rig.sh:143,157 run it to "
+                                         "hold a service's port"),
+        ("scripts/e2e/lib/pack-plugin.sh", "dispatch-session-settings.sh:157 and envoy-session-delivery.sh:524 run it, "
+                                           "and scripts/e2e/lib/install-plugin-profile.sh:153"),
+        ("scripts/e2e/lib/install-plugin-profile.sh", "dispatch-user-turns.sh:292 runs it for pi-envoy"),
+        ("scripts/e2e/lib/install-key-file-model-route.sh", "dispatch-user-turns.sh:296 runs it to route the "
+                                                            "profile's model to the stand-in"),
+        ("scripts/e2e/lib/model-endpoint.sh", "scripts/e2e/lib/install-key-file-model-route.sh:63 sources it"),
+        ("scripts/e2e/lib/dispatch-session-settings.ts", "dispatch-session-settings.sh:66 runs it under bun, the "
+                                                         "driver"),
+        ("scripts/e2e/lib/dispatch-user-turns.ts", "dispatch-user-turns.sh:210 runs it under bun, the page and the "
+                                                   "bus"),
+        *[(f"scripts/e2e/lib/session-settings-{part}.ts", "scripts/e2e/lib/dispatch-session-settings.ts imports it, "
+                                                         "a part of the driver")
+          for part in ("browser", "common", "omp", "services", "session-file")],
+        ("scripts/e2e/lib/agent-replay.ts", "scripts/e2e/lib/session-settings-browser.ts and "
+                                            "scripts/e2e/lib/dispatch-user-turns.ts import readAgentReplay from it"),
+        ("scripts/e2e/lib/session-settings-model.ts", "dispatch-session-settings.sh:167 runs it under bun, the model "
+                                                      "stand-in"),
+        ("scripts/e2e/lib/user-turns-model.ts", "dispatch-user-turns.sh:259 runs it under bun, the model stand-in"),
+        ("scripts/e2e/lib/session-delivery-model.ts", "envoy-session-delivery.sh:700 runs it under bun, the model "
+                                                      "stand-in"),
+        ("scripts/e2e/lib/messages-standin.ts", "the three stand-ins above import runStandin from it"),
+        (f"{DAEMON}/internal/claudelaunch/claudelaunch.go", "envoy-session-delivery.sh:586 reads it for the bridge's "
+                                                             "argv"),
+        ("packages/dispatch/**", "dispatch-session-settings.sh:154 and dispatch-user-turns.sh:245 run "
+                                 "`bun run build:web` in it, and the drivers launch the Chromium of its "
+                                 "@playwright/test"),
+        ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:127-150 (build:web)"),
+        ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes "
+                                           "dist/THIRD_PARTY_NOTICES.txt)"),
+        (".github/actions/install-claude-code/**", at_session_scripts("./.github/actions/install-claude-code")),
+        (".claude-code-pin", ".github/actions/install-claude-code/action.yml:16 pin=$(<.claude-code-pin), the release "
+                             "envoy-session-delivery.sh's Claude Code session runs"),
+    ) + [
+        Read(g, f"{at_session_script(AGENT_HARNESS_SETTINGS)} and {at_session_script(AGENT_HARNESS_DELIVERY)}: "
+                "dispatch-session-settings.sh:157 and envoy-session-delivery.sh:524 pack packages/pi-envoy through "
+                "scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs its prepack")
+        for g in PACK_READS
+    ] + install_jj(AGENT_HARNESS_SESSION_SETTINGS, AGENT_HARNESS_WORKFLOW)
+      + install_omp(AGENT_HARNESS_SESSION_SETTINGS, AGENT_HARNESS_WORKFLOW)
+      + setup_go(AGENT_HARNESS_SESSION_SETTINGS, f"{ENVOY}/go.mod", AGENT_HARNESS_WORKFLOW)
+      + bun_job(AGENT_HARNESS_SESSION_SETTINGS, AGENT_HARNESS_WORKFLOW)
+      + install_jj(AGENT_HARNESS_SESSION_SCRIPTS, AGENT_HARNESS_WORKFLOW)
+      + install_omp(AGENT_HARNESS_SESSION_SCRIPTS, AGENT_HARNESS_WORKFLOW)
+      + setup_go(AGENT_HARNESS_SESSION_SCRIPTS, f"{DAEMON}/go.mod", AGENT_HARNESS_WORKFLOW)
+      + bun_job(AGENT_HARNESS_SESSION_SCRIPTS, AGENT_HARNESS_WORKFLOW)
       + CI_SELF + job_self(AGENT_HARNESS_JOB), workflow=CI),
 
     # The private-name port harness, in a job of its own: one step, which builds the `legion`
