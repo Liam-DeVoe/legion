@@ -34,7 +34,7 @@ The reviewer approves a head whose only open findings are text, leaves each as t
 
 ## Forward merges
 
-For the unchanged-diff fingerprint and the forward-merge procedure, follow `skill://legion-worker/references/conflicts-and-rewrites.md`, then push the merge as the daemon part below says — it is a genuine fast-forward and a code push like any other.
+For the forward-merge procedure, and the merge-forward message the daemon sends you, follow `skill://legion-worker/references/conflicts-and-rewrites.md`, then push the merge as the daemon part below says — it is a genuine fast-forward and a code push like any other.
 
 ## Workspace restrictions
 
