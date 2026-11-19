@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import {
   type AgentStreamCommand,
   type AgentStreamFrame,
@@ -121,6 +121,14 @@ const conversation: MessageRead[] = [
 const spies: { mockRestore: () => void }[] = [];
 const clients: QueryClient[] = [];
 let sockets: FakeLiveSockets;
+
+// A held send's words and a reply are Markdown (`MarkdownBody`), drawn by the lazy Markdown
+// engine, and several rows read them as soon as their turn shows, some on the fake clock, where
+// the engine's load cannot land. The rows run in random order, so the file loads the engine
+// before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 beforeEach(() => {
   sockets = installFakeLiveSockets();
