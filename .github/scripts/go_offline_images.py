@@ -191,7 +191,8 @@ def find_stage(stages: list, ref: str):
 
 def built_stages(stages: list, target: str, contexts: set) -> list:
     """The stages a build of `target` (the last stage when empty) builds, `contexts` replacing the
-    stages they name."""
+    stages they name: a stage a named context replaces is not built, whether the target or a
+    stage reaches it, and nothing is followed from it."""
     start = find_stage(stages, target.lower()) if target else (stages[-1] if stages else None)
     built, todo = [], deque([start] if start else [])
     while todo:
@@ -201,7 +202,7 @@ def built_stages(stages: list, target: str, contexts: set) -> list:
         built.append(stage)
         for ref in [stage.base, *sorted(stage.uses)]:
             found = find_stage(stages[:stage.index], ref) if ref == stage.base else find_stage(stages, ref)
-            if found is not None and ref not in contexts:
+            if found is not None:
                 todo.append(found)
     return sorted(built, key=lambda s: s.index)
 
