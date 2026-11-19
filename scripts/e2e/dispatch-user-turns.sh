@@ -583,7 +583,12 @@ until_true 120 "the broadcast's card" has_card "$broadcast_body"
 note "a card, no user message"
 pass
 
-issue_body="LEGION-394 $run issue message: is $issue ready?"
+# The body names no key of an issue this Dispatch holds (LEGION-394 names none here, so the page
+# draws it as plain text). The page draws a bare key that names an issue as a link that holds the
+# issue's title (useTextReferences, packages/dispatch/web/src/features/refs/MarkdownBody.tsx), so
+# the thread's text for a body that named $issue would not hold the body, and
+# the-page-shows-each-message-once, which finds each message by its body, would count it 0.
+issue_body="LEGION-394 $run issue message: is this issue ready?"
 begin an-issue-message-gets-a-card
 human -X POST "http://127.0.0.1:$dispatch_port/api/v1/issues/$issue/messages" \
   -d "$(jq -nc --arg b "$issue_body" --arg s "$session_id" '{body: $b, target: ("session:" + $s), delivery: "steer"}')" >/dev/null

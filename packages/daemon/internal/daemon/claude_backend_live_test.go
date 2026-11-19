@@ -28,7 +28,9 @@
 // answers the phase's first task with one line of text and no tool, so the turn ends with
 // implementing open; the `Stop` hook's reminder is the next turn, and the stand-in answers that
 // one with a `tool_use` of `mcp__legion__legion` calling handoff_complete, held until the driver
-// has written the implement record; and it answers every other request with a WAITING line.
+// has written the implement record; and it answers every other request with a WAITING line. The
+// pane runs with `ENABLE_TOOL_SEARCH=false`, so each turn offers the `legion` server's tools by
+// name and not behind Claude Code's ToolSearch.
 //
 // Dispatch is the real server this checkout builds, on a database of its own
 // (startHandoffDispatch), which the daemon and the pane both talk to. GitHub is the harness's REST
@@ -229,6 +231,13 @@ func newClaudeBackendLive(t *testing.T) *claudeBackendLive {
 	r.model = newClaudeStandin(t, "claudepane", "claude-backend-marker-"+randomSuffix(t)[:8])
 	r.cfg.Runtime.Tmux = &config.Tmux{PaneEnv: map[string]string{
 		"ANTHROPIC_BASE_URL": r.model.url,
+		// Behind ANTHROPIC_BASE_URL, Claude Code 2.1.304 and later defer every MCP tool behind
+		// ToolSearch: a turn offers ToolSearch and a DeferredToolPlaceholder, and not
+		// mcp__legion__legion. The stand-in finds the phase's start and the Stop hook's reminder by
+		// the tool the turn offers, so it would answer both with its WAITING line. With this
+		// value, every MCP tool is offered with the turn, as the real-hosts rig of
+		// packages/envoy-client/test/session-stall.ts offers them.
+		"ENABLE_TOOL_SEARCH": "false",
 		// Nothing but the turns this proof drives reaches the stand-in, and nothing reaches
 		// Anthropic's own hosts.
 		"DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",

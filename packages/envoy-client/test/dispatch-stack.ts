@@ -69,6 +69,15 @@ export interface DispatchStackOptions {
    * what a person writes. Without it the server runs with NATS off (`DISPATCH_NATS_DISABLED=1`).
    */
   readonly envoy?: Pick<EnvoyStack, "envoyUrl" | "natsUrl">;
+  /**
+   * The session windows the server judges a role route's holder by, as Go durations: its
+   * `ENVOY_SESSION_LIVE_WINDOW` and `ENVOY_SESSION_GONE_HORIZON` (cmd/dispatch's
+   * RoleHolderWindows). The server reads the holder's session itself, by these windows and not by
+   * the listener's, so a rig whose listener runs with windows of its own gives the server the
+   * same ones, and the two read a stalled holder the same. Unset, the server runs with its own
+   * defaults.
+   */
+  readonly sessionWindows?: { readonly liveWindow: string; readonly goneHorizon: string };
 }
 
 const HealthSchema = z.object({ nats: z.boolean().nullable() });
@@ -156,6 +165,12 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
         ...(options.envoy === undefined
           ? { DISPATCH_NATS_DISABLED: "1" }
           : { NATS_URLS: options.envoy.natsUrl, ENVOY_URL: options.envoy.envoyUrl }),
+        ...(options.sessionWindows === undefined
+          ? {}
+          : {
+              ENVOY_SESSION_LIVE_WINDOW: options.sessionWindows.liveWindow,
+              ENVOY_SESSION_GONE_HORIZON: options.sessionWindows.goneHorizon,
+            }),
         DISPATCH_LISTEN_HOST: "127.0.0.1",
         DISPATCH_PORT: String(port),
         DISPATCH_SERVER_URL: url,

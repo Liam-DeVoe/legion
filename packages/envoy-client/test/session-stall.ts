@@ -435,13 +435,37 @@ type RoleAnswer =
   | { readonly status: number; readonly holder: z.infer<typeof RoleHolderSchema> }
   | { readonly status: number; readonly refusal: z.infer<typeof RoleRefusalSchema> };
 
-/** `GET /v1/roles/<role>`: its holder, or the 404 naming why the listener routes nothing there. */
+/** `GET /v1/roles/<role>`: its holder, or the 404 naming why the listener routes nothing there.
+ *  Any other answer names neither - the 503 of a bus the listener could not read the claim or its
+ *  holder's session through (writeBusUnavailable, packages/envoy/cmd/listener/api.go), or the 500
+ *  of an unreadable claim - and is thrown with its status and body. */
 async function roleAnswer(envoyUrl: string, role: string): Promise<RoleAnswer> {
-  const response = await fetch(`${envoyUrl}/v1/roles/${encodeURIComponent(role)}`);
+  const path = `/v1/roles/${encodeURIComponent(role)}`;
+  const response = await fetch(`${envoyUrl}${path}`);
   const body: unknown = await response.json();
-  return response.ok
-    ? { status: response.status, holder: RoleHolderSchema.parse(body) }
-    : { status: response.status, refusal: RoleRefusalSchema.parse(body) };
+  if (response.ok) return { status: response.status, holder: RoleHolderSchema.parse(body) };
+  if (response.status !== 404) {
+    throw new Error(`GET ${path} answered ${response.status}: ${JSON.stringify(body)}`);
+  }
+  return { status: response.status, refusal: RoleRefusalSchema.parse(body) };
+}
+
+/** A role lookup that waits out the listener's 503 once the bus is back, as awaitStateThrough
+ *  waits out the session read: the lookup reads the claim from the bus itself, within one
+ *  request's budget, and is refused until that read is served again. */
+async function roleAnswerThrough(
+  envoyUrl: string,
+  role: string,
+  deadline: number
+): Promise<RoleAnswer> {
+  for (;;) {
+    try {
+      return await roleAnswer(envoyUrl, role);
+    } catch (error) {
+      if (Date.now() > deadline) throw error;
+    }
+    await Bun.sleep(POLL_MS);
+  }
 }
 
 /** The claim the role bucket holds, or undefined once something released it. */
@@ -798,14 +822,17 @@ describe.skipIf(!envoyStackEnabled || !dispatchStackEnabled)(
         })
       ).key;
 
-    /** A stalled-session child on this rig, under a session id and a role of the test's own. */
+    /** A stalled-session child on this rig, under a session id and a role of the test's own. The
+     *  role spells the name's `_` as `-`: Dispatch takes a role route only when the role is
+     *  `[a-z0-9-]` (roleRoutePattern, packages/envoy/internal/dispatch/model/model.go), and the
+     *  row that routes an issue to the holder's role would be refused 400 ROUTE_INVALID. */
     const session = (name: string): Promise<StalledSession> => {
       const { stack } = rig();
       return startStalledSession({
         envoyUrl: stack.envoyUrl,
         natsUrl: stack.natsUrl,
         sessionID: `ses_${name}_${process.pid}`,
-        role: `session-stall-${name}`,
+        role: `session-stall-${name.replaceAll("_", "-")}`,
         directory: `/test/session-stall/${name}`,
         title: `Session ${name}`,
         heartbeatMs: HEARTBEAT_MS,
@@ -824,9 +851,16 @@ describe.skipIf(!envoyStackEnabled || !dispatchStackEnabled)(
         },
       });
       stack = started;
+      // Dispatch reads a role route's holder from the session bucket by windows of its own, so it
+      // is given the listener's: with its 5-minute default it would read a stalled holder live and
+      // hand it the event the row below holds.
       dispatch = await startDispatchStack({
         work: keptDispatchDirectory,
         envoy: { envoyUrl: started.envoyUrl, natsUrl: started.natsUrl },
+        sessionWindows: {
+          liveWindow: goDuration(LIVE_WINDOW_MS),
+          goneHorizon: goDuration(KEPT_GONE_HORIZON_MS),
+        },
       });
       // The observer outlives the outage below: it reconnects for as long as the bus is down.
       nats = await connect({
@@ -1018,7 +1052,11 @@ describe.skipIf(!envoyStackEnabled || !dispatchStackEnabled)(
             Date.now() + 60_000
           );
         }
-        const lookup = await roleAnswer(stack.envoyUrl, roleHolder.role);
+        const lookup = await roleAnswerThrough(
+          stack.envoyUrl,
+          roleHolder.role,
+          Date.now() + 60_000
+        );
         expect("refusal" in lookup ? lookup.refusal : undefined).toMatchObject({
           holder: roleHolder.sessionID,
           holder_state: "unresponsive",
