@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1552,4 +1553,55 @@ func TestOneSessionsUnreadableRecordLeavesAnotherThreadsRuleAlone(t *testing.T) 
 	checkSessionRecipientsReading(t, database, envoy.New(server.URL), []recipientCheck{
 		{event: inB, want: []string{issue.b.ID}},
 	})
+}
+
+// A registry whose answers stop after their headers - the body never comes, so each read ends at
+// the client's timeout - is a registry that does not answer (registryUnanswered), and costs one
+// read's wait: "A registry that hangs then costs one read's wait, which the reader's own timeout
+// bounds" (countedSessions). The reply's thread holds 24 sessions, three rounds of
+// registryReadsAtOnce, and the client's timeout is 700 ms; no read starts after the first round's,
+// and the reply reaches the credits (A and C), as R6 says where the registry does not answer.
+func TestAReadThatRunsOutOfTimeInItsBodyStopsFurtherReads(t *testing.T) {
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	issue := seedThreadRuleIssue(t, database)
+	var reads atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reads.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "200")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"session_id":`))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+	root := seedThreadComment(t, database, "T-1", "", issue.b, nil)
+	for i := range 23 {
+		seedThreadComment(t, database, "T-1", "", model.Actor{Kind: "session", ID: fmt.Sprintf("session-stall-%02d", i)}, &root)
+	}
+	reply := seedThreadComment(t, database, "T-1", "", issue.person, &root)
+	created := appendCommentEvent(t, database, broker, "comment.created", issue.person, model.Comment{ID: reply, ReplyTo: &root})
+	publisher := &recordingPublisher{}
+	deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker(), Registry: envoy.New(server.URL, envoy.WithTimeout(700*time.Millisecond))}
+	start := time.Now()
+	if _, err := scanBatch(context.Background(), deps, unfenced{}, holding(t, deps).instance); err != nil {
+		t.Fatalf("scan batch: %v", err)
+	}
+	took := time.Since(start)
+	var toA, toC bool
+	for _, item := range publisher.all() {
+		if item.SourceEventID != fmt.Sprint(created.ID) {
+			continue
+		}
+		toA = toA || item.Topic == contracts.LegacyAgentSubject(issue.a.ID)
+		toC = toC || item.Topic == contracts.LegacyAgentSubject(issue.c.ID)
+	}
+	t.Logf("24 sessions, each read ending at the client's 700 ms timeout in its body: %d reads, batch %s; credit copy to A %v, C %v", reads.Load(), took.Round(time.Millisecond), toA, toC)
+	if !toA || !toC {
+		t.Fatalf("the reply reached A %v, C %v: want the credit copy where the registry does not answer", toA, toC)
+	}
+	if n := reads.Load(); n > registryReadsAtOnce {
+		t.Fatalf("%d reads were made after reads that never got their answer: want at most %d, one read's wait", n, registryReadsAtOnce)
+	}
 }

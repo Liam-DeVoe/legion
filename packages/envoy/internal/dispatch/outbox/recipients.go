@@ -487,10 +487,11 @@ func countedSessions(ctx context.Context, registry RegistryReader, sessionIDs []
 
 // registryUnanswered reports whether err, a failed read of Envoy's registry, is the registry not
 // answering rather than its answer about one session: envoy.ErrUnreachable (no connection, a
-// connection lost, the client's timeout, or a 502, 503 or 504 from in front of a listener that is
-// gone or starting), or a deadline that ended the read. Any other failure is a status the listener
-// chose for that session's record, or a body that does not decode, which says nothing about the
-// other sessions.
+// connection lost, the client's timeout, an answer whose body stopped after its headers or was cut
+// short of its length, or a 502, 503 or 504 from in front of a listener that is gone or starting),
+// or a deadline that ended the read. Any other failure is a status the listener chose for that
+// session's record, or a whole body that does not decode, which says nothing about the other
+// sessions.
 func registryUnanswered(err error) bool {
 	return errors.Is(err, envoy.ErrUnreachable) || errors.Is(err, context.DeadlineExceeded)
 }

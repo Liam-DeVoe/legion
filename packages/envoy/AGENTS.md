@@ -1679,7 +1679,8 @@ So a switch's Retry, Use Aside instead or resume is refused for a stopped sessio
 **A send that meets a listener take-over waits it out under the attempt it holds.**
 While the active listener pod is replaced its successor refuses connections, answers 503 (its starting gate's `{"error":"service starting"}`), or does not hold the session yet for a few seconds (INFRA-557's take-over target is under 10).
 The listener client reads a 502, 503 or 504 on any route, a role lookup and a send included, as `ErrUnavailable` whatever its body says, keeping the body's reason in the text, and marks it `ErrUnreachable`, as it marks a connection refused, reset or timed out;
-a status the listener chose (a 401 for a token it refuses, a 403, a 500) and an answer that does not decode are `ErrUnavailable` alone, the listener's own answer.
+every read (`GET`) takes its answer whole, body included, before it decodes any of it (`get`; `http.Client.Timeout` bounds the body as it bounds the headers), so a body still coming when the client's window ends, one cut short of its length and one that loses its connection are `ErrUnreachable` too, whatever the status before them;
+a status the listener chose (a 401 for a token it refuses, a 403, a 500) and a whole answer that does not decode are `ErrUnavailable` alone, the listener's own answer.
 A try whose outcome is a take-over's - the listener unreachable (`envoy listener: …`, never the `ENVOY_URL is
 not configured` text), a receipt timeout, or `no live session` (`retryableDeliveryFailure`) - is tried again under the same attempt and the same idempotency key, without a new claim:
 the sender resolves again only the recipient the attempt names (its pinned session, rechecked;
@@ -6053,8 +6054,8 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   After its lookups, with no statement open and no pooled connection held, a batch reads each of those sessions once from Envoy's registry, at most `registryReadsAtOnce` (8) at once (`threadHearing.hear`, `countedSessions`).
   It reads the registry only for the events this rule takes, and only their owners wait for the read: the batch reads the destinations of every event of such an owner, and plans and sends them, once the read answered (`threadHearing.plan`), while it plans and sends every other owner at once (`sendChains`).
   So a registry that does not answer costs those owners its wait and holds no other event of the batch, an `issue.released` on another issue included.
-  The read is the one an issue claim makes of its holder (`GET /v1/registry/<id>?include=unresponsive`, `Deps.Registry`), and the client's own timeout bounds it.
-  A read the registry does not answer stops the read: no connection, the client's timeout, or a 502, 503 or 504 (`envoy.ErrUnreachable`, `registryUnanswered`).
+  The read is the one an issue claim makes of its holder (`GET /v1/registry/<id>?include=unresponsive`, `Deps.Registry`), and the client's own timeout bounds it, body included.
+  A read the registry does not answer stops the read: no connection, the client's timeout, an answer whose body stops after its headers or is cut short of its length, or a 502, 503 or 504 (`envoy.ErrUnreachable`, `registryUnanswered`).
   No read starts after it, and the sessions not read yet do not count, so a hung registry costs one timeout however many sessions the threads hold.
   A read the registry refuses for one session, such as the 500 for an interest record it cannot read, counts nothing for that session alone, and the other sessions are read as before.
   Where one of the thread's sessions reads `live` or `unresponsive` (`routing.threadHeard`), the reply reaches the thread and no session that only a document credits: not the primary document's (`addPrimaryDocumentAuthors`) and not the thread's document's (`addAuthorRoutes`).

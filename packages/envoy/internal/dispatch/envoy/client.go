@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -25,14 +26,14 @@ import (
 var ErrUnavailable = errors.New("envoy listener unavailable")
 
 // ErrUnreachable marks the ErrUnavailable failures no listener answered: the request found no
-// connection, lost it, or ran out of time before an answer, or a 502, 503 or 504 came back - a
-// gateway in front of a listener that is gone, or a listener behind its starting gate
-// (cmd/listener/main.go startingGate). Those are what a listener being replaced gives for a few
-// seconds, so asking again a little later may be answered. Every other ErrUnavailable - a status
-// the listener chose, such as the 401 it gives a token it refuses, or an answer that does not
-// decode - is the listener's own answer, which asking again only repeats. An ErrUnreachable
-// failure is ErrUnavailable too, with the same text, so a caller that asks only errors.Is(err,
-// ErrUnavailable) reads it exactly as before.
+// connection, lost it, or ran out of time before an answer - for a read, before its whole answer,
+// body included (get) - or a 502, 503 or 504 came back - a gateway in front of a listener that is
+// gone, or a listener behind its starting gate (cmd/listener/main.go startingGate). Those are what
+// a listener being replaced gives for a few seconds, so asking again a little later may be
+// answered. Every other ErrUnavailable - a status the listener chose, such as the 401 it gives a
+// token it refuses, or a whole answer that does not decode - is the listener's own answer, which
+// asking again only repeats. An ErrUnreachable failure is ErrUnavailable too, with the same text,
+// so a caller that asks only errors.Is(err, ErrUnavailable) reads it exactly as before.
 var ErrUnreachable = errors.New("envoy listener unreachable")
 
 // unreachableError marks the ErrUnavailable failure it wraps as ErrUnreachable without adding to
@@ -298,13 +299,12 @@ func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
+	if response.status != http.StatusOK {
 		return nil, listFailure(response, "GET "+route)
 	}
 
 	var rows []listenerwire.SessionInfo
-	if err := json.NewDecoder(response.Body).Decode(&rows); err != nil {
+	if err := json.Unmarshal(response.body, &rows); err != nil {
 		return nil, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	// Each row's topics are left behind: Dispatch keeps every row of this answer in its route
@@ -326,13 +326,12 @@ func (c *Client) ListInterests(ctx context.Context) ([]listenerwire.InterestRow,
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
+	if response.status != http.StatusOK {
 		return nil, listFailure(response, "GET "+route)
 	}
 
 	var interests []listenerwire.InterestRow
-	if err := json.NewDecoder(response.Body).Decode(&interests); err != nil {
+	if err := json.Unmarshal(response.body, &interests); err != nil {
 		return nil, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	if interests == nil {
@@ -358,8 +357,7 @@ func (c *Client) Interest(ctx context.Context, sessionID string) (listenerwire.I
 	if err != nil {
 		return listenerwire.InterestRow{}, err
 	}
-	defer response.Body.Close()
-	switch response.StatusCode {
+	switch response.status {
 	case http.StatusOK:
 	case http.StatusNotFound, http.StatusBadRequest, http.StatusRequestEntityTooLarge:
 		return listenerwire.InterestRow{}, ErrNotFound
@@ -368,7 +366,7 @@ func (c *Client) Interest(ctx context.Context, sessionID string) (listenerwire.I
 	}
 
 	var interest listenerwire.InterestRow
-	if err := json.NewDecoder(response.Body).Decode(&interest); err != nil {
+	if err := json.Unmarshal(response.body, &interest); err != nil {
 		return listenerwire.InterestRow{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	if interest.Topics == nil {
@@ -431,12 +429,11 @@ func (c *Client) Role(ctx context.Context, role string) (Session, error) {
 	if err != nil {
 		return Session{}, err
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
+	if response.status != http.StatusOK {
 		return c.lapsedRoleHolder(ctx, response)
 	}
 	var answer listenerwire.RoleHolder
-	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
+	if err := json.Unmarshal(response.body, &answer); err != nil {
 		return Session{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	// An older listener names no holder_state, which normalize reads as live.
@@ -457,8 +454,8 @@ func (c *Client) Role(ctx context.Context, role string) (Session, error) {
 	return holder, nil
 }
 
-// lapsedRoleHolder answers a role lookup the listener refused, having read nothing of its body
-// yet. The refusal is listenerwire.RoleRefusal: a reason, and for a lapsed holder the holder's id,
+// lapsedRoleHolder answers a role lookup the listener refused, from its whole answer (get). The
+// refusal is listenerwire.RoleRefusal: a reason, and for a lapsed holder the holder's id,
 // the state its record puts it in, and claim_released false.
 //
 // A holder that is only unresponsive keeps its claim, so the role still has a holder and this
@@ -470,10 +467,10 @@ func (c *Client) Role(ctx context.Context, role string) (Session, error) {
 // calls gone, and a holder whose record could not be read at all. A holder whose record has gone
 // between the two reads is the same answer, so a role is never resolved to a session the
 // listener no longer holds.
-func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) (Session, error) {
+func (c *Client) lapsedRoleHolder(ctx context.Context, response listenerAnswer) (Session, error) {
 	var refusal listenerwire.RoleRefusal
-	if err := json.NewDecoder(response.Body).Decode(&refusal); err != nil {
-		return Session{}, listenerRefusal(response, "")
+	if err := json.Unmarshal(response.body, &refusal); err != nil {
+		return Session{}, listenerRefusal(response.status, "")
 	}
 	if refusal.Holder != "" && refusal.HolderState == StateUnresponsive {
 		holder, err := c.Session(ctx, refusal.Holder)
@@ -484,7 +481,7 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 			return Session{}, err
 		}
 	}
-	return Session{}, listenerRefusal(response, refusal.Error)
+	return Session{}, listenerRefusal(response.status, refusal.Error)
 }
 
 // Session returns one session's listener metadata, whatever its state, or ErrNotFound if the
@@ -501,9 +498,10 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 // being refilled is absent from the list while its record is there to be read, and a missing
 // row cannot tell the two apart. A session the listener knows only by its known-session record,
 // one that is not running, is ErrNotFound here (SessionIncludingStopped reads it). Every other
-// status, a body that does not decode and a transport failure alike are ErrUnavailable carrying
-// the listener's own reason, so a read the message bus did not answer reads as "ask again", never
-// as "that session is gone"; only a transport failure and a 502, 503 or 504 are also
+// status, a whole body that does not decode and a transport failure alike are ErrUnavailable
+// carrying the listener's own reason, so a read the message bus did not answer reads as "ask
+// again", never as "that session is gone"; only a transport failure - a body that ran out of time,
+// was cut short or lost its connection included (get) - and a 502, 503 or 504 are also
 // ErrUnreachable, because a status the listener chose - a 401 for a token it refuses, say - is
 // its answer and asking again repeats it.
 func (c *Client) Session(ctx context.Context, sessionID string) (Session, error) {
@@ -538,8 +536,7 @@ func (c *Client) readSession(ctx context.Context, sessionID, include string) (Se
 	if err != nil {
 		return Session{}, err
 	}
-	defer response.Body.Close()
-	switch response.StatusCode {
+	switch response.status {
 	case http.StatusOK:
 	case http.StatusNotFound, http.StatusBadRequest, http.StatusRequestEntityTooLarge:
 		return Session{}, ErrNotFound
@@ -548,7 +545,7 @@ func (c *Client) readSession(ctx context.Context, sessionID, include string) (Se
 	}
 
 	var info listenerwire.SessionInfo
-	if err := json.NewDecoder(response.Body).Decode(&info); err != nil {
+	if err := json.Unmarshal(response.body, &info); err != nil {
 		return Session{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	return sessionOf(info, sessionID), nil
@@ -557,7 +554,7 @@ func (c *Client) readSession(ctx context.Context, sessionID, include string) (Se
 // Agent returns the Legion agent registry's entry for one session (listenerwire.LegionAgentAnswer,
 // whose Live is never read as "that agent has stopped"), or ErrNotFound when the registry holds
 // none: a 404, or an id the listener refuses (a 400 or 413), under which no entry can be recorded.
-// Every other status, a body that does not decode and a transport failure are ErrUnavailable
+// Every other status, a whole body that does not decode and a transport failure are ErrUnavailable
 // carrying the listener's reason: a read the registry did not answer says nothing about whether
 // the session was recorded.
 func (c *Client) Agent(ctx context.Context, sessionID string) (listenerwire.LegionAgentAnswer, error) {
@@ -566,8 +563,7 @@ func (c *Client) Agent(ctx context.Context, sessionID string) (listenerwire.Legi
 	if err != nil {
 		return listenerwire.LegionAgentAnswer{}, err
 	}
-	defer response.Body.Close()
-	switch response.StatusCode {
+	switch response.status {
 	case http.StatusOK:
 	case http.StatusNotFound, http.StatusBadRequest, http.StatusRequestEntityTooLarge:
 		return listenerwire.LegionAgentAnswer{}, ErrNotFound
@@ -575,7 +571,7 @@ func (c *Client) Agent(ctx context.Context, sessionID string) (listenerwire.Legi
 		return listenerwire.LegionAgentAnswer{}, unavailableGetStatus(response, route)
 	}
 	var agent listenerwire.LegionAgentAnswer
-	if err := json.NewDecoder(response.Body).Decode(&agent); err != nil {
+	if err := json.Unmarshal(response.body, &agent); err != nil {
 		return listenerwire.LegionAgentAnswer{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	return agent, nil
@@ -600,12 +596,11 @@ func (c *Client) legionAgents(ctx context.Context, route, query string) ([]liste
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
+	if response.status != http.StatusOK {
 		return nil, unavailableGetStatus(response, route)
 	}
 	var body listenerwire.LegionAgentList
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+	if err := json.Unmarshal(response.body, &body); err != nil {
 		return nil, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	if body.Entries == nil {
@@ -614,21 +609,48 @@ func (c *Client) legionAgents(ctx context.Context, route, query string) ([]liste
 	return body.Entries, nil
 }
 
-// get makes one authorized GET of route+query, the one shape every read of the listener takes.
-// route names the read in each error this returns, without query's selector, so the same read
-// reads alike however it was asked. A transport failure is ErrUnavailable and ErrUnreachable
-// both: no listener answered it (unreachable).
-func (c *Client) get(ctx context.Context, route, query string) (*http.Response, error) {
+// maxAnswerBytes bounds the body of the listener's answer to a GET (get). The largest it writes are
+// its two lists (Sessions, ListInterests), a row per session it holds.
+const maxAnswerBytes = 32 << 20
+
+// listenerAnswer is the listener's whole answer to one GET (get): its status, its headers and its
+// body, read to its end.
+type listenerAnswer struct {
+	status int
+	header http.Header
+	body   []byte
+}
+
+// get makes one authorized GET of route+query, the one shape every read of the listener takes,
+// and reads its answer whole, body included, before a caller decodes any of it. route names the
+// read in each error this returns, without query's selector, so the same read reads alike however
+// it was asked. A transport failure is ErrUnavailable and ErrUnreachable both: no listener
+// answered it (unreachable). So is a body that did not come whole, whatever its status: one still
+// coming when the client's window ends (http.Client.Timeout bounds the body as it bounds the
+// headers), one cut short of its length, and one whose connection was lost. A body that then does
+// not decode is one the listener finished, so it is the listener's own answer. A body past
+// maxAnswerBytes is ErrUnavailable alone: the listener answered, with more than a read takes.
+func (c *Client) get(ctx context.Context, route, query string) (listenerAnswer, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+route+query, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, err)
+		return listenerAnswer{}, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, err)
 	}
 	c.authorize(request)
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return nil, unreachable(fmt.Errorf("%w: GET %s: %v", ErrUnavailable, route, err))
+		return listenerAnswer{}, unreachable(fmt.Errorf("%w: GET %s: %v", ErrUnavailable, route, err))
 	}
-	return response, nil
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxAnswerBytes+1))
+	if err != nil {
+		return listenerAnswer{}, unreachable(fmt.Errorf("%w: GET %s returned %d and its body did not come whole: %v",
+			ErrUnavailable, route, response.StatusCode, err))
+	}
+	if len(body) > maxAnswerBytes {
+		return listenerAnswer{}, fmt.Errorf("%w: GET %s returned %d with a body over %d bytes",
+			ErrUnavailable, route, response.StatusCode, maxAnswerBytes)
+	}
+	return listenerAnswer{status: response.StatusCode, header: response.Header, body: body}, nil
 }
 
 // unavailableGetStatus is ErrUnavailable for a GET of route the listener answered with a status
@@ -636,14 +658,14 @@ func (c *Client) get(ctx context.Context, route, query string) (*http.Response, 
 // ErrUnreachable too when that status came from in front of the listener (unavailableStatus).
 // The two list reads answer their refusals through listFailure instead, which tells a refilling
 // listener from an unavailable one.
-func unavailableGetStatus(response *http.Response, route string) error {
+func unavailableGetStatus(response listenerAnswer, route string) error {
 	var failure listenerwire.APIError
-	if err := json.NewDecoder(response.Body).Decode(&failure); err == nil && failure.Error != "" {
-		return unavailableStatus(response.StatusCode,
-			fmt.Errorf("%w: GET %s returned %d: %s", ErrUnavailable, route, response.StatusCode, failure.Error))
+	if err := json.Unmarshal(response.body, &failure); err == nil && failure.Error != "" {
+		return unavailableStatus(response.status,
+			fmt.Errorf("%w: GET %s returned %d: %s", ErrUnavailable, route, response.status, failure.Error))
 	}
-	return unavailableStatus(response.StatusCode,
-		fmt.Errorf("%w: GET %s returned %d", ErrUnavailable, route, response.StatusCode))
+	return unavailableStatus(response.status,
+		fmt.Errorf("%w: GET %s returned %d", ErrUnavailable, route, response.status))
 }
 
 // sendSource is the source every send Dispatch makes through the listener names itself by.
@@ -758,18 +780,17 @@ func sendTransportError(err error, requestWritten bool) error {
 func listenerResponseError(response *http.Response) error {
 	var body listenerwire.APIError
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
-		return listenerRefusal(response, "")
+		return listenerRefusal(response.StatusCode, "")
 	}
-	return listenerRefusal(response, body.Error)
+	return listenerRefusal(response.StatusCode, body.Error)
 }
 
-// listenerRefusal is a refused answer as its caller reports it: the listener's own reason when
-// its body named one, and its status when the body named nothing a caller could act on. A 502,
-// 503 or 504 is ErrUnavailable and ErrUnreachable whatever its body says, reason and all, since
-// it comes from in front of the listener or from its starting gate rather than from a decision
-// about the request.
-func listenerRefusal(response *http.Response, reason string) error {
-	code := response.StatusCode
+// listenerRefusal is a refused answer, of status code, as its caller reports it: the listener's
+// own reason when its body named one, and its status when the body named nothing a caller could
+// act on. A 502, 503 or 504 is ErrUnavailable and ErrUnreachable whatever its body says, reason and
+// all, since it comes from in front of the listener or from its starting gate rather than from a
+// decision about the request.
+func listenerRefusal(code int, reason string) error {
 	if reason != "" {
 		if gatewayStatus(code) {
 			return unreachable(fmt.Errorf("%w: listener returned %d: %s", ErrUnavailable, code, reason))
@@ -783,16 +804,16 @@ func listenerRefusal(response *http.Response, reason string) error {
 // is a *RefillingError, anything else ErrUnavailable carrying the listener's own reason when its
 // body names one, and ErrUnreachable too when the status is a 502, 503 or 504, which comes from
 // in front of the listener or from its starting gate rather than from a verdict on the read.
-func listFailure(response *http.Response, route string) error {
+func listFailure(response listenerAnswer, route string) error {
 	var body listenerwire.APIError
-	decoded := json.NewDecoder(response.Body).Decode(&body) == nil
-	if decoded && response.StatusCode == http.StatusServiceUnavailable && body.Code == listenerRefillingCode {
-		return &RefillingError{RetryAfter: response.Header.Get("Retry-After"), route: route, reason: body.Error}
+	decoded := json.Unmarshal(response.body, &body) == nil
+	if decoded && response.status == http.StatusServiceUnavailable && body.Code == listenerRefillingCode {
+		return &RefillingError{RetryAfter: response.header.Get("Retry-After"), route: route, reason: body.Error}
 	}
 	if !decoded || body.Error == "" {
-		return unavailableStatus(response.StatusCode,
-			fmt.Errorf("%w: %s returned %d", ErrUnavailable, route, response.StatusCode))
+		return unavailableStatus(response.status,
+			fmt.Errorf("%w: %s returned %d", ErrUnavailable, route, response.status))
 	}
-	return unavailableStatus(response.StatusCode,
-		fmt.Errorf("%w: %s returned %d: %s", ErrUnavailable, route, response.StatusCode, body.Error))
+	return unavailableStatus(response.status,
+		fmt.Errorf("%w: %s returned %d: %s", ErrUnavailable, route, response.status, body.Error))
 }

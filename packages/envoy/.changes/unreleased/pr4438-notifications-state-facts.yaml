@@ -6,4 +6,6 @@ body: |-
   urgency. A person's reply in a thread whose session is live or unresponsive no longer also goes to
   the sessions that only a document credits. Dispatch reads Envoy's registry for that rule alone,
   with a bound on the reads open at once, and a registry that does not answer holds back only the
-  events that read it.
+  events that read it, for one read's wait. Every read Dispatch makes of the Envoy listener takes
+  its answer whole: one whose body stops after its headers or is cut short counts as the listener
+  not answering, never as its answer.
