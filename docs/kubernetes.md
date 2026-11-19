@@ -6169,8 +6169,8 @@ an operator's suspension of a claim the round asks, a `ReplacePod` the cluster r
 Its `reason` names that hold, and the notice names the issue, the round, the pod, the drift and every claim the round asked, with that claim's state and whether it answered (`skill://legion-controller/references/escalation.md`).
 One round is told once, however many sweeps find it open.
 The sweep marks the round told on each claim of it without waiting for that claim's machine:
-a claim whose machine is busy, such as one in a relaunch, is marked at a later sweep, the round is not told again meanwhile, and no other issue's round waits for that relaunch (`markUpdateTold`, `markOwedTold`).
-The daemon keeps a mark it owes in memory only, so a daemon that restarts before it makes that mark tells the round once more, which is what a told mark the store refuses already costs.
+a claim whose machine is busy, such as one in a relaunch, or whose mark the store refuses, is marked at a later sweep, the round is not told again meanwhile, and no other issue's round waits for that relaunch (`markUpdateTold`, `markOwedTold`).
+The daemon keeps a mark it owes in memory only, so a daemon that restarts before it makes that mark tells the round once more.
 A round that waits for its roles before its bound is told to nobody, since the bound ends that wait by itself.
 An operator's suspension is the one hold only a person can clear: the daemon replaces the pod only after the operator resumes each such claim.
 A pod that goes before its round is over, replaced where it stood for a failure of its own, has the daemon write on the issue which roles had not answered and that the work they did not push went with the disk.

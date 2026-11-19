@@ -1687,11 +1687,12 @@ func (m *Machine) ReleaseUncertainLaunch(ctx context.Context) (bool, error) {
 //
 // It stamps nothing and reports false when the claim is no longer in round — the round ended, or
 // another opened — or when this round was already told: both are decisions already taken, not
-// faults, since the sweep posts over the same claims at every tick. A write the store refuses is
-// returned with false, and the sweep tells the round again at the next tick rather than lose the
-// notice. That is also why the write goes through putClaim and leaves nothing owed: the stamp is
-// taken back here, so there is no mark to make again, and the next tick's call writes the stamp
-// it makes then.
+// faults, since the sweep posts over the same claims at every tick. A write the store refuses
+// takes the stamp back and is returned with false, and the sweep owes that mark as it owes a busy
+// machine's, and makes it at a later sweep dated when the round was told, so the round is not
+// told again (internal/daemon's markUpdateTold). That is also why the write goes through putClaim
+// and leaves nothing owed here: the claim holds no stamp the store does not, and the mark is the
+// sweep's to make again, under its own time, rather than this machine's next decision's.
 func (m *Machine) PodUpdateTold(ctx context.Context, round string, at time.Time) (bool, error) {
 	if !m.mu.TryLock() {
 		return false, ErrMachineBusy

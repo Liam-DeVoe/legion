@@ -1377,12 +1377,12 @@ type supervision struct {
 	podUpdateMu       sync.Mutex
 	podUpdateOpenedAt time.Time
 	podUpdateOpened   map[string]string
-	// podUpdateToldMu guards podUpdateToldOwed: the claims whose machine was deciding something
-	// when the sweep told the round each records (markUpdateTold), so the told mark could not be
-	// taken then, each with that round and when it was told. The sweep makes those marks at a
-	// later sweep (markOwedTold) and tells none of those rounds again meanwhile (roundTold).
-	// Nothing of it is in the store: a daemon that boots before a mark it owed was made tells that
-	// round once more, which is what a told mark the store refused already costs.
+	// podUpdateToldMu guards podUpdateToldOwed: the claims whose told mark the sweep could not
+	// make when it told the round each records (markUpdateTold) — the claim's machine was
+	// deciding something, or the store refused the write — each with that round and when it was
+	// told. The sweep makes those marks at a later sweep (markOwedTold) and tells none of those
+	// rounds again meanwhile (roundTold). Nothing of it is in the store: a daemon that boots
+	// before a mark it owed was made tells that round once more.
 	podUpdateToldMu   sync.Mutex
 	podUpdateToldOwed map[claim.Token]toldMarkOwed
 	// podUpdateRoundsMu guards podUpdateRounds, what the last sweep decided under those two limits

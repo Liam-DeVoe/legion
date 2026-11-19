@@ -2,11 +2,15 @@ package daemon
 
 // The mark the sweep makes on each claim of a round it has told the controller of, past the
 // round's bound (markUpdateTold, markOwedTold): the sweep never waits on a claim's machine to make
-// it, and a round is told once all the same. The limit rig is podupdate_limits_test.go's, with no
-// limit set.
+// it, a mark it cannot make then — the machine is busy, or the store refuses the write — is made
+// at a later sweep, and a round is told once all the same. The limit rig is
+// podupdate_limits_test.go's, with no limit set.
 
 import (
+	"context"
+	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -126,5 +130,132 @@ func TestPodUpdateTheSweepMarksALateRoundToldWithoutWaitingOnARelaunch(t *testin
 	rig.tick()
 	if notices := rig.controllerNotices(); len(notices) != 1 {
 		t.Fatalf("the controller has been told %d times of the round, want once: %+v", len(notices), notices)
+	}
+}
+
+// toldMarkRefusal is a store that refuses the told mark of one claim while refusing is set, as a
+// database that refuses the row does: a write of that claim that carries a told mark answers an
+// error, and every other write goes to the store behind it. refused counts the marks it refused,
+// so a test can say that the sweep reached the refusal it is of rather than found the machine
+// busy. The two counters are shared by every supervisor wire builds, a restarted daemon's too.
+type toldMarkRefusal struct {
+	supervise.Store
+	token    claim.Token
+	refusing *atomic.Bool
+	refused  *atomic.Int32
+}
+
+func (s *toldMarkRefusal) PutClaim(ctx context.Context, c supervise.Claim) error {
+	if c.Token == s.token && c.UpdateToldAt != nil && s.refusing.Load() {
+		s.refused.Add(1)
+		return errors.New("the database refused the row")
+	}
+	return s.Store.PutClaim(ctx, c)
+}
+
+// refusedMarkRig is the limit rig over one issue, with its architect's told mark refused by the
+// store while refusing is set. The round is open, and every sweep from here on reads the issue
+// podless, so its round waits for a claim to run again and is told once its bound has come
+// (tellPodlessRound).
+func refusedMarkRig(t *testing.T, issue string) (rig *fleetRig, refusing *atomic.Bool, refused *atomic.Int32) {
+	t.Helper()
+	refusing, refused = &atomic.Bool{}, &atomic.Int32{}
+	token := mustClaimToken(t, issue, claim.RoleArchitect)
+	rig = newWiredFleetRig(t, func(sup *supervisor) {
+		sup.deps.Store = &toldMarkRefusal{Store: sup.deps.Store, token: token, refusing: refusing, refused: refused}
+	}, limitIssue(1, issue))
+	rig.drifts(issue, limitDrift)
+	rig.tick()
+	rig.awaitRounds("the first sweep", issue)
+	rig.podless(issue)
+	return rig, refusing, refused
+}
+
+// sweepRefusingTheMark is one sweep with the store refusing the told mark of issue's architect.
+// A sweep that found the architect's machine deciding something would owe the mark without
+// asking the store, so the machine is left to finish what it was posted first, and a sweep at
+// which the store refused no mark fails the test: it never reached the refusal it is of.
+func (r *fleetRig) sweepRefusingTheMark(issue string, refusing *atomic.Bool, refused *atomic.Int32) {
+	r.t.Helper()
+	r.sent(issue, claim.RoleArchitect)
+	refusing.Store(true)
+	before := refused.Load()
+	r.tick()
+	if refused.Load() == before {
+		r.t.Fatalf("the store was asked for no told mark of %s at this sweep, so this run never reached the refusal it is of", issue)
+	}
+}
+
+// The store refuses the told mark of a round the sweep has just told the controller of. The
+// telling is in the store and the mark is the one thing of it left, so the sweep owes the mark as
+// it owes a busy machine's: the round is not told again while the store refuses the mark, and a
+// later sweep makes it, dated when the round was told.
+func TestPodUpdateTheSweepMakesAToldMarkTheStoreRefusedAtALaterSweep(t *testing.T) {
+	issue := "ACME-1"
+	rig, refusing, refused := refusedMarkRig(t, issue)
+	rig.clock.advance(podUpdateGrace + time.Minute)
+	told := rig.clock.Now()
+	rig.sweepRefusingTheMark(issue, refusing, refused)
+	if notices := rig.controllerNotices(); len(notices) != 1 {
+		t.Fatalf("the sweep past the bound told the controller %d times, want once: %+v", len(notices), notices)
+	}
+
+	// A minute on, the store still refuses the mark the sweep owes: it is owed still, and the
+	// round is not told again.
+	rig.clock.advance(time.Minute)
+	rig.sweepRefusingTheMark(issue, refusing, refused)
+	if notices := rig.controllerNotices(); len(notices) != 1 {
+		t.Fatalf("the controller has been told %d times while the store refused the mark, want once: %+v", len(notices), notices)
+	}
+
+	// The store takes the mark again, and a later sweep makes it, dated when the round was told.
+	refusing.Store(false)
+	testwait.Eventually(t, "a sweep after the store takes writes again to make the told mark it owed", func() bool {
+		rig.clock.advance(time.Minute)
+		rig.tick()
+		return rig.claimOf(issue, claim.RoleArchitect).UpdateToldAt != nil
+	})
+	if got := rig.claimOf(issue, claim.RoleArchitect).UpdateToldAt; !got.Equal(told) {
+		t.Errorf("the round was marked told at %s, want %s, when the sweep told it", got, told)
+	}
+	rig.clock.advance(time.Minute)
+	rig.tick()
+	if notices := rig.controllerNotices(); len(notices) != 1 {
+		t.Fatalf("the controller has been told %d times of the round, want once: %+v", len(notices), notices)
+	}
+}
+
+// An owed told mark is kept in memory only, so a daemon that restarts before it makes the mark
+// tells the round once more, and then marks it as the first daemon would have.
+func TestPodUpdateADaemonThatRestartsBeforeAnOwedToldMarkTellsTheRoundOnceMore(t *testing.T) {
+	issue := "ACME-1"
+	rig, refusing, refused := refusedMarkRig(t, issue)
+	rig.clock.advance(podUpdateGrace + time.Minute)
+	rig.sweepRefusingTheMark(issue, refusing, refused)
+	if notices := rig.controllerNotices(); len(notices) != 1 {
+		t.Fatalf("the sweep past the bound told the controller %d times, want once: %+v", len(notices), notices)
+	}
+
+	next := rig.restart()
+	next.clock.advance(time.Minute)
+	retold := next.clock.Now()
+	next.sweepRefusingTheMark(issue, refusing, refused)
+	if notices := next.controllerNotices(); len(notices) != 2 {
+		t.Fatalf("the restarted daemon's first sweep left %d notices of the round, want 2: the mark the first daemon owed went with it, so the round is told once more", len(notices))
+	}
+
+	refusing.Store(false)
+	testwait.Eventually(t, "a sweep of the restarted daemon to make the told mark it owed", func() bool {
+		next.clock.advance(time.Minute)
+		next.tick()
+		return next.claimOf(issue, claim.RoleArchitect).UpdateToldAt != nil
+	})
+	if got := next.claimOf(issue, claim.RoleArchitect).UpdateToldAt; !got.Equal(retold) {
+		t.Errorf("the round was marked told at %s, want %s, when the restarted daemon told it", got, retold)
+	}
+	next.clock.advance(time.Minute)
+	next.tick()
+	if notices := next.controllerNotices(); len(notices) != 2 {
+		t.Fatalf("the controller has been told %d times of the round, want twice: once by each daemon", len(notices))
 	}
 }
