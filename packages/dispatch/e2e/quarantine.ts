@@ -45,15 +45,70 @@ export interface QuarantineEntry {
 
 /** The quarantined rows. An entry is written as `entryLines` prints it, which is what
  *  `e2e/tools/quarantine-check.ts` names as the lines to add or to remove. */
-export const quarantine: readonly QuarantineEntry[] = [];
+export const quarantine: readonly QuarantineEntry[] = [
+  {
+    file: "mention-composer.e2e.ts",
+    project: "chromium",
+    title:
+      "a duplicated mention delivery says the listener already had it, and offers no safe retry",
+    issue: "dispatch://INFRA-3904",
+    added: "2026-11-19",
+  },
+];
 
-/** How many rows the quarantine may hold (R4 of dispatch://INFRA-983). */
+/** A row a commit on main fixed, which a quarantine entry is not: the row stays in every gating
+ *  lane, and the nightly's check counts only the flakes of runs created after `fixed` landed, so
+ *  a row flaky twice before its fix does not ask for an entry after it. Once the commit is older
+ *  than the check's 14 days every flake it reads is after the fix, so the entry does nothing,
+ *  and the check names it for its owner to delete. The check fails on a fix whose commit is not
+ *  on main. */
+export interface FixEntry {
+  readonly file: string;
+  readonly project: string;
+  readonly title: string;
+  /** The issue that owns the row, as `dispatch://<KEY>`. */
+  readonly issue: string;
+  /** The commit on main that fixed the row: its full 40-character sha, lower case. */
+  readonly fixed: string;
+}
+
+/** The fixed rows, each written as `entryLines` prints it. */
+export const fixes: readonly FixEntry[] = [
+  {
+    file: "agent-rail.e2e.ts",
+    project: "iphone",
+    title: "the rail row, the Agents row and the live view each unpin @phone",
+    issue: "dispatch://INFRA-3148",
+    fixed: "a5348c75fa42c05f5581df45abaf33877c9ce90b",
+  },
+  {
+    file: "close-withdraws-asks.e2e.ts",
+    project: "chromium",
+    title:
+      "a person's Close withdraws the issue's asks, an earlier version keeps its open block, and Reopen brings the asks back @pr",
+    issue: "dispatch://INFRA-3904",
+    fixed: "708ca88c523acb412bc3b7a52e0ba9fcf5642516",
+  },
+  {
+    file: "project.e2e.ts",
+    project: "chromium",
+    title:
+      "picker keeps a pick on screen: the repository on the issue page, over a read that answers while its save is out",
+    issue: "dispatch://INFRA-3904",
+    fixed: "c6e58d48fb9efaa5255e557b1aeb57580ed9ce9f",
+  },
+];
+
+/** How many rows the quarantine may hold (R4 of dispatch://INFRA-983). A fix quarantines nothing,
+ *  so `fixes` is not counted. */
 export const quarantineLimit = 10;
 
 /** An entry as a file may hold one, before anything has checked it: every field may be missing
- *  or of any type. It is what `quarantineFaults` reads, so a fixture can plant the entry the
- *  type above would refuse to compile. */
-export type UncheckedEntry = { readonly [Field in keyof QuarantineEntry]?: unknown };
+ *  or of any type. It is what `quarantineFaults` and `fixFaults` read, so a fixture can plant the
+ *  entry the types above would refuse to compile. */
+export type UncheckedEntry = {
+  readonly [Field in keyof QuarantineEntry | keyof FixEntry]?: unknown;
+};
 
 /** What a run asks of the quarantine, from `DISPATCH_E2E_QUARANTINE`: `all` (unset) runs every
  *  row, `exclude` leaves the quarantined rows out, and `only` runs them and nothing else. */
@@ -199,6 +254,59 @@ export function quarantineFaults(
   return faults;
 }
 
+/** What is wrong with `entries` as the list of fixed rows, one sentence per fault: a missing or
+ *  empty file, project or title, a missing or malformed issue, a `fixed` that is not a full
+ *  40-character lower-case sha, a project outside `projects` (as `quarantineFaults` reads it),
+ *  an entry repeated, and a row both fixed and quarantined. Whether the commit is on main is the
+ *  nightly's to read, through GitHub. */
+export function fixFaults(
+  entries: readonly UncheckedEntry[],
+  projects: readonly string[],
+  quarantined: readonly QuarantineEntry[]
+): string[] {
+  const held = new Set(quarantined.map(rowName));
+  const faults: string[] = [];
+  const seen = new Set<string>();
+  entries.forEach((entry, index) => {
+    const { file, project, title } = entry;
+    const named =
+      typeof file === "string" && typeof project === "string" && typeof title === "string";
+    const name = named
+      ? `fix ${index + 1} (${rowName({ file, project, title })})`
+      : `fix ${index + 1}`;
+    for (const field of ["file", "project", "title"] as const) {
+      if (typeof entry[field] !== "string" || entry[field] === "") {
+        faults.push(`${name} names no ${field}, and the row is its file, project and title`);
+      }
+    }
+    if (typeof entry.issue !== "string" || !issuePattern.test(entry.issue)) {
+      faults.push(
+        `${name} names its issue as ${JSON.stringify(entry.issue)}, which is no ` +
+          "dispatch://<KEY> reference such as dispatch://INFRA-983"
+      );
+    }
+    if (typeof entry.fixed !== "string" || !/^[0-9a-f]{40}$/.test(entry.fixed)) {
+      faults.push(
+        `${name} names its fix as ${JSON.stringify(entry.fixed)}, which is no full ` +
+          "40-character lower-case commit sha"
+      );
+    }
+    if (typeof project === "string" && project !== "" && !projects.includes(project)) {
+      faults.push(
+        `${name} names the project ${project}, whose rows CI never reports flaky; a fixed row ` +
+          `is one of ${projects.join(", ")}`
+      );
+    }
+    if (named && held.has(rowName({ file, project, title }))) {
+      faults.push(`${name} is quarantined too: a row is fixed or quarantined, not both`);
+    }
+    const key = JSON.stringify([file, project, title]);
+    if (seen.has(key)) faults.push(`${name} repeats a fix above it`);
+    seen.add(key);
+  });
+  return faults;
+}
+
 /** What is wrong with the rows a listing under `DISPATCH_E2E_QUARANTINE=only` selected, against
  *  the entries it was listed with: an entry whose row it did not select - the suite has no such
  *  row in that project, under that file and title - and a selected row no entry names, which is a
@@ -232,17 +340,23 @@ export function selectionFaults(
   return faults;
 }
 
-/** `entry` as `quarantine` above holds it, in the layout Biome keeps: one field per line, and a
- *  field whose line would pass biome.json's `lineWidth` of 100 with its value on the line after
- *  its key, which is where Biome breaks such a property. So the lines
+/** `entry` as `quarantine` or `fixes` above holds it, in the layout Biome keeps: one field per
+ *  line, and a field whose line would pass biome.json's `lineWidth` of 100 with its value on the
+ *  line after its key, which is where Biome breaks such a property. So the lines
  *  `e2e/tools/quarantine-check.ts` names to add or to remove are the lines the file holds, and
  *  `e2e/__tests__/quarantine.test.ts` holds every real entry to them. */
-export function entryLines(entry: QuarantineEntry): string[] {
-  const fields = (["file", "project", "title", "issue", "added"] as const).flatMap((field) => {
-    const line = `    ${field}: ${JSON.stringify(entry[field])},`;
-    return line.length <= 100
-      ? [line]
-      : [`    ${field}:`, `      ${JSON.stringify(entry[field])},`];
+export function entryLines(entry: QuarantineEntry | FixEntry): string[] {
+  const last =
+    "added" in entry ? (["added", entry.added] as const) : (["fixed", entry.fixed] as const);
+  const fields = [
+    ["file", entry.file],
+    ["project", entry.project],
+    ["title", entry.title],
+    ["issue", entry.issue],
+    last,
+  ].flatMap(([field, value]) => {
+    const line = `    ${field}: ${JSON.stringify(value)},`;
+    return line.length <= 100 ? [line] : [`    ${field}:`, `      ${JSON.stringify(value)},`];
   });
   return ["  {", ...fields, "  },"];
 }

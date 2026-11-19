@@ -10,8 +10,8 @@
  * - `mermaid.e2e.ts [webkit] … @webkit` is flaky in a merge group and in a nightly of 18 days
  *   before, outside the window.
  */
-import type { QuarantineEntry } from "../../quarantine";
-import type { RunReading } from "../../tools/quarantine-check";
+import type { FixEntry, QuarantineEntry } from "../../quarantine";
+import type { BlameRange, RowChange, RunReading } from "../../tools/quarantine-check";
 
 export const readAt = new Date("2026-11-19T02:17:00Z");
 
@@ -67,4 +67,67 @@ export const eighteenDays: QuarantineEntry = {
   title: "an edit is restored across a reload @firefox",
   issue: "dispatch://INFRA-2003",
   added: "2026-11-01",
+};
+
+/** The last change of each row's lines long before the window, so every run of `history`
+ *  counts: the reading of a tree whose rows have stood still. */
+export const stillRows: ReadonlyMap<string, RowChange> = new Map(
+  [pictures, keyedWrites, deepLinks, mermaid].map((message) => [
+    message.replace(/:\d+ \[/, " ["),
+    {
+      committedDate: "2026-10-01T00:00:00Z",
+      lines: `${message.split(":")[0]}:1-40`,
+      oid: "1111111111111111111111111111111111111111",
+    },
+  ])
+);
+
+/** `pictures.e2e.ts` at the reading: the pictures row at line 10, the file's next row at 31, 60
+ *  lines in all, so the row's own lines are 10 to 30. */
+export const picturesRow = { fileLength: 60, fileRows: [10, 31], line: 10 };
+
+const old = {
+  committedDate: "2026-10-01T00:00:00Z",
+  oid: "1111111111111111111111111111111111111111",
+};
+
+/** Blames of `pictures.e2e.ts`, each with one commit of 2026-11-13 - after both runs that named
+ *  the pictures row, 101 of 11-08 and 102 of 11-12 - or of 11-10, between them. */
+export const blames: Readonly<Record<string, readonly BlameRange[]>> = {
+  ownLinesAfter: [
+    { commit: old, endingLine: 9, startingLine: 1 },
+    {
+      commit: { committedDate: "2026-11-13T09:00:00Z", oid: "2".repeat(40) },
+      endingLine: 30,
+      startingLine: 10,
+    },
+    { commit: old, endingLine: 60, startingLine: 31 },
+  ],
+  elsewhereAfter: [
+    { commit: old, endingLine: 30, startingLine: 1 },
+    {
+      commit: { committedDate: "2026-11-13T09:00:00Z", oid: "3".repeat(40) },
+      endingLine: 40,
+      startingLine: 31,
+    },
+    { commit: old, endingLine: 60, startingLine: 41 },
+  ],
+  ownLinesBetween: [
+    { commit: old, endingLine: 19, startingLine: 1 },
+    {
+      commit: { committedDate: "2026-11-10T09:00:00Z", oid: "4".repeat(40) },
+      endingLine: 22,
+      startingLine: 20,
+    },
+    { commit: old, endingLine: 60, startingLine: 23 },
+  ],
+};
+
+/** A fix of the pictures row. */
+export const picturesFix: FixEntry = {
+  file: "pictures.e2e.ts",
+  project: "chromium",
+  title: "a picture uploads @pr",
+  issue: "dispatch://INFRA-2001",
+  fixed: "5".repeat(40),
 };

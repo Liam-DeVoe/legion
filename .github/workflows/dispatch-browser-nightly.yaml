@@ -98,15 +98,23 @@ jobs:
   #
   # `actions: read` is the run listing of the two workflows, `checks: read` the merge jobs' check
   # runs and their annotations, and `contents: read` the checkout. The tool writes nothing to
-  # GitHub. It runs with Bun and no install: it imports the quarantine module and nothing else.
+  # GitHub. For a row flaky in two runs it reads the row's own lines from a listing of this
+  # checkout and their last change from the file's blame at this commit (one GraphQL request per
+  # file, which the tool sends itself with the job's token), so it needs the install and the
+  # contracts build the listing loads; it reads no git history, so the checkout stays shallow. It
+  # counts a flake only from a run created after that change and after the row's fix, where
+  # e2e/quarantine.ts's `fixes` names one, and it reads each fix's commit against this one
+  # through GitHub's compare.
   #
   # The budget, by the rule .github/workflows/dispatch-browser.yaml's head states. The check step
-  # was measured once, in this issue's pod against the history of 2026-11-05 to 2026-11-19: 212 s
-  # for 1,653 runs (20 scheduled, 1,633 merge-group) in 2,071 calls, four at a time. 212 x 1.15
-  # = 244 s, so 5 minutes. The steps without a budget are the merge job's measured checkout
-  # 9 s, setup-bun 3 s, Set up job 2 s and the three post and completion steps 3 s: 17 s, and
-  # 300 + 17 = 317 s rounds up to 6 minutes. The step's time grows with the merge queue's runs,
-  # one call each, so a busier fortnight moves it: a step that outran its budget names itself.
+  # was measured in this issue's pod against the history of 2026-11-05 to 2026-11-19: about 190 s
+  # for 1,641 runs (20 scheduled, 1,621 merge-group) in 2,067 calls, four at a time, and 23 s for
+  # the listing, so 213 s. 213 x 1.15 = 245 s, so 5 minutes. The steps without a budget, at their
+  # maximum over the 12 jobs of this workflow's run 44545596758 that ran them: Set up job 2 s,
+  # checkout 12 s, setup-bun 4 s, `bun install` 11 s, the contracts build 1 s, and the post and
+  # completion steps 3 s: 33 s, and 300 + 33 = 333 s rounds up to 6 minutes. The step's time grows
+  # with the merge queue's runs, one call each, so a busier fortnight moves it: a step that
+  # outran its budget names itself.
   quarantine-check:
     if: github.event_name != 'schedule' || github.event.schedule == '17 2 * * *'
     permissions:
@@ -120,6 +128,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      # The step of this name in .github/workflows/dispatch-browser.yaml's shard job, for the
+      # reason it gives: the listing loads e2e/playwright.config.ts, which imports
+      # `@legion/contracts` out of the build this step makes.
+      - name: Build contracts for dispatch e2e
+        run: bun run build:dispatch
+        working-directory: packages/contracts
       - name: Check the quarantine against 14 days of flaky rows
         timeout-minutes: 5
         run: bun e2e/tools/quarantine-check.ts

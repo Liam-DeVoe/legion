@@ -19,11 +19,20 @@ import { fileURLToPath } from "node:url";
 
 import { rowsOfListing } from "../configurations";
 import realConfig from "../playwright.config";
-import { entryLines, quarantine, quarantineFaults, rowName, selectionFaults } from "../quarantine";
+import {
+  entryLines,
+  fixes,
+  fixFaults,
+  quarantine,
+  quarantineFaults,
+  rowName,
+  selectionFaults,
+} from "../quarantine";
 import { rowLimit } from "./bounded-subprocess";
 import { plantedQuarantine } from "./fixtures/quarantine.config";
 import {
   elevenRows,
+  looseFix,
   malformed,
   withoutDate,
   withoutIssue,
@@ -61,13 +70,27 @@ test("the quarantine holds at most ten rows, each with its issue and its date", 
   expect(quarantineFaults(quarantine, retryingProjects)).toEqual([]);
 });
 
+// A fix entry's shape: its row, a dispatch:// issue and a full lower-case sha. Whether the sha
+// is on main is the nightly's to read; the ten-row bound is the quarantine's alone.
+test("every fix names its row, its issue and the full sha of its commit", () => {
+  expect(fixFaults(fixes, retryingProjects, quarantine)).toEqual([]);
+  expect(fixFaults(looseFix, retryingProjects, quarantine)).toEqual([
+    "fix 1 (planted.e2e.ts [chromium] a planted row fixed loosely) names its issue as " +
+      "undefined, which is no dispatch://<KEY> reference such as dispatch://INFRA-983",
+    'fix 1 (planted.e2e.ts [chromium] a planted row fixed loosely) names its fix as "708CA88", ' +
+      "which is no full 40-character lower-case commit sha",
+  ]);
+});
+
 // The nightly's check names the lines to remove for an entry held too long, as `entryLines`
 // prints them, and a person removes those lines: an entry written any other way would be lines
 // the file does not hold.
 test("every entry is written as the nightly's check prints it", () => {
   const source = readFileSync(fileURLToPath(new URL("../quarantine.ts", import.meta.url)), "utf8");
   expect(
-    quarantine.filter((entry) => !source.includes(entryLines(entry).join("\n"))).map(rowName),
+    [...quarantine, ...fixes]
+      .filter((entry) => !source.includes(entryLines(entry).join("\n")))
+      .map(rowName),
     "Write each entry of e2e/quarantine.ts as `entryLines` prints it: one field per line, in " +
       "the order file, project, title, issue, added, and a value that would pass 100 columns " +
       "on the line after its key, which is what Biome keeps."

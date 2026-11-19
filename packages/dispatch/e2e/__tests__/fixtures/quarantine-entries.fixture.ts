@@ -43,3 +43,13 @@ export const malformed: readonly UncheckedEntry[] = [
     added: "2026-02-30",
   },
 ];
+
+/** One fix whose commit is a short sha in upper case, and whose issue is missing. */
+export const looseFix: readonly UncheckedEntry[] = [
+  {
+    file: "planted.e2e.ts",
+    project: "chromium",
+    title: "a planted row fixed loosely",
+    fixed: "708CA88",
+  },
+];
