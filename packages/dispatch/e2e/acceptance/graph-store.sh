@@ -15,10 +15,11 @@
 #
 # The run writes at least one tuple of every kind it holds, and G14 holds every tuple standing on
 # this run's nodes, of every kind, to the writer, the causing event and a time its record allows:
-# authored_by and the base attributes (visibility, state) of every node it reads, delivered_to -
-# the answer to an attempt the listener had not taken among them (G12) - a page's and a session's
-# part_of, a role's held_by with its retraction (G9), and alias_of (G13). A kind that holds no
-# tuple of this run fails there too, so a writer that stopped writing one cannot pass as right.
+# authored_by and the base attributes (visibility, state, and a comment's project) of every node
+# it reads, delivered_to - the answer to an attempt the listener had not taken among them (G12) -
+# a page's and a session's part_of, a role's held_by with its retraction (G9), and alias_of
+# (G13). A kind that holds no tuple of this run fails there too, so a writer that stopped writing
+# one cannot pass as right.
 #
 # Which clause is read which way, and why:
 #
@@ -1021,8 +1022,9 @@ expect G13 "what the proved session wrote stays that session's and is on no pers
 #     answer to it states none. A delivered_to under any other actor, or under one of these two
 #     actors with the other's event, fails.
 #   - visibility and state, the base attributes, are stated by the write that made the node or
-#     moved them, under that write's writer, event and time (graphstore's queueNodes): a comment's
-#     by its own write at its own time; a person's and a session's that wrote by the comment that
+#     moved them, under that write's writer, event and time (graphstore's queueNodes), as is a
+#     comment's project, the third base attribute this run's nodes carry: a comment's by its own
+#     write at its own time; a person's and a session's that wrote by the comment that
 #     first named them, at that comment's time; a session's an attempt reached by the settle of
 #     that attempt, at the attempt's time (graphstore.Reached), or by an answer it gave, at the
 #     answer's (api's queueAnsweredDelivery); a follower's by the follow, no earlier than it
@@ -1171,7 +1173,7 @@ tuples_carry G14 "every alias_of tuple of this run's sessions carries the actor 
    left join comments c on c.id::text = e.payload->>'id' and c.author = e.actor
      and t.from_id in (c.author->>'id', c.author->'act'->>'session')
    where t.kind = 'alias_of' and $run_nodes"
-for attribute in visibility state; do
+for attribute in visibility state project; do
   tuples_carry G14 "every $attribute tuple of this run's nodes carries the writer, the event and the time of the write that made or moved it" \
     "select format('%s:%s %s %s', t.from_kind, t.from_id, t.kind, t.to_id) as tuple,
             t.who, t.source_event, t.at,
@@ -1237,6 +1239,6 @@ want_value G14 "no tuple of a kind this driver holds no rule for stands on this 
   "select count(*) || coalesce(': ' || string_agg(distinct t.from_kind || ' ' || t.kind, ', '), '')
    from graph_tuples t
    where $run_nodes and t.from_kind <> 'person'
-     and t.kind not in ('authored_by', 'delivered_to', 'part_of', 'held_by', 'alias_of', 'visibility', 'state')"
+     and t.kind not in ('authored_by', 'delivered_to', 'part_of', 'held_by', 'alias_of', 'visibility', 'state', 'project')"
 
 printf 'graph-store.sh: every check passed\n'
