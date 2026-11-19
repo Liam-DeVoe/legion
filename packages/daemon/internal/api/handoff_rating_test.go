@@ -757,10 +757,12 @@ func TestTheRatingIsJudgedOnTheIssueTheWorkflowEndsTheRetroOn(t *testing.T) {
 			seedIssueAt(t, h, key, row.at)
 			implementer := newLiveClaim(t, h, key, claim.RoleImplementer)
 			// A stale claim is served in its turn (staleClaim), and its grant is minted first, as
-			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one.
+			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one. A live claim declares
+			// the daemon's own contract, so a row below it, PlanRatingContract once a later contract
+			// came, declares its own.
 			req := row.request(implementer)
 			req.GrantID = implementer.grant(t)
-			if row.contract != PlanRatingContract {
+			if row.contract != DaemonAPIVersion {
 				h.makeStale(t, implementer.token, implementer.session, implementer.secret, row.contract)
 			}
 			if c := h.stored(implementer.token); c.State != supervise.StateWorking || c.PluginContract != row.contract {
