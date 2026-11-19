@@ -239,7 +239,7 @@ test("the retro's handoff_complete sends its rating of the plan as planRating an
 })
 
 // A tester's fail names the step its task returns to through this tool as through every host's
-// (contract 178): `return_to` reaches the daemon as its own `returnTo`.
+// (contract 180): `return_to` reaches the daemon as its own `returnTo`.
 test("a tester's fail sends return_to as returnTo", async () => {
   const golden = (await daemonFixture("state.json")) as { issues: Record<string, object> }
   const { client, requests } = await daemon({
