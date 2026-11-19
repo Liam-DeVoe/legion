@@ -1,8 +1,12 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { callWrites, GH_COMMANDS, graphqlOperations, graphqlWrites, pinnedTag } from "./gh-writes";
+
+// The rows run the rig's programs as real processes, which a loaded pod slows past bun's 5 s
+// default, so each gets a minute, as rig.test.ts's do.
+setDefaultTimeout(60_000);
 
 /** gh's own help, recorded from the gh the worker image pins (the Legion wrapper's testdata). */
 const GH_HELP = path.join(

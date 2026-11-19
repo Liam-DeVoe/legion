@@ -3,13 +3,17 @@
 // loads to answer it holds neither health.ts nor score.ts, and health.ts's answer is the
 // module's. What each refusal reads as is rig.test.ts's (boot_agent's relaunch rows, and "a claim
 // boot sentence is read in the wording of the run's own label's plugin").
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { CLAIM_BOOT_FAILED_OPENING } from "@legion/pi-shared/legion-claim-core";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { importGraph } from "./run-programs";
 import { spawnChecked } from "./test-programs";
+
+// The rows run the rig's programs as real processes, which a loaded pod slows past bun's 5 s
+// default, so each gets a minute, as rig.test.ts's do.
+setDefaultTimeout(60_000);
 
 /** This checkout, whose plugin's claim core the runs below name in their built-from. */
 const CHECKOUT = path.resolve(import.meta.dir, "../../../..");

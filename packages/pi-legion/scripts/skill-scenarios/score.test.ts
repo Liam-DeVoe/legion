@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
@@ -22,6 +22,10 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { claimBootOpening } from "./boot-refusal";
 import { checkouts, runsOf, specWork, statesDesign, TestHandoff } from "./score";
 import { bundled, sourcesCommit, spawnChecked } from "./test-programs";
+
+// The rows run the rig's programs as real processes, which a loaded pod slows past bun's 5 s
+// default, so each gets a minute, as rig.test.ts's do.
+setDefaultTimeout(60_000);
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
 // profile's gateway key command runs past its budget) says nothing about the skill under test: the

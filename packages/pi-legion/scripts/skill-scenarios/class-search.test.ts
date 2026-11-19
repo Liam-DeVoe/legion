@@ -7,6 +7,7 @@ import {
   CHECKS,
   type Check,
   DATA,
+  defaultBounds,
   judged,
   pinnedRoutes,
   pinSection,
@@ -429,6 +430,9 @@ test("an unpinned GET the README does not name fails the reads check, naming it"
   expect(instances(hits)).toEqual([route]);
 });
 
+/** The check of the bound a test file that runs processes sets its rows. */
+const DEFAULT_BOUND = "hand search 11: a test that runs processes under bun's default bound";
+
 /** Each check that greps the tree, and a line of its class planted in a file it reads. */
 const PLANTED: readonly [check: string, file: string, line: string][] = [
   [
@@ -496,6 +500,7 @@ const PLANTED: readonly [check: string, file: string, line: string][] = [
     `${RIG}/planted.test.ts`,
     "expect(Date.now() - started).toBeLessThan(5_000);",
   ],
+  [DEFAULT_BOUND, `${RIG}/planted.test.ts`, 'const planted = spawnChecked(["true"]);'],
   [
     "hand search 15 and 31: a reader of another program's source as text",
     `${RIG}/daemon-standin.ts`,
@@ -551,3 +556,36 @@ test.each(PLANTED)(
   },
   60_000
 );
+
+// Catches: a check that takes a setDefaultTimeout of any value for the bound, so a file whose rows
+// run processes under one second passes; a bound set inside a block read as the file's; a `_`
+// separator read as no number; and a call in a string or a comment read as a process run.
+test("a test file that runs processes is held only by a top-level bound of 30 s or more", () => {
+  const file = `${RIG}/planted.test.ts`;
+  const spawn = 'const planted = spawnChecked(["true"]);';
+  const planted: [string, string][] = [
+    ["none", spawn],
+    ["one second", `setDefaultTimeout(1_000);\n${spawn}`],
+    ["just under", `setDefaultTimeout(29_999);\n${spawn}`],
+    ["in a block", `describe("d", () => {\n  setDefaultTimeout(60_000);\n});\n${spawn}`],
+    ["thirty seconds", `setDefaultTimeout(30000);\n${spawn}`],
+    ["a minute", `setDefaultTimeout(60_000);\nconst run = () => Bun.spawnSync(["true"]);`],
+    ["no process", `const code = 'execSync("true");';\n// ${spawn}`],
+  ];
+  expect(
+    planted.map(([name, text]) => {
+      const hit = defaultBounds(new Tree(CHECKOUT, new Map([[file, `${text}\n`]]))).find(
+        ({ at }) => at === file || at.startsWith(`${file}:`)
+      );
+      return [name, hit?.at, hit?.verdict];
+    })
+  ).toEqual([
+    ["none", `${file}:1`, "instance"],
+    ["one second", `${file}:2`, "instance"],
+    ["just under", `${file}:2`, "instance"],
+    ["in a block", `${file}:4`, "instance"],
+    ["thirty seconds", `${file}:2`, "true"],
+    ["a minute", `${file}:2`, "true"],
+    ["no process", file, "true"],
+  ]);
+});

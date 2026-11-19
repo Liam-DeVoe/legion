@@ -1,4 +1,13 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  spyOn,
+  test,
+} from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
@@ -7,6 +16,10 @@ import { WORLD_PROJECT } from "./run-names";
 import type * as seedModule from "./seed";
 import type * as handoffSeedsModule from "./seed-handoffs";
 import { WORLD_REPO, WORLD_SPEC, WORLD_TITLE, worldPlan, worldVerification } from "./world-issue";
+
+// The rows run the rig's programs as real processes, which a loaded pod slows past bun's 5 s
+// default, so each gets a minute, as rig.test.ts's do.
+setDefaultTimeout(60_000);
 
 // e2e/api.ts, which seed.ts calls, reads its port when it loads: set it as rig.sh's seed_ts does,
 // then load seed.ts. PLAYWRIGHT_BASE_URL would point api.ts somewhere else. Both go back to what

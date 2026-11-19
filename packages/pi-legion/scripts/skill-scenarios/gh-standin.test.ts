@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, test } from "bun:test";
+import { afterEach, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import {
   appendFileSync,
   cpSync,
@@ -64,6 +64,10 @@ import {
 } from "./rest-required";
 import { REMOVED_NAMES, WORLD_PROJECT } from "./run-names";
 import { bundled, scriptDefinition, spawnChecked, writeGhSelectors } from "./test-programs";
+
+// The rows run the rig's programs as real processes, which a loaded pod slows past bun's 5 s
+// default, so each gets a minute, as rig.test.ts's do.
+setDefaultTimeout(60_000);
 
 // GitHub answers the pull request's head as the commit its branch points at, and the worker skill
 // has every pushing role read that head after its own push and stop when it is not its commit. A

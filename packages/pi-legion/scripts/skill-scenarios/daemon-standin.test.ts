@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { type LegionRole, roleToken } from "@legion/contracts";
@@ -17,6 +17,10 @@ import {
 import { pinnedRead, RECORD_READ, rolesListed, shapeDiff, shapeOf } from "./production-shapes";
 import { contractRefusal, issueRecord, sampleFacts } from "./standin-record";
 import { bundled, spawnChecked, writeGhSelectors } from "./test-programs";
+
+// The rows run the rig's programs as real processes, which a loaded pod slows past bun's 5 s
+// default, so each gets a minute, as rig.test.ts's do.
+setDefaultTimeout(60_000);
 
 /** The daemon stand-in and the gh stand-in the rows start, each a bundle built from its source
  * for this suite, so no start transpiles it again (test-programs.ts). */

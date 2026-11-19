@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
@@ -7,6 +7,10 @@ import type { Socket } from "bun";
 import { connect } from "nats";
 import { nameWords, vocabulary } from "./run-names";
 import { bundled } from "./test-programs";
+
+// The rows run the rig's programs as real processes, which a loaded pod slows past bun's 5 s
+// default, so each gets a minute, as rig.test.ts's do.
+setDefaultTimeout(60_000);
 
 // The recorder reads the bus, so a host with no NATS server runs none of this.
 const skip = skipWithout("nats-server");

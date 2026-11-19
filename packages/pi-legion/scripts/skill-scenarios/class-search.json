@@ -157,7 +157,10 @@
     {
       "entry": 11,
       "finding": "test-fixtures red: the slow-removal row depended on host speed.",
-      "check": ["hand search 11: a bound a slow host fails"]
+      "check": [
+        "hand search 11: a bound a slow host fails",
+        "hand search 11: a test that runs processes under bun's default bound"
+      ]
     },
     {
       "entry": 12,

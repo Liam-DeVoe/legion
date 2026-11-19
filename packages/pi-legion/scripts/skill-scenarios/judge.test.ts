@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import {
   cpSync,
   existsSync,
@@ -15,6 +15,10 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { answerTurn, judgeRun } from "./judge";
 import { FAULT_ROWS } from "./judge-prompts";
 import { sharedRuns } from "./score";
+
+// The rows run the rig's programs as real processes, which a loaded pod slows past bun's 5 s
+// default, so each gets a minute, as rig.test.ts's do.
+setDefaultTimeout(60_000);
 
 // judge.ts gives each prompt a fresh directory under <work>/judging/<run>/ that holds only that
 // prompt's inputs and prompt.txt, starts the judge there through an injected runner (rig.sh

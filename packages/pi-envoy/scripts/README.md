@@ -1794,6 +1794,12 @@ The checks:
   (the architect's ruling of 2026-11-19T04:50Z). Each declaration is an instance, which a
   residual covers where one was ruled, and an unreachable entry where the worlds show no
   scenario reaches it; a declaration neither covers is a finding at its file and line.
+- A test file whose rows run processes under bun's 5 s default bound. Every test file of the rig
+  is read for a code line that calls `spawnChecked`, `Bun.spawn`, `Bun.spawnSync`, `spawnSync`,
+  `execSync` or `Bun.$` outside a string, a helper's of the file among them. Such a file is an
+  instance unless its top level calls `setDefaultTimeout(<n>)` with `n` a number of at least
+  30 000; a file that runs none is a true statement. A process run by a module the file imports
+  is not read.
 - The hand search's greps, each with the rule its hits are judged by.
 
 `class-search.json` holds the residuals, the declared-unreachable entries and the map of the hand

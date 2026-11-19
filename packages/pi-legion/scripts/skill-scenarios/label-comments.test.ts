@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -10,6 +10,10 @@ import {
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { isYes, main, QUESTIONS } from "./label-comments";
+
+// The gateway rows run the key command as a real process (label-comments.ts's runKeyCommand),
+// which a loaded pod slows past bun's 5 s default, so each row gets a minute, as rig.test.ts's do.
+setDefaultTimeout(60_000);
 
 const scratch = temporaryDirectory("label-comments", { real: true });
 

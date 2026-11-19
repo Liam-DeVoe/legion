@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   cpSync,
   existsSync,
@@ -28,6 +28,10 @@ import {
 } from "./daemon-pane";
 import { nameWords, systemPromptIn, systemPromptOf, vocabulary } from "./run-names";
 import { bundled, spawnChecked } from "./test-programs";
+
+// The rows run the rig's programs as real processes, which a loaded pod slows past bun's 5 s
+// default, so each gets a minute, as rig.test.ts's do.
+setDefaultTimeout(60_000);
 
 // Every row below asks the daemon's own functions for a pane environment, which `go run` compiles
 // and runs, so a host with no go runs none of them.

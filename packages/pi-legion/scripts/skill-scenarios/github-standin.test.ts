@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   mkdirSync,
   mkdtempSync,
@@ -16,6 +16,11 @@ import { GITHUB_LOG, GITHUB_NOT_KEPT, githubRefusal, HEADS_NOT_KEPT, headUnmoved
 import { absentFields, restOperation } from "./rest-required";
 import { SCENARIOS, workerWorld } from "./run-names";
 import { spawnChecked } from "./test-programs";
+
+// The rows run the rig's programs as real processes, which a loaded pod slows past bun's 5 s
+// default (the provenance row took 5.1 s beside a second suite, 2026-11-19), so each gets a
+// minute, as rig.test.ts's do.
+setDefaultTimeout(60_000);
 
 // The run's Dispatch server reads GitHub through its App to say where a result's commit stands,
 // and a world whose GitHub was port 1 told every reviewer a pass stands "not known", Dispatch

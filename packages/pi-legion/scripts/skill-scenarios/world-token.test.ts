@@ -1,10 +1,14 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { holds, nameWords, vocabulary } from "./run-names";
 import { spawnChecked } from "./test-programs";
+
+// The rows run the rig's programs as real processes, which a loaded pod slows past bun's 5 s
+// default, so each gets a minute, as rig.test.ts's do.
+setDefaultTimeout(60_000);
 
 // The Dispatch bearer of a run's world is in the file every agent's DISPATCH_TOKEN_FILE names, and
 // an agent can `cat` it. It was the Dispatch harness's own `e2e-token` (packages/dispatch/e2e/
