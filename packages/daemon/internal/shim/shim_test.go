@@ -935,7 +935,7 @@ func TestAnAckedConnectionResetsTheBackoff(t *testing.T) {
 	clock.next(t, 200*time.Millisecond)
 }
 
-// What OMP writes while the daemon is away waits in a backlog of the newest 1000 frames and is
+// What OMP writes while the daemon is away waits in a backlog of the newest 1000 lines and is
 // replayed in order, ahead of anything newer, once the next connection's hello is acked. The
 // hello is re-sent on that connection; a stream that dropped after its ack is redialled at once,
 // with no backoff; and overflowing the backlog is logged once for the shim's life.
@@ -972,7 +972,7 @@ func TestFramesFromADroppedConnectionReplayInOrderAfterTheNextAck(t *testing.T) 
 		}
 		p.expect(t, shimwire.AgentEnd{})
 	}
-	if got := sh.log.count("dropping oldest frames beyond the last 1000"); got != 1 {
+	if got := sh.log.count("dropping oldest frames beyond the last 1000 lines"); got != 1 {
 		t.Fatalf("the backlog overflow was logged %d times, want once for the shim's life; log:\n%s", got, sh.log)
 	}
 	clock.idle(t)

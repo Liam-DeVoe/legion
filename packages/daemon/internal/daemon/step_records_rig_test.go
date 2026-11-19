@@ -898,6 +898,14 @@ func (c *stepClaimant) endTurnUnseen() {
 	c.driver.mu.Unlock()
 }
 
+// endTurnUnreported ends the take's turn as a plugin below supervise.TaskTakeContract does: the
+// agent_end alone, no report naming the number, to the daemon that runs now. The driver lets go of
+// the take first, as endTurnUnseen's pane does, so nothing of the turn is left for it to report.
+func (c *stepClaimant) endTurnUnreported() {
+	c.endTurnUnseen()
+	c.send(shimwire.AgentEnd{})
+}
+
 // ownTurn is a turn of the agent's own in which its model answers: it returns once the claim is
 // out of it, so the answer, read before the turn's end, is the claim's last. A pane whose take's
 // turn still runs — the daemon restarted inside it, and the pane outlived the daemon — answers in

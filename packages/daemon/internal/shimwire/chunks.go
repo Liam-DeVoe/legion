@@ -33,9 +33,9 @@ var (
 	ErrFrameTooLarge = errors.New("shimwire: frame exceeds the reassembly limit")
 )
 
-// maxChunkCount is the most chunks a sequence may declare: the reassembly limit in full
+// MaxChunkCount is the most chunks a sequence may declare: the reassembly limit in full
 // payloads (worker-rpc.ts:260).
-const maxChunkCount = MaxReassembledBytes / ChunkPayloadBytes
+const MaxChunkCount = MaxReassembledBytes / ChunkPayloadBytes
 
 // maxChunkIDBytes bounds the sequence identifier (worker-rpc.ts:251).
 const maxChunkIDBytes = 128
@@ -84,14 +84,15 @@ type Reassembler struct {
 }
 
 // Push adds one chunk. It returns the whole logical frame once the last one lands, nil while
-// more are expected, and an error naming the bound a chunk broke — which also drops the
-// sequence, so the next chunk has to start a new one. Nothing is ever returned truncated.
+// more are expected, and an error when it drops a sequence, naming the bound a chunk broke: the
+// sequence dropped is the one in progress, except where the paragraph below names another.
+// Nothing is ever returned truncated.
 //
-// A stream can begin inside a sequence: a shim replays to its next connection what a broken one
-// did not take, and an older shim forwarded a sequence line by line (internal/shim now sends and
-// replays one whole), so the head of one may have gone to the broken connection. So a chunk past
-// index 0 of a sequence that is not the one in progress drops its sequence with one error, and
-// every later chunk of that sequence is passed over unread and without one, until a chunk of
+// A shim before this release forwarded a sequence line by line and replayed to its next
+// connection what a broken one did not take, so a stream can begin inside a sequence whose head
+// went to the broken connection (internal/shim sends and replays each sequence whole). So a chunk
+// past index 0 of a sequence that is not the one in progress drops its sequence with one error,
+// and every later chunk of that sequence is passed over unread and without one, until a chunk of
 // another sequence or a whole frame (Interrupt) ends the skip. Where another sequence was in
 // progress, that one error also names it, as abandoned by its sender. A chunk 0 always starts its
 // sequence: one it cuts short was abandoned by its sender and is reported as Interrupt reports
@@ -202,7 +203,7 @@ func (c RPCChunk) validate() error {
 	switch {
 	case c.ChunkID == "" || len(c.ChunkID) > maxChunkIDBytes:
 		return fmt.Errorf("%w: chunk id of %d bytes", ErrChunkMetadata, len(c.ChunkID))
-	case c.Count < 2 || c.Count > maxChunkCount:
+	case c.Count < 2 || c.Count > MaxChunkCount:
 		return fmt.Errorf("%w: a sequence of %d chunks", ErrChunkMetadata, c.Count)
 	case c.Index < 0 || c.Index >= c.Count:
 		return fmt.Errorf("%w: chunk %d of %d", ErrChunkMetadata, c.Index, c.Count)

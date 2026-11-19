@@ -158,15 +158,17 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		// error, the task routes' INVALID_BODY; "" for a route that answers the sentence alone.
 		code string
 	}
-	reads := func(member string) nulRow { return nulRow{map[string]any{member: nulText}, nulError(member, 2), ""} }
+	reads := func(member string) nulRow {
+		return nulRow{body: map[string]any{member: nulText}, refusal: nulError(member, 2)}
+	}
 	// coded is reads for a task route, whose undecodable body is refused in the coded shape
 	// (readTaskBody).
 	coded := func(member string) nulRow { row := reads(member); row.code = "INVALID_BODY"; return row }
 	// unread is a body whose one member, note, no route reads: a strict decoder refuses the member
 	// before it reads the string, and a route that reads no body answers nothing about it.
 	unread := map[string]any{"note": nulText}
-	noString := nulRow{unread, `json: unknown field "note"`, ""}
-	noBody := nulRow{unread, "", ""}
+	noString := nulRow{body: unread, refusal: `json: unknown field "note"`}
+	noBody := nulRow{body: unread}
 	rows := map[string]nulRow{
 		"/":                    noBody,
 		"GET /legion/v1/state": noBody,
@@ -191,7 +193,7 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/claims/fresh-session":                   reads("issue"),
 		"POST /legion/v1/claims/compact":                         reads("issue"),
 		"POST /legion/v1/gates/register":                         reads("artifactId"),
-		"POST /legion/v1/waves/release":                          {map[string]any{"issues": []string{nulText}}, nulError("issues[0]", 2), ""},
+		"POST /legion/v1/waves/release":                          {body: map[string]any{"issues": []string{nulText}}, refusal: nulError("issues[0]", 2)},
 		"POST /legion/v1/phase/backward":                         reads("reason"),
 		"POST /legion/v1/phase/retry":                            reads("issue"),
 		"POST /legion/v1/signoff":                                reads("issue"),
@@ -237,12 +239,12 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 			if recorder.Code >= http.StatusInternalServerError {
 				t.Fatalf("%s answered a body holding a NUL %d %s, want no 5xx", pattern, recorder.Code, recorder.Body)
 			}
-			if row.refusal != "" && row.code != "" {
-				refusedSaying(t, recorder, http.StatusBadRequest, row.code, "invalid request body: "+row.refusal)
-				return
-			}
 			if row.refusal != "" {
-				wantRefusal(t, recorder, http.StatusBadRequest, "invalid request body: "+row.refusal)
+				if row.code != "" {
+					refusedSaying(t, recorder, http.StatusBadRequest, row.code, "invalid request body: "+row.refusal)
+				} else {
+					wantRefusal(t, recorder, http.StatusBadRequest, "invalid request body: "+row.refusal)
+				}
 				return
 			}
 			if strings.Contains(recorder.Body.String(), "invalid request body") {

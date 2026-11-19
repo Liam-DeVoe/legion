@@ -497,12 +497,12 @@ func (s *shim) pump(stdout *os.File, done chan<- struct{}) {
 	defer close(done)
 	defer stdout.Close()
 	r := shimwire.NewReader(stdout)
-	var held chunkHold
+	held := chunkHold{out: &s.out}
 	for {
 		line, err := r.ReadLine()
 		if err != nil {
 			// A sequence the child never finished goes as it is, and the daemon's reader drops it.
-			held.release(&s.out)
+			held.release()
 		}
 		if errors.Is(err, shimwire.ErrLineTooLong) {
 			// OMP chunks every frame over the limit; a longer line is a child whose stream can no
@@ -520,8 +520,13 @@ func (s *shim) pump(stdout *os.File, done chan<- struct{}) {
 		}
 		s.warmed.Do(s.warmCodegraph)
 		line = bytes.Clone(line)
-		held.forward(&s.out, line)
-		if summary := summarize(line); summary != "" {
+		// One read of the line serves the hold and the summary. encoding/json fills head's type even
+		// when another member has the wrong JSON type, so head.Type is the type frameType reads
+		// whatever the error; a line is a chunk only when the whole of head decoded.
+		var head lineHead
+		chunk := json.Unmarshal(line, &head) == nil && head.Type == shimwire.TypeRPCChunk
+		held.forward(line, head, chunk)
+		if summary := summarize(line, head.Type); summary != "" {
 			s.log.Print(summary)
 		}
 	}
@@ -532,48 +537,54 @@ func (s *shim) pump(stdout *os.File, done chan<- struct{}) {
 // outbox as one frame. So a connection that breaks under it leaves the whole sequence, from its
 // chunk 0, for the next, and nothing the shim sends of its own (a bundle result's sequence,
 // toDaemonChunked) lands between two of its chunks. A line that does not continue the sequence —
-// one that is not a chunk, a chunk of another sequence, or an index that is not the next — sends
-// what is held first, as one frame, and so does the pump's end: the daemon's reader drops that
-// broken sequence as it would have, and nothing changes order. The pump holds one sequence at
-// most, which OMP writes back to back: at most MaxReassembledBytes of payload, as base64 lines.
+// one that is not a chunk, a chunk at a place the daemon's reader refuses (RPCChunk's validate: a
+// count under two or over shimwire.MaxChunkCount, an index under zero or at or past its count), a
+// chunk of another sequence, or an index that is not the next — sends what is held first, as one
+// frame, and so does the pump's end: the daemon's reader drops that broken sequence as it would
+// have, and nothing changes order. The first two go alone after it, as every line went before the
+// pump held sequences. So the pump holds one sequence at most, which OMP writes back to back, and
+// no more of it than a sequence may declare: shimwire.MaxChunkCount lines, each under the line
+// limit.
 type chunkHold struct {
+	out   *outbox
 	lines [][]byte
 	id    string
 	next  int // the index a chunk has to have to continue the sequence
 }
 
-// chunkPosition is what the pump reads of an rpc_chunk line: where it sits in its sequence,
-// never its data.
-type chunkPosition struct {
+// lineHead is what the pump reads of each of OMP's lines: its type and, for an rpc_chunk, where it
+// sits in its sequence, never its data.
+type lineHead struct {
+	Type    string `json:"type"`
 	ChunkID string `json:"chunkId"`
 	Index   int    `json:"index"`
 	Count   int    `json:"count"`
 }
 
-// forward sends one of OMP's lines to out, or holds it with the rest of its sequence.
-func (h *chunkHold) forward(out *outbox, line []byte) {
-	var chunk chunkPosition
-	if frameType(line) != shimwire.TypeRPCChunk || json.Unmarshal(line, &chunk) != nil {
-		h.release(out)
-		out.send(line)
+// forward sends one of OMP's lines to the outbox, or holds it with the rest of its sequence when
+// it is a chunk at a place the daemon's reader takes, which head reads.
+func (h *chunkHold) forward(line []byte, head lineHead, chunk bool) {
+	if !chunk || head.Count < 2 || head.Count > shimwire.MaxChunkCount || head.Index < 0 || head.Index >= head.Count {
+		h.release()
+		h.out.send(line)
 		return
 	}
-	if chunk.ChunkID != h.id || chunk.Index != h.next {
-		h.release(out)
+	if head.ChunkID != h.id || head.Index != h.next {
+		h.release()
 	}
 	h.lines = append(h.lines, line)
-	h.id, h.next = chunk.ChunkID, chunk.Index+1
-	if chunk.Index == chunk.Count-1 {
-		h.release(out)
+	h.id, h.next = head.ChunkID, head.Index+1
+	if head.Index == head.Count-1 {
+		h.release()
 	}
 }
 
-// release sends what is held to out as one frame, if anything is.
-func (h *chunkHold) release(out *outbox) {
+// release sends what is held to the outbox as one frame, if anything is.
+func (h *chunkHold) release() {
 	if len(h.lines) == 0 {
 		return
 	}
-	out.send(h.lines...)
+	h.out.send(h.lines...)
 	clear(h.lines)
 	h.lines, h.id, h.next = h.lines[:0], "", 0
 }
@@ -734,6 +745,7 @@ func (s *shim) toDaemonChunked(frame shimwire.Frame) {
 			return
 		}
 		lines[i] = encoded
+		chunks[i] = shimwire.RPCChunk{} // encoded carries its data now, so the chunk's copy can go
 	}
 	s.out.send(lines...)
 }
@@ -757,11 +769,11 @@ const (
 )
 
 // summarize is the one line the pane shows for a frame worth a human's glance, or nothing
-// (summarizeShimFrame, worker-shim.ts). It reads line's type first and decodes only the frames it
-// has a line for: every other line Oh My Pi writes — an `rpc_chunk`'s few hundred kilobytes of
-// base64 among them — it reads no further than its type.
-func summarize(line []byte) string {
-	switch frameType(line) {
+// (summarizeShimFrame, worker-shim.ts). It is given line's type, which the pump has read, and
+// decodes only the frames it has a line for: every other line Oh My Pi writes — an `rpc_chunk`'s
+// few hundred kilobytes of base64 among them — it reads no further than that type.
+func summarize(line []byte, typ string) string {
+	switch typ {
 	case shimwire.TypeAgentStart, shimwire.TypeAgentEnd, shimwire.TypeResponse, shimwire.TypeToolExecutionStart,
 		rawErrorType, rawExtensionErrorType:
 	default:
@@ -862,12 +874,10 @@ func (o *outbox) send(lines ...[]byte) {
 	o.backlog = append(o.backlog, lines...)
 	o.frames = append(o.frames, len(lines))
 	for len(o.backlog) > backlogLimit {
-		dropped := o.backlog[:o.frames[0]]
-		clear(dropped)
-		o.backlog, o.frames = o.backlog[len(dropped):], o.frames[1:]
+		o.dropOldest()
 		if !o.dropped {
 			o.dropped = true
-			o.log.Printf("[worker-shim] no daemon client connected; dropping oldest frames beyond the last %d", backlogLimit)
+			o.log.Printf("[worker-shim] no daemon client connected; dropping oldest frames beyond the last %d lines", backlogLimit)
 		}
 	}
 }
@@ -878,16 +888,21 @@ func (o *outbox) attach(conn net.Conn, w *shimwire.Writer) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	for len(o.frames) > 0 {
-		frame := o.backlog[:o.frames[0]]
-		if !writeFrame(w, frame) {
+		if !writeFrame(w, o.backlog[:o.frames[0]]) {
 			_ = conn.Close()
 			return
 		}
-		clear(frame)
-		o.backlog, o.frames = o.backlog[len(frame):], o.frames[1:]
+		o.dropOldest()
 	}
 	o.backlog, o.frames = nil, nil
 	o.conn, o.w = conn, w
+}
+
+// dropOldest drops the backlog's oldest frame, every line of it.
+func (o *outbox) dropOldest() {
+	n := o.frames[0]
+	clear(o.backlog[:n])
+	o.backlog, o.frames = o.backlog[n:], o.frames[1:]
 }
 
 // writeFrame writes the lines of one frame in order and reports whether w took every one.

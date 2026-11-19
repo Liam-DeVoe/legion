@@ -3,11 +3,13 @@ package shim
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -186,7 +188,7 @@ func TestATrimmedBacklogDropsAWholeSequenceNeverItsHeadAlone(t *testing.T) {
 					t.Fatalf("replayed line %d is %.80s, want %s", i, got, want)
 				}
 			}
-			if got := strings.Count(logged.String(), "dropping oldest frames beyond the last 1000"); got != 1 {
+			if got := strings.Count(logged.String(), "dropping oldest frames beyond the last 1000 lines"); got != 1 {
 				t.Fatalf("the trim was logged %d times, want once; log:\n%s", got, logged.String())
 			}
 		})
@@ -321,5 +323,97 @@ func TestABundleResultSentWhileOhMyPiWritesASequenceNeverLandsBetweenItsChunks(t
 	}
 	if got := reassembled(t, bundleLines); !bytes.Equal(got, bundleLine) {
 		t.Fatalf("the bundle result's sequence carries %d bytes, want the %d of the bundle result", len(got), len(bundleLine))
+	}
+}
+
+// The pump reads each of Oh My Pi's lines once, for the hold and the pane's summary both, and a
+// line one of whose other members does not decode is still read as its type says: summarized when
+// the pane shows that type, and sent alone, as one frame, whatever the type.
+func TestThePumpReadsALinesTypeWhateverItsOtherMembersHold(t *testing.T) {
+	for _, tc := range []struct {
+		name, line, summary string
+	}{
+		{"an agent_start whose index is a string", `{"type":"agent_start","index":"one"}`, "agent_start"},
+		{"an rpc_chunk whose count is a string", `{"type":"rpc_chunk","chunkId":"c","index":0,"count":"two"}`, ""},
+		{"an agent_start cut short", `{"type":"agent_start"`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, logged := outboxShim() // no connection: what the pump hands the outbox waits in its backlog
+			stdout, pumped := pumpOf(t, s)
+			writeLines(t, stdout, []byte(tc.line), []byte(tc.line))
+			_ = stdout.Close()
+			<-pumped
+			want := ""
+			if tc.summary != "" {
+				want = strings.Repeat(tc.summary+"\n", 2)
+			}
+			if got := logged.String(); got != want {
+				t.Fatalf("the pane's log is %q, want %q", got, want)
+			}
+			if !slices.Equal(s.out.frames, []int{1, 1}) || !slices.EqualFunc(s.out.backlog, [][]byte{[]byte(tc.line), []byte(tc.line)}, bytes.Equal) {
+				t.Fatalf("the outbox holds frames of %v lines, want the two lines as one frame each", s.out.frames)
+			}
+		})
+	}
+}
+
+// A chunk line whose place the daemon's reader refuses (RPCChunk's validate: a count under two or
+// over shimwire.MaxChunkCount, an index under zero or at or past its count) starts no sequence the
+// pump holds: it goes to the outbox as it is read, a frame of its own after what is held, as every
+// line went before the pump held sequences. So a child that writes such lines, which no splitter
+// does, makes the shim hold none of them, while a sequence of as many chunks as one may declare is
+// still held whole.
+func TestAChunkLineTheDaemonRefusesByItsPlaceGoesAloneAndIsNeverHeld(t *testing.T) {
+	chunk := func(id string, index, count int) []byte {
+		return fmt.Appendf(nil, `{"type":"rpc_chunk","chunkId":%q,"index":%d,"count":%d,"byteLength":%d,"data":""}`,
+			id, index, count, shimwire.MaxFrameBytes)
+	}
+	// Each line but a group's last continues the one before it, so a hold that took them would keep
+	// the whole group: past the ceiling, more chunks than any sequence may have.
+	var refused [][]byte
+	for index := range shimwire.MaxChunkCount + 1 {
+		refused = append(refused, chunk("over-the-ceiling", index, shimwire.MaxChunkCount+1))
+	}
+	refused = append(refused,
+		chunk("past-its-count", 3, 3), chunk("past-its-count", 4, 3),
+		chunk("under-two", 0, 1), chunk("under-two", 1, 1),
+		chunk("under-zero", -1, 3), chunk("under-zero", 0, 0),
+	)
+	for _, line := range refused {
+		frame, err := shimwire.Decode(line)
+		decoded, ok := frame.(shimwire.RPCChunk)
+		if err != nil || !ok {
+			t.Fatalf("%s decodes to %T, %v; want an rpc_chunk", line, frame, err)
+		}
+		var reader shimwire.Reassembler
+		if _, err := reader.Push(decoded); !errors.Is(err, shimwire.ErrChunkMetadata) {
+			t.Fatalf("the daemon's reader answers %s with %v, want ErrChunkMetadata: the case needs a chunk it refuses by its place", line, err)
+		}
+	}
+	var atTheCeiling [][]byte
+	for index := range shimwire.MaxChunkCount {
+		atTheCeiling = append(atTheCeiling, chunk("at-the-ceiling", index, shimwire.MaxChunkCount))
+	}
+
+	s, _ := outboxShim() // no connection: what the pump hands the outbox waits in its backlog
+	stdout, pumped := pumpOf(t, s)
+	writeLines(t, stdout, plain(0))
+	writeLines(t, stdout, refused...)
+	writeLines(t, stdout, atTheCeiling...)
+	writeLines(t, stdout, plain(1))
+	_ = stdout.Close()
+	<-pumped
+
+	want := []int{1}
+	for range refused {
+		want = append(want, 1)
+	}
+	want = append(want, len(atTheCeiling), 1)
+	if !slices.Equal(s.out.frames, want) {
+		t.Fatalf("the outbox holds frames of %v lines; want the plain line, each of the %d refused chunks alone, the %d chunks at the ceiling as one frame, then the plain line", s.out.frames, len(refused), len(atTheCeiling))
+	}
+	written := slices.Concat([][]byte{plain(0)}, refused, atTheCeiling, [][]byte{plain(1)})
+	if !slices.EqualFunc(s.out.backlog, written, bytes.Equal) {
+		t.Fatal("the outbox holds other lines than the pump read, or in another order")
 	}
 }

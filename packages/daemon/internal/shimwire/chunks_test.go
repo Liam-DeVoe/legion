@@ -21,14 +21,21 @@ func agentEnd(t *testing.T, size int) []byte {
 	return []byte(head + strings.Repeat("x", size-len(head)-len(tail)) + tail)
 }
 
+// mustSplit is SplitChunks of frame under id, failing t on its error.
+func mustSplit(t *testing.T, id string, frame []byte) []RPCChunk {
+	t.Helper()
+	chunks, err := SplitChunks(id, frame)
+	if err != nil {
+		t.Fatalf("SplitChunks: %v", err)
+	}
+	return chunks
+}
+
 // chunkLine is one real rpc_chunk line — a full 256 KiB payload, ~350 KiB on the wire — for the
 // reader and writer tests that need a line no single transport read or write will carry.
 func chunkLine(t *testing.T) []byte {
 	t.Helper()
-	chunks, err := SplitChunks("agent-end-1", agentEnd(t, 3<<20+17))
-	if err != nil {
-		t.Fatalf("SplitChunks: %v", err)
-	}
+	chunks := mustSplit(t, "agent-end-1", agentEnd(t, 3<<20+17))
 	line, err := json.Marshal(chunks[0])
 	if err != nil {
 		t.Fatalf("Marshal chunk: %v", err)
@@ -40,10 +47,7 @@ func chunkLine(t *testing.T) []byte {
 // 256 KiB base64 slices in order (fake-omp-rpc.ts:50-65) and comes back byte for byte.
 func TestAThreeMebibyteFrameRoundTripsThroughChunks(t *testing.T) {
 	frame := agentEnd(t, 3<<20+17)
-	chunks, err := SplitChunks("agent-end-1", frame)
-	if err != nil {
-		t.Fatalf("SplitChunks: %v", err)
-	}
+	chunks := mustSplit(t, "agent-end-1", frame)
 	if want := (len(frame) + ChunkPayloadBytes - 1) / ChunkPayloadBytes; len(chunks) != want {
 		t.Fatalf("SplitChunks produced %d chunks, want %d", len(chunks), want)
 	}
@@ -258,17 +262,14 @@ func TestAnInterruptedSequenceIsDroppedByName(t *testing.T) {
 	if err := reassembler.Interrupt(); err != nil {
 		t.Fatalf("Interrupt with no sequence pending = %v, want nil", err)
 	}
-	chunks, err := SplitChunks("agent-end-1", agentEnd(t, 3<<20))
-	if err != nil {
-		t.Fatalf("SplitChunks: %v", err)
-	}
-	if _, err = reassembler.Push(chunks[0]); err != nil {
+	chunks := mustSplit(t, "agent-end-1", agentEnd(t, 3<<20))
+	if _, err := reassembler.Push(chunks[0]); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
-	if err = reassembler.Interrupt(); !errors.Is(err, ErrChunkSequence) {
+	if err := reassembler.Interrupt(); !errors.Is(err, ErrChunkSequence) {
 		t.Fatalf("Interrupt with a sequence pending = %v, want ErrChunkSequence", err)
 	}
-	if _, err = reassembler.Push(chunks[1]); !errors.Is(err, ErrChunkSequence) {
+	if _, err := reassembler.Push(chunks[1]); !errors.Is(err, ErrChunkSequence) {
 		t.Fatalf("Push after an interrupt = %v, want the dropped sequence to refuse it", err)
 	}
 }
@@ -278,19 +279,10 @@ func TestAnInterruptedSequenceIsDroppedByName(t *testing.T) {
 // the first of its chunks, and the rest of them are passed over without a word until a chunk of
 // another sequence or a whole frame ends the skip; the next sequence reassembles as any other.
 func TestASequenceWhoseStartWasNotOnTheStreamIsDroppedOnce(t *testing.T) {
-	joined, err := SplitChunks("agent-end-1", agentEnd(t, 3<<20))
-	if err != nil {
-		t.Fatalf("SplitChunks: %v", err)
-	}
-	other, err := SplitChunks("agent-end-2", agentEnd(t, 3<<20))
-	if err != nil {
-		t.Fatalf("SplitChunks: %v", err)
-	}
+	joined := mustSplit(t, "agent-end-1", agentEnd(t, 3<<20))
+	other := mustSplit(t, "agent-end-2", agentEnd(t, 3<<20))
 	next := agentEnd(t, MaxFrameBytes+5)
-	following, err := SplitChunks("agent-end-3", next)
-	if err != nil {
-		t.Fatalf("SplitChunks: %v", err)
-	}
+	following := mustSplit(t, "agent-end-3", next)
 	var reassembler Reassembler
 	if _, err := reassembler.Push(joined[5]); !errors.Is(err, ErrChunkSequence) || !strings.Contains(err.Error(), `"agent-end-1"`) {
 		t.Fatalf("Push(chunk 5, the first on the stream) = %v, want ErrChunkSequence naming agent-end-1", err)
@@ -323,15 +315,9 @@ func TestASequenceWhoseStartWasNotOnTheStreamIsDroppedOnce(t *testing.T) {
 // is named once, as Interrupt names one; one being passed over ends quietly. Either way the new
 // sequence is read whole rather than dropped beside the old one.
 func TestAChunkZeroStartsItsSequenceWhateverCameBefore(t *testing.T) {
-	cut, err := SplitChunks("agent-end-1", agentEnd(t, 3<<20))
-	if err != nil {
-		t.Fatalf("SplitChunks: %v", err)
-	}
+	cut := mustSplit(t, "agent-end-1", agentEnd(t, 3<<20))
 	next := agentEnd(t, MaxFrameBytes+5)
-	following, err := SplitChunks("agent-end-2", next)
-	if err != nil {
-		t.Fatalf("SplitChunks: %v", err)
-	}
+	following := mustSplit(t, "agent-end-2", next)
 	var reassembler Reassembler
 	for _, chunk := range cut[:2] {
 		if _, err := reassembler.Push(chunk); err != nil {
@@ -362,19 +348,10 @@ func TestAChunkZeroStartsItsSequenceWhateverCameBefore(t *testing.T) {
 // the arriving one, dropped because its start was not on this stream. The rest of the arriving
 // one is passed over without a word, and the next sequence reassembles as any other.
 func TestASequenceJoinedAfterItsStartWhileAnotherIsBuiltIsOneErrorNamingBoth(t *testing.T) {
-	built, err := SplitChunks("agent-end-1", agentEnd(t, 3<<20))
-	if err != nil {
-		t.Fatalf("SplitChunks: %v", err)
-	}
-	joined, err := SplitChunks("agent-end-2", agentEnd(t, 3<<20))
-	if err != nil {
-		t.Fatalf("SplitChunks: %v", err)
-	}
+	built := mustSplit(t, "agent-end-1", agentEnd(t, 3<<20))
+	joined := mustSplit(t, "agent-end-2", agentEnd(t, 3<<20))
 	next := agentEnd(t, MaxFrameBytes+5)
-	following, err := SplitChunks("agent-end-3", next)
-	if err != nil {
-		t.Fatalf("SplitChunks: %v", err)
-	}
+	following := mustSplit(t, "agent-end-3", next)
 	var reassembler Reassembler
 	for _, chunk := range built[:2] {
 		if _, err := reassembler.Push(chunk); err != nil {
