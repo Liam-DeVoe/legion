@@ -622,6 +622,14 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 			return err
 		}
 		task = resume
+	} else {
+		// A merger's stored task names the head its approval named when it was stored, and one a
+		// release before this one stored names none (withApprovedHead).
+		named, err := e.withApprovedHead(ctx, tx, issue.Key, role, task)
+		if err != nil {
+			return err
+		}
+		task = named
 	}
 	marks.reasserts = true
 	return e.started(ctx, tx, issue, role, task, row.Entry, marks)

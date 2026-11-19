@@ -296,15 +296,16 @@ func TestTheEntryCarriesWhetherTheMoveThatRaisedItMovedBack(t *testing.T) {
 // A claim behind its role's entry is sent the work that entry names, at that entry and with no
 // entry raised: the task the record holds for it where it holds one, and the phase's resume task
 // where it holds none, which is the row the upgrade to the entry left and the row a re-admission
-// reset. The merger reads both halves. The task its entry stored is sent as stored, and it named
-// the approved head when the move into merging stored it (withApprovedHead); the resume task is
-// composed now, so it names the head the reviewer's decided approval holds now, or none where the
-// row holds no approval, and a merger on a session that holds no task of its phase still reads
-// the one head it may merge.
+// reset. The merger reads both halves, and each ends with the head the reviewer's decided approval
+// holds now, or none where the row holds no approval (withApprovedHead), so a merger on a session
+// that holds no task of its phase still reads the one head it may merge. A stored task that
+// already ends with that sentence - the move into merging stored it so - is sent as stored, and
+// one a release before this one stored, which names no head, is given it.
 func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
 	issue := record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
 		Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 1, Status: "in_progress", Rank: "U"}
-	recorded := ResumePhaseTask(issue) + " Reason: the review approved. Approved head: " + headOne + "."
+	legacy := ResumePhaseTask(issue) + " Reason: the review approved."
+	recorded := legacy + " Approved head: " + headOne + "."
 	approved := &record.ReviewDecision{State: "approved", Head: headOne}
 	for _, tc := range []struct {
 		name string
@@ -315,6 +316,7 @@ func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
 		want     string
 	}{
 		{name: "a row that names the work of its entry", held: recorded, decision: approved, want: recorded},
+		{name: "a row whose work a release before this one stored, naming no head", held: legacy, decision: approved, want: recorded},
 		{name: "a row an upgrade or a re-admission left with none, over an approval", decision: approved,
 			want: ResumePhaseTask(issue) + " Approved head: " + headOne + "."},
 		{name: "a row left with none where no approval is on record", want: ResumePhaseTask(issue) + " Approved head: none."},

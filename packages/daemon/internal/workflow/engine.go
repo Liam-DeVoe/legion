@@ -1438,8 +1438,12 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // withApprovedHead is text, a task of role's, with the head the review approved after it when role
 // is the merger (approvedHeadSentence): the merger merges that head and no other, so every task
 // that starts it on its phase names the one the record holds for the round that ended in it - the
-// move into merging (transition), a retry of that phase (retryPhase) and each resume of it
-// (resumeTask).
+// move into merging (transition), a retry of that phase (retryPhase), each resume of it
+// (resumeTask) and each send of the work its entry stored (sendOwedEntry). A text that already
+// ends with the sentence the record answers now is sent as it is, so a stored task is not named
+// twice; any other gets the sentence after it: a task a release before this one stored, which
+// names none, and one stored over a decision the record no longer holds, whose newest sentence is
+// then the one that stands.
 func (e *Engine) withApprovedHead(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, text string) (string, error) {
 	if role != claim.RoleMerger {
 		return text, nil
@@ -1448,7 +1452,11 @@ func (e *Engine) withApprovedHead(ctx context.Context, tx pgx.Tx, issue string, 
 	if err != nil {
 		return "", err
 	}
-	return text + approvedHeadSentence(reviewer), nil
+	sentence := approvedHeadSentence(reviewer)
+	if strings.HasSuffix(text, sentence) {
+		return text, nil
+	}
+	return text + sentence, nil
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that

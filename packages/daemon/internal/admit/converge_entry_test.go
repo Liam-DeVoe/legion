@@ -286,7 +286,13 @@ func assertConverged(t *testing.T, pool *pgxpool.Pool, cases []convergeCase) {
 			t.Errorf("the start rows of %s = %+v, want the one row the start is written as (workflow.StartOrOwe): %s", c.key, starts, c.why)
 			continue
 		}
-		want := convergeStart{id: starts[0].id, role: c.role, task: seededEntryTask(c.key), entry: seededEntry}
+		task := seededEntryTask(c.key)
+		if c.role == claim.RoleMerger {
+			// A merger's work names the head the decided review approved, none here, since the
+			// fixture records no review round (workflow's withApprovedHead).
+			task += " Approved head: none."
+		}
+		want := convergeStart{id: starts[0].id, role: c.role, task: task, entry: seededEntry}
 		if starts[0] != want {
 			t.Errorf("the start of %s = %+v, want %+v: the convergence sends the role the work its phases row names, at that entry, so no completion in flight is refused for an entry nothing delivered. %s",
 				c.key, starts[0], want, c.why)
