@@ -224,11 +224,28 @@ function layoutIfAny(body: Record<string, unknown>): string | undefined {
   return typeof layout === "string" ? layout : undefined;
 }
 
-/** The panes a `window_layout` string names, in its own order: every leaf cell is
- *  `<width>x<height>,<x>,<y>,<pane id>`, the id written without its `%`, while a cell holding
- *  other cells ends in `{` or `[` instead and names no pane. */
+/** The panes a `window_layout` string names, in its own order, in either form tmux writes it:
+ *  the case reports whatever the tmux on PATH wrote, and CI's tmux (3.4) and a later one (3.8 on
+ *  a dev box) write different forms. tmux 3.7c and earlier write version 1, where every leaf cell
+ *  is `<width>x<height>,<x>,<y>,<pane id>`, the id written without its `%`, while a cell holding
+ *  other cells ends in `{` or `[` instead and names no pane. tmux 3.8 writes version 2, the JSON
+ *  object `{"V":2,"L":<root cell>}`, where a pane's cell has `"t":"p"` and its id, with its `%`,
+ *  as `I`, and a split's cells are its array `c`. */
 function layoutPanes(layout: string): string[] {
-  return [...layout.matchAll(/\d+x\d+,\d+,\d+,(\d+)/g)].map(([, id]) => `%${id}`);
+  if (!layout.startsWith("{")) {
+    return [...layout.matchAll(/\d+x\d+,\d+,\d+,(\d+)/g)].map(([, id]) => `%${id}`);
+  }
+  const panes: string[] = [];
+  const visit = (cell: unknown): void => {
+    if (typeof cell !== "object" || cell === null) return;
+    if ("t" in cell && cell.t === "p" && "I" in cell && typeof cell.I === "string") {
+      panes.push(cell.I);
+    }
+    if ("c" in cell && Array.isArray(cell.c)) for (const child of cell.c) visit(child);
+  };
+  const parsed: unknown = JSON.parse(layout);
+  if (typeof parsed === "object" && parsed !== null && "L" in parsed) visit(parsed.L);
+  return panes;
 }
 
 /** Polls `probe` until it returns a value, failing on `what` at the deadline with what `diagnose`

@@ -15,6 +15,9 @@ const NOTHING_OWED: PaneCounts = { asksForYou: new Map(), unreadReplies: new Map
 
 /** The three-pane window this design recorded from tmux 3.5a: `%0` over `%1` beside `%2`. */
 const THREE_PANES = "b05b,80x24,0,0[80x12,0,0,0,80x11,0,13{40x11,0,13,1,39x11,41,13,2}]";
+/** The same window as tmux 3.8 writes its layout, in the JSON form. */
+const THREE_PANES_JSON =
+  '{"V":2,"L":{"t":"v","w":80,"h":24,"x":0,"y":0,"c":[{"t":"p","w":80,"h":12,"x":0,"y":0,"a":true,"i":0,"I":"%0"},{"t":"h","w":80,"h":11,"x":0,"y":13,"c":[{"t":"p","w":40,"h":11,"x":0,"y":13,"i":1,"I":"%1"},{"t":"p","w":39,"h":11,"x":41,"y":13,"i":2,"I":"%2"}]}]}}';
 
 const NOW = 1_762_000_000_000;
 
@@ -111,6 +114,39 @@ test("a window is drawn at its own aspect ratio, each pane at the layout's perce
     ]);
   } finally {
     view.unmount();
+    agents.mockRestore();
+  }
+});
+
+test("a window whose tmux writes the JSON layout is drawn as the same boxes", () => {
+  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const panes = [
+    pane("%0", 0, session("a".repeat(16), "Planner")),
+    pane("%1", 1, session("b".repeat(16), "Builder")),
+  ];
+  /** Each drawn pane's id and box, as the drawing placed it. */
+  const drawn = (layout: string) => {
+    const view = draw(
+      <WindowDrawing counts={NOTHING_OWED} now={NOW} width={1440} window={window(panes, layout)} />
+    );
+    try {
+      expect(screen.getByTestId("window-drawing").getAttribute("data-drawn")).toBe("layout");
+      return boxes().map((box) => [
+        box.getAttribute("data-pane"),
+        box.style.left,
+        box.style.top,
+        box.style.width,
+        box.style.height,
+      ]);
+    } finally {
+      view.unmount();
+    }
+  };
+  try {
+    const fromJson = drawn(THREE_PANES_JSON);
+    expect(fromJson.map(([paneId]) => paneId)).toEqual(["%0", "%1", "%2"]);
+    expect(fromJson).toEqual(drawn(THREE_PANES));
+  } finally {
     agents.mockRestore();
   }
 });
