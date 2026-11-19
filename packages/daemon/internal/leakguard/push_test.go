@@ -450,16 +450,22 @@ func wide(text string, size int, little bool) string {
 // A message in UTF-16 or UTF-32 holds a zero byte beside each ASCII letter, so the host it names is
 // in no line git show prints, which ends at the first such byte, nor in any run of the object's
 // bytes, while a reader that decodes the message by the encoding its object's header names reads
-// the host whole. So the push decodes a commit's or a tag's message in either family itself: by the
-// byte-order mark it opens with, and else by the name, read in any case and in both orders where it
-// gives none, a run that decodes to no character read as U+FFFD and the decode going on; and
-// refuses one that names a host, whatever label its report gives the line. A message in either that
-// names nothing is passed. The author line of a commit under such a header is read as the object
-// holds it, since git show decodes the identity with the message (identityLine). Each object is
-// written with --literally: git's own check of a commit, hash-object's and a destination's that
-// runs receive.fsckObjects, refuses a zero byte in its body (nulInCommit), but a destination that
-// runs no such check, git's default, keeps it, and the check takes such a tag. The report never
-// holds the text it refused (refusal).
+// the host whole. So the push decodes a commit's or a tag's message that holds a zero byte itself,
+// as UTF-16 and as UTF-32 in each order, whatever the encoding header names, however it spells it
+// (glibc's iconv reads "UTF 16LE" as UTF-16LE), or where there is none; a byte-order mark is no
+// part of the text, and one of the other order, which glibc reads as a character under a name that
+// gives an order, decides nothing; a run that decodes to no character is read as U+FFFD and the
+// decode goes on; text at an offset none of those decodes is aligned on is read with the message's
+// zero bytes taken out; and the push refuses one that names a host, whatever label its report
+// gives the line. UTF-16 text one byte off is the other order's text aligned, which a decode
+// reads; UTF-32 text two bytes off, and UTF-16 text that one zero byte parts into two alignments,
+// are each read only with the zero bytes taken out. A message in either that names nothing is
+// passed. The author line of a commit under such a header is read as the object holds it, since
+// git show decodes the identity with the message (identityLine). Each object is written with
+// --literally: git's own check of a commit, hash-object's and a destination's that runs
+// receive.fsckObjects, refuses a zero byte in its body (nulInCommit), but a destination that runs
+// no such check, git's default, keeps it, and the check takes such a tag. The report never holds
+// the text it refused (refusal).
 func TestAMessageInUTF16OrUTF32IsReadDecoded(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	repo := filepath.Join(root, "repo")
@@ -470,10 +476,15 @@ func TestAMessageInUTF16OrUTF32IsReadDecoded(t *testing.T) {
 	tree := fixture.Run(repo, "git", "rev-parse", base+"^{tree}")
 	const identity = "builder <builder@example.invalid> 1700000000 +0000"
 	named := "the runner answers at " + theHost + "\n"
+	// cut parts named between the two letters of the host's "ts" label, so that neither part holds
+	// the domain a rule reads, and a message of the two parts at two alignments holds it in no
+	// aligned decode.
+	cut := strings.LastIndex(named, ".") - 1
 	for _, tc := range []struct {
 		name string
-		// tag is whether the object pushed is a tag rather than a commit, and author the commit's
-		// author line, identity where the case leaves it empty.
+		// tag is whether the object pushed is a tag rather than a commit, author the commit's
+		// author line, identity where the case leaves it empty, and encoding the value of the
+		// object's encoding header, which it holds none of where the case leaves it empty.
 		tag      bool
 		author   string
 		encoding string
@@ -493,6 +504,16 @@ func TestAMessageInUTF16OrUTF32IsReadDecoded(t *testing.T) {
 		{name: "a message in UTF-16LE with an unpaired surrogate before the host", encoding: "UTF-16LE", message: wide("a ", 2, true) + "\x00\xd8" + wide(named, 2, true), named: true},
 		{name: "a tag's message in UTF-16LE", tag: true, encoding: "UTF-16LE", message: wide(named, 2, true), named: true},
 		{name: "an author line under UTF-16LE", author: "builder <builder@" + theHost + "> 1700000000 +0000", encoding: "UTF-16LE", message: "a message of no interest\n", named: true},
+		{name: "a message in UTF-16LE after a big-endian byte-order mark under UTF-16LE", encoding: "UTF-16LE", message: "\xfe\xff" + wide(named, 2, true), named: true},
+		{name: "a message in UTF-16LE after a big-endian byte-order mark under UCS-2", encoding: "UCS-2", message: "\xfe\xff" + wide(named, 2, true), named: true},
+		{name: "a message in UTF-16LE under OSF00010100", encoding: "OSF00010100", message: wide(named, 2, true), named: true},
+		{name: "a message in UTF-16LE under UTF 16LE", encoding: "UTF 16LE", message: wide(named, 2, true), named: true},
+		{name: "a message in UTF-16LE under no encoding header", message: wide(named, 2, true), named: true},
+		{name: "a message in UTF-32BE under OSF00010104", encoding: "OSF00010104", message: wide(named, 4, false), named: true},
+		{name: "a message in UTF-32LE under utf@32le", encoding: "utf@32le", message: wide(named, 4, true), named: true},
+		{name: "a message in UTF-16LE after one stray byte", encoding: "UTF-16LE", message: "x" + wide(named, 2, true), named: true},
+		{name: "a message in UTF-32LE after two stray bytes", encoding: "UTF-32LE", message: "xx" + wide(named, 4, true), named: true},
+		{name: "a message in UTF-16LE that one zero byte parts at the host into two alignments", encoding: "UTF-16LE", message: wide(named[:cut], 2, true) + "\x00" + wide(named[cut:], 2, true), named: true},
 		{name: "a message in UTF-16LE that names nothing", encoding: "UTF-16LE", message: wide("a message of no interest\n", 2, true)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -500,7 +521,11 @@ func TestAMessageInUTF16OrUTF32IsReadDecoded(t *testing.T) {
 			if tc.tag {
 				kind, ref, object = "tag", "refs/tags/pushed", "object "+base+"\ntype commit\ntag x\ntagger "+identity+"\n"
 			}
-			pushed := fixture.Fed(repo, object+"encoding "+tc.encoding+"\n\n"+tc.message, "git", "hash-object", "-t", kind, "-w", "--stdin", "--literally")
+			header := ""
+			if tc.encoding != "" {
+				header = "encoding " + tc.encoding + "\n"
+			}
+			pushed := fixture.Fed(repo, object+header+"\n"+tc.message, "git", "hash-object", "-t", kind, "-w", "--stdin", "--literally")
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 			err := guard.Push(bound(t), PushRequest{
 				Dir:     repo,

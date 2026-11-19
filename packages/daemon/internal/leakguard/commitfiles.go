@@ -69,11 +69,7 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string, batch *bl
 		{Label: label + " committer", Text: parts[2]},
 	}
 	headers, message, _ := strings.Cut(object, "\n\n")
-	var encoding string
 	for name, value := range objectHeaders(headers) {
-		if name == "encoding" && encoding == "" {
-			encoding = value
-		}
 		if (name == "tree" || name == "parent") && isObjectID(value) ||
 			name == "author" && identityLine(value, parts[1]) ||
 			name == "committer" && identityLine(value, parts[2]) {
@@ -81,7 +77,7 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string, batch *bl
 		}
 		records = append(records, headerRecord(label, name, value, commitHeaders))
 	}
-	records = appendMessage(records, label, encoding, message, parts[4])
+	records = appendMessage(records, label, message, parts[4])
 	var paths []string
 	var changes []fileChange
 	kind := "commit"
@@ -422,40 +418,55 @@ func identityLine(value, identity string) bool {
 // appendMessage is records with the records of message appended, the message of the commit or the
 // tag label names ("commit 1a2b3c4") as its object holds it, after its first blank line: one of
 // message itself, "<label> message"; one of shown, the message as git show formats it, where that
-// differs, "<label> message as git shows it", which a tag's never does (Guard.tagRecords); and one
-// of the message as the guard decodes it, "<label> message decoded as UTF-16" or "... UTF-32",
-// where encoding, the object's first encoding header, the one git reads, names an encoding of
-// either family (wideEncoding, wideText), with one more, "<label> message decoded as UTF-16,
-// little-endian" or "... UTF-32, little-endian", where that name gives no order and the message
-// opens with no byte-order mark. git decodes a message through iconv, but cuts it at its first
-// zero byte, which a message in UTF-16 or UTF-32 holds beside each ASCII letter, so neither git
-// show's text nor the object's bytes hold a word of such a message whole.
-func appendMessage(records []Record, label, encoding, message, shown string) []Record {
+// differs, "<label> message as git shows it", which a tag's never does (Guard.tagRecords); and,
+// where message holds a zero byte, one of it decoded in each of four ways, whatever encoding header
+// the object holds or lacks (wideText): "<label> message decoded as UTF-16, big-endian", then
+// "UTF-16, little-endian", "UTF-32, big-endian" and "UTF-32, little-endian"; and one of message with
+// every zero byte taken out, "<label> message with its zero bytes taken out".
+//
+// git commit refuses a zero byte in a message, so only a crafted object holds one, and an ASCII
+// name in UTF-16 or UTF-32 holds a zero byte beside each letter. git show cuts a message at its
+// first zero byte and decodes every message that holds none through iconv, by the encoding header,
+// which the record of shown reads. So the four decodes, keyed on the zero byte and not on the name
+// of the encoding, cover every name iconv takes for those encodings, however it is spelled:
+// glibc's iconv_open drops all but letters, digits and "_-.,:/" from a name, and honours a
+// byte-order mark only under the names that give no order (measured with glibc 2.41 and git 2.47.3
+// in an issue pod). The message with its zero bytes taken out holds such a name at any offset and
+// in either order, which the four decodes, aligned on the message's first byte, do not: a reader
+// that scans the bytes without regard to alignment, such as strings -el, finds such text at an
+// offset they are not aligned on, such as UTF-32 text two bytes in, and every name a rule reads is
+// ASCII.
+func appendMessage(records []Record, label, message, shown string) []Record {
 	records = append(records, Record{Label: label + " message", Text: message})
 	if shown != message {
 		records = append(records, Record{Label: label + " message as git shows it", Text: shown})
 	}
-	family, size, little, ordered := wideEncoding(encoding)
-	if family == "" {
+	if strings.IndexByte(message, 0) < 0 {
 		return records
 	}
-	text, marked := wideText(message, size, little)
-	records = append(records, Record{Label: label + " message decoded as " + family, Text: text})
-	if !ordered && !marked {
-		text, _ = wideText(message, size, true)
-		records = append(records, Record{Label: label + " message decoded as " + family + ", little-endian", Text: text})
+	for _, wide := range []struct {
+		name   string
+		size   int
+		little bool
+	}{
+		{"UTF-16, big-endian", 2, false},
+		{"UTF-16, little-endian", 2, true},
+		{"UTF-32, big-endian", 4, false},
+		{"UTF-32, little-endian", 4, true},
+	} {
+		records = append(records, Record{Label: label + " message decoded as " + wide.name, Text: wideText(message, wide.size, wide.little)})
 	}
-	return records
+	return append(records, Record{Label: label + " message with its zero bytes taken out", Text: strings.ReplaceAll(message, "\x00", "")})
 }
 
-// wideText is message decoded from UTF-16 (size 2) or UTF-32 (size 4), little-endian where little
-// and big-endian else, and whether it opens with a byte-order mark, which then decides its order
-// alone and is no part of the text. A unit that is no character, an unpaired surrogate, or in
-// UTF-32 a surrogate or a value above U+10FFFF, and the bytes after the last whole unit, are each
-// read as U+FFFD, and the decode goes on: what follows them is read, and nothing fails the push.
-func wideText(message string, size int, little bool) (text string, marked bool) {
-	// unit is the code unit at the head of s, which holds one, in the order little says.
-	unit := func(s string, little bool) rune {
+// wideText is message decoded from UTF-16 (size 2) or UTF-32 (size 4) from its first byte,
+// little-endian where little and big-endian else, with one U+FEFF it opens with, a byte-order mark
+// of that order, left out. A unit that is no character, an unpaired surrogate, or in UTF-32 a
+// surrogate or a value above U+10FFFF, and the bytes after the last whole unit, are each read as
+// U+FFFD, and the decode goes on: what follows them is read, and nothing fails the push.
+func wideText(message string, size int, little bool) string {
+	// unit is the code unit at the head of s, which holds one.
+	unit := func(s string) rune {
 		var r rune
 		for i := range size {
 			b := s[i]
@@ -467,18 +478,15 @@ func wideText(message string, size int, little bool) (text string, marked bool) 
 		return r
 	}
 	rest := message
-	for _, order := range []bool{false, true} {
-		if len(rest) >= size && unit(rest, order) == '\ufeff' {
-			little, rest, marked = order, rest[size:], true
-			break
-		}
+	if len(rest) >= size && unit(rest) == '\ufeff' {
+		rest = rest[size:]
 	}
 	var decoded strings.Builder
 	decoded.Grow(len(rest))
 	for ; len(rest) >= size; rest = rest[size:] {
-		r := unit(rest, little)
+		r := unit(rest)
 		if size == 2 && utf16.IsSurrogate(r) && len(rest) >= 4 {
-			if pair := utf16.DecodeRune(r, unit(rest[2:], little)); pair != utf8.RuneError {
+			if pair := utf16.DecodeRune(r, unit(rest[2:])); pair != utf8.RuneError {
 				r, rest = pair, rest[2:]
 			}
 		}
@@ -487,43 +495,7 @@ func wideText(message string, size int, little bool) (text string, marked bool) 
 	if rest != "" {
 		decoded.WriteRune(utf8.RuneError)
 	}
-	return decoded.String(), marked
-}
-
-// wideEncoding is the family of the encoding name names, "UTF-16" or "UTF-32", the size of its code
-// unit, whether it is little-endian, and whether name gives that order, which a name that ends in
-// LE or BE, or names one, does; and no family where name names neither. name is matched in any
-// case, without the space around it, a slash it ends with or a "//" suffix such as "//IGNORE",
-// since glibc's iconv_open, and so git, reads such a name as the encoding it is put on (measured
-// with git 2.47.3 in an issue pod). The names are the family's own and the aliases glibc's iconv -l
-// lists for them in that pod: UTF16, UTF16LE, UTF16BE, UTF32, UTF32LE and UTF32BE; UCS-2, UCS2,
-// UCS-2LE, UCS-2BE, UNICODEBIG, UNICODELITTLE and ISO-10646/UCS2, since UCS-2 is UTF-16 with no
-// surrogate, and UNICODE and CSUNICODE, glibc's UCS-2 with a byte-order mark; UCS-4, UCS4, UCS-4LE,
-// UCS-4BE, CSUCS4, ISO-10646, ISO-10646/UCS4, 10646-1:1993 and 10646-1:1993/UCS4, since UCS-4 is
-// UTF-32 with a wider range, a value above U+10FFFF of which is read as U+FFFD; and WCHAR_T,
-// glibc's UCS-4 in the host's order, little-endian on the amd64 and arm64 machines Legion runs on.
-// A message with no mark under a name that gives no order is read in both orders (appendMessage),
-// big-endian first: the Unicode standard reads UTF-16 and UTF-32 with no mark as big-endian, and
-// glibc reads UTF-16, UTF-32, UCS-2 and UNICODE with no mark in its host's order, little-endian on
-// amd64 and arm64 (measured in an issue pod with glibc 2.41).
-func wideEncoding(name string) (family string, size int, little, ordered bool) {
-	name, _, _ = strings.Cut(strings.TrimSpace(name), "//")
-	switch strings.ToUpper(strings.TrimSuffix(name, "/")) {
-	case "UTF-16", "UTF16", "UCS-2", "UCS2", "ISO-10646/UCS2", "UNICODE", "CSUNICODE":
-		return "UTF-16", 2, false, false
-	case "UTF-16BE", "UTF16BE", "UCS-2BE", "UNICODEBIG":
-		return "UTF-16", 2, false, true
-	case "UTF-16LE", "UTF16LE", "UCS-2LE", "UNICODELITTLE":
-		return "UTF-16", 2, true, true
-	case "UTF-32", "UTF32", "UCS-4", "UCS4", "CSUCS4", "ISO-10646", "ISO-10646/UCS4", "10646-1:1993",
-		"10646-1:1993/UCS4":
-		return "UTF-32", 4, false, false
-	case "UTF-32BE", "UTF32BE", "UCS-4BE":
-		return "UTF-32", 4, false, true
-	case "UTF-32LE", "UTF32LE", "UCS-4LE", "WCHAR_T":
-		return "UTF-32", 4, true, true
-	}
-	return "", 0, false, false
+	return decoded.String()
 }
 
 // rawEntry is one entry of diff-tree's raw format, which -z writes as

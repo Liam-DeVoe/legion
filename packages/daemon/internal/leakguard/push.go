@@ -281,14 +281,14 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, held, objects 
 // by its name where git itself writes a tag header of that name, such as "tag <short> tagger" for
 // the tagger, and "tag <short> header" else (headerRecord, tagHeaders), a header of more than one
 // line with its every line (objectHeaders). The message is read as the tag object holds it, which
-// is what git shows of it too, and as the guard decodes it where the tag's first encoding header
-// names an encoding of the UTF-16 or the UTF-32 family (appendMessage). The object and the type
-// followed are the first object line and the first type line, which are the ones git follows a tag
-// by, and a later line of either is a header like any other. A tag object holds its own name, which
-// it publishes as it publishes its message, and a chain's inner tag publishes a name no ref need
-// name. A tag in read, one the destination holds or one this push read already, is not read, nor
-// is the tag it is of, which the destination holds or this push read with it. A tag object's
-// headers name the object it is of and that object's type, so git is asked the type of sha alone:
+// is what git shows of it too, and decoded by the guard where it holds a zero byte (appendMessage).
+// The object and the type followed are the first object line and the first type line, which are
+// the ones git follows a tag by, and a later line of either is a header like any other. A tag
+// object holds its own name, which it publishes as it publishes its message, and a chain's inner
+// tag publishes a name no ref need name. A tag in read, one the destination holds or one this push
+// read already, is not read, nor is the tag it is of, which the destination holds or this push
+// read with it. A tag object's headers name the object it is of and that object's type, so git is
+// asked the type of sha alone:
 //
 //	git cat-file -t <sha>
 //	git cat-file tag <sha>
@@ -316,11 +316,7 @@ func (g *Guard) tagRecords(ctx context.Context, dir, sha string, read map[string
 		headers, message, _ := strings.Cut(out, "\n\n")
 		label := "tag " + short(sha)
 		sha, kind = "", ""
-		var encoding string
 		for name, value := range objectHeaders(headers) {
-			if name == "encoding" && encoding == "" {
-				encoding = value
-			}
 			switch {
 			case name == "object" && sha == "":
 				sha = value
@@ -332,7 +328,7 @@ func (g *Guard) tagRecords(ctx context.Context, dir, sha string, read map[string
 				records = append(records, headerRecord(label, name, value, tagHeaders))
 			}
 		}
-		records = appendMessage(records, label, encoding, message, message)
+		records = appendMessage(records, label, message, message)
 	}
 	if read[sha] {
 		return records, "", "", nil

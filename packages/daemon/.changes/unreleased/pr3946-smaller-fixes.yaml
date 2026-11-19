@@ -25,6 +25,7 @@ body: |-
   private refuses the push too, one that is a name alone among them, and a refusal labels any
   header git itself does not write as a header of its commit or tag.
   A push now has each commit's message read as the commit object holds it, and also as git show
-  prints it where that differs, and a commit's or an annotated tag's message whose encoding header
-  names UTF-16 or UTF-32 also as the guard decodes it, so a message git show decodes into other
-  text, or cuts at its first zero byte, is read as the destination keeps it.
+  prints it where that differs, and a commit's or an annotated tag's message that holds a zero
+  byte also decoded by the guard as UTF-16 and as UTF-32 in each byte order, and read with its
+  zero bytes taken out, whatever its encoding header names, so a message git show decodes into
+  other text, or cuts at its first zero byte, is read as the destination keeps it, at any offset.
