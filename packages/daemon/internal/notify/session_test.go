@@ -267,10 +267,13 @@ func (l heldListener) RoundTrip(r *http.Request) (*http.Response, error) {
 // budget, sessionStop.send in packages/daemon/internal/daemon/daemon.go), and none of the client's
 // own: requestTimeout bounds a publish and a role lookup alone. So a listener that answers past
 // requestTimeout but inside the budget is waited for, and one that answers after the budget is
-// given up at the budget. Each row runs in a synctest bubble, whose clock moves only while every
-// goroutine in it waits, so the holds and the budget are times on that clock, not on the run's.
+// given up at the budget. The budget is a day, longer than any a test of the daemon gives its
+// stops, so a fixed client timeout of any length under it, the 10 s requestTimeout or a minute
+// alike, ends the second row's request before the budget does, and fails it. Each row runs in a
+// synctest bubble, whose clock moves only while every goroutine in it waits, so the holds and the
+// budget are times on that clock, not on the run's, and the day costs the run nothing.
 func TestTheCleanStopsReadAndDeleteEndAtTheirContextAlone(t *testing.T) {
-	const budget = 30 * time.Second
+	const budget = 24 * time.Hour
 	for _, request := range []struct {
 		name string
 		body string
