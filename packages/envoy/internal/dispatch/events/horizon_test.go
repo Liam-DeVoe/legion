@@ -1251,12 +1251,15 @@ func TestHorizonWaitsOnATransactionOnlyOnceItHasInsertedAnEvent(t *testing.T) {
 	}
 }
 
-// A RowExclusiveLock on events whose transaction id the lock table does not show holds H back,
-// and keeps every mark taken after it from counting: a transaction takes that lock when its
-// INSERT, UPDATE or DELETE is parsed and its transaction id only when it first writes a tuple, so
-// the read cannot tell such a holder from a writer about to draw an event id. A transaction of
-// another database holds the snapshot's xmin back throughout, so the lock table is what each
-// observation reads.
+// A RowExclusiveLock on events whose transaction id the lock table does not show holds H back
+// when the lock table is read, and keeps every mark taken after it from counting: a transaction
+// takes that lock when its INSERT, UPDATE or DELETE is parsed and its transaction id only when it
+// first writes a tuple, so the read cannot tell such a holder from a writer about to draw an event
+// id. A transaction of another database holds the snapshot's xmin back throughout, so the lock
+// table is what each observation reads. An observation that does not read it (its xmin passes,
+// or its snapshot proves it) does not wait for such a holder, which the writer invariant makes
+// safe: a writer takes its transaction id before it draws an event id, so an undated holder holds
+// none yet.
 func TestAWriteLockWithNoTransactionIDHoldsTheHorizonBack(t *testing.T) {
 	database := storetest.Open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)

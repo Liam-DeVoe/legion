@@ -16,11 +16,13 @@ import (
 var migrationEventIDSequence = regexp.MustCompile(`\bevents_id_seq\b|pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'|pg_get_serial_sequence\(\s*[^'\s]`)
 
 // migrationEventIDCurrval is a read of the id this session's nextval last drew from
-// events_id_seq, which draws no id and moves no counter: Postgres's own currval, bare or as
-// pg_catalog.currval, and no function whose name only ends in currval or that another schema
-// holds. It is api.eventIDCurrval's pattern, held to it the same way, and
+// events_id_seq, which draws no id and moves no counter: pg_catalog.currval of a bare string
+// literal or of pg_catalog.pg_get_serial_sequence, with no cast, and nothing else. A bare or
+// otherwise qualified currval, an unqualified pg_get_serial_sequence inside it, or a `::regclass`
+// cast can each resolve to a function or a domain of another schema that draws (see
+// api.eventIDCurrval). It is api.eventIDCurrval's pattern, held to it the same way, and
 // migrationEventIDOffences reads the SQL with each such read blanked out.
-var migrationEventIDCurrval = regexp.MustCompile(`(?:^|[^\w.])(?:pg_catalog\s*\.\s*)?currval\(\s*(?:'\s*(?:"?public"?\s*\.\s*)?"?events_id_seq"?\s*'(?:\s*::\s*regclass)?|pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'\s*,\s*'\s*"?id"?\s*'\s*\))\s*\)`)
+var migrationEventIDCurrval = regexp.MustCompile(`(?:^|[^\w.$\x{80}-\x{10FFFF}])pg_catalog\s*\.\s*currval\(\s*(?:'\s*(?:"?public"?\s*\.\s*)?"?events_id_seq"?\s*'|pg_catalog\s*\.\s*pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'\s*,\s*'\s*"?id"?\s*'\s*\))\s*\)`)
 
 // migrationEventIDOffences is each place in a migration's SQL that names the events id sequence
 // other than to read currval, as "<path>:<line>: <match>". Each currval read is blanked out
@@ -73,11 +75,23 @@ func TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault(t *testing.T) {
 				"select nextval(pg_get_serial_sequence(t, 'id'))\n$$;", 1},
 			{"pg_get_serial_sequence of another table", "select pg_get_serial_sequence('issues', 'id');", 0},
 			{"a trigger that reads the id its insert drew", "create function o() returns trigger language plpgsql as $$\n" +
-				"begin new.opened := currval(pg_get_serial_sequence('events', 'id')); return new; end $$;", 0},
-			{"a draw beside a currval read", "select nextval('events_id_seq'), currval('events_id_seq');", 1},
-			{"a currval read at a line's start, and pg_catalog's", "select\ncurrval('events_id_seq'), pg_catalog.currval('events_id_seq');", 0},
+				"begin new.opened := pg_catalog.currval(pg_catalog.pg_get_serial_sequence('events', 'id')); return new; end $$;", 0},
+			{"a draw beside a currval read", "select nextval('events_id_seq'), pg_catalog.currval('events_id_seq');", 1},
+			{"pg_catalog's currval at a line's start", "select\npg_catalog.currval('events_id_seq');", 0},
+			{"a bare currval, which a currval(text) of another schema takes over", "select currval('events_id_seq');", 1},
+			{"a bare currval of the serial sequence", "select currval(pg_get_serial_sequence('events', 'id'));", 1},
+			{"pg_catalog's currval of an unqualified pg_get_serial_sequence", "select pg_catalog.currval(pg_get_serial_sequence('events', 'id'));", 1},
+			{"pg_catalog's currval through a regclass cast", "select pg_catalog.currval('events_id_seq'::regclass);", 1},
 			{"a function whose name ends in currval", "select draw_currval('events_id_seq');", 1},
 			{"another schema's currval", "select util.currval('events_id_seq');", 1},
+			{"another schema's currval, spaced", "select util. currval('events_id_seq');", 1},
+			{"another schema's currval, behind a comment", "select util./**/currval('events_id_seq');", 1},
+			{"another schema's currval, across a line", "select util.\ncurrval('events_id_seq');", 1},
+			{"a name carrying $ that ends in currval", "select draw$currval('events_id_seq');", 1},
+			{"a name with a letter past ASCII that ends in currval", "select \u00e9currval('events_id_seq');", 1},
+			{"a name carrying $ that ends in pg_catalog", "select a$pg_catalog.currval('events_id_seq');", 1},
+			{"a currval(text) that draws", "create function currval(text) returns bigint language sql as $$ select nextval($1::regclass) $$;\n" +
+				"select currval('events_id_seq');", 1},
 		} {
 			if got := migrationEventIDOffences("m.sql", row.sql); len(got) != row.found {
 				t.Errorf("%s: %d matches %q, want %d", row.shape, len(got), got, row.found)

@@ -126,16 +126,22 @@ var eventInsertColumns = regexp.MustCompile(`\binsert into (?:"?public"? ?\. ?)?
 var eventIDSequence = regexp.MustCompile(`\bevents_id_seq\b|pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'|pg_get_serial_sequence\(\s*[^'\s]`)
 
 // eventIDCurrval is a read of the id this session's nextval last drew from events_id_seq,
-// currval of the sequence in eventIDSequence's literal spellings: a write phase reads the id its
-// own insert's default just drew (`where id = currval(pg_get_serial_sequence('events', 'id'))`).
-// currval draws no id and moves no counter, so it is no offence, and eventIDOffences reads a
-// statement with each such read taken out. The read is Postgres's own currval, bare or as
-// pg_catalog.currval, and nothing else: the name must not continue a longer one or follow
-// another schema (draw_currval(…), util.currval(…)), since a function of the module's own whose
-// body draws from the sequence would otherwise pass as a read. A currval of a sequence argument
+// pg_catalog.currval of the sequence in eventIDSequence's literal spellings: a write phase reads
+// the id its own insert's default just drew (store.LatestEventID,
+// `pg_catalog.currval(pg_catalog.pg_get_serial_sequence('events', 'id'))`). currval draws no id and
+// moves no counter, so it is no offence, and eventIDOffences reads a statement with each such read
+// taken out. Only pg_catalog's own currval is that read, with nothing inside it a schema can take
+// over: a name resolves by the search path and by argument type, so a migration's currval(text) is
+// called before pg_catalog's currval(regclass) for a text argument, a pg_get_serial_sequence of a
+// schema placed before pg_catalog is called before pg_catalog's, and a `::regclass` cast can name
+// a domain of such a schema whose check runs at the cast; each of them can draw from the sequence.
+// So the read takes either a bare string literal or pg_catalog.pg_get_serial_sequence, and no
+// cast. pg_catalog must start a name: it may not continue a longer one (a$pg_catalog.currval, a
+// Postgres identifier carrying `$` or a letter past ASCII), and nothing but spaces may stand
+// between it, the dot and currval (util./**/currval is util's). A currval of a sequence argument
 // that is no string literal stays an offence, as eventIDSequence's last branch reads it. The
 // migrations' guard binds the same pattern.
-var eventIDCurrval = regexp.MustCompile(`(?:^|[^\w.])(?:pg_catalog\s*\.\s*)?currval\(\s*(?:'\s*(?:"?public"?\s*\.\s*)?"?events_id_seq"?\s*'(?:\s*::\s*regclass)?|pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'\s*,\s*'\s*"?id"?\s*'\s*\))\s*\)`)
+var eventIDCurrval = regexp.MustCompile(`(?:^|[^\w.$\x{80}-\x{10FFFF}])pg_catalog\s*\.\s*currval\(\s*(?:'\s*(?:"?public"?\s*\.\s*)?"?events_id_seq"?\s*'|pg_catalog\s*\.\s*pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'\s*,\s*'\s*"?id"?\s*'\s*\))\s*\)`)
 
 // eventDerivedTable is a table made from events: one that inherits from it (inherits (...), or
 // alter table ... inherit events) or is a partition of it (partition of events, or alter table
@@ -320,19 +326,30 @@ func TestOnlyAnEventInsertsDefaultDrawsAnEventID(t *testing.T) {
 			{"a.go", "alter table if exists events attach partition rt_x for values from (1) to (2)", []string{"makes a table from events"}},
 			{"a.go", "alter table delivery_log attach partition delivery_log_2027 for values from (1) to (2)", nil},
 			{"a.go", "alter table rt_x no inherit events_archive", nil},
-			{"a.go", "update events set payload = jsonb_set(payload, '{opened_event_id}', to_jsonb(id)) where id = currval(pg_get_serial_sequence('events', 'id'))", nil},
-			{"a.go", "select currval('events_id_seq')", nil},
-			{"a.go", `select currval( '"public"."events_id_seq"' :: regclass )`, nil},
-			{"a.go", `select currval(pg_get_serial_sequence('"public"."events"', 'id'))`, nil},
-			{"a.go", "select nextval('events_id_seq'), currval('events_id_seq')", []string{"names the events id sequence"}},
-			{"a.go", "select setval('events_id_seq', currval('events_id_seq'))", []string{"names the events id sequence"}},
-			{"a.go", "select currval(pg_get_serial_sequence($1, 'id'))", []string{"names the events id sequence"}},
-			{"a.go", "currval(pg_get_serial_sequence('events', 'id'))", nil},
-			{"a.go", "where id=currval('events_id_seq')", nil},
+			{"a.go", "update events set payload = jsonb_set(payload, '{opened_event_id}', to_jsonb(id)) where id = pg_catalog.currval(pg_catalog.pg_get_serial_sequence('events', 'id'))", nil},
 			{"a.go", "select pg_catalog.currval('events_id_seq')", nil},
+			{"a.go", `select pg_catalog . currval( '"public"."events_id_seq"' )`, nil},
+			{"a.go", `select pg_catalog.currval(pg_catalog.pg_get_serial_sequence('"public"."events"', 'id'))`, nil},
+			{"a.go", "pg_catalog.currval(pg_catalog.pg_get_serial_sequence('events', 'id'))", nil},
+			{"a.go", "where id=pg_catalog.currval('events_id_seq')", nil},
+			{"a.go", "select nextval('events_id_seq'), pg_catalog.currval('events_id_seq')", []string{"names the events id sequence"}},
+			{"a.go", "select setval('events_id_seq', pg_catalog.currval('events_id_seq'))", []string{"names the events id sequence"}},
+			{"a.go", "select pg_catalog.currval(pg_get_serial_sequence($1, 'id'))", []string{"names the events id sequence"}},
+			{"a.go", "select currval('events_id_seq')", []string{"names the events id sequence"}},
+			{"a.go", "where id = currval(pg_get_serial_sequence('events', 'id'))", []string{"names the events id sequence"}},
+			{"a.go", "select pg_catalog.currval(pg_get_serial_sequence('events', 'id'))", []string{"names the events id sequence"}},
+			{"a.go", "select pg_catalog.currval('events_id_seq'::regclass)", []string{"names the events id sequence"}},
 			{"a.go", "select draw_currval('events_id_seq')", []string{"names the events id sequence"}},
 			{"a.go", "select util.currval('events_id_seq')", []string{"names the events id sequence"}},
 			{"a.go", `select "util".currval(pg_get_serial_sequence('events', 'id'))`, []string{"names the events id sequence"}},
+			{"a.go", "select util. currval('events_id_seq')", []string{"names the events id sequence"}},
+			{"a.go", "select util./**/currval('events_id_seq')", []string{"names the events id sequence"}},
+			{"a.go", "select util.\ncurrval('events_id_seq')", []string{"names the events id sequence"}},
+			{"a.go", "select draw$currval('events_id_seq')", []string{"names the events id sequence"}},
+			{"a.go", "select \u00e9currval('events_id_seq')", []string{"names the events id sequence"}},
+			{"a.go", "select a$pg_catalog.currval('events_id_seq')", []string{"names the events id sequence"}},
+			{"a.go", "select util.pg_catalog.currval('events_id_seq')", []string{"names the events id sequence"}},
+			{"a.go", `select "pg_catalog".currval('events_id_seq')`, []string{"names the events id sequence"}},
 		} {
 			offences, _ := eventIDOffences(row.path, row.statement)
 			if len(offences) != len(row.refused) {

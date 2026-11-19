@@ -34,12 +34,14 @@
 // writer of this database: it inserted g into this database's events, and the insert's column
 // default drew g, so T took its write lock before nextval handed it g and holds it until it ends.
 // No id is drawn, and no row of events written, any other way: no Go statement of the module
-// names events_id_seq but to read with currval the id its own insert's default just drew, which
-// draws none, or in the offline seed tool's setval; no insert lists an explicit id, no source but
-// that tool copies or merges rows into events, no statement makes a table from events, no
-// migration the server runs names the sequence, in a function, view, trigger or default, and the
-// schema they build gives no other table events' id default and events no child or partition,
-// whose rows would be rows of events written under another table's lock.
+// names events_id_seq but to read with pg_catalog.currval the id its own insert's default just
+// drew (store.LatestEventID), which draws none, or in the offline seed tool's setval; a bare or
+// otherwise qualified currval could resolve to a function of another schema that draws, so it is
+// refused. No insert lists an explicit id, no source but that tool copies or merges rows into
+// events, no statement makes a table from events, no migration the server runs names the
+// sequence, in a function, view, trigger or default, and the schema they build gives no other
+// table events' id default and events no child or partition, whose rows would be rows of events
+// written under another table's lock.
 // TestOnlyAnEventInsertsDefaultDrawsAnEventID and TestOnlyTheBrokerInsertsEvents
 // (internal/dispatch/api) hold the Go half, TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault
 // (internal/dispatch/store) the migrations' text, and
@@ -86,12 +88,18 @@
 // parsed (parse_clause.c, setTargetTable) or its cached plan locked (plancache.c), and its
 // transaction id only when it first writes a tuple (heapam.c, heap_insert and heap_update call
 // GetCurrentTransactionId), so a writer whose transaction had no id yet holds the lock undated in
-// between, and an UPDATE that matched no row holds it undated until its transaction ends.
-// Broker.Append takes its id before it inserts and is never seen undated; the read cannot place
-// any other such holder, so it proves nothing while one stands. A prepared transaction is always
-// dated: MarkAsPreparingGuts gives its dummy proc the preparing backend's virtualtransaction
-// (twophase.c), so its write lock and the lock on its id carry one virtualtransaction while
-// PostPrepare_Locks moves them and after.
+// between, and an UPDATE that matched no row holds it undated until its transaction ends. Such a
+// holder holds H back only when the lock table is read: an observation whose snapshot's xmin
+// already passes the newest pending observer's X does not read it, and an observation that proves
+// itself from its own snapshot never reads it. That is safe by the writer invariant alone: a
+// transaction that has drawn an event id took its transaction id first (Broker.Append does, and
+// the guards above hold every writer of the module to it), so an undated holder holds no event id
+// yet, and any it draws later is above every id observed so far. A writer that drew an id before
+// its transaction had one, outside the module, is outside this proof. When the lock table is
+// read, it cannot place an undated holder, so it proves nothing while one stands. A prepared
+// transaction is always dated: MarkAsPreparingGuts gives its dummy proc the preparing backend's
+// virtualtransaction (twophase.c), so its write lock and the lock on its id carry one
+// virtualtransaction while PostPrepare_Locks moves them and after.
 //
 // S proves its own A when it leaves no room for a running id below X: xip(S) is empty and
 // xmax(S) = X. A snapshot lists every id running at or above its xmin and below its xmax in its
@@ -131,8 +139,9 @@
 //
 // # Costs
 //
-// H trails the longest event write open in this database: Dispatch's own appends, an operator's
-// insert. That delays live readers only; it blocks no writer. A
+// H trails the longest event write open in this database: Dispatch's own appends, or an
+// operator's insert that takes its transaction id before it draws its event id. That delays live
+// readers only; it blocks no writer. A
 // pending observation older than five seconds logs a warning naming the oldest such writer, so a
 // stall can be found. An observation that fails logs its error, and an Await whose every
 // observation has failed for ten seconds returns that error to its caller rather than wait on.

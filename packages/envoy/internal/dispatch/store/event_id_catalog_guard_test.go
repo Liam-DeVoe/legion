@@ -10,9 +10,14 @@ import (
 
 // eventIDCatalogOffences reads the schema the migrations build, in no spelling at all, for what
 // the safe horizon's proof needs of it (events/horizon.go, "Safe horizon"): only events.id's own
-// default depends on events_id_seq, events has no child table and no partition, and events is a
-// plain table. It answers one row per offence, and a row also when events.id has no
-// nextval('events_id_seq') default, since the read would then see nothing.
+// default depends on events_id_seq, events has no child table and no partition, events is a
+// plain table, and no function named currval, nextval, setval, lastval or pg_get_serial_sequence
+// exists outside pg_catalog. A name resolves by the search path and by argument type, so a
+// currval(text) of public is called before pg_catalog.currval(regclass) for a text argument, and
+// one of those names in a schema placed before pg_catalog is called before pg_catalog's; either
+// can draw from the sequence in its body, which names nothing a reading of the text could see.
+// It answers one row per offence, and a row also when events.id has no nextval('events_id_seq')
+// default, since the read would then see nothing.
 const eventIDCatalogOffences = `
 	with own as (
 		select ad.oid from pg_attrdef ad join pg_attribute a on a.attrelid = ad.adrelid and a.attnum = ad.adnum
@@ -29,6 +34,12 @@ const eventIDCatalogOffences = `
 	union all
 	select 'events is not a plain table (relkind ' || relkind::text || ')'
 	from pg_class where oid = 'events'::regclass and relkind <> 'r'
+	union all
+	select n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')'
+		|| ' is a function of a sequence function''s name outside pg_catalog'
+	from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+	where p.proname in ('currval', 'nextval', 'setval', 'lastval', 'pg_get_serial_sequence')
+		and n.nspname <> 'pg_catalog'
 	union all
 	select 'events.id has no nextval(''events_id_seq'') default: this check reads nothing'
 	where not exists (select 1 from own)`
@@ -67,7 +78,11 @@ func readEventIDCatalogOffences(ctx context.Context, t *testing.T, db catalogQue
 // which is the lock the horizon dates a writer by. A child's or a partition's rows are rows of
 // events too, so the horizon would pass an id a write to one still holds open. A view or a
 // SQL-body function that names the sequence depends on it here as well; a plpgsql body records no
-// dependency, which TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault reads the text for.
+// dependency, which TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault reads the text for. And a
+// function named like one of Postgres's sequence functions outside pg_catalog is refused by its
+// name alone: its body need not name the sequence to draw from it (currval(text) calling
+// nextval($1::regclass)), and a bare call elsewhere resolves to it (store.LatestEventID names
+// pg_catalog's for that reason).
 func TestOnlyTheEventsIDDefaultDrawsFromItsSequence(t *testing.T) {
 	store := openEmptyTestStore(t)
 	ctx := context.Background()
@@ -88,6 +103,9 @@ func TestOnlyTheEventsIDDefaultDrawsFromItsSequence(t *testing.T) {
 			`create table rt_child () inherits (events)`,
 			`create table rt_like (like events including defaults)`,
 			`create view rt_view as select nextval('events_id_seq') as id`,
+			`create function public.currval(text) returns bigint language sql as $$ select nextval($1::regclass) $$`,
+			`create schema rt_util`,
+			`create function rt_util.pg_get_serial_sequence(text, text) returns text language sql as $$ select 'events_id_seq' $$`,
 		} {
 			if _, err := tx.Exec(ctx, statement); err != nil {
 				t.Fatalf("%s: %v", statement, err)
@@ -99,6 +117,8 @@ func TestOnlyTheEventsIDDefaultDrawsFromItsSequence(t *testing.T) {
 			"default value for column id of table rt_child depends on events_id_seq",
 			"default value for column id of table rt_like depends on events_id_seq",
 			"rule _RETURN on view rt_view depends on events_id_seq",
+			"public.currval(text) is a function of a sequence function's name outside pg_catalog",
+			"rt_util.pg_get_serial_sequence(text, text) is a function of a sequence function's name outside pg_catalog",
 		} {
 			if !strings.Contains(got, want) {
 				t.Errorf("the read did not name %q; it read:\n%s", want, got)
@@ -108,8 +128,9 @@ func TestOnlyTheEventsIDDefaultDrawsFromItsSequence(t *testing.T) {
 
 	if offences := readEventIDCatalogOffences(ctx, t, store.Pool); len(offences) > 0 {
 		t.Fatalf("the migrated schema lets an event id be drawn, or an event row be written, outside an "+
-			"insert into events:\n\t%s\nLet only events.id's default draw from events_id_seq, and keep events a "+
-			"plain table with no child or partition: the safe horizon dates a writer by the RowExclusiveLock "+
-			"its insert takes on events (events/horizon.go).", strings.Join(offences, "\n\t"))
+			"insert into events:\n\t%s\nLet only events.id's default draw from events_id_seq, keep events a "+
+			"plain table with no child or partition, and define no function of a sequence function's name "+
+			"outside pg_catalog: the safe horizon dates a writer by the RowExclusiveLock its insert takes on "+
+			"events (events/horizon.go).", strings.Join(offences, "\n\t"))
 	}
 }
