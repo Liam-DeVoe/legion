@@ -14,6 +14,17 @@ body: |-
   or a `-loop-listeners` endpoint) whose user part net/url reads apart, such as a token with a raw
   `/` written as the whole user part, and records such a value redacted; `cloudsql-cpu` refuses an
   `-api` or `-token-url` that holds a user part.
+
+  The cause `GET /healthz` names for a failed GitHub read names the request by its path after
+  `DISPATCH_GITHUB_API_BASE`, never the base, which may carry a user and a password, and so does
+  every error of the GitHub App client, a blob read's included.
+
+  The broker refuses by its length a `BROKER_NATS_URLS` entry whose user part net/url reads apart,
+  such as a token with a raw `/` written as the whole user part, which its start line and the NATS
+  auth service's connect error would print whole.
+
+  `gcp:Dispatch` and `gcp:ClusteredNatsHub` name a refused `oidcIssuer` by its length, never
+  quoting it, since an issuer refused for its user part holds a password.
 time: 2026-11-19T07:20:34Z
 custom:
     Issue: pr4314

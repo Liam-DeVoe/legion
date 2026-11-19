@@ -581,7 +581,8 @@ type Config struct {
 	// connection its configuration lists no static user for, and which answers each with a NATS
 	// user of that connection's own. BROKER_NATS_URLS is the hub's servers, comma separated, each
 	// refused at start, by its place in the list and never its text, when it carries user info or
-	// is no URL: the service connects as its seed's user, and the URLs are written to its log;
+	// is no URL, and by its length too when it holds an @ net/url reads apart: the service
+	// connects as its seed's user, and the URLs are written to its log;
 	// BROKER_NATS_SEED_FILE the service's own NATS user seed, a user the hub lists as an auth
 	// user; BROKER_NATS_ISSUER_SEED_FILE the account seed the hub names as its auth_callout
 	// issuer, which signs every user the service admits; BROKER_NATS_XKEY_SEED_FILE the curve
