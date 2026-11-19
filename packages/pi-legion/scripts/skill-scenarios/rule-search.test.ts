@@ -6,9 +6,8 @@
 // instead of passing at another one.
 //
 // The `cut` mode, at head: the head itself, taken for the label's checkout, fails once for each
-// sentence the head's search cuts; a copy with each of those sentences deleted, or made the label's
-// form that its entry names, and nothing else changed, is clean; and the label's sentence planted in
-// that copy fails again, naming its text.
+// sentence the head's search cuts; a copy with each of those sentences deleted, and nothing else
+// changed, is clean; and the label's sentence planted in that copy fails again, naming its text.
 //
 //   bun test rule-search.test.ts
 //
@@ -16,11 +15,18 @@
 // RULE_SEARCH_TREE its tree, base or head (default: head). Each test works in a copy of the
 // checkout's prompts and skills under its own mktemp directory.
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { appendFileSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { chainOf, headSentences, RULES, roleTexts, search, searchCut } from "./rule-search";
+import { RULES } from "./label-rules";
+import { chainOf, roleTexts } from "./role-texts";
+import { headSentences, search, searchCut } from "./rule-search";
+
+// Each row and hook copies or removes the checkout's prompts and skills. On a loaded machine the
+// hook that removes them took 8.5 s and 36 s (at loads of about 600 and 690), past bun's 5 s
+// default, so each test and hook gets one minute, set before the hook below is registered.
+setDefaultTimeout(60_000);
 
 const checkout = process.env.RULE_SEARCH_CHECKOUT ?? path.resolve(import.meta.dir, "../../../..");
 const tree = (process.env.RULE_SEARCH_TREE ?? "head") as "base" | "head";
@@ -43,29 +49,12 @@ const DEEPEST = "packages/daemon/internal/prompts/roles/tester.md";
 
 // For each label: a sentence of its rule, and the text it is planted in at each depth.
 const PLANTS: Record<string, { sentence: string; at: Record<1 | 2 | 3, string> }> = {
-  "ablate-head": {
-    sentence:
-      "Judge each `before_merge` check by the line of the head you review, never by the check's answer.",
-    at: {
-      1: "skills/legion-worker/references/review-threads.md",
-      2: "skills/legion-architect/references/design-gate.md",
-      3: DEEPEST,
-    },
-  },
   "ablate-two-roles": {
     sentence:
       "A check has a pass at a head only when the implementer and the tester each recorded one there.",
     at: {
       1: "skills/legion-worker/references/tools.md",
       2: "skills/legion-controller/references/triage.md",
-      3: DEEPEST,
-    },
-  },
-  "ablate-ci-pass": {
-    sentence: "The named job's green run at the head is all the proof such a check needs.",
-    at: {
-      1: "skills/legion-worker/references/ci-checks.md",
-      2: "skills/legion-architect/references/design-gate.md",
       3: DEEPEST,
     },
   },
@@ -144,11 +133,10 @@ describe("rule-search", () => {
     );
 
     test.if(tree === "head")(
-      `${label}: cut, a copy with each sentence the head's search cuts deleted, or made its entry's form, is clean, and the rule planted in it fails`,
+      `${label}: cut, a copy with each sentence the head's search cuts deleted is clean, and the rule planted in it fails`,
       () => {
         const head = copy();
         const ablated = copy();
-        let forms = 0;
         for (const [file, cut] of headSentences(head, label).cuts) {
           let text = readFileSync(path.join(ablated, file), "utf8");
           for (const sentence of cut) {
@@ -159,19 +147,10 @@ describe("rule-search", () => {
                 .join("\\s+")
             );
             expect(words.test(text)).toBe(true);
-            // A sentence whose entry names its label's form becomes that form, as the label has it.
-            const form = RULES[label]?.entries.find(
-              (entry) =>
-                entry.file === file &&
-                entry.form !== undefined &&
-                sentence.text.includes(entry.has ?? "\u0000")
-            )?.form;
-            if (form !== undefined) forms++;
-            text = text.replace(words, () => form ?? "");
+            text = text.replace(words, "");
           }
           writeFileSync(path.join(ablated, file), text);
         }
-        if (label === "ablate-ci-pass") expect(forms).toBeGreaterThan(0);
         expect(searchCut(ablated, head, label).faults).toEqual([]);
         // A cut can take a link with it, so the plant goes in the first of its texts the copy reads.
         const read = roleTexts(ablated, role).files;
@@ -185,6 +164,18 @@ describe("rule-search", () => {
       }
     );
   }
+
+  // Catches: a label the rig no longer runs left in the search (the approved checks dropped
+  // ablate-head and ablate-ci-pass, which never scored below head on their own case), and a label
+  // of the search with no plant, which no row above would test.
+  test("the search names the three labels the rig runs, each with its plants, and no other", () => {
+    expect(Object.keys(RULES).sort()).toEqual(Object.keys(PLANTS).sort());
+    expect(Object.keys(RULES).sort()).toEqual([
+      "ablate-architect-later-fail",
+      "ablate-later-fail",
+      "ablate-two-roles",
+    ]);
+  });
 
   test("a checkout with no texts is UNKNOWN for each label, never clean", () => {
     const empty = path.join(scratch, "empty");

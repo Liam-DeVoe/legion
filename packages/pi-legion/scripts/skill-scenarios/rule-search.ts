@@ -30,18 +30,14 @@
 // The head checkout's own search must be clean. Then each sentence that it cuts must be gone from
 // the label's checkout, word for word, and each hit there must be a sentence that the head's search
 // keeps, unchanged, or the label's form of a sentence that an entry cuts (one that a `cut` entry of
-// either tree matches by its words or by its `form`: a sentence with words cut, or a base sentence
-// restored). A hit that is neither, a sentence the head keeps that the label changed included, is
-// a FAULT.
+// either tree matches by its words: a sentence with other words cut, or a base sentence restored).
+// A hit that is neither, a sentence the head keeps that the label changed included, is a FAULT.
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { type Entry, RULES, type Tree } from "./label-rules";
 import { chainOf, depthText, roleTexts } from "./role-texts";
 import { type Sentence, sentences } from "./sentences";
-
-// The exports rule-search.test.ts reads from this module.
-export { chainOf, RULES, roleTexts };
 
 export interface Outcome {
   readonly lines: string[];
@@ -196,13 +192,7 @@ export function searchCut(checkout: string, head: string, label: string): Outcom
         continue;
       }
       const owner = rule.entries.find(
-        (entry) =>
-          entry.cut !== undefined &&
-          (ownersOf([entry], file, sentence).length === 1 ||
-            (entry.file === file &&
-              entry.form !== undefined &&
-              !sentence.fenced &&
-              sentence.text.includes(entry.form)))
+        (entry) => entry.cut !== undefined && ownersOf([entry], file, sentence).length === 1
       );
       if (owner !== undefined) {
         cut++;

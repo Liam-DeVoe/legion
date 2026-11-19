@@ -6,7 +6,7 @@
 #   label-checkouts.sh <repository> <commit> <patch>...
 #
 # <repository> is a clone or a worktree of cybermonklabs/legion that holds <commit>. Each <patch> is
-# a file named <label>.patch, one for each label that rule-search.ts names (its RULES) and no other,
+# a file named <label>.patch, one for each label that label-rules.ts names (its RULES) and no other,
 # and each a diff that `git apply` applies to <commit>. In order:
 #   1. it clones <commit> once, with no patch, into a new directory (mktemp -d): the head that the
 #      labels are cut from. That directory also gets labels.tsv, a line `<label>\t<checkout>` for
@@ -38,12 +38,14 @@ head=$(mktemp -d)
 labels=$(mktemp -d)
 git clone --quiet --no-checkout "$repository" "$head/head"
 git -C "$head/head" checkout --quiet --detach "$commit"
-search=$head/head/packages/pi-legion/scripts/skill-scenarios/rule-search.ts
-[ -f "$search" ] || refuse "$commit holds no packages/pi-legion/scripts/skill-scenarios/rule-search.ts"
+scenarios=$head/head/packages/pi-legion/scripts/skill-scenarios
+search=$scenarios/rule-search.ts
+[ -f "$search" ] && [ -f "$scenarios/label-rules.ts" ] ||
+  refuse "$commit holds no rule-search.ts and label-rules.ts in packages/pi-legion/scripts/skill-scenarios"
 
-# The labels rule-search.ts names at <commit>, each of which needs exactly one patch.
-mapfile -t known < <(bun -e "import { RULES } from '$search'; for (const label of Object.keys(RULES)) console.log(label);")
-[ ${#known[@]} -gt 0 ] || refuse "rule-search.ts at $commit names no label"
+# The labels label-rules.ts names at <commit>, each of which needs exactly one patch.
+mapfile -t known < <(bun -e "import { RULES } from '$scenarios/label-rules.ts'; for (const label of Object.keys(RULES)) console.log(label);")
+[ ${#known[@]} -gt 0 ] || refuse "label-rules.ts at $commit names no label"
 declare -A patch_of=()
 for patch in "$@"; do
   label=$(basename -- "$patch" .patch)
@@ -54,7 +56,7 @@ done
 for label in "${known[@]}"; do
   [ -n "${patch_of[$label]:-}" ] || refuse "no patch for $label (want ${known[*]})"
 done
-[ ${#patch_of[@]} -eq ${#known[@]} ] || refuse "a patch names no label of rule-search.ts (its labels: ${known[*]})"
+[ ${#patch_of[@]} -eq ${#known[@]} ] || refuse "a patch names no label of label-rules.ts (its labels: ${known[*]})"
 
 tsv=$head/labels.tsv
 : >"$tsv"
