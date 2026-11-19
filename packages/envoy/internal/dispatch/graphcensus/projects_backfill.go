@@ -30,8 +30,8 @@ type objectKind struct {
 	kind, start string
 	// read is one batch of its rows its marker does not mark (unmarked), after the id $1 and at
 	// most $2 of them, in the order of the index that keys them, as (id, created_at, author,
-	// project, session, root author, root target, own event, row identity, issue). session is a
-	// conversation's, for a document or an ask on one; the root columns are a message's on no issue
+	// project, session, root author, root target, own event, row identity, issue, named). session is
+	// a conversation's, for a document or an ask on one; the root columns are a message's on no issue
 	// alone: the author and the target of its thread's root, its parties (graphstore.ThreadParties).
 	// own event is a document's own create event (ownCreateEvent), null for the other kinds and for
 	// a row that has none; the row's node is stated under it. issue is the issue that owns a
@@ -41,7 +41,13 @@ type objectKind struct {
 	// 20261116092210), and such a row is read while it names none, so a row whose node an earlier
 	// build wrote with no part_of and named nowhere is walked too; an issue's row is read as well
 	// while it names a parent its node does not hang under, which the release before's PATCH leaves
-	// (issueRowUnmarked).
+	// (issueRowUnmarked). named is whether the row is read for its name alone: it names no node,
+	// and its node marker is set (not unmarked, not unmarkedDocument) or it is a retired
+	// document's, so its batch names it and writes no node for it (writeObjectBatch); it is false
+	// for an ask and a message. A row that would be read for its name alone is not read where the
+	// store holds its node in another project (nodeInAnotherProject): no pass can name it, since
+	// the write of the node beside the name is refused (graphstore.ErrProjectMoved), so every run
+	// would answer it moved; the census names it differs, which no command cures.
 	read string
 	// rows answers each address of ids $1 with its stable row identity. A document's UUID
 	// distinguishes replacements even when their created_at values are equal.
@@ -70,6 +76,14 @@ func unmarked(kind, id string) string {
 
 // scopedNode is, for the node n, whether it names a project or parties.
 const scopedNode = `(n.project_key is not null or n.parties is not null)`
+
+// nodeInAnotherProject is, for the row whose project is project and whose node is of kind at the
+// address id, whether the store holds that node, at any state, in a project other than the row's:
+// a node no pass can write, since a node's project never moves (writableRows' moved rows,
+// graphstore.ErrProjectMoved). A row of no project, a conversation's, has none to differ.
+func nodeInAnotherProject(kind, id, project string) string {
+	return `exists (select 1 from graph_nodes n where n.kind = '` + kind + `' and n.id = ` + id + ` and n.project_key <> ` + project + `)`
+}
 
 // unmarkedDocument is unmarked for a document, whose address a later row takes again where a
 // removal can take the row away: the row is not retired (retiredDocument, whose node the
@@ -107,9 +121,11 @@ func ownCreateEvent(a string) string {
 // objectKinds are the kinds the backfill writes a node for from their rows.
 var objectKinds = []objectKind{
 	{kind: graphstore.KindIssue, read: `
-		select i.key, i.created_at, i.created_by, i.project_key, null::text, null::jsonb, null::text, null::bigint, i.key, null::text
+		select i.key, i.created_at, i.created_by, i.project_key, null::text, null::jsonb, null::text, null::bigint, i.key, null::text,
+		       not (` + unmarked(graphstore.KindIssue, "i.key") + `) and i.node_kind is null
 		from issues i
-		where i.key > $1 and (` + unmarked(graphstore.KindIssue, "i.key") + ` or ` + issueRowUnmarked + `)
+		where i.key > $1 and (` + unmarked(graphstore.KindIssue, "i.key") + `
+		  or (` + issueRowUnmarked + ` and not ` + nodeInAnotherProject(graphstore.KindIssue, "i.key", "i.project_key") + `))
 		order by i.key limit $2`,
 		rows:   `select key, key from issues where key = any($1::text[])`,
 		owners: `select key, '', key from issues where key = any($1::text[])`},
@@ -117,7 +133,7 @@ var objectKinds = []objectKind{
 	{kind: graphstore.KindAsk, start: zeroUUID, read: `
 		select k.id::text, k.created_at, k.author, coalesce(i.project_key, a.project_key),
 		       case when coalesce(i.project_key, a.project_key) is null then a.session_id end, null::jsonb, null::text, null::bigint, k.id::text,
-		       null::text
+		       null::text, false
 		from asks k left join issues i on i.key = k.issue_key left join artifacts a on a.id = k.artifact_id
 		where k.id > $1::uuid and ` + unmarked(graphstore.KindAsk, "k.id::text") + `
 		order by k.id limit $2`,
@@ -135,7 +151,7 @@ var objectKinds = []objectKind{
 			select walk.message, parent.id, parent.in_reply_to from walk join messages parent on parent.id = walk.in_reply_to
 		)
 		select batch.id::text, batch.created_at, batch.author, i.project_key, null::text, root.author, root.target, null::bigint, batch.id::text,
-		       null::text
+		       null::text, false
 		from batch
 		left join issues i on i.key = batch.issue_key
 		left join walk on walk.message = batch.id and walk.in_reply_to is null
@@ -148,10 +164,11 @@ var objectKinds = []objectKind{
 // locks of (writeVersionBatch): a version stands under its document's owner.
 var documentObjectKind = objectKind{kind: graphstore.KindArtifact, read: `
 		select a.ref_key, a.created_at, a.created_by, a.project_key, a.session_id, null::jsonb, null::text, ` + ownCreateEvent("a") + `, a.id::text,
-		       a.issue_key
+		       a.issue_key, not (` + unmarkedDocument("a") + `) and a.node_kind is null
 		from artifacts a
 		where a.ref_key > $1 and octet_length(a.ref_key) <= ` + strconv.Itoa(graphstore.MaxAddressBytes) + `
-		  and (` + unmarkedDocument("a") + ` or a.node_kind is null)
+		  and (` + unmarkedDocument("a") + `
+		       or (a.node_kind is null and not ` + nodeInAnotherProject(graphstore.KindArtifact, "a.ref_key", "a.project_key") + `))
 		order by a.ref_key limit $2`,
 	rows:   `select ref_key, id::text from artifacts where ref_key = any($1::text[])`,
 	owners: `select coalesce(issue_key, ''), id::text, ref_key from artifacts where ref_key = any($1::text[])`}
@@ -272,21 +289,24 @@ type ObjectPass struct {
 // no event either, so the pass reads rows, not events: it writes, through writeObjectBatch alone,
 // the node of every row its marker does not mark, as the backfill does.
 //
-// It writes at most batches batches across the four kinds, zero being no bound, so one tick never
-// holds the block-index lease for the whole backlog a first deploy leaves: it answers More where it
-// stopped with rows left, and the next run reads on, from the start of each kind's key, past the
-// rows the last one marked. A kind that fails holds back none of the others: the run goes on to
-// them and answers every failure joined, and the next run reads the failed kind's rows again. A
-// row the store refuses because it holds the row's node in another project is left, before any
-// transaction opens, and answered in Moved, and every other row of its batch is written
-// (writeObjectKind): no second run cures it, so it holds back no run, and the census names that
-// row until a person reads it.
+// It opens at most batches transactions across the four kinds for the batches that write a node,
+// and at most batches more for the batches whose rows are each owed their name alone (objectBudget,
+// writeObjectKind), zero being no bound on either, so one tick never holds the block-index lease
+// for the whole backlog a first deploy leaves, whether that backlog is owed nodes or names: it
+// answers More where it stopped with rows left, and the next run reads on, from the start of each
+// kind's key, past the rows the last one marked. Rows counts only the rows it wrote a node for, as
+// writeObjectBatch's report does, and none it only named. A kind that fails holds back none of the
+// others: the run goes on to them and answers every failure joined, and the next run reads the
+// failed kind's rows again. A row the store refuses because it holds the row's node in another
+// project is left, before any transaction opens, and answered in Moved, and every other row of its
+// batch is written (writeObjectKind): no second run cures it, so it holds back no run, and the
+// census names that row until a person reads it.
 func WriteOwedObjectNodes(ctx context.Context, database *store.Store, batches int) (ObjectPass, error) {
 	var pass ObjectPass
 	var failed, moved []error
-	budget := &batches
-	if batches <= 0 {
-		budget = nil
+	var budget *objectBudget
+	if batches > 0 {
+		budget = &objectBudget{nodes: batches, names: batches}
 	}
 	for _, kind := range objectKinds {
 		report, more, refused, err := writeObjectKind(ctx, database, kind, budget)
@@ -301,26 +321,57 @@ func WriteOwedObjectNodes(ctx context.Context, database *store.Store, batches in
 	return pass, errors.Join(failed...)
 }
 
+// objectBudget is what is left of an object pass's two budgets of batches (WriteOwedObjectNodes),
+// shared by its four kinds: nodes, of the batches that write a node, and names, of the batches
+// whose rows are each owed their name alone (objectKind.read's named).
+type objectBudget struct{ nodes, names int }
+
+// spends answers the budget a batch of rows spends: names where every row of it is owed its name
+// alone, and nodes where any row is owed a node.
+func (b *objectBudget) spends(rows []objectRow) *int {
+	for _, row := range rows {
+		if !row.named {
+			return &b.nodes
+		}
+	}
+	return &b.names
+}
+
 // writeObjectKind walks kind's rows its marker does not mark, one batch at a time from the
 // start of its key, and writes each batch's nodes (writeObjectBatch), answering what it wrote.
-// Each batch that writes a node spends one of budget's batches, nil being no bound; once budget is
-// spent the walk reads whether a row a pass can write is left for the next run (more) and writes
-// nothing more.
+// Each batch that opens a transaction spends one batch of budget, nil being no bound: of its
+// names where every row of it is owed its name alone, and of its nodes otherwise
+// (objectBudget.spends). Once the nodes are spent the walk reads whether a row a pass can write is
+// left for the next run (more) and writes nothing more. While only the names are spent it leaves
+// each batch whose rows are all owed their name alone for the next run, which answers more, and
+// goes on to the batches after it, so a run of such rows holds back no node after them. So a walk,
+// and a pass of the four kinds that share one budget, opens at most as many transactions as the
+// budget's nodes and names, but for a batch written again one row at a time below.
+//
+// A row whose node the store holds but whose row names it nowhere - every issue and document a
+// build that names no node on its row wrote, at its create or by its backfill - is owed that name
+// alone, which writeObjectBatch counts as no row and no node, but its batch costs a transaction,
+// the owner locks and a write of each node all the same. The first pass after this build deploys
+// over that build reads every issue and document of the deployment as such a row, so a batch of
+// them spends a budget of its own, rather than none, which would run a transaction for each
+// backfillBatch of them in one pass, or the nodes', which would hold back behind them the rows
+// owed a node. A batch that holds a row owed a node beside them spends the nodes alone, and names
+// them in the same transaction.
 //
 // A row no pass can write - between a party the store refuses, or whose node the store holds in
 // another project, live or gone - stays unmarked, so every run reads it again from the start of
 // the key. So the walk writes only the rows of each batch a pass can write (writableRows), and
 // leaves the rest before any transaction opens: a refused party counted in Skipped, a node in
-// another project answered in moved. A batch that writes nothing spends no budget, and the read
-// past the budget skips such rows (writableRowLeft). Otherwise those rows would take the budget
-// every run, hold back the rows after them, keep more, and with it the tick's debt, for ever, and
-// each would cost a transaction, its owner's lock and a transaction id on every run. What such
-// rows still cost each run is the read of their batches and of the projects the store holds their
-// nodes in: two index reads, with no lock and no transaction, for each backfillBatch of them. A
-// batch the store still refuses because a node of it was made in another project after that read
-// (graphstore.ErrProjectMoved) is written again one row at a time, so that row alone is left,
-// answered in moved, and every other row of the batch is written.
-func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind, budget *int) (report KindBackfill, more bool, moved []error, err error) {
+// another project answered in moved. A batch with no other row opens no transaction and spends no
+// budget, and the read past the budget skips such rows (writableRowLeft). Otherwise those rows
+// would take the budget every run, hold back the rows after them, keep more, and with it the
+// tick's debt, for ever, and each would cost a transaction, its owner's lock and a transaction id
+// on every run. What such rows still cost each run is the read of their batches and of the
+// projects the store holds their nodes in: two index reads, with no lock and no transaction, for
+// each backfillBatch of them. A batch the store still refuses because a node of it was made in
+// another project after that read (graphstore.ErrProjectMoved) is written again one row at a time,
+// so that row alone is left, answered in moved, and every other row of the batch is written.
+func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind, budget *objectBudget) (report KindBackfill, more bool, moved []error, err error) {
 	report = KindBackfill{Kind: kind.kind}
 	after := kind.start
 	add := func(written KindBackfill) {
@@ -329,26 +380,36 @@ func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind
 		report.Tuples += written.Tuples
 		report.Skipped += written.Skipped
 	}
+	// left is whether the walk left a batch of rows owed their name alone, its names spent, for
+	// the next run.
+	left := false
 	for {
-		if budget != nil && *budget == 0 {
-			left, err := writableRowLeft(ctx, database, kind, after)
-			return report, left, moved, err
+		if budget != nil && budget.nodes == 0 {
+			rest, err := writableRowLeft(ctx, database, kind, after)
+			return report, left || rest, moved, err
 		}
 		nodes, err := readObjectNodes(ctx, database, kind.kind, kind.read, after, backfillBatch)
 		if err != nil {
 			return report, false, moved, err
 		}
 		if len(nodes) == 0 {
-			return report, false, moved, nil
+			return report, left, moved, nil
 		}
 		after = nodes[len(nodes)-1].ID
-		before := report.Rows
 		writable, skipped, unmoved, err := writableRows(ctx, database, kind, nodes)
 		if err != nil {
 			return report, false, moved, err
 		}
 		report.Skipped += skipped
 		moved = append(moved, unmoved...)
+		if len(writable) > 0 && budget != nil {
+			// Only the names can be spent here: spent nodes end the walk above.
+			if spent := budget.spends(writable); *spent > 0 {
+				*spent--
+			} else {
+				left, writable = true, nil
+			}
+		}
 		if len(writable) > 0 {
 			written, err := writeObjectBatch(ctx, database, kind, writable)
 			switch {
@@ -370,11 +431,8 @@ func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind
 				add(written)
 			}
 		}
-		if budget != nil && report.Rows > before {
-			*budget--
-		}
 		if len(nodes) < backfillBatch {
-			return report, false, moved, nil
+			return report, left, moved, nil
 		}
 	}
 }
@@ -468,17 +526,19 @@ func statedOf(nodes []graphstore.Node) int64 {
 }
 
 // objectRow keeps the row's identity separate from its reusable graph address, and, for a
-// document an issue owns, that issue, which its part_of names (graphstore.ArtifactPartOf).
+// document an issue owns, that issue, which its part_of names (graphstore.ArtifactPartOf), and
+// whether the row was read for its name alone (objectKind.read's named).
 type objectRow struct {
 	graphstore.Node
 	identity string
 	issue    string
+	named    bool
 }
 
 // readObjectNodes reads one batch of a kind's rows their marker does not mark, and answers the node its
 // kind's writer writes for each (graphstore.IssueNode and its siblings), caused by the row's own
 // create event where the read found one, and at the sentinel otherwise, with the issue that owns
-// each document an issue owns.
+// each document an issue owns and whether the row was read for its name alone.
 func readObjectNodes(ctx context.Context, database *store.Store, kind, read, after string, limit int) ([]objectRow, error) {
 	rows, err := database.Pool.Query(ctx, read, after, limit)
 	if err != nil {
@@ -492,7 +552,8 @@ func readObjectNodes(ctx context.Context, database *store.Store, kind, read, aft
 		var authorJSON, rootAuthorJSON []byte
 		var project, session, rootTarget, issue *string
 		var ownEvent *int64
-		if err := rows.Scan(&id, &createdAt, &authorJSON, &project, &session, &rootAuthorJSON, &rootTarget, &ownEvent, &identity, &issue); err != nil {
+		var named bool
+		if err := rows.Scan(&id, &createdAt, &authorJSON, &project, &session, &rootAuthorJSON, &rootTarget, &ownEvent, &identity, &issue, &named); err != nil {
 			return nil, fmt.Errorf("read a %s row its marker does not mark: %w", kind, err)
 		}
 		var author model.Actor
@@ -521,7 +582,7 @@ func readObjectNodes(ctx context.Context, database *store.Store, kind, read, aft
 		if ownEvent != nil {
 			node.SourceEvent = *ownEvent
 		}
-		nodes = append(nodes, objectRow{Node: node, identity: identity, issue: derefText(issue)})
+		nodes = append(nodes, objectRow{Node: node, identity: identity, issue: derefText(issue), named: named})
 	}
 	return nodes, rows.Err()
 }
@@ -598,16 +659,20 @@ func derefText(value *string) string {
 // only in naming no node - one a build that names no node on its row wrote, at its create or by
 // its backfill - is owed that name and not a node: it is written again with the rest, which moves
 // nothing of it and states only what its kind's writer states beside it, and named, and it counts
-// as no row and no node of the report, so a batch of such rows spends none of the object pass's
-// budget (writeObjectKind), as that build, whose pass reads no such row, spends none. One that is
-// not gone and its row's own but names neither is written again, which states its project or
-// parties alone. A document whose node is not gone but not its row's own is one a build before
-// this one removed and made again at the address: its node is stated gone, by the backfill, and
-// then live, under the row's own event, as this build's create states it (api's queueNewArtifact),
-// both as the run's own state tuples (stateTuple). A node the store holds is dated one microsecond past
-// the newest statement it holds about it where the row's created_at is no later - a row a build
-// before this one dated at its transaction's start can predate a removal it waited behind - so a
-// read of the node as of a time reads the statements in the order the store appended them.
+// as no row and no node of the report; a batch of such rows alone spends the object pass's budget
+// of names, not its budget of nodes (writeObjectKind). One that is not gone and its row's own but
+// names neither is written again, which states its project or parties alone. A document whose
+// node is not gone but not its row's own is one a build before this one removed and made again at
+// the address: its node is stated gone, by the backfill, and then live, under the row's own event,
+// as this build's create states it (api's queueNewArtifact), both as the run's own state tuples
+// (stateTuple). A node the store holds is dated one microsecond past the newest statement it holds
+// about it where the row's created_at is no later - a row a build before this one dated at its
+// transaction's start can predate a removal it waited behind - so a read of the node as of a time
+// reads the statements in the order the store appended them. A document's part_of is its row's
+// from its creation, so it is dated at the row's created_at, as its create dates it, and moved past
+// the newest statement of its node only where that statement is later: one at that very time comes
+// before it in the log's own order (seq), and a read as of that time reads the document under its
+// issue, as its row has it.
 //
 // It is handed only the rows writableRows answers, so no row between a party
 // graphstore.PartiesValue refuses reaches it: a row's parties are its own content, which the
@@ -682,7 +747,11 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 				taken[node.ID] = gone
 			}
 			if row.issue != "" {
-				partOf[node.ID] = graphstore.ArtifactPartOf(node.ID, row.issue, node.MadeBy, node.MadeAt)
+				at := row.MadeAt
+				if found && stored.newest.After(at) {
+					at = node.MadeAt
+				}
+				partOf[node.ID] = graphstore.ArtifactPartOf(node.ID, row.issue, node.MadeBy, at)
 			}
 			write = append(write, node)
 		}

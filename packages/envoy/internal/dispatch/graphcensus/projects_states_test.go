@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -59,9 +60,14 @@ func TestARowWhoseNodeIsGoneIsNamedAndTheBackfillMakesItLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run the backfill: %v", err)
 	}
-	// The node was there, gone: moving it live states its state and nothing else.
-	if done := reportedKind(t, report, graphstore.KindArtifact); done.Nodes != 1 || done.Tuples != 1 {
-		t.Errorf("the backfill reports %+v for documents, want one node and the one state tuple it appended", done)
+	// The node was there, gone: moving it live states its state, and beside the node the part_of
+	// that hangs the document under its issue, as every write of an issue's document's node states
+	// it (graphstore.ArtifactPartOf), and nothing else.
+	if done := reportedKind(t, report, graphstore.KindArtifact); done.Nodes != 1 || done.Tuples != 2 {
+		t.Errorf("the backfill reports %+v for documents, want one node and the two tuples it appended, its state and its part_of", done)
+	}
+	if partOf := artifactPartOf(t, database, "GONE-1/notes-md"); len(partOf) != 1 || partOf[0].ToID != "GONE-1" || !partOf[0].Asserted {
+		t.Errorf("after the backfill the document is part_of %+v, want the one tuple to issue:GONE-1", partOf)
 	}
 	requireComplete(t, ctx, database, "after the backfill")
 	node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, "GONE-1/notes-md")
@@ -92,14 +98,16 @@ func TestARowMadeAgainAtAnAddressTakesNoVisibilityOfTheRowBefore(t *testing.T) {
 	ctx := context.Background()
 	created := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
 	seedGoneRow(t, database, created, model.Actor{Kind: "user", ID: "alice"})
-	// The removed document's node was reserved for its author before it went.
+	// The removed document's node was reserved for its author before it went: a node of a kind
+	// this build's writers take no such node of (graphstore.CheckVisibilityAdmitted), so it is
+	// seeded as its rows, as the store holds a node a build before this one reserved.
 	removed, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, "GONE-1/notes-md")
 	if err != nil || !held {
 		t.Fatalf("read the removed document's node: held %t, %v", held, err)
 	}
-	removed.Visibility, removed.MadeAt = graphstore.VisibilityAuthor, created.Add(-time.Minute)
+	removed.MadeAt = created.Add(-time.Minute)
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		return graphstore.Write(ctx, tx, []graphstore.Node{removed}, nil)
+		return graphstoretest.SeedAuthorOnly(ctx, tx, removed)
 	}); err != nil {
 		t.Fatalf("reserve the removed document's node for its author: %v", err)
 	}
@@ -262,7 +270,9 @@ func TestANodeAtALaterReleasesStateIsPresentAndTheBackfillKeepsIt(t *testing.T) 
 		t.Fatalf("seed the ask: %v", err)
 	}
 	// The issue's node names its project; the ask's names none, as a build before this one's
-	// writer left it. A later release then marks both, as its build writes a state it owns.
+	// writer left it. A later release then marks both, as its build writes a state it owns: with a
+	// write that owns the node's state and so does not restate it (graphstore.Node's Restates),
+	// unlike this build's writers of these kinds.
 	issueNode := graphstore.IssueNode("LATE-1", "LATE", alice, at)
 	askNode := graphstore.AskNode(ask, "", nil, alice, at)
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
@@ -271,6 +281,7 @@ func TestANodeAtALaterReleasesStateIsPresentAndTheBackfillKeepsIt(t *testing.T) 
 		}
 		issueNode.State, askNode.State = laterObjectState, laterObjectState
 		issueNode.MadeAt, askNode.MadeAt = at.Add(time.Minute), at.Add(time.Minute)
+		issueNode.Restates, askNode.Restates = false, false
 		return graphstore.Write(ctx, tx, []graphstore.Node{issueNode, askNode}, nil)
 	}); err != nil {
 		t.Fatalf("write the two nodes and mark them %s: %v", laterObjectState, err)

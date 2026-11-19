@@ -311,10 +311,13 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 // objectPassBatches bounds the batches one tick's object pass writes across the four kinds, so a
 // first deploy's whole backlog never holds the block-index lease in one tick: a pass that stops
 // with rows left leaves its debt and makes the tick full, and the next one runs blockIndexStep
-// later. At the backfill's batch size of 200 it writes the nodes of up to 800 rows a tick. Rows no
-// pass can write - a refused party, a node held in another project, live or gone - spend none of
-// it and open no transaction: each pass leaves them before it writes a batch, and reads them
-// again, two index reads for each 200 of them (graphcensus's writeObjectKind).
+// later. It is two bounds of that size: at most objectPassBatches batches that write a node, at
+// the backfill's batch size of 200 the nodes of up to 800 rows a tick, and at most as many more
+// whose rows are owed only the name of a node the store already holds (graphcensus's
+// objectBudget). Rows no pass can write - a refused party, a node held in another project, live
+// or gone - spend neither and open no transaction: each pass leaves them before it writes a
+// batch, and reads them again, two index reads for each 200 of them (graphcensus's
+// writeObjectKind).
 const objectPassBatches = 4
 
 // orphanedNodesSwept bounds the orphaned document nodes one tick states gone, each in a
@@ -363,11 +366,11 @@ var rollNow time.Time
 // It runs after the event read has committed and outside its transaction, each batch in a
 // transaction of its own that takes its rows' owner locks first (graphcensus's writeObjectBatch),
 // and each gone statement in its own, owner lock first too, so it holds no lock of the event
-// read's while it takes them. It writes at most objectPassBatches batches and states at most
-// orphanedNodesSwept nodes gone a tick, and a kind that fails holds back neither the other kinds
-// nor the sweep. A pass that fails, or stops with work left, leaves the debt, which only a pass
-// that finishes clears, so no row is left without its node and no node without its row. A node
-// the sweep leaves is logged with the reason.
+// read's while it takes them. It writes at most objectPassBatches batches of each of the object
+// pass's two budgets and states at most orphanedNodesSwept nodes gone a tick, and a kind that
+// fails holds back neither the other kinds nor the sweep. A pass that fails, or stops with work
+// left, leaves the debt, which only a pass that finishes clears, so no row is left without its
+// node and no node without its row. A node the sweep leaves is logged with the reason.
 func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *BlockIndexTick, owed *time.Time) (more bool, err error) {
 	if owed == nil {
 		return false, nil
