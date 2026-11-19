@@ -723,13 +723,13 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 	// Each pair of fields alone: the two set on each kind of claim that leaves both empty, and no
 	// other field, so a filter on a pair that holds only while some third field is empty — a field
 	// of the pair's set above — fails here, and so does a filter that owes a claim the rule refuses
-	// where a pair is set on it. Under -race the pairs are set only on the kinds the sweep asks:
-	// the plain build is where this test holds the logic over every kind, and daemon-go runs it
-	// plain by name for that (raceEnabled); the race build holds the ask and its publish, which run
-	// on the kinds the sweep asks, under the detector, at a cost the race step's bound holds.
+	// where a pair is set on it. The plain build alone sets them, and daemon-go runs this test plain
+	// by name for that (raceEnabled); under -race the test holds the groups, the opening and the
+	// machine's states, where the ask and its publish run beside the machines' own work, at a cost
+	// the race step's bound holds.
 	pairKinds := kinds
 	if raceEnabled {
-		pairKinds = slices.DeleteFunc(slices.Clone(kinds), func(i int) bool { return !r.asks(facts[i]) })
+		pairKinds = nil
 	}
 	pairs, pairsWrong := 0, 0
 	for a := range leaves {
@@ -840,8 +840,8 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 	if openedWrong > 10 {
 		t.Errorf("and at the opening with %d more fields or sets of fields", openedWrong-10)
 	}
-	if fields == 0 || views == 0 || sets == 0 || pairs == 0 || opened < 2 || owed == 0 || refused == 0 {
-		t.Fatalf("checked %d claims over %d fields, %d states of the machine's view, %d sets of fields, %d pairs and %d openings, %d owed and %d refused: a set with no field, no view state, no set of fields, no pair or no opening tried, or no owed or no refused claim, shows nothing",
+	if fields == 0 || views == 0 || sets == 0 || (pairs == 0 && !raceEnabled) || opened < 2 || owed == 0 || refused == 0 {
+		t.Fatalf("checked %d claims over %d fields, %d states of the machine's view, %d sets of fields, %d pairs and %d openings, %d owed and %d refused: a set with no field, no view state, no set of fields, no pair in the plain build or no opening tried, or no owed or no refused claim, shows nothing",
 			checked, fields, views, sets, pairs, opened, owed, refused)
 	}
 	t.Logf("checked %d claims over %d fields of a claim at every depth, %d states of the machine's view beside the claim, %d sets of fields that put every pair together and all of them at once, in groups that put each kind of claim beside every other role in every state, %d pairs of fields alone, and the round's opening with each field and each set: %d owed an ask, %d refused one",

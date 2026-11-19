@@ -233,9 +233,9 @@ jobs:
       # What the race step's packages hold that the race build cannot run, run plain by name, one
       # go test per package (ci_job_reads.py's DAEMON_RACE_IMPOSSIBLE_*, built from the race step's
       # package list and the source, so the two cannot drift). The first is the update round
-      # sweep's field test in internal/daemon, which reads raceEnabled: plain, it sets each pair of
-      # a claim's fields alone on every kind of claim, and under the detector only on the kinds the
-      # sweep asks, so this is its full-size run. The second is internal/launcher's call-graph walk,
+      # sweep's field test in internal/daemon, which reads raceEnabled: plain, it also sets each
+      # pair of a claim's fields alone on every kind of claim, and under the detector it sets no
+      # pair alone, so this is its full-size run. The second is internal/launcher's call-graph walk,
       # under `//go:build !race`: it loads the launcher's whole program from source and builds its
       # call graph twice, which without the detector took about a minute at a 2.3 GB peak, and the
       # detector multiplies both.
