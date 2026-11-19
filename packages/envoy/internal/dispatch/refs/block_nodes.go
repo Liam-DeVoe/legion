@@ -811,7 +811,7 @@ func (b *BlockIndexing) planBlockParents(
 			placement.end(index, blockFarEnd{kind: graphstore.KindAsk, id: ask})
 		}
 	}
-	kept, err := placeAuthored(ctx, q, indexed, record, nodes, &placement, parentIDs, authored)
+	kept, err := placeAuthored(ctx, q, b.artifactID, indexed, record, nodes, &placement, parentIDs, authored)
 	if err != nil {
 		return blockPlacement{}, nil, nil, fmt.Errorf("place the authored nodes of %s: %w", b.artifactID, err)
 	}
@@ -1149,12 +1149,14 @@ func resolvedFarEnd(target Target, farEnds map[string]string) blockFarEnd {
 	return blockFarEnd{kind: target.Kind, id: target.ID}
 }
 
-// authoredFarEnds resolves, in one statement (ResolveFarEnds), each block far end the parent
-// attribute and the serves pointer of the authored nodes ids name in sources, as planBlockRefs
-// resolves the far ends of the same pointers when it writes their tuples: so a node is placed
-// under the node its pointer's tuple reaches, and its parent attribute compared with the parent
-// value the store holds in the same terms (placeAuthored).
-func authoredFarEnds(ctx context.Context, q Queryer, ids []string, sources authoredSources) (map[string]string, error) {
+// authoredFarEnds resolves, in one statement, each block far end the parent attribute and the
+// serves pointer of the authored nodes ids name in sources, as planBlockRefs resolves the far ends
+// of the same pointers when it writes their tuples (resolvePassFarEnds, over the blocks written,
+// the addresses of the blocks of document artifactID this pass places): so a node is placed under
+// the node its pointer's tuple reaches - a block of another fragment of the issue room the pass
+// indexes among them, whose node the pass itself writes - and its parent attribute compared with
+// the parent value the store holds in the same terms (placeAuthored).
+func authoredFarEnds(ctx context.Context, q Queryer, artifactID string, written, ids []string, sources authoredSources) (map[string]string, error) {
 	var addresses []string
 	add := func(ref text.Ref) {
 		if target, ok := TargetOf(ref); ok && target.Kind == BlockNodeKind {
@@ -1162,14 +1164,14 @@ func authoredFarEnds(ctx context.Context, q Queryer, ids []string, sources autho
 		}
 	}
 	for _, id := range ids {
-		if ref, written := sources.parent[id]; written {
+		if ref, named := sources.parent[id]; named {
 			add(ref)
 		}
 		for _, ref := range sources.serves[id] {
 			add(ref)
 		}
 	}
-	return ResolveFarEnds(ctx, q, addresses)
+	return resolvePassFarEnds(ctx, q, artifactID, addresses, written)
 }
 
 // placeAuthored places the authored nodes of placement (D4 of dispatch://INFRA-1253's plan),
@@ -1217,7 +1219,7 @@ func authoredFarEnds(ctx context.Context, q Queryer, ids []string, sources autho
 // (BlockIndex.placed) and its parent value, the target of the parent attribute's link its pairs
 // hold (BlockIndex.links). So a second indexing of the document in one transaction keeps a node
 // where the first placed it, as a later transaction would.
-func placeAuthored(ctx context.Context, q Queryer, indexed BlockIndex, document IndexedVersion, nodes []model.ArtifactBlock, placement *blockPlacement, parentIDs []*string, sources authoredSources) ([]bool, error) {
+func placeAuthored(ctx context.Context, q Queryer, artifactID string, indexed BlockIndex, document IndexedVersion, nodes []model.ArtifactBlock, placement *blockPlacement, parentIDs []*string, sources authoredSources) ([]bool, error) {
 	var authored []int
 	for index, block := range placement.placed {
 		if authoredType(nodes[block].Type) {
@@ -1258,7 +1260,11 @@ func placeAuthored(ctx context.Context, q Queryer, indexed BlockIndex, document 
 			held[at] = read[position]
 		}
 	}
-	farEnds, err := authoredFarEnds(ctx, q, ids, sources)
+	written := make([]string, len(placement.ids))
+	for position, id := range placement.ids {
+		written[position] = blockNodeAddress(document.RefKey, id)
+	}
+	farEnds, err := authoredFarEnds(ctx, q, artifactID, written, ids, sources)
 	if err != nil {
 		return nil, err
 	}

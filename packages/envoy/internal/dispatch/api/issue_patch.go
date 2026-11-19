@@ -452,6 +452,17 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		excluded: askIDs(closingAsks),
 		opened:   askIDs(reopened.asks),
 	})
+	// What the issue's waits stand at, read here in the read phase, under the owner lock, for the
+	// write below to move (readIssueNeeds).
+	var heldNeeds heldIssueNeeds
+	if waitsProvided {
+		read, err := readIssueNeeds(r.Context(), tx, key)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		heldNeeds = read
+	}
 	// The write phase: the statements from here on run back to back.
 	if changed {
 		sets = append(sets, "updated_at = "+issueUpdatedNow)
@@ -481,7 +492,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		relations.tuples = append(relations.tuples, affects...)
 	}
 	if waitsProvided {
-		needs, err := writeIssueNeeds(r.Context(), tx, key, before.Project, callerProject, waits, relationsAt)
+		needs, err := writeIssueNeeds(r.Context(), tx, key, before.Project, callerProject, waits, heldNeeds, relationsAt)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

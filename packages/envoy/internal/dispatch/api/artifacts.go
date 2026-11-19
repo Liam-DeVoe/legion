@@ -602,17 +602,23 @@ func recordDocumentTaskProgress(ctx context.Context, tx pgx.Tx, artifactID strin
 // values are its newest version's (R16 of this branch's spec). It writes no node, so nothing
 // is queued before the event. A row an older build wrote names no node and states nothing here:
 // the backfill gives it its node and its newest version's bytes in the transaction that names the
-// node on the row (graphcensus' writeObjectBatch). The read takes the row FOR SHARE, which
-// conflicts with the backfill's lock of the row, so the two cannot both miss this version: either
-// the backfill named the node first and this read waits for it, sees the node and states these
-// bytes after the backfill's, or this upload holds the row first, the backfill waits for it to
-// commit, and then reads this version as the row's newest. That row lock is the one statement of
-// the upload's read phase that gives its transaction an id, and only an image's or a file's later
-// version takes it.
-func statedVersionBytes(ctx context.Context, tx pgx.Tx, artifactID, mime string, size int, digest string, who model.Actor, at time.Time) (graphstore.Uncaused, error) {
+// node on the row (graphcensus' writeObjectBatch), which holds the document's owner lock to its
+// commit (the issue's, or for a document no issue owns its own: events.LockOwnerRows). The read
+// takes that same lock first, in the statement before it (store.LockOwnerAndRead), so the two
+// cannot both miss this version: either the backfill named the node first and this read waits for
+// it, sees the node and states these bytes after the backfill's, or this upload holds the lock
+// first, the backfill waits for it to commit, and then reads this version as the row's newest. The
+// lock is advisory, so the read, like every other of the upload's read phase, gives the
+// transaction no id: its write phase's batch does (storeArtifact). An issue's upload holds its
+// issue's lock already, and takes it again for nothing.
+func statedVersionBytes(ctx context.Context, tx pgx.Tx, artifact model.Artifact, mime string, size int, digest string, who model.Actor, at time.Time) (graphstore.Uncaused, error) {
+	owner := store.ArtifactOwner(artifact.ID)
+	if artifact.IssueKey != nil {
+		owner = store.IssueOwner(*artifact.IssueKey)
+	}
 	var address *string
-	if err := tx.QueryRow(ctx, `select node_address from artifacts where id = $1 for share`, artifactID).Scan(&address); err != nil {
-		return graphstore.Uncaused{}, fmt.Errorf("read the node artifact %s names: %w", artifactID, err)
+	if err := store.LockOwnerAndRead(ctx, tx, owner, `select node_address from artifacts where id = $1`, []any{artifact.ID}, &address); err != nil {
+		return graphstore.Uncaused{}, fmt.Errorf("read the node artifact %s names: %w", artifact.ID, err)
 	}
 	if address == nil {
 		return graphstore.Uncaused{}, nil
@@ -899,7 +905,7 @@ func (s *server) storeArtifact(
 		// A later version moves the node's bytes to its own, held for the event this upload
 		// appends below; a version this upload creates the document with was stated with the node.
 		if !created {
-			documentNode, err = statedVersionBytes(r.Context(), tx, artifact.ID, input.contentType, len(input.content), sha, actor, version.CreatedAt)
+			documentNode, err = statedVersionBytes(r.Context(), tx, artifact, input.contentType, len(input.content), sha, actor, version.CreatedAt)
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return

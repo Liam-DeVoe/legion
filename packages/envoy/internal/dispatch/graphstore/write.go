@@ -25,9 +25,10 @@ import (
 // earlier one is derived in the later statement's SQL: an event's id (LatestEvent), and which
 // nodes a node write made or moved, which the node rows themselves carry until the statement that
 // states those facts reads them (nodeMark). A check a write is held to that reads the store - the
-// types its nodes name (queueSupertagCheck), the type rules of its pointers (queuePointerChecks) -
-// is a statement of the same batch, whose callback refuses the write as Send reads its result:
-// the statements after it have run by then, and roll back with the transaction the refusal ends.
+// types its nodes name (missingSupertagsSQL, read by the node write's last statement), the type
+// rules of its pointers (queuePointerChecks) - is read in a statement of the same batch, whose
+// callback refuses the write as Send reads its result: the statements after it have run by then,
+// and roll back with the transaction the refusal ends.
 
 // LatestEvent is the cause of a write whose event its write phase appends right before the
 // write's own statements: no Go code reads that event's id before the batch is sent, so the
@@ -508,16 +509,20 @@ func (e *SupertagNotHeldError) Error() string {
 
 func (e *SupertagNotHeldError) Unwrap() error { return ErrSupertagNotHeld }
 
-// queueSupertagCheck queues the refusal of a write of any node whose supertag the store holds no
-// type of (SupertagNotHeldError): one statement over the primary key of graph_nodes for the
-// distinct supertags of the nodes given, read in the write's own transaction before its node
-// write, whose callback refuses the batch as Send reads it. Nothing holds the types in memory: a
-// type a migration or an operator writes is taken by the next write of every process, and one
-// deleted is refused by it, with no restart. The arms a caller splices into a statement of its own
-// (WriteArms) run no such read: they write the person, session, role and page nodes alone, of
-// supertags the store seeds, and the publisher's record that splices them into its one statement
-// has no statement before it to refuse in.
-func queueSupertagCheck(b *store.WriteBatch, nodes []Node) {
+// The refusal of a write of any node whose supertag the store holds no type of
+// (SupertagNotHeldError) rides on the last statement of the write's node write, its move
+// (queueNodes), as one more read of that statement rather than a statement of its own: a read sent
+// in the write phase is a statement inside the transaction's id window (store.WriteBatch), so a
+// statement of its own would add one to every node write's window. supertagsOf is the distinct
+// supertags of the nodes, which that statement binds as param; missingSupertagsSQL is its select,
+// over the primary key of graph_nodes, of each one no `supertag` row not gone holds; and
+// refuseMissingSupertags is the callback that refuses the batch, as Send reads the statement's
+// rows. Nothing holds the types in memory: a type a migration or an operator writes is taken by
+// the next write of every process, and one deleted is refused by it, with no restart. The arms a
+// caller splices into a statement of its own (WriteArms) run no such read: they write the person,
+// session, role and page nodes alone, of supertags the store seeds, and the publisher's record
+// that splices them into its one statement has no statement of its own to refuse in.
+func supertagsOf(nodes []Node) []string {
 	// A write's nodes carry one or two supertags, a block index's every block `block`, so the
 	// distinct ones are gathered by a scan of the few already held rather than a set.
 	supertags := make([]string, 0, 2)
@@ -526,21 +531,26 @@ func queueSupertagCheck(b *store.WriteBatch, nodes []Node) {
 			supertags = append(supertags, supertag)
 		}
 	}
-	b.Queue("read the types of the nodes written", `
-		select named.id from unnest($1::text[]) as named(id)
+	return supertags
+}
+
+func missingSupertagsSQL(param string) string {
+	return `select named.id from unnest(` + param + `::text[]) as named(id)
 		where not exists (
 			select 1 from graph_nodes held
-			where held.kind = '`+supertagKind+`' and held.id = named.id and held.state <> '`+StateGone+`')
-		order by named.id`, supertags).Query(func(rows pgx.Rows) error {
-		missing, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			return fmt.Errorf("read the types of the nodes written: %w", err)
-		}
-		if len(missing) > 0 {
-			return &SupertagNotHeldError{Supertags: missing}
-		}
-		return nil
-	})
+			where held.kind = '` + supertagKind + `' and held.id = named.id and held.state <> '` + StateGone + `')
+		order by named.id`
+}
+
+func refuseMissingSupertags(rows pgx.Rows) error {
+	missing, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("read the types of the nodes written: %w", err)
+	}
+	if len(missing) > 0 {
+		return &SupertagNotHeldError{Supertags: missing}
+	}
+	return nil
 }
 
 // The base attributes a node write states for one node, as nodeMark carries them, and
@@ -652,13 +662,14 @@ func markedAttributes(row string) string {
 // VisibilityNotAdmittedError that names the kind, and nothing of the write is stored. A restating
 // node is held to it too, since the visibility it carries is the one its insert would make.
 //
-// Before the insert, and after those two checks, one read refuses a node whose supertag is no
-// type the store holds (queueSupertagCheck): the distinct supertags of the nodes, read over the
-// primary key of graph_nodes in the write's own transaction, each held only by a `supertag` row
-// that is not gone. Any one it does not hold refuses the whole write with a SupertagNotHeldError
-// naming each, as Send reads that read's result, and nothing of the write is stored. No process
-// holds a copy of the types, so a type written later is taken by the next write anywhere, with no
-// restart.
+// After those two checks, a read refuses a node whose supertag is no type the store holds: the
+// distinct supertags of the nodes, read over the primary key of graph_nodes in the write's own
+// transaction, each held only by a `supertag` row that is not gone, in the last statement of the
+// write, its move, beside the update (missingSupertagsSQL), so the check costs the write phase no
+// statement of its own. Any one it does not hold refuses the whole write with a
+// SupertagNotHeldError naming each, as Send reads that statement's rows, and the caller abandons
+// the transaction, so nothing of the write is stored. No process holds a copy of the types, so a
+// type written later is taken by the next write anywhere, with no restart.
 //
 // The stored values are compared on the row the last statement updates. Under READ COMMITTED
 // that statement reads a snapshot of its own, taken once the first holds every row the write
@@ -694,7 +705,6 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated []Tuple) e
 	if err != nil {
 		return err
 	}
-	queueSupertagCheck(b, nodes)
 	markParam := "$" + strconv.Itoa(len(nodeArrayTypes)+1)
 	b.Queue("write graph nodes", `
 		insert into graph_nodes (`+nodeColumns+`)
@@ -752,34 +762,40 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated []Tuple) e
 	if keeping {
 		queueKeptCauses(b, nodes, args, restates, keeps, mark, own)
 	}
+	// The move is the write's last statement, and its rows are the supertags of the nodes the
+	// store holds no type of (missingSupertagsSQL), which refuse the write (refuseMissingSupertags).
+	// The update is a data-modifying part of the statement's WITH, so it runs whatever the select
+	// after it answers, and the two read one snapshot.
 	b.Queue("write graph nodes", `
 		with incoming as (
 			select kind, id, supertag, visibility, state, attributes, restates, project_key,
 			       string_to_array(parties, ' ') as parties, states, keeps_cause
 			from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::jsonb[], $7::boolean[], $9::text[], $10::text[], $11::boolean[], $12::boolean[])
 				as node(kind, id, supertag, visibility, state, attributes, restates, project_key, parties, states, keeps_cause)
+		), moved as (
+			update graph_nodes set
+				supertag = incoming.supertag,
+				visibility = `+writtenVisibility+`,
+				state = `+writtenState+`,
+				attributes = incoming.attributes,
+				project_key = coalesce(graph_nodes.project_key, incoming.project_key),
+				parties = coalesce(incoming.parties, graph_nodes.parties),
+				source_event = case when incoming.keeps_cause then graph_nodes.source_event else `+markSQL("$8", `case when graph_nodes.visibility is distinct from `+writtenVisibility+` then `+strconv.Itoa(markVisibility)+` else 0 end
+					+ case when graph_nodes.state is distinct from `+writtenState+` then `+strconv.Itoa(markState)+` else 0 end
+					+ case when `+fillsProject+` then `+strconv.Itoa(markProject)+` else 0 end
+					+ case when `+movesParties+` then `+strconv.Itoa(markParties)+` else 0 end`)+` end
+			from incoming
+			where graph_nodes.kind = incoming.kind and graph_nodes.id = incoming.id
+			  and (graph_nodes.supertag is distinct from incoming.supertag
+			       or graph_nodes.visibility is distinct from `+writtenVisibility+`
+			       or graph_nodes.state is distinct from `+writtenState+`
+			       or graph_nodes.attributes is distinct from incoming.attributes
+			       or `+fillsProject+`
+			       or `+movesParties+`
+			       or incoming.states)
 		)
-		update graph_nodes set
-			supertag = incoming.supertag,
-			visibility = `+writtenVisibility+`,
-			state = `+writtenState+`,
-			attributes = incoming.attributes,
-			project_key = coalesce(graph_nodes.project_key, incoming.project_key),
-			parties = coalesce(incoming.parties, graph_nodes.parties),
-			source_event = case when incoming.keeps_cause then graph_nodes.source_event else `+markSQL("$8", `case when graph_nodes.visibility is distinct from `+writtenVisibility+` then `+strconv.Itoa(markVisibility)+` else 0 end
-				+ case when graph_nodes.state is distinct from `+writtenState+` then `+strconv.Itoa(markState)+` else 0 end
-				+ case when `+fillsProject+` then `+strconv.Itoa(markProject)+` else 0 end
-				+ case when `+movesParties+` then `+strconv.Itoa(markParties)+` else 0 end`)+` end
-		from incoming
-		where graph_nodes.kind = incoming.kind and graph_nodes.id = incoming.id
-		  and (graph_nodes.supertag is distinct from incoming.supertag
-		       or graph_nodes.visibility is distinct from `+writtenVisibility+`
-		       or graph_nodes.state is distinct from `+writtenState+`
-		       or graph_nodes.attributes is distinct from incoming.attributes
-		       or `+fillsProject+`
-		       or `+movesParties+`
-		       or incoming.states)
-	`, args[0], args[1], args[2], args[3], args[4], args[5], restates, mark, projects, parties, states, keeps)
+		`+missingSupertagsSQL("$13")+`
+	`, args[0], args[1], args[2], args[3], args[4], args[5], restates, mark, projects, parties, states, keeps, supertagsOf(nodes)).Query(refuseMissingSupertags)
 	return nil
 }
 

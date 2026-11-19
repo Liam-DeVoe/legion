@@ -562,12 +562,13 @@ func (r *storeWriterRig) resultRecord() storeWriter {
 	}
 }
 
-// resultRetraction is the retraction of a result (retractCheckResult, stateResultRetracted),
+// resultRetraction is the retraction of a result (retractCheckResult, writeCheckResultRetraction),
 // through its route: it reads the result's check_results row plainly (readRetractedResult), takes
-// the owner lock of the check's issue (store.LockOwner), then appends result.retracted, writes the
-// check_result_retractions row, and last appends the result's retracted value that event causes,
-// a tuple alone (graphstore.Write). Each run retracts a result its ready recorded; the
-// retraction's row and the value are held as the tables they are written to.
+// the owner lock of the check's issue (store.LockOwner), reads whether the store holds the
+// result's node, then appends result.retracted, and last writes, in one batch, the
+// check_result_retractions row and the result's retracted value that event causes, a tuple alone
+// (graphstore.QueueWrite). Each run retracts a result its ready recorded; the retraction's row and
+// the value are held as the tables they are written to.
 func (r *storeWriterRig) resultRetraction() storeWriter {
 	uploaded := false
 	return storeWriter{

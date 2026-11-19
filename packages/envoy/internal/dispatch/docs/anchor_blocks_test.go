@@ -274,13 +274,14 @@ func TestBlockForQuoteLeavesTopLevelCrossBlockAnchorsUnpinned(t *testing.T) {
 // The anchor block backfill pins a legacy comment anchor's block and states its anchored_in in one
 // transaction (T17b of dispatch://INFRA-1253's plan): the comment's row, which its update locks,
 // then the tuple through the store's writer at the sentinel. It takes the row's owner lock first,
-// in the row's own transaction (backfillAnchorBlock), and no owner row: a settlement holds that
-// owner's lock while it refreshes the anchors, and the two meet at the lock and the row alone
-// (TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner). The comment's row is held while one run
-// of the backfill runs on a connection of its own (lockstep.Follow), over a document service on
-// that connection: the run queues behind that row at its update, holding no lock on the store's
-// tables, and never behind the issue's row or the project's. The comment's node then states one
-// anchored_in to the pinned block's node, so the run followed is the one that committed.
+// in the row's own transaction (backfillAnchorBlock): a settlement holds that owner's lock while it
+// refreshes the anchors, and the two meet at the lock and the row alone
+// (TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner). The issue's owner lock is held, then the
+// comment's row, while one run of the backfill runs on a connection of its own (lockstep.Follow),
+// over a document service on that connection: the run queues behind the owner lock at the
+// statement that takes it (store.OwnerLockStatement), then behind that row at its update, holding
+// no lock on the store's tables, and never behind the project's row. The comment's node then
+// states one anchored_in to the pinned block's node, so the run followed is the one that committed.
 func TestTheAnchorBlockBackfillTakesTheRowThenTheTuple(t *testing.T) {
 	ctx := context.Background()
 	service, artifactID := newTestService(t)
@@ -309,8 +310,11 @@ func TestTheAnchorBlockBackfillTakesTheRowThenTheTuple(t *testing.T) {
 	backfiller := newTestServiceOn(t, runner)
 	pid := backendOf(t, runner)
 
-	owner := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "issue DOC-1's row", Step: lockstep.StepOwner},
-		`select 1 from issues where key = $1 for no key update`, "DOC-1")
+	owner := lockstep.HoldOwner(t, database, &lockstep.Hold{
+		Name: "issue DOC-1's owner lock", Step: lockstep.StepOwner, Taken: true,
+		Statement: lockstep.OwnerLockStatement,
+		Unlocked:  []string{"graph_nodes", "graph_tuples"},
+	}, store.IssueOwner("DOC-1"))
 	row := lockstep.HoldRow(t, database, &lockstep.Hold{
 		Name: "the comment's row", Step: lockstep.StepProjection, Taken: true,
 		Statement: "update comments c set anchor = jsonb_set(",

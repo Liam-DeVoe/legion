@@ -336,20 +336,21 @@ var storeWriteCallSites = map[string]string{
 	// again under them, then the mentions tuples each row owes through Write at the sentinel
 	// (graphcensus' TestTheReferenceBatchTakesTheStoreLockOrder).
 	"graphcensus/census_refs.go#writeReferenceBatch": "graphcensus#TestTheReferenceBatchTakesTheStoreLockOrder",
-	// A recorded result (T11 of this branch's plan, R12): the record route's transaction holds the
-	// rows of the recording issue and of the check's issue (lockIssueRows), appends
-	// result.recorded, writes the check_results row, and then the result's node, the recorder's
-	// nodes and every tuple in one Write caused by that event (writeRecordedResult); a retraction
-	// takes the result's check_results row `for update`, appends result.retracted under the check's
-	// issue row, writes the check_result_retractions row, and then appends the result's retracted
-	// value through Write under that event (stateResultRetracted). api's
+	// A recorded result (T11 of this branch's plan, R12): the record route's transaction takes the
+	// owner locks of the recording issue and of the check's issue (lockIssueOwners), appends
+	// result.recorded, and then writes, in one batch, the check_results row and the result's node,
+	// the recorder's nodes and every tuple caused by that event (writeRecordedResult); a
+	// retraction takes the check issue's owner lock, reads whether the store holds the result's
+	// node under it, appends result.retracted, and then writes, in one batch, the
+	// check_result_retractions row and the result's retracted value under that event
+	// (writeCheckResultRetraction). api's
 	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds both to those steps. The backfill's passes
-	// over the results and the retractions an earlier release wrote take the rows of the batch's
-	// check issues first, then read the rows again under them, then write the nodes and tuples, or
-	// the retracted values, in one Write at the sentinel (graphcensus'
+	// over the results and the retractions an earlier release wrote take the owner locks of the
+	// batch's check issues first, then read the rows again under them, then write the nodes and
+	// tuples, or the retracted values, in one Write at the sentinel (graphcensus'
 	// TestTheResultBatchTakesTheStoreLockOrder and TestTheResultRetractionBatchTakesTheStoreLockOrder).
 	"api/results.go#writeRecordedResult":                       "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/results_retract.go#stateResultRetracted":              "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/results_retract.go#writeCheckResultRetraction":        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"graphcensus/census_results.go#writeResultBatch":           "graphcensus#TestTheResultBatchTakesTheStoreLockOrder",
 	"graphcensus/census_results.go#writeResultRetractionBatch": "graphcensus#TestTheResultRetractionBatchTakesTheStoreLockOrder",
 	// The backfill's passes over the components a process of the release before wrote with no

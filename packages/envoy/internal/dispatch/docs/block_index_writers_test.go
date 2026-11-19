@@ -615,9 +615,10 @@ var indexPasses = map[string]string{
 	// A session's recorded result and its retraction (the result node, T11 of this branch's plan):
 	// the record states the result's node, its values and its tuples from the request and the
 	// check block it resolved under the owner locks, and the retraction states the retracted
-	// value out of the result node it names, read only to name it; neither mends a projection.
-	"api/results.go#writeRecordedResult":          "the result the request records, the check block it resolved and the event it appended",
-	"api/results_retract.go#stateResultRetracted": "the retraction the request records, the result node it names and the event it appended",
+	// value of the result its request names where its read phase found the result's node; neither
+	// mends a projection.
+	"api/results.go#writeRecordedResult":                "the result the request records, the check block it resolved and the event it appended",
+	"api/results_retract.go#writeCheckResultRetraction": "the retraction the request records, whether its result's node stands and the event it appended",
 	// A component's node and its relations (dispatch://INFRA-1253 R9): an import states them from
 	// the model it fetched, read against the part_of and depends_on each node states now only to
 	// state what moved, and the components it drops from the source's rows as they stood; a
@@ -776,6 +777,13 @@ var indexPasses = map[string]string{
 	"graphcensus/census_components.go#writeComponentBatch":            "each components row its marker does not mark, its own content and its snapshot's time",
 	"graphcensus/census_components.go#writeComponentDependsBatch":     "each pre-store component_depends row's own content and its component's row",
 	"graphcensus/census_components.go#writeIssueComponentMemberBatch": "each pre-store issue_component_members row's own content and its issue's row",
+	// The backfill of the results and the retractions a process of the release before recorded
+	// with no node (backfillResults): each result row whose node the store does not hold, read
+	// again under the owner rows of its check's issue, and each retraction whose value its result's
+	// node does not state, read again the same way. The store is read only to find the rows it
+	// holds no node of, never to mend a projection from it.
+	"graphcensus/census_results.go#writeResultBatch":           "each result row whose node the store does not hold, read again under its issue's owner row",
+	"graphcensus/census_results.go#writeResultRetractionBatch": "each retraction whose value its result's node does not state, read again under its issue's owner row",
 	// The block-index tick's sweep of a document the release before this one removed without
 	// stating its node gone. What decides is the store's own row of the node: a document node not
 	// gone at an issue's address that no artifacts row stands behind (graphcensus'
@@ -819,12 +827,20 @@ var indexPasses = map[string]string{
 	// other.
 	"graphstore/graphstoretest/graphstoretest.go#SeedAuthorOnly": "the nodes its test hands it, and whether the store holds each",
 	"graphstore/graphstoretest/graphstoretest.go#SeedSupertags":  "the type names its test hands it",
+	// The changed_by_run a write appends for the run its context carries (graphstore.WithRun):
+	// the nodes the write marks changed, less each one the store already states changed by that
+	// run. It reads the store's own tuples to state no second one, never a projection.
+	"graphstore/changed_by_run.go#queueChangedByRun": "the nodes its caller's write marks changed by its run, and the changed_by_run the store holds of them",
 	// A node write's statements (queueNodes): the insert of the nodes the store lacks, which locks
 	// the ones it holds, and the move of the ones it holds. The move reads each row it moves, in
 	// the snapshot taken once the insert holds them all, to say which base attributes the write
 	// moved: it reads the store's own row to state what it writes into that row, never a
 	// projection to mend the store or the store to mend a projection.
 	"graphstore/write.go#queueNodes": "the nodes its caller states and the rows of them it moves",
+	// A write that keeps a node's cause (Node.KeepsCause) states each base attribute it moves on
+	// a node already there, read off that node's own row as the insert locked it: the store's
+	// row, to state what it writes into that row.
+	"graphstore/write.go#queueKeptCauses": "the nodes its caller states and the rows of them whose cause it keeps",
 	// queueAppend is the second half of one write rather than a second look at it: the tuples its
 	// caller states, the base attributes the node write left marked, and the nodes moved onto the
 	// event that recorded them (graphstore.QueueCaused). It reads no projection and mends nothing.

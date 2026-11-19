@@ -66,8 +66,8 @@ const storeStepWait = 20 * time.Second
 //   - an accept that finds a suggestion's mark gone (orphanCommentAnchor), which retracts the
 //     comment's anchored_in (T17b of this branch's plan);
 //   - and the record and the retraction of a check's result (writeRecordedResult,
-//     stateResultRetracted), which write the result's node and tuples and its retracted value
-//     (T11 of this branch's plan).
+//     writeCheckResultRetraction), which write the result's node and tuples and its retracted
+//     value (T11 of this branch's plan).
 //
 // The order they are held to is the one written on api/inbox_read.go's markInboxReadThreads, which
 // graphstore's TestEveryStoreWriteTakesOneLockOrder reads: the owner's lock comes first; a node's
@@ -601,8 +601,10 @@ func (r *storeWriterRig) issuePatchForRun() storeWriter {
 // dispatch://INFRA-1253 R10), through its route: a PATCH of the issue's needs. It takes the issue's
 // owner lock (lockPatchOwners), updates the issue's row, writes the issue_links rows the new set
 // projects (writeIssueNeeds), writes the issue's node (graphstore.WriteUncaused), so that
-// graph_edges answers the relation out of a node the store holds, appends issue.updated, and then
-// states the needs that event causes in one statement of the store's arms (stateIssueRelations).
+// graph_edges answers the relation out of a node the store holds, appends issue.updated, and then,
+// in the same write phase, appends what that event causes: the facts of the issue's node
+// (graphstore.QueueCaused, the store's tuple append), then the needs in one statement of the
+// store's arms (queueIssueRelations), so the tuple step is first waited at the append.
 // The issue's node exists from its create, so the node step is held as the table it is written to,
 // and so are the rows. Each run names a target no run has named, an issue it creates first, so
 // every run retracts one wait and states another. The event's step takes the issue's project row
@@ -632,7 +634,7 @@ func (r *storeWriterRig) issuePatchRelations() storeWriter {
 			event,
 			{
 				name: "the relations the event causes", order: tupleStep, caused: true,
-				hold: holdTableWrites("graph_tuples"), at: "with graph_relations_appended as (",
+				hold: holdTableWrites("graph_tuples"), at: tupleAppendStatement,
 				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
 			},
 		},
@@ -782,12 +784,14 @@ func (r *storeWriterRig) architectureSourceRemoval() storeWriter {
 				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
 			},
 			{
+				// The source's row is the owner step's, locked `for update` from the start, so its
+				// delete moves no lock this step is read by: the components rows it cascades to are.
 				name: "the source's row and its components rows", order: projectionStep,
 				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
 					holdRow(t, ctx, holder, `select 1 from components where project_key = 'LOCK' and id = $1 for update`, child)
 				},
 				at:    "delete from architecture_sources where project_key = $1 and id = $2",
-				takes: []tableLock{{"architecture_sources", rowExclusiveMode}, {"components", rowExclusiveMode}},
+				takes: []tableLock{{"components", rowExclusiveMode}},
 			},
 			event,
 		},
@@ -1194,17 +1198,19 @@ func (r *storeWriterRig) documentEdit() storeWriter {
 // so the owner it takes first is its project, whose row numbers the issue. It then writes the
 // issue's node and its spec's in one write, then the issue's row and the spec's row, which name
 // them. No live process of the rig lacks the issue room, so each run is born converted (T12b of
-// this branch's plan): after the spec's row it writes the issue's tree (createIssueTree), its
-// issue_trees row and the tree's version 1, whose insert writes the tree's fence row, the fence of
-// the room the spec is indexed in; then the spec's document_rooms row naming that tree, and the
-// decisions query node (createDecisionsQuery), each node before the row naming it. The tree's and
-// the decisions query's nodes, rows and versions are writes of tables an earlier step takes first;
-// the issue_trees and document_rooms rows are each the first write of its own table, held in
-// turn. It then writes the spec's version 1, indexes it in the room as an upload indexes its
-// document, appends issue.created, and appends what the index and the node writes stated under
-// it. The nodes come before the fence for the reason an upload's does. The spec's block nodes are
-// the room's, held by the node of the block the spec names, whose address is the tree's: the
-// issue's key is its project's next number, read before the run, and its tree's slug is `tree`
+// this branch's plan): after the spec's row it writes, inline, the issue's tree (createIssueTree)
+// and its issue_trees row, the spec's document_rooms row naming that tree, and the decisions query
+// node (createDecisionsQuery), each node before the row naming it; the tree's version 1, whose
+// insert writes the tree's fence row, the fence of the room the spec is indexed in, is queued in
+// the read phase (planConvertedIssueRoom) and runs with the rest of the write phase at the commit,
+// after those rows. The tree's and the decisions query's nodes, rows and versions are writes of
+// tables an earlier step takes first; the issue_trees and document_rooms rows are each the first
+// write of its own table, held in turn. The commit then writes the spec's version 1, indexes it in
+// the room as an upload indexes its document, appends issue.created, and appends what the index
+// and the node writes stated under it. The nodes come before the fence for the reason an upload's
+// does. The spec's block nodes are the room's, held by the node of the block the spec names, whose
+// address is the tree's: the issue's key is its project's next number, read before the run, and
+// its tree's slug is `tree`
 // (issueTreeName). Each run's create is forced past the near-copy gate, which would otherwise take
 // each run's issue for a copy of the one before it. Its control is the two nodes written after the
 // issue's row, which fails as the upload's controls do.
@@ -1234,12 +1240,12 @@ func (r *storeWriterRig) issueCreate() storeWriter {
 				hold: holdTableWrites("issue_trees"), at: "insert into issue_trees (",
 				takes: []tableLock{{"issue_trees", rowExclusiveMode}},
 			},
-			newFenceStep(),
 			{
 				name: "the spec's document_rooms row", order: projectionStep,
 				hold: holdTableWrites("document_rooms"), at: "insert into document_rooms (",
 				takes: []tableLock{{"document_rooms", rowExclusiveMode}},
 			},
+			newFenceStep(),
 			heldBlockNodesStep(),
 			blockRowsStep(),
 			eventAppendStep(),

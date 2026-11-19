@@ -53,7 +53,7 @@ type Claim struct {
 // and every tuple after them, because each tuple arm of a write that has nodes reads the node
 // arm before its first row (nodesWrittenFirst).
 //
-// No arm holds its nodes to the types the store holds, as queueNodes does (queueSupertagCheck):
+// No arm holds its nodes to the types the store holds, as queueNodes does (missingSupertagsSQL):
 // the arms are spliced into their caller's one statement - the publisher's record of a batch
 // above all - and a refusal decided before that statement runs has no statement of its own to run
 // in, while one decided inside it would end the record of a batch already sent. Every node an arm

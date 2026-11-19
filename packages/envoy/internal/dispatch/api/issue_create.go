@@ -566,7 +566,8 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		relations.claim(key, graphstore.TupleChildOf, graphstore.KindIssue, parentKey, issueCreatedAt)
 	}
 	if len(waits.targets) > 0 {
-		needs, err := writeIssueNeeds(r.Context(), tx, key, input.Project, callerProject, waits, issueCreatedAt)
+		// A new issue holds no wait yet, so none is read (heldIssueNeeds' zero value).
+		needs, err := writeIssueNeeds(r.Context(), tx, key, input.Project, callerProject, waits, heldIssueNeeds{}, issueCreatedAt)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

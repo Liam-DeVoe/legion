@@ -321,8 +321,12 @@ func writeVersionThroughThisBuild(t *testing.T, link previousReleaseLink, writer
 	`, document, want).Scan(&event); err != nil {
 		t.Fatalf("append version %d's event: %v", want, err)
 	}
-	if err := graphstore.Caused(ctx, tx, written.Blocks, event); err != nil {
-		t.Fatalf("append what version %d's write stated: %v", want, err)
+	// The version write queues its writes on the ledger, its node's among them, so what it stated
+	// is caused in the same write phase, after them, as a route queues it.
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		return graphstore.QueueCaused(ctx, b, written.Blocks, event)
+	}); err != nil {
+		t.Fatalf("queue what version %d's write stated: %v", want, err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit version %d: %v", want, err)

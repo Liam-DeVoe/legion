@@ -638,6 +638,27 @@ func (l *Ledger) PendingDocument(id string) (refs.DocumentAddress, bool) {
 	return address, pending
 }
 
+// PendingRoomKey is the ref_key of the issue room the document of ref_key refKey is edited in,
+// where this transaction creates the document (RegisterPendingArtifact), joins it to the room
+// (RegisterPendingRoom) and creates the room too: an issue born converted's spec and its tree.
+func (l *Ledger) PendingRoomKey(refKey string) (string, bool) {
+	if l == nil {
+		return "", false
+	}
+	for id, address := range l.artifacts {
+		if address.RefKey != refKey {
+			continue
+		}
+		room, joined := l.issueRooms[id]
+		if !joined {
+			return "", false
+		}
+		created, pending := l.artifacts[room]
+		return created.RefKey, pending
+	}
+	return "", false
+}
+
 // PendingMarkdown is the markdown of the version of artifactID this transaction has queued and
 // not written yet (queuedVersion), the latest version of that document as the transaction
 // leaves it, which latestVersion answers with too.
