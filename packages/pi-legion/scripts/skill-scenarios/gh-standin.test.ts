@@ -1,7 +1,13 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+
+// Each row runs the stand-in as a bun process of its own, a start a loaded machine stretches: the
+// file took 0.24 s at a load of about 350, and the rig's other process rows have passed 5 s at
+// heavier loads, so each test and hook gets one minute, set before the hooks the reservations below
+// register.
+setDefaultTimeout(60_000);
 
 // Each row's run directory, reserved here (the fixture's hook makes it before the rows run).
 const runs = {

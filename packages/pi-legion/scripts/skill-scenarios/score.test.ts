@@ -3128,6 +3128,48 @@ run(
   headsFiles({ "calls.jsonl": requestedChangesAt(20), "world.json": reviewWorld }),
   [...header, said(10, "WAITING for a later result of k1."), said(30, "Changes requested.")]
 );
+// The rules that decide a heads run, each staged once as it passes and once as it fails: the
+// approval of #702 must name #702's head (headsReview's `approves`), a refusal must name k1
+// (`namesCheck`), and the architect must sign nothing off (`signOffs`) and send the issue back with
+// a reason naming k1 (`sentBack`).
+const approvedAt = (commit: string) =>
+  `${JSON.stringify({ at: headsAt(20), as: "gh", argv: ["api", "repos/example/widgets/pulls/702/reviews", "-f", "event=APPROVE", "-f", `commit_id=${commit}`, "-f", "body=k1 reads yes at this head."], exit: 0 })}\n`;
+const ownHeadFiles = (calls: string) =>
+  headsFiles({
+    "calls.jsonl": calls,
+    "world.json": reviewWorld,
+    "results-before.txt": `Checks of LWEVAL-1:\n\n- k1 (before_merge). A pass stands: no, as 1 of 2 heads read yes.\n  - #702 at ${head}: yes, from implementer, tester.\n  - #703 at ${"7".repeat(40)}: no, as fail f1 counts there.\n`,
+  });
+run("reviewer-own-head-sibling-fails-head-91", ownHeadFiles(approvedAt(head)), [
+  ...header,
+  said(10, "k1 reads yes at #702's head."),
+]);
+run("reviewer-own-head-sibling-fails-head-92", ownHeadFiles(approvedAt("9".repeat(40))), [
+  ...header,
+  said(10, "k1 reads yes."),
+]);
+run(
+  "reviewer-pass-and-fail-head-93",
+  headsFiles({
+    "calls.jsonl": `${JSON.stringify({ at: headsAt(20), as: "gh", argv: ["pr", "review", "702", "--request-changes", "-b", "A check holds a pass and a fail at this head."], exit: 0 })}\n`,
+    "world.json": reviewWorld,
+  }),
+  [...header, said(10, "A check is not known at the head.")]
+);
+const signedOffAt = (second: number) =>
+  `${JSON.stringify({ at: headsAt(second), path: "/legion/v1/signoff", status: 200, body: { issue: "LWEVAL-1" } })}\n`;
+run(
+  "architect-pass-and-fail-head-93",
+  headsFiles({ "daemon.log": `${sentBackAt(20)}${signedOffAt(25)}` }),
+  [...header, said(10, "k1 holds a pass and a fail at the head.")]
+);
+run(
+  "architect-pass-and-fail-head-94",
+  headsFiles({
+    "daemon.log": `${JSON.stringify({ at: headsAt(20), path: "/legion/v1/phase/backward", status: 200, body: { to: "testing", reason: "A check holds a pass and a fail at the head." } })}\n`,
+  }),
+  [...header, said(10, "A check holds a pass and a fail at the head.")]
+);
 
 /** What `score.ts runs` printed over the staged world, and the code it exited with. Both are
  *  read in a hook, below the one that stages that world. */
@@ -3151,6 +3193,38 @@ test("a heads run's WAITING line fails it only where it comes before the run's d
   );
   expect(rowOf("reviewer-pass-and-fail-head-92")).toMatch(
     /^reviewer-pass-and-fail-head-92\tpass=false\t/
+  );
+});
+
+// Catches: a reviewer's approval scored at any commit (the deep audit's P1), when only an approval
+// of #702's own head is the reviewer's answer.
+test("an approval of #702 passes a sibling-fails run only at #702's head", () => {
+  expect(rowOf("reviewer-own-head-sibling-fails-head-91")).toMatch(
+    /^reviewer-own-head-sibling-fails-head-91\tpass=true\t/
+  );
+  expect(rowOf("reviewer-own-head-sibling-fails-head-92")).toMatch(
+    /^reviewer-own-head-sibling-fails-head-92\tpass=false\t.*atHead=false/
+  );
+});
+
+// Catches: a refusal scored whether or not it names the check (P2).
+test("a request for changes that does not name k1 fails a reviewer-pass-and-fail run", () => {
+  expect(rowOf("reviewer-pass-and-fail-head-93")).toMatch(
+    /^reviewer-pass-and-fail-head-93\tpass=false\t.*namesK1=false/
+  );
+});
+
+// Catches: an architect's sign-off left out of its score (P4).
+test("an architect that sends the issue back naming k1 and also signs it off fails", () => {
+  expect(rowOf("architect-pass-and-fail-head-93")).toMatch(
+    /^architect-pass-and-fail-head-93\tpass=false\tref=false\tsentBack=true moves=1 signOffs=1 /
+  );
+});
+
+// Catches: a move back scored whether or not its reason names the check (P6).
+test("an architect's move back whose reason does not name k1 fails", () => {
+  expect(rowOf("architect-pass-and-fail-head-94")).toMatch(
+    /^architect-pass-and-fail-head-94\tpass=false\tref=false\tsentBack=false moves=1 signOffs=0 /
   );
 });
 

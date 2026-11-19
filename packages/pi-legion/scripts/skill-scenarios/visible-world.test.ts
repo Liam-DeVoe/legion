@@ -1,8 +1,14 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { lstatSync, mkdirSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+
+// Each row runs visible-world.ts as a process of its own, and the view rows walk a real bubblewrap
+// view. At a load of about 350 the slowest row took 1.45 s, and a heavier load passes bun's 5 s
+// default, so each test and hook gets one minute, set before the hooks the reservations below
+// register.
+setDefaultTimeout(60_000);
 
 // Each row's work directory, reserved here (the fixture's hook makes it before the rows run).
 const works = {

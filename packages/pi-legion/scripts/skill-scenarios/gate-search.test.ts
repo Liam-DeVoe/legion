@@ -13,12 +13,18 @@
 // works in a copy of the checkout's prompts and skills, or of its built plugin, under its own
 // mktemp directory.
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { appendFileSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { buildGenerated, GENERATED, gateSearch } from "./gate-search";
 import { roleTexts } from "./role-texts";
+
+// Each row copies the checkout's prompts and skills, or builds its plugin, and the hook removes the
+// copies. The file took 1.8 s at a load of about 350, and the same removal in rule-search.test.ts
+// took 36 s at a load of about 690, past bun's 5 s default per test and hook, so each test and hook
+// gets one minute, set before the hook below.
+setDefaultTimeout(60_000);
 
 const checkout = process.env.GATE_SEARCH_CHECKOUT ?? path.resolve(import.meta.dir, "../../../..");
 const scratch = mkdtempSync(path.join(tmpdir(), "gate-search-test-"));
