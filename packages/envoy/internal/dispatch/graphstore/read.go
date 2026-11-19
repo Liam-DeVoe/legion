@@ -277,9 +277,9 @@ const nodesOfKind = `
 // tuple (CurrentTupleRead) points at that node, in (kind, id) order, in one statement. A node moved
 // under another parent holds its part_of here retracted, and a node of another kind under the
 // parent - a lens invoked on a lens - is none of these. The statement binds `to_kind <> 'value'`
-// as a literal, as CurrentIn does, so the planner proves the predicate of graph_tuples_inbound and
-// walks that index from the parent. The write that takes a lens to gone reads its findings and its
-// risks so (api's writeNodeState).
+// as a literal, as CurrentIn does, so the planner proves the predicate of graph_tuples_as_of_in
+// and walks that index from the parent. The write that takes a lens to gone reads its findings and
+// its risks so (api's writeNodeState).
 func NodesUnder(ctx context.Context, q Queryer, parentKind, parentID string, kinds ...string) ([]Node, error) {
 	rows, err := q.Query(ctx, nodesUnder, parentKind, parentID, kinds, StateGone)
 	if err != nil {
@@ -294,7 +294,7 @@ func NodesUnder(ctx context.Context, q Queryer, parentKind, parentID string, kin
 
 // nodesUnder is the statement of NodesUnder: $1 and $2 the parent's kind and id, $3 the kinds of
 // the nodes it answers and $4 the gone state. The relation the read keeps is the near end alone,
-// the inbound index's columns past those it binds, so it sorts nothing.
+// which graph_tuples_as_of_in does not key, so it sorts the parent's part_of tuples by node.
 var nodesUnder = `
 		select ` + nodeColumns + `
 		from (

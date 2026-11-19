@@ -361,7 +361,7 @@ func excerptOf(node resolvedNode) *model.GraphExcerpt {
 // had read only small nodes planned the whole view again for every execution, 20 ms (on this pod,
 // for a node with 7 edges into it). With the id read as a value, the custom plan is the generic
 // plan, every connection keeps the generic plan from its sixth execution on, and that plan walks
-// graph_tuples_inbound and the arms' own indexes keyed on the far end, as the custom plan did
+// graph_tuples_as_of_in and the arms' own indexes keyed on the far end, as the custom plan did
 // (check c-read-cost).
 func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) ([]edgeRow, error) {
 	if !slices.Contains(nodeKinds, query.Kind) {

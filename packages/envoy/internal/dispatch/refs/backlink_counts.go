@@ -461,7 +461,7 @@ func (a backlinkArm) tupleSQL(target backlinkTarget) string {
 
 // storedSQL is an arm of the store alone (storedFrom): the current tuples of the arm's kind
 // pointing at the addresses bound as $1 out of a node of one of its kinds, read through
-// graph_tuples_inbound as tupleSQL reads them, with the view's two rules over the node each comes
+// graph_tuples_as_of_in as tupleSQL reads them, with the view's two rules over the node each comes
 // from and no projection row to consult. A source is read under the kind the store keys it by
 // and counted under the kind the graph addresses it by (graphstore.AddressKindSQL), so a finding
 // of a lens, a block row whose id names its lens, counts as the lens_block the view's own arm
@@ -541,7 +541,7 @@ var backlinkArms = map[string][]backlinkArm{
 		// artifacts_issue_key, partial on issue_key is not null.
 		{kind: "attached_to", from: `artifacts a`, where: `a.issue_key is not null`, toID: `a.issue_key`,
 			fromKind: "artifact", fromID: `a.ref_key`},
-		// graph_tuples_inbound: a lens invoked on the issue, and a constraint written under it,
+		// graph_tuples_as_of_in: a lens invoked on the issue, and a constraint written under it,
 		// each placed there by its part_of tuple (lensStandsOn).
 		{kind: graphstore.TuplePartOf, storedFrom: []string{graphstore.KindConstraint, graphstore.KindLens}},
 	},
@@ -567,7 +567,7 @@ var backlinkArms = map[string][]backlinkArm{
 		// answered while the block's own row carries its node.
 		{kind: "part_of", from: `artifacts a join document_blocks d on d.artifact_id = a.id`, toID: `a.ref_key`,
 			fromKind: "block", fromID: `d.node_id`, projected: `d.node_kind`, tupleKind: TupleInDocument, projectedIn: "document_blocks"},
-		// graph_tuples_inbound: a lens invoked on the document, its part_of at the document's
+		// graph_tuples_as_of_in: a lens invoked on the document, its part_of at the document's
 		// ref_key; a block's membership is in_document, so this arm counts none of it.
 		lensStandsOn,
 	},
@@ -620,7 +620,7 @@ var backlinkArms = map[string][]backlinkArm{
 		// that ask and that session carries the ask's node (projectionCarries' session test).
 		{kind: "followed_by", from: `ask_followers f`, toID: `f.session_id`,
 			fromKind: "ask", fromID: `f.ask_id::text`, projected: `f.node_kind`, tupleKind: graphstore.TupleFollowedBy, projectedIn: "ask_followers"},
-		// graph_tuples_inbound: what a session wrote of the kinds the view answers its
+		// graph_tuples_as_of_in: what a session wrote of the kinds the view answers its
 		// authored_by from.
 		authoredByReasoning,
 	},

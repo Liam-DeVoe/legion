@@ -126,7 +126,8 @@ func changedByRunMarks(ctx context.Context, nodes []Node, changes []runChange, t
 // heldChangedByRun is, of the nodes $2 and $3 name by kind and id, each that already holds an
 // asserted changed_by_run tuple to the interaction of the run $1 names: the newest tuple of each
 // such relation, read as every relation as it stands now is read (CurrentTupleRead), through
-// graph_tuples_inbound, which keys the run's interaction, the kind and then the node.
+// graph_tuples_as_of_in, which keys the run's interaction and then the kind: the node is no column
+// of it, so the read sorts the run's changed_by_run tuples by node.
 var heldChangedByRun = `
 	select from_kind, from_id from (
 		` + CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,

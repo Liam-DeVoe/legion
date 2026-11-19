@@ -93,11 +93,10 @@ const (
 	predicateCostDropInbound = "drop-inbound-indexes"
 )
 
-// predicateCostInboundIndexes are the indexes the check's negative control drops. The check
-// names graph_tuples_inbound alone, but graph_tuples_as_of_in keys the same (to_kind, to_id,
-// kind) under the same partial predicate (migration 20261109013400_graph_store), so a run that
-// dropped the first would read the second and pay one sort more: the control drops both.
-var predicateCostInboundIndexes = []string{"graph_tuples_inbound", "graph_tuples_as_of_in"}
+// predicateCostInboundIndexes are the indexes the check's negative control drops:
+// graph_tuples_as_of_in alone, which migration 20261109013400_graph_store declares, the one index
+// that serves a read into a node once graph_tuples_inbound is gone.
+var predicateCostInboundIndexes = []string{"graph_tuples_as_of_in"}
 
 // predicateCostInboundLookup is the lookup the tuples-into-a-node read makes of one block, $1 its
 // node id, read as a value before the read as readEdgeRows reads it: the edges of graph_edges into
@@ -649,7 +648,7 @@ func requirePredicateCostAuthorNodes(t *testing.T, head *costArm) {
 // dropPredicateCostInboundIndexes is the check's negative control on this head's database: it
 // drops predicateCostInboundIndexes, and prints the plan of the lookup the tuples-into-a-node read
 // makes of the node of shape before the drop and after it, so the run shows the read losing the
-// index rather than assuming it. A plan that read neither index before the drop would make the
+// index rather than assuming it. A plan that read none of them before the drop would make the
 // drop no control of this read, and fails the run.
 func dropPredicateCostInboundIndexes(t *testing.T, head *costArm, shape *predicateCostShape) {
 	t.Helper()
@@ -666,7 +665,7 @@ func dropPredicateCostInboundIndexes(t *testing.T, head *costArm, shape *predica
 	t.Logf("%s=%s: %s's plan of the tuples into %s, the node of %q, before the drop (it reads %v):\n%s",
 		predicateCostControlEnv, predicateCostDropInbound, head.name, shape.into, shape.name, reads(before), before)
 	if len(reads(before)) == 0 {
-		t.Fatalf("%s=%s: %s's plan of the tuples into %s reads neither of %v before the drop, so dropping them is no control of that read",
+		t.Fatalf("%s=%s: %s's plan of the tuples into %s reads none of %v before the drop, so the drop is no control of that read",
 			predicateCostControlEnv, predicateCostDropInbound, head.name, shape.into, predicateCostInboundIndexes)
 	}
 	for _, index := range predicateCostInboundIndexes {
@@ -675,7 +674,7 @@ func dropPredicateCostInboundIndexes(t *testing.T, head *costArm, shape *predica
 		}
 	}
 	after := predicateCostInboundPlan(t, head, node)
-	t.Logf("%s=%s: %s's plan of the tuples into %s after %v were dropped from its database:\n%s",
+	t.Logf("%s=%s: %s's plan of the tuples into %s after the drop of %v from its database:\n%s",
 		predicateCostControlEnv, predicateCostDropInbound, head.name, shape.into, predicateCostInboundIndexes, after)
 	if left := reads(after); len(left) != 0 {
 		t.Fatalf("%s=%s: %s's plan of the tuples into %s still reads %v after the drop", predicateCostControlEnv, predicateCostDropInbound,
