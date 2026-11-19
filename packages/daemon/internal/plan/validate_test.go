@@ -246,3 +246,22 @@ func TestAStepThatReadsAPullRequestNamesARoleOfTheDeploymentThatNeedsNone(t *tes
 		t.Fatalf("Supported(critic implementer) = %+v, want none", r)
 	}
 }
+
+// A role runs at most one step of a task: a role of the deployment named at two steps is refused
+// as Legion's own roles are, so neither an owner's plan (api's register_plan) nor a project's
+// default steps (config's checkDefaultSteps), the two writers of a task's steps, can name one. The
+// daemon reads the role of the step a task stands at as the step (record.Issue.HoldsQueued, the
+// phases row of a role), which holds only while this does. The control: the same deployment's
+// plan that names the role once, beside another role of the deployment, is taken.
+func TestARoleOfTheDeploymentAtTwoStepsIsRefused(t *testing.T) {
+	d := withRole("checker", TypeTesting)
+	d.Roles["linter"] = RoleDef{Name: "linter", Type: TypeTesting}
+	want := []Refusal{{Task: "a", Reason: "task a names the role checker at steps 2 and 4." + yet}}
+	if r := Supported(oneTask("a", "implementer checker linter checker"), d); !reflect.DeepEqual(r, want) {
+		t.Fatalf("Supported(implementer checker linter checker) =\n%+v\nwant\n%+v", r, want)
+	}
+	p := oneTask("a", "implementer checker linter")
+	if r := append(Supported(p, d), Validate(p, d)...); len(r) != 0 {
+		t.Fatalf("Supported(implementer checker linter) = %+v, want none", r)
+	}
+}

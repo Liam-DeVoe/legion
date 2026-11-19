@@ -2396,13 +2396,15 @@ func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase !
 // queuedFor and, at the phase step, at a step of role (StepRole). Every role a deployment defines
 // runs as step, so a start or a task queued for the step of one role names a phase that still
 // reads the same while the task stands at the step of another; the role is what tells the two
-// apart. Away from step the phase alone is compared: one role works several phases (the
-// implementer implementing and retro), and a phase names its one role. A role that runs two steps
-// of one task is told apart from itself by its phase entry, which each start of it raises
-// (PhaseRow.Entry). It is the one definition of that question, which the three judges of queued
+// apart. At step the role names the step: a role runs at most one step of a task, since a plan, an
+// owner's or a project's default steps, that names a role at two steps is refused (plan.Supported),
+// as the phases row of a role assumes too (PhaseRow.StepPlace). Away from step the phase alone is
+// compared: one role works several phases (the implementer implementing and retro), and a phase
+// names its one role. It is the one definition of that question, which the four judges of queued
 // work ask, each on its own read: the outbox before it runs a start (daemon's supervise), the
-// admission pass before it lets an owed start take a slot (admit's finishFencedStarts), and the
-// supervisor before it sends a queued task (PhaseHolds).
+// admission pass before it lets an owed start take a slot (admit's finishFencedStarts), the
+// supervisor before it sends a queued task (PhaseHolds), and the supervisor again before it
+// brings a claim back for a start (supervise.StartWork, through PhaseHolds).
 func (i Issue) HoldsQueued(role claim.Role, queuedFor phase.Phase) bool {
 	return i.Phase == queuedFor && (queuedFor != phase.Step || i.StepRole == role)
 }
