@@ -61,6 +61,18 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
     keep: "The roles that work from a plan. It names no check of Dispatch.",
   },
   {
+    file: "packages/daemon/internal/prompts/go/worker-common.md",
+    has: "One write is the exception: the forward merge the daemon asks of the implementer",
+    keep: "Who writes the workspace during a merge of the base the daemon asks for. It names no check of Dispatch.",
+    at: "head",
+  },
+  {
+    file: "packages/daemon/internal/prompts/go/worker-common.md",
+    has: "The implementer is asked to merge the base forward in the issue workspace and push",
+    keep: "The daemon's ask of a merge of the base, and the assignments it leaves standing. It names no check of Dispatch.",
+    at: "head",
+  },
+  {
     file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
     has: "Verify as forge facts, never from reports",
     cut: "It asks a pass from both roles. The label deletes `from the implementer and from the tester both,` and `: a line that names one of the two roles alone is no pass for your approval`.",
@@ -153,11 +165,13 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
     file: "skills/legion-worker/references/conflicts-and-rewrites.md",
     has: "This is what lets each role compare against",
     keep: "Fingerprints of heads. It names no check of Dispatch.",
+    at: "base",
   },
   {
     file: "skills/legion-worker/references/conflicts-and-rewrites.md",
     has: "Where each role gets its two heads",
     keep: "Fingerprints of heads. It names no check of Dispatch.",
+    at: "base",
   },
   {
     file: "skills/legion-worker/references/default-branch-check.md",

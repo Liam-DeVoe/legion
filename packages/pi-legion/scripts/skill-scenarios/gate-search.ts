@@ -125,11 +125,18 @@ const ACCEPTANCE_STEP =
   "What the acceptance reads and its two moves, with no condition of its own: the condition is section 6 of `skill://legion-architect`, which states each fact of R16.";
 const NO_CHECK =
   "An issue with no `before_merge` check, so no check whose answer is read: the acceptance decides its delivered items.";
+const MERGE_OF_THE_BASE =
+  "Which checks run again after a merge of the base, and that a pass from before that merge carries none to its head. It states no condition of an approval, an acceptance or a merge of the pull request.";
 const ENTRIES: readonly Entry[] = [
   {
     file: "packages/daemon/internal/prompts/go/architect-common.md",
     has: "The reviewer's `phase-finished` notice over an `APPROVED` review is the daemon telling you",
     keep: ACCEPTANCE_STEP,
+  },
+  {
+    file: "packages/daemon/internal/prompts/go/worker-common.md",
+    has: "A check those files or the resolution can reach runs again",
+    keep: MERGE_OF_THE_BASE,
   },
   {
     file: "packages/daemon/internal/prompts/roles/architect-root.md",
@@ -162,9 +169,19 @@ const ENTRIES: readonly Entry[] = [
     keep: NO_CHECK,
   },
   {
+    file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
+    has: "A check those files or the resolution can reach runs again",
+    keep: MERGE_OF_THE_BASE,
+  },
+  {
     file: "skills/legion-architect/references/acceptance.md",
     has: "While the approved head does not carry those merges",
     keep: "The wait for a child's close, which brings the result a parent's check needs. It is no statement of a check whose result is there and not known.",
+  },
+  {
+    file: "skills/legion-architect/references/acceptance.md",
+    has: "A check those files or the resolution can reach runs again",
+    keep: MERGE_OF_THE_BASE,
   },
   {
     file: "skills/legion-retro/SKILL.md",
@@ -177,6 +194,11 @@ const ENTRIES: readonly Entry[] = [
     keep: "The rules that no deployment overrides. It names the implementer's own result, and no condition of an approval, an acceptance or a merge.",
   },
   {
+    file: "skills/legion-worker/references/conflicts-and-rewrites.md",
+    has: "A check those files or the resolution can reach runs again",
+    keep: MERGE_OF_THE_BASE,
+  },
+  {
     file: "skills/legion-worker/references/merge-gate.md",
     has: "- Between the reviewer's approval and retro the issue sits in `accepting`",
     keep: ACCEPTANCE_STEP,
@@ -187,6 +209,11 @@ const ENTRIES: readonly Entry[] = [
     keep: NO_CHECK,
   },
   {
+    file: "skills/legion-worker/references/merge-gate.md",
+    has: "A check those files or the resolution can reach runs again",
+    keep: MERGE_OF_THE_BASE,
+  },
+  {
     file: "skills/legion-worker/references/pr-body.md",
     has: "**A result proves the head it was recorded at.**",
     keep: "Which commit a result proves. It names no approval, acceptance or merge that waits on it.",
@@ -195,6 +222,11 @@ const ENTRIES: readonly Entry[] = [
     file: "skills/legion-worker/references/pr-body.md",
     has: "A code path whose first execution would be after the merge",
     keep: "An `after_merge` check, recorded after the merge, which no approval or acceptance waits on.",
+  },
+  {
+    file: "skills/legion-worker/references/pr-body.md",
+    has: "A check those files or the resolution can reach runs again",
+    keep: MERGE_OF_THE_BASE,
   },
 ];
 
