@@ -189,9 +189,9 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // spec block `e2e/review-seed.ts` points the decision at.
     //
     // The margin is a column beside the document at the wide layout's width and a bottom sheet
-    // below it, shut until a button opens it (`packages/dispatch/AGENTS.md`, "Phone
-    // acceptance"), so the card is on the screen at a desktop width and only the sheet's
-    // toggle narrower; the phone row waits on the dot and that toggle (`heldMargin`).
+    // below it, shut until a button opens it (`web/src/features/margin/MarginSheet.tsx`), so the
+    // card is on the screen at a desktop width and only the sheet's toggle narrower; the phone row
+    // waits on the dot and that toggle (`heldMargin`).
     ready: (page) => {
       const connected = page.getByRole("status", { name: "connected" });
       return wideLayout(page)
