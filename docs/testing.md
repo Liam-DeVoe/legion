@@ -497,8 +497,8 @@ that wait it answers at the horizon it has and leaves the rest to a later read: 
 it never loses an edge. The horizon is instance-wide,
 so any transaction holding a transaction id on the Postgres instance holds it back, and in
 `packages/envoy/internal/dispatch/api` the holder is the test process itself: `Harness.Clone`'s
-`create database … template … strategy file_copy` and `Harness.drop`'s plain `drop database`,
-which it tries again while Postgres answers 55006 and ends with `drop database … with (force)`
+`create database … template … strategy file_copy` and `Harness.drop`'s plain `drop database if exists`,
+which it tries again while Postgres answers 55006 and ends with `drop database if exists … with (force)`
 only when those tries fail (`packages/envoy/internal/testpg/pgtemplate/pgtemplate.go`).
 
 So a read that answered within `referencesSinceWait` was not held back: what it listed is what it

@@ -130,6 +130,41 @@ func TestEachTestIsHandedADatabaseOfItsOwnWhichIsDroppedAfterwards(t *testing.T)
 	}
 }
 
+// A test may drop its own database before the harness does: internal/dispatch/store's
+// dropRoleAfterTestDatabase drops the test's database and then a role the test made, in a cleanup
+// registered after the clone, which t.Cleanup runs before the harness's drop. That drop then finds
+// no database, which is the end the harness's drop is for, so Main reports nothing. Broken, Main
+// fails a package whose every test passed, naming a database nobody left behind.
+func TestADatabaseItsTestDroppedFirstIsADropThatSucceeded(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	raw := serverURL(t)
+	// A harness of its own, so its Main waits for this test's drop alone and the package's
+	// harness, whose Main decides the run, never sees it.
+	harness := New(Dispatch, store.MigrationsFingerprint, store.MigrateTemplate)
+	var name string
+	code := harness.MainWith(nil, func(*testing.M) int {
+		t.Run("a test that drops its own database", func(t *testing.T) {
+			databaseURL := harness.Unmigrated(t, raw, "dispatch_unmigrated_test_")
+			// Registered after the clone, as dropRoleAfterTestDatabase is, so it runs before the
+			// harness's drop; forced, as that one is, because the connection below closes first
+			// and Postgres may not have torn its backend down yet.
+			t.Cleanup(func() {
+				if _, err := harness.admin.Exec(context.Background(), "drop database "+name+" with (force)"); err != nil {
+					t.Errorf("drop the test's own database %s: %v", name, err)
+				}
+			})
+			if err := connect(t, databaseURL).QueryRow(ctx, "select current_database()").Scan(&name); err != nil {
+				t.Fatalf("read the test database's name: %v", err)
+			}
+		})
+		return 0
+	})
+	if code != 0 {
+		t.Errorf("Main failed the run after a test dropped its own database %s: %q", name, harness.dropFails)
+	}
+}
+
 // The template is the migration set's, whole, and left on the server: that is what lets the next
 // test process clone it instead of applying every migration again, which is most of the Postgres
 // work a test run does. Broken, either every process migrates a template of its own again, or -

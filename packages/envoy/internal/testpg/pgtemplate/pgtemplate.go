@@ -257,12 +257,18 @@ const (
 // Postgres answers SQLSTATE 55006 (object_in_use), the code it gives whatever words it puts on the
 // message, up to dropWindow; `force` is the last attempt, for a connection that really is
 // somebody else's or one a test left open.
+//
+// A test may drop its own clone before this runs: internal/dispatch/store's
+// dropRoleAfterTestDatabase drops the test's database and then a role the test created, and its
+// cleanup, registered after the clone, runs before this one. Both attempts are
+// `drop database if exists`, so a database that is already gone is a drop that succeeded, not one
+// Main reports.
 func (h *Harness) drop(name string) {
 	h.drops.Go(func() {
 		deadline := time.Now().Add(dropWindow)
 		var err error
 		for {
-			if _, err = h.admin.Exec(context.Background(), "drop database "+name); err == nil {
+			if _, err = h.admin.Exec(context.Background(), "drop database if exists "+name); err == nil {
 				return
 			}
 			var pgError *pgconn.PgError
@@ -271,7 +277,7 @@ func (h *Harness) drop(name string) {
 			}
 			time.Sleep(dropPause)
 		}
-		_, forced := h.admin.Exec(context.Background(), "drop database "+name+" with (force)")
+		_, forced := h.admin.Exec(context.Background(), "drop database if exists "+name+" with (force)")
 		if forced == nil {
 			return
 		}
