@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // seedAttributedHead stores the results row and the texts of repo#number, so that the statement
@@ -508,6 +509,63 @@ func TestIssueDeployedNamesTheAttributedIssue(t *testing.T) {
 		t.Errorf("RecordDeployedEvents wrote %d events, want 1, the event of #61 on ATTR-61", written)
 	}
 	requireDeployedEvent(t, ctx, pool, "ATTR-61", timelineRepo, 61, 961, timelineShippedAt.Format(time.RFC3339))
+}
+
+// A link that moves a pull request to another issue between the list of shipped pull requests and
+// the event's transaction gives the issue the list read no issue.deployed: the transaction reads
+// the statement again under the row's lock, and its rollback removes the mark. ATTR-71 links #71,
+// whose texts name no issue, and one run ships it. RecordDeployedEvents lists #71 for ATTR-71 and
+// is held before its mark; the link then moves to ATTR-72. Want no event written, none on ATTR-71
+// and no mark; then the next call writes the event on ATTR-72. An event's transaction that trusts
+// the list writes the event on ATTR-71.
+func TestALinkMovedBetweenTheListAndTheEventGivesTheListedIssueNoDeployedEvent(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	projectIssues(t, ctx, pool, timelineRepo, "ATTR-71", "ATTR-72")
+	url := fmt.Sprintf("https://github.com/%s/pull/71", timelineRepo)
+	storeStatementRow(t, ctx, pool, statementRow{repo: timelineRepo, number: 71, branch: "work/none", title: "the change",
+		texts: readTexts(""), timeline: &statementTimeline{}})
+	mergeTimelineRow(t, ctx, pool, timelineRepo, 71)
+	seedShippingRun(t, ctx, pool, timelineRepo, 971)
+	changeIssueLink(t, ctx, pool, "ATTR-71", url, "url", true)
+	wantShipped(t, ctx, pool, timelineRepo, "#71 ATTR-71")
+	settings := DeliverySettings{DeployRepo: timelineRepo, ProductionJobNames: []string{timelineJob}}
+
+	arrived, release := make(chan struct{}, 1), make(chan struct{})
+	traced := storetest.Traced(t, pool, pauseTracer{match: "set deployed_event_at = now()", arrived: arrived, release: release}, nil)
+	type outcome struct {
+		written int
+		err     error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		written, err := RecordDeployedEvents(ctx, traced, settings, events.NewBroker())
+		done <- outcome{written, err}
+	}()
+	waitOn(t, arrived, "the mark of #71")
+	changeIssueLink(t, ctx, pool, "ATTR-71", url, "url", false)
+	changeIssueLink(t, ctx, pool, "ATTR-72", url, "url", true)
+	close(release)
+	first := <-done
+	if first.err != nil {
+		t.Fatalf("RecordDeployedEvents: %v", first.err)
+	}
+	listedIssueEvents, at := len(deployedEvents(t, ctx, pool, "ATTR-71")), deployedEventAt(t, ctx, pool, timelineRepo, 71)
+	t.Logf("written=%d events_on_ATTR-71=%d marker=%v", first.written, listedIssueEvents, at)
+	if first.written != 0 || listedIssueEvents != 0 {
+		t.Errorf("RecordDeployedEvents wrote %d events and ATTR-71 carries %d, want none: the link moved #71 to ATTR-72 after the list", first.written, listedIssueEvents)
+	}
+	if at != nil {
+		t.Errorf("the marker of #71 is set at %v, want none: no event was written for it", at)
+	}
+
+	written, err := RecordDeployedEvents(ctx, pool, settings, events.NewBroker())
+	if err != nil {
+		t.Fatalf("the next RecordDeployedEvents: %v", err)
+	}
+	if written != 1 {
+		t.Errorf("the next RecordDeployedEvents wrote %d events, want 1, the event of #71 on ATTR-72", written)
+	}
+	requireDeployedEvent(t, ctx, pool, "ATTR-72", timelineRepo, 71, 971, timelineShippedAt.Format(time.RFC3339))
 }
 
 // The timeline marks a pull request whose issue is not known (revision 20, state S13). The
