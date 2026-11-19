@@ -580,8 +580,11 @@ test("a panel that is no modal, losing its last controls, keeps the focus inside
   });
 });
 
-// (u) So does the Inbox drawer, a modal dialog of rows: its last two rows answered together, the
-// focus stays in the drawer, on its first control (the real drawer's is its Close button).
+// (u) So does the Inbox drawer, a modal dialog of rows: its last two rows taken together by an
+// update, with no press of the reader's, the focus stays in the drawer. Each `<li>` is a row by its
+// element alone (`row-marker.ts`'s `ROW_SELECTOR`), so the first row's control, the nearest one
+// before them, is no landing for a loss the reader did not cause (ag): the box the rows are drawn
+// in takes the focus instead, which here, with no box inside it that clips, is the drawer itself.
 test("the Inbox drawer, losing its last rows, keeps the focus inside it", async () => {
   await withRescue(async () => {
     const pageSearch = pageSearchIn(mainOf("Before").main);
@@ -602,7 +605,8 @@ test("the Inbox drawer, losing its last rows, keeps the focus inside it", async 
       rows[1]?.closest("li")?.remove();
     });
     await settled();
-    expect(rows[0]).toHaveFocus();
+    expect(drawer).toHaveFocus();
+    expect(rows[0]).not.toHaveFocus();
     expect(pageSearch).not.toHaveFocus();
   });
 });
@@ -1017,8 +1021,9 @@ test("a control hidden after the reader scrolled it out of sight stays out of si
 });
 
 /** A box that scrolls by itself, laid out from 100 px to 400 px down the window, holding one row
- *  per label - an Inbox row, carrying the row marker as the Inbox draws it, and the one checkbox
- *  a row marks itself by - appended to `parent`. */
+ *  per label - an Inbox row, a `div` carrying the row marker where the Inbox draws an `<li>`, a
+ *  row by the same rule (`ROW_SELECTOR`), and the one checkbox a row marks itself by - appended
+ *  to `parent`. */
 function rowBoxIn(
   parent: Element,
   ...labels: string[]
@@ -1595,6 +1600,113 @@ test("a sibling moved into a pressed control's place is nothing new there, so th
   }
 });
 
+/** The sidebar's pinned agents (`PinnedAgentRow`), in a list at the end of `parent`: one `<li>`
+ *  per name, a row by its element alone, holding a link named for the agent and then its
+ *  `Unpin <name> from the sidebar` button, save for the names in `withoutUnpin`, whose rows hold
+ *  the link alone. */
+function pinnedAgentsIn(
+  parent: Element,
+  names: readonly string[],
+  withoutUnpin: readonly string[]
+): { row: HTMLLIElement; unpin: HTMLButtonElement | null }[] {
+  const list = document.createElement("ul");
+  parent.append(list);
+  return names.map((name) => {
+    const row = document.createElement("li");
+    const link = document.createElement("a");
+    link.href = `/agents/${name}`;
+    link.textContent = name;
+    row.append(link);
+    list.append(row);
+    const unpin = withoutUnpin.includes(name)
+      ? null
+      : buttonIn(row, `Unpin ${name} from the sidebar`);
+    return { row, unpin };
+  });
+}
+
+// (bn) A press of the reader's that takes its own row away lands on the same control in the row
+// that moves up into its place, so the reader can go on, unpinning as Dismiss goes on to the next
+// item. Unpin on the second of the sidebar's three pinned agents takes that `<li>` away at once,
+// and the third moves up, the same element, so nothing new stands there (al). The walk by count
+// lands Chromium, which counts the place while the row is still in the page, on the third row's
+// Unpin, and Firefox and WebKit, which count it once the row has gone, on its link; the row rule
+// lands every engine on its Unpin. Where the row that moves up has no Unpin, its first control,
+// its link, takes the focus. Where the row taken away was the last, no row moves up, and the
+// focus walks back as before, to the Unpin of the row before it. An Unpin its press disabled
+// before the row went, the disable's `focusout` first, keeps its place in its row all the same.
+// By a pointer press and by Enter, with Chromium's `focusout` and without.
+test("a row the reader's press takes away hands the focus to the same control in the row that moves up", async () => {
+  const presses: Record<string, (control: HTMLElement) => void> = {
+    Enter: (control) => {
+      control.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    },
+    pointer: pointerPress,
+  };
+  const cases: {
+    disable: boolean;
+    landing: string;
+    name: string;
+    pressed: number;
+    withoutUnpin: string[];
+  }[] = [
+    {
+      disable: false,
+      landing: "Unpin Gamma from the sidebar",
+      name: "Unpin Beta",
+      pressed: 1,
+      withoutUnpin: [],
+    },
+    {
+      disable: false,
+      landing: "Gamma",
+      name: "Unpin Beta, Gamma with no Unpin",
+      pressed: 1,
+      withoutUnpin: ["Gamma"],
+    },
+    {
+      disable: false,
+      landing: "Unpin Beta from the sidebar",
+      name: "Unpin Gamma, the last row",
+      pressed: 2,
+      withoutUnpin: [],
+    },
+    {
+      disable: true,
+      landing: "Unpin Gamma from the sidebar",
+      name: "Unpin Beta, disabled by its press",
+      pressed: 1,
+      withoutUnpin: [],
+    },
+  ];
+  // Where each press landed, and where it belongs.
+  const landed: Record<string, string | null> = {};
+  const belongs: Record<string, string> = {};
+  for (const { disable, landing, name, pressed, withoutUnpin } of cases) {
+    for (const [by, press] of Object.entries(presses)) {
+      // A disable fires its `focusout` in every engine, so that case is read with it alone.
+      for (const withFocusout of disable ? [true] : [true, false]) {
+        const named = `${name}, by ${by}, ${withFocusout ? "with" : "without"} a focusout`;
+        await withRescue(async () => {
+          const rows = pinnedAgentsIn(mainOf().main, ["Alpha", "Beta", "Gamma"], withoutUnpin);
+          const { row, unpin } = rows[pressed] as { row: HTMLLIElement; unpin: HTMLButtonElement };
+          unpin.focus();
+          press(unpin);
+          // The press's commit takes its row away at once, and the row after it moves up.
+          const leave = () => row.remove();
+          if (disable) unpin.disabled = true;
+          if (withFocusout) lose(unpin, leave);
+          else leave();
+          await settled();
+          landed[named] = focusedName();
+        });
+        belongs[named] = landing;
+      }
+    }
+  }
+  expect(landed).toEqual(belongs);
+});
+
 // (am) One batch of the page's records can hold a commit that moves the pressed control - a live
 // update reordering what it stands among - and the press's own commit that takes it away and
 // draws a form where it stood. With no `focusout` (Firefox and WebKit), the place is read off the
@@ -2068,4 +2180,137 @@ test("a date picked in a date box is the reader's press, so the box's removal wa
       });
     }
   }
+});
+
+/** A control of `kind`: a `<select>`, a `<textarea>`, a content-editable `<div>`, else an
+ *  `<input>` of that type. */
+function controlOf(kind: string): HTMLElement {
+  if (kind === "select" || kind === "textarea") return document.createElement(kind);
+  if (kind === "content-editable") {
+    const editable = document.createElement("div");
+    editable.contentEditable = "true";
+    return editable;
+  }
+  const input = document.createElement("input");
+  input.type = kind;
+  return input;
+}
+
+/** Puts `control` last in the Filter panel of (bk), where the date box stands, after its Status
+ *  trigger and its Author box, beside the page's main content, and gives it the focus. */
+function focusInFilterPanel(control: HTMLElement): void {
+  mainOf("Search");
+  const panel = document.createElement("div");
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute(PANEL_ATTRIBUTE, "");
+  buttonIn(panel, "Status");
+  const author = document.createElement("input");
+  author.setAttribute("aria-label", "Author");
+  panel.append(author);
+  control.setAttribute("aria-label", "Value");
+  panel.append(control);
+  document.body.append(panel);
+  control.focus();
+}
+
+/** The name of the element holding the focus: its `aria-label`, else its text. */
+function focusedName(): string | null {
+  const focused = document.activeElement;
+  return focused?.getAttribute("aria-label") ?? focused?.textContent ?? null;
+}
+
+// (bl) Every control that fires its `change` at the reader's pick, as the date box of (bk) does,
+// makes that change a press of theirs (`isPress`): a `<select>`, a checkbox, a radio, a file,
+// range or color input, and each date and time box, which takes typed text all the same. So in
+// the Filter panel of (bk), the control's removal in the task of its `change` is a loss the reader
+// caused: the focus walks back to the Author box before it, as in (bk), and does not pass over it
+// to the Status trigger.
+test("a change on a control that fires it at the reader's pick is their press, so the control's removal walks back to the control before it", async () => {
+  const kinds = [
+    "select",
+    "checkbox",
+    "radio",
+    "file",
+    "range",
+    "color",
+    "date",
+    "time",
+    "datetime-local",
+    "month",
+    "week",
+  ];
+  // Where the focus went for each kind, with Chromium's `focusout` and with none.
+  const landed: Record<string, string | null> = {};
+  const walkedBack: Record<string, string> = {};
+  for (const kind of kinds) {
+    for (const withFocusout of [true, false]) {
+      const named = `${kind}, ${withFocusout ? "with" : "without"} a focusout`;
+      await withRescue(async () => {
+        const control = controlOf(kind);
+        focusInFilterPanel(control);
+        control.dispatchEvent(new Event("input", { bubbles: true }));
+        control.dispatchEvent(new Event("change", { bubbles: true }));
+        if (withFocusout) lose(control);
+        else control.remove();
+        await settled();
+        landed[named] = focusedName();
+      });
+      walkedBack[named] = "Author";
+    }
+  }
+  expect(landed).toEqual(walkedBack);
+});
+
+// (bm) A `change` on a field whose value is typed text alone - an `<input>` of type text, search,
+// email, url, tel, password or number, a `<textarea>`, a content-editable element - is the
+// field's commit on blur, which Chromium fires as an update takes the focused field away, and no
+// press of the reader's (`isPress`), as in (bi). So in the Filter panel of (bk), the field's
+// removal in the task of that `change` is a loss the reader did not cause: the focus passes over
+// the Author box, which takes typed text, and lands on the Status trigger, in no row, and nothing
+// scrolls.
+test("a change on a field whose value is typed text is no press, so the field's removal takes the uncaused path", async () => {
+  const kinds = [
+    "text",
+    "search",
+    "email",
+    "url",
+    "tel",
+    "password",
+    "number",
+    "textarea",
+    "content-editable",
+  ];
+  // Where the loss landed for each kind, with Chromium's `focusout` and with none: the element
+  // holding the focus, whether it is in a row or takes typed text, and whether anything scrolled.
+  const landed: Record<string, object> = {};
+  const quiet: Record<string, object> = {};
+  for (const kind of kinds) {
+    for (const withFocusout of [true, false]) {
+      const named = `${kind}, ${withFocusout ? "with" : "without"} a focusout`;
+      const scrolls = spyOn(Element.prototype, "scrollIntoView");
+      try {
+        await withRescue(async () => {
+          const field = controlOf(kind);
+          focusInFilterPanel(field);
+          field.dispatchEvent(new Event("input", { bubbles: true }));
+          // The field's commit on blur, which Chromium fires as the update takes it away.
+          field.dispatchEvent(new Event("change", { bubbles: true }));
+          if (withFocusout) lose(field);
+          else field.remove();
+          await settled();
+          const focused = document.activeElement as HTMLElement;
+          landed[named] = {
+            focus: focusedName(),
+            inRow: inRow(focused),
+            scrolled: scrolls.mock.calls.length > 0,
+            takesText: takesText(focused),
+          };
+        });
+      } finally {
+        scrolls.mockRestore();
+      }
+      quiet[named] = { focus: "Status", inRow: false, scrolled: false, takesText: false };
+    }
+  }
+  expect(landed).toEqual(quiet);
 });

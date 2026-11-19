@@ -20,7 +20,6 @@ import {
   textSecondaryOnSurface,
 } from "../theme/classes";
 import { CONTROL, type ControlSize } from "./control-names";
-import { ROW_MARKER } from "./row-marker";
 import { useScrollEnds } from "./useScrollEnds";
 
 /** Everything one density of the shell draws, so the two sit side by side in one place. */
@@ -208,7 +207,7 @@ export function TableHead({ children }: TableHeadProps): ReactNode {
   const recipe = RECIPE[size];
   return (
     <thead className={stickyHead ? `${recipe.stickyHead} ${recipe.head}` : recipe.head}>
-      <tr {...ROW_MARKER}>{children}</tr>
+      <tr>{children}</tr>
     </thead>
   );
 }
@@ -254,7 +253,7 @@ export interface TableRowProps extends Omit<HTMLAttributes<HTMLTableRowElement>,
 export function TableRow({ children, tone = "default", ...rest }: TableRowProps): ReactNode {
   const { size } = useContext(TableStyleContext);
   return (
-    <tr className={joined(RECIPE[size].row, TONE[tone])} {...ROW_MARKER} {...rest}>
+    <tr className={joined(RECIPE[size].row, TONE[tone])} {...rest}>
       {children}
     </tr>
   );
@@ -319,7 +318,7 @@ export interface TableEmptyProps {
 export function TableEmpty({ children, colSpan }: TableEmptyProps): ReactNode {
   const { size } = useContext(TableStyleContext);
   return (
-    <tr {...ROW_MARKER}>
+    <tr>
       <td className={RECIPE[size].empty} colSpan={colSpan}>
         {children}
       </td>
