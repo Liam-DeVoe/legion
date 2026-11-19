@@ -218,8 +218,8 @@ func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.Handl
 // where the upload made the artifact.
 type artifactUploadResponse struct {
 	Artifact        model.Artifact `json:"artifact"`
-	Version         model.Version  `json:"version"`
 	PreviousVersion *int           `json:"previous_version"`
+	Version         model.Version  `json:"version"`
 }
 
 func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, target artifactTarget) {
@@ -1339,12 +1339,12 @@ type editArtifactResponse struct {
 	// check reached no verdict - the publish failed and the room is reloading, or the room
 	// holds a tree too deep to read - which is not the same statement as the empty list.
 	LostOps []int `json:"lost_ops"`
-	// Token is the document's token as the edit left it, and PreviousToken as the edit found it,
+	// PreviousToken is the document's token as the edit found it, and Token as the edit left it,
 	// both read in the edit's own transaction (docs.EditOutcome): a caller that undoes the edit
 	// tells by them whether what it read of the document before and after the edit is what the
 	// edit replaced and what it left.
-	Token         string         `json:"token"`
 	PreviousToken string         `json:"previous_token"`
+	Token         string         `json:"token"`
 	UnchangedOps  []int          `json:"unchanged_ops"`
 	Version       *model.Version `json:"version"`
 	// Written is the markdown the batch wrote, read back off the tree it wrote

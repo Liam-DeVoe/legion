@@ -14640,8 +14640,8 @@
         },
         "required": [
           "artifact",
-          "version",
-          "previous_version"
+          "previous_version",
+          "version"
         ],
         "type": "object"
       },
@@ -20534,8 +20534,8 @@
           "applied",
           "changed",
           "lost_ops",
-          "token",
           "previous_token",
+          "token",
           "unchanged_ops",
           "version",
           "written"
