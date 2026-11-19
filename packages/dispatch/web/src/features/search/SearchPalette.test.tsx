@@ -6,7 +6,8 @@ import {
 } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: a key that is part of an IME composition, which user-event has no form for.
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import { type ReactNode, useState } from "react";
@@ -697,6 +698,65 @@ test("the key hint row names Ctrl+Enter for a new tab, and ⌘+Enter under a Mac
     Reflect.deleteProperty(navigator, "userAgent");
     mac.unmount();
     mac.queryClient.clear();
+  }
+});
+
+// A key that is part of an input method's composition is the composition's, and its default
+// stays the browser's: the arrows move no highlight, Enter opens no row, and Backspace on the
+// empty box widens no chip. The bar is opened over an issue page, where the plain Backspace on
+// the empty box does widen the chip to the project; the page has no writing cursor in a block,
+// so Tab narrows nothing there with or without a composition.
+test("arrow keys, Enter and Backspace inside an IME composition move no highlight, route or chip", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  // The bar opened over an issue reads that issue once there are words in the box, to offer
+  // them to an agent holding it (`SendToAgentOffer.tsx`). No agent holds LEGION-2, so the bar
+  // offers no such row and the hits are the whole list.
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue({
+    ...issueFixture,
+    artifacts: [{ ...specArtifact, issue_key: "LEGION-2", project: "LEGION" }],
+    key: "LEGION-2",
+    number: 2,
+    project: "LEGION",
+    status: "done",
+    title: "Navigation instruments",
+  });
+  const view = renderPalette({ entries: ["/issues/LEGION-2/spec"] });
+  const box = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+  const chip = () => screen.getByTestId("search-scope").textContent;
+
+  try {
+    // Backspace widens the chip on an empty box alone, so it is pressed before the words are
+    // typed. `fireEvent` answers false for a key whose default was cancelled, which the bar does
+    // to each key it spends. user-event has no form for this: it cannot mark a key as an IME
+    // composition.
+    expect(chip()).toContain("Acting on LEGION-2");
+    expect(fireEvent.keyDown(box, { isComposing: true, key: "Backspace" })).toBe(true);
+    expect(chip()).toContain("Acting on LEGION-2");
+
+    await searchFor(user, "astrolabe");
+    // Two rows at least, so an arrow the bar took would move the highlight off the first.
+    const [first, second] = screen.getAllByRole("option");
+    if (first === undefined || second === undefined)
+      throw new Error("the palette listed fewer than two options");
+    expect(box).toHaveAttribute("aria-activedescendant", first.id);
+    for (const key of ["ArrowDown", "ArrowUp", "Enter"]) {
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      expect(fireEvent.keyDown(box, { isComposing: true, key }), `${key} composing`).toBe(true);
+      expect(box, `${key} composing`).toHaveAttribute("aria-activedescendant", first.id);
+    }
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-2/spec");
+
+    // The plain Backspace on the emptied box is the bar's: it widens the chip the composing one
+    // left alone.
+    await user.clear(box);
+    await user.keyboard("{Backspace}");
+    expect(chip()).toContain("Acting on the project LEGION");
+  } finally {
+    search.mockRestore();
+    getIssue.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
   }
 });
 

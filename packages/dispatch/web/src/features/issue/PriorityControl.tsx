@@ -48,12 +48,11 @@ export function PriorityControl({
    *  pane's head: `p`, or the person's own). */
   shortcutKeys?: readonly string[];
 }): ReactNode {
-  const write = useIssuePriority(issueKey);
+  const write = useIssuePriority(issueKey, priority);
   return (
     <PriorityEditor
       disabled={disabled}
       issueKey={issueKey}
-      priority={priority}
       shortcutKeys={shortcutKeys}
       write={write}
     />
@@ -77,6 +76,8 @@ export function PriorityControl({
  * The host passes the write when it has other ways to set the same priority: the issue page
  * creates one for the page and shares it with the keyboard's `0`–`3` and the palette's Set
  * priority rows, so one refusal is reported once, here, by the control the reader is looking at.
+ * The priority drawn is the write's (`IssueFieldWrite.shown`), so a pick from any of them shows
+ * from its press.
  * `held` is the host's own write out (the issue page's other field writes): the trigger keeps the
  * focus and its Tab stop and opens nothing (`ChoiceMenu`'s `held`).
  *
@@ -89,7 +90,6 @@ export function PriorityEditor({
   disabled = false,
   held = false,
   issueKey,
-  priority,
   shortcutKeys,
   variant = "badge",
   write,
@@ -97,13 +97,13 @@ export function PriorityEditor({
   disabled?: boolean;
   held?: boolean;
   issueKey: string;
-  priority: IssuePriority | null;
   /** The keys that open the menu, named on its trigger and the first drawn inside it. */
   shortcutKeys?: readonly string[];
   variant?: "badge" | "header";
   write: IssuePriorityWrite;
 }): ReactNode {
   const page = usePageWords();
+  const priority = write.shown;
   const tone = priority === null ? badgeLow : priorityBadge[priority];
   // Inside `NoTooltips` the badge is the new issue page's label chip, and the word Priority its
   // quiet words on the same ground, as the header variant says it in the quiet grey: each colour
@@ -115,7 +115,7 @@ export function PriorityEditor({
       : priority === null
         ? `${pagePaneBg} ${pageQuietText}`
         : pageLabelChip;
-  const shown = priority === null ? (page?.PROPERTY_LABELS.priority ?? "Priority") : `P${priority}`;
+  const label = priority === null ? (page?.PROPERTY_LABELS.priority ?? "Priority") : `P${priority}`;
   const mark = priority === null ? page?.pageChrome : page?.authorText;
   // Inside `NoTooltips` the priority is a value, so it keeps `max-w-full` and breaks anywhere,
   // and its trigger narrows to the line rather than keep its width. The header variant is the
@@ -132,7 +132,7 @@ export function PriorityEditor({
         checked={priority === null ? "" : `${priority}`}
         choices={priorityChoices}
         disabled={disabled}
-        face={shown}
+        face={label}
         held={held}
         label={`Priority of ${issueKey}`}
         marks={{ "data-priority-menu": "" }}
@@ -148,14 +148,14 @@ export function PriorityEditor({
             {...mark}
           >
             <PriorityBars priority={priority} />
-            {shown}
+            {label}
           </span>
         ) : (
           <span
             className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} ${badgeTone}`}
             {...mark}
           >
-            {shown}
+            {label}
           </span>
         )}
       </ChoiceMenu>

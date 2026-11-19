@@ -40,7 +40,9 @@ export function AssignToMe({
   shortcutKeys?: readonly string[];
   viewer: string;
 }): ReactNode {
-  const write = useIssueAssignee(issueKey);
+  // Offered on an issue nobody holds, it stands on no assignee, and draws none: its words say
+  // whether its write is out, not who holds the issue.
+  const write = useIssueAssignee(issueKey, null);
   const live = write.pending || write.failed;
   useEffect(() => {
     if (!live) return;

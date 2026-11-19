@@ -623,14 +623,13 @@ test("the header variant draws the person and the priority bars on the same menu
     const header = draw(
       <PriorityEditor
         issueKey="CORE-1"
-        priority={level}
         variant="header"
-        write={idlePriorityWrite}
+        write={{ ...idlePriorityWrite, shown: level }}
       />,
       "inside"
     );
     const badge = draw(
-      <PriorityEditor issueKey="CORE-1" priority={level} write={idlePriorityWrite} />,
+      <PriorityEditor issueKey="CORE-1" write={{ ...idlePriorityWrite, shown: level }} />,
       "inside"
     );
     try {
@@ -2322,7 +2321,7 @@ test("the default shapes keep main's class strings", async () => {
         <PriorityControl issueKey="CORE-1" priority={0} />
       </div>
       <div data-case="P1">
-        <PriorityEditor issueKey="CORE-2" priority={1} write={idlePriorityWrite} />
+        <PriorityEditor issueKey="CORE-2" write={{ ...idlePriorityWrite, shown: 1 }} />
       </div>
       <div data-case="no priority">
         <PriorityControl issueKey="CORE-3" priority={null} />

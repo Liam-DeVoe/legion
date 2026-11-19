@@ -40,6 +40,7 @@ import { usableControl } from "./header-control";
 import { IssueHeader } from "./IssueHeader";
 import { IssueTabs } from "./IssueTabs";
 import { ItemMatchList } from "./ItemMatchList";
+import { issuePriority } from "./issue-priority";
 import { issueTabs } from "./issue-tab-list";
 import { stateForIssue } from "./pins";
 import { SpecRequirements } from "./SpecRequirements";
@@ -246,7 +247,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // a keyed priority lands in the same cache the picker writes. `IssueHeader` registers the keys
   // of its own actions (close, reopen, the priorities, Approve and Request changes) into this
   // same scope; it never pushes one of its own.
-  const priorityWrite = useIssuePriority(route.key);
+  const priorityWrite = useIssuePriority(route.key, issuePriority(issue.data?.priority));
   /** Selects the tab `step` places from the one shown, in the strip's order (`issueTabs`),
    *  through its button as a click does; past either end it wraps, as the strip's own arrow keys
    *  do (`Tabs.tsx`). */

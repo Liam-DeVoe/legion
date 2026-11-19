@@ -1229,7 +1229,82 @@ test("a second press on a control its first press holds keeps the first press th
   });
 });
 
-// (ba) A press in a menu or a list counts as one on the trigger that names it (`openerOf`) - the
+// (ba) A second press on a control its first press holds, and that press's release, leave the
+// first press's write deadline where it was: counted from the first press's release, as in (ax),
+// so the reader pressing the held control again 20 s on keeps the first press live no longer. A
+// live update taking the row away a little over 30 s after the first release is no doing of the
+// reader's: the focus goes into no other row and nothing scrolls (ag).
+test("a second press on a control its first press holds leaves the write deadline counted from the first release", async () => {
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  jest.useFakeTimers();
+  try {
+    await withRescue(async () => {
+      const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+      const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+      const dismiss = buttonIn(second.row, "Dismiss");
+      dismiss.focus();
+      placeAt(dismiss, 200);
+      box.dispatchEvent(new Event("scroll"));
+      pointerPress(dismiss);
+      dismiss.setAttribute("aria-disabled", "true");
+      // A frame and a task after the release the press finds its control held, and watches it.
+      await frame();
+      jest.advanceTimersByTime(0);
+      // 20 s on, the reader presses the held control again and lets go, a frame and a task before
+      // the clock moves on.
+      jest.advanceTimersByTime(20_000);
+      pointerPress(dismiss);
+      await frame();
+      jest.advanceTimersByTime(0);
+      // The deadline from the first release passes with the control still held; the press stops a
+      // frame and a task on.
+      jest.advanceTimersByTime(SEND_DEADLINE_MS - 20_000);
+      await frame();
+      jest.advanceTimersByTime(0);
+      expect(dismiss).toHaveFocus();
+      second.row.remove();
+      // The rescue's check, a frame and a task after the removal its watcher reads.
+      await frame();
+      await frame();
+      jest.advanceTimersByTime(0);
+      expect(box).toHaveFocus();
+      expect(document.activeElement?.closest("[data-inbox-row]")).toBeNull();
+      expect(rows[2]?.mark).not.toHaveFocus();
+    });
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    jest.useRealTimers();
+    scrolls.mockRestore();
+  }
+});
+
+// (bb) A second press on an element inside the control its first press holds - an icon drawn in
+// the button - is a press on that control, which takes it without a write: the first press stays
+// the cause, and the row taken away in the commit that ends the hold keeps the hand-off of (az),
+// to the control now at the row's place.
+test("a second press inside a control its first press holds keeps the first press the cause of the row's going", async () => {
+  await withRescue(async () => {
+    const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+    const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+    const third = rows[2] as { mark: HTMLInputElement; row: HTMLElement };
+    const dismiss = buttonIn(second.row, "Dismiss");
+    const icon = document.createElement("span");
+    icon.setAttribute("aria-hidden", "true");
+    dismiss.append(icon);
+    dismiss.focus();
+    placeAt(dismiss, 200);
+    box.dispatchEvent(new Event("scroll"));
+    pointerPress(dismiss);
+    await holdFor(dismiss);
+    pointerPress(icon);
+    await holdFor(dismiss);
+    expect(dismiss).toHaveFocus();
+    second.row.remove();
+    await waitFor(() => expect(third.mark).toHaveFocus());
+  });
+});
+
+// (bd) A press in a menu or a list counts as one on the trigger that names it (`openerOf`) - the
 // selection bar's Snooze, whose menu the focus entered from the row the bar's key was pressed on.
 // A trigger already held when the press is made - an earlier write of the bar's still out - is no
 // doing of that press, as in (ay): the press is live a frame and a task after it and its release,
@@ -1632,5 +1707,65 @@ test("the same field taken away while focused, a microtask after the event, hand
       await settled();
       expect(heading).toHaveFocus();
     });
+  }
+});
+
+/** An Inbox drawer - a modal dialog portalled to the end of the body - holding a box of rows, as
+ *  the drawer draws its threads, with the trigger of `Hand this question to` in its first row and
+ *  that trigger's list opened. */
+function drawerRows(): {
+  box: HTMLElement;
+  list: ListPanel;
+  rows: { mark: HTMLInputElement; row: HTMLElement }[];
+  trigger: HTMLButtonElement;
+} {
+  const drawer = document.createElement("div");
+  drawer.setAttribute("role", "dialog");
+  drawer.setAttribute("aria-modal", "true");
+  document.body.append(drawer);
+  const { box, rows } = rowBoxIn(drawer, "One", "Two", "Three");
+  const { list, trigger } = rowList((rows[0] as { row: HTMLElement }).row);
+  return { box, list, rows, trigger };
+}
+
+// (bc) INFRA-3135 round 16, the tester's, from the class search of review round 2's second
+// finding: Tab pressed on the trigger a pick's write holds is no press the held control takes
+// without a write - it moves the focus off the trigger, to the next row's mark. A live update
+// that takes that row away while the write is still out is no doing of the reader's: the pick's
+// answer is its own row's, not another row's going. So, as in (aw) once the hold has ended, the
+// focus goes into no other row and nothing scrolls, by Chromium's `focusout` as by none. At
+// 90fa8211 the Tab is passed over (`notePress`, `onHeldControl`), the pick stays the cause, and a
+// press's place in a dialog is the whole dialog (`pressPlaces`): on Chromium's path the focus is
+// walked into row Three and scrolled to it; with no `focusout` the detached mark reaches no
+// dialog, so it lands on the box, and the two engines disagree.
+test("Tab off a control a pick's write holds ends the pick as the cause of another row's going", async () => {
+  for (const withFocusout of [true, false]) {
+    const scrolls = spyOn(Element.prototype, "scrollIntoView");
+    try {
+      await withRescue(async () => {
+        const { box, list, rows, trigger } = drawerRows();
+        const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+        await pickAndHold(list, trigger);
+        expect(trigger).toHaveFocus();
+        // The reader's Tab on the held trigger, and the engine's move of the focus to the next
+        // control, the second row's mark.
+        trigger.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Tab" }));
+        second.mark.focus();
+        placeAt(second.mark, 260);
+        box.dispatchEvent(new Event("scroll"));
+        second.mark.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Tab" }));
+        await settled();
+        expect(trigger).toHaveAttribute("aria-disabled", "true");
+        if (withFocusout) lose(second.mark, () => second.row.remove());
+        else second.row.remove();
+        await settled();
+        expect(box).toHaveFocus();
+        expect(document.activeElement?.closest("[data-inbox-row]")).toBeNull();
+        expect(rows[2]?.mark).not.toHaveFocus();
+      });
+      expect(scrolls).not.toHaveBeenCalled();
+    } finally {
+      scrolls.mockRestore();
+    }
   }
 });

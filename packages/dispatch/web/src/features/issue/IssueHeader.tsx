@@ -78,7 +78,6 @@ import { gatedStepEntries } from "./gated-steps";
 import { usableControl } from "./header-control";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
-import { issuePriority } from "./issue-priority";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
 import { stateForIssue } from "./pins";
@@ -537,7 +536,6 @@ export function IssueHeader({
             disabled={isClosed}
             held={fieldHeld}
             issueKey={issue.key}
-            priority={issuePriority(issue.priority)}
             write={priorityWrite}
           />
           <AssigneeControl

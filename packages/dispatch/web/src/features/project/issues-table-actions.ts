@@ -152,9 +152,21 @@ export function useIssueTableActions({
     setBusy(true);
     setNotice(undefined);
     setMoved(new Set());
+    // Whether the action may have changed what the list draws: it answered what it changed, or a
+    // write landed while it ran, or ended without Dispatch's verdict (the reader stopped it) and
+    // so may have landed. A write Dispatch refused (`ApiError`) changed nothing.
+    let mayHaveChanged = false;
+    const unwatch = writes.onOutcome((outcome) => {
+      if (
+        outcome.kind === "landed" ||
+        (outcome.kind === "refused" && !(outcome.refusal instanceof ApiError))
+      )
+        mayHaveChanged = true;
+    });
     try {
       const changed = await action();
       if (changed !== undefined) {
+        mayHaveChanged = true;
         setNotice({ kind: "success", text: said });
         setMoved(new Set(changed));
         clearSelection();
@@ -165,14 +177,17 @@ export function useIssueTableActions({
       else
         setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
-      // The action's controls stay held (`busy`) through the read of the list that draws what it
-      // changed - a row's Start next gone once its issue starts next - so that going is still the
-      // press's doing (`causedByReader`). The read settles either way, and a failed one lets them
-      // go.
+      unwatch();
+      // An action that may have changed the list keeps its controls held (`busy`) through the read
+      // of the list that draws what it changed - a row's Start next gone once its issue starts
+      // next - so that going is still the press's doing (`causedByReader`); a batch that saved
+      // some of its changes before a refusal changed the list too. The read settles either way,
+      // and a failed one lets them go. An action that changed nothing - every write refused, or
+      // none made - lets them go at once, while the list is still read again behind them.
       const listed = client.invalidateQueries({ queryKey: ["issues"] });
       void client.invalidateQueries({ queryKey: ["issue"] });
       void client.invalidateQueries({ queryKey: ["inbox"] });
-      await listed;
+      if (mayHaveChanged) await listed;
       setBusy(false);
     }
   };

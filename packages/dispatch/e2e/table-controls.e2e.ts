@@ -2271,7 +2271,10 @@ test("the Delivery list still answers the keyboard and stays windowed, and each 
   // The global binding that opens each page, and each page's own list binding.
   await seedAgents();
   await seedSurfaces();
+  // The keys wait for the Inbox's heading: pressed as the page loads, before the shell has
+  // registered its keys, they can open nothing.
   await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
   await page.locator("body").focus();
   await page.keyboard.press("g");
   await page.keyboard.press("a");
@@ -5055,8 +5058,11 @@ test("Tab and Escape never leave a panel for the page behind it, in a dialog or 
   await expect(viewTrigger, "Inbox drawer: Tab from the View menu's last choice").toBeFocused();
   await expect(drawer(page)).toBeVisible();
 
-  // In a dialog again: the search bar's Filter panel, whose last control is Updated since.
+  // In a dialog again: the search bar's Filter panel, whose last control is Updated since. The
+  // key waits for the Inbox's own search box: pressed as the page loads, before the shell has
+  // registered its keys, it opened nothing in WebKit (full lane 44466817714, passed on retry).
   await page.goto("/");
+  await expect(page.getByRole("searchbox", { name: "Search asks" })).toBeVisible();
   await page.locator("body").focus();
   await page.keyboard.press("Control+k");
   const palette = page.getByRole("dialog", { name: "Search" });

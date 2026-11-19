@@ -66,7 +66,7 @@ export function assigneeControlName(issueKey: string): string {
  * grey. The list under it is the same either way.
  */
 export function AssigneeControl({
-  assignee,
+  assignee: host,
   disabled = false,
   held = false,
   issueKey,
@@ -82,7 +82,9 @@ export function AssigneeControl({
   const [wanted, setWanted] = useState(false);
   const users = useQuery({ ...usersQuery(), enabled: wanted });
   const [open, setOpen] = useState(false);
-  const write = useIssueAssignee(issueKey);
+  const write = useIssueAssignee(issueKey, host);
+  /** The assignee as the badge and the list draw it (`IssueFieldWrite.shown`). */
+  const assignee = write.shown;
   const logins = (users.data ?? []).map((user) => user.login);
   // An assignee the list does not carry still names who holds the issue; keep it in the list so
   // the list always holds the value it marks.
@@ -98,7 +100,7 @@ export function AssigneeControl({
       : assignee === null
         ? `${pagePaneBg} ${pageQuietText}`
         : pageLabelChip;
-  const shown = assignee ?? page?.CONTROL_LABELS.unassigned ?? "Unassigned";
+  const label = assignee ?? page?.CONTROL_LABELS.unassigned ?? "Unassigned";
   const mark = assignee === null ? page?.pageChrome : page?.authorText;
   // Inside `NoTooltips` the person is a value, so it keeps `max-w-full` and breaks anywhere, and
   // its wrapper and the trigger in it narrow to the line rather than keep their width. The header
@@ -153,14 +155,14 @@ export function AssigneeControl({
                   data-initial={assignee.charAt(0).toUpperCase()}
                 />
               )}
-              <span className="min-w-0 [overflow-wrap:anywhere]">{shown}</span>
+              <span className="min-w-0 [overflow-wrap:anywhere]">{label}</span>
             </span>
           ) : (
             <span
               className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} ${badgeTone}`}
               {...mark}
             >
-              {shown}
+              {label}
             </span>
           )}
         </MultiSelect>

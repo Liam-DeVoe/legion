@@ -4,11 +4,12 @@ import { api } from "../../api/client";
 import type { IssuePriorityWrite } from "./useIssuePriority";
 
 /** The priority write `IssueHeader` is handed in rows about another part of the header than its
- *  priority: it never runs. */
+ *  priority: it never runs, and it draws no priority. */
 export const idlePriorityWrite: IssuePriorityWrite = {
   failed: false,
   pending: false,
   retry: () => undefined,
+  shown: null,
   submit: () => undefined,
 };
 
