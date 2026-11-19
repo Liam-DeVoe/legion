@@ -1801,7 +1801,6 @@ Migration 20261117020856 (dispatch://INFRA-1950) is the one migration of that ch
 it is tested before the block-reference class, so a requirement block's `constrained_by` is not read as a block reference, and a comment's `authored_by` and a session's, a page's or a block's `part_of` stay out of the view.
 It adds one arm more over the current tuples: every relation of the class `store` out of a finding of a lens, a block node whose id names its lens (`lens/<uuid>#<block id>`), answered with the literal from_kind `lens_block`, which the tuple arm's class `store` leaves out, so each such relation is answered once and under the kind the read registry knows a finding by.
 Both changes are one migration because a migrate pass applies each file in its own transaction, in version order, and applies a file below a version the database already holds: a re-statement from a list without 20261116094101's arms would leave a database already at 20261116094101 without the ask arms a live build reads until a later file put them back.
-20261117020856 is the arm list a later migration re-states from.
 An issue may wait on an issue of any project through `blocked_by`, so a wait on work tracked elsewhere is recorded where the waiting issue is.
 A caller whose credential names one project is refused a target outside it with `403 PROJECT_SCOPE`, written inside the write rather than in the pre-handler project-scope check, which reads the project of the object the path names and no key in the body.
 For cycle checks an issue has two halves:
@@ -2237,8 +2236,6 @@ What it costs is that dependency writes serialize across the deployment rather t
 Beside the exclusive deployment lock, the project locks decide nothing among writers of this build.
 They still fence a writer of an earlier build, which holds only its project's lock, on every project this write names (its own and each target's), so even with two builds serving only a ring through a project this write does not name could close.
 The test gates use them too: a caller that holds a project's dependency lock fences that project's dependency writes (`TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks`, `issue_dependencies_test.go`).
-Each target's project is read before any lock is taken, which is sound because no route moves an issue between projects and `writeBlockedBy`'s own read inside the transaction refuses an unknown key;
-a caller whose credential names one project is refused a target outside it there, before the deployment lock is taken, and again under the locks in `writeBlockedBy`, both through the one wording `refuseBlockedByOutsideCallerProject` writes.
 A PATCH then locks every issue row it names `for no key update` in one key order, the order `LockOwners` takes event owners (`lockPatchRows`, `lockIssueRows`):
 the issue; its current parent when a status change or a reparent appends to it; the proposed parent; and the rank neighbours.
 `LockOwners` then re-locks rows already held, so no PATCH holds one of these rows while waiting for another that a second write holds.
@@ -2247,13 +2244,13 @@ a parent a concurrent reparent moved in between releases the attempt's locks (a 
 The bounded dependency walk uses plain reads rather than contending on unrelated issue rows.
 Status-only, title, labels and rank writes take no dependency lock.
 Creation takes these locks with non-empty `blocked_by` or a `parent`, before allocating the issue number or rank, and only its blockers can name another project, since a parent is of the issue's own project;
-creation without either takes no dependency lock, and no creation takes an explicit parent-row lock.
+no creation takes an explicit parent-row lock.
 An issue sits at most `parentDepthCap` (32) links below its root:
 a create under a parent, or a reparent whose subtree's deepest issue would sit deeper, is `409 PARENT_INPUT` (`refuseParentTooDeep`, under the dependency lock, so two writes cannot each pass alone and together pass it), and every recursive issue walk stops at that depth.
 `blocked_by` inputs are limited to `contracts.MaxIssueBlockers` entries before deduplication on both create and PATCH;
 excess entries are `400 BLOCKED_BY_INPUT` naming the limit before any issue-row lock is acquired, and a PATCH naming the issue itself is `400 BLOCKED_BY_INPUT` too.
 A mention's source is the node whose text holds it, never the issue that text belongs to:
-a citation in an issue's spec is an edge out of the spec document, so `GET /api/v1/references?from=dispatch://KEY/spec` lists it, `?from=dispatch://KEY` lists only the issue's own `child_of`, `blocked_by` and `affects` edges, and the cited node's `?to=` backlink names the spec's innermost block holding the citation (a `block` node whose `document` is the spec), or the spec itself while the block index has not reached it.
+a citation in an issue's spec is an edge out of the spec document, so `GET /api/v1/references?from=dispatch://KEY/spec` lists it, and the cited node's `?to=` backlink names the spec's innermost block holding the citation (a `block` node whose `document` is the spec), or the spec itself while the block index has not reached it.
 A citation in a comment, an issue message or an ask is named the same way, by the item's block holding it (a `block` node whose `parent` is the item; for an ask the part - its question, an option or the answer - whose own text holds it), or by the item while no block of it holds the citation (an item a build without item blocks wrote, until the reconciliation indexes it).
 Where a reference in text ends, and what it names, is one rule with two readers:
 `text.ExtractAt`, which every write indexes through, and the dashboard's `composerReferences` (`refs/routes.ts`, scanning with `referenceSpans` from `refs/reference-spans.ts` and parsing with `referenceRouteFromHref`), behind its reference pills, unfurl cards and linked text.
@@ -2570,7 +2567,6 @@ no markdown makes such an href, so no write is refused.
 An `&` that opens none, as in `&foo;` or `AT&T`, is written as it is.
 
 A typed block renders its `blockId`, defaulted attributes, and every explicitly set optional attribute.
-An attribute's kind is `string`, `bool`, `enum`, `string[]`, `block[]`, `actor`, `timestamp` or `ask` (`validateAttributeSchema`).
 An `ask` attribute names one ask of an issue, written whole as `dispatch://<ISSUE>/ask/<id>`, and a part of an ask (`…#b-<id>`) is refused with a reason of its own (`validateAskReference`).
 An attribute declared `markdown: false` (true when the schema names none) is never rendered, and markdown that names it is read as if it did not (`BlockAttributeSchema.InMarkdown`), since its value lives on the block's node:
 `ask`'s `invalid` and a decision's `decided_by`, `kept_by` and `kept_text_sum` are such.
@@ -2580,28 +2576,19 @@ Parsing mints an omitted id, while live document reads and writes validate each 
 Schema changes are additive: add a type, add a defaulted attribute, add an enum choice, or widen a content rule.
 Tightening content, removing or renaming a type or attribute, or requiring a new attribute requires a document migration and version bump.
 
-The shipped types are `callout`, `ask`, `requirement`, `plan_task`, `check`, `decision` and `reading` (`pmdoc/schema/blocks.json`, version 5, which added `decision`, `reading` and `ask`'s `shaped`), `requirement`, `plan_task` and `check` each holding `paragraph+`:
-`requirement`, one requirement of an issue's spec, with no attribute of its own;
-`plan_task`, one task of a plan, with the `block[]` attributes `serves` (the requirements it serves) and `needs` (the tasks of the same plan it needs first);
-`check`, one thing that must be proved, with `serves`, the enum `surface` (`browser`, `cli`, `api`), the strings `run`, `negative_control` and `ci_check` (the GitHub check run that proves the check), and the enum `when` (`before_merge`, `after_merge`, `default_branch`, defaulted `before_merge`);
-`decision`, an agent's decision, holding `block+`, with the enum `uncertainty` (`low`, `medium`, `high`, no default), the string `uncertainty_reason`, the `block[]` `shaped` with no targets, the `ask` attribute `from_ask`, the bool `replaced` (defaulted `false`) and the server's `decided_by`, `kept_by` and `kept_text_sum`, which markdown never carries;
-and `reading`, an agent's reading of a decision, holding `paragraph+`, whose `parents` are `decision` and `ask`.
 A reading inside an ask with no answer (its `asks` row, `askAnswers`) is refused on every write that takes markdown, `400 INVALID_ASK_BLOCK` naming the reading and `dispatch://KEY/ask/<id>` (`refuseReadingsWithoutAnswers`), and settlement flags such an ask block `invalid` with the same reason (`flagReadingsWithoutAnswers`).
-A document holding them is an ordinary document: the role its name gave it (`verification`, `plan`) says which blocks a reader expects, and nothing refuses a `check` block in another document.
 A check whose `ci_check` names a run carries no `run`, keeps `when` `before_merge`, names its `negative_control` and holds no recorded result (`docs.CICheckRuleIn`), and no rule of `blocks.json` can say so, since an attribute there declares only itself:
 an API write that adds a check block, or changes a check's `ci_check`, `run`, `when` or `negative_control`, so that it breaks one is `400 INVALID_CI_CHECK` (`refuseCICheckBlocks`), and settlement repairs what a browser writes (below).
 
-A `block[]` attribute points at blocks; the shipped ones are a plan task's `serves` and `needs`, a check's `serves`, and a decision's and an ask's `shaped`.
-Its value is the empty string (no pointers) or canonical block references joined by exactly one space, none leading or trailing, no other whitespace and none repeated (`pmdoc.ParseBlockPointerValue`, and the renderer joins them with one space);
+A `block[]` attribute points at blocks.
+Its value is the empty string (no pointers) or references joined by exactly one space, none leading or trailing, no other whitespace and none repeated (`pmdoc.ParseBlockPointerValue`, and the renderer joins them with one space);
 anything else is refused, never normalised.
 A canonical reference is one `text.FormatBlockRef` writes back byte for byte (`text.CanonicalBlockRef`):
 `dispatch://<ISSUE>/spec#b-<id>` for a block of an issue's primary document, `dispatch://<ISSUE or PROJECT>/artifact/<slug>#b-<id>` for one of any other document (a project's document whose slug is `spec` included), the id as `text.EncodeBlockID` writes it, optionally pinned `@v<N>`;
 so lower-case or needless percent-encoding, an issue's `artifact/spec` and anything trailing the reference are refused.
-A part of an ask, or a block of a comment or a message (`text.Ref.Item`), is refused with a reason of its own, which names the kind with the article it takes (`"…" is a block of an ask: …`, `of a comment`, `of a message`):
-the attribute points only at blocks of documents, whose types its targets limit.
 Go and `@legion/contracts`' `parseBlockPointerValue` are both tested against `DISPATCH_BLOCK_POINTER_VALUES`, whose Go copy is `pmdoc/testdata/block-pointer-values.json`.
 The attribute's name is the kind of the edges it makes:
-it matches `^[a-z][a-z0-9_]*$` and is none of `model.GraphEdgeKinds`, and two types declaring one name make one edge kind (`pmdoc.LinkKinds`, which `GET /api/v1/references?kind=` accepts beside the structural kinds; any other name has no edges there and is listed in the answer's `unknown_kinds`, which the read still answers `200` with the edges of the kinds it knows).
+it matches `^[a-z][a-z0-9_]*$` and two types declaring one name make one edge kind (`pmdoc.LinkKinds`, which `GET /api/v1/references?kind=` accepts beside the structural kinds; any other name has no edges there and is listed in the answer's `unknown_kinds`, which the read still answers `200` with the edges of the kinds it knows).
 Its `targets`, which no other kind may carry, limit the types of the blocks it points at, each a type the schema declares or a built-in block the link graph holds (`builtInBlockNode`:
 not a list item or a table's row or cell); absent or empty, it points at any block.
 Its default is absent or `[]`.
@@ -2610,8 +2597,8 @@ Three rules enforce `targets`.
 An agent's or API write is refused when a pointer it introduces names a block the attribute may not name (`pmdoc.CheckBlockPointers`, called by `docs.refuseBlockPointers` from `applyLive`, `SeedText`, and `RebuildDocument` given markdown):
 a pointer is introduced when the tree before the write holds no pointer with the same typed block id, typed block type, attribute and reference (a new pointer, a changed value, or a block retyped into a type declaring the attribute, whatever the type before declared under that name), and every pointer is when there is no such tree (a new document, a repair of a tree outside the schema, a rebuild whose latest version does not read back).
 `refs.BlockTargets` reads each target as the block index will hold it, with the writing document's own issue and that issue's ancestors (`refs.IssueAncestors`, the server's one recursive `child_of` walk, bounded by the same depth cap as every other issue walk):
-a target in the written document from the blocks the write's render leaves (the first holder of a repeated id, as `refs.IndexBlocks` takes it), any other from its current `document_blocks` rows, each with its document and that document's issue (one query for all of a write's introduced pointers).
-The write is refused when the pointer names a block no document holds, a block of a type the attribute's targets do not allow, a block of an issue that is neither the writing document's own issue nor an ancestor of it, a block of another document where a project holds the writing document and no issue does, or a block of another document under `needs`, which orders the tasks of one plan and so points only inside its own document.
+a target in the written document from the blocks the write's render leaves (the first holder of a repeated id, as `refs.IndexBlocks` takes it).
+The write is refused when the pointer names a block no document holds, a block of a type the attribute's targets do not allow, a block of an issue that is neither the writing document's own issue nor an ancestor of it, a block of another document where a project holds the writing document and no issue does.
 The refusal is `400 INVALID_OP` on `attributes` on the edit route and `400 INVALID_MARKDOWN` on every other;
 a pointer the write leaves unchanged is never refused.
 A browser's write and the block-index reconciliation are never refused, and store the pointer as any other.
@@ -3226,8 +3213,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - An event says what its write changed, so a reader refreshes only what it shows (the dashboard's `packages/dispatch/web/src/api/event-refresh.ts`).
   Every field is additive, read in the writer's own transaction, and absent (`omitzero`) from an event written before it, so a reader treats an absent field as "anything may have moved"; `[]` means the write names nothing.
   `issue.created`, `issue.updated` and `issue.closed` carry `changed` (`issueChangedFields`, `api/issue_event_fields.go`:
-  every field whose value differs between the issue before and after the write, in one fixed order
-  — `title`, `status`, `closed_at` (whether the issue is closed, so a close or a reopen, which a status alone cannot say), `rank`, `priority`, `assignee`, `parent`, `labels`, `route`, `repo` (its own or the one it resolves to), `components` (the effective attachment, an inherited change included), `blocked_by`, `external_links`;
+  every field whose value differs between the issue before and after the write, in one fixed order;
   for `issue.created`, measured from `unsetIssue`, every field the new issue holds a value in) and `ancestors` (`issueAncestors`:
   the parent chain, parent first up to the root, `[]` for a root, capped at `parentDepthCap`).
   `thread_logins` is every login whose Inbox the write can have moved, sorted and never nil:
