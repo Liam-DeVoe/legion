@@ -147,13 +147,15 @@
 -- roll-forward writes every owed value once under the number the second fill gave it.
 --
 -- The re-arm asks nothing of the other rows. What it does need is that no migration recorded
--- after this one builds on the fourteen columns it drops, and at this release none of the twelve
+-- after this one builds on the fourteen columns it drops, and at this release none of the thirteen
 -- recorded after it touches them: 20261113181500_architect_stalled_notices adds the table
 -- architect_stalled_notices, 20261113182000_architect_entry_upgrade writes the root architects'
 -- phases rows, their claims' given_entry and served_entry and that table's marks,
 -- 20261114020537_claim_entry_handshake adds the four claims.handshake_* columns,
 -- 20261114031356_merge_queue_removal rewrites outbox_kind_check,
 -- 20261114061900_phase_entry_verbatim adds phases.entry_verbatim,
+-- 20261116144907_claim_sessions adds the table claim_sessions and fills it from each claim's
+-- session, its file and the session it last abandoned,
 -- 20261116165926_role_holders_publish rewrites outbox_kind_check again and adds the unique index
 -- outbox_role_holders_publish_issue_unique, 20261116234034_phase_reviewed_head adds
 -- phases.reviewed_head and pending_task_deliveries.round_named and ends each task a reviewer's row
@@ -164,8 +166,8 @@
 -- step_record rows it adds to outbox, 20261117112334_pull_request_statuses adds
 -- pull_requests.statuses, and 20261117200337_update_ask_marks_at_delivery clears
 -- claims.update_tasked_at where that claim's ask still waits in the outbox. The release before
--- this one, contract 160, carries all twelve, so the rollback to it runs this block alone and
--- leaves the twelve standing. Contract 160's own two migrations,
+-- this one, contract 160, carries all thirteen, so the rollback to it runs this block alone and
+-- leaves the thirteen standing. Contract 160's two other migrations,
 -- 20261111090000_volume_trim_notices and 20261111091500_claim_pod_end, are numbered below this one,
 -- so every database records them before it, and neither touches the fourteen columns. A rollback
 -- past it — to contract 87, across 20261111225552_phase_entry — crosses every release between the
@@ -179,10 +181,11 @@
 -- pull_requests.statuses, and which clears for the roll-forward a list no earlier release keeps
 -- current; the reviewed commit's block, which takes the key roundNamed off each start row
 -- contract 87 decodes strictly; the role-holders publication's outbox delete, which leaves no row
--- of its kind behind; contract 146's block, which reverses the four of those twelve that are the
--- root architect's entry (all but the three kind lists and the five other migrations of contract
--- 152); the merge-queue removal's outbox delete; the five statements of the release whose update
--- round ends at its bound, whose 20261113110610_drop_claim_update_answer_marks dropped two columns
+-- of its kind behind; contract 146's block, which reverses the four of those thirteen that are the
+-- root architect's entry (all but the three kind lists, the five other migrations of contract 152
+-- and contract 160's 20261116144907_claim_sessions); the merge-queue removal's outbox delete; the
+-- five statements of the release whose update round ends at its bound, whose
+-- 20261113110610_drop_claim_update_answer_marks dropped two columns
 -- contract 87's claim read names; the steps of contract 111's slot past review and of contract
 -- 98's held list; and last the phase entry's own block. Contract 141's
 -- 20261111045636_experiment_assignments, contract 133's 20261112070503_pull_request_state_read_at
@@ -194,8 +197,9 @@
 -- records' way back leaves standing, and its 20261117200337_update_ask_marks_at_delivery need no
 -- statement on the way back, and contracts 151, 144, 137 and 104 add no migration. Nor does
 -- contract 160's 20261111091500_claim_pod_end, whose claims.pod_end an earlier release leaves
--- unread and unwritten; the table pod_volume_notices its 20261111090000_volume_trim_notices adds
--- stands too, read by no earlier release. The release before the phase entry reads the three
+-- unread and unwritten; the tables pod_volume_notices its 20261111090000_volume_trim_notices adds
+-- and claim_sessions its 20261116144907_claim_sessions adds stand too, read by no earlier release.
+-- The release before the phase entry reads the three
 -- marks as the release before this one does, and neither
 -- contract 146's block, the step records', the commit statuses', the reviewed commit's nor the
 -- phase entry's touches this migration's columns. The roll-forward after them applies again, in

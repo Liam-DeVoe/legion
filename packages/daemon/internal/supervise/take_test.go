@@ -102,6 +102,17 @@ func TestTakeIsRefusedByEachHoldByName(t *testing.T) {
 			h.manualTakes()
 			return h
 		}},
+		// A restored machine admits no name of the session yet (Machine.heldNames), so the take
+		// asks the store, which holds the claim's session id for another claim.
+		{hold: HoldSessionNotHeld, arrange: func(t *testing.T) *harness {
+			h := newHarness(t)
+			h.reach(StateReady)
+			h.store.setHold(sessionID(session), claim.Token("legion-legion-LEGION-209-tester"))
+			h.restart()
+			h.manualTakes()
+			h.must(RequestDeliver{Claim: h.token, Task: "review the pull request", ID: "outbox:42", Row: 42, Generation: 7})
+			return h
+		}},
 	} {
 		t.Run(tc.hold, func(t *testing.T) {
 			h := tc.arrange(t)

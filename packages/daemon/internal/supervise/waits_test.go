@@ -199,6 +199,51 @@ func TestSilentListenerAcrossAHoldsEndAsksOnce(t *testing.T) {
 	h.wantCalls("AdoptWorkingCopy", 1)
 }
 
+// A take refused because the claim records a session it does not hold (session-not-held) charges
+// the worker nothing and starts neither bound: what is missing is the daemon's hold of the session,
+// not anything of the worker's. The hold ends by a write, as every hold does: once the store holds
+// the session for the claim again, the sweep's decision writes the value again under the cause
+// hold-ended, and the worker asks once more, and that take is accepted, exactly once.
+func TestASessionNotHeldTakeChargesNothingAndItsEndWritesTheValueAgain(t *testing.T) {
+	h := waitsHarness(t)
+	h.reach(StateReady)
+	// A restarted machine admits no name of its session yet (Machine.heldNames), so its next take
+	// asks the store, which now holds the session id for another claim.
+	h.store.setHold(sessionID(session), claim.Token("legion-legion-LEGION-209-tester"))
+	h.restart()
+	h.connect()
+	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+	if answers := h.worker.answers; len(answers) != 1 || answers[0].Hold != HoldSessionNotHeld {
+		t.Fatalf("the worker's takes were answered %+v, want one refused by %q", answers, HoldSessionNotHeld)
+	}
+
+	h.advance(3 * turnStartBound)
+	h.wantCharges()
+	h.wantBudgets(Budgets{})
+	h.wantPrompts(0)
+	if p := h.pending(); p.taken() {
+		t.Fatalf("pending %+v while the claim does not hold its session, want it untaken", p)
+	}
+	written := len(h.values.written())
+
+	h.store.setHold(sessionID(session), testToken)
+	h.observe(runtime.Alive)
+	if got := h.values.written(); len(got) != written+1 {
+		t.Fatalf("values written %+v, want the hold's end to write the value once more", got)
+	}
+	lines := h.records.of(valueWrittenLine)
+	if cause, _ := lines[len(lines)-1].attr("cause"); cause.String() != TaskValueHoldEnded {
+		t.Fatalf("the value was written again under cause %q, want %q", cause, TaskValueHoldEnded)
+	}
+	h.advance(3 * takeBound)
+
+	h.wantCharges()
+	if answers := h.worker.answers; len(answers) != 2 || answers[1].Outcome != TakeOutcomeAccepted {
+		t.Fatalf("the worker's takes were answered %+v, want one more take after the hold's end, accepted", answers)
+	}
+	h.wantPrompts(1)
+}
+
 // A worker whose accepted take starts no turn within the second bound is charged, naming the
 // turn-start wait, and the task is taken back under its number and id: the next take of it is
 // decided afresh, and its value is written again under the same number so the worker can ask.

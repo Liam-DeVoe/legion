@@ -263,20 +263,19 @@ func (r *phaseEntryConvergeLive) servedClaimant(role claim.Role, session string)
 	s := r.register(role, session)
 	c := &convergeClaimant{liveSession: s, worker: r.d.takeDriver(s.sh, s.token, s.session, s.secret, s.generation),
 		tasks: make(chan takenTask, 8)}
-	go c.serve()
+	c.sh.serve(c.serve)
 	c.worker.watch(r.t, func(task takenTask) { c.tasks <- task })
 	c.ready()
 	return c
 }
 
-// serve reads every frame the daemon sends the shim until the connection closes: it answers the
-// protocol negotiation and the state probe (idle, or streaming while a turn runs). It runs for the
-// claim's whole life, because a step that left the connection unread would have the daemon's own
-// requests time out.
+// serve reads every frame the daemon sends the shim until the connection closes or the test ends
+// it (shim.serve): it answers the protocol negotiation and the state probe (idle, or streaming
+// while a turn runs). It runs for the claim's whole life, because a step that left the connection
+// unread would have the daemon's own requests time out.
 func (c *convergeClaimant) serve() {
 	// The reader dialShim read the hello_ack through, which may already hold the frames after it.
 	reader := c.sh.lines
-	_ = c.sh.conn.SetReadDeadline(time.Time{})
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {

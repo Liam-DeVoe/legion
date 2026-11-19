@@ -933,7 +933,7 @@ func (r *handoffRecordsLive) claimant(role claim.Role, issue, session string) *h
 	}
 	c.secret = registered.Secret
 	c.worker = r.d.takeDriver(c.sh, token, session, registered.Secret, launch.Generation)
-	go c.serve()
+	c.sh.serve(c.serve)
 	c.worker.watch(t, func(task takenTask) { c.tasks <- task })
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: token, SessionID: session, Secret: registered.Secret, Generation: launch.Generation,
@@ -945,12 +945,12 @@ func (r *handoffRecordsLive) claimant(role claim.Role, issue, session string) *h
 	return c
 }
 
-// serve reads every frame the daemon sends the shim until the connection closes: it answers the
-// protocol negotiation and the state probe (idle, or streaming while a turn runs).
+// serve reads every frame the daemon sends the shim until the connection closes or the test ends
+// it (shim.serve): it answers the protocol negotiation and the state probe (idle, or streaming
+// while a turn runs).
 func (c *handoffClaimant) serve() {
 	// The reader dialShim read the hello_ack through, which may already hold the frames after it.
 	reader := c.sh.lines
-	_ = c.sh.conn.SetReadDeadline(time.Time{})
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {

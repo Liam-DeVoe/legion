@@ -146,6 +146,9 @@ const (
 	HoldRootHears = "root-hears"
 	// HoldProviderError is the wait a provider error armed for the task (waitsForProviderError).
 	HoldProviderError = "provider-error"
+	// HoldSessionNotHeld is a claim recording a session it does not hold, or one the store did not
+	// answer the hold of (holdRecorded): another claim recorded a name of it first, or two did.
+	HoldSessionNotHeld = "session-not-held"
 	// HoldAdoption is a working copy the shim did not adopt, or a role identity the daemon could
 	// not mint for it (adopt).
 	HoldAdoption = "adoption"
@@ -713,11 +716,13 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 // delete its value (dropUnowed): an ask of an update round that an older daemon queued as a task,
 // whichever round it names; the daemon's own delivery of a relaunch's record (Delivery.Relaunch,
 // queueRelaunch) whose record no longer tells, since its text is that record's sentence and
-// nothing else; and a task whose issue has left the phase it was queued for. Then a root
-// architect's task of a run, held while its root has no architect to hear it and narrowed to what
-// it still names once the root hears (currentRootTask), and retired when that leaves it naming
-// nothing. Last, for a task that adopts the working copy the issue's roles share, another role of
-// the issue in a turn, or holding an accepted take whose turn has not ended (issueInTurn).
+// nothing else; and a task whose issue has left the phase it was queued for. Then the claim's
+// hold of the session it records (holdRecorded): a claim that does not hold it, or whose store
+// does not answer, has its task wait. Then a root architect's task of a run, held while its root
+// has no architect to hear it and narrowed to what it still names once the root hears
+// (currentRootTask), and retired when that leaves it naming nothing. Last, for a task that adopts
+// the working copy the issue's roles share, another role of the issue in a turn, or holding an
+// accepted take whose turn has not ended (issueInTurn).
 //
 // This daemon queues no ask of an update round as a task: it publishes the ask to the role's
 // Envoy topic (record.UpdateAsk). A task under an `update:` delivery id (updateTaskPrefix) is one
@@ -754,6 +759,26 @@ func (m *Machine) takeable(ctx context.Context, owed bool) (hold string, dropped
 		return "", true, m.queueRelaunch(ctx)
 	}
 	p := m.claim.Pending
+	// Nothing is taken by a process under a session its claim does not hold (holdRecorded, plan
+	// E's t-e-54): a claim the boot could not suspend, its stop refused, keeps its live process, and
+	// a task it took would put that process to work under another claim's session, or one no claim
+	// holds (review round 12 of #4220). The task waits, untaken and charged nothing, and the next
+	// hold's end asks again (offerPending, at every sweep among them), so an operator's settle of
+	// the name writes the value for the worker to take. A store that does not answer lets nothing
+	// be taken either. For a claim holding its session this asks the store once per session
+	// (Machine.heldNames).
+	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
+		var refusal claim.Refusal
+		switch {
+		case !errors.As(err, &refusal):
+			m.log.Warn("supervise: the store did not answer whether this claim holds its session; the task waits", "task", p.Number, "delivery", p.ID, "error", err)
+		case m.unheldDelivery != p.ID:
+			m.unheldDelivery = p.ID
+			m.log.Error("supervise: this claim records a session it does not hold, so no task is taken by its process; the task waits until the claim holds it: an operator gives the claim a new session, or records it as the rightful holder of a name held for none",
+				"task", p.Number, "delivery", p.ID, "session", m.claim.Session, "error", err)
+		}
+		return HoldSessionNotHeld, false, nil
+	}
 	if m.asksRoot(*p) {
 		hears, err := m.rootHears(ctx, *p)
 		if err != nil {

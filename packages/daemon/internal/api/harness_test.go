@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -193,6 +195,28 @@ type harness struct {
 	// handoffs is the Dispatch a completion route's harness reads handoff records from
 	// (newHandoffHarness), which writeHandoff fills; nil for a harness serving no completion.
 	handoffs *statusRecorder
+	// serverLog is every line the server's own logger wrote (Options.Log), as text.
+	serverLog *lockedLog
+}
+
+// lockedLog is a text log a handler writes while a test reads it.
+type lockedLog struct {
+	testlog.Buffer
+}
+
+// lines is every line of the log that holds each of parts.
+func (l *lockedLog) lines(parts ...string) []string {
+	var matched []string
+	for _, line := range strings.Split(l.String(), "\n") {
+		hit := line != ""
+		for _, part := range parts {
+			hit = hit && strings.Contains(line, part)
+		}
+		if hit {
+			matched = append(matched, line)
+		}
+	}
+	return matched
 }
 
 func newHarness(t *testing.T) *harness {
@@ -253,6 +277,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 	reported, reportedContextErr := &[]capabilities.Report{}, &[]error{}
 	roleHolders, roleHoldersErr := &[]supervise.Claim{}, new(error)
 	rounds := &PodUpdateRounds{}
+	serverLog := &lockedLog{}
 	h := &harness{
 		t: t, ctx: ctx, store: st, runtime: rt, conns: conns, tokens: tokens, supervisor: sup,
 		readied:            readied,
@@ -261,10 +286,12 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 		roleHolders:        roleHolders,
 		roleHoldersErr:     roleHoldersErr,
 		podUpdateRounds:    rounds,
+		serverLog:          serverLog,
 	}
 	server := NewServer("127.0.0.1", 8437, Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
-		Supervisor: sup, BootTokens: tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: st, Log: quiet,
+		Supervisor: sup, BootTokens: tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: st,
+		Log:  slog.New(slog.NewTextHandler(serverLog, nil)),
 		Pool: st.Pool(), Record: record.NewStore(), Releaser: rt, Trees: st, ReleaseRecords: st, ClaimActivity: st,
 		PluginRelaunchable: relaunchable,
 		ClaimReady:         func(c supervise.Claim) { *readied = append(*readied, c) },

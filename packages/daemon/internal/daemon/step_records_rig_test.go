@@ -714,7 +714,8 @@ func (r *stepRecordsRig) workerOf(issue string, role claim.Role) *stepClaimant {
 	c.driver = newTakeDriver(func(path string, body, answer any) error { return c.r.d.post(path, body, answer) }, c.write,
 		claim.AgentCaller{ClaimToken: token, SessionID: c.session, Secret: c.secret}, launch.Generation)
 	c.driver.started = func() (bool, error) { return c.r.d.turnRead(token)() }
-	go c.serve(c.sh)
+	sh, d := c.sh, r.d
+	sh.serve(func() { c.serve(sh, d) })
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: token, SessionID: c.session, Secret: c.secret, Generation: launch.Generation,
 	}, false); status != http.StatusNoContent {
@@ -734,19 +735,22 @@ func (c *stepClaimant) reconnect() {
 	c.mu.Lock()
 	c.sh = sh
 	c.mu.Unlock()
-	go c.serve(sh)
+	d := c.r.d
+	sh.serve(func() { c.serve(sh, d) })
 }
 
-// serve reads every frame the daemon sends sh until the connection closes: it answers the
-// protocol negotiation and the state probe, idle or streaming while a turn of the pane's runs.
-func (c *stepClaimant) serve(sh *shim) {
+// serve reads every frame the daemon d sends sh until the connection closes or the test ends it
+// (shim.serve): it answers the protocol negotiation and the state probe, idle or streaming while
+// a turn of the pane's runs. An answer that fails to write fails the test, unless the test had
+// begun stopping d by then: the pane's connection outlives the daemon, as a tmux pane does, so a
+// restart's stop closes it under whatever answer is on its way, which is no fault of the daemon's.
+func (c *stepClaimant) serve(sh *shim, d *daemon) {
 	reply := func(frame shimwire.Frame) {
-		if err := sh.writer.WriteFrame(frame); err != nil {
+		if err := sh.writer.WriteFrame(frame); err != nil && !d.stopped.Load() {
 			c.r.t.Errorf("send %s for %s: %v", frame.FrameType(), c.token, err)
 		}
 	}
 	reader := sh.lines
-	_ = sh.conn.SetReadDeadline(time.Time{})
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
