@@ -1890,7 +1890,8 @@ Item blocks are top-level only, so the block holding a mention is the top-level 
 A block's identity is `itemblocks.Hash`, the SHA-256 of its text with each CR LF read as LF, so an edit that only turns CR LF into LF (as a textarea does) changes no block.
 Its id is `b1`, `b2`, … in the order the item mints them, and no number is minted twice in one item, a removed block's included (`comment_block_state.next_block` and the ids stored).
 `comment_blocks` and `message_blocks` keep every block an item ever held, a removed one with `position` null and `removed_at` set, with its type, its identity hash, its text cut to 480 runes as its excerpt (`refs.BlockExcerptRunes`), `made_at` and `changed_at`, and for a comment `changed_revision`.
-A delete of the item takes every block out of its current revision and clears each excerpt, and for a comment the text each revision recorded of a block (`refs.TombstoneItem`), so a deleted item's blocks hold no text.
+A delete of the item takes every block out of its current revision through the index of its empty body (`clearDeletedPostBody`, `planItemWrite`).
+`refs.TombstoneItem` then clears each excerpt, for a comment the text each revision recorded of a block, and the item's embedding windows, so a deleted item's blocks hold no text.
 A comment's `comment_block_state.revision` counts its indexed revisions, 1 the first indexing:
 an index raises it when it is the first, when the body differs byte for byte from the one last indexed (`body_sha256`), or when its blocks changed, and otherwise writes no block.
 At the new revision a new, changed or restored block takes the revision as `changed_revision` and the write's time as `changed_at` (a new one that time as `made_at` too, except at the first indexing of a comment edited before blocks were recorded, whose making Dispatch never recorded:

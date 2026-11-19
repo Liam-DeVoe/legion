@@ -376,13 +376,9 @@ func xidWindowCommentReopen(t *testing.T, f *xidFixture) {
 }
 
 func xidWindowCommentEdit(t *testing.T, f *xidFixture) {
-	created := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/comments", map[string]any{
+	comment := createThreadComment(t, f.handler, f.issueKey, map[string]any{
 		"body": "First wording.", "anchor": map[string]any{"artifact": "spec", "quote": f.takeSpare(t)},
 	}, "alice")
-	if created.Code != http.StatusCreated {
-		t.Fatalf("create alice's anchored comment: status=%d body=%s", created.Code, created.Body.String())
-	}
-	comment := decodeBody[model.Comment](t, created)
 	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return dispatchRequest(t, h, http.MethodPatch, "/api/v1/comments/"+comment.ID, map[string]any{"body": "Second wording."}, "alice")
 	})
@@ -393,13 +389,9 @@ func xidWindowCommentEdit(t *testing.T, f *xidFixture) {
 // record its projection writes and the comment.deleted event are queued on the ledger in the
 // read phase and sent as its one batch (deleteComment).
 func xidWindowCommentDelete(t *testing.T, f *xidFixture) {
-	created := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/comments", map[string]any{
+	comment := createThreadComment(t, f.handler, f.issueKey, map[string]any{
 		"body": "A wording to withdraw.", "anchor": map[string]any{"artifact": "spec", "quote": f.takeSpare(t)},
 	}, "alice")
-	if created.Code != http.StatusCreated {
-		t.Fatalf("create alice's anchored comment: status=%d body=%s", created.Code, created.Body.String())
-	}
-	comment := decodeBody[model.Comment](t, created)
 	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return dispatchRequest(t, h, http.MethodDelete, "/api/v1/comments/"+comment.ID, nil, "alice")
 	})
@@ -662,21 +654,11 @@ func xidWindowMessageCreate(t *testing.T, f *xidFixture) {
 	})
 }
 
-// xidIssueMessage posts alice's issue message of body for a correction step to act on.
-func (f *xidFixture) xidIssueMessage(t *testing.T, body string) model.Message {
-	t.Helper()
-	created := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/messages", map[string]any{"body": body}, "alice")
-	if created.Code != http.StatusCreated {
-		t.Fatalf("post alice's issue message: status=%d body=%s", created.Code, created.Body.String())
-	}
-	return decodeBody[model.Message](t, created)
-}
-
 // xidWindowMessageEdit edits an issue message of alice's own: the history row, the update, the
 // index of the new body and the message.edited event go in the one batch the route runs itself
 // (editMessage).
 func xidWindowMessageEdit(t *testing.T, f *xidFixture) {
-	message := f.xidIssueMessage(t, "Status: the first wording.")
+	message := createIssueMessage(t, f.handler, f.issueKey, map[string]any{"body": "Status: the first wording."}, "alice")
 	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return dispatchRequest(t, h, http.MethodPatch, "/api/v1/messages/"+message.ID, map[string]any{"body": "Status: the second wording."}, "alice")
 	})
@@ -686,7 +668,7 @@ func xidWindowMessageEdit(t *testing.T, f *xidFixture) {
 // the index of the empty body, the tombstone of its blocks, the settle of its pending sends and
 // the message.deleted event go in the one batch the route runs itself (deleteMessage).
 func xidWindowMessageDelete(t *testing.T, f *xidFixture) {
-	message := f.xidIssueMessage(t, "Status: a wording to withdraw.")
+	message := createIssueMessage(t, f.handler, f.issueKey, map[string]any{"body": "Status: a wording to withdraw."}, "alice")
 	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return dispatchRequest(t, h, http.MethodDelete, "/api/v1/messages/"+message.ID, nil, "alice")
 	})

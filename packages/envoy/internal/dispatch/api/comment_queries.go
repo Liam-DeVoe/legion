@@ -396,11 +396,11 @@ func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, commen
 // hydrateWrittenComment is the comment a write answers, with the side tables
 // GET /api/v1/comments/{id} reads it with (hydrateCommentSideTables): its mentions, its delivery
 // attempts and the block it replies to. A write calls it on its own transaction, tx, in its read
-// phase, once it has queued its last write and before Commit runs them, so a read that fails
-// ends the request with nothing written. The rows it reads are ones no write that answers this
-// way queues a change to, but for the delete's settle of the attempts still pending, which the
-// delete sets in what this returns as its settle leaves them (deleteComment). The anchor's
-// position stays out: getComment computes it from the document, and no side table holds it.
+// phase, before Commit runs its queued writes, so a read that fails ends the request with nothing
+// written. The rows it reads are ones no write that answers this way queues a change to, but for
+// the delete's settle of the attempts still pending, which the delete sets in what this returns
+// as its settle leaves them (deleteComment). The anchor's position stays out: getComment computes
+// it from the document, and no side table holds it.
 func (s *server) hydrateWrittenComment(ctx context.Context, tx pgx.Tx, comment model.Comment) (model.Comment, error) {
 	comments, err := s.hydrateCommentSideTables(ctx, tx, []model.Comment{comment})
 	if err != nil {

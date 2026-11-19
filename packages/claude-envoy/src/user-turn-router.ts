@@ -99,17 +99,50 @@ export function acceptLanded(messageId: string, error: DispatchWriteLandedError)
   return `Dispatch recorded this session's accept of message ${messageId} and gave no copy of its answer (${error.message}), so no turn follows; it arrives as a card`
 }
 
-/** What stderr says of a reply to message `messageId` Dispatch made and gave no copy of its
- *  answer for (`DispatchWriteLandedError`): it is posted, and the error's message says what was
- *  made. */
-export function replyLanded(messageId: string, error: DispatchWriteLandedError): string {
-  return `a reply to message ${messageId} landed on Dispatch, which gave no copy of its answer — ${error.message}`
+/** What stderr says of a reply to message `messageId` whose post ended in `error`. One Dispatch
+ *  made and gave no copy of its answer for (`DispatchWriteLandedError`) is posted, and the
+ *  error's message says what was made; any other did not reach Dispatch. Every host of this
+ *  package says it in these words (`./codex/codex-user-turns`). */
+export function replyWarning(messageId: string, error: unknown): string {
+  return error instanceof DispatchWriteLandedError
+    ? `a reply to message ${messageId} landed on Dispatch, which gave no copy of its answer — ${error.message}`
+    : `a reply to message ${messageId} did not reach Dispatch — ${messageFor(error)}`
 }
 
-/** What stderr says of a BTW answer to message `messageId` Dispatch made and gave no copy of its
- *  answer for (`DispatchWriteLandedError`): it answered the attempt, so no error reply follows. */
-export function btwAnswerLanded(messageId: string, error: DispatchWriteLandedError): string {
-  return `a BTW answer to message ${messageId} landed on Dispatch, which gave no copy of its answer — ${error.message}`
+/** What stderr says of a BTW answer to message `messageId` whose post ended in `error`. One
+ *  Dispatch made and gave no copy of its answer for (`DispatchWriteLandedError`) answered the
+ *  attempt, so no error reply follows it; any other did not reach Dispatch. */
+export function btwAnswerWarning(messageId: string, error: unknown): string {
+  return error instanceof DispatchWriteLandedError
+    ? `a BTW answer to message ${messageId} landed on Dispatch, which gave no copy of its answer — ${error.message}`
+    : `a BTW answer did not reach Dispatch — ${messageFor(error)}`
+}
+
+/** Answers a BTW on Dispatch with what `ask` makes of its body, and returns without waiting for
+ *  it, so the frame is answered at once. A question `ask` could not answer, and an answer whose
+ *  post Dispatch refused, is answered with the error that stopped it. A reply Dispatch made and
+ *  gave no copy of its answer for (`DispatchWriteLandedError`) answered the attempt, so no error
+ *  reply follows it; stderr names every post that ended in an error (`btwAnswerWarning`). Every
+ *  host of this package answers a BTW through it (`./codex/codex-user-turns`). */
+export function answerBtw(
+  delivery: DispatchDelivery,
+  ask: (question: string) => Promise<string>,
+  reply: (
+    delivery: DispatchDelivery,
+    result: { readonly body?: string; readonly error?: string },
+  ) => Promise<void>,
+  warn: (text: string) => void,
+): void {
+  void (async () => {
+    try {
+      await reply(delivery, { body: await ask(delivery.body) })
+    } catch (error) {
+      if (error instanceof DispatchWriteLandedError) throw error
+      await reply(delivery, { error: messageFor(error) })
+    }
+  })().catch((error: unknown) => {
+    warn(btwAnswerWarning(delivery.id, error))
+  })
 }
 
 /** A message whose row of the conversation has not arrived yet: the person's own words, which
@@ -354,15 +387,11 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
 
   /** Posts one reply to a delivery, naming on stderr a reply that did not reach Dispatch, and one
    *  Dispatch made and gave no copy of its answer for (`DispatchWriteLandedError`), which is
-   *  posted: the error's message says what was made. */
+   *  posted: the error's message says what was made (`replyWarning`). */
   const answer = async (delivery: DispatchDelivery, body: string | undefined): Promise<void> => {
     if (body === undefined) return
     await post(delivery, { body }).catch((error: unknown) => {
-      warn(
-        error instanceof DispatchWriteLandedError
-          ? replyLanded(delivery.id, error)
-          : `a reply to message ${delivery.id} did not reach Dispatch — ${messageFor(error)}`,
-      )
+      warn(replyWarning(delivery.id, error))
     })
   }
 
@@ -451,28 +480,19 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
    *  answer never asks for a follow-up: a BTW is answered one time, and the rule that a frame
    *  this session is handed twice posts no second answer is what Dispatch leans on for it
    *  (`replyAfterAnswer`, `packages/envoy/internal/dispatch/api/message_delivery.go`), since
-   *  nothing here guards a redelivered BTW and the fork would answer it afresh. A reply Dispatch
-   *  made and gave no copy of its answer for (`DispatchWriteLandedError`) answered the attempt,
-   *  so no error reply follows it, and stderr says it landed. */
+   *  nothing here guards a redelivered BTW and the fork would answer it afresh. A session with
+   *  no link to Claude Code cannot ask the model, which is the error its BTW is answered with
+   *  (`answerBtw`). */
   const runBtw = (delivery: DispatchDelivery): void => {
-    void (async () => {
-      if (!session.connected()) {
-        await reply(delivery, { error: "this session has no link to Claude Code" })
-        return
-      }
-      try {
-        await reply(delivery, { body: await session.fork(delivery.body) })
-      } catch (error) {
-        if (error instanceof DispatchWriteLandedError) throw error
-        await reply(delivery, { error: messageFor(error) })
-      }
-    })().catch((error: unknown) => {
-      warn(
-        error instanceof DispatchWriteLandedError
-          ? btwAnswerLanded(delivery.id, error)
-          : `a BTW answer did not reach Dispatch — ${messageFor(error)}`,
-      )
-    })
+    answerBtw(
+      delivery,
+      async (question) => {
+        if (!session.connected()) throw new Error("this session has no link to Claude Code")
+        return session.fork(question)
+      },
+      reply,
+      warn,
+    )
   }
 
   return {

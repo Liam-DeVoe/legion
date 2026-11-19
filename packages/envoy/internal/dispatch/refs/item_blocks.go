@@ -1085,7 +1085,8 @@ func IndexOwedItemBlocks(ctx context.Context, pool Pool, item OwedItemBlock, ser
 // the document a comment or an ask on a document hangs on - which every writer of the item
 // takes, and reports whether the item is still there: one deleted since it was listed took its
 // state row with it (on delete cascade), so nothing is owed of it. A direct message, whose
-// conversation is no owner, has none and needs none, since nothing rewrites a message's body.
+// conversation is no owner, has none and needs none, since nothing rewrites a direct message's
+// body: only an issue message is edited or deleted.
 //
 // It is the lock every writer of a comment, a message, an ask or one of their block-state rows
 // takes before it writes that row, inside and outside this package: the window arm here

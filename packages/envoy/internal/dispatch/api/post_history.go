@@ -19,14 +19,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // postHistoryEntry is one body a write replaced, with the actor that replaced it and the time
@@ -105,7 +103,7 @@ const deletedPostDeliveryError = "not sent: the post was deleted"
 // reference changes the delete's event carries. The step writes, in order: the history row
 // keeping the body about to go (postBodyHistoryStep); the one update that empties the body and
 // stamps the delete on the row at deletedAt, the transaction's now() the caller read in its read
-// phase; the index of the empty body that update leaves, planned here (planItemWrite), which
+// phase; the index of the empty body that update leaves, planned here (planEditedItem), which
 // takes every block out of the post's current revision and every reference out of its edges; and
 // the copies of the body that do not follow the cleared column - each block's stored excerpt,
 // the text each revision recorded of a block and the post's embedding windows - taken out of
@@ -150,9 +148,8 @@ func (s *server) clearDeletedPostBody(
 		return model.ReferenceChanges{}, nil, err
 	}
 	// The update that clears the body is queued, so the index is planned from the empty body the
-	// write leaves rather than read back, as an edit's is (queueEditedItemReferences).
-	changes, index, err := s.planItemWrite(ctx, tx, kind, itemID, "", nil, deletedAt, true, nil,
-		func(found []text.Ref) []refs.Target { return refs.EditedTargets(previousBody, "", found) })
+	// write leaves rather than read back, as an edit's is (planEditedItem).
+	changes, index, err := s.planEditedItem(ctx, tx, kind, itemID, previousBody, "", deletedAt, nil)
 	if err != nil {
 		return model.ReferenceChanges{}, nil, err
 	}
@@ -172,12 +169,69 @@ func (s *server) clearDeletedPostBody(
 	}, nil
 }
 
-// settleDeletedPostAttempt sets one send attempt of a deleted post still pending as the delete's
-// settle leaves it (queueDeletedPostSettlement): failed, with deletedPostDeliveryError. state and
-// failure are the attempt's own fields, a comment's and a message's alike.
-func settleDeletedPostAttempt(state *string, failure **string) {
-	settled := deletedPostDeliveryError
-	*state, *failure = "failed", &settled
+// pendingAttemptsRead is what a delete's read found of its post's send attempts still pending,
+// for the settle to hold each row it settles to (queueDeletedPostSettlement). Each attempt is
+// named by its key and carries every column the delete's receipts and answer state that a writer
+// holding no owner lock moves on a pending row. That writer is the attempt's own sender, under
+// the claim it holds: a comment's records, before its send, the resolution it sends with
+// (recordCommentDeliveryResolution: delivery, session_id, resolve_error), and a message's renews
+// its pin before another try (renewMessageDeliveryClaim: session_id).
+//
+// table is the post's attempts table and owner the column naming the post in it. matches is the
+// SQL that is true of an attempt row d the read found as it stands now, over the arrays args
+// holds from $3, one element per attempt read; pending is how many were read.
+type pendingAttemptsRead struct {
+	table, owner string
+	matches      string
+	args         []any
+	pending      int
+}
+
+// commentAttemptsRead is pendingAttemptsRead of the pending attempts of a comment, as its
+// delete's read found them. session_id and resolve_error are null on an attempt nothing has
+// resolved yet, so a row is matched to them null-safely.
+func commentAttemptsRead(pending []model.CommentDelivery) pendingAttemptsRead {
+	targets := make([]string, len(pending))
+	attempts := make([]int32, len(pending))
+	modes := make([]string, len(pending))
+	sessions := make([]*string, len(pending))
+	resolveErrors := make([]*string, len(pending))
+	for i, attempt := range pending {
+		targets[i], attempts[i], modes[i] = attempt.Target, int32(attempt.Attempt), attempt.Delivery
+		sessions[i], resolveErrors[i] = attempt.SessionID, attempt.ResolveError
+	}
+	return pendingAttemptsRead{
+		table: "comment_deliveries", owner: "comment_id",
+		matches: `exists (
+			select from unnest($3::text[], $4::int[], $5::text[], $6::text[], $7::text[])
+				as seen(target, attempt, delivery, session_id, resolve_error)
+			where (seen.target, seen.attempt, seen.delivery, seen.session_id, seen.resolve_error)
+				is not distinct from (d.target, d.attempt, d.delivery, d.session_id, d.resolve_error)
+		)`,
+		args:    []any{targets, attempts, modes, sessions, resolveErrors},
+		pending: len(pending),
+	}
+}
+
+// messageAttemptsRead is pendingAttemptsRead of the pending attempts of a message, as its
+// delete's read found them.
+func messageAttemptsRead(pending []model.MessageDelivery) pendingAttemptsRead {
+	attempts := make([]int32, len(pending))
+	modes := make([]string, len(pending))
+	sessions := make([]string, len(pending))
+	for i, attempt := range pending {
+		attempts[i], modes[i], sessions[i] = int32(attempt.Attempt), attempt.Delivery, attempt.SessionID
+	}
+	return pendingAttemptsRead{
+		table: "message_deliveries", owner: "message_id",
+		matches: `exists (
+			select from unnest($3::int[], $4::text[], $5::text[]) as seen(attempt, delivery, session_id)
+			where (seen.attempt, seen.delivery, seen.session_id)
+				is not distinct from (d.attempt, d.delivery, d.session_id)
+		)`,
+		args:    []any{attempts, modes, sessions},
+		pending: len(pending),
+	}
 }
 
 // queueDeletedPostSettlement queues the settle of every send of the deleted post still pending:
@@ -187,23 +241,40 @@ func settleDeletedPostAttempt(state *string, failure **string) {
 // moves it: it is how a sender still holding the old claim learns the row is no longer its own.
 //
 // The caller read the post's attempts in its read phase, under the post's owner lock, and builds
-// the receipt each settle owes from the pending ones (settleDeletedPostAttempt), queued after this
-// statement, since no statement's result is read in Go before the next is sent. pending is how
-// many those were. Every settle of an attempt takes that owner's lock first
-// (settleDeliveryAttempt, settleUndeliverableMention), so the statement finds them as the read
-// did; were it to settle another count, its callback refuses, Commit returns that refusal and the
-// receipts never land beside rows they do not describe.
-//
-// attempts is the table of the post's send attempts and owner the column naming the post in it,
-// both the caller's own constants.
-func queueDeletedPostSettlement(b *store.WriteBatch, attempts, owner, itemID string, pending int) {
+// the receipt each settle owes from the pending ones (deliveryOutcome), queued after this
+// statement, since no statement's result is read in Go before the next is sent; read is what
+// that read found of them. Every settle of an attempt takes that owner's lock first
+// (settleDeliveryAttempt, settleUndeliverableMention), so the statement finds as many pending as
+// the read did, but an attempt's own sender moves a pending row holding no owner lock
+// (pendingAttemptsRead). So the statement settles every attempt still pending and answers of each
+// whether the read found it as it stands: were it to settle another count, or a row the read
+// found otherwise, its callback refuses, Commit returns that refusal, which the route answers as
+// it answers any failed write (500 INTERNAL), and the receipts never land beside rows they do not
+// describe.
+func queueDeletedPostSettlement(b *store.WriteBatch, itemID string, read pendingAttemptsRead) {
 	b.Queue("", `
-		update `+attempts+` set state = 'failed', error = $2, claimed_at = now()
-		where `+owner+` = $1 and state = 'pending'
-	`, itemID, deletedPostDeliveryError).Exec(func(tag pgconn.CommandTag) error {
-		if settled := tag.RowsAffected(); settled != int64(pending) {
-			return fmt.Errorf("settle the pending sends of %s %s: the settle met %d pending attempts, the read under its owner lock %d",
-				attempts, itemID, settled, pending)
+		update `+read.table+` d set state = 'failed', error = $2, claimed_at = now()
+		where d.`+read.owner+` = $1 and d.state = 'pending'
+		returning `+read.matches,
+		append([]any{itemID, deletedPostDeliveryError}, read.args...)...,
+	).Query(func(rows pgx.Rows) error {
+		settled, matched := 0, 0
+		for rows.Next() {
+			var seen bool
+			if err := rows.Scan(&seen); err != nil {
+				return err
+			}
+			settled++
+			if seen {
+				matched++
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if settled != read.pending || matched != settled {
+			return fmt.Errorf("settle the pending sends of %s %s: the settle met %d pending attempts, %d of them as the read under its owner lock found them, which found %d",
+				read.table, itemID, settled, matched, read.pending)
 		}
 		return nil
 	})

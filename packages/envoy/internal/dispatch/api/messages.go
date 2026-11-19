@@ -445,13 +445,15 @@ func (s *server) createStoredMessage(
 		}
 		payload := thread.payload(message, referenceChanges)
 		payload.ThreadLogins = directLogins
-		if err := s.deps.Events.QueueAppendWithLogins(b, messageEvent(message, eventType, actor, payload), logins, func(appended model.Event) {
+		// Only an issue message's references are stamped: a direct message writes none.
+		stamped := ""
+		if issueKey != nil {
+			stamped = "message"
+		}
+		if err := s.queueLoggedEventOn(b, messageEvent(message, eventType, actor, payload), logins, stamped, message.ID, func(appended model.Event) {
 			event = appended
 		}); err != nil {
 			return err
-		}
-		if issueKey != nil {
-			refs.QueueStamp(b, "message", message.ID)
 		}
 		// A targeted message's attempt 1 is queued here, with the writes of the transaction that
 		// stores the message, unclaimed and naming no session yet, as writeBroadcast opens each

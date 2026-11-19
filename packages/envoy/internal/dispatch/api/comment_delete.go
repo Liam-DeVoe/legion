@@ -127,23 +127,26 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	}
 	// The answer is read here, in the read phase, with the attempts as they stand: the settle
 	// below is queued, so the attempts it settles are set in the answer as it leaves them, and
-	// each one's receipt is built from that.
+	// each one's receipt is built from that. The settle refuses should a row no longer stand as
+	// this read found it (queueDeletedPostSettlement).
 	answer, err := s.hydrateWrittenComment(r.Context(), tx, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	var pending []model.CommentDelivery
 	var receipts []model.Event
 	for index := range answer.Deliveries {
 		attempt := &answer.Deliveries[index]
-		if attempt.State != "pending" {
+		if attempt.State != model.DeliveryStatePending {
 			continue
 		}
-		settleDeletedPostAttempt(&attempt.State, &attempt.Error)
+		pending = append(pending, *attempt)
+		attempt.State, attempt.Error = deliveryOutcome(deletedPostDeliveryError, false)
 		receipts = append(receipts, commentDeliveryReceipt(comment, comment.Author, *attempt))
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		queueDeletedPostSettlement(b, "comment_deliveries", "comment_id", comment.ID, len(receipts))
+		queueDeletedPostSettlement(b, comment.ID, commentAttemptsRead(pending))
 		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)

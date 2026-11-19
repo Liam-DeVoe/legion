@@ -244,7 +244,8 @@ func sourceText(ctx context.Context, q Queryer, kind, id string) (string, time.T
 // It is how a background pass reads a source it is about to re-index (replaceInTx, ReindexOwed,
 // IndexOwedItemBlocks): the lock excludes every writer of that source, and the read sees what the
 // lock's previous holder committed. A source whose owner is nil - a direct message, whose
-// conversation is no owner - is read with no lock, since nothing rewrites a message's body.
+// conversation is no owner - is read with no lock, since nothing rewrites a direct message's
+// body: only an issue message is edited or deleted.
 // found is false when the source is gone, before the lock or while the pass waited for it: no row
 // is a source that does not exist rather than a failure.
 func readSourceUnderOwner(ctx context.Context, tx pgx.Tx, kind, id, read string, dest ...any) (bool, error) {
@@ -433,12 +434,13 @@ func queueSettleOwed(b *store.WriteBatch, source Owed) {
 // takes the source's owner lock (sourceOwner), the lock every writer of that text takes, and
 // reads the text in the statement after it (readSourceUnderOwner, sourceRead), so a write
 // committed while it waited is the text it indexes; a direct message, whose conversation is no
-// owner, has no such lock and needs none, since nothing rewrites a message's body. It takes no
-// source row: a row lock would assign the transaction a transaction id to hold through
-// everything it reads and plans, and what it would exclude beyond the owner lock is a writer of
-// that row that takes no owner lock, which no writer a server runs is: api's lock table queues
-// behind that item's owner lock the serving writers of a comment, a message or an ask that open
-// their own transaction (TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites,
+// owner, has no such lock and needs none, since nothing rewrites a direct message's body: only an
+// issue message is edited or deleted. It takes no source row: a row lock would assign the
+// transaction a transaction id to hold through everything it reads and plans, and what it would
+// exclude beyond the owner lock is a writer of that row that takes no owner lock, which no writer
+// a server runs is: api's lock table queues behind that item's owner lock the serving writers of
+// a comment, a message or an ask that open their own transaction
+// (TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites,
 // item_row_owner_lock_test.go), and those that write inside a transaction their caller opened
 // rest on the lock that caller took, which that table does not drive; its gap map names each with
 // why (TestTheLockTablePlacesEveryWriterTheCensusNames). Everything it writes is read and planned

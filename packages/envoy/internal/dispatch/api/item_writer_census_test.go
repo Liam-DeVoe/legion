@@ -92,7 +92,8 @@ var itemRowWriters = map[string]map[string]string{
 	},
 	"internal/dispatch/api/broadcasts.go": {
 		"writeBroadcast": "none, and none to take: each copy is a direct message, whose " +
-			"conversation is no owner (store.OwnerOf), and nothing rewrites a message's body",
+			"conversation is no owner (store.OwnerOf), and nothing rewrites a direct message's " +
+			"body: only an issue message is edited or deleted",
 	},
 	"internal/dispatch/api/comment_actions.go": {
 		"commentAction": "the comment's owner lock (lockedComment, lockOwnerOfComment)",
@@ -168,8 +169,9 @@ var itemRowWriters = map[string]map[string]string{
 			"(restoreDocumentDecidedWordings, lockArtifactOwner)",
 	},
 	"internal/dispatch/refs/item_blocks.go": {
-		"clearItemWindowsOwed": "the item's owner lock, which the window arm takes (LockItemOwner)",
-		"markItemBlocksOwed":   "the item's owner lock, which the window arm takes (LockItemOwner)",
+		"clearItemWindowsOwed": "the item's owner lock, which the window arm takes (LockItemOwner) " +
+			"and the post delete that queues TombstoneItem holds (api's clearDeletedPostBody)",
+		"markItemBlocksOwed": "the item's owner lock, which the window arm takes (LockItemOwner)",
 		"queueBlockRefs": "the item's owner lock, which the caller holds (LockItemOwner, " +
 			"readSourceUnderOwner, or the writing route's own); its tables are the item's block " +
 			"and block-ref tables, no item row",

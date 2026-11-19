@@ -4,12 +4,16 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // readPostHistory is one history read as an authenticated person makes it.
@@ -203,5 +207,157 @@ func TestDeletedPostHistoryGivesTheMarkAndNoBody(t *testing.T) {
 	// answer carries no history.
 	if body := deleted.Body.String(); strings.Contains(body, "the second body") {
 		t.Fatalf("the delete answered %s, want no part of the body", body)
+	}
+}
+
+// A delete settles each send of its post still pending from what its read found of it, and an
+// attempt's own sender moves a pending row holding no owner lock: a comment's pins the session
+// its send resolved to (recordCommentDeliveryResolution), a message's the session its renewed
+// try goes to (renewMessageDeliveryClaim). The settle therefore holds each row it settles to that
+// read (queueDeletedPostSettlement). A row that stands as the read found it is settled, an
+// unresolved comment attempt's null session and resolve error included. One whose session moved
+// after the read refuses the settle, as one the read never found does, and the route answers
+// both as it answers any failed write, with nothing settled.
+func TestADeletesSettleHoldsEachPendingAttemptToWhatItsReadFound(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "TEST", "Settle what the read found", "before")
+	exec := func(t *testing.T, sql string, args ...any) {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", strings.TrimSpace(sql), err)
+		}
+	}
+	kinds := []struct {
+		name string
+		// open writes a post with one send pending that nothing has resolved yet.
+		open func(t *testing.T) string
+		// read is what the delete's read finds of the post's pending sends, and none a read
+		// that found none.
+		read func(t *testing.T, id string) pendingAttemptsRead
+		none pendingAttemptsRead
+		// move is the pin the send's own sender writes on its row, holding no owner lock.
+		move, state string
+	}{
+		{
+			name: "comment",
+			open: func(t *testing.T) string {
+				comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "a comment a send waits on"}, "alice")
+				exec(t, `
+					insert into comment_deliveries (comment_id, target, attempt, delivery, state)
+					values ($1, 'role:reviewer', 1, 'steer', 'pending')
+				`, comment.ID)
+				return comment.ID
+			},
+			read: func(t *testing.T, id string) pendingAttemptsRead {
+				t.Helper()
+				rows, err := database.Pool.Query(ctx, `
+					select `+commentDeliveryColumns+` from comment_deliveries where comment_id = $1 and state = 'pending'
+				`, id)
+				if err != nil {
+					t.Fatalf("read the pending attempts of comment %s: %v", id, err)
+				}
+				pending, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.CommentDelivery, error) {
+					return scanCommentDelivery(row)
+				})
+				if err != nil {
+					t.Fatalf("read the pending attempts of comment %s: %v", id, err)
+				}
+				return commentAttemptsRead(pending)
+			},
+			none:  commentAttemptsRead(nil),
+			move:  `update comment_deliveries set session_id = coalesce(session_id, 's1') where comment_id = $1`,
+			state: `select state from comment_deliveries where comment_id = $1`,
+		},
+		{
+			name: "message",
+			open: func(t *testing.T) string {
+				message := createSessionIssueMessage(t, handler, issue.Key, "a message a send waits on")
+				exec(t, `
+					insert into message_deliveries (message_id, attempt, delivery, session_id, state)
+					values ($1, 1, 'steer', '', 'pending')
+				`, message.ID)
+				return message.ID
+			},
+			read: func(t *testing.T, id string) pendingAttemptsRead {
+				t.Helper()
+				rows, err := database.Pool.Query(ctx, `
+					select `+messageDeliveryColumns+` from message_deliveries where message_id = $1 and state = 'pending'
+				`, id)
+				if err != nil {
+					t.Fatalf("read the pending attempts of message %s: %v", id, err)
+				}
+				pending, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.MessageDelivery, error) {
+					return scanMessageDelivery(row)
+				})
+				if err != nil {
+					t.Fatalf("read the pending attempts of message %s: %v", id, err)
+				}
+				return messageAttemptsRead(pending)
+			},
+			none:  messageAttemptsRead(nil),
+			move:  `update message_deliveries set session_id = coalesce(nullif(session_id, ''), 's1') where message_id = $1`,
+			state: `select state from message_deliveries where message_id = $1`,
+		},
+	}
+	for _, kind := range kinds {
+		for _, shape := range []struct {
+			name          string
+			moved, unread bool
+		}{
+			{name: "a row that stands as read is settled"},
+			{name: "a row its sender moved after the read refuses the settle", moved: true},
+			{name: "a row the read did not find refuses the settle", unread: true},
+		} {
+			t.Run(kind.name+": "+shape.name, func(t *testing.T) {
+				id := kind.open(t)
+				read := kind.read(t, id)
+				if shape.unread {
+					read = kind.none
+				}
+				if shape.moved {
+					exec(t, kind.move, id)
+				}
+
+				tx, err := database.Pool.Begin(ctx)
+				if err != nil {
+					t.Fatalf("begin the delete's transaction: %v", err)
+				}
+				defer tx.Rollback(ctx)
+				settle := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+					queueDeletedPostSettlement(b, id, read)
+					return nil
+				})
+				want := model.DeliveryStateFailed
+				if shape.moved || shape.unread {
+					if settle == nil {
+						t.Fatalf("the settle took a row its read did not find as it stands")
+					}
+					recorder := httptest.NewRecorder()
+					(&server{}).writeHandlerError(recorder, settle)
+					if recorder.Code != http.StatusInternalServerError || !strings.Contains(recorder.Body.String(), `"code":"`+codeInternal+`"`) {
+						t.Fatalf("the route answers the refusal %d %s, want 500 %s", recorder.Code, recorder.Body.String(), codeInternal)
+					}
+					if err := tx.Rollback(ctx); err != nil {
+						t.Fatalf("roll the refused settle back: %v", err)
+					}
+					want = model.DeliveryStatePending
+				} else {
+					if settle != nil {
+						t.Fatalf("settle the row its read found as it stands: %v", settle)
+					}
+					if err := tx.Commit(ctx); err != nil {
+						t.Fatalf("commit the settle: %v", err)
+					}
+				}
+				var state string
+				if err := database.Pool.QueryRow(ctx, kind.state, id).Scan(&state); err != nil {
+					t.Fatalf("read the attempt after the settle: %v", err)
+				}
+				if state != want {
+					t.Fatalf("the attempt reads %s after the settle, want %s", state, want)
+				}
+			})
+		}
 	}
 }

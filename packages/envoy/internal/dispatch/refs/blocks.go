@@ -457,7 +457,8 @@ func queueWindows(b *store.WriteBatch, kind, ownerKey string, windows []itembloc
 	return nil
 }
 
-// windowsStatement is the one statement writeWindows sends, with its arguments.
+// windowsStatement is the one statement writeWindows sends and queueWindows queues, with its
+// arguments.
 func windowsStatement(kind, ownerKey string, windows []itemblocks.Window, state blockState) (string, []any, error) {
 	type row struct {
 		Suffix string   `json:"suffix"`

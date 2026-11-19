@@ -1,14 +1,9 @@
 import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
-import { type DispatchClient, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http"
+import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { messageFor } from "@legion/envoy-client/errors"
 import { acceptUserTurn } from "@legion/pi-shared/accept-user-turn"
 import { typedInputReply } from "@legion/pi-shared/dispatch-user-turn"
-import {
-  acceptLanded,
-  btwAnswerLanded,
-  replyLanded,
-  type UserTurnRouter,
-} from "../user-turn-router"
+import { acceptLanded, answerBtw, replyWarning, type UserTurnRouter } from "../user-turn-router"
 import type { UserTurnState } from "../user-turn-state"
 import type { CodexInboxItem } from "./codex-inbox"
 
@@ -27,7 +22,8 @@ import type { CodexInboxItem } from "./codex-inbox"
  *
  * Everything else keeps the card it renders as. A write Dispatch made and gave no copy of its
  * answer for (`DispatchWriteLandedError`: an accept, a reply, a BTW answer) is said as made, in
- * the words `../user-turn-router` says it in (`acceptLanded`, `replyLanded`, `btwAnswerLanded`).
+ * the words `../user-turn-router` says it in (`acceptLanded`, `replyWarning`, `btwAnswerWarning`
+ * through `answerBtw`).
  */
 export interface CodexUserTurnOptions {
   readonly sessionId: () => string
@@ -56,22 +52,9 @@ export function createCodexUserTurnRouter(options: CodexUserTurnOptions): UserTu
   const { state, warn } = options
 
   /** A BTW answer Dispatch made and gave no copy of its answer for answered the attempt, so no
-   *  error reply follows it, and the line says it landed. */
+   *  error reply follows it, and the line says it landed (`answerBtw`). */
   const runBtw = (delivery: DispatchDelivery): void => {
-    void (async () => {
-      try {
-        await options.reply(delivery, { body: await options.ask(delivery.body) })
-      } catch (error) {
-        if (error instanceof DispatchWriteLandedError) throw error
-        await options.reply(delivery, { error: messageFor(error) })
-      }
-    })().catch((error: unknown) => {
-      warn(
-        error instanceof DispatchWriteLandedError
-          ? btwAnswerLanded(delivery.id, error)
-          : `a BTW answer did not reach Dispatch — ${messageFor(error)}`,
-      )
-    })
+    answerBtw(delivery, options.ask, options.reply, warn)
   }
 
   return {
@@ -103,11 +86,7 @@ export function createCodexUserTurnRouter(options: CodexUserTurnOptions): UserTu
         const said = typedInputReply(turn.body, { error: CODEX_COMMAND_REFUSAL })
         if (said !== undefined) {
           void options.reply(delivery, { body: said }).catch((error: unknown) => {
-            warn(
-              error instanceof DispatchWriteLandedError
-                ? replyLanded(delivery.id, error)
-                : `a reply to message ${delivery.id} did not reach Dispatch — ${messageFor(error)}`,
-            )
+            warn(replyWarning(delivery.id, error))
           })
         }
         return true
