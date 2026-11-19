@@ -52,6 +52,8 @@ const NODE_LABELS: Record<GraphEdge["node"]["kind"], string> = {
   // because a reader opens the agent and not the page.
   page: "Agent page",
   person: "Person",
+  // A recorded result of a check, which no read of the graph answers yet.
+  result: "Result",
   risk: "risk",
   // A role is the agent Dispatch keeps across a restart, and a session is one run of one.
   role: "Agent",

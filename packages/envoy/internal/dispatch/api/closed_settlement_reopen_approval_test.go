@@ -18,17 +18,15 @@ import (
 
 // A close withdraws the spec's approval request and a reopen restores it with the turn it had, so
 // a person who was asked to approve the spec is asked again after the reopen, as before the close
-// (restoreIssueAsksTx). The settlements the closed period and the reopen leave owed write no
-// version: the close's withdrawal and the reopen's restoration change no byte of a document
-// (dispatch://INFRA-1150 R3), and neither is a change the request's agent made to the text it
-// handed the person. So after both have run, the request still waits on the person, the spec
-// still reads awaiting approval from the person, and the request is still in the person's Inbox.
-// The browser suite drives the same path (e2e/close-withdraws-asks.e2e.ts, whose "Waiting on you
-// (3)" counts this request).
+// (prepareRestoration, recordRestoredAsksTx). The settlements the closed period and the reopen
+// leave owed write no version: the close's withdrawal and the reopen's restoration change no byte
+// of a document, and neither is a change the request's agent made to the text it handed the
+// person. So after both have run, the request still waits on the person, the spec still reads
+// awaiting approval from the person, and the request is still in the person's Inbox. The browser
+// suite drives the same path (e2e/close-withdraws-asks.e2e.ts, whose "Waiting on you (3)" counts
+// this request).
 func TestAReopenedIssuesApprovalRequestStillWaitsOnThePersonOnceItsDocumentsSettle(t *testing.T) {
-	// The copy in an issue of its own: the request is the spec's, and a copy inside a converted
-	// issue is no copy (TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks).
-	f := newCloseAsksFixtureOf(t, time.Hour, false)
+	f := newCloseAsksFixtureSettlingAfter(t, time.Hour)
 	ctx := context.Background()
 	before := readBlockAsk(t, f.handler, f.approvalAsk)
 	if before.State != "open" || before.WaitingOn != "human" {
@@ -582,8 +580,8 @@ const reopenDecisionSpec = "Context\n\n" +
 // A person's approval of a document given after its issue reopens, before the settlement the
 // reopen leaves owed has run, still stands once that settlement has run. The spec holds a
 // decision; the close withdraws it and the reopen restores it, on the ask's node and its row, and
-// neither changes a byte of the spec (dispatch://INFRA-1150 R3: "a close's withdrawal and a
-// reopen's restoration change no byte of any document"), so the settlement on the closed issue
+// neither changes a byte of the spec - a close's withdrawal and a reopen's restoration change no
+// byte of any document - so the settlement on the closed issue
 // writes no version. The reopen through PATCH leaves the spec owed the settlement that reconciles
 // the restored ask's block (docs.MarkReopenOwedAskDocuments), and alice approves the spec from its
 // header before that settlement runs: there is no approval request, and her review pins the
@@ -615,7 +613,7 @@ func TestAnApprovalGivenBetweenTheReopenAndItsSettlementStaysApproved(t *testing
 	if closed := latestVersion(t, database, spec).Number; closed != before {
 		t.Fatalf("the closed issue's settlement left the spec at version %d, want %d: the close's withdrawal changes no byte of it", closed, before)
 	}
-	requireLiveText(t, handler, spec, `#reopen-decision urgency="med" multiple="false" state="resolved"`)
+	requireLiveText(t, handler, spec, `#reopen-decision state="resolved"`)
 
 	if reopened := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
 		t.Fatalf("reopen: status=%d body=%s", reopened.Code, reopened.Body.String())
@@ -631,7 +629,7 @@ func TestAnApprovalGivenBetweenTheReopenAndItsSettlementStaysApproved(t *testing
 	if reopened := latestVersion(t, database, spec).Number; reopened != before {
 		t.Fatalf("the reopened issue's settlement left the spec at version %d, want %d: the reopen's restoration changes no byte of it", reopened, before)
 	}
-	requireLiveText(t, handler, spec, `#reopen-decision urgency="med" multiple="false" state="open"`)
+	requireLiveText(t, handler, spec, `#reopen-decision state="open"`)
 	if read := readApproval(t, handler, spec); read.Approval == nil || read.Approval.State != "approved" || read.Approval.LatestVersion != before ||
 		read.Approval.Version == nil || *read.Approval.Version != before || read.Approval.By == nil || read.Approval.By.ID != "alice" {
 		t.Fatalf("the spec's approval after the reopen's settlement = %s, want approved by alice at version %d", describeApproval(read), before)

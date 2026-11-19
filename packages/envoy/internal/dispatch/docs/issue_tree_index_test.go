@@ -21,11 +21,13 @@ import (
 )
 
 // The values the block index states of every block beside its parent, spelled out here rather
-// than read off the writer, so a writer that renamed one is read as one that wrote nothing.
+// than read off the writer, so a writer that renamed one is read as one that wrote nothing, and
+// the size it states of a plan node whose opening line writes one.
 const (
 	treeRank      = "rank"
 	treeText      = "text"
 	treePlacement = "placement"
+	treeSize      = "size"
 )
 
 // treeKinds are the tuple kinds the issue tree's renderer reads of a block (R15): its parent, its
@@ -51,6 +53,10 @@ const (
 	treeVerification = "::::callout{#gate kind=\"note\" title=\"\"}\n## What proves it\n\n" +
 		":::callout{#first-check kind=\"note\" title=\"\"}\nThe first check.\n:::\n\n" +
 		":::callout{#second-check kind=\"note\" title=\"\"}\nThe second check.\n:::\n\n::::\n"
+	// treePlan is an issue's plan: one plan node whose opening line writes its size and one whose
+	// line writes none.
+	treePlan = "## The plan\n\n:::plan_task{#sized size=\"2.5\"}\nThe task that says how big it is.\n:::\n\n" +
+		":::plan_task{#unsized}\nThe task that says nothing of its size.\n:::\n"
 )
 
 // treeDocument creates a markdown document of issue, the issue's spec where primary is set and the
@@ -170,10 +176,10 @@ func requireTheTreeOfTheVersion(t *testing.T, database *store.Store, service *Se
 }
 
 // asTheReleaseBeforeLeftIt puts the document's blocks back in the shape the block index of the
-// release before this one left them: no rank, text or placement value, and every top-level block
-// part of the document's own node, dated at the version and stated by its writer. That is what a
-// database holds for a document an earlier build indexed, and what the drain must bring to this
-// release's tree.
+// release before this one left them: no rank, text, placement or size value, and every top-level
+// block part of the document's own node, dated at the version and stated by its writer. That is
+// what a database holds for a document an earlier build indexed, and what the drain must bring to
+// this release's tree.
 func asTheReleaseBeforeLeftIt(t *testing.T, database *store.Store, artifactID, issue string) {
 	t.Helper()
 	ctx := context.Background()
@@ -190,7 +196,7 @@ func asTheReleaseBeforeLeftIt(t *testing.T, database *store.Store, artifactID, i
 		if _, err := tx.Exec(ctx, `
 			delete from graph_tuples where from_kind = $1 and from_id like $2 || '#%'
 			  and (kind = any($3) or (kind = $4 and to_kind = $5 and to_id = $6))
-		`, refs.BlockNodeKind, refKey, []string{treeRank, treeText, treePlacement},
+		`, refs.BlockNodeKind, refKey, []string{treeRank, treeText, treePlacement, treeSize},
 			graphstore.TuplePartOf, graphstore.KindIssue, issue); err != nil {
 			return err
 		}
@@ -882,29 +888,45 @@ func TestAPassThatWaitedForTheOwnerRowDatesItsTuplesAfterThePassItWaitedFor(t *t
 }
 
 // The backfill's drain marks every stored document owed its block index once, and the census of
-// the rank and the text of every block reads zero differences once the reconciliation has drained
-// them (R1; graphcensus's block_rank and block_text).
+// the rank and the text of every block and of the size of every plan node reads zero differences
+// once the reconciliation has drained them (R1, R18; graphcensus's block_rank, block_text and
+// block_size).
 //
-// Three documents of an issue - its spec, its Verification document and an upload - are put back
-// as the release before left them. The first backfill marks all three with the drain's mark,
-// store_owed_at, leaves each one's version standing and records the drain done, and a second
-// before the reconciliation runs marks nothing. A pod of the release before then drains the
-// Verification document as it drains a null version, the mark it reads as its own debt, and states
-// none of its values: the document is still owed by the drain's mark, which that release never
-// reads, and while every document holds it the census reads no difference of the rank and the
-// text kinds, whose blocks are on neither side until the reconciliation states them. After the
-// reconciliation has drained them a third backfill marks nothing and leaves nothing owed, and every
-// block of the Verification document holds its parent, its rank, its text and its placement. The
-// census then reads rows and nodes of the block, the rank and the text kinds and zero differences
-// of any kind. It can fail: a block whose text value is retracted, and one given a rank of another
-// document's band, are each one difference of their kind, named by the block.
+// Four documents of an issue - its spec, its Verification document, its plan and an upload - are
+// written through the real version write, whose index states the size the plan's first plan node
+// writes and none for the second, which writes none, and are then put back as the release before
+// left them. The first backfill marks all four with the drain's mark, store_owed_at, leaves each
+// one's version standing and records the drain done, and a second before the reconciliation runs
+// marks nothing. A pod of the release before then drains the Verification document as it drains
+// a null version, the mark it reads as its own debt, and states none of its values: the document
+// is still owed by the drain's mark, which that release never reads, and while every document
+// holds it the census reads no difference of the rank, the text and the size kinds, whose blocks
+// are on neither side until the reconciliation states them. After the reconciliation has drained
+// them a third backfill marks nothing and leaves nothing owed, every block of the Verification
+// document holds its parent, its rank, its text and its placement, and the plan's first plan node
+// holds its size again and the second none. The census then reads rows and nodes of the block,
+// the rank, the text and the size kinds and zero differences of any kind. It can fail: a block
+// whose text value is retracted, one given a rank of another document's band, and a plan node
+// whose size value is retracted are each one difference of their kind, named by the block.
 func TestTheDrainMarksEveryDocumentOnceAndTheCensusReadsZeroAfterIt(t *testing.T) {
 	ctx := context.Background()
 	database, service := blockIndexService(t)
 	spec, _ := treeDocument(t, database, service, "CORE-1", "spec", true, "", treeVersion1)
 	verification, _ := treeDocument(t, database, service, "CORE-1", "verification-md", false, model.ArtifactRoleVerification, treeVerification)
+	plan, _ := treeDocument(t, database, service, "CORE-1", "plan-md", false, model.ArtifactRolePlan, treePlan)
 	upload, _ := treeDocument(t, database, service, "CORE-1", "notes-md", false, "", treeVerification)
-	documents := []string{spec, verification, upload}
+	sized, unsized := blockAddress(t, database, plan, "sized"), blockAddress(t, database, plan, "unsized")
+	requireSizes := func(when string) {
+		t.Helper()
+		if size, held := treeValue(t, database, sized, treeSize); !held || size != "2.5" {
+			t.Errorf("%s the plan node sized holds the size %q (held %t), want 2.5, the size its opening line writes", when, size, held)
+		}
+		if size, held := treeValue(t, database, unsized, treeSize); held {
+			t.Errorf("%s the plan node unsized holds the size %q, want none: its opening line writes none", when, size)
+		}
+	}
+	requireSizes("after the version write")
+	documents := []string{spec, verification, plan, upload}
 	for _, document := range documents {
 		asTheReleaseBeforeLeftIt(t, database, document, "CORE-1")
 	}
@@ -948,8 +970,11 @@ func TestTheDrainMarksEveryDocumentOnceAndTheCensusReadsZeroAfterIt(t *testing.T
 	if _, held := treeValue(t, database, blockAddress(t, database, verification, "first-check"), treeText); held {
 		t.Errorf("the Verification document's block first-check holds a text value before this build's reconciliation ran, so this case proves nothing")
 	}
+	if _, held := treeValue(t, database, sized, treeSize); held {
+		t.Errorf("the plan node sized holds a size value before this build's reconciliation ran, so this case proves nothing")
+	}
 	owing := treeCensus(t, database)
-	for _, name := range []string{"block_rank", "block_text"} {
+	for _, name := range []string{"block_rank", "block_text", "block_size"} {
 		if kind := treeCensusKind(t, owing, name); kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
 			t.Errorf("while every document holds the drain's mark the census reads %d row and %d node difference(s) of kind %s, %+v, "+
 				"want none: a block of a document owed its index is on neither side", kind.RowDifferences, kind.NodeDifferences, name, kind.ReportedRows)
@@ -957,6 +982,7 @@ func TestTheDrainMarksEveryDocumentOnceAndTheCensusReadsZeroAfterIt(t *testing.T
 	}
 	drainOwed(t, database, service)
 	requireTheTreeOfTheVersion(t, database, service, verification, "CORE-1", '3', nil)
+	requireSizes("after the drain")
 	third, err := graphcensus.Backfill(ctx, database, io.Discard)
 	if err != nil {
 		t.Fatalf("run the backfill a third time: %v", err)
@@ -980,13 +1006,14 @@ func TestTheDrainMarksEveryDocumentOnceAndTheCensusReadsZeroAfterIt(t *testing.T
 			t.Errorf("after the drain the census reads a difference of kind %s at %s: %s", kind.Kind, difference.At, difference.Cause)
 		}
 	}
-	for _, name := range []string{"block", "block_rank", "block_text"} {
+	for _, name := range []string{"block", "block_rank", "block_text", "block_size"} {
 		if kind := treeCensusKind(t, census, name); kind.Rows == 0 || kind.Nodes == 0 {
 			t.Errorf("the census read %d rows and %d nodes of kind %s after the drain, so it compared nothing there", kind.Rows, kind.Nodes, name)
 		}
 	}
 
-	// The controls: one block's text retracted, another's rank of another document's band.
+	// The controls: one block's text retracted, another's rank of another document's band, and the
+	// sized plan node's size retracted.
 	retractedAt, rankedAt := blockAddress(t, database, spec, "stays"), blockAddress(t, database, verification, "first-check")
 	text, _ := treeValue(t, database, retractedAt, treeText)
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
@@ -996,12 +1023,15 @@ func TestTheDrainMarksEveryDocumentOnceAndTheCensusReadsZeroAfterIt(t *testing.T
 		}, {
 			FromKind: refs.BlockNodeKind, FromID: rankedAt, Kind: treeRank, ToKind: graphstore.KindValue, ToID: "1U",
 			At: time.Now(), Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent, Asserted: true,
+		}, {
+			FromKind: refs.BlockNodeKind, FromID: sized, Kind: treeSize, ToKind: graphstore.KindValue, ToID: "2.5",
+			At: time.Now(), Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent, Asserted: false,
 		}})
 	}); err != nil {
-		t.Fatalf("break one block's text and another's rank: %v", err)
+		t.Fatalf("break one block's text, another's rank and a plan node's size: %v", err)
 	}
 	broken := treeCensus(t, database)
-	for name, address := range map[string]string{"block_text": retractedAt, "block_rank": rankedAt} {
+	for name, address := range map[string]string{"block_text": retractedAt, "block_rank": rankedAt, "block_size": sized} {
 		kind := treeCensusKind(t, broken, name)
 		if kind.RowDifferences != 1 || len(kind.ReportedRows) != 1 || !strings.Contains(kind.ReportedRows[0].At, address) {
 			t.Errorf("with block %s broken the census reads %d row difference(s) of kind %s, %+v, want the one naming it",

@@ -20,12 +20,13 @@ func init() { refs.SeedStoreThroughItsWriters = seedStoreThroughItsWriters }
 
 // seedStoreThroughItsWriters writes the rows that address the people and agents of a running
 // deployment - a comment a person wrote, a comment a session wrote and an issue routed to a
-// role - and then runs the writer that states the store from such rows, graphcensus's backfill:
+// role - and a result an earlier release recorded against a check of the issue's Verification
+// document, and then runs the writer that states the store from such rows, graphcensus's backfill:
 // the person, the session, the role and the role's page are each a node that writer makes from
-// one of those rows, as it makes them for a database written before the store existed. Then it
-// writes what a person reasoning about that issue writes (seedReasoning) and one run of the
-// command bar that person asked (seedRun). No kind is named here; which kinds the store then
-// holds is what the census reads from graph_nodes.
+// one of those rows, as it makes them for a database written before the store existed, and so is
+// the result. Then it writes what a person reasoning about that issue writes (seedReasoning) and
+// one run of the command bar that person asked (seedRun). No kind is named here; which kinds the
+// store then holds is what the census reads from graph_nodes.
 func seedStoreThroughItsWriters(t *testing.T, ctx context.Context, database *store.Store) {
 	t.Helper()
 	for _, statement := range []string{
@@ -36,6 +37,13 @@ func seedStoreThroughItsWriters(t *testing.T, ctx context.Context, database *sto
 		 values ('CENSUS-1', '{"kind":"user","id":"alice"}', 'A person''s remark.')`,
 		`insert into comments (issue_key, author, body)
 		 values ('CENSUS-1', '{"kind":"session","id":"census-session"}', 'A session''s remark.')`,
+		`insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+		 values ('CENSUS-1', 'CENSUS', 'verification-md', 'verification.md', 'doc', '{"kind":"user","id":"alice"}')`,
+		`insert into check_results (issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
+		   check_sha256, role, commit_sha, verdict, actor)
+		 select 'CENSUS-1', 'CENSUS-1', a.id, 'c1', 1, 'census-check-sum', 'implementer',
+		        '1111111111111111111111111111111111111111', 'fail', '{"kind":"user","id":"alice"}'
+		 from artifacts a where a.issue_key = 'CENSUS-1' and a.slug = 'verification-md'`,
 	} {
 		if _, err := database.Pool.Exec(ctx, statement); err != nil {
 			t.Fatalf("seed the rows that address people and agents: %v", err)

@@ -17,6 +17,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
+// windowServer is the server this file's references are read against.
+const windowServer = "https://dispatch.example"
+
 // writeStoredVersion writes version number of the document as the version write stores it: its
 // markdown, under the database's clock at the statement (clock_timestamp, so two versions one
 // transaction writes read two times), and answers that time.
@@ -62,7 +65,7 @@ func blockChanges(t *testing.T, tx pgx.Tx, artifact string) map[string]blockChan
 // One block-index pass can cover more than one version: a document past the deferral bound, or
 // versions a build before wrote during the roll, is indexed by the reconciliation at its latest
 // owed version alone (docs' indexOwedDocument). A block's text-change time is read off its row
-// (dispatch://INFRA-1150 c-spec-tie), so the row dates the change to the version that made it,
+// (c-spec-tie), so the row dates the change to the version that made it,
 // and not to the version the pass indexed. Version 1 is indexed; version 2 rewrites b1, version 3
 // leaves b1 alone and rewrites b2, and one pass indexes version 3. b1's row then reads version 2
 // and version 2's time, and its text is recorded at version 2, which is the text read at version
@@ -320,7 +323,7 @@ func TestAReferenceResolvesThroughMovedToBeforeTheRoom(t *testing.T) {
 			t.Fatalf("parse a check serving %s: %v", reference, err)
 		}
 		return pmdoc.CheckBlockPointers(written, nil, func(targets []text.Ref) (pmdoc.BlockWriting, map[string]pmdoc.BlockTarget, error) {
-			return BlockTargets(ctx, tx, verification, nil, targets)
+			return BlockTargets(ctx, tx, verification, storedAddress(t, tx, verification), nil, targets)
 		})
 	}
 	// The room's index, which the version write runs over every fragment of the room.
@@ -340,7 +343,7 @@ func TestAReferenceResolvesThroughMovedToBeforeTheRoom(t *testing.T) {
 	if err := check("dispatch://WIND-1/artifact/spec-md#b-r9"); !errors.Is(err, pmdoc.ErrBlockPointer) || !strings.Contains(err.Error(), "which no document holds") {
 		t.Errorf("a check serving a block no document holds = %v, want it refused", err)
 	}
-	_, found, err := BlockTargets(ctx, tx, verification, nil, []text.Ref{target})
+	_, found, err := BlockTargets(ctx, tx, verification, storedAddress(t, tx, verification), nil, []text.Ref{target})
 	if err != nil {
 		t.Fatalf("read the targets of the check's serves: %v", err)
 	}
@@ -383,8 +386,8 @@ func TestAReferenceResolvesThroughMovedToBeforeTheRoom(t *testing.T) {
 		{verificationRef + "#r1", treeRef + "#r1v", true}, {treeRef + "#r1", treeRef + "#r1", true},
 		{specRef + "#r9", "", false},
 	} {
-		if reached, ok, err := graphstore.MovedTo(ctx, tx, read.from); err != nil || ok != read.reached || reached != read.want {
-			t.Errorf("MovedTo(%s) = %q, %t (%v), want %q, %t", read.from, reached, ok, err, read.want, read.reached)
+		if reached, ok, err := graphstore.MovedTo(ctx, tx, read.from); err != nil || ok != read.reached || reached.Address != read.want {
+			t.Errorf("MovedTo(%s) = %q, %t (%v), want %q, %t", read.from, reached.Address, ok, err, read.want, read.reached)
 		}
 	}
 

@@ -12,7 +12,7 @@ import (
 )
 
 // decisionsPartTitle is the title of a spec's `## Decisions` part, the part its decisions and its
-// returned answered asks stand in (dispatch://INFRA-1150 R6, R9): a level-2 heading with this
+// returned answered asks stand in: a level-2 heading with this
 // title, read without regard to case, and every top-level block after it up to the next heading
 // of level 2 or above.
 const decisionsPartTitle = "Decisions"
@@ -169,7 +169,7 @@ func withoutAddedShapedPointers(tree *pmdoc.Node, added map[string][]string, dec
 }
 
 // shapedAttribute is the `block[]` attribute of a decision and of an ask that names each spec
-// node it shaped (dispatch://INFRA-1150 R5).
+// node it shaped.
 const shapedAttribute = "shaped"
 
 // shapedPointersOf is the pointers node's `shaped` attribute holds, in their order, as a parse

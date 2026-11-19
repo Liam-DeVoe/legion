@@ -19,16 +19,17 @@ import (
 // and for the scan to return once the record has queued behind none.
 const recordLockWait = 30 * time.Second
 
-// TestRecordBatchTakesAPrefixOfTheStoreLockOrder is the outbox half of dispatch://INFRA-1149's
+// TestRecordBatchTakesAPrefixOfTheStoreLockOrder is the outbox half of the check
 // c-lock-order: recordBatch is a store write path that takes fewer steps than the store's lock
-// order lists, and the steps it takes are a prefix of that order with nothing out of it. The
-// order's steps are the owner row, the node rows in ascending (kind, id), the tuple append, the
-// projection rows and the project of the event (the lock order on api/inbox_read.go's
-// markInboxReadThreads). The record runs on a pooled connection with no transaction of its own,
-// so it takes no owner row, and it writes no projection row and appends no event, so it takes
-// no project row either: what it takes is the node rows and then the tuple append.
-// graphstore's TestEveryStoreWriteTakesOneLockOrder cannot run this path, since outbox imports
-// graphstore.
+// order lists, a subset of the steps, in the order. The order's invariants are the ones written on
+// api/inbox_read.go's markInboxReadThreads: the owner row first, a node's row before the projection
+// row naming it, the event before the tuples it causes, and several node rows in ascending
+// (kind, id). A writer may skip a step it does not take, and keeps the order of those it does. The
+// record runs on a pooled connection with no transaction of its own, so it takes no owner row,
+// the order's first step, which makes what it takes no prefix of the order; and it writes no
+// projection row and appends no event, so it takes no project row either. What it takes is the
+// node rows and then the tuple append, and it passes. graphstore's
+// TestEveryStoreWriteTakesOneLockOrder cannot run this path, since outbox imports graphstore.
 //
 // The run drives one batch through the publisher's own scan: a message routed to a role whose
 // holder the claim store names, so the record writes the role's node and its page's and appends
@@ -43,7 +44,7 @@ const recordLockWait = 30 * time.Second
 // disagree, and the tuple append comes after the node rows. The record runs as one statement, so
 // the order of its steps is the order Postgres runs the arms graphstore.WriteArms splices in.
 // The owner and the project are never among them: they are still held when the scan returns with
-// the batch recorded.
+// the batch recorded, so the record took no owner row and still passed.
 func TestRecordBatchTakesAPrefixOfTheStoreLockOrder(t *testing.T) {
 	const (
 		key  = "T-1"
@@ -111,7 +112,7 @@ func TestRecordBatchTakesAPrefixOfTheStoreLockOrder(t *testing.T) {
 	t.Logf("the record queued behind, in order: %v", names)
 
 	if slices.Contains(queued, owner) {
-		t.Errorf("the record queued behind %s (in order: %v): recordBatch takes no owner row and no project row, since it runs on a pooled connection with no transaction of its own and appends no event",
+		t.Errorf("the record queued behind %s (in order: %v): recordBatch takes no owner row and no project row, since it runs on a pooled connection with no transaction of its own and appends no event, so the steps it takes are a subset of the order's with the owner row left out",
 			owner.name, names)
 	}
 	pageAt, roleAt, tupleAt := slices.Index(queued, lower), slices.Index(queued, upper), slices.Index(queued, tuple)
@@ -137,7 +138,11 @@ func TestRecordBatchTakesAPrefixOfTheStoreLockOrder(t *testing.T) {
 		t.Fatalf("event %d is not published after the scan, so the record the test followed is not one that committed", event.ID)
 	}
 	requireTuple(t, database, graphstore.KindRole, role, graphstore.TupleHeldBy, graphstore.KindSession, holder, true)
+	// The owner hold is let go only here, after the batch committed: the record took a subset of
+	// the order's steps, in the order, with no owner row among them, and passed.
+	t.Logf("the batch was recorded while %s were still held: recordBatch took %q, a subset of the store's lock order with no owner row, in the order", owner.name, names)
 	owner.release()
+	storetest.RequireNoMarkedCause(t, database, "recordBatch")
 }
 
 // recordHold is one transaction the lock-order test holds rows in, named as a failure names it.

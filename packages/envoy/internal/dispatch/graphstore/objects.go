@@ -3,12 +3,14 @@ package graphstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -51,14 +53,11 @@ func IssueNode(key, project string, who model.Actor, at time.Time) Node {
 
 // ArtifactNode is a document's node, addressed by its ref_key (ArtifactRefKey), as its upload
 // writes it. A document of an issue or a project is in that project; an agent conversation's
-// document is in none, and is between the parties of that conversation, its session. Every write
-// of it states beside it the facts its row projects: the part_of to its issue where an issue owns
-// it (ArtifactPartOf), and the bytes of an image or a file (ArtifactBytes).
+// document is in none, and is between the parties of that conversation, its session (SessionScope).
+// Every write of it states beside it the facts its row projects: the part_of to its issue where an
+// issue owns it (ArtifactPartOf), and the bytes of an image or a file (ArtifactBytes).
 func ArtifactNode(refKey, project, session string, who model.Actor, at time.Time) Node {
-	var parties []string
-	if session != "" {
-		parties = []string{PartySession(session)}
-	}
+	project, parties := SessionScope(project, session)
 	return objectNode(KindArtifact, refKey, SupertagDocument, project, parties, who, at)
 }
 
@@ -236,11 +235,8 @@ func VersionFacts(tuples []Tuple, owner VersionOwner, number int, who model.Acto
 	if owner.Query {
 		supertag = SupertagQueryVersion
 	}
-	var parties []string
-	if owner.Session != "" {
-		parties = []string{PartySession(owner.Session)}
-	}
-	node = objectNode(KindVersion, id, supertag, owner.Project, parties, who, at)
+	project, parties := SessionScope(owner.Project, owner.Session)
+	node = objectNode(KindVersion, id, supertag, project, parties, who, at)
 	node.Attributes = map[string]any{
 		AttributeNumber:    number,
 		AttributeCreatedAt: at.UTC().Format(time.RFC3339Nano),
@@ -278,16 +274,32 @@ func AttributeFacts(tuples []Tuple, node Node) []Tuple {
 	return tuples
 }
 
-// Joined is several writes held for one cause as one write held for it: Caused moves the nodes of
-// each and appends the facts of each under that cause, in the order given. A writer whose caller
-// causes one write it answers adds its own to it here.
+// Joined is several writes held for one cause as one write held for it: QueueCaused moves the
+// nodes of each and appends the facts of each under that cause, in the order given, each in an
+// append of its own, since each carries the mark its own node write left (nodeMark), and
+// QueueNodes writes the nodes of each. Its Nodes and Tuples are theirs, in that order, and a fact
+// a writer appends to its Tuples after joining them is appended after every one's (Uncaused's
+// parts). A writer whose caller causes one write it answers adds its own to it here.
 func Joined(writes ...Uncaused) Uncaused {
 	var joined Uncaused
 	for _, write := range writes {
 		joined.Nodes = append(joined.Nodes, write.Nodes...)
 		joined.Tuples = append(joined.Tuples, write.Tuples...)
+		joined.parts = append(joined.parts, write.split()...)
 	}
 	return joined
+}
+
+// SessionScope is the scope of a document, or of what belongs to one, whose project is project and
+// whose agent conversation is session: the project, or for a document no project owns the party of
+// that conversation's session. A document has one of the two (the artifacts_one_owner check,
+// 0071_agent_artifacts.up.sql). Every writer of a document's node, of an ask, a comment or a block
+// on a document, and the census's sessionParties, follow this one rule.
+func SessionScope(project, session string) (string, []string) {
+	if project == "" && session != "" {
+		return "", []string{PartySession(session)}
+	}
+	return project, nil
 }
 
 // AskNode is an ask's node, addressed by the ask's id, in the project of the issue or the document
@@ -343,18 +355,53 @@ func ArtifactRefKey(issueKey, projectKey, session, slug string) string {
 	}
 }
 
+// StatementTime is the one time a writer of a document dates what it writes in its transaction:
+// the row it creates (its created_at) and every statement it makes about the document's node at
+// address id. It is the database's clock as the call runs (clock_timestamp(), never the
+// transaction's start), and one microsecond past the newest statement the store holds about the
+// node where the clock reads no later. A writer reads it once, after it holds the lock that orders
+// every writer of the address - the document's owner lock (api's queueNewArtifact and
+// removeArtifact) - so two writers of one address read it one after the other, the second once the
+// first has committed, and the second's time is strictly later than every statement the first made,
+// by the clock and, should the clock step back, by the greatest(). So every statement about an address is
+// dated in the order the store appends it, and a read of a node as of a time reads what the store
+// held then. Which row a statement names is not read from its time but from its cause, the row's
+// own create event (graphcensus's ownLiveStatement).
+func StatementTime(ctx context.Context, q Queryer, kind, id string) (time.Time, error) {
+	var at time.Time
+	if err := q.QueryRow(ctx, `
+		select greatest(clock_timestamp(), (
+			select max(at) + interval '1 microsecond' from graph_tuples where from_kind = $1 and from_id = $2))
+	`, kind, id).Scan(&at); err != nil {
+		return time.Time{}, fmt.Errorf("read the time of a write of %s/%s: %w", kind, id, err)
+	}
+	return at.UTC(), nil
+}
+
 // PartiesValue is the value the `parties` attribute of a node between parties carries: its parties
 // sorted, each once, and joined by one space, which is what graph_nodes.parties is split back from.
-// No party is ever written with a space in it: a login and a session id hold none. Nil parties are
-// the empty value, which no write states.
-func PartiesValue(parties []string) string {
+// It is the one place the parties are joined, so it refuses a party that is empty or holds white
+// space with ErrBadParty: such a party would come back from the column as two parties, or none. A
+// login and a path's session id hold none, but a broadcast's session ids are only trimmed, so the
+// refusal is here rather than at each source. Nil parties are the empty value, which no write
+// states.
+func PartiesValue(parties []string) (string, error) {
 	if len(parties) == 0 {
-		return ""
+		return "", nil
+	}
+	for _, party := range parties {
+		if party == "" || strings.IndexFunc(party, unicode.IsSpace) >= 0 {
+			return "", fmt.Errorf("party %q: %w", party, ErrBadParty)
+		}
 	}
 	sorted := slices.Clone(parties)
 	slices.Sort(sorted)
-	return strings.Join(slices.Compact(sorted), " ")
+	return strings.Join(slices.Compact(sorted), " "), nil
 }
+
+// ErrBadParty is a party that is empty or holds white space (PartiesValue). A node write that
+// names one is refused before it binds anything, and the caller's transaction ends.
+var ErrBadParty = errors.New("a party is empty or holds white space")
 
 // ScopeOf is the project, or for a thing no project owns the parties, of an ask or a comment that
 // belongs to an issue or a document: the issue's project where it names an issue, else the
@@ -370,13 +417,15 @@ func ScopeOf(ctx context.Context, q Queryer, issueKey, artifactID *string) (proj
 	`, issueKey, artifactID).Scan(&projectKey, &session); err != nil {
 		return "", nil, fmt.Errorf("read the project of what an item belongs to: %w", err)
 	}
-	switch {
-	case projectKey != nil:
-		return *projectKey, nil, nil
-	case session != nil:
-		return "", []string{PartySession(*session)}, nil
+	var owner, conversation string
+	if projectKey != nil {
+		owner = *projectKey
 	}
-	return "", nil, nil
+	if session != nil {
+		conversation = *session
+	}
+	project, parties = SessionScope(owner, conversation)
+	return project, parties, nil
 }
 
 // ThreadParties is the parties a message on no issue is between, read off its thread's root: who

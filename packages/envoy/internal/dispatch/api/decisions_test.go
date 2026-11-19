@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// The Decisions read reads the store alone (dispatch://INFRA-1150 R4, R11). Its entries are held
+// The Decisions read reads the store alone. Its entries are held
 // by decision_entries_test.go: the order, the shaped links and their staleness, and the review state
 // a Keep moves are TestTheDecisionsReadAnswersEveryDecisionInOrder's, and a decision whose words
 // change after a Keep waiting again is TestAReadingIsAChildNodeOfTheDecisionItReads'. The Keep on a
@@ -58,7 +58,7 @@ const oldMembersSpec = ":::requirement{#r1}\nThe service answers over one transp
 	":::ask{#a2 urgency=\"low\" multiple=\"false\"}\nWhich region first?\n\n- East: Near the team\n- West: Near the users\n:::\n"
 
 // The Decisions read's old members answer from the store for one release, for a page of the
-// release before (dispatch://INFRA-1150 R11, ruling F4). `decisions` answers each decision node
+// release before. `decisions` answers each decision node
 // and each answered ask in model.Decision's shape: kind `agent` for a `decision` block and
 // `person` for an answered ask, links from their `shaped` tuples, waiting_review from the node, and
 // no entry for an open ask. `document` answers null while the issue holds no decisions document.
@@ -156,7 +156,7 @@ func TestTheOldDecisionsMembersAnswerFromTheStore(t *testing.T) {
 }
 
 // Until the decisions step retires it, a heading of a decisions document an earlier release stored
-// is kept as the release before kept it (dispatch://INFRA-1150 R11, ruling F3): the Keep reads the
+// is kept as the release before kept it: the Keep reads the
 // section through the step's section reader, whose text runs from the heading to its last block, so
 // its sum is the one that release served. A Keep of another sum is 409 DECISION_CHANGED and writes
 // nothing; the Keep of the sum answers 200 and writes the decision_keeps row the conversion carries
@@ -378,20 +378,21 @@ func TestAConvertedIssuesDecisionAnswersAsAnUnconvertedIssuesDecisionDoes(t *tes
 		}
 		for _, link := range links {
 			text, shaped := words[link.To.BlockID]
-			if !shaped || link.To.Kind != refs.BlockNodeKind || link.To.ID != spec.refKey+"#"+link.To.BlockID ||
+			if !shaped || link.To.Kind != refs.BlockNodeKind || link.To.ID != spec.pointed(link.To.BlockID) ||
 				link.To.Ref != pointer(link.To.BlockID) || link.To.Document != "dispatch://"+issue.Key+"/spec" ||
 				!strings.Contains(link.To.Text, text) || link.To.ChangedVersion != 1 || link.FromBlock != "d1" || link.Stale {
-				t.Errorf("%s answers the shaped link %s, want one to a paragraph at the spec's own address %s#<id>, with its words, version 1 and the spec",
-					what, entryJSON(t, link), spec.refKey)
+				t.Errorf("%s answers the shaped link %s, want one to a paragraph of the spec, at its node %s, at the spec's address %s, with its words, version 1 and the spec",
+					what, entryJSON(t, link), spec.pointed("<id>"), pointer("<id>"))
 			}
 		}
 	}
 	requireSpecLinks("the decision's entry", entry.Shaped)
-	// The margin's shape of the links (useMarginItems): each one whose node is the spec's own,
-	// placed beside the spec's block of its block id.
+	// The margin's shape of the links (useMarginItems, linkReachesDocument): each one whose block the
+	// spec holds, as the link's document says - its node is the issue room's, whichever document of
+	// the room holds the block - placed beside the spec's block of its block id.
 	placed := []string{}
 	for _, link := range entry.Shaped {
-		if link.To.BlockID != "" && strings.HasPrefix(link.To.ID, spec.refKey+"#") {
+		if link.To.BlockID != "" && link.To.Document == "dispatch://"+issue.Key+"/spec" {
 			placed = append(placed, link.To.BlockID)
 		}
 	}

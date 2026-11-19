@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -13,11 +14,12 @@ import (
 // caller's transaction as an artifacts row of kind tree, with a slug of its own among the issue's
 // documents (nextArtifactSlug), its node and that node's part_of to the issue written before the
 // row that names it, the issue's one issue_trees row, and its version 1, empty, with that
-// version's node (number, created_at, part_of the tree); a second tree of the same issue is
+// version's node (number, created_at, part_of the tree), which the create queues on its ledger
+// (planConvertedIssueRoom) and its commit runs after the row; a second tree of the same issue is
 // refused by that row's key.
 func TestAnIssuesTreeArtifactTakesItsSlugItsNodeAndItsIssueTreesRow(t *testing.T) {
 	ctx := context.Background()
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	// The issue is created as before the issue room, holding no tree yet: an issue born converted
 	// holds one from its create, and this test makes the issue's first.
 	holdIssuesUnconverted(t, database)
@@ -29,12 +31,36 @@ func TestAnIssuesTreeArtifactTakesItsSlugItsNodeAndItsIssueTreesRow(t *testing.T
 			t.Fatalf("begin: %v", err)
 		}
 		defer tx.Rollback(ctx)
-		id, written, err := (&server{}).createIssueTree(ctx, tx, key, "TREE", alice, time.Now().UTC())
+		s := &server{deps: deps}
+		var id string
+		if err := tx.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&id); err != nil {
+			t.Fatalf("draw the tree's id: %v", err)
+		}
+		slug, err := s.nextArtifactSlug(ctx, tx, artifactTarget{IssueKey: &key}, issueTreeName)
+		if err != nil {
+			t.Fatalf("take the tree's slug: %v", err)
+		}
+		written, err := s.createIssueTree(ctx, tx, id, slug, key, "TREE", alice, time.Now().UTC())
 		if err != nil {
 			return "", err
 		}
-		if err := graphstore.Caused(ctx, tx, written, graphstore.NoEvent); err != nil {
-			t.Fatalf("append what the tree's node write stated: %v", err)
+		joined, ledger := deps.Docs.Join(ctx, tx)
+		defer ledger.Discard()
+		version, err := ledger.QueueVersion(joined, id, "", []model.Actor{alice}, nil)
+		if err != nil {
+			t.Fatalf("queue the tree's version 1: %v", err)
+		}
+		versionNode, err := docs.WriteVersionNode(joined, tx, graphstore.VersionOwner{
+			RefKey: graphstore.ArtifactRefKey(key, "TREE", "", slug), Project: "TREE",
+		}, version.Number, alice, version.CreatedAt)
+		if err != nil {
+			t.Fatalf("queue the node of the tree's version 1: %v", err)
+		}
+		if err := ledger.Commit(ctx); err != nil {
+			t.Fatalf("run the tree's queued writes: %v", err)
+		}
+		if err := graphstore.Caused(ctx, tx, graphstore.Joined(written, versionNode), graphstore.NoEvent); err != nil {
+			t.Fatalf("append what the tree's node writes stated: %v", err)
 		}
 		return id, tx.Commit(ctx)
 	}

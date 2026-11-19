@@ -155,6 +155,7 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
       dry_run: true,
       actor,
     }),
+  listSteps: (client) => client.listSteps("DSP-1"),
 };
 
 afterEach(forgetKeyedLayerMemory);

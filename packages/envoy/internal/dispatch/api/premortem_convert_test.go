@@ -149,7 +149,7 @@ func (r premortemRig) nodeOf(address string) string {
 	if err != nil || !resolved {
 		r.t.Fatalf("resolve the check %s: resolved %t, %v", address, resolved, err)
 	}
-	return node
+	return node.Address
 }
 
 func newPremortemRig(t *testing.T) premortemRig {

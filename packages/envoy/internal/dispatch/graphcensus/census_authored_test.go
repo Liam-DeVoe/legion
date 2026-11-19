@@ -293,9 +293,10 @@ func renderVersion(t *testing.T, tree *pmdoc.Node) renderedVersion {
 }
 
 // typedIndex is the pass a version write runs over version number of artifact, written at at: the
-// typed-node pass reads its decisions, readings and asks, with credited the author of every block
-// the document service is asked for (refs.TypedSources.Authors) and no ask answered, and the block
-// index and the typed-node pass state what each states.
+// typed-node pass reads its decisions, readings and asks of the version's record
+// (refs.ReadIndexedVersion), with credited the author of every block the document service is
+// asked for (refs.TypedSources.Authors) and no ask answered, and the block index states what it
+// states with the typed-node pass's own facts planned into the same write (refs.IndexBlocks).
 func typedIndex(artifact string, number int, at time.Time, version renderedVersion, credited model.Actor) func(context.Context, pgx.Tx) (graphstore.Uncaused, error) {
 	sources := refs.TypedSources{Authors: func(ids []string) (map[string]model.Actor, error) {
 		authors := make(map[string]model.Actor, len(ids))
@@ -306,7 +307,11 @@ func typedIndex(artifact string, number int, at time.Time, version renderedVersi
 	}}
 	return func(ctx context.Context, tx pgx.Tx) (graphstore.Uncaused, error) {
 		versions := refs.OneVersion(artifact, number, at)
-		facts, err := refs.DecisionFacts(ctx, tx, artifact, versions, version.blocks, version.tree, version.pointers, sources)
+		record, err := refs.ReadIndexedVersion(ctx, tx, artifact, artifact, number)
+		if err != nil {
+			return graphstore.Uncaused{}, err
+		}
+		facts, err := refs.DecisionFacts(ctx, tx, artifact, record, versions, version.blocks, version.tree, version.pointers, sources)
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
@@ -314,11 +319,6 @@ func typedIndex(artifact string, number int, at time.Time, version renderedVersi
 		if err == nil && !won {
 			err = errLostFence
 		}
-		if err != nil {
-			return graphstore.Uncaused{}, err
-		}
-		_, typed, err := refs.IndexDecisionNodes(ctx, tx, artifact, facts, true)
-		write.Nodes, write.Tuples = append(write.Nodes, typed.Nodes...), append(write.Tuples, typed.Tuples...)
 		return write, err
 	}
 }

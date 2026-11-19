@@ -288,7 +288,6 @@ export const architecture: ArchitectureTree = {
 };
 
 export const SPEC_ID = "artifact-spec";
-export const DECISIONS_ID = "artifact-decisions";
 export const VERIFICATION_ID = "artifact-verification";
 
 /** A document of the issue (`ApprovalSteps.test.tsx`'s `doc`). */
@@ -396,11 +395,13 @@ export function proofDocument(): ReactNode {
   );
 }
 
-/** The header's priority write, which no case presses. */
+/** The header's priority write, which no case presses. It draws no priority; a case that draws
+ *  one spreads it with its own `shown`. */
 export const idlePriorityWrite: IssuePriorityWrite = {
   failed: false,
   pending: false,
   retry: () => undefined,
+  shown: null,
   submit: () => undefined,
 };
 

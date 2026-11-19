@@ -9,10 +9,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -22,6 +27,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // askOpener is the opening line of an ask block, at any depth and under any quote or list prefix.
@@ -119,7 +126,7 @@ func approveAndCapture(t *testing.T, ctx context.Context, p *dispatchProcess, da
 }
 
 // One version whose only change is the removal of the server-owned ask attributes carries a
-// person's approval, and nothing wider does (dispatch://INFRA-1150 R10, c-attribute-removal). The
+// person's approval, and nothing wider does (c-attribute-removal). The
 // base release writes the documents and a person approves them; this head writes a document
 // holding a reading; the base release serves again beside this head and leaves that document be;
 // while both serve, the roll window keeps the attributes; once the base release is gone, the first
@@ -156,6 +163,16 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 		answerAsk(t, previous, blockAskOf(t, previous, issue, "decided-"+name), "Ship", "Ship "+name+" now.")
 		blockAskOf(t, previous, issue, "pending-"+name)
 	}
+	// A project document, whose open ask block the base release writes open: the project slug
+	// form of the text read reads it.
+	projectUpload := previous.send(t, http.MethodPost, "/api/v1/projects/RMV/artifacts", encodeJSON(t, map[string]string{
+		"name": "project-notes.md", "content": "# Project notes\n\n:::ask{#project-open urgency=\"med\" multiple=\"false\"}\nIs it open?\n\n- Yes: It is.\n- No: It is not.\n:::\n",
+	}), asUser(dispatchTestLogin))
+	if projectUpload.status != http.StatusCreated {
+		t.Fatalf("upload the project document: %s", projectUpload)
+	}
+	projectDocument := uploadedID(t, projectUpload)
+	settledDocument(t, ctx, previous, database, projectDocument)
 	one := approveAndCapture(t, ctx, previous, database, issue, first, "the first document")
 	two := approveAndCapture(t, ctx, previous, database, issue, second, "the second document")
 	for _, name := range []string{"state", "answered_by", "answered_at", "selected", "answer", "copied_from", "copied_from_document"} {
@@ -244,8 +261,138 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	// The fleet is this head alone: the first accepted write to each of the two documents drops the
-	// attributes and carries the approval.
+	// The server's own text read, once the fleet is one build and before any write of it, while
+	// the documents the base release wrote still hold the attributes it and the roll window wrote,
+	// live and stored: Verification v43's statements, each read by name.
+	slugOf := func(document string) string {
+		t.Helper()
+		var slug string
+		if err := database.QueryRow(ctx, `select slug from artifacts where id = $1::uuid`, document).Scan(&slug); err != nil {
+			t.Fatalf("read the slug of %s: %v", document, err)
+		}
+		return slug
+	}
+	t.Run("the text read and its two slug forms hold none of the eight attributes whatever the stored bytes hold", func(t *testing.T) {
+		for _, read := range []struct {
+			what, document string
+			paths          []string
+		}{
+			{"the first document", first, []string{"/api/v1/artifacts/" + first + "/text", "/api/v1/issues/" + issue + "/artifacts/" + slugOf(first) + "/text"}},
+			{"the second document", second, []string{"/api/v1/artifacts/" + second + "/text", "/api/v1/issues/" + issue + "/artifacts/" + slugOf(second) + "/text"}},
+			{"the project document", projectDocument, []string{"/api/v1/artifacts/" + projectDocument + "/text", "/api/v1/projects/RMV/artifacts/" + slugOf(projectDocument) + "/text"}},
+		} {
+			_, stored := latestMarkdown(t, current, read.document)
+			if !askServerAttribute.MatchString(stored) {
+				t.Fatalf("%s's latest stored version holds none of the eight attributes, so its read proves nothing:\n%s", read.what, stored)
+			}
+			for _, path := range read.paths {
+				served := servedTextOf(t, current, path)
+				for _, opener := range askOpener.FindAllString(served.Markdown, -1) {
+					if askServerAttribute.MatchString(opener) {
+						t.Errorf("GET %s serves an ask block of %s with a server-owned attribute: %s", path, read.what, opener)
+					}
+				}
+				if want := withoutAskServerAttributes(stored); served.Markdown != want {
+					t.Errorf("GET %s serves %s as\n%s\nwant its stored text without the eight attributes:\n%s", path, read.what, served.Markdown, want)
+				}
+			}
+		}
+	})
+	t.Run("the asks member answers each ask block from the ask node", func(t *testing.T) {
+		served := servedTextOf(t, current, "/api/v1/artifacts/"+first+"/text")
+		t.Logf("the first document's asks: %s", encodeJSON(t, served.Asks))
+		sourceAsk := blockAskOf(t, current, issue, "shared")
+		for _, want := range []struct {
+			block, ask, copied string
+		}{
+			{"decided-one", blockAskOf(t, current, issue, "decided-one"), ""},
+			{"pending-one", blockAskOf(t, current, issue, "pending-one"), ""},
+			{"shared", sourceAsk, "dispatch://" + issue + "/artifact/" + slugOf(sourceDocument)},
+		} {
+			entry := textAskOf(served.Asks, want.block)
+			var rowState, rowBy string
+			var rowWords *string
+			if err := database.QueryRow(ctx, `select state, coalesce(answer->>'user', ''), answer->>'text' from asks where id = $1::uuid`, want.ask).Scan(&rowState, &rowBy, &rowWords); err != nil {
+				t.Fatalf("read the ask %s: %v", want.ask, err)
+			}
+			// The asks row is the node's projection; where this head's backfill has stated the
+			// node of an ask the base release wrote, its tuples are what the entry must read.
+			held := askNodeHolds(t, ctx, database, want.ask)
+			nodeState, stated := held[graphstore.TupleAnswerState]
+			words, worded := held[graphstore.TupleAnswer]
+			if entry == nil || entry.State == "" || entry.State != rowState || entry.AnsweredBy != rowBy ||
+				(rowWords == nil) != (entry.Answer == nil) || (rowWords != nil && *rowWords != *entry.Answer) ||
+				(stated && nodeState.ToID != entry.State) || (worded && (entry.Answer == nil || words.ToID != *entry.Answer)) {
+				t.Errorf("the first document's text answers %s as %s, want the ask %s as its node %v and its row (%s, %q) hold it", want.block, encodeJSON(t, entry), want.ask, held, rowState, rowBy)
+				continue
+			}
+			if want.copied != "" && (entry.CopiedFrom != want.ask || entry.CopiedFromDocument != want.copied) {
+				t.Errorf("the first document's text answers the copy %s as %s, want it naming the ask %s on %s", want.block, encodeJSON(t, entry), want.ask, want.copied)
+			}
+		}
+	})
+	t.Run("a version's own text is the stored bytes a person approved", func(t *testing.T) {
+		for _, document := range []approvedDocument{one, two} {
+			var stored string
+			if err := database.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1::uuid and number = $2`, document.id, document.version).Scan(&stored); err != nil {
+				t.Fatalf("read %s's version %d: %v", document.name, document.version, err)
+			}
+			var version struct {
+				Markdown string `json:"markdown"`
+			}
+			readJSON(t, current, fmt.Sprintf("/api/v1/artifacts/%s/versions/%d", document.id, document.version), &version)
+			if version.Markdown != stored || !askServerAttribute.MatchString(stored) {
+				t.Errorf("%s's version %d reads\n%s\nwant its stored bytes, which hold the attributes the base release wrote:\n%s", document.name, document.version, version.Markdown, stored)
+			}
+		}
+	})
+	// The first accepted write to the first document on one build is the agent's upload of the
+	// text dispatch doc-read printed, which the loop below reads as carrying the approval.
+	t.Run("through the CLI, doc-read's trailer holds each answer and its text uploads back unchanged", func(t *testing.T) {
+		home := t.TempDir()
+		read := runCurrentCLI(t, current, home, "doc-read", "--issue", issue)
+		cut := strings.Index(read.stdout, "\n\nDocument token: ")
+		if read.code != 0 || cut < 0 {
+			t.Fatalf("dispatch doc-read --issue %s: %s", issue, read)
+		}
+		markdown := read.stdout[:cut]
+		trailer, _, _ := strings.Cut(read.stdout[cut+len("\n\n"):], "\n\n")
+		for _, opener := range askOpener.FindAllString(markdown, -1) {
+			if askServerAttribute.MatchString(opener) {
+				t.Errorf("dispatch doc-read prints an ask block with a server-owned attribute: %s", opener)
+			}
+		}
+		answered := 0
+		for _, entry := range servedTextOf(t, current, "/api/v1/artifacts/"+first+"/text").Asks {
+			if entry.State != asks.StateAnswered {
+				continue
+			}
+			answered++
+			line := fmt.Sprintf("Answered %s by %s at %s: ", entry.BlockID, entry.AnsweredBy, entry.AnsweredAt)
+			if entry.Answer != nil {
+				words, _ := json.Marshal(*entry.Answer)
+				line += string(words)
+			}
+			if !strings.Contains(trailer, line) {
+				t.Errorf("dispatch doc-read's trailer holds no line opening %q:\n%s", line, trailer)
+			}
+		}
+		if answered == 0 {
+			t.Fatalf("the first document answers no answered ask, so its read proves nothing:\n%s", trailer)
+		}
+		t.Logf("dispatch doc-read's trailer:\n%s", trailer)
+		uploaded := runCurrentCLI(t, current, home, "artifact", "--issue", issue, "--name", documentName(t, current, first), "--content", markdown, "--force")
+		if uploaded.code != 0 {
+			t.Fatalf("dispatch artifact --force refused the text dispatch doc-read printed: %s", uploaded)
+		}
+		settledDocument(t, ctx, current, database, first)
+		if served := servedTextOf(t, current, "/api/v1/artifacts/"+first+"/text"); served.Markdown != markdown {
+			t.Errorf("the first document after the upload of the text doc-read printed reads\n%s\nwant that text:\n%s", served.Markdown, markdown)
+		}
+	})
+
+	// The fleet is this head alone: the first accepted write to each of the two documents - for the
+	// first, the agent's upload above - drops the attributes and carries the approval.
 	for _, document := range []approvedDocument{one, two} {
 		before := newestReviewOf(t, current, document.id)
 		if before.State != "approved" {
@@ -397,4 +544,76 @@ func requireBlockInStepWithRow(t *testing.T, ctx context.Context, database *pgx.
 				blockID, name, mustJSON(t, got), held, mustJSON(t, wanted), isWanted)
 		}
 	}
+}
+
+// servedText is the answer of a text route (GET /api/v1/artifacts/{id}/text and its slug forms):
+// the markdown it serves and its asks.
+type servedText struct {
+	Markdown string          `json:"markdown"`
+	Asks     []model.TextAsk `json:"asks"`
+}
+
+// servedTextOf is what the text route path answers through p.
+func servedTextOf(t *testing.T, p *dispatchProcess, path string) servedText {
+	t.Helper()
+	var text servedText
+	readJSON(t, p, path, &text)
+	return text
+}
+
+// textAskOf is the entry of asks for the ask block blockID, or nil where none is.
+func textAskOf(asks []model.TextAsk, blockID string) *model.TextAsk {
+	for index := range asks {
+		if asks[index].BlockID == blockID {
+			return &asks[index]
+		}
+	}
+	return nil
+}
+
+// cliOutcome is one run of this head's `dispatch` command.
+type cliOutcome struct {
+	code           int
+	stdout, stderr string
+}
+
+func (o cliOutcome) String() string {
+	return fmt.Sprintf("exit %d\nstdout:\n%s\nstderr:\n%s", o.code, o.stdout, o.stderr)
+}
+
+// runCurrentCLI runs this head's `dispatch` command (packages/envoy-client's bin/dispatch.ts,
+// under bun) against server with args, as an agent: the shared agent token every test process
+// trusts, as the session the two-build suite's CLI acts as. Its environment is written here, never
+// inherited, so it reads no developer's envoy.json and no pane's Dispatch.
+func runCurrentCLI(t *testing.T, server *dispatchProcess, home string, args ...string) cliOutcome {
+	t.Helper()
+	entry, err := filepath.Abs(filepath.Join("..", "..", "..", "envoy-client", "bin", "dispatch.ts"))
+	if err != nil {
+		t.Fatalf("resolve this head's CLI: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bun", append([]string{entry}, args...)...)
+	cmd.Dir = home
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + home,
+		"DISPATCH_STATE_DIR=" + home,
+		"DISPATCH_HOST=omp",
+		"DISPATCH_SESSION_ID=attribute-removal-cli",
+		"DISPATCH_URL=" + server.url(""),
+		"DISPATCH_TOKEN=" + dispatchTestAgentToken,
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err = cmd.Run()
+	run := cliOutcome{stdout: stdout.String(), stderr: stderr.String()}
+	var exit *exec.ExitError
+	switch {
+	case errors.As(err, &exit):
+		run.code = exit.ExitCode()
+	case err != nil:
+		t.Fatalf("run dispatch %s: %v", strings.Join(args, " "), err)
+	}
+	return run
 }

@@ -3854,10 +3854,11 @@ func (p *dispatchPair) openMarkedEditor(t *testing.T, process *dispatchProcess, 
 	if err != nil {
 		t.Fatalf("send %s's sync marker: %v", login, err)
 	}
+	room, _ := storedRoomOf(t, p, artifactID)
 	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(10 * time.Millisecond) {
 		var stored bool
 		if err := p.database.Pool.QueryRow(context.Background(),
-			`select exists(select 1 from doc_updates where artifact_id = $1 and update = $2)`, artifactID, update).Scan(&stored); err != nil {
+			`select exists(select 1 from doc_updates where artifact_id = $1 and update = $2)`, room, update).Scan(&stored); err != nil {
 			t.Fatalf("read %s's stored sync marker: %v", login, err)
 		}
 		if stored {
@@ -5054,10 +5055,18 @@ func (p *dispatchProcess) textAndToken(t *testing.T, artifactID string) (string,
 	return document.Markdown, document.Token
 }
 
-// holdsRoom reports whether the process holds a room of the document now (the rooms test hook).
+// holdsRoom reports whether the process holds now the room the document is edited in, as the
+// process's artifact read names it (room): its issue's room for a role document of a converted
+// issue, the document itself otherwise. The rooms test hook lists rooms by their names.
 func (p *dispatchProcess) holdsRoom(t *testing.T, artifactID string) bool {
 	t.Helper()
-	return slices.Contains(p.residentRooms(t), artifactID)
+	var artifact struct {
+		Room string `json:"room"`
+	}
+	if answer := p.call(t, http.MethodGet, "/api/v1/artifacts/"+artifactID, "", http.StatusOK); json.Unmarshal(answer, &artifact) != nil || artifact.Room == "" {
+		t.Fatalf("the artifact read of %s names no room: %s", artifactID, answer)
+	}
+	return slices.Contains(p.residentRooms(t), artifact.Room)
 }
 
 // roomCloses names what the room-counters hook counted for the document on either process so far
@@ -6007,7 +6016,13 @@ func openClosingAskIssue(t *testing.T, pair *dispatchPair, project, title string
 		t.Fatalf("the decision's ask reads %s before the close, want open", ask.State)
 	}
 
-	bob := pair.openSyncedEditor(t, pair.b, "bob", artifactID, pair.b.documentText(t, artifactID))
+	// A's settlement wrote the ask's state into its block (docs' rollWindowAskAttributes), so the
+	// live document bob's tab syncs holds it. The text routes serve that document with none of an
+	// ask block's server-owned attributes, whatever its live tree holds (docs' TextWithAsks), so
+	// the copy the tab is held to is the stored document, which every room loads.
+	pair.waitStoredHolds(t, artifactID, `#ship-it urgency="med" multiple="false" state="open"`, 5*time.Second,
+		"A's settlement's write of the ask block open")
+	bob := pair.openSyncedEditor(t, pair.b, "bob", artifactID, storedText(t, pair, artifactID))
 	if scope := authenticateEditor(t, bob); scope != "read-write" {
 		t.Fatalf("bob's tab on B on an open issue was granted %q, want read-write", scope)
 	}
@@ -6050,7 +6065,7 @@ func decodeAuthors(t *testing.T, version int, authors string) []model.Actor {
 // neither undoes the other; its reopen brings both back.
 //
 // A process of another build is registered beside the pair (openClosingAskIssue), so the ask's
-// state is kept in its block as the release before keeps it (dispatch://INFRA-1150 R10). Bob's
+// state is kept in its block as the release before keeps it. Bob's
 // tab on B holds the spec, whose ask block is an open ask, and his keystroke there is
 // stored, which arms B's settlement of it. The issue closes through A, which settles the issue's
 // documents before it closes the issue (settleIssueBeforeClose, in the api package), so the
@@ -6105,7 +6120,8 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 	}
 	requireAskWithdrawn(t, pair.a, issueKey, askID, "once the closed issue's spec settled")
 	requireAskWithdrawn(t, pair.b, issueKey, askID, "once the closed issue's spec settled")
-	requireClosedText("the stored document", pair.a.documentText(t, artifactID))
+	// The stored document, which the text routes serve with no ask block's state (docs' TextWithAsks).
+	requireClosedText("the stored document", storedText(t, pair, artifactID))
 
 	pair.b.patchIssueStatus(t, issueKey, "todo")
 	if ask := pair.a.readAsk(t, askID); ask.State != "open" || ask.Resolution != nil {
@@ -6131,7 +6147,7 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 //
 // A process of another build is registered beside the pair (openClosingAskIssue), since only then
 // does the close write anything into the spec for a settlement to save: on a fleet of one build a
-// close changes no byte of any document (dispatch://INFRA-1150 R3). Bob's keystroke in his tab on
+// close changes no byte of any document. Bob's keystroke in his tab on
 // B is stored, and the issue closes through A. The close settles the spec first, so the keystroke
 // is in the version the close leaves; the close's withdrawal of the decision's ask then writes the
 // block resolved, which leaves the spec owing a settlement, and the close closes B's room. Nothing
@@ -6532,11 +6548,13 @@ func TestAReadOnTheOtherProcessIsNeverOlderThanTheStore(t *testing.T) {
 	})
 }
 
-// corruptHistory makes the document's stored history one update ygo cannot decode, at the head
-// it stood at, so a rebuild has something to rebuild and no room's cursor moves.
+// corruptHistory makes the stored history of the room the document is edited in (storedRoomOf)
+// one update ygo cannot decode, at the head it stood at, so a rebuild has something to rebuild and
+// no room's cursor moves.
 func corruptHistory(t *testing.T, pair *dispatchPair, artifactID string) {
 	t.Helper()
 	ctx := context.Background()
+	room, _ := storedRoomOf(t, pair, artifactID)
 	tx, err := pair.database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the corruption: %v", err)
@@ -6547,7 +6565,7 @@ func corruptHistory(t *testing.T, pair *dispatchPair, artifactID string) {
 		`delete from doc_updates where artifact_id = $1 and version < (select max(version) from doc_updates where artifact_id = $1)`,
 		`update doc_updates set update = decode('deadbeef', 'hex') where artifact_id = $1`,
 	} {
-		if _, err := tx.Exec(ctx, statement, artifactID); err != nil {
+		if _, err := tx.Exec(ctx, statement, room); err != nil {
 			t.Fatalf("corrupt the document's history: %s: %v", statement, err)
 		}
 	}

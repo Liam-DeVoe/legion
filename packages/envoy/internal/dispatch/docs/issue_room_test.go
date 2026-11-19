@@ -471,10 +471,13 @@ func TestAMoveAnnouncedAtItsCommitClosesTheOldRoomOnEveryProcess(t *testing.T) {
 			t.Fatalf("the socket on process %d's old room did not close once the move committed", index)
 		}
 	}
+	// The close ends each socket and then lets the room go once ygo's last caller in it leaves, so
+	// the room can still be resident just after its sockets end (waitForRoomGone): each process is
+	// waited on until it holds no room of the document's old id.
 	for _, task := range []*Service{taskA, taskB} {
-		if task.srv.GetDoc(document) != nil {
-			t.Errorf("a process still holds the old room of %s after the move", document)
-		}
+		waitFor(t, roomWait(t), "a process to hold no old room of "+document+" after the move", func() bool {
+			return task.srv.GetDoc(document) == nil
+		})
 	}
 	if after := roomUpdateCount(t, database, document); after != before {
 		t.Errorf("the old room holds %d stored updates after the move, want the %d it held", after, before)

@@ -1,6 +1,6 @@
 -- 20261115051200_server_build_announcements_tuple_kinds.up.sql
 --
--- INFRA-1149: each build the fleet announces says which relation kinds it writes as tuples of the
+-- Each build the fleet announces says which relation kinds it writes as tuples of the
 -- node and tuple store, so the release that deletes an old arm of `graph_edges` can read whether
 -- the release a rollback would reach answers that arm's kinds from the store too.
 --

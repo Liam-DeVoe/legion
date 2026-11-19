@@ -33,9 +33,10 @@ type decisionDocument struct {
 // address is a block's node address in the document.
 func (d decisionDocument) address(block string) string { return d.nodeKey + "#" + block }
 
-// pointed is the address a pointer at a block of the document spells, which a shaped tuple's far
-// end and a decision's link name: the document's own, whatever room the document is edited in.
-func (d decisionDocument) pointed(block string) string { return d.refKey + "#" + block }
+// pointed is the node a pointer at a block of the document resolves to, which a shaped tuple's far
+// end and a decision's link name: a tuple's ends are nodes, and the node of a block of a document
+// converted into its issue's room is the room's (address), whatever address the pointer spells.
+func (d decisionDocument) pointed(block string) string { return d.address(block) }
 
 // readDecisionDocument reads the id and ref_key of the issue's document slug, and those of the
 // artifact its blocks are keyed under (refs.DocumentRoomSQL).
@@ -288,19 +289,19 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 	// The event names the block whose backlink count the new tie moved, as a version event names
 	// what its block index moved, so a page reading counts off the event refreshes it.
 	if !slices.ContainsFunc(openedPayload.ReferencesChanged, func(changed model.ChangedReference) bool {
-		return changed.Kind == refs.BlockNodeKind && changed.ID == issue.Key+"/spec#r1"
+		return changed.Kind == refs.BlockNodeKind && changed.ID == spec.pointed("r1")
 	}) {
-		t.Errorf("the ask.opened of %s names the changed references %+v, want the block %s/spec#r1 its shaped tie reaches", askID, openedPayload.ReferencesChanged, issue.Key)
+		t.Errorf("the ask.opened of %s names the changed references %+v, want the block %s its shaped tie reaches", askID, openedPayload.ReferencesChanged, spec.pointed("r1"))
 	}
-	if len(askShaped) != 1 || askShaped[0].ToKind != refs.BlockNodeKind || askShaped[0].ToID != issue.Key+"/spec#r1" {
-		t.Fatalf("the ask %s states the shaped %+v once its settlement opened it, want one tuple to %s/spec#r1", askID, askShaped, issue.Key)
+	if len(askShaped) != 1 || askShaped[0].ToKind != refs.BlockNodeKind || askShaped[0].ToID != spec.pointed("r1") {
+		t.Fatalf("the ask %s states the shaped %+v once its settlement opened it, want one tuple to %s", askID, askShaped, spec.pointed("r1"))
 	}
 	requireCaused(t, "the new ask's shaped", askShaped[0], "alice", opened)
 	var marked int
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) from block_refs
 		where block_id = 'a1' and kind = 'shaped' and node_kind = $1 and node_address = $2 and to_id = $3
-	`, graphstore.KindAsk, askID, issue.Key+"/spec#r1").Scan(&marked); err != nil {
+	`, graphstore.KindAsk, askID, spec.pointed("r1")).Scan(&marked); err != nil {
 		t.Fatalf("read the new ask's shaped row: %v", err)
 	}
 	if marked != 1 {
@@ -337,7 +338,7 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 		t.Fatalf("d1 states %d shaped tuples, want one for each of the three requirements: %+v", len(shapedTies), shapedTies)
 	}
 	for index, tuple := range shapedTies {
-		if want := issue.Key + "/spec#r" + string(rune('1'+index)); tuple.ToKind != refs.BlockNodeKind || tuple.ToID != want {
+		if want := spec.pointed("r" + string(rune('1'+index))); tuple.ToKind != refs.BlockNodeKind || tuple.ToID != want {
 			t.Errorf("shaped tuple %d of d1 reaches %s/%s, want block %s", index+1, tuple.ToKind, tuple.ToID, want)
 		}
 		requireCaused(t, "a shaped tuple of d1", tuple, "alice", uploaded)
@@ -401,13 +402,30 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 	uploadAs(t, handler, issue.Key, "choices.md", decided+":::decision{#u1}\nBob rewords the upload's decision.\n:::\n", "bob")
 	requireDecidedBy(t, database, "another writer's upload", decisions.address("u1"), "alice")
 
-	// An index pass over the document leaves from_ask and decided_by standing.
+	// An index pass over the document leaves from_ask and decided_by standing. The pass is read by
+	// what it did: it indexes choices.md, the one document owed, at its newest version, so a pass
+	// that indexed nothing cannot stand in for it.
 	if _, err := database.Pool.Exec(ctx, `update document_block_versions set version = null where artifact_id = $1`, decisions.id); err != nil {
 		t.Fatalf("leave choices.md owed its block index: %v", err)
 	}
-	if _, err := documents.ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil); err != nil {
+	var owed int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from document_block_versions where version is null`).Scan(&owed); err != nil || owed != 1 {
+		t.Fatalf("%d documents are owed their block index (%v), want choices.md alone", owed, err)
+	}
+	tick, err := documents.ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil)
+	if err != nil {
 		t.Fatalf("run the block-index reconciliation: %v", err)
 	}
+	newest := latestVersion(t, database, decisions.id).Number
+	var indexed int
+	if err := database.Pool.QueryRow(ctx, `select coalesce(version, 0) from document_block_versions where artifact_id = $1`, decisions.id).Scan(&indexed); err != nil {
+		t.Fatalf("read the version choices.md is indexed at: %v", err)
+	}
+	if tick.Documents != 1 || tick.LiveAhead != 0 || tick.OwedDocuments != 0 || indexed != newest {
+		t.Fatalf("the index pass read %+v and left choices.md indexed at version %d (0 for owed), want it to index that one document at its newest version %d and leave none owed",
+			tick, indexed, newest)
+	}
+	t.Logf("the index pass indexed %d document, choices.md at version %d, and left %d owed", tick.Documents, indexed, tick.OwedDocuments)
 	if held := currentTies(t, database, d1, refs.TupleFromAsk); len(held) != 1 || held[0].ToID != askID {
 		t.Errorf("after an index pass d1 states the from_ask %+v, want the ask %s still standing", held, askID)
 	}
@@ -602,7 +620,7 @@ func TestATieToAnotherIssueIsRefusedOnEveryWritePath(t *testing.T) {
 		t.Fatalf("settlement refused the browser's write, want it stored")
 	}
 	address := browser.address("b1")
-	if held := currentTies(t, database, address, refs.TupleShaped); len(held) != 1 || held[0].ToID != issue.Key+"/spec#r1" {
+	if held := currentTies(t, database, address, refs.TupleShaped); len(held) != 1 || held[0].ToID != readDecisionDocument(t, database, issue.Key, "spec").pointed("r1") {
 		t.Errorf("the browser's decision states the shaped %+v, want its tie inside %s alone", held, issue.Key)
 	}
 	if held := currentTies(t, database, address, refs.TupleFromAsk); len(held) != 0 {
@@ -696,31 +714,46 @@ func TestADecisionInASettlementOfSeveralWritersNamesTheOneWhoWroteIt(t *testing.
 }
 
 // A reading inside an ask stands under the ask the block shows (R2: the parent of a reading inside
-// an ask is the ask node). A browser's new ask block holding a reading shows no ask at all - no
-// row, no source - and settlement flags it invalid, so the reading in it is a block like any
-// other: supertag block, placed in the ask block. A copy of an answered ask, on another document
-// of the issue, opens no row of its own and shows its source's answer, so a reading in it is a
-// reading node whose part_of is the source ask's node, its document_blocks row still naming the
-// copy's block.
+// an ask is the ask node). A copy of an answered ask, on another document of the issue, opens no
+// row of its own and shows its source's answer, so a reading in it is a reading node whose part_of
+// is the source ask's node, its document_blocks row still naming the copy's block. A browser's new
+// ask block holding a reading shows no ask at all - no row, no source - and settlement flags it
+// invalid, so the reading in it is a block like any other: supertag block, placed in the ask block.
 func TestAReadingInAnAskBlockStandsUnderTheAskTheBlockShows(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
-	// asksOf is the number of asks of the block id of the document artifactID, read under the
-	// room the document is edited in (refs.AsksOfFragmentBlocksSQL).
-	asksOf := func(t *testing.T, artifactID, id string) int {
-		t.Helper()
+	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
+	const ask = ":::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n"
+	uploadAs(t, handler, issue.Key, "asks.md", ask, "alice")
+	settleIssue(t, documents, issue.Key)
+	askID := blockAskID(t, handler, issue.Key, "a1")
+	answerDecisionBlock(t, handler, askID, "alice", []string{"REST"}, "", nil)
+
+	t.Run("a copy of an answered ask", func(t *testing.T) {
+		uploadAs(t, handler, issue.Key, "copy.md", "::::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n\n"+
+			":::reading{#g1}\nThe agent reads the copied answer as REST.\n:::\n::::\n", "alice")
+		copied := readDecisionDocument(t, database, issue.Key, "copy-md")
 		var rows int
-		if err := database.Pool.QueryRow(context.Background(),
-			`select count(*) from asks k where `+refs.AsksOfFragmentBlocksSQL("k", "$1::uuid", "$2::text[]"),
-			artifactID, []string{id}).Scan(&rows); err != nil {
-			t.Fatalf("count the asks of %s in %s: %v", id, artifactID, err)
+		if err := database.Pool.QueryRow(context.Background(), `select count(*) from asks where block_artifact_id = $1`, copied.id).Scan(&rows); err != nil {
+			t.Fatalf("count the copy's asks: %v", err)
 		}
-		return rows
-	}
+		if rows != 0 {
+			t.Fatalf("the copy opened %d asks of its own, want none: it shows its source's", rows)
+		}
+		requireTypedNode(t, database, "a reading in a copy of an answered ask", copied.address("g1"), "reading", graphstore.KindAsk, askID)
+		var parent *string
+		if err := database.Pool.QueryRow(context.Background(), `
+			select parent_block_id from document_blocks where artifact_id = $1 and block_id = 'g1'
+		`, copied.id).Scan(&parent); err != nil {
+			t.Fatalf("read the reading's row: %v", err)
+		}
+		if parent == nil || *parent != "a1" {
+			t.Errorf("the reading's row names the parent %v, want the copy's ask block a1, the projection of its part_of", parent)
+		}
+	})
 
 	t.Run("a browser's new ask block", func(t *testing.T) {
-		issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
 		uploadAs(t, handler, issue.Key, "browser.md", "Before.\n", "alice")
 		browser := readDecisionDocument(t, database, issue.Key, "browser-md")
 		writeBrowserDocument(t, handler, documents, browser.id, "Before.\n\n::::ask{#a9 urgency=\"med\" multiple=\"false\"}\nShould we ship?\n\n- Ship: Release it\n- Hold: Wait\n\n"+
@@ -730,43 +763,13 @@ func TestAReadingInAnAskBlockStandsUnderTheAskTheBlockShows(t *testing.T) {
 		if latestVersion(t, database, browser.id).Number < 2 {
 			t.Fatalf("settlement wrote no version of the browser's ask block")
 		}
-		if rows := asksOf(t, browser.id, "a9"); rows != 0 {
+		var rows int
+		if err := database.Pool.QueryRow(context.Background(), `select count(*) from asks where block_artifact_id = $1`, browser.id).Scan(&rows); err != nil {
+			t.Fatalf("count the browser document's asks: %v", err)
+		}
+		if rows != 0 {
 			t.Fatalf("the browser's ask block holding a reading opened %d asks, want none: settlement flags it", rows)
 		}
 		requireTypedNode(t, database, "a reading in a new ask block that shows no ask", browser.address("g9"), refs.BlockSupertag, refs.BlockNodeKind, browser.address("a9"))
-	})
-
-	t.Run("a copy of an answered ask", func(t *testing.T) {
-		// Held unconverted: block ids are unique within an issue room, so a copy uploaded into its
-		// own converted issue takes fresh ids and shows no source's answer; the copy this case
-		// reads, of an ask on another document of the same owner under the same block id, is one
-		// of documents that are each their own room (TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks).
-		holdIssuesUnconverted(t, database)
-		created := createIssueRequest(t, handler, map[string]any{"project": "CORE", "title": "Copies of an answered ask", "spec": "A spec.\n"})
-		if created.Code != http.StatusCreated {
-			t.Fatalf("create the copy case's issue: status=%d body=%s", created.Code, created.Body.String())
-		}
-		issue := decodeBody[model.Issue](t, created)
-		const ask = ":::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n"
-		uploadAs(t, handler, issue.Key, "asks.md", ask, "alice")
-		settleIssue(t, documents, issue.Key)
-		askID := blockAskID(t, handler, issue.Key, "a1")
-		answerDecisionBlock(t, handler, askID, "alice", []string{"REST"}, "", nil)
-		uploadAs(t, handler, issue.Key, "copy.md", "::::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n\n"+
-			":::reading{#g1}\nThe agent reads the copied answer as REST.\n:::\n::::\n", "alice")
-		copied := readDecisionDocument(t, database, issue.Key, "copy-md")
-		if rows := asksOf(t, copied.id, "a1"); rows != 0 {
-			t.Fatalf("the copy opened %d asks of its own, want none: it shows its source's", rows)
-		}
-		requireTypedNode(t, database, "a reading in a copy of an answered ask", copied.address("g1"), "reading", graphstore.KindAsk, askID)
-		var parent *string
-		if err := database.Pool.QueryRow(context.Background(), `
-			select parent_block_id from document_blocks where artifact_id = $1 and block_id = 'g1'
-		`, copied.room).Scan(&parent); err != nil {
-			t.Fatalf("read the reading's row: %v", err)
-		}
-		if parent == nil || *parent != "a1" {
-			t.Errorf("the reading's row names the parent %v, want the copy's ask block a1, the projection of its part_of", parent)
-		}
 	})
 }

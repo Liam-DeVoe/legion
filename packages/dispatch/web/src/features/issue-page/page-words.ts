@@ -66,13 +66,14 @@ function keysOf<T extends object>(value: T): readonly (keyof T)[] {
 
 /**
  * A plain name for every kind of node the page draws, which is every kind the model holds: the
- * issue, the documents and images it carries, the seven typed blocks of those documents, the
+ * issue, the documents and images it carries, the eight typed blocks of those documents, the
  * decisions and asks, the conversation, the results recorded against a check, and the child
  * issues.
  *
  * A key is the model's own token for the kind, so the page needs no second table to read a
- * node: `callout`, `ask`, `requirement`, `plan_task`, `check`, `decision` and `reading` are the
- * block type names in `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`, and `ask`,
+ * node: `callout`, `ask`, `requirement`, `plan_task`, `check`, `decision`, `reading` and
+ * `criterion` are the block type names in
+ * `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`, and `ask`,
  * `comment` and `message` are the item kinds of a `dispatch://` reference. A name is lowercase
  * because the page draws it inside its own sentences and rows, where a capital would read as a
  * proper noun; `sentenceCase` supplies the capital where a name opens a sentence or a heading.
@@ -86,9 +87,8 @@ export const NODE_TYPE_NAMES = freeze({
   check: "check",
   child_issue: "child issue",
   comment: "comment",
-  /** A `criterion` block, and a `reading` below: block types the model's block schema
-   *  (version 6) declares, named here so every type the schema declares has a name. A later part
-   *  of the page draws them. */
+  /** A `criterion` block: what a person wants to be able to do, in their own words, which a
+   *  statement answers. The schema's own word is a plain one, so the page draws it. */
   criterion: "criterion",
   decision: "decision",
   document: "document",
@@ -1185,6 +1185,8 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  /** The question, comment or message a statement, a criterion, a check or a plan task hangs
+   *  under, by the plain word the page's own parent controls use. */
   parent: "parent",
   /** Whether a newer decision stands in this one's place. */
   replaced: "replaced",
@@ -1194,6 +1196,8 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   serves: "serves",
   /** The spec blocks a decision, or the answer of an ask, shaped. */
   shaped: "shaped",
+  /** How long a plan task takes, in days, which the plan's chart draws as its bar's length;
+   *  the chart's own word for a task that holds none is `PLAN_WORDS.no_size`. */
   size: "size",
   state: "state",
   surface: "surface",

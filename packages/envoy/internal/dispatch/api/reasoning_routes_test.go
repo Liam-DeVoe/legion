@@ -27,7 +27,8 @@ type reasoningRig struct {
 	database *store.Store
 	issue    string
 	// spec, requirement, paragraph and check are dispatch:// addresses; requirementNode is the
-	// requirement's store id, which a tuple names it by.
+	// requirement's store id, which a tuple names it by: the spec is a document of its issue's
+	// room, whose tree keys its blocks' nodes.
 	spec, requirement, paragraph, check, secondCheck string
 	requirementNode                                  string
 }
@@ -41,10 +42,7 @@ func newReasoningRig(t *testing.T) reasoningRig {
 	rig.spec = "dispatch://" + issue.Key + "/spec"
 	rig.requirement = refs.BlockRef(rig.spec, "r1")
 	rig.paragraph = refs.BlockRef(rig.spec, firstBlockOf(t, handler, issue.PrimaryArtifactID))
-	if err := database.Pool.QueryRow(context.Background(),
-		`select ref_key || '#r1' from artifacts where id = $1::uuid`, issue.PrimaryArtifactID).Scan(&rig.requirementNode); err != nil {
-		t.Fatalf("read the requirement's node id: %v", err)
-	}
+	rig.requirementNode = readDecisionDocument(t, database, issue.Key, "spec").address("r1")
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
 		checkServing("k1", rig.requirement)+"\n"+checkServing("k2", rig.requirement))
 	document := "dispatch://" + issue.Key + "/artifact/" + verification.Artifact.Slug

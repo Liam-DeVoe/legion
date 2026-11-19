@@ -592,7 +592,7 @@ func premortemChecks(ctx context.Context, q refs.Queryer, who model.Actor, entri
 // the write records (reasoningWrite): it is the one conversion, which the route and the command
 // both run.
 //
-// It takes the issue's row `for no key update` first, the owner row the lock order on
+// It takes the issue's owner lock first (store.LockOwner), the lock the lock order on
 // api/inbox_read.go's markInboxReadThreads puts before every other, so two conversions of one
 // issue queue there and the second reads what the first wrote. It reads the document's newest
 // version. A document whose address carries a moved_to tuple already is converted: the call
@@ -618,12 +618,12 @@ func premortemChecks(ctx context.Context, q refs.Queryer, who model.Actor, entri
 // (refusedPrevention); the write it refused is the savepoint's, rolled back, or tx's, which the
 // caller rolls back on that error, so nothing of it remains.
 func ConvertPremortem(ctx context.Context, tx pgx.Tx, proving, recorded model.Actor, key, slug string, entries []PremortemEntry, dryRun bool) (PremortemReport, []model.Event, error) {
-	_, _, err := issueStatus(ctx, tx, key, ownerRowLock)
+	_, _, err := issueStatus(ctx, key, lockedOwnerRead(tx))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PremortemReport{}, nil, &PremortemDocumentError{Missing: true, Problem: fmt.Sprintf("no issue %s holds a document %q", key, slug)}
 	}
 	if err != nil {
-		return PremortemReport{}, nil, fmt.Errorf("take the row of the issue %s: %w", key, err)
+		return PremortemReport{}, nil, fmt.Errorf("take the owner lock of the issue %s: %w", key, err)
 	}
 	source, err := readPremortemSource(ctx, tx, key, slug)
 	if err != nil {

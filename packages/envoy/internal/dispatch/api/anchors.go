@@ -22,7 +22,7 @@ import (
 // that block's matches (docs.QuoteScope): a block_id beside a mark_id, an empty one, one that names
 // no block of the anchor's document and one whose block does not hold the quote are each refused
 // 400 INVALID_ANCHOR naming block_id, before the caller writes its row. An anchor on a document of
-// a converted issue locks that document's own row, which stays a doc, and its mark is written into
+// a converted issue reads that document's own row, which stays a doc, and its mark is written into
 // the document's fragment of the issue's room (docs' targetOf), with the id the artifact read
 // gives.
 func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, input *model.AnchorInput, kind docs.MarkKind, rowID string, actor model.Actor) (*model.Anchor, string, *docs.VersionResult, error) {
@@ -50,7 +50,7 @@ func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, inpu
 	if input.BlockID != nil && *input.BlockID == "" {
 		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor block_id must not be empty")
 	}
-	artifact, err := s.lockAnchorArtifact(ctx, tx, owner, artifactRef)
+	artifact, err := s.loadAnchorArtifact(ctx, tx, owner, artifactRef)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -119,13 +119,15 @@ func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, inpu
 	return &anchor, artifact.Name, nil, nil
 }
 
-func (s *server) lockAnchorArtifact(ctx context.Context, tx pgx.Tx, owner owner, artifactRef string) (model.Artifact, error) {
+// loadAnchorArtifact reads the document an anchor targets, which must be one of owner's. The caller
+// holds owner's lock; the read takes no row lock, since nothing deletes an artifact or changes its
+// key, and the only update an artifact row takes, its event sequence, moves nothing read here.
+func (s *server) loadAnchorArtifact(ctx context.Context, tx pgx.Tx, owner owner, artifactRef string) (model.Artifact, error) {
 	if owner.IssueKey != nil {
 		return scanArtifact(tx.QueryRow(ctx, `
 			select `+artifactColumns+`
 			from artifacts
 			where issue_key = $1 and (id::text = $2 or slug = $2)
-			for key share
 		`, *owner.IssueKey, artifactRef))
 	}
 	if owner.ArtifactID == nil {
@@ -135,7 +137,6 @@ func (s *server) lockAnchorArtifact(ctx context.Context, tx pgx.Tx, owner owner,
 		select `+artifactColumns+`
 		from artifacts
 		where id = $1 and issue_key is null
-		for key share
 	`, *owner.ArtifactID))
 	if err != nil {
 		return model.Artifact{}, err

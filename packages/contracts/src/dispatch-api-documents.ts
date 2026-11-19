@@ -29,8 +29,7 @@ export const VersionSchema = z.strictObject(versionFields).readonly();
 /** The part an issue's document plays beside its spec: `verification` for the document created
  *  as `verification.md`, `plan` for the one created as `plan.md`. `decisions` is the role of an
  *  issue's decisions document an earlier release stored, which a server answers until the
- *  decisions step retires that document; this build gives it to no document
- *  (dispatch://INFRA-1150 R11). */
+ *  decisions step retires that document; this build gives it to no document. */
 // kept for one release: contract-read-side
 export const DocumentRoleSchema = z.enum(["verification", "plan", "decisions"]);
 

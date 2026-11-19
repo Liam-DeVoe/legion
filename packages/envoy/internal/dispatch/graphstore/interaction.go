@@ -114,11 +114,11 @@ func FrameTuple(run, value string, at time.Time) Tuple {
 }
 
 // QueueFrameTuple queues on batch the one statement Write sends for tuple, one frame value of a run
-// (FrameTuple): the append of value tuples under their repeat key (appendTuples). It is Write for
-// that one tuple, for the frame path, which sends it in one round trip beside a statement of its
-// own (api's appendGoingEvent): a frame value is no base attribute a value is refused for, no
-// pointer a type rule holds and no change of its node (Tuple.Changes), so Write reads nothing and
-// appends nothing else for it. Any other tuple is refused and nothing is queued: it goes through
+// (FrameTuple): the append of a value tuple under its repeat key (tupleInsert, valueRepeatKey). It
+// is Write for that one tuple, for the frame path, which sends it in one round trip beside a
+// statement of its own (api's appendGoingEvent): a frame value is no base attribute a value is
+// refused for, no pointer a type rule holds and no change of its node (Tuple.Changes), so Write
+// queues nothing else for it. Any other tuple is refused and nothing is queued: it goes through
 // Write, which holds it to whatever applies.
 func QueueFrameTuple(batch *pgx.Batch, tuple Tuple) error {
 	if tuple.FromKind != KindInteraction || tuple.Kind != AttributeFrame || tuple.ToKind != KindValue || tuple.Changes {

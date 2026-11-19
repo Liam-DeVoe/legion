@@ -68,8 +68,9 @@ func nodeNotFound(key, id string) error {
 // resolvedNodeAddress is the registry kind and the store id the `{id}` segment names
 // (decodeNodeAddress), with a document block's address taken as the node it resolves to
 // (graphstore.MovedTo: its moved_to tuples first, then its document's room, then itself), as every
-// reader of a reference resolves one (T17 of this branch's plan). An address that resolves to no
-// block is answered as decoded, which names no node.
+// reader of a reference resolves one (T17 of this branch's plan): a block, or the ask a chain of
+// moves ends at, named by its id. An address that resolves to neither is answered as decoded,
+// which names no node.
 func resolvedNodeAddress(ctx context.Context, q refs.Queryer, id string) (kind, address string, ok bool, err error) {
 	kind, address, ok = decodeNodeAddress(id)
 	if !ok || kind != refs.BlockNodeKind {
@@ -79,8 +80,12 @@ func resolvedNodeAddress(ctx context.Context, q refs.Queryer, id string) (kind, 
 	if err != nil {
 		return "", "", false, err
 	}
-	if resolved {
-		address = reached
+	switch {
+	case !resolved:
+	case reached.Ask != "":
+		kind, address = graphstore.KindAsk, reached.Ask
+	default:
+		address = reached.Address
 	}
 	return kind, address, true, nil
 }

@@ -572,8 +572,8 @@ func TestTwoDesignGatePublishesOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
 	}
 }
 
-// The design_gates rows of the retired `decisions` step stay, and this build ignores them
-// (dispatch://INFRA-1150 R11, ruling F6). A row of that step, written beside a `spec` row as a
+// The design_gates rows of the retired `decisions` step stay, and this build ignores them. A row
+// of that step, written beside a `spec` row as a
 // daemon of the release before stored it, is in neither the issue's gates nor the
 // superseded-approval advice, which name the `spec` step alone, and no read deletes it. The
 // project's stored list of that step alone reads as [spec], so the spec gate still names its

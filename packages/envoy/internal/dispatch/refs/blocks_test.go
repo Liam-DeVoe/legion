@@ -15,10 +15,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// windowServer is the server a window test's references are read against; no test of this file
-// writes one.
-const windowServer = "https://dispatch.example"
-
 // part is one block of a test document: its id, its node type and its text.
 type part struct{ id, nodeType, text string }
 
@@ -37,6 +33,21 @@ func documentOf(parts []part) (string, []model.ArtifactBlock) {
 		blocks[i] = model.ArtifactBlock{ID: p.id, Type: p.nodeType, From: from, To: markdown.Len()}
 	}
 	return markdown.String(), blocks
+}
+
+// storedAddress is where the stored document artifactID sits, as docs' addressOfDocument reads a
+// stored row for BlockTargets: its ref_key and its issue.
+func storedAddress(t *testing.T, q Queryer, artifactID string) DocumentAddress {
+	t.Helper()
+	var address DocumentAddress
+	var issue *string
+	if err := q.QueryRow(context.Background(), `select coalesce(ref_key, ''), issue_key from artifacts where id = $1::uuid`, artifactID).Scan(&address.RefKey, &issue); err != nil {
+		t.Fatalf("read the address of document %s: %v", artifactID, err)
+	}
+	if issue != nil {
+		address.IssueKey = *issue
+	}
+	return address
 }
 
 // windowRow is one embeddings window row as its owner's indexer wrote it: the blocks it covers,
@@ -152,9 +163,9 @@ func TestAWindowRecordsTheBlocksItCovers(t *testing.T) {
 	if _, err := IndexItem(ctx, tx, ItemComment, comment, "The first paragraph.\n\nThe second paragraph.", time.Now(), nil, nil); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
-	// An item's index writes no window: the block-index tick's window arm writes them in a
-	// transaction of its own (indexItemBlocks, WriteItemWindows). This is that arm's write,
-	// run here in the fixture's transaction, and what it writes is read below.
+	// An item's index writes no window (IndexItem): the block-index tick's window arm writes
+	// them in a transaction of its own (docs.windowItem, WriteItemWindows). This is that arm's
+	// write, run here in the fixture's transaction, and what it writes is read below.
 	if written, err := WriteItemWindows(ctx, tx, ItemComment, comment); err != nil || !written {
 		t.Fatalf("window the comment = %v, %v; want the window arm to write them", written, err)
 	}
@@ -168,10 +179,7 @@ func TestAWindowRecordsTheBlocksItCovers(t *testing.T) {
 	}
 
 	ask := insertAsk(t, tx, "WIND-1", "Which region?", model.AskOption{Label: "eu", Description: "for latency"})
-	reader := NewReader(ctx, tx, "ask", ask.ID, windowServer)
-	if _, err := IndexAskParts(ctx, tx, reader, ask, time.Now()); err != nil {
-		t.Fatalf("index the ask's parts: %v", err)
-	}
+	indexAskPartsAt(t, tx, ask, 1)
 	if written, err := WriteItemWindows(ctx, tx, ItemAsk, ask.ID); err != nil || !written {
 		t.Fatalf("window the ask = %v, %v; want the window arm to write them", written, err)
 	}

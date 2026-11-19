@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -304,7 +305,7 @@ func TestCarryVerdictOverTheApprovedAndTheNewVersion(t *testing.T) {
 	}
 }
 
-// The reading case (dispatch://INFRA-1150 R2) over the two versions: N carries the approval of A
+// The reading case over the two versions: N carries the approval of A
 // when the two differ only in the readings their decisions and their answered asks close with -
 // one added, edited or removed - and the case composes with R10's, so one version that drops the
 // server-owned attributes and adds a reading carries, naming both changes. A case names only what
@@ -633,7 +634,7 @@ func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 // version, and the version an agent's edit takes at once - stores none of the seven attributes a
 // version can store, though the live tree still holds what the release before wrote into an ask
 // block: here state="open" on an ask bob has answered since, which the answer leaves in place,
-// since on one build it changes no byte of the document (dispatch://INFRA-1150 R3). The named
+// since on one build it changes no byte of the document. The named
 // version differs from the one alice approved, which the release before's settlement wrote with
 // that state, in those attributes alone, and every ask of it agrees with its node, so her approval
 // is carried to it by the case that compares the two without them (attributeRemovalCase, R10).
@@ -1066,5 +1067,53 @@ func TestARestoreOfACarriedVersionNamesTheVersionWhoseTextItHolds(t *testing.T) 
 	want := fmt.Sprintf("Carried forward from the approval of version %d: this version's text is version %d's, unchanged, which that approval was carried to.", approved, dropped)
 	if reason := approvedReasonAt(t, service, artifactID, restored); reason != want {
 		t.Fatalf("the review carried to version %d reads %q, want %q", restored, reason, want)
+	}
+}
+
+// A transaction carries one document's approval at most once (errApprovalCarriedTwice, whose doc
+// carries the reason). Here the agent names a version whose text is the approved text, which
+// carries alice's approval, and both routes into the carry are then refused in that same
+// transaction: a second named version of the document (carryApproval's guard) and the carry the
+// upload route runs on its own (CarryUploadedApproval's). SnapshotVersion would not reach
+// the carry for the first version, returning the latest version where the live text has not
+// moved, so the versions are named.
+func TestATransactionCannotCarryOneDocumentsApprovalTwice(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "Context\n")
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Second})
+	t.Cleanup(func() { _ = service.Shutdown(ctx) })
+	seedServiceText(t, service, artifactID, "Context\n")
+	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
+	// The approved version is one this service wrote, so the version named below restores its
+	// text byte for byte, which is what carries the approval (restoresApprovedText).
+	joined(t, service, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := service.NamedVersion(ctx, artifactID, "Named before the approval", agent)
+		return err
+	})
+	approveStoredVersion(t, database, artifactID, 2, "alice")
+
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	joinedCtx, ledger := service.Join(ctx, tx)
+	defer ledger.Discard()
+	restored, err := service.NamedVersion(joinedCtx, artifactID, "Restores the approved text", agent)
+	if err != nil {
+		t.Fatalf("the version restoring the approved text: %v", err)
+	}
+	if _, carried := ledger.PendingReview(artifactID); !carried {
+		t.Fatal("the version restoring the approved text carried no approval, so the second version faces no first carry")
+	}
+	if _, err := service.NamedVersion(joinedCtx, artifactID, "A second version of the same document", agent); !errors.Is(err, errApprovalCarriedTwice) {
+		t.Fatalf("the second version of the document in the same transaction = %v, want %v", err, errApprovalCarriedTwice)
+	}
+	// The upload route writes its version itself and carries its approval through its own entry
+	// (the api package's storeArtifact calls CarryUploadedApproval), so that route's own guard
+	// call is what refuses it here.
+	if err := CarryUploadedApproval(joinedCtx, tx, service.events, artifactID, restored.Version.Number, "Context\n", nil, service.serverURL); !errors.Is(err, errApprovalCarriedTwice) {
+		t.Fatalf("the upload route's carry over the same document in the same transaction = %v, want %v", err, errApprovalCarriedTwice)
 	}
 }

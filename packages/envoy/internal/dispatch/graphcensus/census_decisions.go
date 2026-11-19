@@ -224,7 +224,7 @@ var readingParents = `
 // or a reading's. A document that still owes its block index (document_block_versions.version
 // null) holds no row yet for a block its latest version added, while that version's typed-node
 // pass already wrote the block's node: a decision or a reading written above the deferral bound
-// (refs.IndexDecisionNodes), the one writer of a block node that writes no row beside it. The
+// (refs.PlanDecisionNodes), the one writer of a block node that writes no row beside it. The
 // block-index reconciliation writes the row, so such a node is owed its row and no difference
 // until then; a node of any other supertag in such a document is a difference still, since no
 // writer leaves one without its row. A ref_key holds no '#', so a block node's document is the
@@ -237,7 +237,7 @@ var typedNodeOwed = `exists (
 		  and typed.supertag in ('` + refs.DecisionSupertag + `', '` + refs.ReadingSupertag + `')
 		  and owed.version is null)`
 
-// tieProjection is the kind of one tie of dispatch://INFRA-1150 that block_refs projects - a
+// tieProjection is the kind of one tie that block_refs projects - a
 // decision's shaped, from_ask or decided_by, and an ask's shaped - held triple by triple
 // (projection.tuples): each row is the triple of the node that states its tie (node_kind,
 // node_address: the decision's block node, or for an ask block's shaped the ask's node,

@@ -555,7 +555,7 @@ func refusedWithAdvice(answer response) bool {
 
 // An ask's text is written into its block, so it grows a document as an edit does, and is held to
 // what one upload may hold on a real Dispatch process as an edit is. Its answer is held on the
-// ask's node alone (dispatch://INFRA-1150 R3) and written into its block only while a process of
+// ask's node alone and written into its block only while a process of
 // another build serves, whose pages read it there (docs' rollWindowAskAttributes), so the answer
 // route runs with one registered (registerOtherBuild), and the bound must hold there as it holds
 // for the release before: edits of the asks of one document, each giving an option a
@@ -565,7 +565,7 @@ func refusedWithAdvice(answer response) bool {
 // out of its block. Either way the document stays within the cap, still reads, and a one-word edit
 // on a server that has not loaded it holds at most the bound. The 900 KB description this test
 // grew a document with before is refused outright now, for the 32,000 characters an ask's
-// question and options may hold together (INFRA-370), so the growth is written here in texts that
+// question and options may hold together, so the growth is written here in texts that
 // bound holds.
 func TestAskEditsAndAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T) {
 	memory := newMemoryHarness(t)
@@ -689,7 +689,7 @@ func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
 	}
 }
 
-// An answer is held on its ask's node (dispatch://INFRA-1150 R3), and while a process of another
+// An answer is held on its ask's node, and while a process of another
 // build serves, whose pages read it from the block, settlement writes it back into a block that
 // returns to the document (docs' rollWindowAskAttributes), so this test registers one
 // (registerOtherBuild) and returning blocks cannot grow a document past what one upload may hold
@@ -955,6 +955,113 @@ func TestVersionsCannotLeaveALiveStateTooLargeToDecode(t *testing.T) {
 		return
 	}
 	t.Fatal("all 20 versions were taken, want the version that would pass ygo's decode cap refused")
+}
+
+// An issue's three role documents - its spec, its Verification document and its plan - share the
+// issue room's one state, which a load decodes as one update, and ygo decodes at most 1,048,576
+// structs in one. Versions of the spec, alternating 16,000 paragraphs and 16,000 headings as
+// TestVersionsCannotLeaveALiveStateTooLargeToDecode writes them, take the room to that cap, where
+// the version that would pass it is refused. The heaviest document of list items the element limit
+// admits fits an issue room alone; uploaded as the plan and then as the Verification document, the
+// first of the two whose seed would take the room past the cap is refused with 413 CAP_EXCEEDED
+// naming it, and stores nothing: the room keeps the updates it held and the issue holds no document
+// of that name. Every document of the issue still reads. Without that refusal both seeds are taken,
+// and no document of the issue loads (the room's load fails "decode the folded state: crdt: invalid
+// update").
+func TestARoleDocumentCannotLeaveItsIssueRoomTooLargeToDecode(t *testing.T) {
+	memory := newMemoryHarness(t)
+	server := memory.start(t)
+	issue := server.createIssue(t, "A room at the decode cap", "Before.\n")
+	room := documentRoom(t, memory.database, issue.PrimaryArtifactID)
+	if room == issue.PrimaryArtifactID {
+		t.Fatalf("the spec of %s is a room of its own, want it a fragment of its issue's room", issue.Key)
+	}
+	capRefusal := func(answer uploadResult) bool {
+		return answer.status == http.StatusRequestEntityTooLarge && strings.Contains(string(answer.body), `"code":"CAP_EXCEEDED"`) &&
+			strings.Contains(string(answer.body), "1048576 items")
+	}
+	numbered := func(format string) string {
+		var markdown strings.Builder
+		for index := range 16_000 {
+			fmt.Fprintf(&markdown, format, index)
+		}
+		return markdown.String()
+	}
+	paragraphs, headings := numbered("p%d\n\n"), numbered("# h%d\n")
+	full := false
+	for version := range 20 {
+		markdown := paragraphs
+		if version%2 == 1 {
+			markdown = headings
+		}
+		answer, err := server.tryUploadNamed("multipart", issue.Key, "spec.md", markdown)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("spec upload %d answered %d", version+1, answer.status)
+		if answer.status == http.StatusCreated {
+			continue
+		}
+		if version < 2 || !capRefusal(answer) {
+			t.Fatalf("spec upload %d answered %d %.500s, want 201 until 413 CAP_EXCEEDED names ygo's 1048576-item decode cap", version+1, answer.status, answer.body)
+		}
+		full = true
+		break
+	}
+	if !full {
+		t.Fatal("all 20 spec uploads were taken, want the one that would pass ygo's decode cap refused")
+	}
+	documents := []string{issue.PrimaryArtifactID}
+	// loads reports whether every document of the issue still reads, naming each that does not.
+	loads := func() bool {
+		t.Helper()
+		loaded := true
+		for _, artifactID := range documents {
+			if answer := server.send(t, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", "", nil, http.Header{"X-Dispatch-User": {"alice"}}); answer.status != http.StatusOK {
+				t.Errorf("document %s of %s answered GET /text %d %.300s, want 200", artifactID, issue.Key, answer.status, answer.body)
+				loaded = false
+			}
+		}
+		return loaded
+	}
+	heaviest := heaviestAdmitted(t, func(units int) string { return strings.Repeat("- a\n", units) })
+	for _, name := range []string{"plan.md", "verification.md"} {
+		var held, named int
+		count := func() {
+			t.Helper()
+			if err := memory.database.Pool.QueryRow(context.Background(), `
+				select (select count(*) from doc_updates where artifact_id = $1),
+				       (select count(*) from artifacts where issue_key = $2 and name = $3)
+			`, room, issue.Key, name).Scan(&held, &named); err != nil {
+				t.Fatalf("count the issue room's updates and the documents named %s: %v", name, err)
+			}
+		}
+		// A settlement of the room's last write appends its own repairs; it has run before the count.
+		memory.waitForSettled(t, issue.PrimaryArtifactID)
+		count()
+		before := held
+		answer, err := server.tryUploadNamed("json", issue.Key, name, heaviest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("%s answered %d %.300s", name, answer.status, answer.body)
+		if answer.status == http.StatusCreated {
+			documents = append(documents, answer.artifactID)
+			if !loads() {
+				t.Fatalf("%s was taken and left its issue room past what ygo decodes, so no document of %s loads; want it refused with 413 CAP_EXCEEDED", name, issue.Key)
+			}
+			continue
+		}
+		if !capRefusal(answer) {
+			t.Fatalf("%s answered %d %.500s, want 201, or 413 CAP_EXCEEDED naming ygo's 1048576-item decode cap", name, answer.status, answer.body)
+		}
+		if count(); held != before || named != 0 {
+			t.Errorf("after the refused %s the issue room holds %d updates and the issue %d documents of that name, want the %d it held and none", name, held, named, before)
+		}
+		loads()
+		return
+	}
+	t.Fatal("the plan and the Verification document were both taken, want the seed that would take the issue room past ygo's decode cap refused")
 }
 
 // An upload's parse does not count front matter, so a new spec of front matter and the 16,384

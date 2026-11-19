@@ -33,7 +33,7 @@ type Scope struct {
 // their newest writer left them.
 //
 // The rows are locked in ascending (kind, id) before the update, in a statement of their own, as
-// every write of this store takes them (writeNodes): an update over an unnest takes its rows in
+// every write of this store takes them (queueNodes): an update over an unnest takes its rows in
 // whatever order the plan reads them.
 func FillScopes(ctx context.Context, tx pgx.Tx, scopes []Scope) (int64, error) {
 	if len(scopes) == 0 {
@@ -48,7 +48,11 @@ func FillScopes(ctx context.Context, tx pgx.Tx, scopes []Scope) (int64, error) {
 		if scope.Project != "" {
 			projects[index] = &scopes[index].Project
 		}
-		if value := PartiesValue(scope.Parties); value != "" {
+		value, err := PartiesValue(scope.Parties)
+		if err != nil {
+			return 0, fmt.Errorf("fill the scope of node %s/%s: %w", scope.Kind, scope.ID, err)
+		}
+		if value != "" {
 			parties[index] = &value
 		}
 	}
@@ -110,7 +114,7 @@ func FillScopes(ctx context.Context, tx pgx.Tx, scopes []Scope) (int64, error) {
 		}
 		return strings.Compare(left.FromID, right.FromID)
 	})
-	if err := appendTuples(ctx, tx, stated); err != nil {
+	if err := Write(ctx, tx, nil, stated); err != nil {
 		return 0, err
 	}
 	return filled, nil

@@ -2,7 +2,9 @@ package graphcensus
 
 import (
 	"bytes"
+	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
@@ -13,10 +15,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -101,7 +111,7 @@ func TestTheSizingReportsTheOwedDocumentsAndTheAgeOfTheOldest(t *testing.T) {
 }
 
 // Two runs over one unchanged database print one report, which is what the growth check holds
-// the command to (dispatch://INFRA-1149's c-growth diffs the two). An age measured against
+// the command to (the check c-growth diffs the two). An age measured against
 // now() would move between the two runs, so the backlog lines carry the oldest debt's own
 // timestamp and an age measured against the newest write the database recorded.
 func TestTwoSizingRunsOverAnUnchangedDatabaseAgree(t *testing.T) {
@@ -134,18 +144,25 @@ func TestTheSizingPrintsNoDateWhereNothingIsOwed(t *testing.T) {
 	}
 }
 
-// The two versions seedSizedHistory writes of one document: a callout holding two paragraphs
-// beside two paragraphs of the document's own, then the same document with the callout's second
-// paragraph moved out of it, the document's last paragraph dropped and a new one added.
+// The three versions seedSizedHistory writes of each of its two documents: a callout holding two
+// paragraphs beside two paragraphs of the document's own; then the same document with the
+// callout's second paragraph moved out of it, the document's last paragraph dropped and a new one
+// added that cites CORE-1; then the dropped paragraph brought back at the document's end.
 const (
 	sizedVersion1 = ":::callout{#box kind=\"note\" title=\"\"}\nInside.\n\nMoving.\n:::\n\nStays.\n\nDropped.\n"
-	sizedVersion2 = ":::callout{#box kind=\"note\" title=\"\"}\nInside.\n:::\n\nMoving.\n\nStays.\n\nAdded.\n"
+	sizedVersion2 = ":::callout{#box kind=\"note\" title=\"\"}\nInside.\n:::\n\nMoving.\n\nStays.\n\nAdded for dispatch://CORE-1.\n"
+	sizedVersion3 = sizedVersion2 + "\nDropped.\n"
 )
 
-// renderedTexts is each block of markdown as the block index sums it (markdown[From:To] of the
-// render), under the id this test gives it: a callout's own id, and a paragraph's text after
+// sizedServerURL is the server the block index reads the archived document's references against
+// (text.ExtractAt). Its one reference is a dispatch:// one, which names no server.
+const sizedServerURL = "https://dispatch.sizing.invalid"
+
+// renderedBlocks is markdown as the block index takes it: the render of its parse, which a version
+// stores and the index reads each block's text out of (markdown[From:To]), and each block of that
+// render under the id this test gives it: a callout's own id, and a paragraph's first word after
 // `p-`, since a version's markdown names no paragraph's id.
-func renderedTexts(t *testing.T, markdown string) map[string]string {
+func renderedBlocks(t *testing.T, markdown string) (string, []model.ArtifactBlock) {
 	t.Helper()
 	tree, err := pmdoc.ParseRendering(markdown)
 	if err != nil {
@@ -155,53 +172,73 @@ func renderedTexts(t *testing.T, markdown string) map[string]string {
 	if err != nil {
 		t.Fatalf("render %q: %v", markdown, err)
 	}
-	texts := map[string]string{}
+	blocks := make([]model.ArtifactBlock, 0, len(offsets))
 	for _, offset := range offsets {
-		text := rendered[offset.From:offset.To]
 		id := offset.ID
 		if offset.Type == "paragraph" {
-			id = "p-" + text
+			id = "p-" + strings.TrimRight(strings.Fields(rendered[offset.From:offset.To])[0], ".")
 		}
-		texts[id] = text
+		blocks = append(blocks, model.ArtifactBlock{ID: id, Type: offset.Type, From: offset.From, To: offset.To})
+	}
+	return rendered, blocks
+}
+
+// renderedTexts is each block of markdown's render as the block index sums it, by the id
+// renderedBlocks gives it.
+func renderedTexts(t *testing.T, markdown string) map[string]string {
+	t.Helper()
+	rendered, blocks := renderedBlocks(t, markdown)
+	texts := make(map[string]string, len(blocks))
+	for _, block := range blocks {
+		texts[block.ID] = rendered[block.From:block.To]
 	}
 	return texts
 }
 
 // seedSizedHistory writes, as a build before the store writes them, the history of one document
-// the block index indexed twice inside the sizing window, one comment, one clear, a message and
-// its reply, one delivery and three events. The block index records a version's blocks in
-// document_block_texts and the version itself in document_indexed_versions; this writes those
-// rows by hand, each block's text exactly as the index sums it, since this package cannot import
-// the index (docs imports it).
+// the block index indexed three times inside the sizing window, one comment, one clear, a message
+// and its reply, a delivery of each and the events beside them. The block index records a
+// version's blocks in document_block_texts and the version itself in document_indexed_versions,
+// and leaves the latest version's blocks in document_blocks and what they cite in block_refs; this
+// writes those rows by hand as that build's index left them, each block's text exactly as the
+// index sums it and each row naming no node, since that build wrote none.
 //
 // The comment is written by "Alice", whose canonical login is alice, anchored to the document and
 // owned by it, so its write states an authored_by, an anchored_to, an owned_by and the
-// recorded_as alias that keeps the raw id beside the canonical login.
+// recorded_as alias that keeps the raw id beside the canonical login. Its mention of the role sizer
+// reached the session ses_sized, which the listener took (seedSizedRelations), and CORE-1, which
+// owns the document, is routed to that role.
 //
 // The message is alice's on the issue, addressed to the role sizer, and the reply is the session
 // ses_sized's, answering it; the delivery is the message's attempt to that session, which the
-// listener took. Three events stand for what the server appends beside such writes: the
-// message's message.created, which first addresses the role, and an ask's ask.opened and
-// ask.answered, whose ask no row holds, since the ask terms read the events alone.
+// listener took. The events stand for what the server appends beside such writes, and the outbox
+// published them long ago: the message's message.created, which first addresses the role, and an
+// ask's events, whose ask no row holds, since the ask terms read the events alone. The comment's
+// own two, its comment.created and the receipt of its mention's attempt, are still to be published,
+// so that a test that runs the outbox over this history publishes them (publishTheLog).
+//
+// Beside it is a second document of CORE-1, the archive: the same three versions, each written
+// before the window opened and none indexed yet, so that a test can run the block index itself
+// over them (indexTheArchive) without the window counting what the index writes.
 func seedSizedHistory(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
-		insert into issues (key, project_key, number, title, created_by, rank) values
-			('CORE-1', 'CORE', 1, 'One', '{"kind":"user","id":"alice"}', 'U');
+		insert into issues (key, project_key, number, title, created_by, rank, route) values
+			('CORE-1', 'CORE', 1, 'One', '{"kind":"user","id":"alice"}', 'U', 'role:sizer');
 	`); err != nil {
 		t.Fatalf("seed issue CORE-1: %v", err)
 	}
-	var document string
+	var document, refKey string
 	if err := database.Pool.QueryRow(ctx, `
 		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
 		values ('CORE-1', 'CORE', 'spec', 'spec.md', 'doc', false, '{"kind":"user","id":"alice"}')
-		returning id::text
-	`).Scan(&document); err != nil {
+		returning id::text, ref_key
+	`).Scan(&document, &refKey); err != nil {
 		t.Fatalf("create the document: %v", err)
 	}
-	first, second := renderedTexts(t, sizedVersion1), renderedTexts(t, sizedVersion2)
+	first, second, third := renderedTexts(t, sizedVersion1), renderedTexts(t, sizedVersion2), renderedTexts(t, sizedVersion3)
 	type text struct {
 		block string
 		text  *string
@@ -210,17 +247,20 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 		markdown string
 		texts    []text
 	}{{markdown: sizedVersion1}, {markdown: sizedVersion2, texts: []text{
-		{"box", new(second["box"])}, {"p-Dropped.", nil}, {"p-Added.", new(second["p-Added."])},
-	}}}
+		{"box", new(second["box"])}, {"p-Dropped", nil}, {"p-Added", new(second["p-Added"])},
+	}}, {markdown: sizedVersion3, texts: []text{{"p-Dropped", new(third["p-Dropped"])}}}}
 	for block, body := range first {
 		versions[0].texts = append(versions[0].texts, text{block, new(body)})
 	}
+	// The version that last wrote each block's text, which its document_blocks row records.
+	changed := map[string]int{}
 	for index, version := range versions {
 		number := index + 1
+		rendered, _ := renderedBlocks(t, version.markdown)
 		if _, err := database.Pool.Exec(ctx, `
 			insert into artifact_versions (artifact_id, number, markdown, authors)
 			values ($1, $2, $3, '[{"kind":"user","id":"alice"}]')
-		`, document, number, version.markdown); err != nil {
+		`, document, number, rendered); err != nil {
 			t.Fatalf("write version %d of the document: %v", number, err)
 		}
 		for _, written := range version.texts {
@@ -229,12 +269,41 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 			`, document, written.block, number, written.text); err != nil {
 				t.Fatalf("record block %s at version %d: %v", written.block, number, err)
 			}
+			changed[written.block] = number
 		}
 		if _, err := database.Pool.Exec(ctx, `
 			insert into document_indexed_versions (artifact_id, version) values ($1::uuid, $2)
 		`, document, number); err != nil {
 			t.Fatalf("record version %d indexed: %v", number, err)
 		}
+	}
+	latest, blocks := renderedBlocks(t, sizedVersion3)
+	for _, block := range blocks {
+		if _, err := database.Pool.Exec(ctx, `
+			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
+			values ($1::uuid, $2, $3, $4, '', $5, $6, now())
+		`, document, block.ID, refKey+"#"+block.ID, block.Type, latest[block.From:block.To], changed[block.ID]); err != nil {
+			t.Fatalf("record block %s of the latest version: %v", block.ID, err)
+		}
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version)
+		values ($1::uuid, 'p-Added', $2, 'issue', 'CORE-1', 'mentions', 2)
+	`, document, refKey+"#p-Added"); err != nil {
+		t.Fatalf("record the added paragraph's reference to CORE-1: %v", err)
+	}
+	// An image of CORE-1 uploaded in the window, whose one version holds its bytes: the write the
+	// version_bytes term counts, its mime, size and sha256 values on the image's node.
+	if _, err := database.Pool.Exec(ctx, `
+		with made as (
+			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+			values ('CORE-1', 'CORE', 'diagram-png', 'diagram.png', 'image', false, '{"kind":"user","id":"alice"}')
+			returning id
+		)
+		insert into artifact_versions (artifact_id, number, content, mime, size, sha256, authors)
+		select made.id, 1, '\x89504e47'::bytea, 'image/png', 4, repeat('a', 64), '[{"kind":"user","id":"alice"}]' from made
+	`); err != nil {
+		t.Fatalf("upload the image: %v", err)
 	}
 	var comment string
 	if err := database.Pool.QueryRow(ctx, `
@@ -270,28 +339,78 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 		t.Fatalf("write the delivery: %v", err)
 	}
 	if _, err := database.Pool.Exec(ctx, `
-		insert into events (issue_key, seq, type, actor, payload, notify) values
+		insert into events (issue_key, seq, type, actor, payload, notify, published_at) values
 			('CORE-1', 1, 'message.created', '{"kind":"user","id":"alice"}',
-			 jsonb_build_object('id', $1::text, 'target', 'role:sizer'), false),
-			('CORE-1', 2, 'ask.opened', '{"kind":"user","id":"alice"}', jsonb_build_object('id', $2::text), false),
-			('CORE-1', 3, 'ask.answered', '{"kind":"user","id":"bob"}', jsonb_build_object('id', $2::text), false),
-			('CORE-1', 4, 'ask.edited', '{"kind":"user","id":"alice"}', jsonb_build_object('id', $2::text), false),
-			('CORE-1', 5, 'ask.resolved', '{"kind":"user","id":"alice"}', jsonb_build_object('id', $2::text), false),
-			('CORE-1', 6, 'ask.asked_of', '{"kind":"user","id":"alice"}', jsonb_build_object('id', $2::text), false),
+			 jsonb_build_object('id', $1::text, 'target', 'role:sizer'), false, now()),
+			('CORE-1', 2, 'ask.opened', '{"kind":"user","id":"alice"}', jsonb_build_object('id', $2::text), false, now()),
+			('CORE-1', 3, 'ask.answered', '{"kind":"user","id":"bob"}', jsonb_build_object('id', $2::text), false, now()),
+			('CORE-1', 4, 'ask.edited', '{"kind":"user","id":"alice"}', jsonb_build_object('id', $2::text), false, now()),
+			('CORE-1', 5, 'ask.resolved', '{"kind":"user","id":"alice"}', jsonb_build_object('id', $2::text), false, now()),
+			('CORE-1', 6, 'ask.asked_of', '{"kind":"user","id":"alice"}', jsonb_build_object('id', $2::text), false, now()),
 			('CORE-1', 7, 'ask.follower_added', '{"kind":"session","id":"ses_sized"}',
-			 jsonb_build_object('ask_id', $2::text, 'session_id', 'ses_sized'), false)
-	`, message, "6a0e5d4c-3b2a-4f19-8e7d-6c5b4a392817"); err != nil {
+			 jsonb_build_object('ask_id', $2::text, 'session_id', 'ses_sized'), false, now()),
+			-- The removal of an untouched scratch document, which states its node gone.
+			('CORE-1', 8, 'artifact.removed', '{"kind":"user","id":"alice"}',
+			 jsonb_build_object('artifact', jsonb_build_object('id', $3::text)), false, now())
+	`, message, "6a0e5d4c-3b2a-4f19-8e7d-6c5b4a392817", "7b1f6e5d-4c3b-4a20-9f8e-7d6c5b4a3928"); err != nil {
 		t.Fatalf("write the events: %v", err)
 	}
-	seedSizedRelations(t, database, document, comment)
+	// The comment's comment.created, as the API appends one for a person's comment on a document:
+	// owned by the document and notifying, so the outbox delivers it to the route of the issue the
+	// document belongs to. The receipt is the one the mention's settle appends (api's
+	// completeCommentDelivery), which notifies nobody.
+	alice := model.Actor{Kind: "user", ID: "Alice"}
+	created, err := json.Marshal(model.CommentEventPayload{
+		Comment:      model.Comment{ID: comment, ArtifactID: &document, Author: alice, Body: "A remark on the spec."},
+		ArtifactName: "spec.md", ProjectKey: "CORE", ArtifactSlug: "spec",
+	})
+	if err != nil {
+		t.Fatalf("encode the comment's event: %v", err)
+	}
+	receipt, err := json.Marshal(model.CommentDeliveryEventPayload{
+		CommentID: comment, Target: "role:sizer", Attempt: 1, Delivery: "btw",
+		SessionID: new("ses_sized"), State: model.DeliveryStateSent,
+	})
+	if err != nil {
+		t.Fatalf("encode the mention's receipt: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into events (artifact_id, seq, type, actor, payload, notify) values
+			($1::uuid, 1, 'comment.created', '{"kind":"user","id":"Alice"}', $2::jsonb, true),
+			($1::uuid, 2, 'comment.delivery', '{"kind":"user","id":"Alice"}', $3::jsonb, false)
+	`, document, created, receipt); err != nil {
+		t.Fatalf("write the comment's events: %v", err)
+	}
+	var archive string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, created_at)
+		values ('CORE-1', 'CORE', 'archive', 'archive.md', 'doc', false, '{"kind":"user","id":"alice"}',
+		        now() - interval '40 days')
+		returning id::text
+	`).Scan(&archive); err != nil {
+		t.Fatalf("create the archive: %v", err)
+	}
+	for index, markdown := range []string{sizedVersion1, sizedVersion2, sizedVersion3} {
+		rendered, _ := renderedBlocks(t, markdown)
+		if _, err := database.Pool.Exec(ctx, `
+			insert into artifact_versions (artifact_id, number, markdown, authors, created_at)
+			values ($1, $2, $3, '[{"kind":"user","id":"alice"}]', now() - make_interval(days => $4))
+		`, archive, index+1, rendered, sizingWindowDays+12-4*index); err != nil {
+			t.Fatalf("write version %d of the archive: %v", index+1, err)
+		}
+	}
+	seedSizedRelations(t, database, document, comment, message)
 }
 
 // seedSizedRelations writes, beside the history seedSizedHistory writes, one row for each further
-// table a term counts: a mention of the comment that resolved to a session, two body blocks of
-// the comment of which one is removed, a link out of the live one, a child issue that waits on
-// its parent, a failed result with two screenshots and its retraction, a Keep, and two components
-// of one imported snapshot, one under and depending on the other, with CORE-1 affecting the first.
-func seedSizedRelations(t *testing.T, database *store.Store, document, comment string) {
+// table a term counts: a mention of the comment that resolved to a session and its attempt, which
+// the listener took, two body blocks of the comment of which one is removed, a link out of the
+// live one, a child issue that waits on its parent, a failed result with two screenshots and its
+// retraction, a Keep, two components of one imported snapshot, one under and depending on the
+// other, with CORE-1 affecting the first, alice's dismissal of the message's thread, and her
+// snooze of an ask the session ses_asker opened before the window, so that inside the window
+// the snooze is the one write of it a term counts.
+func seedSizedRelations(t *testing.T, database *store.Store, document, comment, message string) {
 	t.Helper()
 	ctx := context.Background()
 	for _, step := range []struct {
@@ -301,6 +420,20 @@ func seedSizedRelations(t *testing.T, database *store.Store, document, comment s
 		{"write the mention", `
 			insert into comment_mentions (comment_id, target, delivery, resolved_session_id)
 			values ($1::uuid, 'role:sizer', 'btw', 'ses_sized')`, []any{comment}},
+		{"write the mention's attempt", `
+			insert into comment_deliveries (comment_id, target, attempt, delivery, session_id, state)
+			values ($1::uuid, 'role:sizer', 1, 'btw', 'ses_sized', 'sent')`, []any{comment}},
+		{"write the dismissal", `
+			insert into user_agent_thread_dismissed (login, message_id, dismissed_at) values ('alice', $1::uuid, now())`,
+			[]any{message}},
+		{"write the snooze", `
+			with asked as (
+				insert into asks (issue_key, author, question, created_at)
+				values ('CORE-1', '{"kind":"session","id":"ses_asker"}', 'Which store?', now() - interval '40 days')
+				returning id
+			)
+			insert into user_ask_snooze (login, ask_id, snoozed_until) select 'alice', id, now() + interval '1 day' from asked`,
+			nil},
 		{"write the comment's body blocks", `
 			insert into comment_blocks (comment_id, block_id, node_id, position, type, text_sha256, excerpt,
 			                            changed_revision, changed_at, removed_at)
@@ -404,92 +537,459 @@ func sizedTerms(t *testing.T, printed string) map[string]sizedTerm {
 	return terms
 }
 
-// The sizing counts every tuple the writers append, term by term, from the database's own
-// history: rows a day is the sum over the kinds of writes a day times tuples a write (R4), so a
-// kind it leaves out reads the one-year verdict low. The history here holds a version that drops
-// a block, which the index states gone, and moves a paragraph out of a callout, which it states
-// as the retraction of one parent and the assertion of the other, beside the blocks each version
-// writes afresh and the texts INFRA-1253 states, a comment with each fact its write states, the
-// read marks that comment and a message move, a clear, a message with a reply, a delivery, the
-// events of an ask, and a row of each further table a term counts (seedSizedRelations). Every
-// kind R20 gives the five children has a term, and every term is printed, each with its writes
-// inside the window or the writes it is assumed at, and the rows a day of graph_tuples is exactly
-// their sum.
+// resultWrite is every tuple the store states of one result a session recorded, naming no
+// screenshot (the result_screenshot term counts those), by its kind, as the store's own writer
+// appends them: graphstore.ResultFacts' nodes and tuples written through graphstore.Write in a
+// transaction of its own, which is rolled back, and the tuples that write appended read back in
+// the order it appended them - the visibility, state and project its node write states of the
+// result's node, and each tuple ResultFacts appends: its values, its part_of and result_of its
+// check, its authored_by with the alias_of a session's credential proves of its owner
+// (graphstore.AuthorFacts) and its run_session. The base attributes of the author's own nodes are
+// the session and person terms', and are left out. The result term is held to it, so a value or
+// a tuple the writer comes to state fails the sizing until its term counts and names it.
+func resultWrite(t *testing.T, database *store.Store) []string {
+	t.Helper()
+	ctx := context.Background()
+	owner, session := "alice", "ses_sized"
+	recorder := model.Actor{Kind: "session", ID: session, Owner: &owner, Act: &model.ActorAct{Session: session, SessionProven: true}}
+	nodes, tuples, ok := graphstore.ResultFacts(graphstore.Result{
+		ID: "00000000-0000-4000-8000-000000000001", Project: "CORE", Check: "CORE-1/verification-md#c-one",
+		Verdict: "fail", Surface: "cli", Run: "go test ./...", Observed: "FAIL", Commit: strings.Repeat("a", 40),
+		Role: "tester", Control: "Broke it and watched it fail.", Failed: 1, CheckVersion: 1, CheckSHA256: "x",
+		Session: session, Recorder: recorder, At: time.Now().UTC(), Event: graphstore.NoEvent,
+	})
+	if !ok || len(nodes) == 0 || nodes[0].Kind != graphstore.KindResult {
+		t.Fatalf("graphstore.ResultFacts states no result node for a session's result: %+v", nodes)
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the result's write: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	var before int64
+	if err := tx.QueryRow(ctx, `select coalesce(max(seq), 0) from graph_tuples`).Scan(&before); err != nil {
+		t.Fatalf("read the highest tuple before the result's write: %v", err)
+	}
+	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+		t.Fatalf("write the result through the store: %v", err)
+	}
+	rows, err := tx.Query(ctx, `
+		select kind from graph_tuples
+		where seq > $1 and (from_kind = $2 or not kind = any($3::text[]))
+		order by seq
+	`, before, graphstore.KindResult, graphstore.BaseAttributes())
+	if err != nil {
+		t.Fatalf("read the tuples the result's write appended: %v", err)
+	}
+	kinds, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the tuples the result's write appended: %v", err)
+	}
+	return kinds
+}
+
+// writtenKind is one kind of tuple a writer of the store appended: the writer, named by its site
+// as the register of the store's writers names it (graphstore's storeWriteCallSites), the kind of
+// the node the tuple is out of, and the tuple's own kind.
+type writtenKind struct{ writer, from, kind string }
+
+func compareWritten(a, b writtenKind) int {
+	return cmp.Or(strings.Compare(a.writer, b.writer), strings.Compare(a.from, b.from), strings.Compare(a.kind, b.kind))
+}
+
+// The writers writeTheStore drives, by the sites graphstore's storeWriteCallSites names them by.
+const (
+	blockIndexSite    = "refs/blocks.go#IndexBlocks"
+	blockBatchSite    = "graphcensus/backfill.go#writeBlockBatch"
+	blockRefBatchSite = "graphcensus/backfill.go#writeBlockRefBatch"
+	commentBatchSite  = "graphcensus/backfill.go#writeCommentBatch"
+	roleBatchSite     = "graphcensus/backfill.go#writeRoleBatch"
+	sessionBatchSite  = "graphcensus/backfill.go#writeSessionBatch"
+	objectBatchSite   = "graphcensus/projects_backfill.go#writeObjectBatch"
+	scopeBatchSite    = "graphcensus/projects_backfill.go#writeScopeBatch"
+	batchRecordSite   = "outbox/publisher.go#recordBatch"
+	fallbackSite      = "outbox/mentions.go#recordFallbackCopies"
+)
+
+// countedBy is the terms of the sizing that count each kind of tuple writeTheStore's writers
+// append over the seeded history. It is the one thing about the writers this test states rather
+// than reads: which term counts a tuple is what that term's driver says of the writer, and no
+// writer says it. Every kind a writer appends must be here and every term here must be printed,
+// so a writer that starts to append a kind no term counts fails the test by its name; and every
+// kind here must be one a writer appended, so the list never names a kind the run no longer
+// exercises.
+var countedBy = map[writtenKind][]string{
+	// A version's blocks, as the index states them over the archive's three versions: the blocks
+	// it inserts afresh, each with its node's base attributes, its in_document and its part_of;
+	// the paragraph the second version drops, stated gone; the paragraph it moves out of the
+	// callout, its old parent retracted and its new one asserted; the dropped paragraph the third
+	// version brings back, stated live, with its in_document and at most a parent the restore
+	// moved; and the added paragraph's reference to CORE-1.
+	{blockIndexSite, refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
+	{blockIndexSite, refs.BlockNodeKind, graphstore.AttributeState}:      {"block", "block_restored", "block_gone"},
+	{blockIndexSite, refs.BlockNodeKind, graphstore.AttributeProject}:    {"block"},
+	{blockIndexSite, refs.BlockNodeKind, refs.TupleInDocument}:           {"block", "block_restored"},
+	{blockIndexSite, refs.BlockNodeKind, graphstore.TuplePartOf}:         {"block", "block_restored", movedParents},
+	{blockIndexSite, refs.BlockNodeKind, "mentions"}:                     {"block_ref"},
+	// The values the index states of the blocks it places (refs' planBlockValues): a block's rank
+	// and its placement at its first row, its rank again where it moved among new siblings, and
+	// the text value of each row with a text.
+	{blockIndexSite, refs.BlockNodeKind, refs.AttributeRank}:       {"block_values", movedRanks},
+	{blockIndexSite, refs.BlockNodeKind, refs.AttributePlacement}:  {"block_values"},
+	{blockIndexSite, refs.BlockNodeKind, graphstore.AttributeText}: {"block_text"},
+	// The backfill's passes over the rows the build before the store wrote: the blocks of the
+	// window's document, which it states a block's node and membership of and leaves the parent
+	// of to the index; that document's reference; the comment, as api's commentStored and
+	// graphstore.Authored state one (graphstore.CommentFacts, graphstore.AuthorFacts), so its
+	// kinds are the comment path's; the role sizer and its page; and the sessions the census holds
+	// to a node.
+	{blockBatchSite, refs.BlockNodeKind, graphstore.AttributeVisibility}:       {"block"},
+	{blockBatchSite, refs.BlockNodeKind, graphstore.AttributeState}:            {"block"},
+	{blockBatchSite, refs.BlockNodeKind, graphstore.AttributeProject}:          {"block"},
+	{blockBatchSite, refs.BlockNodeKind, refs.TupleInDocument}:                 {"block"},
+	{blockRefBatchSite, refs.BlockNodeKind, "mentions"}:                        {"block_ref"},
+	{commentBatchSite, graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
+	{commentBatchSite, graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
+	{commentBatchSite, graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
+	{commentBatchSite, graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
+	{commentBatchSite, graphstore.KindComment, graphstore.TupleAnchoredTo}:     {graphstore.TupleAnchoredTo},
+	{commentBatchSite, graphstore.KindComment, graphstore.TupleOwnedBy}:        {graphstore.TupleOwnedBy},
+	{commentBatchSite, graphstore.KindPerson, graphstore.AttributeVisibility}:  {graphstore.KindPerson},
+	{commentBatchSite, graphstore.KindPerson, graphstore.AttributeState}:       {graphstore.KindPerson},
+	{commentBatchSite, graphstore.KindPerson, graphstore.TupleRecordedAs}:      {"author_alias"},
+	{roleBatchSite, graphstore.KindRole, graphstore.AttributeVisibility}:       {graphstore.KindRole},
+	{roleBatchSite, graphstore.KindRole, graphstore.AttributeState}:            {graphstore.KindRole},
+	{roleBatchSite, graphstore.KindPage, graphstore.AttributeVisibility}:       {graphstore.KindPage},
+	{roleBatchSite, graphstore.KindPage, graphstore.AttributeState}:            {graphstore.KindPage},
+	{roleBatchSite, graphstore.KindPage, graphstore.TuplePartOf}:               {graphstore.KindPage},
+	{sessionBatchSite, graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
+	{sessionBatchSite, graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
+	// The backfill's pass over the issues, documents, asks and messages the build before the store
+	// wrote: each one's node and its visibility, state and project, as its create states them, a
+	// document's part_of the issue that owns it, and an issue's child_of its parent, CORE-2's of
+	// CORE-1. The seeded history's are all in project CORE, so none states parties, no document is
+	// an image or a file, and every comment and block already names its project, so the scope pass
+	// states nothing.
+	{objectBatchSite, graphstore.KindIssue, graphstore.AttributeVisibility}:    {graphstore.KindIssue},
+	{objectBatchSite, graphstore.KindIssue, graphstore.AttributeState}:         {graphstore.KindIssue},
+	{objectBatchSite, graphstore.KindIssue, graphstore.AttributeProject}:       {graphstore.KindIssue},
+	{objectBatchSite, graphstore.KindArtifact, graphstore.AttributeVisibility}: {graphstore.KindArtifact},
+	{objectBatchSite, graphstore.KindArtifact, graphstore.AttributeState}:      {graphstore.KindArtifact},
+	{objectBatchSite, graphstore.KindArtifact, graphstore.AttributeProject}:    {graphstore.KindArtifact},
+	{objectBatchSite, graphstore.KindAsk, graphstore.AttributeVisibility}:      {graphstore.KindAsk},
+	{objectBatchSite, graphstore.KindAsk, graphstore.AttributeState}:           {graphstore.KindAsk},
+	{objectBatchSite, graphstore.KindAsk, graphstore.AttributeProject}:         {graphstore.KindAsk},
+	{objectBatchSite, graphstore.KindMessage, graphstore.AttributeVisibility}:  {graphstore.KindMessage},
+	{objectBatchSite, graphstore.KindMessage, graphstore.AttributeState}:       {graphstore.KindMessage},
+	{objectBatchSite, graphstore.KindMessage, graphstore.AttributeProject}:     {graphstore.KindMessage},
+	{objectBatchSite, graphstore.KindIssue, graphstore.TupleChildOf}:           {"issue_relation"},
+	{objectBatchSite, graphstore.KindArtifact, graphstore.TuplePartOf}:         {"document_part_of"},
+	// The outbox's record of a batch: the comment's comment.created, which the bus delivers to
+	// the role sizer, whose holder it resolves and records; and the receipt of the comment's
+	// mention, a delivery to ses_sized, which claimed no role and so takes a page of its own. A
+	// page is a role's or a session's, and the record writes both.
+	{batchRecordSite, graphstore.KindComment, graphstore.TupleDeliveredTo}: {"bus_delivery", "delivery"},
+	{batchRecordSite, graphstore.KindRole, graphstore.TupleHeldBy}:         {graphstore.KindSession},
+	{batchRecordSite, graphstore.KindSession, graphstore.TuplePartOf}:      {graphstore.KindSession},
+	{batchRecordSite, graphstore.KindPage, graphstore.AttributeVisibility}: {graphstore.KindPage, graphstore.KindSession},
+	{batchRecordSite, graphstore.KindPage, graphstore.AttributeState}:      {graphstore.KindPage, graphstore.KindSession},
+	{batchRecordSite, graphstore.KindPage, graphstore.TuplePartOf}:         {graphstore.KindPage, graphstore.KindSession},
+	// The outbox's fallback pass: the copy it publishes to ses_copy's own topic, and that
+	// session's node, which the copy's row is the first to name.
+	{fallbackSite, graphstore.KindComment, graphstore.TupleDeliveredTo}:    {"fallback_delivery"},
+	{fallbackSite, graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
+	{fallbackSite, graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
+}
+
+// writeTheStore drives the store's writers over the history seedSizedHistory wrote, one after
+// another, and answers how many tuples of each kind each of them appended, read off graph_tuples
+// by the sequences each one's tuples took. Each is the writer itself and not a copy of what it
+// writes: the block index (refs.IndexBlocks), the backfill's passes, and the outbox, run whole,
+// publishing the log and then a held copy. The other sites graphstore's storeWriteCallSites names
+// append no kind these do not: the API's comment path states what the backfill's comment pass
+// states of a comment (graphstore.CommentFacts, graphstore.AuthorFacts), the creates of an issue,
+// a document, an ask and a message state what the backfill's object pass states of each, a
+// document's removal states the state that pass states, and so does the roll tick's sweep of a
+// document a build before this one removed (StateOrphanedGone), the settle of a delivery attempt,
+// the follow of an ask and the seed's followers each state a session's node, the sites that cause
+// a version's index append what the block index stated, and the erase appends nothing.
+func writeTheStore(t *testing.T, database *store.Store) map[writtenKind]int64 {
+	t.Helper()
+	ctx := context.Background()
+	backfill := func(pass func(context.Context, *store.Store) (KindBackfill, error)) func(*testing.T, *store.Store) {
+		return func(t *testing.T, database *store.Store) {
+			t.Helper()
+			if done, err := pass(ctx, database); err != nil {
+				t.Fatalf("backfill the %s kind: %v", done.Kind, err)
+			}
+		}
+	}
+	passes := func(pass func(context.Context, *store.Store) ([]KindBackfill, error)) func(*testing.T, *store.Store) {
+		return func(t *testing.T, database *store.Store) {
+			t.Helper()
+			if _, err := pass(ctx, database); err != nil {
+				t.Fatalf("run a backfill pass: %v", err)
+			}
+		}
+	}
+	writers := []struct {
+		site  string
+		drive func(*testing.T, *store.Store)
+	}{
+		{blockIndexSite, indexTheArchive},
+		{blockBatchSite, backfill(backfillBlocks)},
+		{blockRefBatchSite, backfill(backfillBlockRefs)},
+		{commentBatchSite, backfill(backfillComments)},
+		{roleBatchSite, backfill(backfillRoles)},
+		{sessionBatchSite, backfill(backfillSessions)},
+		{objectBatchSite, passes(backfillObjectNodes)},
+		{scopeBatchSite, passes(backfillScopes)},
+		{batchRecordSite, publishTheLog},
+		{fallbackSite, publishAFallbackCopy},
+	}
+	appended := map[writtenKind]int64{}
+	for _, writer := range writers {
+		var before int64
+		if err := database.Pool.QueryRow(ctx, `select coalesce(max(seq), 0) from graph_tuples`).Scan(&before); err != nil {
+			t.Fatalf("read the highest tuple before %s: %v", writer.site, err)
+		}
+		writer.drive(t, database)
+		rows, err := database.Pool.Query(ctx, `
+			select from_kind, kind, count(*) from graph_tuples where seq > $1 group by from_kind, kind
+		`, before)
+		if err != nil {
+			t.Fatalf("read the tuples %s appended: %v", writer.site, err)
+		}
+		for rows.Next() {
+			written := writtenKind{writer: writer.site}
+			var count int64
+			if err := rows.Scan(&written.from, &written.kind, &count); err != nil {
+				t.Fatalf("read a kind of tuple %s appended: %v", writer.site, err)
+			}
+			appended[written] = count
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("read the tuples %s appended: %v", writer.site, err)
+		}
+	}
+	return appended
+}
+
+// indexTheArchive runs the block index over each version of the archive in turn, at the time
+// that version was written, as each version's write runs it: the render's blocks under the ids
+// renderedBlocks gives them, and what the render cites (text.ExtractAt). No event recorded those
+// writes, so what the index states carries the sentinel, as the seed's own documents' does
+// (cmd/dispatch-seed's writeDocument).
+func indexTheArchive(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	rows, err := database.Pool.Query(ctx, `
+		select v.artifact_id::text, v.number, v.markdown, v.created_at
+		from artifact_versions v join artifacts a on a.id = v.artifact_id
+		where a.slug = 'archive' order by v.number
+	`)
+	if err != nil {
+		t.Fatalf("read the archive's versions: %v", err)
+	}
+	type version struct {
+		artifact, markdown string
+		number             int
+		at                 time.Time
+	}
+	var versions []version
+	for rows.Next() {
+		var read version
+		if err := rows.Scan(&read.artifact, &read.number, &read.markdown, &read.at); err != nil {
+			t.Fatalf("read a version of the archive: %v", err)
+		}
+		versions = append(versions, read)
+	}
+	if err := rows.Err(); err != nil || len(versions) == 0 {
+		t.Fatalf("read the archive's versions: %d of them, %v", len(versions), err)
+	}
+	for _, version := range versions {
+		_, blocks := renderedBlocks(t, version.markdown)
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the index of version %d: %v", version.number, err)
+		}
+		_, won, write, _, err := refs.IndexBlocks(ctx, tx, version.artifact, refs.OneVersion(version.artifact, version.number, version.at), version.markdown,
+			blocks, text.ExtractAt(version.markdown, sizedServerURL), nil, refs.TypedFacts{})
+		if err == nil && !won {
+			err = fmt.Errorf("the pass lost the revision fence, so it wrote nothing")
+		}
+		if err == nil {
+			err = graphstore.Caused(ctx, tx, write, graphstore.NoEvent)
+		}
+		if err == nil {
+			err = tx.Commit(ctx)
+		}
+		if err != nil {
+			tx.Rollback(ctx)
+			t.Fatalf("index version %d of the archive: %v", version.number, err)
+		}
+	}
+}
+
+// publishTheLog runs the outbox until it has published every event the history left unpublished:
+// the comment's comment.created and the receipt of its mention's attempt.
+func publishTheLog(t *testing.T, database *store.Store) {
+	t.Helper()
+	runTheOutbox(t, database, "publish every event", `select not exists (select 1 from events where published_at is null)`)
+}
+
+// publishAFallbackCopy holds the comment's copy for the session ses_copy as a fallback row, as a
+// batch holds one back for a mention it waits on no longer (outbox's holdFallbackCopy), and runs
+// the outbox until its fallback pass has published it. No attempt of the comment names ses_copy,
+// which the pass reads as a mention that delivered nothing, so the copy goes.
+func publishAFallbackCopy(t *testing.T, database *store.Store) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into comment_fallback_copies (comment_id, destination, event_id, session_id)
+		select (e.payload->>'id')::uuid, $1, e.id, 'ses_copy' from events e where e.type = 'comment.created'
+	`, contracts.LegacyAgentSubject("ses_copy")); err != nil {
+		t.Fatalf("hold the comment's copy for ses_copy: %v", err)
+	}
+	runTheOutbox(t, database, "publish the held copy",
+		`select exists (select 1 from comment_fallback_copies where published and settled_at is not null)`)
+}
+
+// runTheOutbox runs the real outbox over database (outbox.New, Run), every role held by
+// censusRoleHolder and every send acknowledged at once, until settled answers true, and then
+// stops it and waits for it to stop, so nothing it writes lands after this returns.
+func runTheOutbox(t *testing.T, database *store.Store, what, settled string) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		outbox.New(outbox.Deps{
+			Store: database, Publisher: censusStream{}, Broker: events.NewBroker(),
+			Listen: database.Pool.Listener, RoleClaims: censusRoles{}, Sessions: censusRoles{},
+		}).Run(ctx)
+	}()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("the outbox did not stop")
+		}
+	}()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var ok bool
+		if err := database.Pool.QueryRow(context.Background(), settled).Scan(&ok); err != nil {
+			t.Fatalf("read whether the outbox did %s: %v", what, err)
+		}
+		if ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the outbox did not %s within 30s", what)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// The sizing counts every tuple the writers append, term by term: rows a day is the sum over the
+// terms of writes a day times tuples a write (R4), so a kind it leaves out reads the one-year
+// verdict low. The test takes its list of kinds from the writers themselves: it runs the store's
+// writers over the seeded history (writeTheStore) and requires each kind of tuple each of them
+// appended to be counted by a term the sizing prints (countedBy), naming the writer and the kind
+// where none does. That is what holds the delivered_to of a comment event the bus delivers and
+// that of a published fallback copy to a term each.
+//
+// The history holds at least one write of every term, so that the sum over the terms sees each:
+// a version that drops a block, which the index states gone, moves a paragraph out of a callout,
+// which it states as the retraction of one parent and the assertion of the other, and brings the
+// dropped block back, beside the blocks each version writes afresh, a reference and the texts
+// the blocks child moves; a comment with each fact its write states, its mention's delivery and the
+// bus's and a fallback copy's delivery of it; the read marks that comment and a message move, a
+// clear, a dismissal and a snooze; a message with a reply and a delivery; the events of an ask;
+// and a row of each further table a term counts (seedSizedRelations). Every term is printed with
+// the tuples a write this test states for it and its writes inside the window or the writes it is
+// assumed at, none of them zero, and the rows a day of graph_tuples is exactly their sum.
 func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 	database := storetest.Open(t)
 	seedSizedHistory(t, database)
+	appended := writeTheStore(t, database)
 	printed := sizingCensus(t, database)
 	terms := sizedTerms(t, printed)
-	// Each kind R20 gives the five children (dispatch://INFRA-1149/spec#b-r-kinds-here), beside the
-	// term that counts it. A kind whose write states facts beyond its node has further terms, which
-	// want below holds; requirements, plan nodes and checks are typed blocks of a document, which
-	// the block term counts with their placement and the block_ref term with their serves, and a
-	// version's blocks are what the block and block_text terms count beside its own node.
-	kinds := []struct{ child, kind, term string }{
-		{movedHere, "comments", "comment"}, {movedHere, "blocks", "block"},
-		{movedHere, "block references", "block_ref"}, {movedHere, "people", "person"},
-		{movedHere, "sessions", "session"}, {movedHere, "roles", "role"}, {movedHere, "a role's page", "page"},
-		{movedWithInbox, "messages", "message"}, {movedWithInbox, "replies", "reply"},
-		{movedWithInbox, "mentions", "mention"}, {movedWithInbox, "deliveries", "person_delivery"},
-		{movedWithInbox, "delivery attempts", "delivery_attempt"}, {movedWithInbox, "threads", "participation"},
-		{movedWithInbox, "read state", "read_mark"}, {movedWithInbox, "body blocks", "body_block"},
-		{movedWithBlocks, "issues", "issue"}, {movedWithBlocks, "artifacts", "artifact"},
-		{movedWithBlocks, "versions", "document_version"}, {movedWithBlocks, "criteria", "criterion"},
-		{movedWithBlocks, "requirements", "block"}, {movedWithBlocks, "plan nodes", "block"},
-		{movedWithBlocks, "checks", "block"}, {movedWithBlocks, "results", "result"},
-		{movedWithBlocks, "component", "component"},
-		{movedWithAsks, "decisions", "decision"}, {movedWithAsks, "readings", "reading"},
-		{movedWithAsks, "asks", "ask"}, {movedWithAsks, "answers", "answer"},
-		{movedWithLenses, "interactions", "interaction"}, {movedWithLenses, "lenses", "lens"},
-		{movedWithLenses, "lens kinds", "lens_kind"}, {movedWithLenses, "constraints", "constraint"},
-		{movedWithLenses, "risks", "risk"},
+	resultKinds := resultWrite(t, database)
+	for _, written := range slices.SortedFunc(maps.Keys(appended), compareWritten) {
+		counting, stated := countedBy[written]
+		if !stated {
+			t.Errorf("%s appends %s tuples out of a %s node, and no term of the sizing counts them",
+				written.writer, written.kind, written.from)
+			continue
+		}
+		for _, term := range counting {
+			if _, printedTerm := terms[term]; !printedTerm {
+				t.Errorf("%s appends %s tuples out of a %s node, which term %s counts, and the sizing prints no term %s",
+					written.writer, written.kind, written.from, term, term)
+			}
+		}
 	}
-	for _, kind := range kinds {
-		if _, printedTerm := terms[kind.term]; !printedTerm {
-			t.Errorf("the sizing prints no term for %s of %s", kind.kind, strings.TrimPrefix(kind.child, "dispatch://"))
+	for _, written := range slices.SortedFunc(maps.Keys(countedBy), compareWritten) {
+		if appended[written] == 0 {
+			t.Errorf("this test says %s appends %s tuples out of a %s node, and over the seeded history it appended none",
+				written.writer, written.kind, written.from)
 		}
 	}
 	want := map[string]sizedTerm{
-		"comment": {tuples: 2, writes: 1}, "authored_by": {tuples: 1, writes: 1}, "anchored_to": {tuples: 1, writes: 1},
-		"owned_by": {tuples: 1, writes: 1}, "author_alias": {tuples: 1, writes: 1}, "delivery": {tuples: 1},
+		"comment": {tuples: 3, writes: 1}, "authored_by": {tuples: 1, writes: 1}, "anchored_to": {tuples: 1, writes: 1},
+		"owned_by": {tuples: 1, writes: 1}, "author_alias": {tuples: 1, writes: 1},
+		// The mention's attempt to ses_sized, the comment.created the bus delivered to the role
+		// sizer, and the copy the fallback pass published to ses_copy.
+		"delivery": {tuples: 1, writes: 1}, "bus_delivery": {tuples: 1, writes: 1}, "fallback_delivery": {tuples: 1, writes: 1},
 		// Five blocks are new at version 1 and one at version 2; version 2 drops one and rewrites
-		// the callout, so seven rows of the window hold a text.
-		"block": {tuples: 4, writes: 6}, "block_restored": {tuples: 4}, "block_gone": {tuples: 1, writes: 1},
-		// Version 1 is the document's first indexed version, so it is compared with nothing, and
-		// version 2 moved one paragraph out of the callout, which takes a rank in its new place.
-		movedParents: {tuples: 2, writes: 1, read: 2}, movedRanks: {tuples: 1, writes: 1},
-		// Seven rows hold a text, each a text value; six are a block's first, each a rank and a
+		// the callout, and version 3 brings the dropped one back, so eight rows of the window hold
+		// a text.
+		"block": {tuples: 5, writes: 6}, "block_restored": {tuples: 4, writes: 1}, "block_gone": {tuples: 1, writes: 1},
+		// Version 1 is the document's first indexed version, so it is compared with nothing,
+		// version 2 moved one paragraph out of the callout, which takes a rank in its new place, and
+		// version 3 moved none.
+		movedParents: {tuples: 2, writes: 1, read: 3}, movedRanks: {tuples: 1, writes: 1},
+		// Eight rows hold a text, each a text value; six are a block's first, each a rank and a
 		// placement; one deleted a block, whose text value stays as the block's node goes gone.
-		"block_ref": {tuples: 2}, "block_text": {tuples: 1, writes: 7}, "block_values": {tuples: 2, writes: 6},
-		// Each of the two versions writes its node and six tuples (graphstore.VersionFacts); neither
-		// is a file's, and the one document is an issue's, created inside the window.
-		"version": {tuples: 6, writes: 2}, "version_bytes": {tuples: 3}, "document_part_of": {tuples: 1, writes: 1},
-		// The comment is alice's first, the delivery records ses_sized, and the message.created
-		// event is the first to address the role sizer, which takes a page with it.
-		"person": {tuples: 2, writes: 1}, "session": {tuples: 5, writes: 1}, "role": {tuples: 2, writes: 1},
+		"block_ref": {tuples: 2, writes: 1}, "block_text": {tuples: 1, writes: 8}, "block_values": {tuples: 2, writes: 6},
+		// Each of the window's four versions writes its node and six tuples
+		// (graphstore.VersionFacts): the window document's three, and the image's one, which
+		// states its three bytes on the image's node; both documents are an issue's, created
+		// inside the window.
+		"version": {tuples: 6, writes: 4}, "version_bytes": {tuples: 3, writes: 1}, "document_part_of": {tuples: 1, writes: 2},
+		// The comment is alice's first, the delivery records ses_sized and the published copy
+		// ses_copy, and the message.created event is the first to address the role sizer, which
+		// takes a page with it.
+		"person": {tuples: 2, writes: 1}, "session": {tuples: 5, writes: 2}, "role": {tuples: 2, writes: 1},
 		"page": {tuples: 3, writes: 1},
 		// The comment and the message each move alice's read_through on their thread (migrations
 		// 0095 and 0097's triggers), so she takes part in two threads and each is a read mark; the
 		// reply, a session's, reaches her in the message's thread, and the ask opened reaches the
 		// person it waits on.
 		"message_delivery": {tuples: 1, writes: 1}, "read_mark": {tuples: 1, writes: 2}, "clear": {tuples: 1, writes: 1},
-		"dismissal": {tuples: 1}, "snooze": {tuples: 1},
-		"message": {tuples: 4, writes: 2}, "message_pointer": {tuples: 1, writes: 1}, "reply": {tuples: 2, writes: 1},
+		"dismissal": {tuples: 1, writes: 1}, "snooze": {tuples: 1, writes: 1},
+		"message": {tuples: 3, writes: 2}, "message_relation": {tuples: 2, writes: 2}, "message_pointer": {tuples: 1, writes: 1},
+		"reply": {tuples: 2, writes: 1},
 		// The mention is one tuple to its role and one to the session the role resolved to.
 		"mention": {tuples: 1, writes: 2}, "participation": {tuples: 1, writes: 2}, "person_delivery": {tuples: 1, writes: 2},
 		"ask_asked_of": {tuples: 4, writes: 1}, "body_block": {tuples: 3, writes: 2}, "body_block_gone": {tuples: 1, writes: 1},
-		"body_block_ref": {tuples: 2, writes: 1}, "delivery_attempt": {tuples: 14, writes: 1},
-		// CORE-2 is a child of CORE-1 and waits on it.
-		"issue": {tuples: 2, writes: 2}, "issue_relation": {tuples: 1, writes: 2}, "artifact": {tuples: 3, writes: 1},
-		"document_version": {tuples: 2, writes: 2}, "criterion": {tuples: 1, writes: 5 * sizingWindowDays, assumed: true},
-		"result": {tuples: 16, writes: 1}, "result_screenshot": {tuples: 1, writes: 2}, "result_retraction": {tuples: 1, writes: 1},
+		// The attempts are the mention's and the message's.
+		"body_block_ref": {tuples: 2, writes: 1}, "delivery_attempt": {tuples: 14, writes: 2},
+		// CORE-2 is a child of CORE-1 and waits on it. The archive was written before the window.
+		"issue": {tuples: 3, writes: 2}, "issue_relation": {tuples: 1, writes: 2}, "artifact": {tuples: 3, writes: 2},
+		// The scratch document removed in the window.
+		"artifact_removed": {tuples: 1, writes: 1},
+		"criterion":        {tuples: 1, writes: 5 * sizingWindowDays, assumed: true},
+		"result":           {tuples: int64(len(resultKinds)), writes: 1}, "result_screenshot": {tuples: 1, writes: 2}, "result_retraction": {tuples: 1, writes: 1},
 		// The leaf's part_of the root and its depends_on it, and CORE-1's affects of the root.
 		"component": {tuples: 2, writes: 2}, "component_relation": {tuples: 1, writes: 3},
-		"ask": {tuples: 8, writes: 1}, "ask_edit": {tuples: 2, writes: 1}, "answer": {tuples: 5, writes: 1},
+		"ask": {tuples: 3, writes: 1}, "ask_opened": {tuples: 6, writes: 1}, "ask_edit": {tuples: 2, writes: 1}, "answer": {tuples: 5, writes: 1},
 		"ask_resolved": {tuples: 1, writes: 1}, "ask_follower": {tuples: 1, writes: 1}, "keep": {tuples: 2, writes: 1},
 		"decision": {tuples: 5, writes: 10 * sizingWindowDays, assumed: true},
 		"reading":  {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
-		// No table holds a kind of dispatch://INFRA-1950's yet, so each term reads the writes it
+		// No table holds a kind of the lenses child's yet, so each term reads the writes it
 		// is assumed at, and the tuples its writer appends (storeKinds names each writer).
 		"interaction":  {tuples: 9, writes: 10 * sizingWindowDays, assumed: true},
 		"frame":        {tuples: 1, writes: 500 * sizingWindowDays, assumed: true},
@@ -508,6 +1008,24 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 			t.Errorf("the sizing prints term %s as %+v, want %+v", name, got, want[name])
 		}
 	}
+	// The result term's driver names every kind of tuple its writer states (resultWrite), as the
+	// count above holds its tuples to that writer's.
+	resultDriver := regexp.MustCompile(`(?m)^census: sizing tuples-a-write kind=result .* driver=(.*)$`).FindStringSubmatch(printed)
+	if resultDriver == nil {
+		t.Fatalf("the sizing prints no driver of the result term:\n%s", printed)
+	}
+	for _, kind := range resultKinds {
+		if !regexp.MustCompile(`\b` + regexp.QuoteMeta(kind) + `\b`).MatchString(resultDriver[1]) {
+			t.Errorf("the result term's driver %q names no %s, which graphstore.ResultFacts states of a session's result", resultDriver[1], kind)
+		}
+	}
+	// A term with no write adds nothing to the sum, so the sum below would read the same with the
+	// term left out of it: every term needs a write for that check to see it.
+	for _, name := range slices.Sorted(maps.Keys(terms)) {
+		if terms[name].writes == 0 {
+			t.Errorf("the seeded history gives term %s no write, so the sum of the terms cannot tell whether it counts %s", name, name)
+		}
+	}
 	var tuples int64
 	for name, term := range terms {
 		if _, wanted := want[name]; !wanted {
@@ -520,13 +1038,24 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		t.Errorf("the sizing projects graph_tuples at %v rows a day, want %s: the sum of every term's writes times its tuples, %d, over %d days\n%s",
 			match, wantADay, tuples, sizingWindowDays, printed)
 	}
-	// The history's two versions were written before the store held a version node, so the
-	// version backfill owes each its node and six tuples once, and the year projects those beside
-	// the rate (backfillVersions).
+	// The history's seven versions, the window document's three, the image's one and the
+	// archive's three, were written before the store held a version node, so the version backfill
+	// owes each its node and six tuples once. The block index drain has not run over this store,
+	// so it owes every document_blocks row its rank, text and placement (blockDrainOwed). The year
+	// projects every backfill's rows beside the rate: each table's backfill-rows line is the sum
+	// of the backfill lines' nodes or tuples.
+	if line := "census: sizing backfill kind=version moved_by=" + movedWithBlocks + " owed_rows=7 nodes_a_row=1 tuples_a_row=6 nodes=7 tuples=42 "; !strings.Contains(printed, line) {
+		t.Errorf("the sizing prints no line %q:\n%s", line, printed)
+	}
+	var backfillNodes, backfillTuples int64
+	for _, owed := range regexp.MustCompile(`(?m)^census: sizing backfill kind=\S+ .* nodes=(\d+) tuples=(\d+) `).FindAllStringSubmatch(printed, -1) {
+		nodes, _ := strconv.ParseInt(owed[1], 10, 64)
+		tuples, _ := strconv.ParseInt(owed[2], 10, 64)
+		backfillNodes, backfillTuples = backfillNodes+nodes, backfillTuples+tuples
+	}
 	for _, line := range []string{
-		"census: sizing backfill kind=version moved_by=" + movedWithBlocks + " owed_rows=2 nodes_a_row=1 tuples_a_row=6 nodes=2 tuples=12 ",
-		"census: sizing backfill-rows table=graph_tuples rows=12\n",
-		"census: sizing backfill-rows table=graph_nodes rows=2\n",
+		fmt.Sprintf("census: sizing backfill-rows table=graph_tuples rows=%d\n", backfillTuples),
+		fmt.Sprintf("census: sizing backfill-rows table=graph_nodes rows=%d\n", backfillNodes),
 	} {
 		if !strings.Contains(printed, line) {
 			t.Errorf("the sizing prints no line %q:\n%s", line, printed)

@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 func TestApplyOpsEditsLiveDocumentAndSettlesVersion(t *testing.T) {
@@ -152,7 +153,7 @@ func TestVerifyTableAnchorSnapshotsRejectsMarkAddedAfterPrevalidation(t *testing
 	}
 }
 
-func TestLockTableAnchorRowsRejectsCommentReopenedAfterPrevalidation(t *testing.T) {
+func TestCheckTableAnchorRowsRejectsCommentReopenedAfterPrevalidation(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "| Key | Value |\n| --- | --- |\n| delete | row |\n| retain | row |\n")
@@ -188,25 +189,44 @@ func TestLockTableAnchorRowsRejectsCommentReopenedAfterPrevalidation(t *testing.
 	if _, err := service.store.Pool.Exec(context.Background(), `update comments set resolved = false where id = $1`, commentID); err != nil {
 		t.Fatalf("reopen table comment: %v", err)
 	}
+	// The edit's transaction holds the document owner's lock, as ApplyOps's does through
+	// joinLiveWrite, and reads the anchored rows under it with no row lock of its own.
 	tx, err := service.store.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("begin edit transaction: %v", err)
 	}
 	defer tx.Rollback(context.Background())
-	err = lockTableAnchorRows(context.Background(), tx, artifactID, snapshots)
+	if _, _, err := lockArtifactOwner(context.Background(), tx, artifactID); err != nil {
+		t.Fatalf("lock the document owner: %v", err)
+	}
+	err = checkTableAnchorRows(context.Background(), tx, artifactID, snapshots)
 	var invalid *ErrInvalidOp
 	if !errors.As(err, &invalid) || invalid.Field != "index" || !strings.Contains(invalid.Reason, "active anchors") {
-		t.Fatalf("reopened table comment lock error = %v", err)
+		t.Fatalf("reopened table comment check error = %v", err)
 	}
 
+	// A writer of the comment takes the owner's lock first, as every comment mutation does, so it
+	// waits for the edit's transaction and changes nothing the check read until that ends.
 	updateDone := make(chan error, 1)
 	go func() {
-		_, err := service.store.Pool.Exec(context.Background(), `update comments set body = 'Updated discussion' where id = $1`, commentID)
-		updateDone <- err
+		updateDone <- func() error {
+			writer, err := service.store.Pool.Begin(context.Background())
+			if err != nil {
+				return err
+			}
+			defer writer.Rollback(context.Background())
+			if err := store.LockOwner(context.Background(), writer, store.IssueOwner("DOC-1")); err != nil {
+				return err
+			}
+			if _, err := writer.Exec(context.Background(), `update comments set body = 'Updated discussion' where id = $1`, commentID); err != nil {
+				return err
+			}
+			return writer.Commit(context.Background())
+		}()
 	}()
-	waitForLockWait(t, context.Background(), service.store, "%update comments%", updateDone)
+	waitForLockWait(t, context.Background(), service.store, "%as owner_lock%", updateDone)
 	if err := tx.Rollback(context.Background()); err != nil {
-		t.Fatalf("release table share lock: %v", err)
+		t.Fatalf("release the document owner's lock: %v", err)
 	}
 	select {
 	case err := <-updateDone:
@@ -214,7 +234,7 @@ func TestLockTableAnchorRowsRejectsCommentReopenedAfterPrevalidation(t *testing.
 			t.Fatalf("comment body update: %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("comment body update remained blocked after the edit transaction released its share lock")
+		t.Fatal("comment body update remained blocked after the edit transaction released the owner's lock")
 	}
 }
 
@@ -289,7 +309,7 @@ func TestApplyOperationRetypesAParagraphInPlace(t *testing.T) {
 		t.Fatalf("render retyped paragraph: %v", err)
 	}
 	// A server attribute has no written default, so the retyped block's markdown holds no answer
-	// state: an ask's state is its node's (dispatch://INFRA-1150 R3), never its block's.
+	// state: an ask's state is its node's, never its block's.
 	want := ":::ask{#" + blockID + " urgency=\"high\" multiple=\"true\"}\nWhich transport should we expose?\n:::\n"
 	if got != want {
 		t.Fatalf("retyped markdown = %q, want %q", got, want)
@@ -323,7 +343,7 @@ func TestApplyOperationLabelsInvalidRetypeFields(t *testing.T) {
 // The answer route's write into an ask's block (KeepAskBlockInStep) puts the ask's state and
 // answer into the block while another build serves, whose pages read them there, as the release
 // before wrote them; on a fleet of one build it writes nothing, and the answer, held on the ask's
-// node and its row, changes no byte of the document (dispatch://INFRA-1150 R3).
+// node and its row, changes no byte of the document.
 func TestKeepAskBlockInStepWritesTheAnswerOnlyWhileAnotherBuildServes(t *testing.T) {
 	const block = ":::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 	for _, twoBuilds := range []bool{false, true} {
@@ -744,7 +764,7 @@ func TestApplyOperationExplainsRenderedQuoteMatching(t *testing.T) {
 }
 
 // askFixture is an open ask's block as a document holds it: no attribute of the block holds the
-// ask's state, which its node and its asks row hold (dispatch://INFRA-1150 R3).
+// ask's state, which its node and its asks row hold.
 const askFixture = ":::ask{#decision urgency=\"high\" multiple=\"false\"}\nWhich transport?\n:::\n"
 
 func TestApplyOperationDeletesABlockByID(t *testing.T) {
@@ -3435,9 +3455,9 @@ func TestApplyOpsMovingAnOpenAskBlockKeepsItsAsk(t *testing.T) {
 }
 
 // Moving an answered ask's block keeps its answer: the ask stays answered, with no retraction,
-// reopen or repair, and the text an agent reads shows the answer on the block at its new place
-// (TextWithAnswers). The ask is answered as the answer route answers it, on its node and its row
-// alone (asks.Settle): no byte of the document holds the answer (dispatch://INFRA-1150 R3), so
+// reopen or repair, and the asks member an agent reads beside the text answers the block at its
+// new place (TextWithAsks). The ask is answered as the answer route answers it, on its node and its
+// row alone (asks.Settle): no byte of the document holds the answer, so
 // the document reads the same before and after it.
 func TestApplyOpsMovingAnAnsweredAskBlockKeepsItsAnswer(t *testing.T) {
 	service, artifactID, askID, settle, askEvents := blockAskHarness(t)
@@ -3445,17 +3465,17 @@ func TestApplyOpsMovingAnAnsweredAskBlockKeepsItsAnswer(t *testing.T) {
 	change := asks.Answered(model.AskAnswer{User: "alice", Selected: []string{"REST"}, At: answeredAt})
 	change.Who, change.At = model.Actor{Kind: "user", ID: "alice"}, answeredAt
 	settleTheDocumentsAsk(t, service, artifactID, change)
-	const answeredAsk = ":::ask{#decision urgency=\"high\" multiple=\"false\" state=\"answered\" answered_by=\"alice\" answered_at=\"2026-09-15T17:37:34Z\" selected=\"[&#x22;REST&#x22;]\"}\nWhich transport?\n:::\n"
+	const answered = `#decision state="answered" answered_by="alice" answered_at="2026-09-15T17:37:34Z" selected=["REST"]` + "\n"
 	settle()
 	waitForDocumentText(t, service, artifactID, askFixture+"\nContext ends with no drift.\n")
-	waitForAnswersText(t, service, artifactID, answeredAsk+"\nContext ends with no drift.\n")
+	waitForAgentText(t, service, artifactID, askFixture+"\nContext ends with no drift.\n", answered)
 
 	if _, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "move", Block: "decision", After: "no drift."}}, editingSession, nil); err != nil {
 		t.Fatalf("move ask block: %v", err)
 	}
 	waitForDocumentText(t, service, artifactID, "Context ends with no drift.\n\n"+askFixture)
 	settle()
-	waitForAnswersText(t, service, artifactID, "Context ends with no drift.\n\n"+answeredAsk)
+	waitForAgentText(t, service, artifactID, "Context ends with no drift.\n\n"+askFixture, answered)
 	if state, _ := askRowState(t, service, askID); state != "answered" {
 		t.Fatalf("moved ask state = %q, want answered", state)
 	}
@@ -3463,8 +3483,8 @@ func TestApplyOpsMovingAnAnsweredAskBlockKeepsItsAnswer(t *testing.T) {
 		t.Fatalf("ask events after move = %d, want no retract, reopen, or repair", got)
 	}
 
-	// An agent cannot take the person's answered decision out of the document (dispatch://INFRA-1150
-	// R6): its delete is refused, and the document and its versions stay as they were.
+	// An agent cannot take the person's answered decision out of the document: its delete is
+	// refused, and the document and its versions stay as they were.
 	before, err := service.Text(context.Background(), artifactID)
 	if err != nil {
 		t.Fatal(err)

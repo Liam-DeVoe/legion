@@ -10,13 +10,18 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // results_retract.go retracts one recorded result. A retraction is a record of its own
 // (check_result_retractions): it names the result, carries the reason and the actor, and
 // updates and deletes nothing, so a reader sees the result and its retraction together. A
-// retracted result is no evidence, and the record says who said so and why.
+// retracted result is no evidence, and the record says who said so and why. The store holds it as
+// the result node's retracted value, appended in the transaction that writes the row, of which the
+// row is the projection (stateResultRetracted); the node itself never changes.
 //
 // It is taken on a closed issue, and for a check of any `when`, which is what the record route
 // refuses (ISSUE_CLOSED in results.go). A closed issue's results are the production record,
@@ -30,7 +35,8 @@ type checkResultRetractionInput struct {
 
 // retractedResult is what the write reads about the result it is asked to retract: the issue
 // the result was recorded on, whose claim is one of the three credentials that may retract it,
-// the check's issue, which the event is appended on, and the session that recorded it.
+// the check's issue, which the event is appended on and whose owner lock the route takes before
+// it reads anything else, and the session that recorded it.
 type retractedResult struct {
 	IssueKey      string
 	CheckIssueKey string
@@ -76,13 +82,24 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 
-	// The result's row is locked before anything is judged, and the retraction is looked for in
-	// the statement after that lock. In READ COMMITTED each statement takes its own snapshot, so
-	// a second retraction that waited here reads the first one as soon as that one commits. No
-	// writer of a result ever holds this lock — nothing updates a check_results row — and the
-	// record route takes its issue rows before it inserts, so the two cannot deadlock.
-	result, err := lockRetractedResult(r.Context(), tx, resultID)
+	// The read phase holds no transaction id (INFRA-636). The result's row is read plainly, for
+	// the owner it names: nothing ever updates a check_results row, and its one writer, the
+	// record route, inserts it under that same owner's lock (results.go, lockIssueOwners), so
+	// the row read here holds still. The owner's lock comes next, and it is the lock the event's
+	// append would otherwise be the first to take (store.LockOwner, events' lockEventOwner):
+	// advisory, so this route waits for it holding no transaction id, where a `select ... for
+	// update` of the result taken first would have held one across the wait and across every
+	// read below it.
+	//
+	// Everything the retraction is decided on is read in the statements after that lock, each
+	// taking a fresh snapshot: a second retraction of this result, whose only writer is this
+	// route under this lock, reads the first one as soon as that one commits.
+	result, err := readRetractedResult(r.Context(), tx, resultID)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := store.LockOwner(r.Context(), tx, store.IssueOwner(result.CheckIssueKey)); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -102,9 +119,10 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The event is appended inside the transaction and published after the commit, as the record
-	// route appends result.recorded (results.go): the Verification tab refetches on it, and a
-	// reader woken before the row committed would read the result as evidence still.
+	// The write phase: the event and the retraction's row, back to back, and the COMMIT behind
+	// them. The event is appended inside the transaction and published after the commit, as the
+	// record route appends result.recorded (results.go): the Verification tab refetches on it,
+	// and a reader woken before the row committed would read the result as evidence still.
 	event, err := s.appendEvent(r.Context(), tx, issueOwner(result.CheckIssueKey).event(
 		"result.retracted", actor, model.CheckResultRetractedEventPayload{
 			ResultID: resultID, Issue: result.IssueKey, CheckIssue: result.CheckIssueKey,
@@ -119,6 +137,10 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		ResultID: resultID, Reason: reason, Session: sessionOf(actor), Actor: actor, EventSeq: &seq,
 	}
 	if err := insertCheckResultRetraction(r.Context(), tx, &retraction); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := stateResultRetracted(r.Context(), tx, &retraction, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -183,14 +205,18 @@ func claimingSession(ctx context.Context, q queryer, key string) (string, error)
 	return holder, nil
 }
 
-// lockRetractedResult reads the result a retraction names and locks its row for the length of
-// the write, so two retractions of one result are taken one after the other.
-func lockRetractedResult(ctx context.Context, tx pgx.Tx, id string) (retractedResult, error) {
+// readRetractedResult reads the result a retraction names, which is the one read this route
+// makes before it takes the owner's lock: it names that owner (check_issue_key). It takes no row
+// lock, so it leaves the transaction without a transaction id for the wait on that lock. A row
+// lock here would serialise nothing the owner's lock does not: check_results is written once, by
+// the record route under the check issue's owner lock, and two retractions of one result are
+// taken one after the other because both hold that lock while they read and write
+// (retractCheckResult).
+func readRetractedResult(ctx context.Context, tx pgx.Tx, id string) (retractedResult, error) {
 	var result retractedResult
 	err := tx.QueryRow(ctx, `
 		select issue_key, check_issue_key, check_block_id, commit_sha, session
 		from check_results where id = $1
-		for update
 	`, id).Scan(&result.IssueKey, &result.CheckIssueKey, &result.CheckBlockID,
 		&result.CommitSHA, &result.Session)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -227,11 +253,13 @@ func resultIsRetracted(ctx context.Context, q queryer, id string) (bool, error) 
 func loadCheckResultRetractions(
 	ctx context.Context, q queryer, artifactID string,
 ) (map[string]model.CheckResultRetracted, error) {
+	// A document of an issue room keys its results by the room's tree artifact, so they are read
+	// through its room, as loadCheckResults reads them (refs.CheckResultsOfDocumentSQL).
 	rows, err := q.Query(ctx, `
 		select retraction.result_id, retraction.reason, retraction.actor, retraction.created_at
 		from check_result_retractions retraction
 		join check_results result on result.id = retraction.result_id
-		where result.check_artifact_id = $1::uuid
+		where `+refs.CheckResultsOfDocumentSQL("result", "$1::uuid")+`
 	`, artifactID)
 	if err != nil {
 		return nil, fmt.Errorf("read the retractions of document %s: %w", artifactID, err)
@@ -269,4 +297,28 @@ func insertCheckResultRetraction(ctx context.Context, tx pgx.Tx, retraction *mod
 		returning created_at
 	`, retraction.ResultID, retraction.Reason, retraction.Session, actorJSON, retraction.EventSeq,
 	).Scan(&retraction.CreatedAt)
+}
+
+// stateResultRetracted appends, in tx, the retraction's own transaction, the retracted value of
+// the result it names (graphstore.ResultRetracted): its reason, stated by the retraction's actor at
+// the row's created_at and caused by event, the result.retracted event, of which the
+// check_result_retractions row just written is the projection. A result whose node the store
+// does not hold yet - a row an earlier release wrote, which the backfill has not reached - takes
+// no value here: the backfill writes its node and then its retracted value from the row
+// (graphcensus' census_results.go).
+//
+// The node is read after the event's append, which holds the check's issue row, the row the
+// backfill writes a result's node and its retracted value under, so a node it wrote meanwhile is
+// one this read finds, and one it writes later reads this retraction's row.
+func stateResultRetracted(ctx context.Context, tx pgx.Tx, retraction *model.CheckResultRetraction, event int64) error {
+	var held bool
+	if err := tx.QueryRow(ctx, `select exists(select 1 from graph_nodes where kind = $1 and id = $2)`,
+		graphstore.KindResult, retraction.ResultID).Scan(&held); err != nil {
+		return fmt.Errorf("read the node of result %s: %w", retraction.ResultID, err)
+	}
+	if !held {
+		return nil
+	}
+	return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{graphstore.ResultRetracted(
+		retraction.ResultID, retraction.Reason, retraction.Actor, retraction.CreatedAt, event)})
 }

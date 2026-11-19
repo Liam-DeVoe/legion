@@ -197,22 +197,33 @@ const DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT: RefreshTarget = {
     rowsOf<Ask>(data).some(openAndNotHandedOn),
 };
 
-/** Every document's live text (`["artifact", id, "text"]`) that renders a copy of an ask on
- *  another document (`copied_from`): a project document's page reads a copy's source from that
- *  text (`renderedAskOf`), since no route lists a project's asks, and an answer, a resolution or a
- *  reopening of the source changes no byte of the copy's document, so no event of that document
- *  refreshes it. Of any document, since the key names the document by id alone; a text that
- *  renders no copy is not read again. */
+/** Every document's live text (`["artifact", id, "text"]`) that holds a copy of an ask on another
+ *  document: an entry of its `asks` naming the source (`copied_from`), or, from a Dispatch of the
+ *  release before, which sends no `asks`, a `copied_from` on an ask block's opening line. A
+ *  project document's page reads a copy's source from that text (`liveAskOf`), since no route
+ *  lists a project's asks, and an answer, a resolution or a reopening of the source changes no
+ *  byte of the copy's document, so no event of that document refreshes it. Of any document, since
+ *  the key names the document by id alone; a text that holds no copy is not read again. */
 const LIVE_TEXTS_RENDERING_COPIES: RefreshTarget = {
   queryKey: ["artifact"],
-  when: (data, query) =>
-    query.queryKey.length === 3 &&
-    query.queryKey[2] === "text" &&
-    typeof data === "object" &&
-    data !== null &&
-    "markdown" in data &&
-    typeof data.markdown === "string" &&
-    data.markdown.includes("copied_from="),
+  when: (data, query) => {
+    if (query.queryKey.length !== 3 || query.queryKey[2] !== "text") return false;
+    if (typeof data !== "object" || data === null) return false;
+    if ("asks" in data && Array.isArray(data.asks)) {
+      return data.asks.some(
+        (entry: unknown) =>
+          typeof entry === "object" &&
+          entry !== null &&
+          "copied_from" in entry &&
+          typeof entry.copied_from === "string"
+      );
+    }
+    return (
+      "markdown" in data &&
+      typeof data.markdown === "string" &&
+      data.markdown.includes("copied_from=")
+    );
+  },
 };
 
 /** The project the ask of a cached thread names, or undefined when it names none: its issue's
@@ -951,6 +962,30 @@ function changesCollaborators(event: DispatchEvent): boolean {
   }
 }
 
+/**
+ * Whether the event comes with the Legion daemon writing a step record of the issue. A step write
+ * appends no event of its own (packages/envoy/internal/dispatch/api/steps.go), so the Steps tab
+ * is refreshed by what the daemon writes beside it as a phase moves: a claim or a release, as a
+ * role's run starts or ends; a handoff, the report a role writes as its step ends; a close, which
+ * ends the merge; and an issue write that moved the status or the route, or that does not say
+ * what it moved.
+ */
+function changesSteps(event: DispatchEvent): boolean {
+  switch (event.type) {
+    case "handoff.recorded":
+    case "issue.claimed":
+    case "issue.closed":
+    case "issue.released":
+      return true;
+    case "issue.updated": {
+      const changes = issueChanges(event);
+      return changes === undefined || changes.has("status") || changes.has("route");
+    }
+    default:
+      return false;
+  }
+}
+
 /** What a project document's event refreshes: an ask, a comment, a version or a review on a
  *  document that belongs to no issue. */
 function documentTargets(event: DispatchEvent, viewer: string | undefined): RefreshTarget[] {
@@ -1195,6 +1230,10 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // claim's among them, and a claim is what makes a Legion agent a collaborator.
     targets.push({ exact: true, queryKey: ["issue", key, "collaborators"] });
   }
+  if (changesSteps(event)) {
+    // The Steps tab's read, named here for the same two reasons as the collaborators above.
+    targets.push({ exact: true, queryKey: ["issue", key, "steps"] });
+  }
   if (event.type === "decision.kept") {
     // A Keep moves one decision's row of the issue's Decisions view and nothing else: it writes
     // no document version, no ask and no issue field.
@@ -1216,9 +1255,9 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     event.type === "issue.deployed"
   ) {
     // A claim changes who holds the issue, and its holder is a collaborator from then on: the
-    // detail, the log, the project lists that render the claim, and the collaborators the
-    // branch above named. No rollup, ask count or component attachment moves with it. A deploy
-    // is a line in the issue's log and nothing the lists or rollups read.
+    // detail, the log, the project lists that render the claim, and the collaborators and the
+    // steps the branches above named. No rollup, ask count or component attachment moves with it.
+    // A deploy is a line in the issue's log and nothing the lists or rollups read.
     return targets;
   }
   if (event.type === "artifact.human_edited") {
@@ -1365,7 +1404,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   }
   if (event.type === "handoff.recorded") {
     // A handoff write lands in the issue's handoff list; its log line is the `["events", key]`
-    // target above.
+    // target above, and the step it ended the steps target above.
     targets.push({ queryKey: ["handoffs", key] });
     return targets;
   }
@@ -1431,7 +1470,7 @@ const TRUNCATED_KIND_READS: Readonly<Partial<Record<string, readonly RefreshTarg
 };
 
 /**
- * The reads that carry a changed target's backlinks, which `refs.ReplaceCounted` names in the
+ * The reads that carry a changed target's backlinks, which `refs.CountedChanges` names in the
  * transaction that appends the event: an issue's detail (its count), its references tab and its
  * panel; an ask's read, its thread, the list its row lives in (its issue's asks, or its
  * document's), the Inbox row showing its count, and its panel; a document's panel; a block's

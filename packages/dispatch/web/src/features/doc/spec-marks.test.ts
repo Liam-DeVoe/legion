@@ -29,9 +29,11 @@ function block(id: string, type: string, from: number): ArtifactBlock {
   };
 }
 
-/** A `shaped` link to block `to` of the spec: its tuple written by event 10, and the block's text
- *  last changed by the event `changed` names, after the tie where it is the greater. */
-function link(to: string, changed: number, document = "CORE-1/spec"): DecisionLink {
+/** A `shaped` link to block `to` of the document at `document`: its tuple written by event 10, and
+ *  the block's text last changed by the event `changed` names, after the tie where it is the
+ *  greater. Its node is the issue room's (`CORE-1/tree#<id>`), and the document holding the block
+ *  is named on the link, as the server answers a block of an issue room. */
+function link(to: string, changed: number, document = "dispatch://CORE-1/spec"): DecisionLink {
   return {
     created_at: "2026-10-01T00:00:00Z",
     created_version: 1,
@@ -39,7 +41,7 @@ function link(to: string, changed: number, document = "CORE-1/spec"): DecisionLi
     from_block: "d-1",
     stale: changed > 10,
     text_changed_event: changed,
-    to: graphNode({ block_id: to, id: `${document}#${to}`, kind: "block" }),
+    to: graphNode({ block_id: to, document, id: `CORE-1/tree#${to}`, kind: "block" }),
   };
 }
 
@@ -90,7 +92,11 @@ const decisions: IssueDecisions = {
     entry("d-1", [link("p-plan", 12), link("p-scope", 8)]),
     entry(
       "d-2",
-      [link("p-plan", 12), link("p-rollout", 11), link("p-notes", 13, "CORE-1/notes-md")],
+      [
+        link("p-plan", 12),
+        link("p-rollout", 11),
+        link("p-notes", 13, "dispatch://CORE-1/artifact/notes-md"),
+      ],
       true
     ),
   ],
@@ -98,10 +104,10 @@ const decisions: IssueDecisions = {
 };
 
 test("every spec block whose text changed after a decision tied it is stale, each once, in the order the read names them", () => {
-  expect(staleSpecBlocks(decisions, "CORE-1/spec")).toEqual(["p-plan", "p-rollout"]);
+  expect(staleSpecBlocks(decisions, "dispatch://CORE-1/spec")).toEqual(["p-plan", "p-rollout"]);
   expect(staleSpecBlocks(decisions)).toEqual(["p-plan", "p-rollout", "p-notes"]);
-  expect(staleSpecBlocks(undefined, "CORE-1/spec")).toEqual([]);
-  expect(staleSpecBlocks({ ...decisions, entries: [] }, "CORE-1/spec")).toEqual([]);
+  expect(staleSpecBlocks(undefined, "dispatch://CORE-1/spec")).toEqual([]);
+  expect(staleSpecBlocks({ ...decisions, entries: [] }, "dispatch://CORE-1/spec")).toEqual([]);
 });
 
 test("an open and a declined ask mark nothing stale, and an answered one does", () => {
@@ -123,7 +129,7 @@ test("an open and a declined ask mark nothing stale, and an answered one does", 
       ask("answered-ask", "answered", "p-answered"),
     ],
   };
-  expect(staleSpecBlocks(asks, "CORE-1/spec")).toEqual(["p-answered"]);
+  expect(staleSpecBlocks(asks, "dispatch://CORE-1/spec")).toEqual(["p-answered"]);
 });
 
 test("a shaped node changed after the tie when its text's event is later than the tuple's", () => {

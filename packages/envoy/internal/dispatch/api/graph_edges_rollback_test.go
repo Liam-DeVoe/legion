@@ -136,6 +136,13 @@ type movedInPlace struct {
 // and the old arms answer none of them: each moved relation reads once through the tuple arm, and
 // the store holds its new value alone, the old one retracted. The cases of an artifact's citations
 // and the deletion of dispatch://INFRA-1149's four arms are T8c's and T9's.
+//
+// A document's citations, T8c's: the release before's document, naming no node, cites the target
+// by a refs row that release wrote, which the arm over refs answers once before the backfill and
+// the tuple arm once after it, dated at the row's created_at, as the outbound references read of
+// the document answers it once in both; and a document this build uploads cites another issue, a
+// citation it states in the store, whose refs row the release before deletes with no retraction,
+// which no arm answers. The target's backlink count holds the release before's citation.
 func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 	fake := &fakeGitHubApp{
 		installations: map[string]string{"legion/roll": "read"},
@@ -211,6 +218,36 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 	`, stamped.Key).Scan(&document); err != nil {
 		t.Fatalf("write a document as the release before: %v", err)
 	}
+	// The release before's document cites the target, through the refs row that release writes; a
+	// document this build uploads cites oldChild and states the citation in the store, and the
+	// release before deletes that citation's refs row with no retraction.
+	if _, err := database.Pool.Exec(ctx, `
+		insert into refs (from_kind, from_id, to_kind, to_id, created_at) values ('artifact', $1, 'issue', $2, now() - interval '1 day')
+	`, document, target); err != nil {
+		t.Fatalf("write the release before's document's citation of %s: %v", target, err)
+	}
+	cited := uploadDocument(t, handler, "/api/v1/issues/"+deletedLink.Key, "cited.md", "Cites "+oldChild+".\n")
+	if held, err := graphstore.CurrentOut(ctx, database.Pool, graphstore.KindArtifact, cited.Artifact.RefKey, []string{graphstore.TupleMentions}); err != nil ||
+		len(held) != 1 || held[0].ToID != oldChild {
+		t.Fatalf("the uploaded document states the mentions %v (%v), want its one citation of %s", held, err, oldChild)
+	}
+	if tag, err := database.Pool.Exec(ctx, `
+		delete from refs where from_kind = 'artifact' and from_id = $1 and to_kind = 'issue' and to_id = $2
+	`, cited.Artifact.ID, oldChild); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("delete the uploaded document's citation as the release before: %d rows, %v", tag.RowsAffected(), err)
+	}
+	documentAddress := stamped.Key + "/artifact/old-notes-md"
+	// The stamped issue is born converted, so beside its spec it is made with its tree and its
+	// decisions query, each attached to it (part_of its issue), and the release before's document
+	// is a fourth artifact attached to it. Its tree and its decisions query are no backlinks of it
+	// (refs' issueOwnArtifact), so its count of attachments is its spec and that document.
+	var issueArtifacts int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from artifacts where issue_key = $1 and kind in ('doc', 'tree')
+	`, stamped.Key).Scan(&issueArtifacts); err != nil || issueArtifacts != 4 {
+		t.Fatalf("the artifacts of %s = %d (%v), want its spec, its tree, its decisions query and the release before's document",
+			stamped.Key, issueArtifacts, err)
+	}
 
 	standing := []rollbackEdge{
 		{"issue", stamped.Key, "blocked_by", "issue", target},
@@ -226,6 +263,7 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 		{"component", "ROLL/daemon", "depends_on", "component", "ROLL/listener"},
 		{"issue", stamped.Key, "affects", "component", "ROLL/daemon"},
 		{"issue", oldWaiter, "affects", "component", "ROLL/envoy"},
+		{"artifact", document, "mentions", "issue", target},
 	}
 	deleted := []rollbackEdge{
 		{"issue", deletedLink.Key, "blocked_by", "issue", target},
@@ -235,8 +273,32 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 		{"component", "ROLL/server", "depends_on", "component", "ROLL/listener"},
 		{"component", "ROLL/listener", "part_of", "component", "ROLL/envoy"},
 		{"issue", deletedLink.Key, "affects", "component", "ROLL/envoy"},
+		{"artifact", cited.Artifact.ID, "mentions", "issue", oldChild},
 	}
 	tupleArm := graphEdgesArm(t, database, "the arm over the store's tuples", "edge.from_kind", "graph_tuples tuple")
+	refsArm := graphEdgesArm(t, database, "the arm over refs", "\n   FROM refs r")
+	citation, deletedCitation := standing[13], deleted[7]
+	// throughRefs holds the release before's citation to one arm: the arm over refs before the
+	// backfill and the tuple arm after it, never both; and the citation deleted with no retraction
+	// to neither.
+	throughRefs := func(stage string, viaRefs bool) {
+		t.Helper()
+		name, arm, otherName, other := "arm over refs", refsArm, "tuple arm", tupleArm
+		if !viaRefs {
+			name, arm, otherName, other = otherName, other, name, arm
+		}
+		if rows := armAnswers(t, database, arm, citation); rows != 1 {
+			t.Errorf("%s the %s answers %v %d times, want once", stage, name, citation, rows)
+		}
+		if rows := armAnswers(t, database, other, citation); rows != 0 {
+			t.Errorf("%s the %s answers %v %d times, want none: the %s answers it", stage, otherName, citation, rows, name)
+		}
+		for _, each := range []string{refsArm, tupleArm} {
+			if rows := armAnswers(t, database, each, deletedCitation); rows != 0 {
+				t.Errorf("%s an arm of graph_edges answers %v, whose refs row the release before deleted, %d times, want none", stage, deletedCitation, rows)
+			}
+		}
+	}
 	movedRelations := []movedInPlace{{
 		what: moved.Key + "'s parent", now: standing[5], left: deleted[2],
 		oldArmName: "old child_of arm", oldArm: graphEdgesArm(t, database, "the child_of arm over issues", "'child_of'::text AS kind", "\n   FROM issues"),
@@ -285,19 +347,20 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s count the backlinks: %v", stage, err)
 		}
-		// The target is waited on by the stamped issue and the release before's waiter; the parent
-		// holds the stamped child and the release before's child, and not the child moved away from
-		// it, which the new parent holds alone. Each holds its own spec too, which the attached_to
-		// count reads below.
-		if counts[target] != 2 || counts[parent] != 2 || counts[movedTo] != 1 {
-			t.Errorf("%s the backlink counts are %v, want 2 at %s, 2 at %s and 1 at %s", stage, counts, target, parent, movedTo)
+		// The target is waited on by the stamped issue and the release before's waiter, and cited by
+		// the release before's document; the parent holds the stamped child and the release before's
+		// child, and not the child moved away from it, which the new parent holds alone. Each holds
+		// its own spec too, which the attached_to count reads below.
+		if counts[target] != 3 || counts[parent] != 2 || counts[movedTo] != 1 {
+			t.Errorf("%s the backlink counts are %v, want 3 at %s, 2 at %s and 1 at %s", stage, counts, target, parent, movedTo)
 		}
 		attached, err := refs.BacklinkCounts(ctx, database.Pool, alice, "issue", []string{stamped.Key}, nil)
 		if err != nil {
 			t.Fatalf("%s count the attachments: %v", stage, err)
 		}
 		if attached[stamped.Key] != 2 {
-			t.Errorf("%s %s counts %d backlinks, want its spec and the release before's document", stage, stamped.Key, attached[stamped.Key])
+			t.Errorf("%s %s counts %d backlinks, want its spec and the release before's document, and neither its tree nor its decisions query",
+				stage, stamped.Key, attached[stamped.Key])
 		}
 		// legion holds daemon and envoy, stamped, and the release before's relay; daemon holds
 		// listener, moved in place to it, and not workspace, deleted, and the stamped issue's
@@ -334,6 +397,7 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 			{stamped.Key, "affects", "component", "ROLL/daemon", 1},
 			{oldWaiter, "affects", "component", "ROLL/envoy", 1},
 			{deletedLink.Key, "affects", "component", "ROLL/envoy", 0},
+			{documentAddress, "mentions", "issue", target, 1},
 		} {
 			if got := outboundAnswers(t, handler, outbound.from, outbound.kind, outbound.targetKind, outbound.target); got != outbound.want {
 				t.Errorf("%s GET /api/v1/references?from=%s answers %s to %s %d times, want %d", stage, outbound.from, outbound.kind, outbound.target, got, outbound.want)
@@ -345,12 +409,41 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 	}
 	read("before the backfill:")
 	throughArm("before the backfill:", true)
+	throughRefs("before the backfill:", true)
+	// The deleted citation's tuple stands with no row: the census of a document's references names
+	// it as a tuple no row projects until the backfill retracts it.
+	referenceDifferences := func(stage string) (rows, tuples int64) {
+		t.Helper()
+		report, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false)
+		if err != nil {
+			t.Fatalf("%s take the store census: %v", stage, err)
+		}
+		for _, kind := range report.Kinds {
+			if kind.Kind == "artifact_reference" {
+				return kind.RowDifferences, kind.NodeDifferences
+			}
+		}
+		t.Fatalf("%s the census reports no kind of a document's references", stage)
+		return 0, 0
+	}
+	if rows, tuples := referenceDifferences("before the backfill:"); rows != 0 || tuples != 1 {
+		t.Errorf("before the backfill the census reads %d row and %d tuple differences of a document's references, want the deleted citation's tuple alone",
+			rows, tuples)
+	}
 
 	if _, err := graphcensus.Backfill(ctx, database, io.Discard); err != nil {
 		t.Fatalf("backfill: %v", err)
 	}
 	read("after the backfill:")
 	throughArm("after the backfill:", false)
+	throughRefs("after the backfill:", false)
+	if rows, tuples := referenceDifferences("after the backfill:"); rows != 0 || tuples != 0 {
+		t.Errorf("after the backfill the census reads %d row and %d tuple differences of a document's references, want none: the backfill retracts the deleted citation's tuple",
+			rows, tuples)
+	}
+	if held, err := graphstore.CurrentOut(ctx, database.Pool, graphstore.KindArtifact, cited.Artifact.RefKey, []string{graphstore.TupleMentions}); err != nil || len(held) != 0 {
+		t.Errorf("after the backfill the uploaded document states the mentions %v (%v), want none: its row is gone", held, err)
+	}
 	var movedCreated, listenerImported time.Time
 	if err := database.Pool.QueryRow(ctx, `select created_at from issues where key = $1`, moved.Key).Scan(&movedCreated); err != nil {
 		t.Fatalf("read %s's row: %v", moved.Key, err)
@@ -395,6 +488,10 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 				where m.issue_key = $1 and m.component_id = $2`,
 			`select count(*) from issue_component_members where issue_key = $1 and component_id = $2 and node_kind is null`,
 			[]any{oldWaiter, "envoy"}},
+		{citation, `select created_at from refs where from_kind = 'artifact' and from_id = $1 and to_kind = 'issue' and to_id = $2`,
+			`select count(*) from refs r join artifacts a on a.id::text = r.from_id
+				where r.from_kind = 'artifact' and r.from_id = $1 and r.to_kind = 'issue' and r.to_id = $2 and a.node_kind is null`,
+			[]any{document, target}},
 	} {
 		var createdAt time.Time
 		if err := database.Pool.QueryRow(ctx, written.createdAt, written.args...).Scan(&createdAt); err != nil {

@@ -40,28 +40,23 @@ const eraseApplicationName = "envoy-dispatch erase"
 const eraseMarker = "[erased by envoy-dispatch erase %s:%s, recorded in graph_erasures]"
 
 // projectedTables are the tables that carry a node's address, and so are the rows a node is
-// projected onto: comments, document_blocks and block_refs, which migration 20261109022248 gave
-// `node_kind` and `node_address`, and asks and ask_followers, which 20261116094058 gave them. A
-// follower row names its ask's node: it is a relation of that node (followed_by), not a node of its
-// own, so an ask's node is projected onto its asks row and onto each of its follower rows.
+// projected onto (migration 20261109022248 gave all three `node_kind` and `node_address`). Issue
+// is the column naming the issue that owns a row itself, empty for a table whose rows are owned
+// through their document alone, by the artifact_id all three carry: a comment is an issue's or a
+// document's (comments_one_owner, migration 0009), and a block and a block reference are their
+// document's. Key is the table's primary key, the order the erase takes a node's rows of it in
+// (lockProjectionRows) and how the listing names each.
 //
-// Issue is the column naming the issue that owns a row, empty for a table whose rows are owned
-// through their document alone, by the artifact_id the owning row carries: a comment and an ask
-// are an issue's or a document's (comments_one_owner and asks_one_owner, migration 0009), and a
-// block and a block reference are their document's. Through is, for a table whose rows carry no
-// owner of their own, the join from a row (held) to the row that owns it (owner): a follower row
-// stands under its ask's owner. Key is the table's primary key, the order the erase takes a node's
-// rows of it in (lockProjectionRows) and how the listing names each.
-//
-// The erase walks every one by (node_kind, node_address) rather than by the node's kind, so a kind
-// that gains a projection carries no second list here to keep in step. The order is the order
-// every writer takes them in: an ask's row before its follower rows (20261116094058).
-var projectedTables = []struct{ Table, Issue, Through, Key string }{
+// The erase walks all three by (node_kind, node_address) rather than by the node's kind, so a
+// kind that gains a projection the erase deletes carries no second list here to keep in step.
+// asks and ask_followers, which 20261116094058 gave the same pair, project only an ask's node,
+// and the erase deletes, locks and lists neither: it refuses an ask's node while its asks row
+// stands (graphcensus.ObjectRowStands), and a follower row goes with its asks row. An asks row
+// still says what its ask's node states, which readBlockers reads.
+var projectedTables = []struct{ Table, Issue, Key string }{
 	{Table: "comments", Issue: "issue_key", Key: "id"},
 	{Table: "document_blocks", Key: "artifact_id, block_id"},
 	{Table: "block_refs", Key: "artifact_id, block_id, to_kind, to_id, kind"},
-	{Table: "asks", Issue: "issue_key", Key: "id"},
-	{Table: "ask_followers", Issue: "issue_key", Through: "asks owner on owner.id = held.ask_id", Key: "ask_id, session_id"},
 }
 
 // runTables are the rows a run of the command bar is projected onto
@@ -157,7 +152,10 @@ func ParseNode(value string) (kind, id string, err error) {
 // writes back. The run deletes those, or rewrites them with the marker where it may take no row
 // away. Every other row that holds the same bytes derives from another node and is that node's
 // text - a sibling block of the same document among them: the run lists it with its address and
-// changes nothing in it, and an operator erases that node by a run of its own.
+// changes nothing in it. An operator erases a comment's or a block's text by a run over that node;
+// an issue's, a document's, an ask's or a message's text is in its own row and the events about
+// it, which no run reaches, and is changed through that object's own route (an issue's title, a
+// document's name and versions).
 //
 // confirm is the digest of a listing. With none the run reads everything it would delete,
 // rewrite, redact or leave in a read-only transaction, which takes no write lock and waits on no
@@ -181,6 +179,18 @@ func ParseNode(value string) (kind, id string, err error) {
 // one of those kinds holds no text anybody wrote, so no erasure is owed for it, and the event log
 // keeps addressing it, so deleting it leaves the census a difference no erase can close
 // (graphcensus's addressedRoles reads the roles every event ever named).
+//
+// It refuses an issue, a document, an ask and a message while their row stands
+// (graphcensus.ObjectRowStands, read in Erasure.read, under the node's lock on a confirmed run).
+// A node of one of those kinds holds its text in its own row - an issue's title, a document's
+// name and versions, an ask's question, a message's body - and the erase reads text only from the
+// comments and the document blocks that derive from a node. A run over one would delete the node
+// and its tuples, record an erasure and answer applied with every byte of that text still in
+// place, the project census would read the row as missing its node, and the backfill would write
+// the node again (graphcensus.ProjectComplete). A node of one of those kinds, at any state but
+// gone, that no row stands behind - a document a build before this one removed, during a roll or after a rollback,
+// without stating its node gone - holds no text and is the project census's orphaned class; the
+// erase removes it with its tuples, which is that class's one remedy.
 //
 // What it did goes into `graph_erasures`: what was removed, who ran it and when, and no erased
 // text. Nobody addresses that row and no read of the graph answers it.

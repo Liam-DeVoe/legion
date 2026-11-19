@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // Retirement is what RetireDocument did: the document.retired event it appended, which the
@@ -36,8 +37,8 @@ var errRetirementReason = errors.New("docs: a retirement needs a reason")
 // its own broker after its commit.
 var retirementEvents = events.NewBroker()
 
-// RetireDocument retires the document artifactID, any document, inside tx (dispatch://INFRA-1150
-// R11): it sets artifacts.retired_at and clears the document's role, states the document's
+// RetireDocument retires the document artifactID, any document, inside tx: it sets
+// artifacts.retired_at and clears the document's role, states the document's
 // artifact node gone, appends one document.retired event naming the reason, and supersedes the
 // approval the document holds, which it reports. The document keeps its row, its versions, its
 // reviews, its comments, its block texts and its slug, so its versions stay readable and a
@@ -143,23 +144,11 @@ func documentRetired(ctx context.Context, q Queryer, room string) (bool, error) 
 	return retired, nil
 }
 
-// DecisionsQuerySQL is true of the artifacts row aliased alias while it is its issue's decisions
-// query node (api's createDecisionsQuery, D6 of this branch's plan): a document whose node is a
-// query node of query `decisions` (graphstore.QueryNode) and which no document_rooms row joins to
-// an issue room, whose versions render that query. No fragment of any room holds it, so no socket
-// opens on it (Service.ServeHTTP), and no upload or edit writes it (api's decisionsQueryRefusal).
-func DecisionsQuerySQL(alias string) string {
-	return `(` + alias + `.kind = 'doc' and not exists (select 1 from document_rooms moved where moved.artifact_id = ` + alias + `.id)
-		and exists (select 1 from graph_nodes node where node.kind = '` + graphstore.KindArtifact + `' and node.id = ` + alias + `.ref_key
-		            and node.supertag = '` + graphstore.SupertagQuery + `'
-		            and node.attributes->>'` + graphstore.AttributeQuery + `' = '` + graphstore.QueryDecisions + `'))`
-}
-
 // refusedDocument reads from q, in one statement, whether the document asked is retired
-// (documentRetired) and whether it is its issue's decisions query (DecisionsQuerySQL): no socket
-// opens on either.
+// (documentRetired) and whether it is its issue's decisions query (refs.DecisionsQuerySQL): no
+// socket opens on either.
 func refusedDocument(ctx context.Context, q Queryer, asked string) (retired, query bool, err error) {
-	if err := q.QueryRow(ctx, `select a.retired_at is not null, `+DecisionsQuerySQL("a")+` from artifacts a where a.id = $1`, asked).
+	if err := q.QueryRow(ctx, `select a.retired_at is not null, `+refs.DecisionsQuerySQL("a")+` from artifacts a where a.id = $1`, asked).
 		Scan(&retired, &query); err != nil {
 		return false, false, fmt.Errorf("read whether the document takes a socket: %w", err)
 	}
@@ -190,41 +179,6 @@ func writeRetiredNode(ctx context.Context, tx pgx.Tx, refKey, project string, se
 	node.State = graphstore.StateGone
 	node.SourceEvent = graphstore.NoEvent
 	return graphstore.WriteUncaused(ctx, tx, []graphstore.Node{node}, stated)
-}
-
-// WriteRemovedNode states the node of document gone inside tx, the transaction that removes the
-// document's row (api's removeArtifact), as a retirement states a retired document's node
-// (writeRetiredNode), and retracts, as actor at at, each changed_by_run the node states now
-// (graphstore.TupleChangedByRun). The write is held for the artifact.removed event the caller
-// appends, and the caller hands it to graphstore.Caused once that event is appended.
-//
-// A retired document keeps its row, its slug and so its ref_key, so no later document takes its
-// address. A removed one frees its slug, and a document made again under the same title takes the
-// same ref_key, which is the id of the same node: a create restates the node and brings it back
-// live (graphstore.ArtifactNode), and a changed_by_run left asserted on it would name the new
-// document changed by the run that made the old one, which refs' edgeFrom reads through the new
-// document's uuid. Gone, the node is counted under no run (refs' liveVisibleNodeOf), as the run's
-// list leaves out a document whose row has gone.
-//
-// The caller holds the document's owner row, which every writer that marks the document's node
-// changed takes first, so no changed_by_run of the node lands between the read here and the
-// retraction.
-func WriteRemovedNode(ctx context.Context, tx pgx.Tx, document model.Artifact, actor model.Actor, at time.Time) (graphstore.Uncaused, error) {
-	if !graphstore.AddressFits(document.RefKey) {
-		return graphstore.Uncaused{}, nil
-	}
-	marks, err := graphstore.CurrentOut(ctx, tx, graphstore.KindArtifact, document.RefKey, []string{graphstore.TupleChangedByRun})
-	if err != nil {
-		return graphstore.Uncaused{}, err
-	}
-	retractions := make([]graphstore.Tuple, len(marks))
-	for index, mark := range marks {
-		retractions[index] = graphstore.Tuple{
-			FromKind: mark.FromKind, FromID: mark.FromID, Kind: mark.Kind, ToKind: mark.ToKind, ToID: mark.ToID,
-			At: at, Who: actor, Asserted: false,
-		}
-	}
-	return writeRetiredNode(ctx, tx, document.RefKey, document.Project, document.SessionID, document.CreatedBy, document.CreatedAt, retractions)
 }
 
 // standingApproval is the approval of artifactID that stands, the newest review where it approves

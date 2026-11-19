@@ -12,11 +12,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // writeDocuments writes every document with its versions and indexes the latest version of each,
-// the only version a block index records (refs.IndexBlocks) and the only one search, the
+// the only version a block index records (refs.PlanBlocks) and the only one search, the
 // related-item check and every anchor read look at.
 func (r *seedRun) writeDocuments(ctx context.Context) error {
 	marked, err := r.carriesNodeMarker(ctx, "artifacts")
@@ -36,7 +37,7 @@ func (r *seedRun) writeDocuments(ctx context.Context) error {
 
 // writeDocument writes one document, its versions and the index of its latest version. The
 // latest version's markdown is the markdown the renderer wrote (RenderWithBlockOffsets), not the
-// markdown the renderer was given, because refs.IndexBlocks indexes `markdown[block.From:block.To]`
+// markdown the renderer was given, because refs.PlanBlocks indexes `markdown[block.From:block.To]`
 // and those offsets are into that render: a row holding anything else would index the wrong
 // bytes. Every document the seed writes is markdown, so its node carries no bytes values
 // (graphstore.ArtifactBytes).
@@ -132,7 +133,13 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	// a pointer, and a decision, a reading or an ask is what the typed-node pass reads, and every
 	// document this tool writes is plain markdown with no typed block in it, so the lists the
 	// server builds from a document's block tree are empty here.
-	moved, _, blockWrite, _, err := refs.IndexBlocks(ctx, tx, document.ID, refs.OneVersion(document.ID, document.Versions, versionAt), latest, blocks, located, nil, refs.TypedFacts{})
+	//
+	// The index the version is planned against is the one the document holds, which is empty:
+	// this is its first indexing, the rows being written here. The seed's transaction joins no
+	// write phase of anyone's, so the plan's statements run at once, as a batch of their own
+	// (refs.IndexBlocks). The targets the plan moves are counted by nobody: the seed appends no
+	// event for a document write, which is what names them.
+	_, _, blockWrite, _, err := refs.IndexBlocks(ctx, tx, document.ID, refs.OneVersion(document.ID, document.Versions, versionAt), latest, blocks, located, nil, refs.TypedFacts{})
 	if err != nil {
 		return fmt.Errorf("index blocks: %w", err)
 	}
@@ -148,20 +155,45 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 			return fmt.Errorf("version nodes: %w", err)
 		}
 	}
-	// The version write records the blocks and leaves their windows to the block-index tick's
-	// window arm (refs.IndexBlocks), so the seed writes them here as that arm would: a seeded
-	// database a server has to window is one it would rewrite.
+	// The version write records the blocks and marks the document owed the windows that stand
+	// for them, which the block-index tick's window arm writes (refs.BlockIndexing.Queue), so
+	// the seed writes them here as that arm would: a seeded database a server has to window is
+	// one it would rewrite.
 	if err := refs.WriteDocumentWindows(ctx, tx, document.ID, latest, blocks); err != nil {
 		return fmt.Errorf("write the document's windows: %w", err)
 	}
-	// ReplaceDocumentCounted stores each mention's excerpt at this version number, which is the
-	// document's highest: refs.MarkStaleExcerpts re-owes a mention whose excerpt_version is
-	// below max(artifact_versions.number), so a seed that wrote 1 would leave every one of the
-	// 28-version documents owed, which settle.go's owedWorkCounts refuses and a server started
-	// on the data set would rewrite.
-	if _, err := refs.ReplaceDocumentCounted(ctx, tx, document.ID, document.Versions, versionAt,
-		text.Refs(located), moved, refs.MentionExcerpts(latest, blocks, located)); err != nil {
+	// The document's own references are reconciled after its blocks, as the server's own version
+	// write reconciles them (docs.indexRenderedVersion): the block mentions of a first indexing
+	// date from the document's refs row for their target, so they are written while the document
+	// holds no refs row yet, and take this version's time.
+	replacement, err := refs.PlanReplace(ctx, tx, "artifact", document.ID, text.Refs(located), &versionAt)
+	if err != nil {
 		return fmt.Errorf("index references: %w", err)
+	}
+	// The excerpts are stored at this version number, which is the document's highest:
+	// refs.MarkStaleExcerpts re-owes a mention whose excerpt_version is below
+	// max(artifact_versions.number), so a seed that wrote 1 would leave every one of the
+	// 28-version documents owed, which settle.go's owedWorkCounts refuses and a server started
+	// on the data set would rewrite. They are queued after the reconciliation, whose rows the
+	// update reads (refs.QueueRecordExcerpts). What it states of the references it writes is
+	// appended at the sentinel, as the block index's is above.
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		replacement.Queue(b)
+		refs.QueueRecordExcerpts(b, document.ID, document.Versions, refs.MentionExcerpts(latest, blocks, located))
+		return nil
+	}); err != nil {
+		return fmt.Errorf("index references: %w", err)
+	}
+	record, err := refs.ReadIndexedVersion(ctx, tx, document.ID, document.ID, document.Versions)
+	if err != nil {
+		return fmt.Errorf("read the version the references are stated at: %w", err)
+	}
+	mentions, err := replacement.ArtifactMentions(ctx, tx, record)
+	if err != nil {
+		return fmt.Errorf("index references: %w", err)
+	}
+	if err := graphstore.Caused(ctx, tx, graphstore.Uncaused{Tuples: mentions}, graphstore.NoEvent); err != nil {
+		return fmt.Errorf("record what the references stated: %w", err)
 	}
 	if document.Primary {
 		if err := docs.RecordTaskProgressMarkdown(ctx, tx, document.ID, latest); err != nil {

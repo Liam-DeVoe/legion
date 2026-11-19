@@ -11,7 +11,6 @@ import (
 	"time"
 
 	gws "github.com/gorilla/websocket"
-	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -352,37 +351,13 @@ func TestAWriteThroughTheParentNamingAChildsNodeIsRefused(t *testing.T) {
 	}
 }
 
-// storedFragmentLength is how many elements the fragment named fragment holds in the stored history
-// of room, every update of it applied in order: what the room's next load holds of the fragment.
-func storedFragmentLength(t *testing.T, database *store.Store, room, fragment string) int {
-	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), `select update from doc_updates where artifact_id = $1::uuid order by version`, room)
-	if err != nil {
-		t.Fatalf("read the stored history of %s: %v", room, err)
-	}
-	defer rows.Close()
-	doc := crdt.New()
-	for rows.Next() {
-		var update []byte
-		if err := rows.Scan(&update); err != nil {
-			t.Fatalf("read an update of %s: %v", room, err)
-		}
-		if err := crdt.ApplyUpdateV1(doc, update, nil); err != nil {
-			t.Fatalf("apply an update of %s: %v", room, err)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read the stored history of %s: %v", room, err)
-	}
-	return doc.GetXmlFragment(fragment).Len()
-}
-
-// A document of a converted issue is judged for removal, and removed, by its own fragment of the
-// issue's room: one a person typed in, whose edit no version holds yet, is refused as not
-// untouched and keeps what was typed, while an untouched one goes - its document_rooms row, and its
-// fragment's content out of the room's stored state - and the sibling documents' fragments keep
-// their text (T12b of dispatch://INFRA-1253's plan).
-func TestARemovalOfAConvertedIssuesDocumentWeighsAndTakesOutItsOwnFragment(t *testing.T) {
+// A document of a converted issue that plays no role is a room of its own (R5 of this branch's
+// spec), so it is judged for removal, and removed, as a document of an unconverted issue is, and
+// the issue's room, which holds the spec and the plan, stands as it was: one a person typed in,
+// whose edit no version holds yet, is refused as not untouched and keeps what was typed, while an
+// untouched one goes with its own room's history, and the issue's room takes no update of the
+// removal and keeps its documents and their text.
+func TestARemovalOfAConvertedIssuesDocumentLeavesTheIssueRoomAsItStood(t *testing.T) {
 	ctx := context.Background()
 	// Settlement is held back, so the typed edit is still unsettled when the removal reads it.
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
@@ -391,38 +366,31 @@ func TestARemovalOfAConvertedIssuesDocumentWeighsAndTakesOutItsOwnFragment(t *te
 	if tree == "" {
 		t.Fatalf("issue %s holds no tree", issue.Key)
 	}
-	sibling := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "Sibling notes", "The sibling's words.\n").Artifact
+	owner := "/api/v1/issues/" + issue.Key
+	plan := uploadDocument(t, handler, owner, "plan.md", "The plan's words.\n").Artifact
+	if plan.Room != tree || plan.Fragment != plan.ID {
+		t.Fatalf("the plan reads room %q fragment %q, want the issue's room %s and its own fragment %s", plan.Room, plan.Fragment, tree, plan.ID)
+	}
+	sibling := uploadDocument(t, handler, owner, "Sibling notes", "The sibling's words.\n").Artifact
 	typed := emptyDocument(t, handler, issue.Key, "Typed notes")
 	untouched := emptyDocument(t, handler, issue.Key, "Untouched notes")
 	for _, document := range []model.Artifact{sibling, typed, untouched} {
-		if document.Room != tree {
-			t.Fatalf("%s reads room %q, want the issue's room %s", document.Name, document.Room, tree)
-		}
+		requireOwnRoom(t, document)
 	}
 	if _, err := replaceDocumentText(database, deps.Docs, typed.ID, "The typed words.\n", model.Actor{Kind: "user", ID: "alice"}); err != nil {
-		t.Fatalf("type into the document's fragment: %v", err)
+		t.Fatalf("type into the document's room: %v", err)
 	}
-	assertRemovalRefused(t, handler, "a document of the room whose edit has not settled", typed,
+	assertRemovalRefused(t, handler, "a document of its own room whose edit has not settled", typed,
 		http.StatusConflict, "ARTIFACT_NOT_UNTOUCHED", notUntouchedSentence(typed, "an edit of it has not settled"))
 	if text := artifactTextOf(t, handler, typed.ID); !strings.Contains(text, "The typed words.") {
 		t.Errorf("the typed document reads %q after its refused removal, want what was typed", text)
 	}
 
-	if held := storedFragmentLength(t, database, tree, untouched.ID); held == 0 {
-		t.Fatalf("the room's stored state holds nothing of %s's fragment before its removal, so its removal takes nothing out", untouched.ID)
-	}
-	// The untouched document's fragment renders as no text, so the room's index holds no block of
-	// it, as a document of its own room that renders as no text holds none.
-	var blocks int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from issue_room_blocks where document_id = $1::uuid`, untouched.ID).Scan(&blocks); err != nil {
-		t.Fatalf("read the room's blocks of %s: %v", untouched.ID, err)
-	}
-	if blocks != 0 {
-		t.Errorf("the room's index holds %d blocks of the untouched document %s, want none", blocks, untouched.ID)
-	}
+	roomUpdates := documentAppendCount(t, database, tree)
 	removedDocument(t, handler, untouched.ID)
-	if held := storedFragmentLength(t, database, tree, untouched.ID); held != 0 {
-		t.Errorf("the room's stored state holds %d elements of the removed document's fragment, want none", held)
+	assertNoRowNamesTheDocument(t, database, untouched.ID)
+	if held := documentAppendCount(t, database, tree); held != roomUpdates {
+		t.Errorf("the issue's room holds %d stored updates after the removal, %d before it: the removal of a document of its own room wrote into the issue's room", held, roomUpdates)
 	}
 	var joined []string
 	rows, err := database.Pool.Query(ctx, `select artifact_id::text from document_rooms where room = $1::uuid order by artifact_id`, tree)
@@ -437,12 +405,11 @@ func TestARemovalOfAConvertedIssuesDocumentWeighsAndTakesOutItsOwnFragment(t *te
 		joined = append(joined, document)
 	}
 	rows.Close()
-	if slices.Contains(joined, untouched.ID) || !slices.Contains(joined, sibling.ID) || !slices.Contains(joined, typed.ID) ||
-		!slices.Contains(joined, issue.PrimaryArtifactID) {
-		t.Errorf("the room's documents are %v after the removal, want the spec, %s and %s and not %s", joined, sibling.ID, typed.ID, untouched.ID)
+	if want := slices.Sorted(slices.Values([]string{issue.PrimaryArtifactID, plan.ID})); !slices.Equal(joined, want) {
+		t.Errorf("the room's documents are %v after the removal, want the spec and the plan alone, %v", joined, want)
 	}
 	for document, want := range map[string]string{
-		issue.PrimaryArtifactID: "The spec's words.", sibling.ID: "The sibling's words.", typed.ID: "The typed words.",
+		issue.PrimaryArtifactID: "The spec's words.", plan.ID: "The plan's words.", sibling.ID: "The sibling's words.", typed.ID: "The typed words.",
 	} {
 		if text := artifactTextOf(t, handler, document); !strings.Contains(text, want) {
 			t.Errorf("%s reads %q after its sibling's removal, want %q", document, text, want)
@@ -450,14 +417,12 @@ func TestARemovalOfAConvertedIssuesDocumentWeighsAndTakesOutItsOwnFragment(t *te
 	}
 }
 
-// A removal of a document of a converted issue reads what cites the document only once the room's
-// index holds every write of the room: an upload citing the document, made while another fragment
-// of the room holds an edit no version holds yet, is not indexed by its own request, which leaves
-// the room's index owed to the room's settlement, and until that pass runs the removal of the cited
-// document is refused as one to retry, and the document stays (T12b of dispatch://INFRA-1253's
-// plan). The pass cannot run in the removal's transaction while the spec's edit is unsettled, for
-// the reason the request's could not.
-func TestARemovalOfADocumentAnOwedRoomIndexMayCiteIsRefusedUntilTheRoomSettles(t *testing.T) {
+// A document of a converted issue that plays no role is a room of its own (R5 of this branch's
+// spec), and so is a document that cites it: an upload citing it, made while the spec's fragment of
+// the issue's room holds an edit no version holds yet, is indexed by its own request, since no
+// other fragment shares its room, so the removal of the cited document is refused at once for the
+// citation, as on an unconverted issue, and never as one the issue room's settlement owes.
+func TestARemovalOfADocumentCitedWhileTheIssueRoomHoldsAnUnsettledEditIsRefusedForTheCitation(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	createRoomProject(t, handler, "CITE")
 	issue, tree := createRoomIssue(t, handler, database, "CITE", "A converted issue", "The spec's words.\n", "")
@@ -465,12 +430,78 @@ func TestARemovalOfADocumentAnOwedRoomIndexMayCiteIsRefusedUntilTheRoomSettles(t
 		t.Fatalf("issue %s holds no tree", issue.Key)
 	}
 	cited := emptyDocument(t, handler, issue.Key, "Cited notes")
+	requireOwnRoom(t, cited)
 	if _, err := replaceDocumentText(database, deps.Docs, issue.PrimaryArtifactID, "The spec's words, edited.\n", model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("edit the spec's fragment: %v", err)
 	}
-	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "Citing notes", "See dispatch://"+issue.Key+"/artifact/"+cited.Slug+" for the rest.\n")
-	assertRemovalRefused(t, handler, "a document an upload cites while the room's index is owed", cited,
-		http.StatusConflict, "ARTIFACT_NOT_UNTOUCHED", notUntouchedSentence(cited, roomIndexOwedReason))
+	citing := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "Citing notes", "See dispatch://"+issue.Key+"/artifact/"+cited.Slug+" for the rest.\n").Artifact
+	requireOwnRoom(t, citing)
+	if indexed := blockIndexVersion(t, database, citing.ID); indexed == nil || *indexed != 1 {
+		t.Fatalf("the citing upload's blocks are indexed at %v, want version 1, by its own request", indexed)
+	}
+	assertRemovalRefused(t, handler, "a document an upload cites while the issue's room holds an unsettled edit", cited,
+		http.StatusConflict, "ARTIFACT_NOT_UNTOUCHED", notUntouchedSentence(cited, "something in Dispatch links to it"))
+}
+
+// A role document of a converted issue holds a fragment of the issue's room, and the removal
+// refuses it for that alone, not only for the role it plays: an operator's erase of its query node
+// (`envoy-dispatch erase --node artifact:<ref_key>`, which deletes the node's row as
+// graphstore.EraseNode does) leaves its row with no role to read, and the removal of the plan,
+// still untouched, answers 409 ARTIFACT_NOT_UNTOUCHED and leaves the room as it stood: the
+// documents it holds and the updates it stores.
+func TestARemovalOfAnIssueRoomsDocumentIsRefusedOnceItsQueryNodeIsErased(t *testing.T) {
+	ctx := context.Background()
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	createRoomProject(t, handler, "FRAG")
+	issue, tree := createRoomIssue(t, handler, database, "FRAG", "A converted issue", "The spec's words.\n", "")
+	if tree == "" {
+		t.Fatalf("issue %s holds no tree", issue.Key)
+	}
+	// A multipart upload always carries its bytes, so plan.md of a blank line is no blank create,
+	// which a role's name refuses, and the store makes its one version empty: an untouched plan.
+	uploaded := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "plan.md"},
+		"plan.md", "text/markdown", []byte("\n"), "alice")
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("upload an empty plan.md: status=%d body=%s", uploaded.Code, uploaded.Body.String())
+	}
+	plan := decodeBody[artifactUploadResponse](t, uploaded).Artifact
+	if plan.Room != tree || plan.Fragment != plan.ID || plan.Role != model.ArtifactRolePlan || len(plan.Versions) != 1 {
+		t.Fatalf("the plan reads room %q fragment %q role %q and %d versions, want room %s, fragment %s, role plan and one version",
+			plan.Room, plan.Fragment, plan.Role, len(plan.Versions), tree, plan.ID)
+	}
+	erased, err := database.Pool.Exec(ctx, `delete from graph_nodes where kind = $1 and id = $2`, graphstore.KindArtifact, plan.RefKey)
+	if err != nil || erased.RowsAffected() != 1 {
+		t.Fatalf("erase the plan's query node %s: %d rows, %v; want its one row", plan.RefKey, erased.RowsAffected(), err)
+	}
+	plan = readDocument(t, handler, plan.ID)
+	if plan.Role != "" || plan.Room != tree {
+		t.Fatalf("the plan reads role %q room %q once its query node is gone, want no role and room %s", plan.Role, plan.Room, tree)
+	}
+	roomDocuments := func() []string {
+		t.Helper()
+		var held []string
+		if err := database.Pool.QueryRow(ctx, `
+			select coalesce(array_agg(artifact_id::text order by artifact_id), '{}') from document_rooms where room = $1::uuid`, tree).Scan(&held); err != nil {
+			t.Fatalf("read the room's documents: %v", err)
+		}
+		return held
+	}
+	documents, updates := roomDocuments(), documentAppendCount(t, database, tree)
+	if want := slices.Sorted(slices.Values([]string{issue.PrimaryArtifactID, plan.ID})); !slices.Equal(documents, want) {
+		t.Fatalf("the room holds %v, want the spec and the plan, %v", documents, want)
+	}
+
+	assertRemovalRefused(t, handler, "a document of the issue's room that reads no role", plan,
+		http.StatusConflict, "ARTIFACT_NOT_UNTOUCHED", notUntouchedSentence(plan, "it shares its issue's room with the spec"))
+	if after := roomDocuments(); !slices.Equal(after, documents) {
+		t.Errorf("the room holds %v after the refused removal, want %v", after, documents)
+	}
+	if after := documentAppendCount(t, database, tree); after != updates {
+		t.Errorf("the room stores %d updates after the refused removal, %d before it", after, updates)
+	}
+	if text := artifactTextOf(t, handler, issue.PrimaryArtifactID); !strings.Contains(text, "The spec's words.") {
+		t.Errorf("the spec reads %q after the refused removal, want its words", text)
+	}
 }
 
 // An ask block of a converted document is that document's own ask (the T12b fixes of
@@ -519,18 +550,18 @@ func TestAConvertedDocumentsAskIsItsOwnAndItsAnswerOwesNoCopy(t *testing.T) {
 	}
 }
 
-// Block ids are unique within an issue room, so a copy of the spec uploaded into its own converted
-// issue is no copy of the spec's asks: its ask blocks take ids of their own when its fragment
-// settles, and each opens an ask of its own on the copy, beside the spec's, which keeps its block
-// (the T12b fixes of dispatch://INFRA-1253's plan). The copy rule between an owner's documents
-// (TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks) is that of documents that are each their
-// own room.
-func TestACopyOfASpecUploadedIntoItsConvertedIssueOpensItsOwnAsks(t *testing.T) {
+// A copy of the spec uploaded into its converted issue plays no role, so it is a room of its own
+// beside the issue's room, which holds the spec (R5 of this branch's spec): it keeps the spec's
+// block ids, and its ask block is a copy of the spec's ask, which opens no ask of its own and shows
+// its source's (TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks reads the states), while the
+// issue's room holds the spec alone.
+func TestACopyOfASpecUploadedIntoItsConvertedIssueIsARoomOfItsOwnAndOpensNoAsk(t *testing.T) {
 	ctx := context.Background()
 	handler, database := blockAskHandler(t)
 	spec := "Context\n\n:::ask{#rec-open urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
 	issue := createInteractionIssue(t, handler, "COPY", "A copy in its own room", spec)
-	if tree, err := issueTreeOf(ctx, database.Pool, issue.Key); err != nil || tree == "" {
+	tree, err := issueTreeOf(ctx, database.Pool, issue.Key)
+	if err != nil || tree == "" {
 		t.Fatalf("the tree of %s is %q (%v), want the issue born converted", issue.Key, tree, err)
 	}
 	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "rec-open", "Which region?")
@@ -543,36 +574,22 @@ func TestACopyOfASpecUploadedIntoItsConvertedIssueOpensItsOwnAsks(t *testing.T) 
 	}
 	copied := decodeBody[struct {
 		Artifact model.Artifact `json:"artifact"`
-	}](t, uploaded).Artifact.ID
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		var own *model.Ask
-		listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/asks?state=all", nil, "alice")
-		asks := decodeBody[[]model.Ask](t, listed)
-		for index, ask := range asks {
-			if ask.BlockArtifact != nil && ask.BlockArtifact.ID == copied {
-				own = &asks[index]
-			}
-		}
-		if own != nil {
-			if own.ID == source || own.BlockID == nil || *own.BlockID == "rec-open" || own.State != "open" || own.Question != "Which region?" {
-				t.Fatalf("the copy's ask = %#v, want an open ask of its own under an id of its own", own)
-			}
-			if len(asks) != 2 {
-				t.Fatalf("the issue holds %d asks, want the spec's and the copy's: %#v", len(asks), asks)
-			}
-			if again := blockAskID(t, handler, issue.Key, "rec-open"); again != source {
-				t.Fatalf("the spec's block rec-open indexes %s, was %s", again, source)
-			}
-			if text := artifactTextOf(t, handler, copied); strings.Contains(text, "copied_from") || strings.Contains(text, "#rec-open") {
-				t.Fatalf("the copy's text still reads as a copy of the spec's ask:\n%s", text)
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the copy never opened an ask of its own: %#v", asks)
-		}
-		time.Sleep(20 * time.Millisecond)
+	}](t, uploaded).Artifact
+	requireOwnRoom(t, copied)
+	// The copy's settlement writes its copied_from, which the text read renders on its block.
+	awaitTextShows(t, handler, copied.ID, "the copy of the spec's open ask", contains(
+		`#rec-open urgency="med" multiple="false" state="open" copied_from="`+source+`"`,
+	), nil)
+	asks := decodeBody[[]model.Ask](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/asks?state=all", nil, "alice"))
+	if len(asks) != 1 || asks[0].ID != source {
+		t.Fatalf("the issue holds the asks %#v, want the spec's %s alone: the copy opens none of its own", asks, source)
+	}
+	var joined []string
+	if err := database.Pool.QueryRow(ctx, `select coalesce(array_agg(artifact_id::text), '{}') from document_rooms where room = $1::uuid`, tree).Scan(&joined); err != nil {
+		t.Fatalf("read the room's documents: %v", err)
+	}
+	if !slices.Equal(joined, []string{issue.PrimaryArtifactID}) {
+		t.Errorf("the issue's room holds the documents %v, want the spec %s alone", joined, issue.PrimaryArtifactID)
 	}
 }
 

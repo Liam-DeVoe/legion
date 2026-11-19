@@ -415,7 +415,7 @@ func TestCheckRefusesEveryMeasuredBodyTheReaderOpensAnAskIn(t *testing.T) {
 	}
 }
 
-// carriageReturnRows are the bodies of INFRA-1201's second measurement: an ask block whose
+// carriageReturnRows are the bodies of the refusal's second measurement: an ask block whose
 // line endings are lone carriage returns, which a browser's own reader ends its lines at and
 // this parser ends none at, so the body reaches the parse here as one line holding no block
 // while the dashboard draws its decision card for it. The rule reads such a body as the reader
@@ -487,7 +487,7 @@ func TestCheckReadsTheLineEndingsTheReaderReads(t *testing.T) {
 	}
 }
 
-// byteOrderMarkRows are the bodies of INFRA-1201's third measurement: an ask block whose
+// byteOrderMarkRows are the bodies of the refusal's third measurement: an ask block whose
 // opening line stands behind a byte-order mark, which the browser's own reader drops before it
 // reads the line and this parser reads as the line's first character, so the body reaches the
 // parse here as a paragraph holding no block while the dashboard draws its decision card for it.
