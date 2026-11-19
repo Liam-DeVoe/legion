@@ -30,7 +30,7 @@ After every push that answers a review, and before you complete, reply on each t
 
 ## A reviewer's text commit
 
-When a reviewer names its text commit to you, that is your last chance to change the text: read the commit in this session, in no phase, and check that it changes no code that runs; where it left you no thread and you change nothing, accept it in a pull-request comment naming the commit and a message to the architect, and push nothing; otherwise push one commit that changes only text, with a comment naming that commit, and tell the reviewer and the architect. The reviewer's message on your role topic names its commit, each repair and each thread it left open, and is what starts this, since the daemon starts no phase for it; send yours with `envoy_publish` to the architect's role topic, and to the reviewer's too when you push.
+When a reviewer names its text commit to you, that is your last chance to change the text: read the commit in this session, in no phase, and check that it changes no code that runs; where it left you no thread and you change nothing, accept it in a pull-request comment naming the commit (`gh pr comment <n> --repo <owner>/<repo> --body …`) and a message to the architect, and push nothing; otherwise push one commit that changes only text, with a comment naming that commit, and tell the reviewer and the architect. The reviewer's message on your role topic names its commit, each repair and each thread it left open, and is what starts this, since the daemon starts no phase for it; send yours with `envoy_publish` to the architect's role topic, and to the reviewer's too when you push.
 
 ## Forward merges
 

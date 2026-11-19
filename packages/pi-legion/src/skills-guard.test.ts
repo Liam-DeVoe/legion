@@ -579,7 +579,12 @@ test("one verdict rule for the reviewer, in every copy", () => {
     "A text finding you cannot push stays the inline review thread you write: one in a workflow file, since the review App holds no `workflows` permission, and every one on a base whose rules require the last push to be approved by someone other than its pusher",
     [prompt("roles/reviewer.md")]
   );
-  const retired = ["prose-only", "push no fix", "a prose fix included", "refuses it `resolveReviewThread`"];
+  const retired = [
+    "prose-only",
+    "push no fix",
+    "a prose fix included",
+    "refuses it `resolveReviewThread`",
+  ];
   const parts = ["roles", "go"].flatMap((dir) =>
     readdirSync(path.join(REPO_ROOT, prompt(dir)), { recursive: true, encoding: "utf8" })
       .filter((name) => name.endsWith(".md"))
@@ -600,8 +605,12 @@ test("one verdict rule for the reviewer, in every copy", () => {
 // hold on `sign_off` until the implementer has answered.
 test("one last chance at the reviewer's text commit for each role, in every copy", () => {
   countedOncePerFile(
-    "When a reviewer names its text commit to you, that is your last chance to change the text: read the commit in this session, in no phase, and check that it changes no code that runs; where it left you no thread and you change nothing, accept it in a pull-request comment naming the commit and a message to the architect, and push nothing; otherwise push one commit that changes only text, with a comment naming that commit, and tell the reviewer and the architect.",
-    [prompt("roles/implementer.md"), prompt("roles/core/implementer.md"), prompt("go/implementer.md")]
+    "When a reviewer names its text commit to you, that is your last chance to change the text: read the commit in this session, in no phase, and check that it changes no code that runs; where it left you no thread and you change nothing, accept it in a pull-request comment naming the commit (`gh pr comment <n> --repo <owner>/<repo> --body …`) and a message to the architect, and push nothing; otherwise push one commit that changes only text, with a comment naming that commit, and tell the reviewer and the architect.",
+    [
+      prompt("roles/implementer.md"),
+      prompt("roles/core/implementer.md"),
+      prompt("go/implementer.md"),
+    ]
   );
   countedOncePerFile(
     "When the implementer then pushes its one text-only commit, read it, resolve each thread you opened, one call per thread, and approve the head it made, by SHA: its text stands, so where you disagree you approve it all the same, or tell the architect when your finding is behavioural.",
@@ -627,12 +636,27 @@ test("every text stating a gate a carried result meets points at the one carry r
     [prompt("roles/core/common.md"), prompt("go/architect-common.md")]
   );
   for (const [part, pointer] of [
-    ["roles/reviewer.md", "nor one carried to it under the carry rule: `REQUEST_CHANGES` naming each such check"],
-    ["roles/reviewer.md", "nor one carried to it under the carry rule, naming each by its block id"],
-    ["roles/core/reviewer.md", "at that head, or carried to it under the carry rule, from the implementer"],
+    [
+      "roles/reviewer.md",
+      "nor one carried to it under the carry rule: `REQUEST_CHANGES` naming each such check",
+    ],
+    [
+      "roles/reviewer.md",
+      "nor one carried to it under the carry rule, naming each by its block id",
+    ],
+    [
+      "roles/core/reviewer.md",
+      "at that head, or carried to it under the carry rule, from the implementer",
+    ],
     ["roles/core/reviewer.md", "carries to it only under the carry rule"],
-    ["roles/architect.md", "or one carried to it under the carry rule your daemon part below states."],
-    ["roles/architect-root.md", "or one carried to it under the carry rule your daemon part below states."],
+    [
+      "roles/architect.md",
+      "or one carried to it under the carry rule your daemon part below states.",
+    ],
+    [
+      "roles/architect-root.md",
+      "or one carried to it under the carry rule your daemon part below states.",
+    ],
     ["go/architect-common.md", "at the approved head or carried to it under the carry rule below"],
     ["go/worker-common.md", "unless the carry rule keeps its pass current across that push"],
   ] as const) {
@@ -647,9 +671,10 @@ test("the read-only paragraph names both writes that stand outside a phase, and 
   countedOncePerFile("Two writes stand outside a phase, and only two, both the implementer's", [
     prompt("go/worker-common.md"),
   ]);
-  countedOncePerFile("the two writes that stand outside a phase are the two your daemon part names", [
-    prompt("roles/mechanics/headless.md"),
-  ]);
+  countedOncePerFile(
+    "the two writes that stand outside a phase are the two your daemon part names",
+    [prompt("roles/mechanics/headless.md")]
+  );
 });
 
 // R3: nothing in Legion holds the merge for an open thread, the reviewer's part says where that
@@ -663,7 +688,9 @@ test("nothing in Legion holds the merge for an open thread, and the merger repor
     "A merge GitHub refuses for an unresolved conversation, on a base whose rules require it: merge nothing, and tell the reviewer and the architect, quoting GitHub's refusal",
     [prompt("roles/merger.md")]
   );
-  countedOncePerFile("Nothing here holds the merge for an open review thread", [prompt("go/merger.md")]);
+  countedOncePerFile("Nothing here holds the merge for an open review thread", [
+    prompt("go/merger.md"),
+  ]);
 });
 
 // R3's first clause, which no reading of prose can keep true: nothing in Legion holds the merge

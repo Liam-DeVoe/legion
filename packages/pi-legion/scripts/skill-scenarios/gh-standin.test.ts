@@ -6777,10 +6777,29 @@ test("the sweep reads every spelling a role text writes a gh call in", () => {
   ]);
   expect(routeOf(commandsIn(text)[0]?.argv ?? [])?.kind).toBe("read");
   expect(routeOf(commandsIn(text)[1]?.argv ?? [])?.kind).toBe("write");
+  // A placeholder query (`query=…`, as headless.md writes the reads `legion gh` runs since
+  // cybermonklabs/legion#4035, or `query=<query>`) names a class of reads, not a query a call
+  // sends, so like a bare `gh api graphql` it names no route and is no unread query either; a
+  // query the parser cannot read still is.
+  const placeholders = mkdtempSync(path.join(tmpdir(), "gh-standin-sweep-"));
+  made.push(placeholders);
+  mkdirSync(path.join(placeholders, "skills"));
+  writeFileSync(
+    path.join(placeholders, "skills", "reads.md"),
+    "It runs `gh api graphql -f query=…` and `gh api graphql -f query=<query>`.\nNot `gh api graphql -f query='query{'`.\n"
+  );
+  expect(sweep(placeholders)).toEqual({
+    named: [],
+    unread: [{ file: "skills/reads.md", line: 2, command: "gh api graphql -f query=query{" }],
+  });
 });
 
 // The merge gate's own reads and the thread listing are the ones a reviewer makes on every head.
 // Catches a sweep that reads none of them, which pins nothing of the reads round 17 lost runs on.
+// cybermonklabs/legion#4447 cut merge-gate.md to what the role prompts do not say, so each read
+// is pinned where main now names it: the commit statuses and the base's required set in
+// merge-gate.md, the head's check runs, runs and jobs (and the base's required set again) in the
+// reviewer's daemon part, and the compare and repository reads in the merger's part.
 test("the sweep finds the merge gate's reads and the review-thread query", () => {
   const { named } = sweep(CHECKOUT);
   const of = (file: string) =>
@@ -6788,14 +6807,21 @@ test("the sweep finds the merge gate's reads and the review-thread query", () =>
   expect([...of("skills/legion-worker/references/merge-gate.md")]).toEqual(
     expect.arrayContaining([
       "GET repos/{}/{}/commits/{}/status",
+      "GET repos/{}/{}/rules/branches/{}",
+      "GET repos/{}/{}/branches/{}",
+    ])
+  );
+  expect([...of("packages/daemon/internal/prompts/go/reviewer.md")]).toEqual(
+    expect.arrayContaining([
       "GET repos/{}/{}/actions/runs",
       "GET repos/{}/{}/actions/runs/{}/jobs",
       "GET repos/{}/{}/commits/{}/check-runs",
       "GET repos/{}/{}/rules/branches/{}",
       "GET repos/{}/{}/branches/{}",
-      "GET repos/{}/{}/compare/{}",
-      "GET repos/{}/{}",
     ])
+  );
+  expect([...of("packages/daemon/internal/prompts/roles/merger.md")]).toEqual(
+    expect.arrayContaining(["GET repos/{}/{}/compare/{}", "GET repos/{}/{}"])
   );
   expect([...of("skills/legion-worker/references/review-threads.md")]).toEqual(
     expect.arrayContaining([

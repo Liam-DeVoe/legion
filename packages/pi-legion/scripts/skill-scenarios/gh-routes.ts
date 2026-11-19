@@ -68,15 +68,24 @@ export function routeOf(argv: readonly string[]): RouteKey | undefined {
   return { key: `${method} ${segments.join("/")}`, kind: method === "GET" ? "read" : "write" };
 }
 
+/** A query a text writes as a placeholder for a class of queries rather than as one it sends:
+ * an ellipsis (`query=…`, as headless.md's account of the reads `legion gh` runs writes it) or
+ * one placeholder in angle brackets (`query=<query>`). */
+const PLACEHOLDER_QUERY = /^(?:…|\.\.\.|<[^<>]+>)$/;
+
 /** The query text a `gh api graphql` call sends in its `query` field, or undefined when it sends
- * none, or sends a file (`-F query=@q.graphql`), whose text a role text does not hold. */
+ * none, sends a file (`-F query=@q.graphql`), whose text a role text does not hold, or names a
+ * class of queries with a placeholder (PLACEHOLDER_QUERY), which, like a bare `gh api graphql`,
+ * names no route. */
 export function graphqlQueryOf(argv: readonly string[]): string | undefined {
   let query: string | undefined;
   for (const index of argv.keys()) {
     const pair = valueAt(argv, index, FIELD_FLAGS);
     if (pair?.startsWith("query=")) query = pair.slice("query=".length);
   }
-  return query === undefined || query.startsWith("@") ? undefined : query;
+  return query === undefined || query.startsWith("@") || PLACEHOLDER_QUERY.test(query)
+    ? undefined
+    : query;
 }
 
 /** Whether the route `key` is one `template` answers: the same method, and a path whose segments
