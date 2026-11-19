@@ -8,4 +8,4 @@ The Oh My Pi plugin a Legion pane loads beside the Envoy plugin (`@sjawhar/pi-le
 
 Its Dispatch client, its listener publisher and the production-Dispatch reader of `scripts/skill-scenarios/` present the `credential` that `ActiveDispatchConfig` and `EnabledEnvoySettings` carry rather than a bearer string, so they work under a deployment whose Dispatch token is the secrets broker's DPoP-bound access token.
 
-Every Dispatch request it makes, the handoff record's read among them, names it in its `User-Agent` as `pi-legion/<version>`, from its own `package.json` (`PI_LEGION_USER_AGENT`, `extensions/legion.ts`). It still calls `/api/v1`, which Dispatch deprecates from the first `legion-envoy` release that carries pull request #4274.
+Every Dispatch request it makes, the handoff record's read among them, names it in its `User-Agent` as `pi-legion/<version>`, from its own `package.json` (`PI_LEGION_USER_AGENT`, `extensions/legion.ts`). It still calls `/api/v1`, which Dispatch deprecates from the first `legion-envoy` release that carries pull request #4274, the release that first serves `/api/v2`.
