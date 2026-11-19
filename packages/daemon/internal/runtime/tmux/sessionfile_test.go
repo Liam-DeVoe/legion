@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"syscall"
 	"testing"
 	"time"
 
@@ -188,6 +189,84 @@ func TestSessionFileOfAnswersASessionItCannotLookAtAsAStoreFault(t *testing.T) {
 	if !errors.Is(err, runtime.ErrSessionStore) || got != "" {
 		t.Fatalf("sessionFileOf over a session it cannot look at = %q, %v; want runtime.ErrSessionStore", got, err)
 	}
+}
+
+// A search that cannot read a place its session may be in is a store that did not answer
+// (runtime.ErrSessionStore), never the session's absence: a sessions directory that is there and
+// cannot be read, a folder of this daemon's own user with its mode taken away, and a folder that
+// fails otherwise, here a link to itself, which stands for an I/O error any user can stage. The
+// recorded path itself is gone in each, so the search is what answers.
+func TestSessionFileOfAnswersAPlaceItCannotReadAsAStoreFault(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a directory whatever its mode")
+	}
+	const name = "2026-10-20T10-00-00-000Z_ses-abc.jsonl"
+	for label, fault := range map[string]func(t *testing.T, sessions, pane string){
+		"a sessions directory it cannot read": func(t *testing.T, _, pane string) {
+			writeSession(t, filepath.Join(pane, "--pane-work--", name), time.Now())
+			unreadable(t, pane)
+		},
+		"a folder of its own user it cannot read": func(t *testing.T, sessions, _ string) {
+			writeSession(t, filepath.Join(sessions, "--pod-work--", name), time.Now())
+			unreadable(t, filepath.Join(sessions, "--pod-work--"))
+		},
+		"a folder that fails otherwise": func(t *testing.T, sessions, _ string) {
+			looped := filepath.Join(sessions, "--looped--")
+			if err := os.MkdirAll(sessions, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(looped, looped); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(label, func(t *testing.T) {
+			sessions, pane := filepath.Join(t.TempDir(), "sessions"), filepath.Join(t.TempDir(), "pane-sessions")
+			fault(t, sessions, pane)
+			got, _, err := sessionFileOf(filepath.Join(sessions, "--legion-workspace--", name), paneAt(pane))
+			if !errors.Is(err, runtime.ErrSessionStore) || got != "" {
+				t.Fatalf("sessionFileOf over %s = %q, %v; want runtime.ErrSessionStore", label, got, err)
+			}
+		})
+	}
+}
+
+// A folder another user owns and denies this daemon's user is no part of this daemon's session
+// store, as a sessions directory such as /tmp holds folders of other users: the search passes it
+// over, and a session found nowhere else reads missing. The folder here is /root, reached through a
+// link the sessions directory holds, so a user other than root can stage it.
+func TestSessionFileOfPassesOverAFolderAnotherUserDenies(t *testing.T) {
+	info, err := os.Stat("/root")
+	if err != nil {
+		t.Skipf("no /root to stand for another user's folder: %v", err)
+	}
+	if _, err := os.ReadDir("/root"); !errors.Is(err, os.ErrPermission) {
+		t.Skipf("this user can read /root (%v), so it stands for no folder another user denies", err)
+	}
+	if owner, ok := info.Sys().(*syscall.Stat_t); !ok || int(owner.Uid) == os.Geteuid() {
+		t.Skip("/root is this user's own, so it stands for no folder another user owns")
+	}
+	sessions := filepath.Join(t.TempDir(), "sessions")
+	if err := os.MkdirAll(sessions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/root", filepath.Join(sessions, "--another-user--")); err != nil {
+		t.Fatal(err)
+	}
+	recorded := filepath.Join(sessions, "--legion-workspace--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
+	got, searched, err := sessionFileOf(recorded, paneAt(filepath.Join(t.TempDir(), "pane-sessions")))
+	if err != nil || got != "" || len(searched) != 2 {
+		t.Fatalf("sessionFileOf beside a folder another user denies = %q, %v, %v; want nothing found in both directories, no error", got, searched, err)
+	}
+}
+
+// unreadable takes every mode bit off dir and gives them back when the test ends.
+func unreadable(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 }
 
 // paneAt is a pane sessions directory that resolves to dir.

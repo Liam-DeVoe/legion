@@ -774,9 +774,10 @@ written by whichever daemon wrote last — so the order matters:
    set — a session no store holds is gone whichever runtime last wrote it — so what this key buys
    is the takeover of the other runtime's locators: a claim whose pod this daemon cannot see is
    resumed without waiting that process out. Each workspace is provisioned before its first launch.
-   A folder of those places the daemon cannot read starts nothing, since the session may be in it:
-   the claim keeps its session, charged nothing, is started again every minute, and the issue and
-   the controller are told at once and then hourly until the folder can be read.
+   A sessions directory or a folder of the daemon's own user there that the daemon cannot read
+   starts nothing, since the session may be in it: the claim keeps its session, charged nothing,
+   is started again every minute, and the issue and the controller are told at once and then
+   hourly until it can be read. A folder another user owns and denies the daemon is passed over.
 4. Retry what failed to launch meanwhile, once the cause is gone: `legion claims retry --failed`
    (an architect relaunches on its session, or on a new one once supervise's `forgetSession` has
    dropped it; a phase worker whose issue is held for its own role retries that phase).

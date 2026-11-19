@@ -29,8 +29,8 @@ import (
 // runtime.ErrSessionStore: the claim waits launching, its session kept and no launch failure
 // charged, and nothing is tried again before the minute is out. Once the folder answers, the
 // minute's try resumes that same session, still charging nothing. The folder is the recorded
-// session's own, or, for a session carried from where it was recorded, one the search for it
-// cannot list: nothing says the session is not in it.
+// session's own, or, for a session carried from where it was recorded, a folder of this daemon's
+// own user that the search for it cannot list: nothing says the session is not in it.
 func TestASessionFolderThatCannotBeReadIsWaitedOutAndTheSameSessionResumed(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads a directory whatever its mode")

@@ -58,8 +58,12 @@ func sessionFileOf(recorded string, paneSessions func() (string, error)) (found 
 // for none. On equal times a file of the recorded name is taken before one of the session id alone.
 // A directory or name holding a glob character is searched nowhere: it would match other sessions.
 // A sessions directory that is not there holds no session, and nor does an entry of it that is no
-// folder; a folder that is there and cannot be read, or a session in it that cannot be looked at,
-// is runtime.ErrSessionStore, since the session may be in it.
+// folder, or a folder another user owns and denies this daemon's user: it is no part of this
+// daemon's session store, as a sessions directory such as /tmp holds folders of other users. A
+// sessions directory that is there and cannot be read, a folder of this daemon's own user that
+// cannot be read, a folder that fails otherwise, or a session in one that cannot be looked at is
+// runtime.ErrSessionStore, since the session may be in it: calling it missing would start a fresh
+// session over the saved one.
 func newestSession(sessions, name string) (string, error) {
 	if strings.ContainsAny(sessions+name, `*?[\`) {
 		return "", nil
@@ -70,14 +74,14 @@ func newestSession(sessions, name string) (string, error) {
 			ofID = "_" + id + ".jsonl"
 		}
 	}
-	folders, err := sessionEntries(sessions)
+	folders, err := sessionEntries(sessions, false)
 	if err != nil {
 		return "", err
 	}
 	var named, identified []string
 	for _, folder := range folders {
 		dir := filepath.Join(sessions, folder.Name())
-		entries, err := sessionEntries(dir)
+		entries, err := sessionEntries(dir, true)
 		if err != nil {
 			return "", err
 		}
@@ -110,16 +114,31 @@ func newestSession(sessions, name string) (string, error) {
 }
 
 // sessionEntries is what dir, a sessions directory or a folder of one, holds: nothing when it is
-// not there or is no directory, and runtime.ErrSessionStore when it is there and cannot be read.
-func sessionEntries(dir string) ([]os.DirEntry, error) {
+// not there or is no directory, or when it is a folder another user owns and denies this daemon's
+// user (othersFolder), and runtime.ErrSessionStore when it is there and cannot be read otherwise.
+func sessionEntries(dir string, folder bool) ([]os.DirEntry, error) {
 	entries, err := os.ReadDir(dir)
-	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || folder && othersFolder(dir, err) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", runtime.ErrSessionStore, err)
 	}
 	return entries, nil
+}
+
+// othersFolder is whether err, the refusal to read dir, is this daemon's user denied a folder that
+// another user owns. A folder whose owner cannot be read is not taken for another's.
+func othersFolder(dir string, err error) bool {
+	if !errors.Is(err, syscall.EACCES) && !errors.Is(err, syscall.EPERM) {
+		return false
+	}
+	info, statErr := os.Stat(dir)
+	if statErr != nil {
+		return false
+	}
+	owner, ok := info.Sys().(*syscall.Stat_t)
+	return ok && int(owner.Uid) != os.Geteuid()
 }
 
 // searchedIn is the sessions directories a search for a session found nothing in (sessionFileOf),
