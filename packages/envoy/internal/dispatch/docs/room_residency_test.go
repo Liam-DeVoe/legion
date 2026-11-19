@@ -1191,9 +1191,10 @@ func parkedCommitTrial() (int, bool) {
 // A write whose commit never returns is the defect TestAWriteSurvivesItsIssueClosingAsItPublishes
 // exists to catch, and the case must report it and end rather than hold its package's cleanup:
 // storetest.Open closes the pool in a cleanup Go runs before it prints the subtest's result
-// (storetest.go:73), and the pool's Close waits for every connection in use, so a transaction
-// left open there costs the whole run its deadline - the -timeout .github/workflows/ci.yaml gives
-// envoy-go-race-docs and envoy-go-docs-finalizers - and prints no --- FAIL line at all. This runs
+// (storetest.go, open), and the pool's Close waits for every connection in use, so a transaction
+// left open there costs the whole run its deadline - the -timeout that
+// .github/workflows/ci-job-envoy-go-race-docs.yaml and ci-job-envoy-go-docs-finalizers.yaml give
+// those jobs - and prints no --- FAIL line at all. This runs
 // the case in a child process of this test binary with one trial's commit parked for good and
 // requires the child to print the case's own --- FAIL line inside a deadline of its own.
 func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
@@ -1208,18 +1209,20 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	// template migration and database clone before that, and storetest's drop of that clone
 	// after it: the parked commit's connection is still open on the clone, so the plain drop is
 	// answered 55006 and tried again for dropWindow, 15 s, before the drop is forced
-	// (pgtemplate.go:243, :260-285), and Main waits for that drop before the binary exits
-	// (storetest.go:80, pgtemplate.go:119-143). Both measurements take it in: 54.56 s in this package's issue pod
-	// under -race and six busy loops on two CPUs, 47.75 s plain. The deadline is three times
-	// that worst measurement, so a slow runner cannot turn a reporting child into this row's red,
-	// and it is minutes below the deadline of any run that holds this package (the -timeout
-	// .github/workflows/ci.yaml gives envoy-go-docs-finalizers and envoy-go-race-docs), so a child
-	// that truly wedges ends in this row's own failure rather than in the parent run's panic.
+	// (pgtemplate.go, dropWindow and drop), and Main waits for that drop before the binary exits
+	// (storetest.go, Main; pgtemplate.go, Harness.Main and MainWith). Both measurements take it in:
+	// 54.56 s in this package's issue pod under -race and six busy loops on two CPUs, 47.75 s
+	// plain. The deadline is three times that worst measurement, so a slow runner cannot turn a
+	// reporting child into this row's red, and it is minutes below the deadline of any run that
+	// holds this package (the -timeout .github/workflows/ci-job-envoy-go-docs-finalizers.yaml and
+	// ci-job-envoy-go-race-docs.yaml give those jobs), so a child that truly wedges ends in this
+	// row's own failure rather than in the parent run's panic.
 	const childDeadline = 180 * time.Second
 	// -test.timeout arms only around the tests (testing.go, M.Run's startAlarm and stopAlarm), so
 	// the deadline above watches none of what the child does after them: storetest.Main's wait for
-	// those drops (pgtemplate.go:135) and the leak report. The template is not dropped: it is named
-	// after the migration set and every test process on the server shares it (pgtemplate.go:116-118).
+	// those drops (pgtemplate.go, MainWith's h.drops.Wait) and the leak report. The template is not
+	// dropped: it is named after the migration set and every test process on the server shares it
+	// (pgtemplate.go, Harness.Main).
 	// A child stuck in one of those would hold this row
 	// until the run that holds this package reached its own deadline, which is the end this row
 	// exists to prevent, so the child is bounded from here too. The margin over childDeadline is

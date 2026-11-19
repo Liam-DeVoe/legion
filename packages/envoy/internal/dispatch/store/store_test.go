@@ -743,7 +743,7 @@ func TestMigrateRecordsTheVersionUnderTheValuesResetGives(t *testing.T) {
 // openIsolatedStoreWithPool opens a store on a database of its own carrying no migration, as
 // openEmptyTestStore does, with a pool of maxConns connections, so a test can hold every
 // connection the pool can give and read each one. It keeps production's discipline, a zero
-// Locking, since TestMigrateCreateVersionTableBoundsTheWidenLock asserts on its five seconds.
+// Locking, since TestMigratePrepareVersionTableBoundsItsAlterLock asserts on its five seconds.
 func openIsolatedStoreWithPool(t *testing.T, maxConns int32) *Store {
 	t.Helper()
 	store, err := Open(context.Background(), templates.Unmigrated(t, testDatabaseURL(t), "dispatch_unmigrated_test_"), WithMaxConns(maxConns))

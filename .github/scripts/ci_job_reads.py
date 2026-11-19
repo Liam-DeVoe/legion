@@ -3896,7 +3896,7 @@ GATES = [
         pinned_step(CLAIM_MODEL_JOB, CLAIM_MODEL_STEP, ENVOY, CLAIM_MODEL_SCRIPT, [
             (ENVOY, [CLAIM_MODEL_PACKAGE], f"go test -run of the sender claim model's two tests in {CLAIM_MODEL_PACKAGE}", {}),
         ]),
-    ], reads=setup_go(CLAIM_MODEL_JOB, f"{ENVOY}/go.mod")),
+    ], reads=setup_go(CLAIM_MODEL_JOB, f"{ENVOY}/go.mod") + service_settings(CLAIM_MODEL_JOB)),
 
     # The lane's three jobs: each step's text and packages come from ENVOY_RACE_LANE, which the
     # envoy-go unit step and its plain companion are built from too. envoy-go-race is pinned

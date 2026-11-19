@@ -4262,6 +4262,8 @@ jobs:
             envoy_go_claim_model:
               - *ci_router
               - '.github/workflows/ci-job-envoy-go-claim-model.yaml'
+              # Its read-back step runs this script.
+              - '.github/scripts/postgres-service-settings.sh'
               - *go_workspace
               - 'packages/envoy/**'
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011, which the step compiles
@@ -5829,9 +5831,10 @@ jobs:
   #
   # Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache,
   # kvwatch, natscred and the NATS auth service share this runner. The Dispatch store's tests read
-  # DISPATCH_TEST_DATABASE_URL and skip without it (store_test.go:30-32), cloning their databases
-  # through a harness of their own (store_test.go:37-44), and delivery's take theirs from
-  # storetest.Open (storetest.go:63-66), which does the same;
+  # DISPATCH_TEST_DATABASE_URL and skip without it (internal/dispatch/store/store_test.go,
+  # testDatabaseURL), cloning their databases through a harness of their own (store_test.go,
+  # templates), and delivery's take theirs from storetest.Open
+  # (internal/dispatch/store/storetest/storetest.go, serverURL), which does the same;
   # cmd/listener/dispatch_resolution_test.go:204 gets its database through internal/testpg, so the
   # job carries the lane's Postgres service; the registry store itself is the NATS KV view, and
   # natscred's and the auth service's tests open no store, so they need none.

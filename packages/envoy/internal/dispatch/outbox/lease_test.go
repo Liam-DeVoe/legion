@@ -565,15 +565,16 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 // only the grace's timer can give: the cut closes the connection, so the loss is reported by the
 // client's own connection event (bus.Client.Connected, internal/bus/nats.go, reads the
 // connection's status), the holder reads its client disconnected and arms one timer of
-// that grace without scanning (lease.go:500-503), and only that timer firing with the client still
-// down ends the turn as NATS lost (lease.go:551-557). The line's stopped attribute, at or before
+// that grace without scanning (lease.go, serve's disconnected timer), and only that timer firing
+// with the client still down ends the turn as NATS lost (lease.go, serve's case on
+// disconnectedFor). The line's stopped attribute, at or before
 // the moment the process stopped publishing, must be natsLossGrace or more past the cut, so a
 // release inside the grace is a holder that gave the hold up early; load can only make that bound
 // safer, since a loaded machine delays the release and never hastens it.
 //
 // How long past the grace the release comes is not bounded: between the grace's timer and the
 // release there is only a run of goroutine wakes - the holder's wake, the timer, serve's return
-// and publish's clearing of the hold (lease.go:443-451) - which is the machine's to say. A bound
+// and publish's clearing of the hold (lease.go, publish) - which is the machine's to say. A bound
 // on it was this row's until it failed on those wakes at 500 ms, under CI's eight concurrent go
 // test calls (run 42949344199) and with 111 test binaries at once (run 43716631673, job
 // 132819560357), and was then widened to 6 s, which made it a reading of the machine. A holder
@@ -614,7 +615,7 @@ func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 		return found
 	})
 	if released["reason"] != string(natsLost) {
-		t.Fatalf("the cut process released the publisher hold for %q, want %q: the cut leaves its client disconnected, and only the grace's timer ends that turn (lease.go:551-557)",
+		t.Fatalf("the cut process released the publisher hold for %q, want %q: the cut leaves its client disconnected, and only the grace's timer ends that turn (lease.go, serve's case on disconnectedFor)",
 			released["reason"], natsLost)
 	}
 	stopped, err := time.Parse(time.RFC3339Nano, released["stopped"])
