@@ -2663,6 +2663,20 @@ func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplace
 	}
 	rig.settleAll()
 
+	// The reader's own control: a turn in the round's own pod, with every worker answered, holds
+	// the replacement, and the line that says so is the one turnWaits reads, naming the round and
+	// the implementer in its working field. Words of that line changed, or that field renamed,
+	// fail here rather than leave the read below finding nothing.
+	rig.envoyTurn(claim.RoleImplementer)
+	held := len(rig.logs.String())
+	rig.tick()
+	if waits := turnWaits(t, rig.logs.String()[held:], podUpdateIssue, podUpdateRound); len(waits) != 1 || !waits[0].names(claim.RoleImplementer) {
+		t.Fatalf("a turn in the round's own pod with every worker answered held the replacement by %d lines %q of issue %s and round %s, want one, naming the implementer under %q: %v",
+			len(waits), podUpdateTurnWaitLine, podUpdateIssue, podUpdateRound, "working", waits)
+	}
+	rig.handle(claim.RoleImplementer, supervise.StreamTurnEnd{Claim: rig.tokens[claim.RoleImplementer]})
+	rig.settleAll()
+
 	// The pod goes, and the displaced path brings both workers back in the pod that replaced
 	// it; one of them is in a turn of its own there when the sweep runs.
 	for _, role := range roles {
@@ -2679,10 +2693,10 @@ func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplace
 
 	// What the sweep itself did, read before the round's end is waited for: a sweep that waited
 	// on the turn instead says so in these three, and leaves the round open behind them. The wait is
-	// read from the lines of this tick by the round and the role in a turn each line names
-	// (turnWaits), so neither a change of its words nor a renamed field changes what is read here.
-	if waits := turnWaits(t, rig.logs.String()[before:], podUpdateRound, claim.RoleImplementer); len(waits) != 0 {
-		t.Errorf("the sweep waited for the turns still running %d times, and that turn is in the pod that replaced this round's own: %s",
+	// read from the lines of this tick by the turn-wait line's own words and the issue and round it
+	// names (turnWaits), whatever else the line holds, and the control above shows the read finds it.
+	if waits := turnWaits(t, rig.logs.String()[before:], podUpdateIssue, podUpdateRound); len(waits) != 0 {
+		t.Errorf("the sweep waited for the turns still running %d times, and that turn is in the pod that replaced this round's own: %v",
 			len(waits), waits)
 	}
 	if lines := loggedLines(t, rig.logs.String(), overAGonePod); len(lines) != 1 {
@@ -2708,78 +2722,47 @@ func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplace
 	}
 }
 
-// turnWait is one line of the daemon's JSON log that names an update round and the roles whose
-// turns run: its message, and the field that names the roles.
-type turnWait struct {
-	msg, field string
+// podUpdateTurnWaitLine is the line that holds a round's replacement for the turns still running
+// (completePodUpdate's waitsForTurn), in the daemon's words.
+const podUpdateTurnWaitLine = "supervise: every worker of this update round but a failed one and one that has left the round's pod has answered; the replacement waits for the turns still running, or for the round's bound"
+
+// turnWait is one turn-wait line of the daemon's JSON log, decoded.
+type turnWait map[string]any
+
+// names is whether the line's working field lists role.
+func (w turnWait) names(role claim.Role) bool {
+	list, _ := w["working"].([]any)
+	return slices.Contains(list, any(string(role)))
 }
 
+// String is the line's fields beside its time, level, message, issue and round, so a failure names
+// the field that names the roles in a turn, under whatever name it has.
 func (w turnWait) String() string {
-	return fmt.Sprintf("the line %q, which names the roles in a turn under %q", w.msg, w.field)
-}
-
-// turnWaits is every line of logs that names round in one of its fields and the roles in a turn in
-// another, read by what it names rather than by its words or its field names: the line that holds a
-// round's replacement for the turns still running names the round and those roles
-// (completePodUpdate's waitsForTurn), so a line of that wait in other words, or with its fields
-// renamed, is read here too, and its failure names the field that named the roles. A field names
-// the roles in a turn where it names each of working, or where it is a list that names none (an
-// empty list, or null): past the round's bound the round counts no turn (roundEnd.holding), so a
-// wait on turns written there lists no role. The caller hands it the lines of one tick, so a line
-// an earlier tick wrote that names the roles for another reason (the ask of the round to them) is
-// not read.
-func turnWaits(t *testing.T, logs, round string, working ...claim.Role) []turnWait {
-	t.Helper()
-	var waits []turnWait
-	for line := range strings.SplitSeq(logs, "\n") {
-		if strings.TrimSpace(line) == "" {
+	var fields []string
+	for _, key := range slices.Sorted(maps.Keys(w)) {
+		switch key {
+		case "time", "level", "msg", "issue", "round":
 			continue
 		}
-		fields := decodedLogLine(t, line)
-		namesRound, roles := false, ""
-		for _, key := range slices.Sorted(maps.Keys(fields)) {
-			if fields[key] == round {
-				namesRound = true
-			}
-			if roles == "" && (namesEachRole(fields[key], working) || listsNoRole(fields[key])) {
-				roles = key
-			}
-		}
-		if namesRound && roles != "" {
-			msg, _ := fields["msg"].(string)
-			waits = append(waits, turnWait{msg: msg, field: roles})
+		value, _ := json.Marshal(w[key])
+		fields = append(fields, fmt.Sprintf("%s=%s", key, value))
+	}
+	return fmt.Sprintf("[the turn-wait line with %s]", strings.Join(fields, " "))
+}
+
+// turnWaits is every turn-wait line of logs (podUpdateTurnWaitLine, selected by its message,
+// loggedMessages) that names issue and round, whatever else it holds: past the round's bound the
+// round counts no turn (roundEnd.holding), so such a line can list no role at all. The caller hands
+// it the lines of one tick.
+func turnWaits(t *testing.T, logs, issue, round string) []turnWait {
+	t.Helper()
+	var waits []turnWait
+	for _, fields := range loggedMessages(t, logs, podUpdateTurnWaitLine) {
+		if fields["issue"] == issue && fields["round"] == round {
+			waits = append(waits, fields)
 		}
 	}
 	return waits
-}
-
-// namesEachRole is whether value, one field of a decoded log line, names each of roles, as a string
-// or a list of strings.
-func namesEachRole(value any, roles []claim.Role) bool {
-	var names []string
-	switch v := value.(type) {
-	case string:
-		names = []string{v}
-	case []any:
-		for _, e := range v {
-			if s, ok := e.(string); ok {
-				names = append(names, s)
-			}
-		}
-	}
-	for _, role := range roles {
-		if !slices.Contains(names, string(role)) {
-			return false
-		}
-	}
-	return len(roles) > 0
-}
-
-// listsNoRole is whether value, one field of a decoded log line, is a list that names no role: an
-// empty list, or null, which is how the daemon's log writes a list it holds none of.
-func listsNoRole(value any) bool {
-	list, isList := value.([]any)
-	return value == nil || (isList && len(list) == 0)
 }
 
 // Two rounds can stand on one group at once while a dead round's end is still on its way: the

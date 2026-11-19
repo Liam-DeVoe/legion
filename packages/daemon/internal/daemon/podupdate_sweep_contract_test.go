@@ -581,6 +581,9 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 	if wrong := r.path.machineStatesRead(base, leaves, at); len(wrong) > 0 {
 		t.Fatalf("the machine's view reads fields this test does not set as a machine holds them: %s", strings.Join(wrong, "; "))
 	}
+	if wrong := r.path.viewStatesRead(base); len(wrong) > 0 {
+		t.Fatalf("the machine's view holds state beside the claim that this test does not put a machine in: %s", strings.Join(wrong, "; "))
+	}
 	checked, owed, refused, fields := 0, 0, 0, 0
 	buf := make([]supervise.Claim, 0, sweepRoleCount)
 	others := make([]supervise.Claim, len(facts))
@@ -630,11 +633,49 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 		}
 	}
 
+	// Each state of the machine's view beside the claim (sweepViewStates), on each kind of claim,
+	// alone, beside a claim of another role and beside a claim of every other role, with every
+	// machine of the group put in that state.
+	views := 0
+	pools := newSweepPools(facts, r.asks)
+	for v := range sweepViewStates {
+		state := &sweepViewStates[v]
+		r.path.view, r.path.taken = state, 0
+		wrong, seen, example := 0, 0, ""
+		for n, i := range kinds {
+			for _, s := range sweepFieldShapes {
+				group := pools.group(buf, i, s.at(n), s.others, nil)
+				asked, misses := r.hold(group)
+				checked += len(group)
+				seen += len(group)
+				owed += asked
+				refused += len(group) - asked
+				wrong += len(misses)
+				if example == "" && len(misses) > 0 {
+					example = s.name + ", " + misses[0]
+				}
+			}
+		}
+		r.path.view = nil
+		if r.path.taken == 0 {
+			t.Errorf("no machine of the %d claims put %s took that state, so this test tried it on no claim", seen, state.what)
+		} else {
+			views++
+		}
+		if wrong > 0 {
+			t.Errorf("with each machine %s (%s), the sweep disagrees with the rule on %d of %d claims, for example %s",
+				state.what, state.field, wrong, seen, example)
+		}
+	}
+
 	blocks := sweepFieldBlocks(sweepFlips(facts, kinds, leaves, at))
 	if missing := sweepUncoveredPairs(facts, kinds, leaves, blocks); len(missing) > 0 {
 		t.Fatalf("%d pairs of fields that a kind of claim leaves empty are set together on it in no set of fields, for example %s", len(missing), missing[0])
 	}
-	groups := sweepKindGroups(facts, kinds, sweepKinds)
+	groups := sweepKindGroups(t, facts, kinds, sweepKinds)
+	if missing := sweepUnmetNeighbours(facts, kinds, groups); len(missing) > 0 {
+		t.Fatalf("%d claims of a role and a state stand beside a kind of claim in no group of every role, for example %s", len(missing), missing[0])
+	}
 	sets, setsWrong := 0, 0
 	for _, block := range blocks {
 		with := func(c supervise.Claim) supervise.Claim {
@@ -679,9 +720,59 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 		t.Errorf("and with %d more sets of fields", setsWrong-10)
 	}
 
+	// Each pair of fields alone: the two set on each kind of claim that leaves both empty, and no
+	// other field, so a filter on a pair that holds only while some third field is empty — a field
+	// of the pair's set above — fails here, and so does a filter that owes a claim the rule refuses
+	// where a pair is set on it. Under -race the pairs are set only on the kinds the sweep asks:
+	// the plain build is where this test holds the logic over every kind, and daemon-go runs it
+	// plain by name for that (raceEnabled); the race build holds the ask and its publish, which run
+	// on the kinds the sweep asks, under the detector, at a cost the race step's bound holds.
+	pairKinds := kinds
+	if raceEnabled {
+		pairKinds = slices.DeleteFunc(slices.Clone(kinds), func(i int) bool { return !r.asks(facts[i]) })
+	}
+	pairs, pairsWrong := 0, 0
+	for a := range leaves {
+		for b := a + 1; b < len(leaves); b++ {
+			wrong, seen, example := 0, 0, ""
+			for _, i := range pairKinds {
+				c := facts[i]
+				if !leaves[a].empty(c) || !leaves[b].empty(c) {
+					continue
+				}
+				leaves[a].set(&c, at)
+				leaves[b].set(&c, at)
+				asked, misses := r.hold(append(buf[:0], c))
+				checked++
+				seen++
+				owed += asked
+				refused += 1 - asked
+				wrong += len(misses)
+				if example == "" && len(misses) > 0 {
+					example = misses[0]
+				}
+			}
+			if seen > 0 {
+				pairs++
+			}
+			if wrong > 0 {
+				if pairsWrong++; pairsWrong <= 10 {
+					t.Errorf("with %s and %s set and no other field, the sweep disagrees with the rule on %d of %d claims, for example %s",
+						leaves[a].name, leaves[b].name, wrong, seen, example)
+				}
+			}
+		}
+	}
+	if pairsWrong > 10 {
+		t.Errorf("and with %d more pairs of fields", pairsWrong-10)
+	}
+
 	opening := sweepKindsOfFacts(facts, factSession, factSession|factLocator)
-	openingGroups := sweepKindGroups(facts, opening, []sweepFact{factSession, factSession | factLocator})
-	opened := 0
+	openingGroups := sweepKindGroups(t, facts, opening, []sweepFact{factSession, factSession | factLocator})
+	if missing := sweepUnmetNeighbours(facts, opening, openingGroups); len(missing) > 0 {
+		t.Fatalf("at the round's opening, %d claims of a role and a state stand beside a claim with a session in no group of every role, for example %s", len(missing), missing[0])
+	}
+	opened, openedWrong := 0, 0
 	openAt := func(label string, set func(*supervise.Claim)) {
 		build := func(i int) supervise.Claim {
 			c := facts[i]
@@ -712,13 +803,19 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 		}
 		opened++
 		if wrong > 0 {
-			t.Errorf("at the tick that opens the round, %s, the sweep disagrees with the rule on %d of %d claims, for example %s; want the round posted to each claim with a session that has not retired, and no ask, since no claim records the round yet",
-				label, wrong, seen, example)
+			if openedWrong++; openedWrong <= 10 {
+				t.Errorf("at the tick that opens the round, %s, the sweep disagrees with the rule on %d of %d claims, for example %s; want the round posted to each claim with a session that has not retired, and no ask, since no claim records the round yet",
+					label, wrong, seen, example)
+			}
 		}
 	}
 	openAt("with no field set", func(*supervise.Claim) {})
+	opens := func(l claimLeaf) bool {
+		_, everyClaimSets := sweepFieldsEveryClaimSets[l.top]
+		return !everyClaimSets
+	}
 	for _, leaf := range leaves {
-		if _, everyClaimSets := sweepFieldsEveryClaimSets[leaf.top]; everyClaimSets {
+		if !opens(leaf) {
 			continue
 		}
 		openAt("with "+leaf.name+" set", func(c *supervise.Claim) {
@@ -727,12 +824,28 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 			}
 		})
 	}
-	if fields == 0 || sets == 0 || opened < 2 || owed == 0 || refused == 0 {
-		t.Fatalf("checked %d claims over %d fields, %d sets of fields and %d openings, %d owed and %d refused: a set with no field, no set of fields or no opening tried, or no owed or no refused claim, shows nothing",
-			checked, fields, sets, opened, owed, refused)
+	for _, block := range blocks {
+		block = slices.DeleteFunc(slices.Clone(block), func(l int) bool { return !opens(leaves[l]) })
+		if len(block) < 2 {
+			continue
+		}
+		openAt("with "+sweepLeafNames(leaves, block)+" set together", func(c *supervise.Claim) {
+			for _, l := range block {
+				if leaves[l].empty(*c) {
+					leaves[l].set(c, at)
+				}
+			}
+		})
 	}
-	t.Logf("checked %d claims over %d fields of a claim at every depth, %d sets of them that put every pair together and all of them at once, and the round's opening with each field: %d owed an ask, %d refused one",
-		checked, fields, sets, owed, refused)
+	if openedWrong > 10 {
+		t.Errorf("and at the opening with %d more fields or sets of fields", openedWrong-10)
+	}
+	if fields == 0 || views == 0 || sets == 0 || pairs == 0 || opened < 2 || owed == 0 || refused == 0 {
+		t.Fatalf("checked %d claims over %d fields, %d states of the machine's view, %d sets of fields, %d pairs and %d openings, %d owed and %d refused: a set with no field, no view state, no set of fields, no pair or no opening tried, or no owed or no refused claim, shows nothing",
+			checked, fields, views, sets, pairs, opened, owed, refused)
+	}
+	t.Logf("checked %d claims over %d fields of a claim at every depth, %d states of the machine's view beside the claim, %d sets of fields that put every pair together and all of them at once, in groups that put each kind of claim beside every other role in every state, %d pairs of fields alone, and the round's opening with each field and each set: %d owed an ask, %d refused one",
+		checked, fields, views, sets, pairs, owed, refused)
 }
 
 // The sweep's ask reaches a ready claim the rule owes an ask whatever else the claim holds, through
@@ -778,12 +891,26 @@ func TestPodUpdateTheSweepsAskReachesEveryOwedReadyClaimWhateverElseItHolds(t *t
 		}
 		group := []supervise.Claim{c}
 		path.hold(group)
+		defer path.end()
 		c = group[0]
 		owed, why := c.OwesUpdateAsk(podUpdateRound)
 		want := owed && supervise.SaidReady(c.State)
+		delivered := want
 		path.sweep(group, podUpdatePod, podUpdateRound)
 		if wrong := path.posts(group, podUpdateRound, false); len(wrong) > 0 {
 			t.Errorf("%s: %s", label, strings.Join(wrong, "; "))
+		}
+		// A machine held deciding is read by the tick as one that has not answered (roundGroup's
+		// mask), and its decision ends before the lane runs the row, which publishes under the
+		// claim's lock only where the rule still owes the claim an ask as the decision left it.
+		path.letGo()
+		if h := path.held[c.Token]; h != nil && h.deciding {
+			read := c
+			read.UpdateSignalledAt, read.UpdateHead = nil, ""
+			readOwed, _ := read.OwesUpdateAsk(podUpdateRound)
+			afterOwed, _ := h.machine.View().Claim.OwesUpdateAsk(podUpdateRound)
+			want = readOwed && supervise.SaidReady(read.State)
+			delivered = want && afterOwed
 		}
 		queued, others := 0, 0
 		for _, row := range rig.rows(record.OutboxKindUpdateAsk) {
@@ -805,11 +932,11 @@ func TestPodUpdateTheSweepsAskReachesEveryOwedReadyClaimWhateverElseItHolds(t *t
 		}
 		rig.runLane()
 		got := rig.deliveredTo(claim.RoleImplementer) - heard
-		if (queued == 1) != want || queued > 1 || (got == 1) != want || got > 1 {
-			t.Errorf("%s: the tick queued %d rows and the lane delivered %d asks to the ready implementer, state %s; the rule says owed=%t (%v); want one of each exactly where the rule owes one and the agent said it is ready",
-				label, queued, got, c.State, owed, why)
+		if (queued == 1) != want || queued > 1 || (got == 1) != delivered || got > 1 {
+			t.Errorf("%s: the tick queued %d rows and the lane delivered %d asks to the ready implementer, state %s; the rule says owed=%t (%v); want a row exactly where the rule owes one and the agent said it is ready (%t), and an ask delivered where the rule still owes it at the publish (%t)",
+				label, queued, got, c.State, owed, why, want, delivered)
 		}
-		if want {
+		if delivered {
 			owedSeen++
 		} else {
 			refusedSeen++
@@ -825,8 +952,20 @@ func TestPodUpdateTheSweepsAskReachesEveryOwedReadyClaimWhateverElseItHolds(t *t
 		fields++
 		try("with "+leaf.name+" set", c)
 	}
-	if fields == 0 || owedSeen == 0 || refusedSeen == 0 {
-		t.Fatalf("tried %d fields, %d owed and %d refused: a test with no field tried, or no owed or no refused case, shows nothing", fields, owedSeen, refusedSeen)
+	views := 0
+	for v := range sweepViewStates {
+		state := &sweepViewStates[v]
+		path.view, path.taken = state, 0
+		try("the control with its machine "+state.what, base)
+		path.view = nil
+		if path.taken == 0 {
+			t.Errorf("the ready implementer's machine did not take the state of its view %s (%s), so this test tried it on no claim", state.what, state.field)
+		} else {
+			views++
+		}
 	}
-	t.Logf("tried the control and %d fields of a claim at every depth from the tick to the publish: %d owed an ask, %d refused one", fields, owedSeen, refusedSeen)
+	if fields == 0 || views == 0 || owedSeen == 0 || refusedSeen == 0 {
+		t.Fatalf("tried %d fields and %d states of the machine's view, %d owed and %d refused: a test with no field or no view state tried, or no owed or no refused case, shows nothing", fields, views, owedSeen, refusedSeen)
+	}
+	t.Logf("tried the control, %d fields of a claim at every depth and %d states of the machine's view beside the claim, from the tick to the publish: %d owed an ask, %d refused one", fields, views, owedSeen, refusedSeen)
 }

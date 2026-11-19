@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,10 +64,16 @@ type sweepPath struct {
 	posted map[claim.Token]*inbox
 	deps   supervise.Deps
 	read   []supervise.Claim
+	// view, where it is set, is the state of the machine's view outside the claim that hold puts
+	// every machine of a group in (sweepViewStates), held is each machine that took it, and taken
+	// counts the machines that took it.
+	view  *sweepViewState
+	held  map[claim.Token]*sweepHeld
+	taken int
 }
 
 func newSweepPath(rig *podUpdateRig) *sweepPath {
-	p := &sweepPath{rig: rig, posted: map[claim.Token]*inbox{}, deps: rig.sup.deps}
+	p := &sweepPath{rig: rig, posted: map[claim.Token]*inbox{}, deps: rig.sup.deps, held: map[claim.Token]*sweepHeld{}}
 	p.deps.Store, p.deps.Clock, p.deps.Log = sweepClaims{rig.sup.deps.Store}, sweepClock{rig.clock}, slog.New(slog.DiscardHandler)
 	rig.s.runtime = steadyPod{rig.rt}
 	rig.sup.mu.Lock()
@@ -81,10 +89,13 @@ func newSweepPath(rig *podUpdateRig) *sweepPath {
 
 // hold puts each claim of group into a machine of its own, in the place of the rig's machine of
 // the claim's token. A claim of a token no machine of the rig holds stays unheld, and holds none of
-// a machine's own state (sweepMachineStates). A claim that sets a field of that state is put to the
-// path as its machine holds it once the machine was driven into that state: group's claim becomes
-// the machine's view of it, so where the machine does not take the state the claim is tried
-// without the field, as a running daemon would hold it.
+// a machine's own state (sweepMachineStates, sweepViewStates). A claim that sets a field of that
+// state is put to the path as its machine holds it once the machine was driven into that state:
+// group's claim becomes the machine's view of it, so where the machine does not take the state
+// the claim is tried without the field, as a running daemon would hold it. Where the path names a
+// state of the view outside the claim (view), each machine of the group is put in it the same
+// way, through the machine's own request, and group's claim becomes its view; a machine that does
+// not take it holds the claim as the request left it.
 func (p *sweepPath) hold(group []supervise.Claim) {
 	p.rig.t.Helper()
 	p.rig.sup.mu.Lock()
@@ -109,10 +120,20 @@ func (p *sweepPath) hold(group []supervise.Claim) {
 		if !ok {
 			continue
 		}
-		m, err := supervise.NewMachine(p.rig.sup.ctx, p.deps, *c)
-		if err != nil {
-			p.rig.t.Fatalf("build the machine of %s: %v", describeSwept(*c), err)
+		if p.view != nil {
+			if len(states) > 0 {
+				p.rig.t.Fatalf("%s holds the machine state %s and is put in the view's %s too: a test tries one at a time", describeSwept(*c), states[0].field, p.view.field)
+			}
+			m, held := p.view.take(p, *c)
+			if held != nil {
+				p.held[c.Token] = held
+				p.taken++
+			}
+			*c = m.View().Claim
+			member.machine = m
+			continue
 		}
+		m := p.machine(p.deps, *c)
 		for _, s := range states {
 			s.drive(p, m, *c)
 		}
@@ -121,6 +142,16 @@ func (p *sweepPath) hold(group []supervise.Claim) {
 		}
 		member.machine = m
 	}
+}
+
+// machine is a machine of its own over c, built on deps.
+func (p *sweepPath) machine(deps supervise.Deps, c supervise.Claim) *supervise.Machine {
+	p.rig.t.Helper()
+	m, err := supervise.NewMachine(p.rig.sup.ctx, deps, c)
+	if err != nil {
+		p.rig.t.Fatalf("build the machine of %s: %v", describeSwept(c), err)
+	}
+	return m
 }
 
 // sweepMachineState is one field of the claim that the machine's view puts over the claim's record
@@ -204,6 +235,219 @@ func (p *sweepPath) machineStatesRead(base supervise.Claim, leaves []claimLeaf, 
 	return wrong
 }
 
+// sweepViewState is one field the machine's view holds beside the claim rather than in it
+// (supervise's ClaimView), from the machine's own memory, with how a test puts a machine in the
+// state it reads. take builds the machine of c over dependencies that hold that state where the
+// test can let it go, and puts the machine in it through the machine's own request; it answers
+// the hold, or nil where the machine did not take the state.
+type sweepViewState struct {
+	field string
+	// what names the state in a test's failure text.
+	what string
+	take func(p *sweepPath, c supervise.Claim) (*supervise.Machine, *sweepHeld)
+}
+
+// sweepHeld is a machine held in a view state. deciding is whether the machine's decision is in
+// flight while the tick reads it — a stop is, and holds the machine's lock until it is let go, so
+// the tick reads that claim as one that has not answered (roundGroup's mask) — and letGo lets such
+// a decision end once the tick has read the group, before the outbox runs its rows, which publish
+// under that lock. end lets the rest go and waits for the machine's own work, once the rows ran.
+type sweepHeld struct {
+	machine  *supervise.Machine
+	deciding bool
+	letGo    func()
+	end      func()
+}
+
+// sweepViewStates is every field of the machine's view outside the claim (supervise's ClaimView,
+// published by Machine.publish), each with how a machine is put in it: a prompt on its way to the
+// agent (SendInFlight), which an operator's task starts on a ready or idle claim over a connection
+// whose prompt waits until the test lets it go; a stop in flight (Stopping), which an operator's
+// suspension of a claim whose process runs holds while the runtime's suspension waits; and a wake
+// the pacing holds (WakeWaiting), which the stale-plugin lane's relaunch of a ready or idle claim
+// on another plugin contract parks where the pacing gives its launch a later moment. A field of the
+// view outside the claim this list does not name fails the field test (sweepPath.viewStatesRead).
+var sweepViewStates = []sweepViewState{
+	{
+		field: "SendInFlight", what: "with a prompt on its way to the agent",
+		take: func(p *sweepPath, c supervise.Claim) (*supervise.Machine, *sweepHeld) {
+			conn := &heldPrompt{Conn: fake.NewConn(), release: make(chan struct{})}
+			deps := p.deps
+			deps.Conns = sweepConns{Conns: p.deps.Conns, token: c.Token, conn: conn}
+			m := p.machine(deps, c)
+			// An operator's own task names no phase, so no phase check drops it, and it is sent at
+			// once to a ready or idle claim with no task in flight.
+			_ = m.Handle(p.rig.ctx, supervise.RequestDeliver{Claim: c.Token, Task: "the operator's task"})
+			end := func() {
+				close(conn.release)
+				m.Wait()
+			}
+			if !m.View().SendInFlight {
+				end()
+				return m, nil
+			}
+			return m, &sweepHeld{machine: m, end: end}
+		},
+	},
+	{
+		field: "Stopping", what: "with its process being stopped",
+		take: func(p *sweepPath, c supervise.Claim) (*supervise.Machine, *sweepHeld) {
+			if c.Locator == nil {
+				c.Locator = podUpdateLocator(c.Token, podUpdateIssue, podUpdatePod)
+			}
+			rt := &heldStop{Runtime: p.deps.Runtime, entered: make(chan struct{}, 1), release: make(chan struct{})}
+			deps := p.deps
+			deps.Runtime = rt
+			m := p.machine(deps, c)
+			decided := make(chan struct{})
+			go func() {
+				defer close(decided)
+				_ = m.Handle(p.rig.ctx, supervise.RequestSuspend{Claim: c.Token, By: supervise.SuspendedByOperator})
+			}()
+			letGo := func() {
+				close(rt.release)
+				<-decided
+			}
+			select {
+			case <-rt.entered:
+			case <-decided:
+				close(rt.release)
+				return m, nil
+			}
+			if !m.View().Stopping {
+				letGo()
+				return m, nil
+			}
+			return m, &sweepHeld{machine: m, deciding: true, letGo: letGo, end: m.Wait}
+		},
+	},
+	{
+		field: "WakeWaiting", what: "with a wake the pacing holds",
+		take: func(p *sweepPath, c supervise.Claim) (*supervise.Machine, *sweepHeld) {
+			// The machine's daemon speaks a later plugin contract than the claim's process, and its
+			// pacing gives every wake a moment an hour on. The relaunch replaces a process, so a
+			// claim that records none is given one in the pod, and its launch check, which asks the
+			// store about the cleanup of the claim's tree (store.CheckLaunch), a lifecycle the test
+			// claims record no tree of, passes.
+			if c.Locator == nil {
+				c.Locator = podUpdateLocator(c.Token, podUpdateIssue, podUpdatePod)
+			}
+			deps := p.deps
+			deps.Store = launchChecked{p.deps.Store}
+			deps.PluginContract = c.PluginContract + 1
+			deps.WakePace = supervise.WakePace{Reserve: func(now time.Time) time.Time { return now.Add(time.Hour) }, Rate: 1, Burst: 1}
+			m := p.machine(deps, c)
+			_ = m.Handle(p.rig.ctx, supervise.StalePlugin{Claim: c.Token, Trigger: "sweep", Admitted: true})
+			if m.View().WakeWaiting == nil {
+				return m, nil
+			}
+			return m, &sweepHeld{machine: m, end: m.Wait}
+		},
+	},
+}
+
+// viewStatesRead reports each field of the machine's view outside the claim that sweepViewStates
+// does not name, and each one it names that the machine of base, put into a machine of its own
+// (hold), does not take.
+func (p *sweepPath) viewStatesRead(base supervise.Claim) (wrong []string) {
+	p.rig.t.Helper()
+	view := reflect.TypeOf(supervise.ClaimView{})
+	for i := range view.NumField() {
+		f := view.Field(i)
+		if f.Anonymous || !f.IsExported() {
+			continue
+		}
+		j := slices.IndexFunc(sweepViewStates, func(s sweepViewState) bool { return s.field == f.Name })
+		if j < 0 {
+			wrong = append(wrong, fmt.Sprintf("the machine's view holds %s beside the claim, from the machine's own memory: name it in sweepViewStates with how a machine is put in that state", f.Name))
+			continue
+		}
+		p.view = &sweepViewStates[j]
+		p.hold([]supervise.Claim{base})
+		_, took := p.held[base.Token]
+		p.letGo()
+		p.end()
+		p.view = nil
+		if !took {
+			wrong = append(wrong, fmt.Sprintf("the machine of %s did not take the state its view reads %s from", describeSwept(base), f.Name))
+		}
+	}
+	return wrong
+}
+
+// letGo lets each machine held deciding end its decision (sweepHeld.letGo).
+func (p *sweepPath) letGo() {
+	for _, h := range p.held {
+		if h.letGo != nil {
+			h.letGo()
+			h.letGo = nil
+		}
+	}
+}
+
+// end lets every held machine go and waits for its own work (sweepHeld.end).
+func (p *sweepPath) end() {
+	p.letGo()
+	for token, h := range p.held {
+		if h.end != nil {
+			h.end()
+		}
+		delete(p.held, token)
+	}
+}
+
+// heldPrompt is a connection whose prompt waits until the test lets it go, so the send a machine
+// starts over it stays in flight (supervise's ClaimView.SendInFlight).
+type heldPrompt struct {
+	*fake.Conn
+	release chan struct{}
+}
+
+func (c *heldPrompt) Prompt(ctx context.Context, deliveryID, message string) error {
+	select {
+	case <-c.release:
+	case <-ctx.Done():
+	}
+	return c.Conn.Prompt(ctx, deliveryID, message)
+}
+
+// sweepConns is the rig's connections with token's in conn's place.
+type sweepConns struct {
+	runtime.Conns
+	token claim.Token
+	conn  runtime.Conn
+}
+
+func (s sweepConns) Conn(token claim.Token) (runtime.Conn, bool) {
+	if token == s.token {
+		return s.conn, true
+	}
+	return s.Conns.Conn(token)
+}
+
+// heldStop is the runtime whose suspension of a process waits until the test lets it go, so the
+// decision that stops the process stays in flight (supervise's ClaimView.Stopping).
+type heldStop struct {
+	runtime.Runtime
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (h *heldStop) Suspend(ctx context.Context, loc runtime.Locator) error {
+	select {
+	case h.entered <- struct{}{}:
+	default:
+	}
+	<-h.release
+	return h.Runtime.Suspend(ctx, loc)
+}
+
+// launchChecked is a machine's store whose launch check passes every launch (sweepViewStates'
+// wake).
+type launchChecked struct{ supervise.Store }
+
+func (launchChecked) CheckLaunch(context.Context, supervise.Claim) error { return nil }
+
 // sweep runs the daemon's tick over group, each claim of it read by the tick in the issue and in a
 // process in pod where a machine holds it, and, where round is not empty, in round with the rig's
 // drift as the reasons it records. An empty round is the tick that opens the round: no claim
@@ -253,7 +497,7 @@ func (p *sweepPath) posts(group []supervise.Claim, round string, opening bool) (
 				ended = true
 				continue
 			}
-			wrong = append(wrong, fmt.Sprintf("the sweep posted %#v to %s, want only PodUpdateOpen or PodUpdateEnded of round %s", ev, token, round))
+			wrong = append(wrong, fmt.Sprintf("the sweep posted a %T to %s, want only PodUpdateOpen or PodUpdateEnded of round %s", ev, sweptToken(token), round))
 		}
 	}
 	for token := range p.posted {
@@ -265,7 +509,7 @@ func (p *sweepPath) posts(group []supervise.Claim, round string, opening bool) (
 				where = "at the round's opening"
 			}
 			wrong = append(wrong, fmt.Sprintf("the sweep posted %s the round %d times, want it posted once exactly where the group holds its claim with a session that has not retired, %s (in the group: %t)",
-				token, n, where, i >= 0))
+				sweptToken(token), n, where, i >= 0))
 		}
 	}
 	if posted && ended {
@@ -401,13 +645,24 @@ func (r *sweepRig) asks(c supervise.Claim) bool {
 }
 
 // drive is hold and open: the tick reads group in round, or at the round's opening where round is
-// empty.
+// empty. A claim whose machine the path holds deciding (sweepHeld) is read by the tick as one that
+// has not answered the round (roundGroup's mask), so the tick asks it as such; its decision ends
+// before the outbox runs its rows, and the ask's row publishes under the claim's lock only where
+// the rule still owes the claim an ask as the decision left it.
 func (r *sweepRig) drive(group []supervise.Claim, round string) (asked int, wrong []string) {
 	r.asked = r.asked[:0]
 	r.path.hold(group)
+	defer r.path.end()
 	listed := unaskedClaims(group, podUpdateRound)
 	r.path.sweep(group, podUpdatePod, round)
 	wrong = r.path.posts(group, podUpdateRound, round == "")
+	r.path.letGo()
+	decided := map[claim.Token]supervise.Claim{}
+	for token, h := range r.path.held {
+		if h.deciding {
+			decided[token] = h.machine.View().Claim
+		}
+	}
 	r.heard.mu.Lock()
 	r.heard.delivered = r.heard.delivered[:0]
 	r.heard.mu.Unlock()
@@ -430,6 +685,19 @@ func (r *sweepRig) drive(group []supervise.Claim, round string) (asked int, wron
 		owed, why := c.OwesUpdateAsk(podUpdateRound)
 		wantListed := c.Session != "" && owed
 		wantAsked := r.asks(c)
+		wantHeard := wantAsked
+		state := ""
+		if h := r.path.held[c.Token]; h != nil {
+			state = ", its machine " + r.path.view.what
+		}
+		if after, ok := decided[c.Token]; ok {
+			read := c
+			read.UpdateSignalledAt, read.UpdateHead = nil, ""
+			wantAsked = r.asks(read)
+			afterOwed, _ := after.OwesUpdateAsk(podUpdateRound)
+			wantHeard = wantAsked && afterOwed
+			state += " and deciding as the tick read it"
+		}
 		gotListed, gotAsked := 0, 0
 		for _, l := range listed {
 			if l.Token == c.Token {
@@ -444,12 +712,12 @@ func (r *sweepRig) drive(group []supervise.Claim, round string) (asked int, wron
 		topic := notify.RoleTopicPrefix + string(c.Token)
 		gotHeard := heard[topic]
 		delete(heard, topic)
-		if wantAsked {
+		if wantHeard {
 			asked++
 		}
-		if (gotListed == 1) != wantListed || gotListed > 1 || (gotAsked == 1) != wantAsked || gotAsked > 1 || (gotHeard == 1) != wantAsked || gotHeard > 1 {
-			wrong = append(wrong, fmt.Sprintf("%s: the sweep's list holds it %d times, the sweep asks it %d times and %d asks reached its role, where the rule says owed=%t (%v), so want it listed %t, and asked once and reached once %t",
-				describeSwept(c), gotListed, gotAsked, gotHeard, owed, why, wantListed, wantAsked))
+		if (gotListed == 1) != wantListed || gotListed > 1 || (gotAsked == 1) != wantAsked || gotAsked > 1 || (gotHeard == 1) != wantHeard || gotHeard > 1 {
+			wrong = append(wrong, fmt.Sprintf("%s%s: the sweep's list holds it %d times, the sweep asks it %d times and %d asks reached its role, where the rule says owed=%t (%v), so want it listed %t, asked once %t and reached once %t",
+				describeSwept(c), state, gotListed, gotAsked, gotHeard, owed, why, wantListed, wantAsked, wantHeard))
 		}
 	}
 	for _, a := range r.asked {
@@ -458,9 +726,19 @@ func (r *sweepRig) drive(group []supervise.Claim, round string) (asked int, wron
 		}
 	}
 	for topic, n := range heard {
-		wrong = append(wrong, fmt.Sprintf("%d asks reached %s, which is the topic of no claim of the group", n, topic))
+		wrong = append(wrong, fmt.Sprintf("%d asks reached the topic of %s, which is no claim of the group", n, sweptToken(claim.Token(strings.TrimPrefix(topic, notify.RoleTopicPrefix)))))
 	}
 	return asked, wrong
+}
+
+// sweptToken names the claim of token by its role and its issue's number, never by the token
+// itself, which holds the issue's key: a failure text a report quotes carries no key form.
+func sweptToken(token claim.Token) string {
+	role, ok := token.Role()
+	if !ok {
+		return "a claim of no role"
+	}
+	return fmt.Sprintf("the %s claim of issue number %s", role, podUpdateIssue[strings.LastIndexByte(podUpdateIssue, '-')+1:])
 }
 
 func describeSwept(c supervise.Claim) string {

@@ -31,12 +31,19 @@ func sweepKindsOfFacts(facts []supervise.Claim, of ...sweepFact) []int {
 	return kinds
 }
 
-// sweepKindGroups is the claims of kinds, of the sets of facts of, each in one group of one claim
-// of every role, so a field set on every claim of a group stands beside claims of every other role,
-// each of a state and a kind of its own: in group (a, k) the role of index r in sweepRoleList holds
-// the claim of the facts of index (k+r) mod len(of), in the state of index (a+r) mod the states.
-// For each state and role a claim is tried in, the claims beside it are of six other states.
-func sweepKindGroups(facts []supervise.Claim, kinds []int, of []sweepFact) [][]int {
+// sweepKindGroups is the claims of kinds, of the sets of facts of, in groups of one claim of every
+// role, so that a field set on every claim of a group stands beside claims of every other role:
+// in the group (b, a, k) the role of index r in sweepRoleList holds the claim of the facts of
+// index (k + b·r) mod len(of), in the state of index (a + b·r) mod the states, for every
+// arrangement b from 0 to the count of states less one. At b = 0 every claim of a group is of one
+// state and one kind, so each claim stands beside a claim of every other role in its own state.
+// The count of states is a prime larger than the count of roles, so over all the arrangements
+// each claim stands beside each other role in each state, and in each kind of of where len(of)
+// is prime too; sweepUnmetNeighbours says where a claim stands beside no claim of some role and
+// state, and the field test fails on it. A state, role and set of facts no claim of kinds holds
+// fails the test, naming them, rather than take some other claim in its place.
+func sweepKindGroups(t *testing.T, facts []supervise.Claim, kinds []int, of []sweepFact) [][]int {
+	t.Helper()
 	states := supervise.States()
 	index := map[[3]int]int{}
 	for _, i := range kinds {
@@ -44,16 +51,58 @@ func sweepKindGroups(facts []supervise.Claim, kinds []int, of []sweepFact) [][]i
 		index[[3]int{slices.Index(states, c.State), sweepRoleIndex(c.Role), slices.Index(of, factsOf(c))}] = i
 	}
 	var groups [][]int
-	for a := range states {
-		for k := range of {
-			g := make([]int, 0, sweepRoleCount)
-			for r := range sweepRoleCount {
-				g = append(g, index[[3]int{(a + r) % len(states), r, (k + r) % len(of)}])
+	for b := range states {
+		for a := range states {
+			for k := range of {
+				g := make([]int, 0, sweepRoleCount)
+				for r := range sweepRoleCount {
+					key := [3]int{(a + b*r) % len(states), r, (k + b*r) % len(of)}
+					i, ok := index[key]
+					if !ok {
+						t.Fatalf("no claim of the kinds tried is a %s %s claim of the facts %s, so no group of every role can hold one",
+							states[key[0]], sweepRoleList[r], of[key[2]])
+					}
+					g = append(g, i)
+				}
+				groups = append(groups, g)
 			}
-			groups = append(groups, g)
 		}
 	}
 	return groups
+}
+
+// sweepUnmetNeighbours is each claim of kinds, with each role other than its own and each state,
+// such that no group of groups puts a claim of that role in that state beside it, named.
+func sweepUnmetNeighbours(facts []supervise.Claim, kinds []int, groups [][]int) (missing []string) {
+	states := supervise.States()
+	beside := map[int][]bool{}
+	for _, g := range groups {
+		for _, i := range g {
+			seen := beside[i]
+			if seen == nil {
+				seen = make([]bool, sweepRoleCount*len(states))
+				beside[i] = seen
+			}
+			for _, j := range g {
+				if j != i {
+					seen[sweepRoleIndex(facts[j].Role)*len(states)+slices.Index(states, facts[j].State)] = true
+				}
+			}
+		}
+	}
+	for _, i := range kinds {
+		for r, role := range sweepRoleList {
+			if role == facts[i].Role {
+				continue
+			}
+			for s, state := range states {
+				if seen := beside[i]; seen == nil || !seen[r*len(states)+s] {
+					missing = append(missing, fmt.Sprintf("a %s %s claim beside %s", state, role, describeSwept(facts[i])))
+				}
+			}
+		}
+	}
+	return missing
 }
 
 // sweepFlips is, for each leaf, whether setting it on some kind of claim changes whether the rule
