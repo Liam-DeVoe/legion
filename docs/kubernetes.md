@@ -320,9 +320,10 @@ Then:
   The value it sends is `postgres://legion_test@127.0.0.1:5433/postgres?sslmode=disable`, the one database every image's server serves, and the pod's launcher replaces it with the DSN that launcher serves, or takes the variable out when it serves none.
   The deployment pins the daemon and the worker image apart, so the process that serves the database is the one that names it: a role is told the database its own pod's server holds, whichever of the two builds is older.
 
-- The **data directory** is `/var/run/legion/roles/testpg` (`LEGION_TESTPG_DIR`), a disk `emptyDir` the daemon mounts there and covers inside every role namespace, so no role can write or corrupt the cluster while its tests use it, and it dies with the pod
+- The **data directory** is `/var/run/legion/roles/testpg` (`LEGION_TESTPG_DIR`), on a volume the daemon mounts there and covers inside every role namespace, so no role can write or corrupt the cluster while its tests use it, and the volume dies with the pod
   — every issue starts on an empty cluster.
-  That `emptyDir` carries no `sizeLimit`, as the role homes volume beside it does not:
+  The volume is a disk `emptyDir`, or, where the deployment sets `runtime.kubernetes.test_postgres_disk`, a disk of its own ("A disk of its own" below).
+  The `emptyDir` carries no `sizeLimit`, as the role homes volume beside it does not:
   what bounds it is the pod's own ephemeral-storage limit, and a runaway test that fills the node's disk through it is evicted with all six roles.
   The WAL settings below bound the server's steady state, not a test writing rows.
 
@@ -342,7 +343,7 @@ Then:
   The server logs every connection with `log_connections=all`: the backend the postmaster forks for a connect writes a `connection received` line with the client's port, then the authentication, the authorization, and the setup time with the fork's share of it.
   With `log_disconnections` it logs each session's end.
   That costs about 350 bytes a connection (measured over 4,241 connections, about half of them refused at `max_connections`), for the pod's life, and the launcher's own `ensure` every 15 seconds is one more connection each time, whose five lines measured 653 bytes, about 3.7 MB a day:
-  the pod's ephemeral-storage limit bounds the log, as it bounds the data directory.
+  whatever bounds the data directory's volume bounds the log as well, which is on that volume.
   So a connect that failed with lines of its own failed in the server, and the log names why;
   a fork the postmaster could not make logs `could not fork new process for connection` instead, with no `connection received` line;
   and a connect with neither line never reached the postmaster.
@@ -375,7 +376,7 @@ Then:
   The `-o` closes the lock's descriptor in the child, without which the server inherits it and every later `ensure` waits on a lock the server holds for the pod's life.
   That connection is a connection: a suite that has taken every slot the server allows (the script's `max_connections`, which `packages/envoy/internal/dispatch/testlimits/testlimits_test.go` holds to `testlimits.ServerConnections` plus Postgres's default superuser reserve) makes each tick's `ensure` fail and log, and spend a slot trying, until the suite gives them back.
 
-- Each run of the script is bounded at 60 s.
+- Each `ensure` is bounded at 60 s, and a reset of a disk of its own at 5 minutes (below).
   The first `ensure` runs before the launcher serves any role, and the daemon gives a pod 120 s to boot by default, so an `ensure` that hangs costs that pod a log line and not its boot.
 
 - A postmaster the node kills comes back within a tick, but **not with what was in it**:
@@ -396,6 +397,66 @@ Then:
 - `template1` carries the `vector` extension, so every database made from it has pgvector, and the Dispatch browser suite runs on a database a role makes for it there (`createdb`, then `DATABASE_URL`).
 
 - The image's own build runs `legion-testpg check` and a real `initdb`, start, `create database` and extension read as the runtime user, so a build whose server package or script stops working fails there rather than at every pod's start.
+
+- **A disk of its own.**
+  `runtime.kubernetes.test_postgres_disk` takes a size, a Kubernetes quantity such as `20Gi`, and is off when absent.
+  The loader refuses a value that is no positive quantity (`runtime.kubernetes.test_postgres_disk must be a positive Kubernetes quantity`), and refuses the key in a file that does not set `test_postgres: true` (`runtime.kubernetes.test_postgres_disk is the disk of the pod's own test database, so it requires runtime.kubernetes.test_postgres: true`), at `legion config check` as at boot.
+  Where it is set, every issue pod that runs the test database keeps the cluster on a generic ephemeral volume of that size in place of the `testpg` `emptyDir`, mounted at the same path:
+  a `ReadWriteOnce` claim on the class the issue's own disk is claimed on (`storage_class`, or the microVM block's in a microVM pod), made with the pod and deleted with it, as the issue's disk is (`issuePod.mainVolumes`, `podkind.go`).
+  The kubelet's ephemeral-storage limit counts a pod's `emptyDir` volumes, its containers' writable layers and its logs, and not a volume a claim provides ([Local ephemeral storage](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#local-ephemeral-storage), [Generic ephemeral volumes](https://kubernetes.io/docs/concepts/storage/ephemeral-volumes/#generic-ephemeral-volumes)), so a test database that fills its disk can no longer get its pod evicted.
+  The daemon then starts the launcher with `--test-postgres-disk` right after `--test-postgres`, which tells it that the free bytes it reads on that disk are the cluster's own, and a launcher given `--test-postgres-disk` without `--test-postgres` refuses to start.
+  The controller's pod, which runs no test database, gets neither the volume nor the flag.
+
+- **The check.**
+  Unlike the `emptyDir`, that disk reports its own size, so the launcher can read the bytes free on it.
+  With `--test-postgres-disk`, the launcher's first `ensure` stays a plain `ensure`, run before any role starts and bounded at 60 s, since the daemon's boot of the pod waits on it.
+  Right after it, and then at each 15-second tick in place of the plain `ensure`, the launcher runs a check of the disk (`checkTestPGDisk`, `packages/daemon/internal/launcher/testpg.go`), which no role's start waits on.
+  Each check first deletes `data.reset` in the cluster's directory where it finds one: the old cluster a reset cut after its rename set aside, which would otherwise hold its bytes for the pod's life.
+  It then reads the disk with `statfs`: the bytes free to a process that is not root (`f_bavail`), as the server finds them, and the disk's size.
+  Under 2 GiB free it resets the cluster, whether the server answers or not; at 2 GiB or more, and where the disk cannot be read, it runs the plain `ensure` and changes nothing else.
+  The floor is far above what the server needs to keep working, and it is set there on purpose:
+  a data-file write that finds no space fails its statement and the server stays up, but a WAL write that finds none makes the server panic, end every connection and start again, over and over while the disk stays full ([Disk Full Failure](https://www.postgresql.org/docs/current/diskusage.html#DISK-FULL)).
+
+- **The reset.**
+  The check runs `legion-testpg reset`, which takes the lock every start takes (`flock` on `.lock` in the cluster's directory, waiting up to 180 s), so it never runs beside a start:
+  a reset that waits for the lock resets the cluster that start made, and an `ensure` that waits for a reset finds the new cluster serving.
+  It runs under a bound of its own, 5 minutes (`testPGResetBound`), and not under the 60 s of an `ensure`.
+  Its steps run in this order.
+  It reads each database's name, owner and size where the server answers, as the cluster's superuser over the socket, which a login out of connections leaves open to it.
+  It stops the server, fast and then immediate, and only where the pid `postmaster.pid` names is a process in the data directory, since a stale file may name any process of the container, a role's among them.
+  It waits up to 60 s until no process has the data directory as its working directory;
+  a process still there at that bound is named and the cluster is left where it is, so the next check under the floor tries again and a reset never moves or deletes what a process still holds.
+  It deletes a `data.reset` an earlier reset left, and moves the data directory aside to `data.reset` in one rename.
+  It makes and starts a new empty cluster as a pod's first `ensure` does, with the DSN's login, `vector` in `template1` and the DSN's database.
+  It deletes `data.reset`, and where that fails the next check deletes it.
+  It then writes its line (next bullet).
+  Because the rename comes before any of the old cluster is deleted, a reset cut at any later step, by its own bound, a restart of the `roles` container or a kill, leaves a data directory with no `PG_VERSION`, or none at all, which the next check rebuilds as `ensure` builds a pod's first cluster, and a `data.reset` that the next check deletes before it reads the free bytes.
+  A reset cut before the rename leaves the old cluster whole where it was, which the next check serves, or resets again while the disk is still under the floor.
+
+- **The reset's line.**
+  A reset writes one line to the `roles` container's log, behind the launcher's own `legion-testpg: ` prefix, and appends the same line to the server's log, after the new cluster's first lines, since the new cluster's `initdb` starts that log over:
+  `legion-testpg: reset the cluster in <data directory>: <free> free of <size> on its disk, under the floor of 2.0 GiB; it held <database> (owner <role>, <size>), …`, each database that is no template, in name order, and each amount in GiB to a tenth, or in MiB below one GiB.
+  Where the server did not answer, the line ends `the server did not answer, so it read no databases`, and where the list failed, `the server answered but the list of its databases failed, so it read none`.
+  `kubectl logs <pod> -c roles | grep 'legion-testpg: reset'` finds it, and a role reads it there or in `$LEGION_TEST_PG_LOG`;
+  `skills/legion-worker/references/tools.md` ("The database your tests use") tells a role what a reset is and where its line is.
+  A reset ends every session on the test database and loses every database in it, as an eviction does, but it ends no role's turn: the new empty cluster serves the same DSN.
+  So a harness that makes a database at each run and never drops it is reset each time it passes the floor, and no pod is evicted for it.
+
+- **What the disk costs.**
+  On the disk the test database runs about as fast as on the `emptyDir`, and each small database it copies takes about 40 ms more:
+  76 ms against 35 ms at the median, so a suite that makes 200 copies runs about 8 s longer (dispatch://INFRA-1117/artifact/crash-causes-2026-11-18-md, "The test database on a persistent disk").
+  Each pod that runs the test database where the key is set holds one more disk, of the key's size, for its life.
+  On a GKE class of balanced persistent disks (`pd-balanced`) that disk costs $0.10 a GB-month in us-west1 ([pd-balanced prices](https://gcloud-compute.com/pd-balanced.html)), so about $2.15 a pod-month at 20 GiB.
+
+- **Rolling the disk out and back.**
+  The key lands only with a `daemonImage` and a worker image that both carry this release:
+  a daemon of an earlier release refuses at boot a key it does not know (`unknown key runtime.kubernetes.test_postgres_disk`), and an older image's launcher refuses the `--test-postgres-disk` flag and has no reset.
+  A change that moves either pin back below this release takes the key out first.
+  This release raises the daemon API contract to 167 (`DaemonAPIVersion`, `packages/daemon/internal/api/version.go`) because the launcher's command line gains `--test-postgres-disk`, so the image probe ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)) pairs a daemon of this release only with a worker image of this release: the two move together.
+  A pod whose key is off gets no such flag, and runs as it did before this release.
+  Setting the key opens no update round, because the shape a pod records (`legion.dev/pod-shape`) does not hold it:
+  a running pod keeps its `emptyDir` until it is replaced, and the pod that replaces it gets the disk.
+  Where the key lands with the image move, that move's own update round replaces each running issue pod.
 
 - **Upgrading.**
   This release refuses one operator mount the release before it took: a `runtime.kubernetes.pod.volume_mounts[].mount_path` at `/var/run/legion/testpg.log` (or `/run/legion/testpg.log`, the same path through the image's link), where role-init now binds the server's log.
@@ -2854,6 +2915,7 @@ runtime:
       resources: { cpu: 1, memory: 4Gi, ephemeral_storage: 2Gi, ephemeral_storage_request: 1Gi }   # the defaults
     setup: [/bin/sh, -c, '<command>']   # optional: run in every role's namespace before each start of its Oh My Pi (below)
     test_postgres: true         # optional, default false: every issue pod's roles container serves its own PostgreSQL for tests (A test database in the pod, above)
+    test_postgres_disk: 20Gi    # optional, default none: the test database's own disk, a generic ephemeral volume of this size that the pod's ephemeral-storage limit does not count; needs test_postgres: true (A test database in the pod, above)
     memory_guard:               # optional: the memory guard in each gVisor issue pod's launcher; a microVM issue pod runs the guest watch instead (The memory guard in an issue pod, Memory in a microVM pod, below)
       issue_pods: { enabled: true, act_percent: 85, floor_percent: 10, wait_seconds: 5, interval_milliseconds: 100 }   # the defaults
 bind: <the daemon host's own address, or 0.0.0.0 once advertise_host names one>
@@ -4272,7 +4334,11 @@ A death the daemon charges for memory, or for the pod's own disk, is told in pla
 - an eviction for the pod's own disk is told as `the kubelet evicted the pod because its container's own disk, outside $TMPDIR, passed its <limit> limit`, with the limit the kubelet's message gives, or the limit the pod's spec holds it to where the message holds one of the kubelet's limit sentences and its limit does not parse; any other `Evicted` end, such as a node's refusal at admission or a node-pressure eviction whose message names no container of this pod over its request, is told with no plain sentence.
 
 Each size is in GiB or MiB, to two decimals with the zeros that end them dropped, so `9437188Ki` reads `9 GiB` and `16082620Ki` reads `15.34 GiB`.
-The role's next task carries the sentence where it says why its process ended, as `Your process ended because <sentence>. The runtime's detail: "<detail>".`, and for either disk eviction, over the pod's disk limit or over its ephemeral-storage request, `Keep large files under $TMPDIR, on the issue's volume.` stands between the sentence and the detail.
+The role's next task carries the sentence where it says why its process ended, as `Your process ended because <sentence>. The runtime's detail: "<detail>".`, and for either disk eviction a note stands between the sentence and the detail.
+After an eviction over the pod's ephemeral-storage request the note is `Keep large files under $TMPDIR, on the issue's volume.` (`diskTask`), since what the kubelet's message counts there is the container's own layer and its logs alone.
+After an eviction for the pod's disk limit the note first says what that limit counts and then where large files go (`diskLimitTask`): `That limit counts each role's home, /tmp and /var/tmp, the container's logs and what is written in the container's own layer. Keep large files under $TMPDIR, on the issue's volume.`
+Where the pod that ended kept its test database in the `testpg` `emptyDir`, which that limit counts, the note also names the test database, between those two sentences: `It also counts the pod's test database, which fills up with the databases test runs make and never drop. Drop each database a test run makes when the run ends.`
+The daemon reads that from the ended pod's own spec (`testDatabaseCounted`, `pod_end.go`) and not from the setting, so a pod made before `runtime.kubernetes.test_postgres_disk` was set is told what its own limit counted, and a pod whose test database is on a disk of its own ([A test database in the pod](#a-test-database-in-the-pod), "A disk of its own"), or that runs none, is told of no database.
 For a `roles` container killed for memory that sentence is the task's one statement that the pod ran out of memory: the note behind it keeps its guidance, that the work can be another role's and the pointer to the worker guide, and drops its own `Your pod ran out of memory.` and the sentence after it (`outOfMemoryNote`), which it still carries whole where the daemon names no limit.
 The claim's `lastDeathCause` opens with the same sentence, as `<sentence>. The runtime's detail: <detail>`.
 So when those deaths fail the claim, the hold notice its architect gets, the controller's copy of it and the `worker-died` beside them carry it as `failure.death`, and for the tree's own architect so does the `worker-died` the controller gets.
@@ -5842,7 +5908,7 @@ the kubelet evicts the pods using more than their request before any pod within 
 The message names each such container in the words `Container roles was using 9437188Ki, request is 8Gi, has larger consumption of memory.`, and an eviction whose message names no container of the pod's own spec is a neighbour's, read as an end from outside the pod and continued.
 An eviction for node disk pressure whose kubelet message names a container of the pod using more ephemeral storage than it requested is such an end too, for the same reason:
 its message names each such container in the words `Container roles was using 7Gi, request is 6Gi, has larger consumption of ephemeral-storage.`, counting as the container's use its own disk, its writable layer and its logs, and never `$TMPDIR`, which is on the issue's volume.
-Disk use in the pod's `emptyDir` volumes on the node's disk — each role's home, `/tmp` and `/var/tmp`, all on the role homes volume, and, where the deployment runs it, the test database — names no container in that message.
+Disk use in the pod's `emptyDir` volumes on the node's disk — each role's home, `/tmp` and `/var/tmp`, all on the role homes volume, and, where the deployment runs it in its `emptyDir` rather than on a disk of its own, the test database — names no container in that message.
 So on a pod whose ephemeral-storage request is below its limit, as at the daemon's defaults of a 6Gi request under an 80Gi limit, a node disk-pressure eviction of such use is read as a neighbour's and continued with no limit, each time on a new pod whose `emptyDir` volumes start empty.
 A pod whose ephemeral-storage request equals its limit is evicted by that limit first, since the pod's limit counts its `emptyDir` volumes too, and that end, `Evicted` with no `DisruptionTarget` condition, is charged as above.
 An end the daemon itself started is its own whatever the pod's status says, so a pod the daemon is releasing that the kubelet then evicts continues no role.

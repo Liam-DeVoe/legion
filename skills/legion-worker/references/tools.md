@@ -64,6 +64,15 @@ heavy run goes where your deployment's instructions say.
   `ensure` only ever installs it at a database's creation.
 - The server is empty in every new pod and dies with it. Every database made from `template1`
   has pgvector.
+- Where your deployment gives the test database a disk of its own
+  (`runtime.kubernetes.test_postgres_disk`), the launcher's 15-second check resets the cluster
+  when that disk has fewer than 2 GiB free. Every database in it is gone, and every session on it
+  ends. A new empty cluster serves the same DSN, and no role's turn ends. So make your suite drop
+  each database it makes. A reset writes one line, `legion-testpg: reset the cluster in …`, with
+  the disk's use and the databases the cluster held, each with its owner and size. It goes to the
+  pod's log: `kubectl logs <pod> -n legion -c roles | grep 'legion-testpg: reset'` shows it. The
+  server's log (`$LEGION_TEST_PG_LOG`) carries the same line, after the new cluster's first lines,
+  because a reset starts that log over.
 - `LEGION_TEST_PG_DSN` set and the connection refused: that is not yours to repair. Starting the
   server is the roles container's launcher's job — it runs `legion-testpg ensure` before any role
   starts and again every 15 seconds — so wait about that interval and try again. Never start a

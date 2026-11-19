@@ -30,12 +30,16 @@ body: |-
   before the runtime's own detail, in the role's next task and in the claim's `lastDeathCause`: the
   `roles` container's memory limit when it ended `OOMKilled`, the container's use and request when
   node pressure evicted the pod for its own memory or ephemeral-storage use, and the disk limit
-  when the kubelet evicted the pod for its own disk; after either disk eviction the task also says
-  to keep large files under `$TMPDIR`. The memory limit's sentence is the task's one statement
-  that the pod ran out of memory: the out-of-memory note behind it keeps only its guidance on
-  heavy work. When those deaths fail the claim, the hold notice and its copies carry the same
-  words in `failure.death`, and the `worker-died` of a tree's own architect now carries `failure`
-  too, so the controller reads them.
+  when the kubelet evicted the pod for its own disk. After an eviction over the ephemeral-storage
+  request the task also says to keep large files under `$TMPDIR`. After one for the disk limit it
+  first says what that limit counts: each role's home, `/tmp` and `/var/tmp`, the container's logs
+  and what is written in the container's own layer. Where the pod kept its test database in an
+  `emptyDir`, which that limit counts, it names the test database too and says to drop each
+  database a test run makes; it then says to keep large files under `$TMPDIR`. The memory limit's
+  sentence is the task's one statement that the pod ran out of memory: the out-of-memory note
+  behind it keeps only its guidance on heavy work. When those deaths fail the claim, the hold
+  notice and its copies carry the same words in `failure.death`, and the `worker-died` of a tree's
+  own architect now carries `failure` too, so the controller reads them.
 
   An issue pod whose CPU or memory request is below its limit no longer carries
   `cluster-autoscaler.kubernetes.io/safe-to-evict`, so such pods can share nodes and burst.
