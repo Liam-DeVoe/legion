@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -121,10 +122,11 @@ func (s *Store) CancelPodBackstopsOf(ctx context.Context, project, issue string)
 	return s.Tx(ctx, func(tx pgx.Tx) error { return CancelPodBackstops(ctx, tx, project, issue, "") })
 }
 
-// TakePodWake takes one wake outside any fact transaction, for the wakes the outbox takes: a
-// notice or a phase-ended message that found the role it is for released. Inside a fact's
-// transaction the workflow takes its four through PodRecords.TakePodWake, which is where taking
-// a wake is written out.
+// TakePodWake takes one wake in a transaction of its own: PodRecords.TakePodWake, for a caller
+// outside any transaction. Like a workflow wake, it takes the wake while a release of the pod
+// still stands. The outbox's delivery wake must take nothing then, so it takes its wake through
+// TakeDeliveryWake. The daemon itself does not call this; tests use it to take a wake as a
+// workflow wake leaves one.
 //
 // project is the project token the claim-keyed tables hold, as it is for every other
 // project-keyed method of this file: the daemon derives it once at boot (claim.ProjectToken,
@@ -138,6 +140,41 @@ func (s *Store) TakePodWake(ctx context.Context, project, issue string, role cla
 		return err
 	})
 	return taken, err
+}
+
+// TakeDeliveryWake takes the wake of the outbox's delivery wake (internal/daemon's
+// wakeForDelivery) in a transaction of its own. While a release mark of issue stands, it writes
+// nothing and answers inRelease. Otherwise it takes the wake as PodRecords.TakePodWake does and
+// answers whether this call took it.
+//
+// The delivery wake waits for any release of the issue that still stands, not only for one that
+// recorded the role. Its resume runs in process (supervise.RequestRuleResume), so no `start` row
+// waits behind the teardown row (record's outboxInOrder), as a workflow wake's `start` does. A
+// resume while the release stands would launch the role in the pod the teardown is about to take.
+// The role on the mark does not show that in time. A release's stop suspends the claim as
+// `released` first, and records the role on the mark after it, in a transaction of its own
+// (ReleaseSuspendedClaim). A wake in that gap reads the role as not recorded and resumes it. The
+// record then names the role, and the release, which no wake of a recorded role cancels
+// (releaseOvertaken), tears the pod down under the resumed role.
+//
+// The mark is read with the take's own lock (lockReleaseMark), in the take's own transaction, so
+// nothing can come between the read and the take. A release's record or cancel that has not
+// committed makes the read wait until it commits. Once the teardown clears the mark, the next call
+// takes the wake against the release the teardown recorded. Once a cancel clears it, the next
+// call takes the wake in the pod that stayed.
+//
+// project is the project token the claim-keyed tables hold, as it is for TakePodWake.
+func (s *Store) TakeDeliveryWake(ctx context.Context, project, issue string, role claim.Role, at time.Time) (taken, inRelease bool, err error) {
+	records := &PodRecords{store: s, project: project}
+	err = s.Tx(ctx, func(tx pgx.Tx) error {
+		var err error
+		if inRelease, err = lockReleaseMark(ctx, tx, project, issue); err != nil || inRelease {
+			return err
+		}
+		taken, err = records.TakePodWake(ctx, tx, issue, role, pods.WakeDelivery, at)
+		return err
+	})
+	return taken, inRelease, err
 }
 
 // ReleasedClaimsIn is every released claim of issue, in a transaction of its own: what the
@@ -493,25 +530,6 @@ func (p *PodRecords) ClaimInReleaseByToken(ctx context.Context, tx pgx.Tx, token
 	return claimInRelease(ctx, tx, `c.token = $2`, p.project, token, "role token")
 }
 
-// ReleaseRecordedRole is whether issue's release mark stands and its suspended set names role: a
-// stop of that release has recorded the role's claim as `released`, and the release's teardown has
-// not finished. The outbox's delivery wake reads it before it takes a wake (internal/daemon's
-// wakeForDelivery). That wake resumes the claim in process, so it has no `start` row to wait
-// behind the teardown row (record's outboxInOrder), and a resume now would launch the role in the
-// pod the teardown is about to take. So the delivery takes nothing while this answers true, and
-// takes its wake once the teardown has recorded the release.
-//
-// It is one statement on the pool, as ClaimStatesIn is: there is nothing for a transaction to
-// make consistent, and the delivery reads it again at its next attempt.
-func (s *Store) ReleaseRecordedRole(ctx context.Context, project, issue string, role claim.Role) (bool, error) {
-	var recorded bool
-	if err := s.pool.QueryRow(ctx, `select exists (select 1 from issue_releases
-		where project = $1 and issue = $2 and $3 = any(suspended))`, project, issue, string(role)).Scan(&recorded); err != nil {
-		return false, fmt.Errorf("read whether the release of %s recorded its %s: %w", issue, role, err)
-	}
-	return recorded, nil
-}
-
 // claimInRelease is the one claim of project that where selects, in a live state, whose issue's
 // release mark stands in issue_releases, with the mark's marked_at, and whether there is one. A
 // claim that is suspended, failed or retired is no release's to hold back: a released claim is a
@@ -569,6 +587,23 @@ func (p *PodRecords) StartQueued(ctx context.Context, tx pgx.Tx, issue string, r
 	return queued, nil
 }
 
+// lockReleaseMark locks issue's release mark, its issue_releases row, `for share`, and answers
+// whether the mark stands. It is a wake's half of the lock order PodRecords.TakePodWake gives: a
+// release's record and its cancel lock the same row `for update`, so each side waits for the
+// other to commit. With no mark there is no row, and nothing is locked.
+func lockReleaseMark(ctx context.Context, tx pgx.Tx, project, issue string) (bool, error) {
+	var one int
+	err := tx.QueryRow(ctx, `select 1 from issue_releases where project = $1 and issue = $2 for share`,
+		project, issue).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("lock the release mark of %s: %w", issue, err)
+	}
+	return true, nil
+}
+
 // TakePodWake takes one wake of issue's role inside the caller's transaction, and is the whole
 // of what taking a wake is: the mark under the wake's own key, the resume recorded against the
 // release that wake ends, and the role's own backstop cancelled. It answers whether this call
@@ -605,32 +640,42 @@ func (p *PodRecords) StartQueued(ctx context.Context, tx pgx.Tx, issue string, r
 // resume at the release it ends (RecordPodRelease). Such a wake does not cancel the release
 // (releaseOvertaken), and its `start` waits for the teardown (record's outboxInOrder), so the role
 // starts once, in the pod that comes back. A cancel of the release for another cause deletes the
-// resume instead (CancelIssueRelease, dropWakesUnderRelease).
+// resume instead (CancelIssueRelease, dropWakesUnderRelease). Only a workflow wake is taken so.
+// The outbox's delivery wake resumes its claim in process, with no `start` to wait for the
+// teardown, so it takes nothing while any release mark of the issue stands, whether or not that
+// release recorded its role (Store.TakeDeliveryWake).
 //
 // The take, the record and the cancel run in different transactions, so the record or the cancel
 // can run while a take has not committed. Under READ COMMITTED a statement reads only what
 // committed before it started. So the three order against each other on the issue's release
-// mark, its issue_releases row. The take locks the mark `for share` before it reads
-// LatestPodRelease. The record and the cancel lock it `for update`. When the take locks first, the
-// record or the cancel waits until the take commits. Its next statement then reads the take's
-// resume: the record points that resume at its release, and the cancel deletes it. When the record
-// or the cancel locks first, the take waits. The take then reads the release the record wrote, or
-// finds the mark gone. With no mark there is no row, and the take locks nothing. Without the
-// lock, a take still open when the record commits keeps the release before, and the record never
-// reads its resume; a take still open when the cancel deletes the wakes leaves its resume behind.
+// mark, its issue_releases row. The take locks the mark `for share` (lockReleaseMark) before it
+// reads LatestPodRelease. The record and the cancel lock it `for update`. When the take locks
+// first, the record or the cancel waits until the take commits. Its next statement then reads the
+// take's resume: the record points that resume at its release, and the cancel deletes it. When
+// the record or the cancel locks first, the take waits. The take then reads the release the
+// record wrote, or finds the mark gone. With no mark there is no row, and the take locks nothing.
+// Without the lock, a take still open when the record commits keeps the release before, and the
+// record never reads its resume; a take still open when the cancel deletes the wakes leaves its
+// resume behind.
+//
+// Two more reads of a wake order on the same lock. The workflow's wake closes a resume whose pod
+// went away before it takes its own (ClosePodGoneResume), in the take's transaction. That close
+// locks the mark `for share` before it reads the newest release, so the take's own lock is held
+// already when the take runs. The delivery wake reads whether a mark stands under that lock, in
+// the take's transaction too (Store.TakeDeliveryWake).
 //
 // This lock order cannot deadlock. The workflow's take and the cancel both take the global fact
-// serializer first (treelifecycle.Serialize), then the mark. The record and the outbox's delivery
-// take hold the mark alone. The teardown's delete of the mark (ClearIssueRelease) waits for a
-// take's share lock, as every delete of a locked row does.
+// serializer first (treelifecycle.Serialize), then the mark. The workflow's close of a gone
+// resume locks the mark in the take's own transaction, after the serializer as well. The record
+// and the outbox's delivery take hold the mark alone. The teardown's delete of the mark
+// (ClearIssueRelease) waits for a take's share lock, as every delete of a locked row does.
 //
 // Every wake runs through here — the four the workflow applies inside a fact's transaction and
-// the delivery wake the outbox takes in one of its own (Store.TakePodWake) — so there is one
+// the delivery wake the outbox takes in one of its own (Store.TakeDeliveryWake) — so there is one
 // account of what a wake writes and one order it writes it in.
 func (p *PodRecords) TakePodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, kind string, at time.Time) (bool, error) {
-	if _, err := tx.Exec(ctx, `select 1 from issue_releases where project = $1 and issue = $2 for share`,
-		p.project, issue); err != nil {
-		return false, fmt.Errorf("lock the release mark of %s: %w", issue, err)
+	if _, err := lockReleaseMark(ctx, tx, p.project, issue); err != nil {
+		return false, err
 	}
 	release, err := LatestPodRelease(ctx, tx, p.project, issue)
 	if err != nil {
@@ -654,6 +699,14 @@ func (p *PodRecords) TakePodWake(ctx context.Context, tx pgx.Tx, issue string, r
 // rather than after a refusal: a resume of a pod still coming back was written after the newest
 // release there is, so no release stands above its own, and the row stands.
 //
+// It locks the issue's release mark `for share` before it reads the newest release, as the take
+// does (lockReleaseMark; PodRecords.TakePodWake gives the lock order). The workflow runs the
+// close and the take in one transaction, so the take's own lock is held already when the take
+// runs. Without the lock here, a release recorded after this read and before the take's lock is
+// missed by the close and read by the take. The take then finds the old resume still open and
+// takes nothing, so the wake is lost while the role's pod is gone: a fired backstop is spent, and
+// a listener's report is dropped.
+//
 // It answers the issue's newest release where it closed a row, and 0 where it closed none, so the
 // caller can say in the log that a pod went away under an open resume. That release is the one
 // standing above the resume's own, which with two releases since the wake is the later of them
@@ -666,6 +719,9 @@ func (p *PodRecords) TakePodWake(ctx context.Context, tx pgx.Tx, issue string, r
 // to, with no release since — is the outbox's to heal, in process, because the claim's own state
 // is what tells it (the delivery wake, internal/daemon's wakeForDelivery).
 func (p *PodRecords) ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (int64, error) {
+	if _, err := lockReleaseMark(ctx, tx, p.project, issue); err != nil {
+		return 0, err
+	}
 	newest, err := newestPodRelease(ctx, tx, p.project, issue)
 	if err != nil {
 		return 0, err

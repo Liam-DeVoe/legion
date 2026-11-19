@@ -6310,8 +6310,10 @@ After that moment, the release's record of a role's claim as `released` is its p
 The release's teardown runs to its end, and the wake's start waits for it, because no start of a role of the issue runs while the issue's teardown row is in the outbox.
 The role then starts once, in the new pod.
 Its task says that its pod was released and that this wake brought it back, and the wake's resume is recorded against that release.
-A notice, phase-ended message, hook prompt or merge-queue removal message for such a role waits in its outbox row, reads the role again every 30 seconds, and wakes the role in the new pod once the teardown has finished.
-A wake of a role that the release did not stop still cancels the release, for example a notice for an architect that an earlier release left `released`.
+A notice, phase-ended message, hook prompt or merge-queue removal message for a `released` role of the issue takes no wake while the release runs, whether or not the release stopped that role.
+It waits in its outbox row, reads the role again every 30 seconds, and wakes the role in the new pod once the teardown has finished.
+Such a message resumes the role inside the daemon, not through a start row, so nothing else keeps that resume out of the pod the teardown deletes.
+A wake of a role that the release did not stop still cancels the release, for example a role message to an architect that an earlier release left `released`.
 So do a phase start of any role of the pod and a claim of the pod that starts or holds a process again.
 A release can still be cancelled after such a wake, for another cause: a bundle above 40 MiB or a save that fails, a role stop that meets another role's start, or an issue that leaves the workflow.
 The pod then never goes away, so the cancel deletes the wake's resume and its queued start, and the role starts once, in the same pod.

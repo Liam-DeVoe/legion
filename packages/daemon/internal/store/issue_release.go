@@ -174,8 +174,8 @@ func (m releaseMark) suspendsNoRole() bool { return m.kind == releaseKindUnowned
 //     it did to a claim, because what it did to a claim says too little. The outbox's wake of a
 //     delivery it holds resumes its role by rule (RequestRuleResume), which queues no start row
 //     and moves no last_start_row; and a wake for a claim an earlier release left `released` —
-//     a notice for an architect this release never stopped — touches no claim of the mark's own
-//     set. Either way that role comes back in the pod that still stands, so the release goes
+//     a role message to an architect this release never stopped — touches no claim of the mark's
+//     own set. Either way that role comes back in the pod that still stands, so the release goes
 //     rather than the pod, whatever that claim looks like by the time this reads it;
 //   - a claim of the issue started since the newest start the mark was taken at;
 //   - a live claim in a turn, starting, or whose launch is not yet known — the states the idle
@@ -189,8 +189,8 @@ func (m releaseMark) suspendsNoRole() bool { return m.kind == releaseKindUnowned
 // a wake takes only a released claim, so such a wake came after the record. The release then
 // runs to its end. The wake's `start` waits for the teardown (record's outboxInOrder) and starts
 // the role once, in the pod that comes back, and the release's record points the wake's resume
-// at this release (RecordPodRelease). The outbox's delivery wake takes no wake of such a role
-// until the teardown has finished (internal/daemon's wakeForDelivery). The three claims clauses
+// at this release (RecordPodRelease). The outbox's delivery wake takes no wake at all while the
+// mark stands, of a role in the set or of any other (TakeDeliveryWake). The three claims clauses
 // still read every role of the set, because a claim that started, holds a process or is no
 // longer suspended as `released` is a process that really runs — after an operator's resume,
 // for example — and the pod must not go from under it.

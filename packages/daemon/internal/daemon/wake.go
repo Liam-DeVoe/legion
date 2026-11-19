@@ -42,9 +42,9 @@ const (
 	// attempts, each logged at debug, where its backoff's 64 s would make about 57 of them.
 	parkedWakeBound = 5 * time.Minute
 	// deliveryWakeInRelease is how long a delivery row waits before it reads its role again while
-	// a release that recorded that role's claim as `released` still runs (wakeForDelivery). It is
-	// the delay a listener's wake report takes to read a release again (workflow's
-	// wakeRetryInRelease), and the teardown it waits for is one row of the issue's lifecycle lane.
+	// a release of its issue's pod still stands (wakeForDelivery). It is the delay a listener's
+	// wake report takes to read a release again (workflow's wakeRetryInRelease), and the teardown
+	// it waits for is one row of the issue's lifecycle lane.
 	deliveryWakeInRelease = 30 * time.Second
 	// A wake that has not reached the woken role's first turn within workflow.StrandedReleaseWake
 	// is the same fact two passes read: this one warns about it and marks it (R5), and the
@@ -245,15 +245,22 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // (retry). A released claim this call resumes answers no turn, even where the resume parks: the
 // row waits on its backoff, and its next attempt reads the park.
 //
-// A released claim whose role a release still running has recorded (store's
-// ReleaseRecordedRole) is not woken yet. That release runs to its end whatever wakes the role
-// (store's releaseOvertaken), and a resume here would launch the role in the pod its teardown is
-// about to take. So the call takes nothing and answers, as its error, a routine wait of
-// deliveryWakeInRelease (routineWaiting, wait.Until), whose text names the release it waits for:
-// the attempts stay at debug, and the text is not the wake pacing's. Once the teardown has
-// finished, the row's next attempt takes the wake against the release the teardown recorded and
-// resumes the role in the new pod. Once a cancel has resumed the claim, the next attempt finds it
-// live and publishes.
+// A released claim is not woken while any release of its issue still stands, whether or not that
+// release has recorded this role (store.Store.TakeDeliveryWake). The resume here runs in process,
+// so it does not wait for the release's teardown as a workflow wake's `start` does (record's
+// outboxInOrder), and it would launch the role in the pod the teardown is about to take. The
+// role's record on the mark comes too late to tell: the release's stop suspends the claim as
+// `released` first and records the role after it, in a transaction of its own (store's
+// ReleaseSuspendedClaim). A wake in that gap would resume the role, and the record would then make
+// the release pass over that wake (store's releaseOvertaken) and tear the pod down under it. The
+// store reads the mark under the take's own lock, in the take's own transaction, so nothing comes
+// between the read and the take. While a mark stands, the call takes nothing and answers, as its
+// error, a routine wait of deliveryWakeInRelease (routineWaiting, wait.Until), whose text names
+// the release it waits for: the attempts stay at debug, and the text is not the wake pacing's.
+// Once the teardown has cleared the mark, the row's next attempt takes the wake against the
+// release the teardown recorded and resumes the role in the new pod. Once a cancel has cleared
+// it, the next attempt finds the claim live again, as the cancel resumed it, and publishes; a
+// claim the cancel did not resume is still released, and the attempt wakes it in the same pod.
 //
 // The role's one open resume is what makes the wake one wake however often the row retries, so a
 // notice that backs off for ten minutes resumes the claim once. A claim of an issue that has left
@@ -292,17 +299,13 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	if root == nil || !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
 		return false, time.Time{}, nil
 	}
-	recorded, err := r.trees.ReleaseRecordedRole(ctx, r.project, issue.Key, held.Role)
+	taken, inRelease, err := r.trees.TakeDeliveryWake(ctx, r.project, issue.Key, held.Role, r.now().UTC())
 	if err != nil {
 		return false, time.Time{}, err
 	}
-	if recorded {
+	if inRelease {
 		return false, time.Time{}, routineWaiting{err: wait.Until(r.now().UTC().Add(deliveryWakeInRelease),
 			fmt.Sprintf("a wake for %s waits for the release of %s's pod to finish", detail, issue.Key))}
-	}
-	taken, err := r.trees.TakePodWake(ctx, r.project, issue.Key, held.Role, pods.WakeDelivery, r.now().UTC())
-	if err != nil {
-		return false, time.Time{}, err
 	}
 	// A wake the role's open resume refused is a pod already on its way back — unless no resume
 	// of that claim ever ran. This take commits before the resume it leads to, and that resume is
