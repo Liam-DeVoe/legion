@@ -183,13 +183,6 @@ type docsWriter struct {
 	steps []docsStep
 	// ready writes what one run needs and answers the run, not yet started.
 	ready func(t *testing.T, ctx context.Context) docsRun
-	// projectKeyShare says the path writes its issue's row a second time - a second event of the
-	// issue, whose append moves the row's last_seq again - and Postgres checks again the foreign
-	// key into projects of a row its own transaction wrote, which takes the project's row
-	// `for key share`. That shows in pg_locks as the row share mode on projects and conflicts with
-	// no lock an event's project is taken with, so only a write of projects counts against such a
-	// path.
-	projectKeyShare bool
 }
 
 // docsRun is one run of a write path.
@@ -234,6 +227,9 @@ const (
 	// docsTupleStatement is graphstore's tuple append for a write that wrote nodes, which states
 	// their base attributes and moves them onto the cause in the same statement (queueAppend).
 	docsTupleStatement = "with written as ("
+	// docsPlainTupleStatement is graphstore's tuple append for a write that wrote no nodes, a
+	// plain insert with nothing to move onto the cause (queueAppend).
+	docsPlainTupleStatement = "insert into graph_tuples ("
 	// docsCursorStatement is the block-index tick's move of its build's event cursor row, which
 	// records whether the tick found another build and the debt of the object pass with it.
 	docsCursorStatement = "insert into block_index_event_cursors (build_commit, event_id, another_build_seen, object_nodes_owed_at)"
@@ -801,10 +797,9 @@ func requireTheDocsOrderAdmits(t *testing.T, writer docsWriter) {
 // and to no lock of a later step, as api's requireEachStepIsWaitedAtInTurn does. A lock several
 // steps show is read for the first of them, the one that takes it. A later step is read by its
 // rows (rowsLocked) and by its table locks of every mode but the two a batch's preparation takes
-// (docsParseTimeMode). Every event these paths append is an issue's, so none of them locks a
-// projects row, but the key share a path that writes its issue's row twice takes of its project's
-// row (docsWriter.projectKeyShare). Held at the revision fence, the write is held to taking no
-// lock besides those as well (requireNothingBetweenTheStepsAndTheFence).
+// (docsParseTimeMode). Every event these paths append is an issue's, so none of them takes a
+// projects row. Held at the revision fence, the write is held to taking no lock besides those as
+// well (requireNothingBetweenTheStepsAndTheFence).
 func requireEachDocsStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig *docsWriterRig, writer docsWriter) {
 	t.Helper()
 	first := map[docsTableLock]int{}
@@ -857,10 +852,10 @@ func requireEachDocsStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig 
 		}
 		// An event's append moves its owner's last_seq in one statement whose arms update issues,
 		// artifacts and projects, so every append holds the row exclusive lock of projects with
-		// no row of it. What an issue's event must not take is a projects row; a path that writes
-		// its issue's row a second time takes its project's row `for key share` in the foreign
-		// key's check (docsWriter.projectKeyShare), which locks no project an event names.
-		if locked := rig.rowsLocked(t, ctx, backend, []string{"projects"}); len(locked) > 0 && !writer.projectKeyShare {
+		// no row of it. What an issue's event must not take is a projects row. The key share a
+		// path that writes its issue's row a second time takes of its project's row, in the
+		// foreign key's check of that row, is no take of it (rowsLocked).
+		if locked := rig.rowsLocked(t, ctx, backend, []string{"projects"}); len(locked) > 0 {
 			t.Errorf("%s held at %s has locked %v: it took the project of its event, which an issue's event does not name",
 				writer.name, step.name, locked)
 		}
@@ -902,11 +897,18 @@ func docsParseTimeMode(mode string) bool {
 // its read of the events right after its event cursor row, so a lock the write holds there that
 // none of those steps takes is one it took between the step before the fence and the fence, and
 // the failure names it. It reads both kinds of lock: the table locks the transaction holds of a
-// mode a statement asks for when it runs (docsParseTimeMode), and the rows it has locked
+// mode a statement asks for when it runs (docsParseTimeMode), and the rows it has taken
 // (rowsLocked), each of which has to be a row a step before the fence names (docsStep's row),
 // since a lock of another row of a table an earlier step locks shows no table lock of its own.
-// Only the fence is held to this: past it, a path takes locks no step of
-// the written order names - a version's row, an ask's row, the share of a row a foreign key reads.
+// Only the fence is held to this: past it, a path takes locks no step of the written order names
+// - a version's row, an ask's row.
+//
+// A path that versions several documents takes a fence for each (docsStep.fence), and each fence
+// after the first comes after the whole version write of the document before it. That fence is
+// checked against the steps declared between the previous fence and this one, the previous fence
+// among them: a row it has taken passes where a step before it names that row, or where one of
+// those steps takes the row's table, so the fence accepts the rows the path's earlier declared
+// steps take and no row of a table none of them declares.
 func (r *docsWriterRig) requireNothingBetweenTheStepsAndTheFence(t *testing.T, ctx context.Context, writer docsWriter, index int, backend uint32, held []docsTableLock) {
 	t.Helper()
 	step := writer.steps[index]
@@ -926,6 +928,20 @@ func (r *docsWriterRig) requireNothingBetweenTheStepsAndTheFence(t *testing.T, c
 			named = append(named, earlier.row)
 		}
 	}
+	// declared is every table a step since the previous fence takes, none before the path's first
+	// fence.
+	declared := map[string]bool{}
+	for previous := index - 1; previous >= 0; previous-- {
+		if writer.steps[previous].order != docsFenceStep {
+			continue
+		}
+		for _, earlier := range writer.steps[previous:index] {
+			for _, lock := range earlier.takes {
+				declared[lock.table] = true
+			}
+		}
+		break
+	}
 	var tables []string
 	for _, lock := range held {
 		if !slices.Contains(tables, lock.table) {
@@ -939,7 +955,7 @@ func (r *docsWriterRig) requireNothingBetweenTheStepsAndTheFence(t *testing.T, c
 	locked := r.rowsLocked(t, ctx, backend, tables)
 	t.Logf("held at %s, %s has locked: %v", step.name, writer.name, locked)
 	for _, row := range locked {
-		if !slices.Contains(named, row) {
+		if !slices.Contains(named, row) && !declared[row.table] {
 			t.Errorf("%s held at %s has locked %s, which no step before it locks: it took that lock between %s and %s, which it takes right after %s (it has locked %v)",
 				writer.name, step.name, row, before, step.name, before, locked)
 		}
@@ -1187,15 +1203,22 @@ func (r *docsWriterRig) locksHeld(t *testing.T, ctx context.Context, backend uin
 	return held
 }
 
-// rowsLocked is every row of tables that backend's transaction has locked, updated or deleted,
-// each named by its table and its primary key, in table and key order. A row lock, an update and
-// a delete each stamp the row's xmax with the transaction's id, which the row keeps while that
-// transaction is open, and a read through the pool still sees the row as it stood before it, so
-// such a row is the one whose xmax is the backend's transaction id (pg_stat_activity's
-// backend_xid). A transaction is given that id by its first row lock or write, so one with none
-// has locked no row. A row two open transactions lock at once carries a multixact rather than
-// either id, which no run of these paths holds at its fence. A table with no primary key names a
-// row by its ctid.
+// rowsLocked is every row of tables that backend's transaction has taken - locked at FOR NO KEY
+// UPDATE strength or stronger, updated or deleted - each named by its table and its primary key,
+// in table and key order. A row lock, an update and a delete each stamp the row's xmax with the
+// transaction's id, which the row keeps while that transaction is open, and a read through the
+// pool still sees the row as it stood before it, so such a row is one whose xmax is the backend's
+// transaction id (pg_stat_activity's backend_xid). A transaction is given that id by its first row
+// lock or write, so one with none has locked no row. A row two open transactions lock at once
+// carries a multixact rather than either id, which no run of these paths holds at its fence. A
+// table with no primary key names a row by its ctid.
+//
+// The key share a foreign key's check takes of the row a new row names stamps that row's xmax as
+// well, and it is no step's lock: it conflicts with no write of the row's other columns, so it
+// orders the path against no writer of that row, and a step that does take the row - an update of
+// it, a `for no key update` - takes a mode the key share does not hold. Such a row is told apart
+// by another transaction's `for no key update skip locked`, which a key share alone does not
+// block, and is left out (keySharedRows); every row that skips is counted.
 func (r *docsWriterRig) rowsLocked(t *testing.T, ctx context.Context, backend uint32, tables []string) []docsRowLock {
 	t.Helper()
 	var xid *string
@@ -1236,9 +1259,44 @@ func (r *docsWriterRig) rowsLocked(t *testing.T, ctx context.Context, backend ui
 		if err != nil {
 			t.Fatalf("read the rows of %s backend %d has locked: %v", table, backend, err)
 		}
+		if len(keys) == 0 {
+			continue
+		}
+		shared := r.keySharedRows(t, ctx, table, key, *xid)
 		for _, key := range keys {
-			locked = append(locked, docsRowLock{table: table, key: key})
+			if !shared[key] {
+				locked = append(locked, docsRowLock{table: table, key: key})
+			}
 		}
 	}
 	return locked
+}
+
+// keySharedRows is, by key, each row of table whose xmax is xid that another transaction locks
+// `for no key update` without waiting: one xid's transaction holds for key share alone, since
+// every stronger lock, an update and a delete each conflict with it and make `skip locked` pass
+// the row over. The probe's transaction rolls back at once and the write it reads is stopped on
+// its hold meanwhile, so the probe's lock delays nothing. It leaves such a row's xmax a multixact
+// of the two transactions, which no later read of rowsLocked lists, and which would not count.
+func (r *docsWriterRig) keySharedRows(t *testing.T, ctx context.Context, table, key, xid string) map[string]bool {
+	t.Helper()
+	probe, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the probe of the rows of %s: %v", table, err)
+	}
+	defer func() { _ = probe.Rollback(context.Background()) }()
+	rows, err := probe.Query(ctx, "select "+key+" from "+pgx.Identifier{table}.Sanitize()+
+		" locked where locked.xmax::text = $1 for no key update of locked skip locked", xid)
+	if err != nil {
+		t.Fatalf("probe the rows of %s for a key share alone: %v", table, err)
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("probe the rows of %s for a key share alone: %v", table, err)
+	}
+	shared := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		shared[key] = true
+	}
+	return shared
 }

@@ -186,7 +186,7 @@ func waitingStatement(t *testing.T, holder pgx.Tx) string {
 // A document of more blocks than a write indexes in its own request writes no block row at all,
 // as it does today, and the block-index reconciliation then writes all three for it - proven by
 // killing the tick's transaction and finding none of them. The tick takes the document's owner
-// row and then its owed row before it writes either, in that order. The item block pass writes
+// lock and then its owed row before it writes either, in that order. The item block pass writes
 // no row of the store. The rebuild writes refs and marks work owed and writes no row of
 // document_blocks, block_refs or comments.
 func TestTheIndexPassesAreStoreWritersAndNoRepairExists(t *testing.T) {
@@ -268,43 +268,59 @@ func TestTheIndexPassesAreStoreWritersAndNoRepairExists(t *testing.T) {
 	requireTheRebuildWritesRefsAndNoProjectedRow(t, database, document)
 }
 
-// requireTheTickLocksTheOwnerThenTheOwedRow holds each of the two rows the tick takes and reads
-// where the tick stops: the owner row first, before it has written anything, and the owed row
-// next, which it only reaches once the owner row is free. Both are taken before any write, so a
+// requireTheTickLocksTheOwnerThenTheOwedRow holds each of the two locks the tick takes and reads
+// where the tick stops: the owner lock first, the transaction advisory lock every writer of the
+// document's issue takes (lockArtifactOwner), before it has written anything, and the owed row
+// next, which it only reaches once the owner lock is free. Both are taken before any write, so a
 // tick that could not take them leaves the document as it found it.
 //
-// Where the tick stops says which row it waits for, not which it already holds, so each step
-// also tries the other row without waiting while the tick waits. Waiting at the owner row, the
+// Where the tick stops says which lock it waits for, not which it already holds, so each step
+// also tries the other lock without waiting while the tick waits. Waiting at the owner lock, the
 // tick must hold nothing yet, so the owed row is free to take; waiting at the owed row, it must
-// hold the owner row already, so the try is refused. A tick that took the two in the other order
+// hold the owner lock already, so the try is refused. A tick that took the two in the other order
 // passes neither try.
 func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Store, service *Service) {
 	t.Helper()
 	ctx := context.Background()
+	// Every document of these tests is issue CORE-1's, so the issue's owner lock is the document's.
+	owner := store.IssueOwner("CORE-1")
+	const owedRow = `select 1 from document_block_versions where artifact_id = $1 for no key update`
 	for _, step := range []struct {
-		name, slug, hold, wantStatement string
-		// other is the row the step does not hold, tried `nowait` while the tick waits, and
-		// otherHeld whether the tick must hold it by then.
-		otherName, other string
-		otherHeld        bool
+		name, slug, wantStatement string
+		hold                      func(holder pgx.Tx, document string) error
+		// other tries the lock the step does not hold, without waiting, while the tick waits, and
+		// answers whether it took it; otherHeld is whether the tick must hold it by then.
+		otherName string
+		other     func(probe pgx.Tx, document string) (bool, error)
+		otherHeld bool
 	}{
 		{
-			name:          "the document's owner row",
+			name:          "the document's owner lock",
 			slug:          "owner-locked",
-			hold:          `select 1 from issues i join artifacts a on a.issue_key = i.key where a.id = $1::uuid for no key update of i`,
-			wantStatement: "from issues",
+			hold:          func(holder pgx.Tx, _ string) error { return store.LockOwner(ctx, holder, owner) },
+			wantStatement: "owner_lock(",
 			otherName:     "the document's owed row",
-			other:         `select 1 from document_block_versions where artifact_id = $1 for no key update nowait`,
-			otherHeld:     false,
+			other: func(probe pgx.Tx, document string) (bool, error) {
+				_, err := probe.Exec(ctx, owedRow+` nowait`, document)
+				var refused *pgconn.PgError
+				if errors.As(err, &refused) && refused.Code == "55P03" {
+					return false, nil
+				}
+				return err == nil, err
+			},
+			otherHeld: false,
 		},
 		{
 			name:          "the document's owed row",
 			slug:          "owed-locked",
-			hold:          `select 1 from document_block_versions where artifact_id = $1 for no key update`,
+			hold:          func(holder pgx.Tx, document string) error { _, err := holder.Exec(ctx, owedRow, document); return err },
 			wantStatement: "document_block_versions",
-			otherName:     "the document's owner row",
-			other:         `select 1 from issues i join artifacts a on a.issue_key = i.key where a.id = $1::uuid for no key update of i nowait`,
-			otherHeld:     true,
+			otherName:     "the document's owner lock",
+			other: func(probe pgx.Tx, _ string) (bool, error) {
+				taken, err := store.TryLockOwners(ctx, probe, owner)
+				return len(taken) == 1, err
+			},
+			otherHeld: true,
 		},
 	} {
 		// A document of its own each step, since the tick indexes the one before it as soon as
@@ -315,7 +331,7 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 		if err != nil {
 			t.Fatalf("begin the holder of %s: %v", step.name, err)
 		}
-		if _, err := holder.Exec(ctx, step.hold, document); err != nil {
+		if err := step.hold(holder, document); err != nil {
 			holder.Rollback(ctx)
 			t.Fatalf("hold %s: %v", step.name, err)
 		}
@@ -336,7 +352,7 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 		if rows := countRows(t, database, "document_blocks", document); rows != 0 {
 			t.Errorf("the tick wrote %d block rows before it had taken %s, want none", rows, step.name)
 		}
-		requireTheOtherRow(t, database, document, step.name, step.otherName, step.other, step.otherHeld)
+		requireTheOtherLock(t, database, document, step.name, step.otherName, step.other, step.otherHeld)
 		if err := holder.Rollback(ctx); err != nil {
 			t.Fatalf("release %s: %v", step.name, err)
 		}
@@ -348,31 +364,30 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 	}
 }
 
-// requireTheOtherRow tries, on a transaction of its own and without waiting, the row the step
+// requireTheOtherLock tries, on a transaction of its own and without waiting, the lock the step
 // does not hold while the tick waits at the one it does. held says whether the tick must hold
-// that row by then: the try is refused (55P03) exactly when it does. The try is rolled back at
-// once, so a row it took is never one the tick then waits for.
-func requireTheOtherRow(t *testing.T, database *store.Store, document, waitingAt, otherName, other string, held bool) {
+// that lock by then: the try is refused exactly when it does. The try is rolled back at once, so a
+// lock it took is never one the tick then waits for.
+func requireTheOtherLock(t *testing.T, database *store.Store, document, waitingAt, otherName string, try func(probe pgx.Tx, document string) (bool, error), held bool) {
 	t.Helper()
 	ctx := context.Background()
 	probe, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the try of %s: %v", otherName, err)
 	}
-	_, tried := probe.Exec(ctx, other, document)
+	taken, tried := try(probe, document)
 	if err := probe.Rollback(ctx); err != nil {
 		t.Fatalf("end the try of %s: %v", otherName, err)
 	}
-	var refused *pgconn.PgError
-	switch taken := !errors.As(tried, &refused) || refused.Code != "55P03"; {
-	case tried != nil && taken:
+	switch {
+	case tried != nil:
 		t.Fatalf("try %s while the tick waits at %s: %v", otherName, waitingAt, tried)
 	case held && taken:
-		t.Errorf("while the tick waited at %s, %s was free to take: the tick takes the owner row, then the owed row, so it holds %s by then",
+		t.Errorf("while the tick waited at %s, %s was free to take: the tick takes the owner lock, then the owed row, so it holds %s by then",
 			waitingAt, otherName, otherName)
 	case !held && !taken:
-		t.Errorf("while the tick waited at %s, %s was already held (%v): the tick takes the owner row, then the owed row, so it holds nothing while it waits for the first",
-			waitingAt, otherName, tried)
+		t.Errorf("while the tick waited at %s, %s was already held: the tick takes the owner lock, then the owed row, so it holds nothing while it waits for the first",
+			waitingAt, otherName)
 	}
 }
 
