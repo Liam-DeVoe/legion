@@ -7427,7 +7427,10 @@ test("an item's failure drawn in place of the outline after the reader moved to 
 // the outline stayed drawn, so the focus fell to the page's body with the mark still set, and no
 // focusout left the box when the reader then pressed a control outside it. The line drawn later
 // took the focus from that control. After an act the line takes the focus only while nothing else
-// holds it as it is drawn.
+// holds it as it is drawn. The read here drops every comment, not the reader's alone, so no row is
+// left for the focus to move to: a focused row a render drops gives the focus to the nearest row
+// still drawn (`IssueTree`), and only where none is left does the focus fall to the page's body,
+// with the mark still set.
 test("a line drawn after the reader's row left the outline and they pressed a control outside it leaves the focus on that control", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -7447,13 +7450,10 @@ test("a line drawn after the reader's row left the outline and they pressed a co
     if (moved === undefined) throw new Error("j left the focus on no row");
 
     await act(async () => {
-      body.client.setQueryData(
-        ["comments", KEY],
-        TWO_THREADS.filter((comment) => comment.id !== moved)
-      );
+      body.client.setQueryData(["comments", KEY], []);
     });
     await waitFor(() => expect(rowsFor(container, moved)).toEqual([]));
-    expect(rowsFor(container, "head-a"), "the outline left the page with the row").not.toEqual([]);
+    expect(body.view.queryByRole("tree"), "the outline left the page with the row").not.toBeNull();
     expect(
       document.activeElement,
       "the row's leaving left the focus on an element, not the page's body"
@@ -7868,6 +7868,84 @@ test("a comment the address landed on that leaves the tree leaves the outline dr
   } finally {
     names.mockRestore();
     read.mockRestore();
+  }
+});
+
+// A read of the comments that answers without the comment whose row holds the focus takes that
+// row out of the tree, and the browser dropped the focus to the page's body with it: the reader's
+// place in the outline was lost, and no row held the focus. The nearest row still drawn takes
+// it, as a key's move gives it - the tab stop and the row's body go with it: the row that now
+// stands where the dropped one stood, or the last row where the tree now ends before that place.
+// The issue holds three comments, each a thread of its own, so each is a row of the tree's top
+// level; `focus` is the key that takes the reader from the first row to `dropped`'s.
+const THREE_COMMENTS: readonly Comment[] = [
+  readComment("first", 1),
+  readComment("second", 2),
+  readComment("third", 3),
+];
+async function dropFocusedComment(
+  focus: string,
+  dropped: string
+): Promise<{ readonly container: HTMLElement; readonly unmount: () => void }> {
+  const user = userEvent.setup();
+  const body = renderAddressedBody(`/issues/${KEY}`, THREE_COMMENTS);
+  const { container } = body.view;
+  await waitFor(() => expect(focusedRow(container)).toBe("first"));
+  await user.keyboard(focus);
+  await waitFor(() => expect(focusedRow(container)).toBe(dropped));
+
+  await act(async () => {
+    body.client.setQueryData(
+      ["comments", KEY],
+      THREE_COMMENTS.filter((comment) => comment.id !== dropped)
+    );
+  });
+  await waitFor(() => expect(rowsFor(container, dropped)).toEqual([]));
+  return { container, unmount: body.view.unmount };
+}
+
+/** Whether the row of `id` is the reader's place in the tree: the tree's one tab stop, its body
+ *  drawn as a focused row's is. */
+async function expectReadersPlace(container: HTMLElement, id: string): Promise<void> {
+  const row = rowsFor(container, id)[0];
+  expect(row?.tabIndex, `the tree's tab stop is not on ${id}'s row, which holds the focus`).toBe(0);
+  await waitFor(() =>
+    expect(
+      row?.querySelector("[data-node-body]"),
+      `${id}'s row holds the focus and draws no body`
+    ).not.toBeNull()
+  );
+}
+
+test("a read that drops the focused comment's row leaves the focus on the row that now stands in its place", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const { container, unmount } = await dropFocusedComment("j", "second");
+    expect(
+      focusedRow(container),
+      "a read that dropped the focused comment's row left the focus on no row of the tree, or not on the next row"
+    ).toBe("third");
+    await expectReadersPlace(container, "third");
+    unmount();
+  } finally {
+    names.mockRestore();
+  }
+});
+
+test("a read that drops the focused comment's row, the tree's last, leaves the focus on the row before it", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const { container, unmount } = await dropFocusedComment("{End}", "third");
+    expect(
+      focusedRow(container),
+      "a read that dropped the tree's last row, which held the focus, left the focus on no row of the tree, or not on the row before it"
+    ).toBe("second");
+    await expectReadersPlace(container, "second");
+    unmount();
+  } finally {
+    names.mockRestore();
   }
 });
 
