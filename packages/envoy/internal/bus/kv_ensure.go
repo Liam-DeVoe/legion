@@ -61,21 +61,23 @@ func namedRequest(request string, err error) error {
 // (context.DeadlineExceeded, context.Canceled or the guard's errHangGuard).
 //
 // A lookup or a create the server leaves unanswered is sent again rather than waited out for
-// longer (sentAgain): nats.go sends each request once, and a member answers neither while its
-// metadata group is younger than lostQuorumInterval or while it has not yet seen its metadata
-// leader go, and a member that is not an existing bucket's stream leader leaves its lookup
-// unanswered while that stream's leader is gone (sentAgain lists the paths). The create of a
-// bucket of more than one copy is answered only once its stream's group has elected its first
-// leader, so on a cluster whose election is slow every send of it can run out unanswered until
-// then. A member that knows it has no leader answers an error instead, which unanswered() does
-// not match and this call still ends on. Every production caller opens its JetStream context with
+// longer (readAgain, sentAgain): nats.go sends each request once, and a member answers neither
+// while its metadata group is younger than lostQuorumInterval or while it has not yet seen its
+// metadata leader go, and a member that is not an existing bucket's stream leader leaves its
+// lookup unanswered while that stream's leader is gone (sentAgain lists the paths). The create of
+// a bucket of more than one copy is answered only once its stream's group has elected its first
+// leader, so on a cluster whose election is slow a send of it can run out unanswered until then.
+// A member that knows it has no leader answers an error instead, which unanswered() does not match
+// and this call still ends on. Every production caller opens its JetStream context with
 // nats.MaxWait(10 * time.Second) (brokerTokens.open in cmd/listener/brokerauth.go, cistore.Open,
 // session.OpenSessionRegistry, store.Open, and the client's own context, Client.install), and
 // legionagents.Open opens its own with nats.MaxWait(openTimeout), the same ten seconds; the
 // known-session bucket's open waits 2 s (internal/session/known.go, knownBucketOpenWait). That
-// wait bounds one send and not one step of this call: a step is sent again until it is answered,
-// ctx ends or the guard passes, and a send in flight then is abandoned with its answer dropped
-// (Bounded). So where the server answers nothing at all, the call costs startHangGuard and ends
+// wait bounds one request inside a send, and each send of a step, the create's included, is waited
+// for up to the start's read limit (firstReadLimit, readLimit) and then sent again, until it is
+// answered, ctx ends or the guard passes; a send in flight then is abandoned with its answer
+// dropped (Bounded). So one lost answer costs the start its read limit, a fraction of a second, and
+// not that wait, and where the server answers nothing at all, the call costs startHangGuard and ends
 // naming the step that drew no answer and how many sends it made.
 //
 // A request the server refuses under the connection's grant is not sent again, since it would be
@@ -164,7 +166,23 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 		// the replica or age change updateStream guards is a write another one can race. A
 		// request of the step the server refuses under the connection's grant ends the step at
 		// that send instead (refusedBy): it would be refused again.
-		kv, err = sentAgain(ctx, create, func() (nats.KeyValue, error) { return js.CreateKeyValue(config) })
+		//
+		// Each send of the step is waited for up to the start's read limit and then sent again
+		// (readAgain), as a read is, and not for the JetStream context's own wait, because the
+		// step reads: nats.go waits for each of its requests, the read of the stream after "stream
+		// name already in use" among them, for that context's MaxWait, ten seconds at every
+		// production caller, and nothing this call passes reaches those requests. In the moment
+		// after another start's create of the bucket lands, no member answers that read (the
+		// members that hold the new assignment are not the stream's preferred member, which has
+		// not applied it yet), and a read no member answered is never answered later: such a start
+		// waited the whole ten seconds, while the stream answered every read after it (103 of
+		// 1,600 runs of TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALeader
+		// at a one-minute load of 375 to 425). The create in the step is no read, and the first send
+		// of a create of more than one copy is answered only at its stream's first leader election:
+		// cut at its limit, it is sent again as an equal create, which the server answers at once
+		// with the stream still leaderless, and the start then waits for the leader below
+		// (awaitStreamLeader), so the election costs a send and not the start.
+		kv, err = readAgain(ctx, create, readLimitOf(ctx), func() (nats.KeyValue, error) { return js.CreateKeyValue(config) })
 		if errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			// The bucket was created between this start's lookup and its create, by another start
 			// of this deployment, and the member answering may not have applied that create

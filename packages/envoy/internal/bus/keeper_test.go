@@ -159,7 +159,7 @@ func TestTheKeeperEndsTheMixedSettingsRaceAtThreeCopiesTheByteLimitAndTheID(t *t
 			t.Fatalf("the setting program's start left the stream at %+v (%v), want three copies, the byte limit and the id", info, err)
 		}
 	}}
-	if _, err := ensureStreamWithConfig(t.Context(), defaultStart, &defaults, capsAnUnsetStream, atStart); err != nil {
+	if _, err := ensureStreamWithConfig(countedReads(t.Context()), defaultStart, &defaults, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("the default program's start: %v", err)
 	}
 	if n := defaultStart.updates.Load(); n != 1 {

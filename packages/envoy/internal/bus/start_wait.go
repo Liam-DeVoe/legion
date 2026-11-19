@@ -195,23 +195,25 @@ func awaitStream(ctx context.Context, js nats.JetStreamContext, step streamStep,
 }
 
 // sentAgain is what send answers, sent again while the server leaves it unanswered (unanswered)
-// and ctx lasts, with request naming it in the line each further send logs: the stream read and
-// the create of ensureStreamWithConfig, the handle open EnsureKeyValue makes, and EnsureKeyValue's
-// lookup of a KV bucket and its create (kv_ensure.go). A wait that runs out is either a
-// request the server will never answer, on one of the paths listed below, or one it is still
-// working on, and either is safe to send again: a read changes nothing, and a second identical
-// create is deduplicated and carries the same id as the one that may have landed, so no second
-// send can contradict the send before it (an update is read again rather than sent again,
-// updateStream). The create of a stream of more than one copy is one the server is still working
-// on until that stream's group elects its first leader, and the server answers it then: how many
-// sends that takes depends on the election, so no count of sends, and no clock of its own, ends
-// this wait. ctx does, which every caller bounds by the start's hang guard (startHangGuard), so a
-// bus that is not serving JetStream at all ends the start at that guard, with an error that says
-// how many sends drew no answer (unansweredUntil). Each send carries the wait of each request it
-// makes, and a send in flight when ctx ends is abandoned and its answer dropped (Bounded): a create
-// that lands after that leaves a stream the next start finds. Between two sends it pauses
-// bucketAppliedInterval, so a request that a context of the send's own ends at once
-// (requestsUnder) is not sent in a loop.
+// and ctx lasts, with request naming it in the line each further send logs. Its one caller is
+// readAgain, which bounds each send by the start's read limit: the stream read, the create, the
+// migrate and the purge of ensureStreamWithConfig, the handle open EnsureKeyValue makes, and
+// EnsureKeyValue's lookup of a KV bucket and its create (kv_ensure.go). A wait that runs out is
+// either a request the server will never answer, on one of the paths listed below, or one it is
+// still working on, and either is safe to send again: a read changes nothing, a second identical
+// create is deduplicated and carries the same id as the one that may have landed, and the migrate
+// and the purge are written from a fresh read and remove nothing twice, so no second send can
+// contradict the send before it (a stream's update is read back rather than sent again blind,
+// updateStream). The create of a stream of more than one copy is one the server is
+// still working on until that stream's group elects its first leader, and the server answers it
+// then: how many sends that takes depends on the election, so no count of sends, and no clock of
+// its own, ends this wait. ctx does, which every caller bounds by the start's hang guard
+// (startHangGuard), so a bus that is not serving JetStream at all ends the start at that guard,
+// with an error that says how many sends drew no answer (unansweredUntil). Each send is waited for
+// up to its read limit or its JetStream wait, and a send in flight when that bound or ctx ends is
+// abandoned and its answer dropped (Bounded): a create that lands after that leaves a stream the
+// next send, or the next start, finds. Between two sends it pauses bucketAppliedInterval, so a
+// request that a context of the send's own ends at once (requestsUnder) is not sent in a loop.
 // Any answer, the server's refusal included, is returned at once, so a refused create is sent
 // once. A refusal the server reports on the connection rather than in the request's answer
 // arrives here as an answer too, because every request of a start goes through a JetStream
@@ -364,13 +366,14 @@ func (r *readLimit) answered(took time.Duration) {
 	r.limit = min(max(r.first, 3*took), RequestTimeout)
 }
 
-// limitedRead is one send of read, a read of a stream's state, waited for up to limit's limit and
-// then abandoned, its answer dropped (Bounded), and it sets limit for the next read of the run
-// from what this one came to: a read the server left unanswered (lost) or one it answered
-// (answered), an error of the server's included. answered is false when the limit or ctx passed
-// first, and wait is the limit the read had, so a caller's error names it. Its callers are the
-// reads a start makes of one request, sent again while unanswered (readAgain), and the reads of a
-// wait on a stream (awaitStream).
+// limitedRead is one send of read, a read of a stream's state or a request a start may send again
+// as it reads (readAgain), waited for up to limit's limit and then abandoned, its answer dropped
+// (Bounded), and it sets limit for the next read of the run from what this one came to: a read the
+// server left unanswered (lost) or one it answered (answered), an error of the server's included.
+// answered is false when the limit or ctx passed first, and wait is the limit the read had, so a
+// caller's error names it. Its callers are the reads a start makes of one request, sent again while
+// unanswered (readAgain), the reads of a wait on a stream (awaitStream), and each send of a stream's
+// update, which is read back before it is sent again (updateStream).
 func limitedRead[T any](ctx context.Context, limit *readLimit, read func() (T, error)) (value T, wait time.Duration, answered bool, err error) {
 	wait = limit.limit
 	readCtx, cancel := context.WithTimeout(ctx, wait)
@@ -387,11 +390,22 @@ func limitedRead[T any](ctx context.Context, limit *readLimit, read func() (T, e
 
 // readAgain is sentAgain for read, a read of a stream's state, each send of which is waited for
 // up to its read limit (limitedRead) rather than up to the caller's whole wait: a read past its
-// limit is read again, as an unanswered one is. A create keeps the caller's wait (sentAgain): its
-// first send is answered only at the stream's first leader election, seconds after it is sent.
-// Its callers are the reads a start makes: EnsureKeyValue's lookup, its read of a found bucket's
-// stream and its handle open (wrapKeyValue), the stream ensure's read (ensureStreamWithConfig),
-// SetKeyValueMaxAge's read and updateStream's read after an update that drew no answer.
+// limit is read again, as an unanswered one is. Its callers are the reads a start makes:
+// EnsureKeyValue's lookup, its read of a found bucket's stream and its handle open (wrapKeyValue),
+// the stream ensure's read (ensureStreamWithConfig), SetKeyValueMaxAge's read and updateStream's
+// read after an update that drew no answer. A start's creates go through it too, EnsureKeyValue's
+// create step and the stream ensure's create, and so do the stream ensure's migrate and purge of the
+// role lanes: a second identical create lands nothing a first one did not, the migrate and the purge
+// remove nothing twice, and each of them, its answer lost, held the start its whole JetStream wait,
+// ten seconds, where the read limit holds it a fraction of a second. The create step holds reads of
+// its own besides, which nothing this package passes reaches (EnsureKeyValue). The first send of a
+// create of more than one copy is answered only at its stream's first leader election, so one the
+// limit cuts is sent again as an equal create, which the server answers at once, and the start then
+// waits for the leader (awaitStreamLeader). A send the limit cuts is not taken back: it can still be
+// in the server's JetStream API queue and land after the one sent again. That is so of every send
+// whose answer a start stops waiting for, at the read limit or at the JetStream wait, so the limit
+// adds no write the server would not have made, and a late landing writes what that send would have
+// written had it been the only one (updateStream gives the same reasoning for an update).
 func readAgain[T any](ctx context.Context, request string, limit *readLimit, read func() (T, error)) (T, error) {
 	return sentAgain(ctx, request, func() (T, error) {
 		value, wait, answered, err := limitedRead(ctx, limit, read)

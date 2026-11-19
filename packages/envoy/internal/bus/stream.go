@@ -898,8 +898,12 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		// equal create and answers it with the stream (v2.15.1 server/jetstream_cluster.go
 		// jsClusteredStreamRequest, "This is an equal assignment"), so the start goes on; only
 		// another start's create, which carries another id, draws ErrStreamNameAlreadyInUse, which
-		// this branch reads as such and follows with the read below.
-		_, err = sentAgain(ctx, create, func() (*nats.StreamInfo, error) { return js.AddStream(&created) })
+		// this branch reads as such and follows with the read below. Each send is waited for up to
+		// the start's read limit and then sent again (readAgain), not for the JetStream context's
+		// own wait: an answer the server never gives would hold the start that whole wait, ten
+		// seconds, and a first send cut while the stream's first election runs is sent again as an
+		// equal create, answered at once, after which the start waits for the leader below.
+		_, err = readAgain(ctx, create, readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.AddStream(&created) })
 		if err == nil {
 			if created.Replicas > 1 {
 				err = awaitStreamLeader(ctx, js, afterCreate, Stream)
@@ -939,14 +943,19 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		reconciliation.log()
 		return info.Config.Subjects, nil
 	}
-	// The migrate and the purge below are requests a server can leave unanswered, and each is
-	// abandoned when ctx ends (Bounded), so the ensure ends at ctx or the start's hang guard like
-	// every other wait of it, naming the write that was in flight. The update bounds itself
-	// (updateStream).
+	// The migrate and the purge below are requests a server can leave unanswered. Each is sent
+	// again while the server leaves it unanswered, each send waited for up to the start's read
+	// limit (readAgain), and the ensure ends at ctx or the start's hang guard like every other wait
+	// of it, naming the write that was in flight; sent once, a lost answer failed the start after
+	// the JetStream context's own ten second wait. Sending either again is safe: the migrate lists
+	// and reads every consumer again and rewrites only one whose filter is still the legacy one,
+	// from that read, and a purge of the role lanes again removes only role-lane messages. A send
+	// the limit cut that lands later writes what it would have written as the only send. The update
+	// bounds itself (updateStream).
 	written := func(step string, write func() error) error {
-		_, answered, err := Bounded(ctx, func() (struct{}, error) { return struct{}{}, write() })
-		if !answered {
-			return fmt.Errorf("%s %s: no answer when the wait ended: %w", step, Stream, context.Cause(ctx))
+		_, err := readAgain(ctx, Stream+" "+step, readLimitOf(ctx), func() (struct{}, error) { return struct{}{}, write() })
+		if unanswered(err) || ctx.Err() != nil {
+			return fmt.Errorf("%s %s: %w", step, Stream, err)
 		}
 		return err
 	}
@@ -1150,8 +1159,8 @@ type streamUpdate struct {
 //     server/jetstream_cluster.go), and v2.10.29 was seen to leave one of two replica changes
 //     proposed at once unanswered. A stream that holds what was asked for has taken the update; one
 //     that does not is sent it again, for as long as ctx lasts, so an update the server dropped
-//     cannot fail the step at the caller's JetStream wait. Each send waits that MaxWait, a hang
-//     guard of one send, and the step ends on a server that never answers only when ctx does,
+//     cannot fail the step at the caller's JetStream wait. Each send waits its read limit (below),
+//     and the step ends on a server that never answers only when ctx does,
 //     which every caller bounds: a start's or a keeper pass's hang guard (startHangGuard), the
 //     session reaper's RequestTimeout. An update sent again while the one before it is still
 //     proposed is checked against that proposal (streamAssignmentOrInflight, v2.15.1), so a raise
@@ -1171,17 +1180,29 @@ type streamUpdate struct {
 // changes only what the caller changes and never writes back what another writer changed since
 // the caller's read, and none is sent onto a stream that read finds change declines, such as one
 // a newer build wrote while this update went unanswered. It goes bucketAppliedInterval after that
-// read, as sentAgain pauses between two sends. Any other refusal is the update's own error. A
-// send in flight when ctx ends is abandoned, its answer dropped (Bounded), and the step ends
-// naming ctx's cause.
+// read, as sentAgain pauses between two sends. Any other refusal is the update's own error.
+//
+// Each send is waited for up to the read limit of ctx's run of reads (limitedRead) and not for the
+// JetStream context's own wait, ten seconds: a member answers no update sent while the stream's
+// group elects its leader (a bucket's age set during its first election, 3 of 3), and the start
+// once waited that whole wait before the read that showed the update had landed. An update whose answer
+// did not come within the limit is read back, and sent again only when that read shows it did not
+// land, made from that read. The send the limit cut is not taken back, and may still land after
+// the one sent again; it writes what it would have written had it been the only send, which is
+// what a send whose answer the JetStream wait ran out on, or the read back missed, could write
+// late before, so the limit adds no write that waiting for the answer did not. A send in flight
+// when ctx ends is abandoned, its answer dropped (Bounded), and the step ends naming ctx's cause.
 //
 // The read after the update is a read of a stream's state, sent again while the server leaves it
 // unanswered, each send up to its read limit, for as long as ctx lasts (readAgain): an update
 // sent while the stream's group elects a leader can draw no answer, and a read sent then can be
-// lost too, so a read sent once could leave a raise that landed reported as one that failed.
+// lost too, so a read sent once could leave a raise that landed reported as one that failed. Every
+// send and read of one update share one run of reads, so a limit a lost send doubled holds for the
+// next also under a context that carries none, a keeper pass's.
 func updateStream(ctx context.Context, js nats.JetStreamContext, info *nats.StreamInfo, change func(*nats.StreamInfo) (nats.StreamConfig, bool), holds func(*nats.StreamInfo) bool) (streamUpdate, error) {
 	name := info.Config.Name
 	result := streamUpdate{from: info}
+	limits := readLimitOf(ctx)
 	for overlaps := 0; ; {
 		update, write := change(result.from)
 		if !write {
@@ -1189,16 +1210,18 @@ func updateStream(ctx context.Context, js nats.JetStreamContext, info *nats.Stre
 			return result, nil
 		}
 		result.sent = update
-		_, answered, err := Bounded(ctx, func() (*nats.StreamInfo, error) { return js.UpdateStream(&update) })
+		_, wait, answered, err := limitedRead(ctx, limits, func() (*nats.StreamInfo, error) { return js.UpdateStream(&update) })
 		switch {
-		case !answered:
+		case !answered && ctx.Err() != nil:
 			return result, fmt.Errorf("the update drew no answer when the wait ended: %w", context.Cause(ctx))
+		case !answered:
+			err = fmt.Errorf("no answer within %s: %w", wait, context.DeadlineExceeded)
 		case overlapRefused(err):
 			overlaps++
 		case !unanswered(err):
 			return result, err
 		}
-		again, readErr := readAgain(ctx, name+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(name) })
+		again, readErr := readAgain(ctx, name+" STREAM.INFO", limits, func() (*nats.StreamInfo, error) { return js.StreamInfo(name) })
 		switch {
 		case readErr == nil && holds(again):
 			return result, nil

@@ -12,8 +12,9 @@ import (
 )
 
 // countedReads is ctx with the first read limit at the caller's whole wait (firstReadLimitKey),
-// for a row that counts a start's requests: a read a loaded machine answers past firstReadLimit is
-// then waited for rather than abandoned and read again, so the count is the requests' own.
+// for a row that counts a start's requests: a read, a create or an update a loaded machine answers
+// past firstReadLimit is then waited for rather than abandoned and sent or read again, so the count
+// is the requests' own.
 func countedReads(ctx context.Context) context.Context {
 	return context.WithValue(ctx, firstReadLimitKey{}, RequestTimeout)
 }

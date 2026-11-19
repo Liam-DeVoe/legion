@@ -38,6 +38,9 @@ type streamInfoJetStream struct {
 	roleMessages              int
 	injectRoleMessageOnUpdate bool
 	updateErr                 error
+	// unansweredPurges is how many purges, the first ones, draw no answer: each returns nats.ErrTimeout,
+	// as one whose JetStream wait ran out, and purges nothing.
+	unansweredPurges int
 }
 
 func (js *streamInfoJetStream) StreamInfo(_ string, _ ...nats.JSOpt) (*nats.StreamInfo, error) {
@@ -57,6 +60,10 @@ func (js *streamInfoJetStream) UpdateStream(cfg *nats.StreamConfig, _ ...nats.JS
 }
 
 func (js *streamInfoJetStream) PurgeStream(_ string, opts ...nats.JSOpt) error {
+	if js.unansweredPurges > 0 {
+		js.unansweredPurges--
+		return nats.ErrTimeout
+	}
 	for _, opt := range opts {
 		request, ok := opt.(*nats.StreamPurgeRequest)
 		if !ok || request.Subject == "" {
@@ -250,6 +257,35 @@ func TestEnsureStreamWithConfigPurgesRoleMessagesPublishedDuringMigration(t *tes
 	}
 	if !reflect.DeepEqual(js.purgedSubjects, wantPurges) {
 		t.Fatalf("purged subjects = %v, want %v", js.purgedSubjects, wantPurges)
+	}
+}
+
+// A start that moves the role lanes off a stream that still carries them, and whose first purge of
+// those lanes draws no answer, sends the migration again and goes on. It once sent each write of the
+// migration once, so the start failed on the one lost answer, at the end of the JetStream context's
+// own ten second wait.
+func TestALegacyRoleLanePurgeTheServerLeavesUnansweredIsSentAgain(t *testing.T) {
+	oldConfig := *streamCfg
+	oldConfig.Subjects = []string{"notifications.>"}
+	js := &streamInfoJetStream{config: oldConfig, unansweredPurges: 1}
+
+	if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
+		t.Fatalf("a start whose first purge of the role lanes drew no answer = %v, want it to go on", err)
+	}
+	if js.unansweredPurges != 0 {
+		t.Fatalf("unanswered purges left = %d, want the lost one spent: the row held nothing", js.unansweredPurges)
+	}
+	wantPurges := []string{
+		"notifications.role.>",
+		"notifications.envoy.exceptions.notifications.role.>",
+		"notifications.role.>",
+		"notifications.envoy.exceptions.notifications.role.>",
+	}
+	if !reflect.DeepEqual(js.purgedSubjects, wantPurges) {
+		t.Fatalf("purged subjects = %v, want %v: the migration sent again, then the purge after the update", js.purgedSubjects, wantPurges)
+	}
+	if streamCapturesRoleLanes(js.config.Subjects) {
+		t.Fatalf("subjects %v still capture the role lanes after the start", js.config.Subjects)
 	}
 }
 

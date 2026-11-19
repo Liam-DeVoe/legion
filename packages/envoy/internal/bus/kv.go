@@ -69,9 +69,9 @@ type KeyValue struct {
 // key's history. It is the JetStream MaxWait the listener and Dispatch open their legacy handles
 // with, so a read moved off the legacy handle waits no longer than it did there, and no less,
 // whatever MaxWait the legacy handle carries. A start that sends a request again because the
-// server left it unanswered takes that bound once per send (sentAgain, wrapKeyValue for a
-// start's caller), so the bound is one send's and not one step's: what a step of EnsureKeyValue
-// costs is counted in that function's doc.
+// server left it unanswered waits for each send up to its read limit, which grows to this bound at
+// most (readLimit, readAgain), so the bound is one send's and not one step's: what a step of
+// EnsureKeyValue costs is counted in that function's doc.
 const RequestTimeout = 10 * time.Second
 
 // OpenKeyValue opens the existing KV bucket named bucket on conn, through js, and creates nothing,

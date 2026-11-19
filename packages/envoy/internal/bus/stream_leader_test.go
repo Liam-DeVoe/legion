@@ -153,6 +153,109 @@ func TestAStartAtOneCopyThatFindsAJustRaisedBucketAnswersOnceItHasALeader(t *tes
 	}
 }
 
+// updateWaitJetStream records when the first update of stream was sent through it, and when the
+// start stopped waiting on that update: the update's answer, or the next read of the stream the
+// start began, which follows an update whose answer did not come. It reaches the cluster for
+// everything.
+type updateWaitJetStream struct {
+	nats.JetStreamContext
+	stream        string
+	sent, settled atomic.Int64
+}
+
+func (js *updateWaitJetStream) settle() {
+	if js.sent.Load() != 0 {
+		js.settled.CompareAndSwap(0, time.Now().UnixNano())
+	}
+}
+
+func (js *updateWaitJetStream) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	if stream == js.stream {
+		js.settle()
+	}
+	return js.JetStreamContext.StreamInfo(stream, opts...)
+}
+
+func (js *updateWaitJetStream) UpdateStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	if cfg.Name == js.stream {
+		js.sent.CompareAndSwap(0, time.Now().UnixNano())
+		defer js.settle()
+	}
+	return js.JetStreamContext.UpdateStream(cfg, opts...)
+}
+
+// updateAnswerBound is how long a start may wait on one update of a stream before it reads the
+// stream back: half the JetStream wait the update is sent under. A start that waited out an update
+// no member answered took that whole wait, RequestTimeout, and one that reads the stream back after
+// its read limit (firstReadLimit) takes a fraction of a second, so the bound sits far from both.
+const updateAnswerBound = RequestTimeout / 2
+
+// A start that sets a bucket's maximum age, as the session registry's start does, while the
+// bucket's stream elects its leader, reads the stream back within its read limit rather than
+// waiting out the JetStream wait for an answer no member gives then, and sends the update again
+// only when that read shows it did not land. Here another start's create of the bucket at three
+// copies lands with its answer lost, so its stream may still be in its first election, and this
+// start sets the age the moment a member answers for the bucket. nats-server v2.15.1 answered no
+// such update, and the start once waited the whole ten seconds before it read the stream and found
+// the age there: 10 of 10 runs with the election as the server holds it, and 15 of 15 with it held
+// 1 s, 3 s and 5 s (the held election the issue's verification adds to a copy of nats-server). On
+// a cluster whose election ends before the update arrives the update is answered at once.
+func TestAnUpdateSentWhileTheStreamElectsItsLeaderIsReadBackWithinTheReadLimit(t *testing.T) {
+	cluster := testnats.StartCluster(t, 3)
+	conn, js := memberJetStream(t, cluster, 0)
+	const bucket = "envoy_update_during_election_test"
+	other, err := jetstream.New(conn)
+	if err != nil {
+		t.Fatalf("open the other start's JetStream: %v", err)
+	}
+	creates, err := conn.SubscribeSync("$JS.API.STREAM.CREATE.KV_" + bucket)
+	if err != nil {
+		t.Fatalf("listen for the other start's create: %v", err)
+	}
+	t.Cleanup(func() { _ = creates.Unsubscribe() })
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the listener: %v", err)
+	}
+	createCtx, abandon := context.WithCancel(t.Context())
+	abandoned := make(chan error, 1)
+	go func() {
+		_, err := other.CreateKeyValue(createCtx, jetstream.KeyValueConfig{Bucket: bucket, Storage: jetstream.FileStorage, Replicas: 3})
+		abandoned <- err
+	}()
+	_, err = creates.NextMsg(time.Minute)
+	abandon()
+	if err != nil {
+		t.Fatalf("the other start's create never went out, so this row holds nothing: %v", err)
+	}
+	<-abandoned
+	awaitAssigned(t, js, "KV_"+bucket)
+	// The session registry's start sets the age after its bucket's open, which has waited until a
+	// member answers for the bucket's stream (awaitBucketApplied); the row waits for the same, so
+	// the start's first read of the stream finds it and its update is what this row is about.
+	testwait.Eventually(t, "a member to answer a read of KV_"+bucket, func() bool {
+		_, err := js.StreamInfo("KV_"+bucket, nats.MaxWait(firstReadLimit))
+		return err == nil
+	})
+
+	timed := &updateWaitJetStream{JetStreamContext: js, stream: "KV_" + bucket}
+	age, err := SetKeyValueMaxAge(t.Context(), conn, timed, bucket, time.Hour)
+	if err != nil || age != time.Hour {
+		t.Fatalf("set the age of the bucket whose stream elects its leader = %s, %v; want 1h0m0s and no error", age, err)
+	}
+	sent, settled := timed.sent.Load(), timed.settled.Load()
+	if sent == 0 || settled == 0 {
+		t.Fatalf("the start sent its update at %d and stopped waiting on it at %d, want both: this row holds nothing", sent, settled)
+	}
+	if waited := time.Duration(settled - sent); waited >= updateAnswerBound {
+		t.Fatalf("the start waited %s on its update, want under %s: an update no member answers is read back after the read limit, %s, and not waited out for the JetStream wait, %s",
+			waited.Round(time.Millisecond), updateAnswerBound, firstReadLimit, RequestTimeout)
+	}
+	info, err := js.StreamInfo("KV_" + bucket)
+	if err != nil || info.Config.MaxAge != time.Hour {
+		t.Fatalf("the bucket's stream after the start = %+v, %v; want the age of 1h0m0s", info, err)
+	}
+}
+
 // missingOnceJetStream answers the first KeyValue lookup "bucket not found", as a start's lookup
 // is answered when it lands just before another start's create: the start then sends its own
 // create and draws "stream name already in use".
@@ -172,9 +275,17 @@ func (js *missingOnceJetStream) KeyValue(bucket string) (nats.KeyValue, error) {
 // A start at one copy whose create meets a bucket another start, configured with three, created
 // a moment before waits for that stream's leader: the other start's count is not this one's, and
 // its create may have been answered before its stream's first election ended. The other start's
-// create is abandoned the moment a listener on its subject sees it go out, so it lands with its
-// answer lost and its stream still in that election; the cut is made on the create itself, so the
-// account read nats.go makes before it is answered first however slow the machine is.
+// create is abandoned the moment a listener on its subject sees it go out, so its answer is lost;
+// the cut is made on the create itself, so the account read nats.go makes before it is answered
+// first however slow the machine is. This start begins only once the metadata leader holds that
+// create's stream (awaitAssigned), which its own create then meets. The create going out is not
+// enough, because nats-server serves JetStream API requests on a pool of workers
+// (processJSAPIRoutedRequests, v2.15.1 server/jetstream_api.go), so a create sent after it can be
+// applied before it, and this start then made the bucket itself, at one copy, and the row held
+// nothing (1 run in 100 at a one-minute load of 414). The wait is for the assignment and not for a
+// read of the stream, because the stream answers a read only once a member has made it, by which
+// time its first election is often over and this start would find a leader whether it waited for
+// one or not.
 func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALeader(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
@@ -203,6 +314,7 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 		t.Fatalf("the other start's create never went out, so this row holds nothing: %v", err)
 	}
 	<-abandoned
+	awaitAssigned(t, js, "KV_"+bucket)
 	kv, err := EnsureKeyValue(t.Context(), conn, &missingOnceJetStream{JetStreamContext: js}, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1})
 	if err != nil {
 		t.Fatalf("a start at one copy whose create met another start's: %v", err)
@@ -212,9 +324,7 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 		t.Fatalf("read the bucket's stream: %v", err)
 	}
 	if info.Config.Replicas != 3 {
-		// A wait of a millisecond can cut the account read nats.go makes before the create, and
-		// then the other start's create never goes out and this start creates the bucket itself.
-		t.Fatalf("the bucket's stream has %d copies, want the other start's 3: its create never landed, so this row holds nothing", info.Config.Replicas)
+		t.Fatalf("the bucket's stream has %d copies, want the other start's 3, whose create the metadata leader held before this start began", info.Config.Replicas)
 	}
 	if info.Cluster == nil || info.Cluster.Leader == "" {
 		t.Fatal("the start at one copy answered while the other start's stream had no leader")
@@ -222,6 +332,23 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 	if _, err := kv.Put("key", []byte("value")); err != nil {
 		t.Fatalf("the first put after the start: %v", err)
 	}
+}
+
+// awaitAssigned waits until the JetStream metadata leader lists stream: the fact that a create of
+// it has been applied, which a create of the same stream sent after it meets ("stream name already
+// in use"), where the create's request going out is not. Only the metadata leader answers the list,
+// from the assignments it has applied (jsStreamNamesRequest, v2.15.1 server/jetstream_api.go). Each
+// list is waited for up to firstReadLimit and then asked again, as a start reads (limitedRead), so a
+// list a member leaves unanswered costs the row that and not the context's whole wait.
+func awaitAssigned(t *testing.T, js nats.JetStreamContext, stream string) {
+	t.Helper()
+	testwait.Eventually(t, "the metadata leader to hold "+stream, func() bool {
+		listed := false
+		for name := range js.StreamNames(nats.MaxWait(firstReadLimit)) {
+			listed = listed || name == stream
+		}
+		return listed
+	})
 }
 
 // A start that finds the notification stream another program raised a moment ago waits for its

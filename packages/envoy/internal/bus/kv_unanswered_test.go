@@ -320,7 +320,7 @@ func TestAnUnansweredBucketCreateIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
 
 	relay.arm(1)
-	handle, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	handle, err := EnsureKeyValue(countedReads(t.Context()), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("a start whose first bucket create drew no answer = %v, want it to go on", err)
 	}
@@ -354,7 +354,7 @@ func TestAnUnansweredRaiseIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	}
 
 	relay.arm(1)
-	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3}); err != nil {
+	if _, err := EnsureKeyValue(countedReads(t.Context()), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3}); err != nil {
 		t.Fatalf("a start whose first raise drew no answer = %v, want it to go on", err)
 	}
 
@@ -389,7 +389,7 @@ func TestARaiseTheServerNeverAnswersEndsAtTheHangGuardNamingNoSetting(t *testing
 
 	relay.arm(1 << 30)
 	guard := RequestTimeout + 2*time.Second
-	_, err := ensureKeyValue(context.Background(), guard, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage, Replicas: 3})
+	_, err := ensureKeyValue(countedReads(context.Background()), guard, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage, Replicas: 3})
 	if !errors.Is(err, errHangGuard) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("a start whose raise the server never answers = %v, want the start's hang guard, with context.DeadlineExceeded", err)
 	}
@@ -417,7 +417,7 @@ func TestAnUnansweredMaxAgeUpdateIsSentAgain(t *testing.T) {
 	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
 
 	relay.arm(1)
-	age, err := SetKeyValueMaxAge(t.Context(), conn, js, bucket, time.Hour)
+	age, err := SetKeyValueMaxAge(countedReads(t.Context()), conn, js, bucket, time.Hour)
 	if err != nil || age != time.Hour {
 		t.Fatalf("a setting of the age whose first update drew no answer = %s, %v, want 1h and nil", age, err)
 	}
@@ -450,7 +450,7 @@ func TestAnUnansweredAccountInfoIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
 
 	relay.arm(1)
-	handle, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	handle, err := EnsureKeyValue(countedReads(t.Context()), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("a start whose first account info drew no answer = %v, want it to go on", err)
 	}
@@ -468,6 +468,56 @@ func TestAnUnansweredAccountInfoIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	// no answer. Each of those rides a subject of its own, which this relay passes on.
 	if sends := relay.sent(); sends != 2 {
 		t.Fatalf("account infos sent = %d, want 2: the lost one and the one of the send that made the bucket", sends)
+	}
+}
+
+// createStepReadBound is how long after it begins a start whose create step loses its own read of
+// the stream may take: half the JetStream wait the read is sent under. A start that waited that read
+// out took the whole wait, RequestTimeout, and one that sends the step again after its read limit
+// (firstReadLimit) takes a fraction of a second, so the bound sits far from both on a loaded machine.
+const createStepReadBound = RequestTimeout / 2
+
+// A start whose create meets a bucket another start created a moment before, and whose create step
+// loses the read of the stream nats.go makes inside it, sends the step again after its read limit
+// and goes on, rather than waiting out the JetStream wait that read is sent under. On "stream name
+// already in use" nats.go's js.CreateKeyValue reads the stream itself (nats.go@v1.53.1
+// kv.go:534-545), and nothing the start passes reaches that read. In the moment after another
+// start's create lands, no member answers it (the members that hold the new assignment are not the
+// stream's preferred member, which has not applied it yet), and a read no member answered is never
+// answered later: such a start once waited the whole ten seconds, in 103 of 1,600 runs of
+// TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALeader. Here the relay
+// drops that read, the first STREAM.INFO of the bucket on the wire: the start's own lookup is
+// answered "bucket not found" before anything is sent (missingOnceJetStream), as a lookup is that
+// lands just before another start's create.
+func TestACreateStepThatLosesItsReadOfAnotherStartsBucketGoesOnWithinItsReadLimit(t *testing.T) {
+	const bucket = "envoy_unanswered_create_read"
+	cluster := testnats.StartCluster(t, 3)
+	relay := startUnansweredRelayOn(t, cluster.Servers[0].URL(), openSubject(bucket))
+	conn, js := relayedJetStream(t, relay)
+	// The other start's bucket, at three copies, whose create this start's meets: its count is not
+	// this start's, so the server answers this start's create "stream name already in use".
+	if _, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3}); err != nil {
+		t.Fatalf("the other start's create: %v", err)
+	}
+
+	relay.arm(1)
+	started := time.Now()
+	kv, err := EnsureKeyValue(t.Context(), conn, &missingOnceJetStream{JetStreamContext: js}, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1})
+	took := time.Since(started)
+	if err != nil {
+		t.Fatalf("a start whose create step lost its read of the stream = %v, want it to go on", err)
+	}
+	// The dropped read, and at least the step's read sent again, the lookup that follows and the
+	// handle open: a relay that dropped another request would leave fewer.
+	if sends := relay.sent(); sends < 3 {
+		t.Fatalf("reads of the bucket's stream sent = %d, want the lost one inside the create step and the ones after it", sends)
+	}
+	if took >= createStepReadBound {
+		t.Fatalf("the start answered %s after it began, want within %s: a create step whose own read is lost is sent again after its read limit, %s, and not waited out for the JetStream wait, %s",
+			took.Round(time.Millisecond), createStepReadBound, firstReadLimit, RequestTimeout)
+	}
+	if _, err := kv.Put("key", []byte("value")); err != nil {
+		t.Fatalf("the first put after the start: %v", err)
 	}
 }
 
