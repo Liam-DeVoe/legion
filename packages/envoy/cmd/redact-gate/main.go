@@ -95,10 +95,13 @@ type boxConfig struct {
 	TSRule      []string `json:"ts_rule"`   // names of the TS rule's functions
 }
 
-// holderRow is a holder and the print test that covers it.
+// holderRow is a holder and the print test that covers it. Holder is the holder census's name for
+// it: a package path and type name (a generic instance's with its type arguments, as
+// types.TypeString writes them), a function and the anonymous struct it declares, or a
+// TypeScript file#name.
 type holderRow struct {
-	Holder string `json:"holder"` // pkg path and type name, or a TypeScript file#name
-	Test   string `json:"test"`   // the print test's row id
+	Holder string `json:"holder"`
+	Test   string `json:"test"` // the print test's row id
 }
 
 // reflectionExempt is a reflection or unsafe site the reflection census allows, with the types it
