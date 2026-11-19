@@ -15,16 +15,17 @@
 # none` and `ratings none`, which is true of what Dispatch holds of it. It exits 1 and prints one
 # `FAIL: …` line per fault when the read lists finished issues and <ISSUE>'s line does not hold,
 # or lists no line of <ISSUE>. It exits 2 and prints `UNKNOWN: <reason>` when it could read
-# nothing to judge: the read lists no finished issue at all, the command failed, its answer is no
-# read of the project, or the daemon's scale of a rating, a file of this checkout, cannot be read;
-# so an empty or failed read is never a pass. A usage error is exit 2 too, with the usage on
-# stderr.
+# nothing to judge: the read lists no finished issue at all, the command failed, or its answer is
+# no read of the project; so an empty or failed read is never a pass. A usage error is exit 2 too,
+# with the usage on stderr.
 #
 # It runs where the operator runs `dispatch` by hand, with the operator's own credential: the
 # `dispatch` command on PATH (packages/envoy-client's bin), the session the operator's shell names
 # (DISPATCH_HOST and DISPATCH_SESSION_ID), and the deployed Dispatch and token the operator's
 # envoy.json or DISPATCH_URL and DISPATCH_TOKEN name. This script sets none of those and reads
-# no credential of its own. It reaches only that Dispatch, and writes nothing.
+# no credential of its own. It reaches only that Dispatch, and writes nothing. It reads no file but
+# lib/dispatch-read.sh beside it, so a copy of the two runs outside a checkout of this repository
+# too.
 set -euo pipefail
 
 usage="usage: scripts/e2e/plan-ratings-read.sh <PROJECT> <ISSUE>, a project key and the key of one issue of it, such as INFRA INFRA-123"
@@ -39,23 +40,6 @@ case ${BASH_SOURCE[0]} in */*) here=${BASH_SOURCE[0]%/*} ;; *) here=. ;; esac
 . "$here/lib/dispatch-read.sh"
 read_require_dispatch
 
-# The scale a rating is printed on is the daemon's: the bounds its golden test writes to this file
-# from steprecord.RatingLeast and RatingMost, generated from the contract's constants, which the
-# printer reads too. A rating is read on it, so a line the command prints out of another top is no
-# finished issue, and the scale is written nowhere in this script.
-bounds="$here/../../packages/contracts/fixtures/daemon-api/plan-rating.json"
-scale=$(awk '
-  { text = text $0 }
-  END {
-    if (!match(text, /"least": *[0-9]+/)) exit 1
-    least = substr(text, RSTART, RLENGTH); sub(/.*: */, "", least)
-    if (!match(text, /"most": *[0-9]+/)) exit 1
-    most = substr(text, RSTART, RLENGTH); sub(/.*: */, "", most)
-    print least " " most
-  }
-' "$bounds" 2>/dev/null) || read_unknown "the scale of a rating, $bounds, could not be read, so no line can be judged"
-read -r least most <<<"$scale"
-
 read_dispatch plans --project "$project"
 
 # Each line after the header is one finished issue, as `dispatch plans` prints it
@@ -63,21 +47,20 @@ read_dispatch plans --project "$project"
 #   <issue> closed <closed_at> plan <none|<source> (<n> tasks: <steps|->)> ratings <none|<r>/<most> "<reason>", …> time <-|<h>h<m>m> failed steps <n>
 # Each reason is a JSON string, so a quotation mark or a line break in it keeps the issue on one
 # line; the ratings are separated by `, ` outside those strings.
-awk -v project="$project" -v issue="$issue" -v least="$least" -v most="$most" '
+awk -v project="$project" -v issue="$issue" '
   function unknown(why) { print "UNKNOWN: " why; status = 2; exit }
   # ratingsOf reads the ratings text of one line: the number of ratings it lists, 0 for `none`,
-  # and -1 when it is no list of ratings: each is a whole number from least to most, then `/`,
-  # most and a JSON string. It sets reasonless to how many of them have an empty reason.
+  # and -1 when it is no list of ratings: each is a whole number, `/`, the top of the scale and a
+  # JSON string. Dispatch refuses a rating off the scale, so the number is read as the form alone.
+  # It sets reasonless to how many of them have an empty reason.
   function ratingsOf(text,   n, at, head, end, c) {
     reasonless = 0
     if (text == "none") return 0
     n = 0
     at = 1
     while (1) {
-      if (!match(substr(text, at), "^[1-9][0-9]*/" most " \"")) return -1
+      if (!match(substr(text, at), /^[0-9]+\/[0-9]+ "/)) return -1
       head = RLENGTH
-      c = substr(text, at, index(substr(text, at), "/") - 1) + 0
-      if (c < least + 0 || c > most + 0) return -1
       end = at + head
       while (1) {
         c = substr(text, end, 1)

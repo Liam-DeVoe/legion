@@ -1,12 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { copyFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { FinishedIssue, PlanRecord, ProjectPlans } from "@legion/contracts";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import {
-  LEGION_PLAN_RATING_LEAST,
-  LEGION_PLAN_RATING_MOST,
-} from "../../../packages/contracts/src/legion-roles";
 import { bearerCredential } from "../../../packages/envoy-client/src/bearer";
 import { executeDispatchTool } from "../../../packages/envoy-client/src/dispatch-execute";
 import { fakeDispatchFetch } from "../../../packages/envoy-client/test/fake-dispatch";
@@ -143,30 +138,6 @@ let line42 = "";
 // read runs the script with args against the fake dispatch, which prints err on stderr and out on
 // stdout and exits exit, on path, which by default finds the fake first.
 const read = fakeDispatchRead(script, dir, [project, key]);
-// The same script copied where its checkout's bounds of a rating are a file this test writes, or
-// none: `bounds` is the path the copy reads them from, as the script finds plan-rating.json from its
-// own place in the repository.
-const moved = join(dir, "checkout", "scripts", "e2e", "plan-ratings-read.sh");
-const bounds = join(
-  dir,
-  "checkout",
-  "packages",
-  "contracts",
-  "fixtures",
-  "daemon-api",
-  "plan-rating.json"
-);
-const readMoved = fakeDispatchRead(moved, dir, [project, key]);
-
-/** copyScript places the script at `moved`, with the prologue it sources beside it. */
-function copyScript(): void {
-  mkdirSync(join(dirname(moved), "lib"), { recursive: true });
-  copyFileSync(script, moved);
-  copyFileSync(
-    join(import.meta.dir, "dispatch-read.sh"),
-    join(dirname(moved), "lib", "dispatch-read.sh")
-  );
-}
 beforeAll(async () => {
   const rendered = await executeDispatchTool({
     tool: "dispatch_plans",
@@ -339,72 +310,6 @@ describe("plan-ratings-read.sh", () => {
     expect(torn.stdout).toContain("UNKNOWN: the line is no finished issue: INFRA-43 closed");
     expect(torn.stdout).not.toContain("PASS");
     expect(torn.code).toBe(2);
-  });
-
-  // A rating is read on the daemon's scale, whose bounds are the ones its golden test writes to
-  // plan-rating.json: a rating past either end, or printed out of another top, is no rating, so
-  // the line is no finished issue and nothing is judged.
-  test("a rating off the daemon's scale, or out of another top, is UNKNOWN, exit 2", () => {
-    const [least, most] = [LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST];
-    for (const rating of [`${most + 1}/${most}`, `${least - 1}/${most}`, `${least}/${most + 2}`]) {
-      const { code, stdout } = read(
-        changed(whole, /^INFRA-42 /, (line) => line.replace(`4/${most} "`, `${rating} "`))
-      );
-      expect(stdout).toContain(`UNKNOWN: the line is no finished issue: ${key} closed`);
-      expect(stdout).not.toContain("PASS");
-      expect(code).toBe(2);
-    }
-  });
-
-  // The scale is the bounds file's, not one the script types: under bounds whose top is two above
-  // the contract's, that top is a rating out of itself, and a rating out of the contract's top, or
-  // past the file's, is none.
-  test("a rating is read on the scale the daemon's bounds file states", () => {
-    const [least, most] = [LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST];
-    const other = most + 2;
-    copyScript();
-    mkdirSync(dirname(bounds), { recursive: true });
-    writeFileSync(
-      bounds,
-      `{\n  "least": ${least},\n  "most": ${other},\n  "reasonMost": 2000\n}\n`
-    );
-    const reason = '"The plan fit the work; the review sent it back once."';
-    // outOf is the whole answer with every rating printed out of other, and the judged issue's
-    // rating printed as rating.
-    const outOf = (rating: string) =>
-      changed(whole, /^/, (line) =>
-        line
-          .replace(new RegExp(` (\\d+)/${most} "`, "g"), ` $1/${other} "`)
-          .replace(`4/${other} ${reason}`, `${rating} ${reason}`)
-      );
-    const top = readMoved(outOf(`${other}/${other}`));
-    expect(top.stdout).toContain(
-      `PASS: ${key}: ${plan}, ratings ${other}/${other} ${reason}, time 2h20m, failed steps 1`
-    );
-    expect(top.code).toBe(0);
-    for (const rating of [`4/${most}`, `${other + 1}/${other}`]) {
-      const off = readMoved(outOf(rating));
-      expect(off.stdout).toContain(`UNKNOWN: the line is no finished issue: ${key} closed`);
-      expect(off.code).toBe(2);
-    }
-  });
-
-  // With no bounds of a rating to read, or bounds that name no top, no line can be judged: the
-  // script says so before it runs `dispatch`, so nothing is read and nothing passes.
-  test("bounds of a rating it cannot read are UNKNOWN, exit 2, reading nothing", () => {
-    copyScript();
-    rmSync(bounds, { force: true });
-    const missing = readMoved(printed());
-    expect(missing.stdout).toContain("UNKNOWN: the scale of a rating,");
-    expect(missing.stdout).toContain("could not be read, so no line can be judged");
-    expect(missing.calls).toBe("");
-    expect(missing.code).toBe(2);
-    mkdirSync(dirname(bounds), { recursive: true });
-    writeFileSync(bounds, '{\n  "least": 1,\n  "reasonMost": 2000\n}\n');
-    const topless = readMoved(printed());
-    expect(topless.stdout).toContain("could not be read, so no line can be judged");
-    expect(topless.calls).toBe("");
-    expect(topless.code).toBe(2);
   });
 
   test("no dispatch command on PATH is UNKNOWN, exit 2, naming what is missing", () => {

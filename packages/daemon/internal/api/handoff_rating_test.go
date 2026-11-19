@@ -512,20 +512,6 @@ func TestHandoffCompleteRequestRatedGolden(t *testing.T) {
 	})
 }
 
-// The bounds of a rating of the plan, as planRatingOf holds a completion to them: the scale
-// (steprecord.RatingLeast, steprecord.RatingMost) and the most characters of the reason
-// (steprecord.RatingReasonMax), each generated from packages/contracts. Go writes them (`-update`) for a
-// reader with no Go and no TypeScript, plan-ratings-read.sh, and
-// `packages/contracts/src/legion-api.test.ts` holds the file to the contract's constants, so a file
-// left behind a change of the scale fails there.
-func TestPlanRatingGolden(t *testing.T) {
-	golden(t, "plan-rating.json", struct {
-		Least      int `json:"least"`
-		Most       int `json:"most"`
-		ReasonMost int `json:"reasonMost"`
-	}{Least: steprecord.RatingLeast, Most: steprecord.RatingMost, ReasonMost: steprecord.RatingReasonMax})
-}
-
 // planRatingCase is one row of plan-rating-cases.json: the rating and the reason a retro's
 // completion carries, a member left out of the body where its pointer is nil, and the verdict the
 // completion route answers it with, `accepted` or the code of its refusal.

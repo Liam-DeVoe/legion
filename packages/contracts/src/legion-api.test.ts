@@ -7,9 +7,6 @@ import {
   LEGION_FAILURE_CAUSES,
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PHASES,
-  LEGION_PLAN_RATING_LEAST,
-  LEGION_PLAN_RATING_MOST,
-  LEGION_PLAN_REASON_MAX,
   LEGION_WORKFLOW_PHASES,
   LegionActivityRequest,
   LegionCapabilityReport,
@@ -137,15 +134,6 @@ const schemas: Record<string, z.ZodType> = {
   // a name of the rating Go writes and the contract does not read fails the gate above, and the
   // case "the rated completion the daemon reads parses under the contract's names" below.
   "handoff-complete-request-rated.json": LegionHandoffCompleteRequest,
-  // Nor this one: the bounds `planRatingOf` holds a rating of the plan to (`steprecord.RatingLeast`,
-  // `RatingMost` and `RatingReasonMax`, which gen-go generates from this package's constants), written by
-  // TestPlanRatingGolden so that the case "the rating's bounds are the daemon's" below holds the
-  // file the read script reads to the contract's constants.
-  "plan-rating.json": z.strictObject({
-    least: z.number().int(),
-    most: z.number().int(),
-    reasonMost: z.number().int().positive(),
-  }),
   // Nor this one: the daemon's verdict on each case of a rating, which internal/api's
   // TestPlanRatingCasesGolden posts as its raw body to the completion that ends a retro and writes
   // down as the route answered it, so that the case "the request schema takes exactly the ratings
@@ -960,18 +948,6 @@ test("the rated completion the daemon reads parses under the contract's names", 
   );
   expect(request.planRating).toBe(3);
   expect(request.planReason).toBe("The tester found the bug the plan had left out.");
-});
-
-// The scale and the reason's bound are defined once, in legion-roles.ts, and generated into the
-// Go that the daemon and Dispatch refuse by. The daemon's golden test writes the bounds it holds
-// to plan-rating.json, which plan-ratings-read.sh reads with no Go and no TypeScript, so a file
-// left behind a change of the constants, or a generated file not regenerated, fails here.
-test("the rating's bounds are the daemon's", () => {
-  expect(fixture("plan-rating.json")).toEqual({
-    least: LEGION_PLAN_RATING_LEAST,
-    most: LEGION_PLAN_RATING_MOST,
-    reasonMost: LEGION_PLAN_REASON_MAX,
-  });
 });
 
 // A rating's rule is the daemon's, and the request schema states it again: the scale, the pair,
