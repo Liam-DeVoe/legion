@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The refusals of the reads and writes below. Each is wrapped with what it names, so a caller
@@ -509,8 +510,15 @@ func DeleteGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name string,
 		changes = append(changes, projectChangeEvent(access, model.AccessGroupRemoved, name, by))
 	}
 	changes = append(changes, groupChangeEvent(name, model.AccessGroupDeleted, by))
-	appended, err := ev.AppendAll(ctx, tx, changes)
-	if err != nil {
+	appended := make([]model.Event, len(changes))
+	if err := store.RunWrite(ctx, tx, func(batch *store.WriteBatch) error {
+		for index, change := range changes {
+			if err := ev.QueueAppend(batch, change, func(written model.Event) { appended[index] = written }); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
 		return nil, fmt.Errorf("append the events of group %s's delete: %w", name, err)
 	}
 	return appended, nil

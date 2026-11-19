@@ -163,7 +163,7 @@ func TestTheOrphanSweepLosesNothingOfACreateItRacesWith(t *testing.T) {
 }
 
 // The sweep of one orphaned document (StateOrphanedGone) takes the store's lock order: the issue's
-// row first, then the node's row, then the state tuple it appends under the removal's event, and
+// owner lock first, then the node's row, then the state tuple it appends under the removal's event, and
 // never the project's row. Each step is held in turn while the sweep's own backend is read at the
 // statement it waits at and the locks it holds.
 func TestTheOrphanSweepTakesTheStoreLockOrder(t *testing.T) {
@@ -175,17 +175,17 @@ func TestTheOrphanSweepTakesTheStoreLockOrder(t *testing.T) {
 	if err := sweeper.Pool.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
 		t.Fatalf("read the sweep's backend: %v", err)
 	}
-	owner := lockstep.HoldRow(t, database, &lockstep.Hold{
-		Name: "issue ORPH-1's row", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: orphanIssue,
-		Statement: "select closed_at is null from issues where key = $1 for no key update",
+	owner := lockstep.HoldOwner(t, database, &lockstep.Hold{
+		Name: "issue ORPH-1's owner lock", Step: lockstep.StepOwner, Taken: true,
+		Statement: lockstep.OwnerLockStatement,
 		Unlocked:  []string{"graph_nodes", "graph_tuples"},
-	}, `select 1 from issues where key = $1 for update`, orphanIssue)
+	}, store.IssueOwner(orphanIssue))
 	node := lockstep.HoldRow(t, database, &lockstep.Hold{
 		Name: ref + "'s node row", Step: lockstep.StepNode, Taken: true, Kind: graphstore.KindArtifact, ID: ref,
 		Statement: "select state from graph_nodes where kind = $1 and id = $2 for update",
 		Unlocked:  []string{"graph_tuples"},
 	}, `select 1 from graph_nodes where kind = $1 and id = $2 for update`, graphstore.KindArtifact, ref)
-	state := lockstep.Hold{Name: ref + "'s gone tuple", Step: lockstep.StepTuple, Taken: true, Statement: "insert into graph_tuples ("}
+	state := lockstep.Hold{Name: ref + "'s gone tuple", Step: lockstep.StepTuple, Taken: true, Statement: "with written as ("}
 	lockstep.Begin(t, database, &state)
 	if err := graphstore.Write(ctx, state.Tx, nil, []graphstore.Tuple{{
 		FromKind: graphstore.KindArtifact, FromID: ref, Kind: graphstore.AttributeState,
@@ -225,6 +225,78 @@ func TestTheObjectPassStopsAtItsBatchBound(t *testing.T) {
 	requireComplete(t, ctx, database, "after the two passes")
 }
 
+// A row no pass can write - one between a party the store refuses, or one whose node the store
+// holds in another project - neither spends the pass's budget nor keeps its More, so the tick's
+// debt clears once only such rows are left, and they hold back no row after them.
+//
+// With a budget of one batch over an issue owed its node, two such documents (a conversation file
+// whose session holds white space, and ORPH-1/a-md, whose node is gone in project ELSEWHERE) and
+// an ask owed its node: the first pass writes the issue and answers More for the ask past its
+// budget; the second reads the two documents, writes neither and spends nothing on them, writes the
+// ask and answers no More; a third writes nothing and answers no More; and once another issue is
+// owed its node, a fourth spends its batch on that issue, reads past the budget only the two
+// documents, and answers no More.
+//
+// Its controls are the read past the budget taking any row its marker does not mark, with which
+// the fourth pass answers More over the two documents, and a batch spending budget whatever it
+// wrote, with which the second answers More, and so does every pass after it, with the ask left
+// with no node.
+func TestRowsNoPassCanWriteNeitherSpendTheBudgetNorKeepMore(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seedOrphanIssueWithAsks(t, database, 1)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('ELSEWHERE', 'Elsewhere', 'alice')`); err != nil {
+			return err
+		}
+		moved := graphstore.ArtifactNode(orphanIssue+"/a-md", "ELSEWHERE", "", alice, time.Now().UTC().Add(-time.Hour))
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{moved}, nil); err != nil {
+			return err
+		}
+		moved.State, moved.MadeAt = graphstore.StateGone, time.Now().UTC().Add(-time.Minute)
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{moved}, nil); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			insert into issues (key, project_key, number, title, created_by, rank)
+			values ('ORPH-2', 'ORPH', 2, 'Two', '{"kind":"user","id":"alice"}', 'V');
+			insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+			values ('ORPH-1', 'ORPH', 'a-md', 'A', 'doc', '{"kind":"user","id":"alice"}');
+			insert into artifacts (session_id, slug, name, kind, created_by)
+			values ('ses bad', 'notes-md', 'Notes', 'file', '{"kind":"session","id":"ses bad"}');
+		`)
+		return err
+	}); err != nil {
+		t.Fatalf("seed the issue, the two documents no pass can write and the ask: %v", err)
+	}
+	passes := []struct {
+		rows int64
+		more bool
+	}{{rows: 1, more: true}, {rows: 1, more: false}, {rows: 0, more: false}, {rows: 1, more: false}}
+	for run, want := range passes {
+		if run == 3 {
+			if _, err := database.Pool.Exec(ctx, `
+				insert into issues (key, project_key, number, title, created_by, rank)
+				values ('ORPH-3', 'ORPH', 3, 'Three', '{"kind":"user","id":"alice"}', 'W')
+			`); err != nil {
+				t.Fatalf("seed issue ORPH-3 with no node: %v", err)
+			}
+		}
+		pass, err := WriteOwedObjectNodes(ctx, database, 1)
+		if err != nil || pass.Rows != want.rows || pass.More != want.more {
+			t.Fatalf("pass %d of one batch answered %+v (%v), want %d row(s) and More %t", run+1, pass, err, want.rows, want.more)
+		}
+	}
+	if node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindIssue, "ORPH-2"); err != nil || !held || node.Project != "ORPH" {
+		t.Errorf("after the passes the node of issue ORPH-2 is %+v (held %t, %v), want it in ORPH", node, held, err)
+	}
+	var askNodes int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from graph_nodes where kind = 'ask' and project_key = 'ORPH'`).Scan(&askNodes); err != nil || askNodes != 1 {
+		t.Errorf("after the passes %d ask node(s) name ORPH (%v), want the one ask's", askNodes, err)
+	}
+}
+
 // A kind whose batch fails holds back no other kind: with the store refusing every ask's node, the
 // pass still writes the message's node, and answers the asks' failure.
 //
@@ -258,10 +330,12 @@ func TestAFailingKindHoldsBackNoOtherKind(t *testing.T) {
 // project never moves (graphstore.ErrProjectMoved), and no writer makes one: it is a store a
 // person has to read. It holds back no other row: with a gone node at ORPH-1/a-md in project
 // ELSEWHERE and rows a-md and b-md in ORPH, the pass writes b-md's node, answers a-md in Moved, and
-// answers no failure, and a second pass does the same.
+// answers no failure, and a second pass does the same. The project census names a-md `differs`,
+// with the cure no command gives, and not `gone` with the backfill the passes just ran.
 //
-// Its control is the batch written whole with no retry of its rows one at a time: the pass then
-// fails at that batch, and b-md keeps no node.
+// Its controls are the batch written whole with no retry of its rows one at a time, with which the
+// pass fails at that batch and b-md keeps no node, and the census reading gone before another
+// project, with which it names a-md gone and the backfill as its cure.
 func TestARowWhoseNodeStandsInAnotherProjectHoldsBackNoOtherRow(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -300,6 +374,11 @@ func TestARowWhoseNodeStandsInAnotherProjectHoldsBackNoOtherRow(t *testing.T) {
 		if err != nil || !held || node.Project != "ORPH" || node.State != graphstore.StateLive {
 			t.Errorf("after pass %d the node of b-md is %+v (held %t, %v), want it live in ORPH", run, node, held, err)
 		}
+	}
+	incomplete, err := ProjectComplete(ctx, database.Pool)
+	want := "artifact " + orphanIssue + "/a-md: " + classDiffers + differsCure
+	if err != nil || len(incomplete) != 1 || incomplete[0] != want {
+		t.Errorf("the project census names %q (%v), want exactly %q", incomplete, err, want)
 	}
 }
 
