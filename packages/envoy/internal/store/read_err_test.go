@@ -17,7 +17,7 @@ import (
 )
 
 // The registry answers ReadErr for two watchers, and the listener's /healthz reports it under the
-// interest cache. So the role claim watcher's reads that cannot read their bucket past a barrier
+// interest cache. So the role claim watcher's reads that fail to settle past their barrier
 // are reported under that watcher's own name and bucket, not as the interest registry's: here the
 // interest reads complete, and only the role claim reads fail.
 func TestReadErrNamesTheRoleClaimWatcherAndItsBucket(t *testing.T) {

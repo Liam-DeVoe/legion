@@ -246,10 +246,13 @@ func (w *Watcher) verifyUnmarked(generation uint64, read Read, barrier uint64) e
 }
 
 // settleFailed ends generation's wait past its barrier, begun at since, without completing the
-// read: the barrier was not written, or the consumer did not read past it in time. A read that may
-// still complete removes nothing and is read again after the run's next wait (readAgainUnverified),
-// logged at WARN; one that may not (completeRead) ends as any such read does. Readiness is released
-// either way.
+// read: the barrier was not written, the consumer did not read past it in time (whatever the stream
+// check after the timeout answered, except a replaced bucket), or, once the consumer was past it,
+// the key list or a leader read of what the read did not deliver failed (finishSettle,
+// verifyUnmarked). A read that may still complete removes nothing, is read again after the run's
+// next wait and adds to the run ReadErr reports (readAgainUnverified), logged at WARN; one that may
+// not (completeRead) ends as any such read does, and adds nothing. Readiness is released either
+// way.
 func (w *Watcher) settleFailed(generation uint64, read Read, since time.Time, err error) {
 	w.endSettle(generation)
 	w.mu.RLock()

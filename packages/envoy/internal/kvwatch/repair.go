@@ -18,8 +18,9 @@ const (
 	timedOutCause    = "a timed-out scan"
 	recreatedCause   = "a recreated bucket"
 	unconfirmedCause = "a read whose stream could not be confirmed"
-	// unverifiedCause is a read that could not read its own consumer past a barrier (settling):
-	// the barrier was not written, or the consumer did not reach it in time.
+	// unverifiedCause is a read whose settlement past its barrier failed (settleFailed): the
+	// barrier was not written, the consumer did not reach it in time, or the key list or a leader
+	// read after it failed.
 	unverifiedCause = "a read that could not read its bucket past a barrier"
 	// scheduledCause is the read a completed read arms (WithScheduledRead, armScheduledRead).
 	scheduledCause = "a scheduled read"
@@ -48,8 +49,8 @@ func (w *Watcher) readAgainLater(generation uint64, cause string) {
 	w.armReread(generation, rereadDelay, cause)
 }
 
-// unverifiedRetryMax is the longest wait between two reads of a run that could not read their
-// bucket past a barrier (readAgainUnverified). A run's waits double from rereadDelay - 5, 10, 20
+// unverifiedRetryMax is the longest wait between two reads of a run whose settlement past their
+// barrier failed (readAgainUnverified). A run's waits double from rereadDelay - 5, 10, 20
 // and 40 s - and then stay at this, so a bucket that takes no write, or a consumer that never
 // catches up, is read at most once a minute, while the first reads after a blip still come within
 // seconds.

@@ -11,5 +11,6 @@ body: |-
   100,000 keys, normally one page, and one more for each step back past a key removed between two
   pages; 64 KB for 1,055 sessions) and one leader read per key the read did not deliver, usually
   none. A list of any size is taken while the bucket is written to. A read the stream cannot
-  answer keeps every row, fails and is read again, and `/healthz` reports reads that fail past the
-  stale bound, the known-session store's among them.
+  answer keeps every row, fails and is read again, and `/healthz` reports reads that fail, or keep
+  waiting, to settle past their barrier for longer than the stale bound, the known-session store's
+  among them.

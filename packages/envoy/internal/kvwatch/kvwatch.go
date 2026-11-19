@@ -220,12 +220,14 @@ type Watcher struct {
 	// epoch is the current read's Read.Epoch, and bound its stale bound (boundFor).
 	epoch uint64
 	bound time.Duration
-	// unverifiedSince is when the first of an unbroken run of reads that could not read their own
-	// consumer past a barrier began waiting for it (settle), on now, zero once a read completes;
-	// unverifiedErr is the last of their errors and unverifiedRuns how many there were. The run
-	// spaces its re-reads apart (readAgainUnverified), and ReadErr reports it once it outlasts the
-	// stale bound. settleSince is when the current read began waiting past its barrier, zero when
-	// none is waiting, so ReadErr reports a wait that outlasts the bound before it has failed.
+	// unverifiedSince is when the first of an unbroken run of reads whose settlement past their
+	// barrier failed (settleFailed: the barrier was not written, the consumer did not reach it in
+	// time, or the key list or a leader read after it failed) began waiting past it (settle), on
+	// now, zero once a read completes; unverifiedErr is the last of their errors and
+	// unverifiedRuns how many there were. The run spaces its re-reads apart (readAgainUnverified),
+	// and ReadErr reports it once it outlasts the stale bound. settleSince is when the current read
+	// began waiting past its barrier, zero when none is waiting, so ReadErr reports a wait that
+	// outlasts the bound before it has failed.
 	unverifiedSince time.Time
 	unverifiedErr   error
 	unverifiedRuns  int

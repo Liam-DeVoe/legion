@@ -757,11 +757,17 @@ A cache past its stale bound is `503` `unhealthy` too, with `interest KV read un
 `session KV read unavailable` or `CI KV read unavailable`. Each read of a cache's bucket writes a
 marker into the bucket once its scan ends. It completes only once its own consumer has delivered
 that marker or a later record, and the bucket's leader has answered for each key the read did not
-deliver. The answer comes when reads that got past their scan have gone longer than the stale
-bound without one completing: 2 minutes, or half the bucket's maximum age when that is shorter,
-counted from when the first of them began waiting. The error names the watcher and its bucket,
-and the interest cache's covers the role claims too. A read whose scan times out, or whose check of
-the bucket's stream fails, is read again and is not counted.
+deliver. The answer comes when reads have failed at that step, or are still waiting at it, for
+longer than the stale bound without one completing: 2 minutes, or half the bucket's maximum age
+when that is shorter, counted from when the first of them began waiting. A failure there is a
+marker that is not written, a consumer that does not reach it in time, or a list of the bucket's
+keys or a leader's answer that fails. Only a completed read ends a run of such failures; a wait
+with no failure before it also ends when the listener watches the bucket again or its watcher
+stops. The error names the watcher and its bucket, and the interest cache's covers the role claims
+too. A read whose scan times out, or whose last check of the bucket's stream fails after the
+marker and the leader's answers, is read again and is not counted. Neither is a wait that finds
+the bucket deleted, or deleted and created again, nor a read the listener's NATS connection
+dropped under.
 
 `role_claim_repair` says how fresh the listener's copy of the role claims is. The listener reads
 every role claim from NATS again one minute after each full read completes, and each such read

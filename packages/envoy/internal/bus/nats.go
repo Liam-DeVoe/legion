@@ -1752,13 +1752,14 @@ var ErrInvalidKey error = refusal("not a key nats.go accepts")
 // TestV1RoutesAnswerAKeyNATSWouldRefuseWith4xx), but for a send: POST /v1/messages/send to it is
 // the 404 of a session neither the session bucket nor the known-session store holds, as a send to
 // any refused key is, because session.SessionRegistry.Refresh answers a refused key as
-// nats.ErrKeyNotFound. The Legion agent routes (/v1/legion/agents/sessions/<id>) take it as any
-// other session id: their store writes `session.<id>`, `role.<token>.<id>` and `issue.<key>.<id>`
-// in legion_agents (legionagents.Store), none of which is this key, in a bucket no kvwatch watcher
-// reads, so no barrier is ever written there. A GET of one never recorded is their 404, "unknown
-// legion agent", and a PUT records it. A record a watch or a scan of a bucket delivers under this
-// key is dropped before a cache or a visitor sees it (kvwatch's Watcher.consume and drainScan,
-// which ScanExistingKeys and ScanFilteredKeys read through), and StoredKeys lists no key under it.
+// nats.ErrKeyNotFound. The Legion agent routes that take a session id, PUT /v1/legion/agents (a
+// batch) and /v1/legion/agents/sessions/<id>, take it as any other session id: their store writes
+// `session.<id>`, `role.<token>.<id>` and `issue.<key>.<id>` in legion_agents (legionagents.Store),
+// none of which is this key, in a bucket no kvwatch watcher reads, so no barrier is ever written
+// there. A GET of one never recorded is their 404, "unknown legion agent", and either PUT records
+// it. A record a watch or a scan of a bucket delivers under this key is dropped before a cache or
+// a visitor sees it (kvwatch's Watcher.consume and drainScan, which ScanExistingKeys and
+// ScanFilteredKeys read through), and StoredKeys lists no key under it.
 var ErrReservedKey error = refusal("a key kvwatch reserves for its read barrier")
 
 // ErrStreamFull is wrapped by the error of a JetStream publish the stream did not store because it

@@ -17,7 +17,7 @@ import (
 )
 
 // The registry's ReadErr is its watcher's: once every read of the session bucket for longer than
-// the copy's stale bound could not read the bucket past a barrier, ReadErr says so, which /healthz
+// the copy's stale bound has failed to settle past its barrier, ReadErr says so, which /healthz
 // answers unhealthy. Ping reads only the bucket's stream and the watcher's terminal error, and both
 // stay healthy throughout.
 func TestReadErrReportsSessionReadsThatCannotReadPastABarrier(t *testing.T) {
@@ -84,7 +84,7 @@ func TestReadErrReportsSessionReadsThatCannotReadPastABarrier(t *testing.T) {
 	}
 }
 
-// The known-session store's reads that cannot read its bucket past a barrier are reported too, by
+// The known-session store's reads that fail to settle past their barrier are reported too, by
 // its own ReadErr, which names the store's watcher and its bucket: it is none of the listener's
 // caches, so /healthz reads this one to report them (degraded, cmd/listener's healthz handler).
 func TestKnownSessionsReadErrReportsReadsThatCannotReadPastABarrier(t *testing.T) {
