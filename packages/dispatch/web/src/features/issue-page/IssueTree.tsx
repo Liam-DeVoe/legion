@@ -628,8 +628,8 @@ export function IssueTree({
     writer,
     // The node the rows are drawn from, not the zoom asked for (undefined for the issue where the
     // whole tree is drawn): a filter that leaves the zoomed node out, or a read that drops it,
-    // draws from the issue while the zoom is kept for when it is cleared, and Left and `,` there
-    // moved nothing and said nothing, since they read a zoom no row stood under.
+    // draws from the issue while the zoom is kept for when the row comes back, and Left and `,`
+    // there moved nothing and said nothing, since they read a zoom no row stood under.
     zoom: zoomed ? rooted.id : zoomRoot,
   });
 

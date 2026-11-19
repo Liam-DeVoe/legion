@@ -2672,8 +2672,8 @@ test("a child whose title holds an unbroken run keeps the page inside its viewpo
   });
 });
 
-/** One CSS selector for the element axe names by `target`: axe writes a selector a part at a time,
- *  and a part inside a frame or a shadow root as a list of its own. */
+/** One CSS selector for the element axe names by `target`: axe writes one part for each frame
+ *  the element is inside, and a part that reaches into a shadow root as a list of its own. */
 function axeSelector(target: readonly unknown[]): string {
   return target.map((part) => (Array.isArray(part) ? part.join(" ") : String(part))).join(" ");
 }

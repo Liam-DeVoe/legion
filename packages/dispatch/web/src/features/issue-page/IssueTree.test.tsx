@@ -6864,9 +6864,8 @@ test("q to a question under a branch folded in the cycle's last state opens that
 });
 
 // The row the tree is zoomed to is drawn open by definition, so its Fold control drew nothing at
-// any width, and wrote a fold that showed only after the zoom out. That row is the tree's
-// heading and draws no fold control, while its treeitem still says it is expanded; zoomed out,
-// the row has its fold control again.
+// any width, and wrote a fold that showed only after the zoom out. That row draws no fold control,
+// while its treeitem still says it is expanded; zoomed out, the row has its fold control again.
 test("the row the tree is zoomed to draws no fold control and stays expanded, and gets it back out of the zoom", async () => {
   for (const width of [1440, 390]) {
     setViewport(width);
@@ -6897,6 +6896,30 @@ test("the row the tree is zoomed to draws no fold control and stays expanded, an
     );
     view.unmount();
   }
+});
+
+// An address's own path is drawn open over the reader's folds, so the row it names stays drawn:
+// in the cycle's last state too, where the reader's folds there are drawn and no other. Left on
+// a branch the address goes through folds nothing there.
+test("in the cycle's last state a branch on the address's own path stays open under Left", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const root = twoBranchesTree();
+  const first = root.children[0] as TreeNode;
+  const view = renderTree(root, { reveal: [root, first, first.children[0] as TreeNode] });
+  await waitFor(() => expect(focusedRow(view.container)).toBe("reply-1"));
+  await user.keyboard("zz");
+  await waitFor(() => expect(rowsFor(view.container, "reply-2").length).toBe(1));
+  await user.keyboard("k");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  await user.keyboard("{ArrowLeft}");
+  await act(async () => {});
+  expect(
+    rowsFor(view.container, "reply-1").length,
+    "Left folded the branch the address goes through"
+  ).toBe(1);
+  expect(rowsFor(view.container, "comment-1")[0]?.getAttribute("aria-expanded")).toBe("true");
+  view.unmount();
 });
 
 // `q` and `w` each work out where they go from the tree as it stands, so pressed before the
