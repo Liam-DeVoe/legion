@@ -681,18 +681,29 @@ func requirePreconditionCoverage(tree *batchTree, ops []model.EditOp, preconditi
 	return &ErrInvalidPrecondition{Reason: "blocks must include tokens for resolved blocks: " + strings.Join(missing, ", ")}
 }
 
+// operationPreconditionBlocks is the blocks a block guard must name for op, read over the tree op
+// applies to. An operation that removes or replaces a block holding others asks for the whole of
+// what it removes or replaces, so a change another writer made anywhere inside it refuses the
+// batch (INFRA-341): a delete for what its removal takes (removalPreconditionBlocks), a replace
+// for the typed block its with rewrites (replacePreconditionBlocks), and a move for the list or
+// quote its block's leaving empties. Every other operation asks for the block it names or the
+// block holding the text it matched.
 func operationPreconditionBlocks(tree *batchTree, op model.EditOp) ([]string, error) {
 	switch op.Op {
 	case "replace":
-		return quotePreconditionBlock(tree, "find", op.Find, op.Occurrence)
+		return replacePreconditionBlocks(tree, op)
 	case "delete":
 		if op.Block != "" {
 			if err := requireBlock(tree, op, "block", op.Block); err != nil {
 				return nil, err
 			}
-			return []string{op.Block}, nil
+			held, err := tree.heldAtStart(op.Block)
+			if err != nil {
+				return nil, err
+			}
+			return removalPreconditionBlocks(tree, op.Block, held, true)
 		}
-		return quotePreconditionBlock(tree, "find", op.Find, op.Occurrence)
+		return deletePreconditionBlocks(tree, op)
 	case "retype", "delete_row", "delete_column":
 		if err := requireBlock(tree, op, "block", op.Block); err != nil {
 			return nil, err
@@ -705,18 +716,130 @@ func operationPreconditionBlocks(tree *batchTree, op model.EditOp) ([]string, er
 	}
 }
 
+// removalPreconditionBlocks is what a block guard covers for a removal that starts at the block
+// carrying id and keeps held (deleteHeldBlock), or for a move taking that block from its place
+// (held nil): the outermost node the removal takes (pmdoc.ValidDocument.BlockRemoval), as the
+// listing names it (pmdoc.ListedBlocks), whose tokens cover every block inside it. That is the
+// list or quote the removal empties, where it empties one, and otherwise the removed block; an
+// operation that names the very block it removes (named) asks for that block, as it always has.
+// A list item, which a find's marker selects, is no block the listing names, so its delete asks
+// for the item's paragraph and the blocks after it - its nested lists, its typed blocks - whose
+// tokens cover every block the item holds. The known limit is the item's own attributes, which
+// lie on the list_item and in no listed token: a guard on those blocks does not see a task item's
+// checked mark another writer set.
+func removalPreconditionBlocks(tree *batchTree, id string, held map[string]struct{}, named bool) ([]string, error) {
+	valid, err := tree.validated("BlockRemoval")
+	if err != nil {
+		return nil, err
+	}
+	removed, err := valid.BlockRemoval(id, held)
+	if err != nil {
+		return nil, err
+	}
+	if named && blockID(removed) == id {
+		return []string{id}, nil
+	}
+	if listed := pmdoc.ListedBlocks(removed); len(listed) > 0 {
+		return listed, nil
+	}
+	return []string{id}, nil
+}
+
+// deletePreconditionBlocks is what a block guard covers for a delete by find: where the find's
+// list marker selected an item, the item the delete removes with the items nested in it
+// (removalPreconditionBlocks); where the find covers a textblock's whole text, the outermost node
+// that removal takes (pmdoc.ValidDocument.TextblockRemoval) - the textblock, the list item whose
+// text it is, or the list or quote that empties - as the listing names it; otherwise the block
+// holding the text it deletes.
+func deletePreconditionBlocks(tree *batchTree, op model.EditOp) ([]string, error) {
+	r, _, byMarker, err := findEditQuote(tree, "find", op.Find, op.Occurrence)
+	if err != nil {
+		return nil, err
+	}
+	if byMarker {
+		item, err := listItemSelected(tree.node, r)
+		if err != nil {
+			return nil, err
+		}
+		held, err := tree.heldAtStart(item)
+		if err != nil {
+			return nil, err
+		}
+		return removalPreconditionBlocks(tree, item, held, false)
+	}
+	valid, err := tree.validated("TextblockRemoval")
+	if err != nil {
+		return nil, invalidSchemaOp("find", err)
+	}
+	removed, err := valid.TextblockRemoval(r)
+	if err != nil {
+		return nil, invalidSchemaOp("find", err)
+	}
+	if removed != nil {
+		if listed := pmdoc.ListedBlocks(removed); len(listed) > 0 {
+			return listed, nil
+		}
+	}
+	return rangePreconditionBlock(tree, r)
+}
+
+// replacePreconditionBlocks is what a block guard covers for a replace: the block holding the text
+// its find matched, or, where its with rewrites the typed block holding that text under the
+// block's own id, the outermost typed block it rewrites (rewrittenTypedBlock), which the write
+// replaces whole.
+func replacePreconditionBlocks(tree *batchTree, op model.EditOp) ([]string, error) {
+	r, _, _, err := findEditQuote(tree, "find", op.Find, op.Occurrence)
+	if err != nil {
+		return nil, err
+	}
+	if rewritten := rewrittenTypedBlock(tree, r, op.With); rewritten != nil && blockID(rewritten) != "" {
+		return []string{blockID(rewritten)}, nil
+	}
+	return rangePreconditionBlock(tree, r)
+}
+
+// rewrittenTypedBlock is the outermost typed block a replace's with rewrites in place under its
+// own id, and nil where it rewrites none. The fit climbs out of each typed block around the
+// match's paragraph that the with holds exactly one block of under that block's type and id
+// (pmdoc.RewritesBlock, pmdoc's fitReplacement), up to the first that it does not, and writes the
+// with where the outermost of them stood. The with is read as applyReplace reads it there: a
+// paragraph directly inside a typed block carries no marker for replacementMarkdown to take off.
+func rewrittenTypedBlock(tree *batchTree, r pmdoc.Range, with string) *pmdoc.Node {
+	at, ok := pmdoc.ContainingTextblock(tree.node, r.From)
+	if !ok || at.Node.Type != "paragraph" || len(at.Ancestors) == 0 || !pmdoc.IsTypedBlock(at.Ancestors[0].Type) {
+		return nil
+	}
+	parsed, err := pmdoc.ParseFragment(pmdoc.LineFeeds(with), opensDocument(tree.node, r.From), pmdoc.NewWriteBudget())
+	if err != nil {
+		return nil
+	}
+	var rewritten *pmdoc.Node
+	for _, ancestor := range at.Ancestors {
+		if !pmdoc.IsTypedBlock(ancestor.Type) || !pmdoc.RewritesBlock(parsed.Children, ancestor) {
+			break
+		}
+		rewritten = ancestor
+	}
+	return rewritten
+}
+
 // anchoredPreconditionBlocks is what a block guard covers for an insert or a move: the block the
 // anchor resolves to - the one a `block:<id>` anchor names, or the one holding the text a quote
-// anchor matched - and, for a move, the block it relocates. The document's edges and a `heading:`
-// anchor resolve to no block of their own, so an operation naming none is refused and the batch
-// takes the document token instead.
+// anchor matched - and, for a move, the block it relocates, or the list or quote that block's
+// leaving empties (removalPreconditionBlocks). The document's edges and a `heading:` anchor
+// resolve to no block of their own, so an operation naming none is refused and the batch takes
+// the document token instead.
 func anchoredPreconditionBlocks(tree *batchTree, op model.EditOp) ([]string, error) {
 	blocks := make([]string, 0, 2)
 	if op.Op == "move" && op.Block != "" {
 		if err := requireBlock(tree, op, "block", op.Block); err != nil {
 			return nil, err
 		}
-		blocks = append(blocks, op.Block)
+		moved, err := removalPreconditionBlocks(tree, op.Block, nil, true)
+		if err != nil {
+			return nil, err
+		}
+		blocks = append(blocks, moved...)
 	}
 	anchor, after, err := anchorOf(op)
 	if err != nil {
@@ -746,14 +869,19 @@ func anchoredPreconditionBlocks(tree *batchTree, op model.EditOp) ([]string, err
 	return blocks, nil
 }
 
-// quotePreconditionBlock is the block holding the text quote matched, written in field: a
-// replace's or a delete's find, or an insert's or a move's anchor.
+// quotePreconditionBlock is the block holding the text quote matched, written in field: an
+// insert's or a move's anchor.
 func quotePreconditionBlock(tree *batchTree, field, quote string, occurrence *int) ([]string, error) {
 	range_, _, _, err := findEditQuote(tree, field, quote, occurrence)
 	if err != nil {
 		return nil, err
 	}
-	blockID, err := pmdoc.BlockIDForRange(tree.node, range_)
+	return rangePreconditionBlock(tree, range_)
+}
+
+// rangePreconditionBlock is the lowest block holding all of r that carries an id.
+func rangePreconditionBlock(tree *batchTree, r pmdoc.Range) ([]string, error) {
+	blockID, err := pmdoc.BlockIDForRange(tree.node, r)
 	if err != nil {
 		return nil, err
 	}

@@ -1466,6 +1466,11 @@ Within one atomic batch, an operation that names a block cascaded away by an ear
 `POST /api/v1/artifacts/{id}/edits` accepts an optional precondition choosing exactly one document token or one-or-more `{id, token}` block tokens.
 A document token protects every operation;
 a block guard must name every content block the resolved batch changes, while unrelated sections can change concurrently.
+An operation that removes or rewrites a block holding others asks for the whole of it, so a change another writer made anywhere inside refuses the batch (`docs.operationPreconditionBlocks`):
+a delete whose removal empties a list or a quote, and a move whose block's leaving does, names that list or quote;
+a delete by a find's list marker names the removed item's paragraph and its nested lists and typed blocks, since the block listing names no list item;
+a replace whose `with` rewrites the typed block around its match names that typed block.
+A task item's checked mark lies on the list item and in no listed token, so a guard on the item's blocks does not see it change.
 A block guard covers an insert or a move whose anchor is a block id or a quote: it names the anchor's block, and a move's moved block as well (`docs.anchoredPreconditionBlocks`).
 An operation naming no block that way - an insert at `start` or `end`, or on a `heading:` anchor - is `400 INVALID_PRECONDITION` saying the document token guards it.
 Tokens include inline marks, so a fresh anchor makes the relevant document or block guard stale.

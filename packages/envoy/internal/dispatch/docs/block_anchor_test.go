@@ -2,6 +2,7 @@ package docs
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -111,6 +112,173 @@ func TestPreconditionBlocksCoverInsertAndMove(t *testing.T) {
 			}
 		})
 	}
+}
+
+// An operation that removes or replaces a block holding others is covered only by a guard on the
+// whole of what it takes, so a change another writer made anywhere inside refuses the batch
+// (INFRA-341). The guard names the outermost node the operation takes as the listing names it:
+// the list or quote a removal empties; for a list item a find removes, the item's paragraph and
+// the nested list after it, since the listing names no list item; the typed block a replace's
+// with rewrites under its own id. A delete that removes the very block it names asks for that
+// block, as it always has. Each case prints the refusal it got.
+func TestPreconditionBlocksCoverTheWholeOfWhatAnOperationTakes(t *testing.T) {
+	const (
+		nested = "- Parent\n  - Child\n- Other\n"
+		only   = "Intro.\n\n- Only\n  - Child\n"
+		lone   = "Intro.\n\n- Only\n"
+		quoted = "> :::callout{#c1 kind=\"note\" title=\"T\"}\n> Alpha.\n> :::\n\nAfter.\n"
+		typed  = "Intro.\n\n:::callout{#c1 kind=\"note\" title=\"T\"}\nAlpha.\n:::\n"
+	)
+	for _, test := range []struct {
+		name, markdown string
+		op             func(ids map[string]string) model.EditOp
+		// covered and missing name blocks as blockIDsByName does; missing is "" where the
+		// guard covers the operation.
+		covered []string
+		missing string
+	}{
+		{
+			name:     "a delete whose list marker selects an item, under the item's paragraph alone",
+			markdown: nested,
+			op:       func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "- Parent"} },
+			covered:  []string{"Parent"},
+			missing:  "bullet_list 1",
+		},
+		{
+			name:     "a delete whose list marker selects an item, under its paragraph and its nested list",
+			markdown: nested,
+			op:       func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "- Parent"} },
+			covered:  []string{"Parent", "bullet_list 1"},
+		},
+		{
+			name:     "a delete whose list marker selects a list's only item, under all the item holds",
+			markdown: only,
+			op:       func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "- Only"} },
+			covered:  []string{"Only", "bullet_list 1"},
+			missing:  "bullet_list 0",
+		},
+		{
+			name:     "a delete whose list marker selects a list's only item, under the list",
+			markdown: only,
+			op:       func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "- Only"} },
+			covered:  []string{"bullet_list 0"},
+		},
+		{
+			name:     "a delete of an item's whole text, which hoists its nested list, under the item's paragraph",
+			markdown: nested,
+			op:       func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "Parent"} },
+			covered:  []string{"Parent"},
+			missing:  "bullet_list 1",
+		},
+		{
+			name:     "a delete of the whole text of a list's only item, under the item's paragraph",
+			markdown: lone,
+			op:       func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "Only"} },
+			covered:  []string{"Only"},
+			missing:  "bullet_list 0",
+		},
+		{
+			name:     "a delete of the paragraph a list's only item holds, under that paragraph",
+			markdown: lone,
+			op:       func(ids map[string]string) model.EditOp { return model.EditOp{Op: "delete", Block: ids["Only"]} },
+			covered:  []string{"Only"},
+			missing:  "bullet_list 0",
+		},
+		{
+			name:     "a delete of the typed block a quote holds alone, under the typed block",
+			markdown: quoted,
+			op:       func(ids map[string]string) model.EditOp { return model.EditOp{Op: "delete", Block: ids["callout 0"]} },
+			covered:  []string{"callout 0"},
+			missing:  "blockquote 0",
+		},
+		{
+			name:     "a delete of the list item it names, under that item",
+			markdown: nested,
+			op:       func(ids map[string]string) model.EditOp { return model.EditOp{Op: "delete", Block: ids["list_item 0"]} },
+			covered:  []string{"list_item 0"},
+		},
+		{
+			name:     "a move of a list's only item, under the anchor and the item's paragraph",
+			markdown: lone,
+			op: func(ids map[string]string) model.EditOp {
+				return model.EditOp{Op: "move", Block: ids["Only"], After: "Intro."}
+			},
+			covered: []string{"Intro.", "Only"},
+			missing: "bullet_list 0",
+		},
+		{
+			name:     "a move of a list's only item, under the anchor and the list",
+			markdown: lone,
+			op: func(ids map[string]string) model.EditOp {
+				return model.EditOp{Op: "move", Block: ids["Only"], After: "Intro."}
+			},
+			covered: []string{"Intro.", "bullet_list 0"},
+		},
+		{
+			name:     "a replace whose with rewrites the typed block it lands in, under the matched paragraph",
+			markdown: typed,
+			op: func(map[string]string) model.EditOp {
+				return model.EditOp{Op: "replace", Find: "Alpha.", With: ":::callout{#c1 kind=\"warning\" title=\"T\"}\nNew.\n:::"}
+			},
+			covered: []string{"Alpha."},
+			missing: "callout 0",
+		},
+		{
+			name:     "a replace whose with rewrites the typed block it lands in, under that block",
+			markdown: typed,
+			op: func(map[string]string) model.EditOp {
+				return model.EditOp{Op: "replace", Find: "Alpha.", With: ":::callout{#c1 kind=\"warning\" title=\"T\"}\nNew.\n:::"}
+			},
+			covered: []string{"callout 0"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tree, err := parseInput(test.markdown)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids := blockIDsByName(tree)
+			covered := make([]string, 0, len(test.covered))
+			for _, name := range test.covered {
+				if ids[name] == "" {
+					t.Fatalf("no block %q in %v", name, ids)
+				}
+				covered = append(covered, ids[name])
+			}
+			err = preconditionCoverage(tree, []model.EditOp{test.op(ids)}, covered...)
+			if test.missing == "" {
+				if err != nil {
+					t.Fatalf("coverage of %v = %v, want it accepted", test.covered, err)
+				}
+				return
+			}
+			var invalid *ErrInvalidPrecondition
+			if want := "blocks must include tokens for resolved blocks: " + ids[test.missing]; !errors.As(err, &invalid) || invalid.Reason != want {
+				t.Fatalf("coverage of %v = %v, want the reason %q, naming %s", test.covered, err, want, test.missing)
+			}
+			t.Logf("under %v: %v", test.covered, err)
+		})
+	}
+}
+
+// blockIDsByName names tree's blocks for a test: a paragraph by its text, and every other block by
+// its type and its place among the blocks of that type in document order ("bullet_list 0" is the
+// first list, the outermost where lists nest).
+func blockIDsByName(tree *pmdoc.Node) map[string]string {
+	ids := map[string]string{}
+	counts := map[string]int{}
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		switch id := blockID(node); {
+		case id == "" || node.Type == "doc":
+		case node.Type == "paragraph":
+			ids[pmdoc.TextContent(node)] = id
+		default:
+			ids[fmt.Sprintf("%s %d", node.Type, counts[node.Type])] = id
+			counts[node.Type]++
+		}
+		return true
+	})
+	return ids
 }
 
 // An operation whose anchor names no block of its own - the document's edges, a heading - is the

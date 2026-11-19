@@ -600,29 +600,83 @@ func (d ValidDocument) DeleteTableColumn(blockID string, index int) (*Node, erro
 	return out, nil
 }
 
-// removeAtPath removes the node at path and every list, list item, or
-// blockquote that removal empties. Other containers keep their emptied shape
-// for Validate to report.
+// removeAtPath removes the node at path and every list, list item, or blockquote that removal
+// empties (removalRoot). Other containers keep their emptied shape for Validate to report.
 func removeAtPath(root *Node, path []int) {
-	for len(path) > 0 {
+	if len(path) == 0 {
+		return
+	}
+	path = removalRoot(root, path)
+	parent := nodeAtPath(root, path[:len(path)-1])
+	index := path[len(path)-1]
+	parent.Children = append(parent.Children[:index:index], parent.Children[index+1:]...)
+	// Both parsers read `[^1]: ` as a definition holding one empty paragraph, so an emptied
+	// definition keeps one, and its reference stays a footnote reference.
+	if len(parent.Children) == 0 && parent.Type == "footnote_definition" {
+		parent.Children = []*Node{{Type: "paragraph"}}
+	}
+}
+
+// removalRoot is the path of the outermost node a removal of the node at path takes
+// (removeAtPath): that node, or the list, list item or blockquote that holds nothing else, up
+// through every such container that holds nothing but the one inside it.
+func removalRoot(root *Node, path []int) []int {
+	for len(path) > 1 {
 		parent := nodeAtPath(root, path[:len(path)-1])
-		index := path[len(path)-1]
-		parent.Children = append(parent.Children[:index:index], parent.Children[index+1:]...)
-		if len(parent.Children) > 0 {
-			return
+		if len(parent.Children) > 1 {
+			return path
 		}
 		switch parent.Type {
 		case "bullet_list", "ordered_list", "list_item", "blockquote":
 			path = path[:len(path)-1]
-		case "footnote_definition":
-			// Both parsers read `[^1]: ` as a definition holding one empty paragraph, so an
-			// emptied definition keeps one, and its reference stays a footnote reference.
-			parent.Children = []*Node{{Type: "paragraph"}}
-			return
 		default:
-			return
+			return path
 		}
 	}
+	return path
+}
+
+// BlockRemoval is the outermost node DeleteBlockKeeping(blockID, held) removes from the tree d
+// validated: the block carrying blockID where blocks inside it that held does not name take its
+// place (keptBlocks), and otherwise that block or the list, list item or blockquote its removal
+// empties, up through every such container (removalRoot). MoveBlock takes the block it moves out
+// of its place by the same removal, so BlockRemoval(blockID, nil) is what a move of blockID
+// removes there; a paragraph that is its list item's whole content moves as that item, and the
+// item's removal empties the containers the paragraph's does. The zero ValidDocument wants a
+// document.
+func (d ValidDocument) BlockRemoval(blockID string, held map[string]struct{}) (*Node, error) {
+	if d.doc == nil {
+		return nil, wantsDocument("BlockRemoval")
+	}
+	path, _, ok := findBlock(d.doc, blockID)
+	if !ok {
+		return nil, fmt.Errorf("%w: block %q", ErrTargetNotFound, blockID)
+	}
+	if block := nodeAtPath(d.doc, path); len(keptBlocks(block, held)) > 0 {
+		return block, nil
+	}
+	return nodeAtPath(d.doc, removalRoot(d.doc, path)), nil
+}
+
+// ListedBlocks is the ids of the outermost blocks in node, node included, that the document's
+// listing names (RenderWithBlockOffsets), in document order: node's own where it carries one and is
+// no list item, and otherwise those of the blocks it holds. It is for the node a removal takes
+// (BlockRemoval, TextblockRemoval), of which a list item is the one kind the listing never names:
+// the paragraph that opens an item stands for it there, so an item's are its paragraph's and those
+// of the blocks after it, a nested list or a typed block, whose tokens cover all the blocks the
+// item holds. No listed token covers the item's own attributes: a task item's checked mark lies on
+// the list_item, outside its paragraph's token.
+func ListedBlocks(node *Node) []string {
+	if id, _ := node.Attrs[BlockIDAttr].(string); id != "" && node.Type != "list_item" {
+		return []string{id}
+	}
+	var ids []string
+	for _, child := range node.Children {
+		if !isInlineNodeType(child.Type) {
+			ids = append(ids, ListedBlocks(child)...)
+		}
+	}
+	return ids
 }
 
 // ErrListItemContent reports a whole-text delete of a list item that holds
@@ -644,32 +698,9 @@ func (d ValidDocument) DeleteTextblock(r Range) (*Node, bool, error) {
 		return nil, false, wantsDocument("DeleteTextblock")
 	}
 	doc := d.doc
-	var textblockPath []int
-	walk(doc, func(node *Node, path []int, pos, end int) bool {
-		if !isTextblock(node.Type) || r.From != pos+1 || r.To != end-1 {
-			return true
-		}
-		textblockPath = append([]int(nil), path...)
-		return false
-	})
-	if textblockPath == nil {
-		return nil, false, nil
-	}
-	removePath := textblockPath
-	hoistNested := false
-	if len(textblockPath) > 1 {
-		parentPath := textblockPath[:len(textblockPath)-1]
-		parent := nodeAtPath(doc, parentPath)
-		switch parent.Type {
-		case "table_cell", "table_header":
-			return nil, false, nil
-		case "list_item":
-			var err error
-			removePath, hoistNested, err = listItemRemoval(parent, textblockPath)
-			if err != nil {
-				return nil, false, err
-			}
-		}
+	removePath, hoistNested, found, err := textblockRemoval(doc, r)
+	if err != nil || !found {
+		return nil, false, err
 	}
 	out := cloneNode(doc)
 	if hoistNested {
@@ -691,6 +722,56 @@ func (d ValidDocument) DeleteTextblock(r Range) (*Node, bool, error) {
 		return nil, false, err
 	}
 	return out, true, nil
+}
+
+// TextblockRemoval is the outermost node DeleteTextblock(r) removes from the tree d validated, and
+// nil where it removes none: the textblock whose whole text r covers, or the list item that goes
+// with that text, whether its one nested list's items take its place or not, or else the list,
+// list item or blockquote that removal empties, up through every such container (removalRoot). Its
+// error is DeleteTextblock's refusal of r (ErrListItemContent). The zero ValidDocument wants a
+// document.
+func (d ValidDocument) TextblockRemoval(r Range) (*Node, error) {
+	if d.doc == nil {
+		return nil, wantsDocument("TextblockRemoval")
+	}
+	removePath, hoistNested, found, err := textblockRemoval(d.doc, r)
+	if err != nil || !found {
+		return nil, err
+	}
+	// Hoisted items take the item's place, so the list that held it keeps them.
+	if !hoistNested {
+		removePath = removalRoot(d.doc, removePath)
+	}
+	return nodeAtPath(d.doc, removePath), nil
+}
+
+// textblockRemoval is what DeleteTextblock(r) removes from doc: the path of the textblock whose
+// whole text r covers, or of the list item that goes with that text (listItemRemoval), and
+// whether that item's one nested list is hoisted into its place. found is false where r covers
+// part of a textblock's text, or a table cell's text, which the cell's content rule keeps.
+func textblockRemoval(doc *Node, r Range) (removePath []int, hoistNested, found bool, err error) {
+	var textblockPath []int
+	walk(doc, func(node *Node, path []int, pos, end int) bool {
+		if !isTextblock(node.Type) || r.From != pos+1 || r.To != end-1 {
+			return true
+		}
+		textblockPath = append([]int(nil), path...)
+		return false
+	})
+	if textblockPath == nil {
+		return nil, false, false, nil
+	}
+	if len(textblockPath) > 1 {
+		parent := nodeAtPath(doc, textblockPath[:len(textblockPath)-1])
+		switch parent.Type {
+		case "table_cell", "table_header":
+			return nil, false, false, nil
+		case "list_item":
+			removePath, hoistNested, err = listItemRemoval(parent, textblockPath)
+			return removePath, hoistNested, err == nil, err
+		}
+	}
+	return textblockPath, false, true, nil
 }
 
 // listItemRemoval decides what deleting the textblock at textblockPath, a child of the list

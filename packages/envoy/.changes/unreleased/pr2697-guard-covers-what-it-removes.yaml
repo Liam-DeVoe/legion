@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  A `dispatch doc-edit` block guard covers the whole of what an operation removes or rewrites, so
+  a change another writer made anywhere inside it refuses the edit, and nothing is written. A
+  `delete` whose `find` opens with a list marker removed the item and the items nested in it while
+  asking a guard on the item's text alone, so it deleted a nested change another writer had just
+  made. Such a delete now asks for the item's paragraph and its nested lists and typed blocks; a
+  `delete` or `move` whose block's leaving empties a list or a quote asks for that list or quote;
+  and a `replace` whose `with` rewrites the typed block around its match asks for that typed block.
+  An uncovered edit is refused `400 INVALID_PRECONDITION` naming each block it lacks, as before. A
+  task item's checked mark is in no listed block's token, so a guard does not see it change.
+time: 2026-11-19T20:30:00Z
+custom:
+    Issue: pr2697
