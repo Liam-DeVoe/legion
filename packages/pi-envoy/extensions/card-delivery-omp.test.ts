@@ -23,6 +23,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { connect, createInbox, headers, type NatsConnection, StringCodec } from "nats";
 import { z } from "zod";
 import { cardLines, readCardLines } from "../test/card-entries";
@@ -40,6 +41,8 @@ import { cardLines, readCardLines } from "../test/card-entries";
 // without both skips, except on GitHub Actions, where the pi-envoy job supplies both
 // (`ompNatsGuard`).
 const { skip, setup } = ompNatsGuard();
+/** The Dispatch token the session is handed. */
+const DISPATCH_TOKEN = fixtureSecret("dsp");
 
 /** The kind line of the wake (src/card-wake.ts, `CardWake`), whatever count it states. */
 const WAKE_TEXT = /notice: unread messages/;
@@ -531,7 +534,7 @@ async function startSession(
       ENVOY_URL: base,
       ENVOY_NATS_URL: nats,
       DISPATCH_URL: base,
-      DISPATCH_TOKEN: "card-delivery-token",
+      DISPATCH_TOKEN,
       ...(storage === "sql" && { OMP_SESSION_STORAGE: "sql", OMP_SESSION_SQL_DSN_FILE: dsnFile }),
       ...env,
     },
