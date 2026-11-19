@@ -890,11 +890,11 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	var sessions *pgx.Conn
 	if command.ResumeFile != "" {
 		if recreated, sessions, err = resumable(ctx, env, command.ResumeFile, clientURL, m.stderr); err != nil {
-			return abandon(err)
+			return abandon(proxiedStoreFault(proxy, err))
 		}
 	}
 	if err := keeper.open(ctx, sessions); err != nil {
-		return abandon(err)
+		return abandon(proxiedStoreFault(proxy, err))
 	}
 	// The clone's stale git locks: this start names the workspace the sweep works, and a sweep
 	// that had none sweeps it here, before the restore below runs real git and jj against that
@@ -950,6 +950,23 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	go m.wait(process.cmd, active)
 	_ = m.state()
 	return result
+}
+
+// proxiedStoreFault is err, a refusal of the resume's lookup or the keeper's work that reached the
+// table through proxy, as a store fault when it is one the launcher's own client cannot see: the
+// proxy closes a connection whose dial of the database was refused or never answered, which that
+// client reads as the connection closing, but the proxy records it (sessionproxy.Proxy.Fault). A
+// refusal already read as the store's or as a session the table lacks is left as it is, and so is
+// every refusal under no proxy, or while every dial since the last fault reached the database.
+func proxiedStoreFault(proxy *sessionproxy.Proxy, err error) error {
+	if proxy == nil || errors.Is(err, shimwire.SessionStoreUnreachable) || errors.Is(err, shimwire.SessionGone) {
+		return err
+	}
+	fault := proxy.Fault()
+	if fault == nil {
+		return err
+	}
+	return fmt.Errorf("%w: %v (%v)", shimwire.SessionStoreUnreachable, err, fault)
 }
 
 func (m *manager) remember(id string, body []byte, result shimwire.Frame) {

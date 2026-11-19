@@ -29,15 +29,22 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
-// A generation whose proxy's proof dial the session database refused or never answered is refused
-// as a session store that did not answer, having started nothing. The next start of the same
-// session, once the database answers, runs.
+// A generation whose proxy's proof dial the session database refused or never answered, or whose
+// resume's lookup through the proxy the database refused once the proof dial had passed, is refused
+// as a session store that did not answer, having started nothing. The lookup's own client reads
+// that refusal as its connection closing; the proxy recorded the refused dial (Proxy.Fault). The
+// next start of the same session, once the database answers, runs.
 func TestAProxyThatCannotReachTheSessionDatabaseIsAStoreFaultAndTheNextStartResumes(t *testing.T) {
 	for name, fault := range map[string]struct {
-		dial, stall bool
+		// refuseFrom is the first dial the database refuses, the proof dial being the first.
+		refuseFrom int32
+		stall      bool
+		// names is what the refusal names of the step that met the fault.
+		names string
 	}{
-		"the proof dial is refused":      {dial: true},
-		"the proof dial is not answered": {stall: true},
+		"the proof dial is refused":                         {refuseFrom: 1, names: "the session database proxy for generation 3"},
+		"the proof dial is not answered":                    {stall: true, names: "the session database proxy for generation 3"},
+		"the lookup is refused after the proof dial passed": {refuseFrom: 2, names: "resume session "},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dsn := testdb.Database(t, "legion_launcher_proxy_fault_test")
@@ -46,9 +53,10 @@ func TestAProxyThatCannotReachTheSessionDatabaseIsAStoreFaultAndTheNextStartResu
 			shortenResumeLookup(t)
 			refused := refusedDial(t)
 			var down atomic.Bool
+			var dials atomic.Int32
 			down.Store(true)
 			dialer.check = func() error {
-				if fault.dial && down.Load() {
+				if n := dials.Add(1); fault.refuseFrom > 0 && n >= fault.refuseFrom && down.Load() {
 					return refused
 				}
 				return nil
@@ -72,8 +80,8 @@ func TestAProxyThatCannotReachTheSessionDatabaseIsAStoreFaultAndTheNextStartResu
 				return g.start(command)
 			}
 
-			if got := start(3); got.OK || got.Session != shimwire.SessionStoreUnreachable || !strings.Contains(got.Error, "generation 3") {
-				t.Fatalf("start over a proxy that cannot reach the session database = %#v, want a refusal of generation 3 as %q", got, shimwire.SessionStoreUnreachable)
+			if got := start(3); got.OK || got.Session != shimwire.SessionStoreUnreachable || !strings.Contains(got.Error, fault.names) {
+				t.Fatalf("start over a proxy that cannot reach the session database = %#v, want a refusal naming %q as %q", got, fault.names, shimwire.SessionStoreUnreachable)
 			}
 			if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 				t.Fatal("a generation whose proxy could not reach the session database started its child")
