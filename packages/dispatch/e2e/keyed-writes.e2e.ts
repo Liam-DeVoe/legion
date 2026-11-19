@@ -283,11 +283,14 @@ test("a write whose key has expired stops and offers a new write @webkit @firefo
 
 // The status change is the one kept through a reload: the page keeps an unconfirmed write in the
 // tab's storage, asks before the tab is left, and the reloaded page sends it again under the same
-// key. The shell's pending-writes indicator names it while it is out and clears once Dispatch
-// answers it.
+// key. The shell's pending-writes indicator names it while it is out, on the page that pressed it
+// and on the reloaded one, and clears once Dispatch answers it. The reloaded page is a cold load
+// that holds the write before it has drawn, and the indicator is a chunk of its own
+// (`web/src/features/writes/write-hosts.tsx`) that such a page has not fetched yet, so the row
+// reads the indicator there as well as on the page that pressed it.
 // @webkit @firefox: the keyed write path's storage of a tab's unconfirmed write across a reload,
 // and the ask before the tab unloads.
-test("a status change whose answer is lost survives a reload, lands once, and the pending-writes indicator shows and clears @webkit @firefox", async ({
+test("a status change whose answer is lost survives a reload, lands once, and the pending-writes indicator shows it before and after the reload and clears @webkit @firefox", async ({
   browser,
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
@@ -305,6 +308,17 @@ test("a status change whose answer is lost survives a reload, lands once, and th
     // The first PATCH reaches Dispatch, which writes the status; its answer is held until the
     // page that asked is gone.
     const reloaded = Promise.withResolvers<void>();
+    // The replay the reloaded page sends is held before it reaches Dispatch until this row has
+    // read the indicator on that page: an answer back first would clear the indicator before it
+    // could be seen. This route is added before `dropFirstAnswer`'s, and Playwright runs the
+    // routes of one request last-added first, so the first PATCH is that one's and every PATCH
+    // it lets through comes here.
+    const indicatorRead = Promise.withResolvers<void>();
+    await page.route(`**${path}`, async (route) => {
+      if (route.request().method() !== "PATCH") return route.fallback();
+      await indicatorRead.promise;
+      return route.fallback();
+    });
     const reached = dropFirstAnswer(page, `**${path}`, "PATCH", reloaded.promise);
     const resumed = replayed(page, "PATCH", path);
     await page.goto(`/issues/${issue.key}`);
@@ -315,6 +329,11 @@ test("a status change whose answer is lost survives a reload, lands once, and th
 
     await page.reload();
     reloaded.resolve();
+    await expect(
+      indicator.getByRole("status"),
+      "the reloaded page does not show the write it sends again"
+    ).toHaveText("Saving 1 change…");
+    indicatorRead.resolve();
     expect((await resumed).status()).toBe(200);
     expect(prompts).toEqual(["beforeunload"]);
     expect(patches).toHaveLength(2);

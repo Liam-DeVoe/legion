@@ -1,6 +1,6 @@
 /**
- * The dashboard's landing waterfall, measured on four cold pages and one cold issue tab
- * (INFRA-1109, R3).
+ * The dashboard's landing waterfall, measured on four cold pages, one cold issue tab, and the
+ * issue page and the board of a reader who turned the new issue page on (INFRA-1109, R3).
  *
  * Why this row exists. Opening a page of Dispatch before dispatch://INFRA-1109 cost a chain of
  * dependent round trips before anything the reader asked for was drawn: `AuthGate`
@@ -33,15 +33,16 @@
  * A page drawn from one wave asks for everything at once; a page drawn from five asks four
  * questions whose answers it already had the means to ask for.
  *
- * What the row drives. Five cold landings - an issue page, the board, the inbox, a document
- * page and one tab of the issue page other than the Spec - each in a browser context of its own,
- * so no query cache, no HTTP cache and no warmed chunk of an earlier landing can answer a read
- * this one should have sent. Each landing is measured from its own navigation until that page's
- * OWN content is on the screen. "On the screen" has no observable of its own, so each page names
- * the locator the suite already waits for when it lands there, and each comment beside a locator
- * names the row it was taken from, so that the two cannot drift apart: a locator that stopped
- * meaning "this page is drawn" would otherwise leave this row measuring a window that ends
- * somewhere else.
+ * What the row drives. Seven cold landings - an issue page, the board, the inbox, a document
+ * page, one tab of the issue page other than the Spec, and the issue page and the board again for
+ * a reader whose stored issue-page choice is `outline`, the new issue page - each in a browser
+ * context of its own, so no query cache, no HTTP cache and no warmed chunk of an earlier landing
+ * can answer a read this one should have sent. Each landing is measured from its own navigation
+ * until that page's OWN content is on the screen. "On the screen" has no observable of its own,
+ * so each page names the locator the suite already waits for when it lands there, and each
+ * comment beside a locator names the row it was taken from, so that the two cannot drift apart:
+ * a locator that stopped meaning "this page is drawn" would otherwise leave this row measuring a
+ * window that ends somewhere else.
  *
  * What the row holds besides the waves. Each page's own route chunk is asked for before the
  * landing read answers. The entry starts it beside that read, before React renders anything
@@ -58,6 +59,19 @@
  * before the landing read answers too; without that start, the transport comes down only once
  * the document mounts.
  *
+ * A reader who turned the new issue page on draws the whole shell, on every page, through a chunk
+ * of its own (`web/src/features/issue-page/frame-chunk.ts`): the frame shell, which holds the new
+ * page's providers, its state, its fallback and its icon rail. The entry starts that chunk beside
+ * the landing read on every address once any stored choice reads `outline` (`preloadRouteChunk`'s
+ * first statement), so it is the route chunk of that reader's two landings: without the start,
+ * the shell asks for it only once the landing read has answered (`ChosenShell`), and draws no
+ * shell until it is in. The board is the second of them because the start is made on every
+ * address: a start made in the issue arm alone would pass the issue landing and fail the board's.
+ * R3's bound is the bound of the issue page every reader gets, and the new page is a preview a
+ * reader turns on in Settings (dispatch://INFRA-1196), so the two landings of that reader are
+ * held to the shell's one wave and to the start of their chunk, and their reads and waves are
+ * printed beside the default landings' rather than bounded.
+ *
  * Everything here is made up: this repository is public, so nothing names a real person, host or
  * project.
  */
@@ -68,7 +82,16 @@ import { createIssue, createProject, createProjectDocument } from "./api";
 import { documentEditor } from "./editor";
 import { inboxPane } from "./inbox-pane";
 import { seedCommentThread, THREAD_SESSION } from "./inbox-threads";
-import { type Browser, expect, type Locator, type Page, type Request, test } from "./test";
+import { withIssuePage } from "./issue-page-option";
+import {
+  type Browser,
+  type BrowserContext,
+  expect,
+  type Locator,
+  type Page,
+  type Request,
+  test,
+} from "./test";
 import { asUser } from "./users";
 
 /** R3's bound on one issue landing: at most this many reads, in at most `WAVE_BOUND` waves. */
@@ -85,10 +108,18 @@ const SHELL_WAVE_BOUND = 1;
  *  after that can have caused none of them. */
 const ANSWER_SETTLE_MS = 2_000;
 
-/** The landings, in the order this row drives them. The assertion names the same five, so a
+/** The landings, in the order this row drives them. The assertion names the same seven, so a
  *  landing dropped from here fails the row rather than quietly shrinking what "every page"
  *  covers. */
-const PAGES = ["issue page", "board", "inbox", "document page", "issue tab"] as const;
+const PAGES = [
+  "issue page",
+  "board",
+  "inbox",
+  "document page",
+  "issue tab",
+  "issue page of an outline reader",
+  "board of an outline reader",
+] as const;
 
 /**
  * One read of one landing: a GET under `/api/` or `/auth/`, with the time it started and the time
@@ -121,6 +152,8 @@ interface Measurement {
   /** When the page's own route chunk was first asked for, in milliseconds from the navigation;
    *  undefined when it never was before the landing ended. */
   readonly routeChunkAt: number | undefined;
+  /** The path that route chunk was asked at, so the report names the chunk's file. */
+  readonly routeChunkPath: string | undefined;
   /** When the document's transport chunk was first asked for, as `routeChunkAt` is read; undefined
    *  for a landing that draws no document, or when it never was before the landing ended. */
   readonly documentChunkAt: number | undefined;
@@ -138,8 +171,13 @@ interface Landing {
    *  such read are the ones the shell makes before the page can even ask for what it shows. */
   readonly ownData: (read: Read) => boolean;
   /** The page's own route chunk, which the entry starts beside the landing read
-   *  (`web/src/app.tsx`, `preloadRouteChunk`). */
+   *  (`web/src/app.tsx`, `preloadRouteChunk`). For a reader who turned the new issue page on it
+   *  is the frame shell's chunk, which that reader's shell is drawn through on every page. */
   readonly routeChunk: RegExp;
+  /** Prepares the landing's own context before its navigation: the two landings of a reader who
+   *  turned the new issue page on store that choice here (`withIssuePage`), since each landing
+   *  is a context of its own. */
+  readonly prepare?: (context: BrowserContext) => Promise<void>;
   /** For a landing that draws a live document, the Yjs transport's chunk, which the entry starts
    *  beside the landing read with the editor's library (`web/src/app.tsx`, `loadDocumentChunks`).
    *  It is a chunk of that start whose name stands whether or not the start is there: without
@@ -153,7 +191,7 @@ interface Landing {
   readonly bounds?: { readonly reads: number; readonly waves: number };
 }
 
-/** What the seed left behind for the five landings to open. */
+/** What the seed left behind for the seven landings to open. */
 interface World {
   readonly issue: string;
   /** The slug of the project document the document landing opens. It is a document of the
@@ -271,6 +309,7 @@ function waterfallOf({
   landing,
   reads,
   routeChunkAt,
+  routeChunkPath,
   waves,
 }: Measurement): string {
   const lines = [
@@ -285,9 +324,9 @@ function waterfallOf({
       );
     }
   }
-  lines.push(
-    `  route chunk  asked ${routeChunkAt === undefined ? "    never" : stamp(routeChunkAt)}`
-  );
+  const routeChunkAsked =
+    routeChunkAt === undefined ? "    never" : `${stamp(routeChunkAt)}  ${routeChunkPath}`;
+  lines.push(`  route chunk  asked ${routeChunkAsked}`);
   if (landing.documentChunk !== undefined) {
     lines.push(
       `  document chunk  asked ${documentChunkAt === undefined ? "    never" : stamp(documentChunkAt)}`
@@ -307,15 +346,18 @@ function waterfallOf({
 async function land(browser: Browser, landing: Landing): Promise<Measurement> {
   const context = await asUser(browser, "alice");
   try {
+    await landing.prepare?.(context);
     const tab = await context.newPage();
     const from = performance.now();
     const { ended, reads } = recordReads(tab, from);
     let routeChunkAt: number | undefined;
+    let routeChunkPath: string | undefined;
     let documentChunkAt: number | undefined;
     tab.on("request", (request) => {
       const { pathname } = new URL(request.url());
       if (routeChunkAt === undefined && landing.routeChunk.test(pathname)) {
         routeChunkAt = performance.now() - from;
+        routeChunkPath = pathname;
       }
       if (documentChunkAt === undefined && landing.documentChunk?.test(pathname)) {
         documentChunkAt = performance.now() - from;
@@ -338,13 +380,20 @@ async function land(browser: Browser, landing: Landing): Promise<Measurement> {
       Promise.all(measured.map((read) => ended.get(read))),
       once(AbortSignal.timeout(ANSWER_SETTLE_MS), "abort"),
     ]);
-    return { documentChunkAt, landing, reads: measured, routeChunkAt, waves: wavesOf(measured) };
+    return {
+      documentChunkAt,
+      landing,
+      reads: measured,
+      routeChunkAt,
+      routeChunkPath,
+      waves: wavesOf(measured),
+    };
   } finally {
     await context.close();
   }
 }
 
-/** The world the five landings open: one project with a document of its own, one issue with a
+/** The world the seven landings open: one project with a document of its own, one issue with a
  *  spec and no plan, and one comment thread, so the inbox has a thread card to draw. */
 async function seedWorld(): Promise<World> {
   await setLiveSessions([THREAD_SESSION]);
@@ -370,6 +419,11 @@ async function seedWorld(): Promise<World> {
  *  starting beside their landing read (`Landing.documentChunk` says why this chunk). */
 const TRANSPORT_CHUNK = /\/assets\/yjs-[\w-]{8}\.js$/u;
 
+/** The new issue page's frame shell (`web/src/features/issue-page/frame-shell.tsx`, loaded
+ *  through `frame-chunk.ts`), the route chunk of both landings of a reader who turned that page
+ *  on (`Landing.routeChunk`). */
+const FRAME_SHELL_CHUNK = /\/assets\/frame-shell-[\w-]{8}\.js$/u;
+
 /** The landing route, which answers one page's whole cold read: the viewer, the shell, and the
  *  part of the answer the page named by `?page=` draws (`web/src/api/queries.ts`). */
 const LANDING_PATH = "/api/v1/landing";
@@ -387,6 +441,19 @@ function landingFor(read: Read, page: "issue" | "board" | "inbox" | "document"):
 }
 
 function landingsOf(world: World): Landing[] {
+  const board: Landing = {
+    address: "/projects/CORE/issues",
+    // The board's own content is the first row of the issues table. The locator is
+    // `e2e/issues-table.e2e.ts`'s, which lands on `/projects/CORE/issues` and reads
+    // `page.getByTestId("issues-table-scroll").locator("[data-issue-row]")`.
+    content: (page) => page.getByTestId("issues-table-scroll").locator("[data-issue-row]").first(),
+    name: "board",
+    routeChunk: /\/assets\/ProjectPage-[\w-]{8}\.js$/u,
+    ownData: (read) =>
+      (read.pathname === "/api/v1/issues" &&
+        new URLSearchParams(read.search).get("project") === "CORE") ||
+      landingFor(read, "board"),
+  };
   return [
     {
       address: `/issues/${world.issue}`,
@@ -401,20 +468,7 @@ function landingsOf(world: World): Landing[] {
       ownData: (read) =>
         read.pathname === `/api/v1/issues/${world.issue}` || landingFor(read, "issue"),
     },
-    {
-      address: "/projects/CORE/issues",
-      // The board's own content is the first row of the issues table. The locator is
-      // `e2e/issues-table.e2e.ts`'s, which lands on `/projects/CORE/issues` and reads
-      // `page.getByTestId("issues-table-scroll").locator("[data-issue-row]")`.
-      content: (page) =>
-        page.getByTestId("issues-table-scroll").locator("[data-issue-row]").first(),
-      name: "board",
-      routeChunk: /\/assets\/ProjectPage-[\w-]{8}\.js$/u,
-      ownData: (read) =>
-        (read.pathname === "/api/v1/issues" &&
-          new URLSearchParams(read.search).get("project") === "CORE") ||
-        landingFor(read, "board"),
-    },
+    board,
     {
       address: "/",
       // The inbox's own content is the first thread card. The locator is
@@ -462,11 +516,35 @@ function landingsOf(world: World): Landing[] {
       ownData: (read) =>
         read.pathname === `/api/v1/issues/${world.issue}` || landingFor(read, "issue"),
     },
+    {
+      address: `/issues/${world.issue}`,
+      // The first landing's address, for a reader whose stored choice is the new issue page:
+      // the new page draws there, in the frame shell. Its own content is the page's column,
+      // which the new page draws once its read of the issue has answered. The locator is
+      // `issueRead`'s (`e2e/issue-page.ts`), which every row of `e2e/issue-page-d.e2e.ts` waits
+      // for once it has landed on the new page.
+      content: (page) => page.getByTestId("issue-column"),
+      name: "issue page of an outline reader",
+      prepare: (context) => withIssuePage(context, "alice"),
+      routeChunk: FRAME_SHELL_CHUNK,
+      ownData: (read) =>
+        read.pathname === `/api/v1/issues/${world.issue}` || landingFor(read, "issue"),
+    },
+    {
+      // The board for the same reader: no issue's address, so the frame shell draws today's
+      // shell inside the new page's providers, and the board draws as it does for every reader,
+      // from its own content and data above. What this landing adds is the frame shell's start
+      // on an address that is no issue's.
+      ...board,
+      name: "board of an outline reader",
+      prepare: (context) => withIssuePage(context, "alice"),
+      routeChunk: FRAME_SHELL_CHUNK,
+    },
   ];
 }
 
-// SLOW(>=2s): five cold landings, each in a context of its own - a fresh Chromium context, the
-// cold parse of the dashboard bundle it cannot cache, and the landing's own reads, five times
+// SLOW(>=2s): seven cold landings, each in a context of its own - a fresh Chromium context, the
+// cold parse of the dashboard bundle it cannot cache, and the landing's own reads, seven times
 // over. The cost is the measurement: a warm context would answer reads from its query cache and
 // count waves that a person opening the page never pays.
 // No `@pr` tag: the pull-request lane's real-stack budget is full. It runs on the full lane at the
@@ -482,12 +560,12 @@ test("a cold landing draws each page from at most two waves of reads", async ({ 
   const waterfall = measured.map(waterfallOf).join("\n\n");
   console.log(`LANDING-READS\n${waterfall}`);
 
-  // The count of landings driven is asserted first, and by name: "on each of the five landings"
+  // The count of landings driven is asserted first, and by name: "on each of the seven landings"
   // is true of no landings at all, so a landing that was dropped or never ran has to fail the row
   // rather than make the bounds below vacuous.
   expect(
     measured.map(({ landing }) => landing.name),
-    "the row drives five cold landings"
+    "the row drives seven cold landings"
   ).toEqual([...PAGES]);
 
   const faults: string[] = [];
@@ -525,9 +603,10 @@ test("a cold landing draws each page from at most two waves of reads", async ({ 
       faults.push(`the ${landing.name} never asked for its route chunk`);
     } else if (measurement.routeChunkAt >= landingRead.respondedAt) {
       faults.push(
-        `the ${landing.name} asked for its route chunk at ${stamp(measurement.routeChunkAt)}, ` +
-          `after the landing read answered at ${stamp(landingRead.respondedAt)}: the entry no ` +
-          "longer starts it beside that read (web/src/app.tsx, preloadRouteChunk)"
+        `the ${landing.name} asked for its route chunk ${measurement.routeChunkPath} at ` +
+          `${stamp(measurement.routeChunkAt)}, after the landing read answered at ` +
+          `${stamp(landingRead.respondedAt)}: the entry no longer starts it beside that read ` +
+          "(web/src/app.tsx, preloadRouteChunk)"
       );
     }
     if (landing.documentChunk !== undefined && landingRead !== undefined) {

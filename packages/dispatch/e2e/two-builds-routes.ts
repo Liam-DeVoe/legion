@@ -65,6 +65,13 @@ export const lazyPieces = {
   "event-refresh":
     "the map from a live event to the reads it refreshes (api/event-refresh.ts), which the live " +
     "feed asks for once the page it landed on has drawn (api/event-refresh-load.ts)",
+  "frame-shell":
+    "the new issue page's frame shell (features/issue-page/frame-shell.tsx, named once in " +
+    "features/issue-page/frame-chunk.ts): its providers, its state, its fallback and the icon " +
+    "rail, which the shell is drawn through only for a reader whose stored issue-page choice is " +
+    "`outline`, and which the entry starts beside the landing read on every address once a " +
+    "stored choice reads `outline` (app.tsx, preloadRouteChunk); the rail it draws from `md` up " +
+    "is what shows it ran",
   "headless-markdown":
     "the headless Markdown renderer, @legion/proof-editor/headless, which every page warms at " +
     "boot (features/refs/markdown-engine.ts)",
@@ -74,6 +81,11 @@ export const lazyPieces = {
   "issue-tab":
     "an issue tab's panel other than the Spec's (features/issue/tab-chunks.ts), each a chunk " +
     "fetched when its tab first opens",
+  "kept-writes":
+    "what a lapsed session keeps, on the sign-in page (features/writes/KeptWrites.tsx), which " +
+    "the writes host (features/writes/write-hosts.tsx) fetches once the page has drawn, beside " +
+    "the pending-writes indicator, and draws only while the page keeps a write, so the fetch is " +
+    "what shows it ran",
   "markdown-worker":
     "the Markdown parse worker (features/refs/markdown-parse.worker.ts), which a body longer " +
     "than markdownWorkerThreshold is parsed in rather than on the page's own thread " +
@@ -81,6 +93,10 @@ export const lazyPieces = {
   mermaid:
     "the Mermaid renderer's Web Worker (features/refs/mermaid-render.worker.ts), which a body " +
     "holding a fenced `mermaid` block starts (features/refs/mermaid-diagrams.ts)",
+  "pending-writes":
+    "the pending-writes indicator (features/writes/PendingWritesIndicator.tsx), which the " +
+    "writes host (features/writes/write-hosts.tsx) fetches once the page has drawn and draws " +
+    "only while a write is pending, so the fetch is what shows it ran",
   "ref-preview":
     "the reference-preview layer (features/refs/RefPreviewLayer.tsx), which the shell asks for " +
     "in its first effect, after the page it landed on has drawn",

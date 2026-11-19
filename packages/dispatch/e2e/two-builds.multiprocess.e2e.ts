@@ -307,8 +307,10 @@ async function seedEveryRoute(): Promise<Seeded> {
  *
  *  `opens` is for a surface no address reaches: the search bar, the Create issue dialog and the
  *  shortcut sheet are chunks of their own (dispatch://INFRA-1109), and a reader's keystroke is
- *  the only thing that asks for one. It runs once the page has loaded, before `shows` is
- *  waited for, and its own asset requests are awaited with the visit's. */
+ *  the only thing that asks for one. It is also where a visit waits for a chunk the page fetches
+ *  of its own accord and draws nothing from (`fetchedChunk`), which no landmark can show. It runs
+ *  once the page has loaded, before `shows` is waited for, and its own asset requests are awaited
+ *  with the visit's. */
 interface Visit {
   readonly route: WalkRoutePath;
   readonly url: string;
@@ -336,6 +338,36 @@ function openDocument(page: Page, text: string): readonly Locator[] {
   return [documentEditor(page).filter({ hasText: text }), connectedDot(page)];
 }
 
+/** The shell's two lists of writes, which the writes host fetches once the page has drawn and
+ *  draws only while it holds a write (`web/src/features/writes/write-hosts.tsx`). */
+const writesChunks = [
+  /\/assets\/PendingWritesIndicator-[\w-]{8}\.js$/u,
+  /\/assets\/KeptWrites-[\w-]{8}\.js$/u,
+] as const;
+
+/** Waits until the page has fetched a script whose path `chunk` matches: for a chunk the page
+ *  starts of its own accord and draws nothing from until a reader needs it, so that no landmark
+ *  can show that it came down. It reads the page's own resource timing, which keeps every fetch
+ *  of the document, so a fetch that ended before the wait began is found as well as one still to
+ *  come; the visit's own wait for its asset requests then holds it to an answer. */
+async function fetchedChunk(page: Page, chunk: RegExp): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          ({ flags, source }) => {
+            const pattern = new RegExp(source, flags);
+            return performance
+              .getEntriesByType("resource")
+              .some((entry) => pattern.test(new URL(entry.name).pathname));
+          },
+          { flags: chunk.flags, source: chunk.source }
+        ),
+      `the page never fetched ${chunk}`
+    )
+    .toBe(true);
+}
+
 /** The timeline fixture's day (`seedDeliveryFixture`). */
 const deliveryWindow = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z";
 
@@ -356,7 +388,11 @@ function visits(seed: Seeded): readonly Visit[] {
       // would leave three of this build's scripts unasked for, which is what the last assertion
       // of `walk` refuses, and they are opened on this visit rather than on a second landing at
       // the same address, which would cost the walk another cold navigation, landing read and
-      // shell render for nothing.
+      // shell render for nothing. The shell's two lists of writes, the pending-writes indicator
+      // and what a lapsed session keeps, are chunks the writes host fetches once the page has
+      // drawn, on this page as on every other, and draws only while it holds a write, which no
+      // visit of this walk makes: no landmark shows them, so this visit waits for their fetches
+      // first, and they are this visit's rather than whichever visit happened to outlast them.
       loads: [
         "inbox",
         "change-view",
@@ -366,8 +402,11 @@ function visits(seed: Seeded): readonly Visit[] {
         "search-bar",
         "create-issue",
         "shortcut-help",
+        "pending-writes",
+        "kept-writes",
       ],
       opens: async (page) => {
+        for (const chunk of writesChunks) await fetchedChunk(page, chunk);
         // Each dialog is waited out of the way before the next key: these keys reach the
         // shell's global scope, and a dialog still on the stack consults its own scope alone,
         // so a press sent while the one before it is closing reaches nothing and the chunk it
@@ -659,15 +698,21 @@ function visits(seed: Seeded): readonly Visit[] {
     { route: "/pipeline", shows: (page) => [heading(page, "Pipeline")], url: "/pipeline" },
     { route: "*", shows: (page) => [heading(page, "Page not found")], url: "/no-such-page" },
     {
-      // Only a reader with the new issue page turned on loads its chunk (`IssueOutlinePage`), so
-      // no visit above loads it. This visit is last because the init script stays on the walk's
-      // one context: an issue visit after it would draw the new page rather than today's.
+      // Only a reader with the new issue page turned on loads its chunk (`IssueOutlinePage`), and
+      // only that reader's shell is drawn through the frame shell's chunk
+      // (`web/src/features/issue-page/frame-chunk.ts`), so no visit above loads either. The frame
+      // shell holds the icon rail, which it draws from Tailwind's `md` up: the window here is the
+      // project's Desktop Chrome one, 1280 px wide, and the rail among the landmarks is what
+      // shows that chunk ran. This visit is last because the init script stays on the walk's one
+      // context: an issue visit after it would draw the new page rather than today's.
+      loads: ["frame-shell"],
       prepare: (page) => withIssuePage(page.context(), "alice"),
       route: "/issues/:key/*",
       shows: (page) => [
         page
           .locator("[data-issue-page]")
           .getByRole("heading", { exact: true, level: 1, name: shown.issue }),
+        page.getByTestId("icon-rail"),
       ],
       url: issue,
     },
