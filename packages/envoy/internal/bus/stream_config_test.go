@@ -41,10 +41,23 @@ type streamInfoJetStream struct {
 	// unansweredPurges is how many purges, the first ones, draw no answer: each returns nats.ErrTimeout,
 	// as one whose JetStream wait ran out, and purges nothing.
 	unansweredPurges int
+	// lostPurgeAnswers is how many purges, the first ones after unansweredPurges, land and lose
+	// their answer: each purges and returns nats.ErrTimeout.
+	lostPurgeAnswers int
+	// purgeSends counts every purge sent, answered or not.
+	purgeSends int
 }
 
-func (js *streamInfoJetStream) StreamInfo(_ string, _ ...nats.JSOpt) (*nats.StreamInfo, error) {
-	return &nats.StreamInfo{Config: js.config}, nil
+// StreamInfo answers the stream as it holds it, and a read filtered to a role lane
+// (nats.StreamInfoRequest) with the role messages it holds on that lane.
+func (js *streamInfoJetStream) StreamInfo(_ string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	info := &nats.StreamInfo{Config: js.config}
+	for _, opt := range opts {
+		if request, ok := opt.(*nats.StreamInfoRequest); ok && slices.Contains(roleLaneSubjects, request.SubjectsFilter) && js.roleMessages > 0 {
+			info.State.Subjects = map[string]uint64{request.SubjectsFilter: uint64(js.roleMessages)}
+		}
+	}
+	return info, nil
 }
 
 func (js *streamInfoJetStream) UpdateStream(cfg *nats.StreamConfig, _ ...nats.JSOpt) (*nats.StreamInfo, error) {
@@ -60,6 +73,7 @@ func (js *streamInfoJetStream) UpdateStream(cfg *nats.StreamConfig, _ ...nats.JS
 }
 
 func (js *streamInfoJetStream) PurgeStream(_ string, opts ...nats.JSOpt) error {
+	js.purgeSends++
 	if js.unansweredPurges > 0 {
 		js.unansweredPurges--
 		return nats.ErrTimeout
@@ -73,6 +87,10 @@ func (js *streamInfoJetStream) PurgeStream(_ string, opts ...nats.JSOpt) error {
 		if request.Subject == "notifications.role.>" || request.Subject == "notifications.envoy.exceptions.notifications.role.>" {
 			js.roleMessages = 0
 		}
+	}
+	if js.lostPurgeAnswers > 0 {
+		js.lostPurgeAnswers--
+		return nats.ErrTimeout
 	}
 	return nil
 }
@@ -261,13 +279,13 @@ func TestEnsureStreamWithConfigPurgesRoleMessagesPublishedDuringMigration(t *tes
 }
 
 // A start that moves the role lanes off a stream that still carries them, and whose first purge of
-// those lanes draws no answer, sends the migration again and goes on. It once sent each write of the
-// migration once, so the start failed on the one lost answer, at the end of the JetStream context's
-// own ten second wait.
+// those lanes draws no answer, reads the lane back, finds its messages still there, sends the purge
+// again and goes on. It once sent each write of the migration once, so the start failed on the one
+// lost answer, at the end of the JetStream context's own ten second wait.
 func TestALegacyRoleLanePurgeTheServerLeavesUnansweredIsSentAgain(t *testing.T) {
 	oldConfig := *streamCfg
 	oldConfig.Subjects = []string{"notifications.>"}
-	js := &streamInfoJetStream{config: oldConfig, unansweredPurges: 1}
+	js := &streamInfoJetStream{config: oldConfig, roleMessages: 1, unansweredPurges: 1}
 
 	if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("a start whose first purge of the role lanes drew no answer = %v, want it to go on", err)
@@ -282,10 +300,38 @@ func TestALegacyRoleLanePurgeTheServerLeavesUnansweredIsSentAgain(t *testing.T) 
 		"notifications.envoy.exceptions.notifications.role.>",
 	}
 	if !reflect.DeepEqual(js.purgedSubjects, wantPurges) {
-		t.Fatalf("purged subjects = %v, want %v: the migration sent again, then the purge after the update", js.purgedSubjects, wantPurges)
+		t.Fatalf("purged subjects = %v, want %v: the lost purge sent again, then the purge after the update", js.purgedSubjects, wantPurges)
+	}
+	if js.purgeSends != len(wantPurges)+1 || js.roleMessages != 0 {
+		t.Fatalf("purges sent = %d with %d role messages left, want %d and none: the lost one and the ones that landed", js.purgeSends, js.roleMessages, len(wantPurges)+1)
 	}
 	if streamCapturesRoleLanes(js.config.Subjects) {
 		t.Fatalf("subjects %v still capture the role lanes after the start", js.config.Subjects)
+	}
+}
+
+// A purge that lands and loses its answer is not sent again: the read of the lane after it finds
+// no role message left. Only the read decides it, since a lost answer says nothing of whether the
+// purge landed, and sending it again would cost the start one more send.
+func TestALegacyRoleLanePurgeThatLandedWithItsAnswerLostIsNotSentAgain(t *testing.T) {
+	oldConfig := *streamCfg
+	oldConfig.Subjects = []string{"notifications.>"}
+	js := &streamInfoJetStream{config: oldConfig, roleMessages: 1, lostPurgeAnswers: 1}
+
+	if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
+		t.Fatalf("a start whose first purge landed with its answer lost = %v, want it to go on", err)
+	}
+	if js.lostPurgeAnswers != 0 {
+		t.Fatalf("lost answers left = %d, want the one spent: the row held nothing", js.lostPurgeAnswers)
+	}
+	wantPurges := []string{
+		"notifications.role.>",
+		"notifications.envoy.exceptions.notifications.role.>",
+		"notifications.role.>",
+		"notifications.envoy.exceptions.notifications.role.>",
+	}
+	if !reflect.DeepEqual(js.purgedSubjects, wantPurges) || js.purgeSends != len(wantPurges) {
+		t.Fatalf("purged subjects = %v in %d sends, want %v in %d: the purge that landed is not sent again", js.purgedSubjects, js.purgeSends, wantPurges, len(wantPurges))
 	}
 }
 

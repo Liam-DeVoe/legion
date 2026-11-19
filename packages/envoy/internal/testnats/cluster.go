@@ -51,7 +51,7 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	routes := make([]string, n)
 	listeners := make([]net.Listener, n)
 	for i := range n {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		listener, err := Listen()
 		if err != nil {
 			t.Fatalf("hold member %d's route port: %v", i, err)
 		}
@@ -88,12 +88,12 @@ func clusterConfig(i int, routes []string) string {
 jetstream {}
 cluster {
   name: "envoy-test"
-  listen: "127.0.0.1:-1"
+  listen: %q
   advertise: %q
   no_advertise: true
   routes: [ %s ]
 }
-`, memberName(i), routes[i], strings.Join(urls, ", "))
+`, memberName(i), net.JoinHostPort(Loopback, "-1"), routes[i], strings.Join(urls, ", "))
 }
 
 // memberName is member i's server_name.

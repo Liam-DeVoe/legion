@@ -2046,7 +2046,7 @@ func startNATSTap(t *testing.T, target string) *natsTap {
 	if err != nil || server.Host == "" {
 		t.Fatalf("read the NATS URL %q the tap relays to: %v", target, err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testnats.Listen()
 	if err != nil {
 		t.Fatalf("listen for the NATS tap: %v", err)
 	}

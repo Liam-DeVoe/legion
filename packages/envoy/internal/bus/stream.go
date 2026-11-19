@@ -641,13 +641,65 @@ func streamCapturesRoleLanes(subjects []string) bool {
 	return slices.ContainsFunc(subjects, subjectCapturesRoleLanes)
 }
 
-func purgeLegacyRoleMessages(js nats.JetStreamContext) error {
+// purgeLegacyRoleMessages purges the stream's messages on each role lane (purgeRoleLane).
+func purgeLegacyRoleMessages(ctx context.Context, js nats.JetStreamContext) error {
 	for _, subject := range roleLaneSubjects {
-		if err := js.PurgeStream(Stream, &nats.StreamPurgeRequest{Subject: subject}); err != nil {
+		if err := purgeRoleLane(ctx, js, subject); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// purgeRoleLane purges the stream's messages on subject, a role lane. Each send is waited for up
+// to the read limit of ctx's run of reads and is handed that bound as its context (limitedRead):
+// nats.go's own PurgeStream reads no context and waits its JetStream context's own wait, ten
+// seconds (nats.go@v1.53.1 jsm.go:1477-1524), so the JetStream context of a start sends the purge
+// itself under the context it is handed (refusalReads.PurgeStream). A send that drew no answer is
+// read back, the stream's messages on subject (laneMessages, sent again while unanswered,
+// readAgain), and the purge is sent again only when that read still finds some, the purge not yet
+// landed. A purge the limit cut that lands after the one sent again removes only role-lane
+// messages, as the one sent again did. The purge ends at ctx, naming the lane.
+func purgeRoleLane(ctx context.Context, js nats.JetStreamContext, subject string) error {
+	limits := readLimitOf(ctx)
+	request := &nats.StreamPurgeRequest{Subject: subject}
+	for {
+		_, wait, answered, err := limitedRead(ctx, limits, func(sendCtx context.Context) (struct{}, error) {
+			return struct{}{}, js.PurgeStream(Stream, request, nats.Context(sendCtx))
+		})
+		switch {
+		case (!answered || unanswered(err)) && ctx.Err() != nil:
+			return fmt.Errorf("the purge of %s drew no answer when the wait ended: %w", subject, context.Cause(ctx))
+		case !answered:
+			err = fmt.Errorf("no answer within %s: %w", wait, context.DeadlineExceeded)
+		case !unanswered(err):
+			return err
+		}
+		left, readErr := readAgain(ctx, Stream+" STREAM.INFO "+subject, limits, func() (uint64, error) { return laneMessages(js, subject) })
+		switch {
+		case readErr != nil:
+			return fmt.Errorf("the purge of %s: %w, and the read after it: %w", subject, err, readErr)
+		case left == 0:
+			return nil
+		}
+		if ended := pause(ctx, bucketAppliedInterval); ended != nil {
+			return fmt.Errorf("the purge of %s: %w, and the wait ended before it was sent again: %w", subject, err, ended)
+		}
+	}
+}
+
+// laneMessages is how many messages the stream holds on subject: its read filtered to that subject
+// (nats.StreamInfoRequest), which counts the messages on each subject it matches.
+func laneMessages(js nats.JetStreamContext, subject string) (uint64, error) {
+	info, err := js.StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: subject})
+	if err != nil {
+		return 0, err
+	}
+	var left uint64
+	for _, messages := range info.State.Subjects {
+		left += messages
+	}
+	return left, nil
 }
 
 // consumerFilterSubjects is subjects without the listener's own lanes
@@ -661,33 +713,92 @@ func consumerFilterSubjects(subjects []string) []string {
 	})
 }
 
-func migrateLegacyConsumerFilters(js nats.JetStreamContext, subjects []string) error {
-	for name := range js.ConsumerNames(Stream) {
-		info, err := js.ConsumerInfo(Stream, name)
-		if err != nil {
-			return err
-		}
-		if info.Config.FilterSubject != "notifications.>" {
-			continue
-		}
-		config := info.Config
-		config.FilterSubject = ""
-		config.FilterSubjects = consumerFilterSubjects(subjects)
-		if _, err := js.UpdateConsumer(Stream, &config); err != nil {
+// migrateLegacyConsumerFilters moves every consumer of the stream whose filter is still the legacy
+// "notifications.>" onto subjects' consumer filters (moveLegacyFilter). The list of the stream's
+// consumers is a read, sent again while the server leaves it unanswered, each send up to the read
+// limit (readAgain). nats.go's legacy ConsumerNames reports no error: a list whose answer was lost,
+// or one page of it, ends as a shorter list, and the migration then moved nothing and said nothing.
+// So the list is read with the stream's own count of its consumers, read first (consumerNames), and
+// a list that names fewer is the lost answer it is (nats.ErrTimeout), read again, and named in the
+// error when the wait ends. A consumer deleted between the two reads costs one more read, whose two
+// reads then agree.
+func migrateLegacyConsumerFilters(ctx context.Context, js nats.JetStreamContext, subjects []string) error {
+	limits := readLimitOf(ctx)
+	list := Stream + " CONSUMER.NAMES"
+	names, err := readAgain(ctx, list, limits, func() ([]string, error) { return consumerNames(js) })
+	if err != nil {
+		return namedRequest(list, err)
+	}
+	for _, name := range names {
+		if err := moveLegacyFilter(ctx, js, limits, name, subjects); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func migrateRoleLanesOffStream(js nats.JetStreamContext, oldConfig, newConfig *nats.StreamConfig) error {
+// consumerNames is the names of the stream's consumers, or nats.ErrTimeout when the list names
+// fewer than the stream's count of them, read just before it: a list that lost a page.
+func consumerNames(js nats.JetStreamContext) ([]string, error) {
+	info, err := js.StreamInfo(Stream)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for name := range js.ConsumerNames(Stream) {
+		names = append(names, name)
+	}
+	if len(names) < info.State.Consumers {
+		return nil, fmt.Errorf("the list named %d of the stream's %d consumers: %w", len(names), info.State.Consumers, nats.ErrTimeout)
+	}
+	return names, nil
+}
+
+// moveLegacyFilter moves consumer name's filter off the legacy "notifications.>" onto subjects'
+// consumer filters, written from a read of the consumer (readAgain), and leaves a consumer whose
+// filter is another as it is. Each send of the move is waited for up to the read limit and is
+// handed that bound as its context (limitedRead), and one that drew no answer is followed by a
+// fresh read of the consumer: a consumer the read finds moved is done, and one still on the legacy
+// filter is sent the move again, made from that read, so a change another writer made to the
+// consumer meanwhile is kept. A send the limit cut that lands after the one sent again writes the
+// consumer as the read before it found it: a consumer's update has no compare-and-swap, as a
+// stream's has none (updateStream).
+func moveLegacyFilter(ctx context.Context, js nats.JetStreamContext, limits *readLimit, name string, subjects []string) error {
+	read := Stream + " CONSUMER.INFO " + name
+	for {
+		info, err := readAgain(ctx, read, limits, func() (*nats.ConsumerInfo, error) { return js.ConsumerInfo(Stream, name) })
+		if err != nil {
+			return namedRequest(read, err)
+		}
+		if info.Config.FilterSubject != "notifications.>" {
+			return nil
+		}
+		config := info.Config
+		config.FilterSubject = ""
+		config.FilterSubjects = consumerFilterSubjects(subjects)
+		_, _, answered, err := limitedRead(ctx, limits, func(sendCtx context.Context) (*nats.ConsumerInfo, error) {
+			return js.UpdateConsumer(Stream, &config, nats.Context(sendCtx))
+		})
+		switch {
+		case (!answered || unanswered(err)) && ctx.Err() != nil:
+			return fmt.Errorf("move consumer %s off the role lanes: the update drew no answer when the wait ended: %w", name, context.Cause(ctx))
+		case answered && !unanswered(err):
+			return err
+		}
+		if ended := pause(ctx, bucketAppliedInterval); ended != nil {
+			return fmt.Errorf("move consumer %s off the role lanes: the update drew no answer, and the wait ended before it was read again: %w", name, ended)
+		}
+	}
+}
+
+func migrateRoleLanesOffStream(ctx context.Context, js nats.JetStreamContext, oldConfig, newConfig *nats.StreamConfig) error {
 	if !streamCapturesRoleLanes(oldConfig.Subjects) || streamCapturesRoleLanes(newConfig.Subjects) {
 		return nil
 	}
-	if err := migrateLegacyConsumerFilters(js, newConfig.Subjects); err != nil {
+	if err := migrateLegacyConsumerFilters(ctx, js, newConfig.Subjects); err != nil {
 		return err
 	}
-	return purgeLegacyRoleMessages(js)
+	return purgeLegacyRoleMessages(ctx, js)
 }
 
 // subjectsOverlap reports whether some subject matches both patterns. JetStream refuses two such
@@ -943,24 +1054,22 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		reconciliation.log()
 		return info.Config.Subjects, nil
 	}
-	// The migrate and the purge below are requests a server can leave unanswered. Each is sent
-	// again while the server leaves it unanswered, each send waited for up to the start's read
-	// limit (readAgain), and the ensure ends at ctx or the start's hang guard like every other wait
-	// of it, naming the write that was in flight; sent once, a lost answer failed the start after
-	// the JetStream context's own ten second wait. Sending either again is safe: the migrate lists
-	// and reads every consumer again and rewrites only one whose filter is still the legacy one,
-	// from that read, and a purge of the role lanes again removes only role-lane messages. A send
-	// the limit cut that lands later writes what it would have written as the only send. The update
-	// bounds itself (updateStream).
-	written := func(step string, write func() error) error {
-		_, err := readAgain(ctx, Stream+" "+step, readLimitOf(ctx), func() (struct{}, error) { return struct{}{}, write() })
-		if unanswered(err) || ctx.Err() != nil {
+	// The migrate and the purge below write the stream's consumers and its messages, and a server
+	// can leave any of their requests unanswered. Each of their reads is sent again while the
+	// server leaves it unanswered, and each write is waited for up to the start's read limit, read
+	// back, and sent again only when that read shows it did not land (migrateLegacyConsumerFilters,
+	// purgeRoleLane), each send under a context of its own, so none waits the JetStream context's
+	// own ten second wait, and the ensure ends at ctx or the start's hang guard like every other
+	// wait of it, naming the step that was in flight; sent once, a lost answer failed the start
+	// after that ten second wait. The update bounds itself (updateStream).
+	written := func(step string, err error) error {
+		if err != nil && (unanswered(err) || ctx.Err() != nil) {
 			return fmt.Errorf("%s %s: %w", step, Stream, err)
 		}
 		return err
 	}
 	migratingRoleLanes := streamCapturesRoleLanes(info.Config.Subjects) && !streamCapturesRoleLanes(desired.Subjects)
-	if err := written("migrate", func() error { return migrateRoleLanesOffStream(js, &info.Config, &desired) }); err != nil {
+	if err := written("migrate", migrateRoleLanesOffStream(ctx, js, &info.Config, &desired)); err != nil {
 		return nil, err
 	}
 	// An update sent again is reconciled from the stream as its read found it, and none is sent
@@ -1001,7 +1110,7 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		}
 	}
 	if migratingRoleLanes {
-		if err := written("purge", func() error { return purgeLegacyRoleMessages(js) }); err != nil {
+		if err := written("purge", purgeLegacyRoleMessages(ctx, js)); err != nil {
 			return nil, err
 		}
 	}
@@ -1182,16 +1291,26 @@ type streamUpdate struct {
 // a newer build wrote while this update went unanswered. It goes bucketAppliedInterval after that
 // read, as sentAgain pauses between two sends. Any other refusal is the update's own error.
 //
-// Each send is waited for up to the read limit of ctx's run of reads (limitedRead) and not for the
-// JetStream context's own wait, ten seconds: a member answers no update sent while the stream's
-// group elects its leader (a bucket's age set during its first election, 3 of 3), and the start
-// once waited that whole wait before the read that showed the update had landed. An update whose answer
-// did not come within the limit is read back, and sent again only when that read shows it did not
-// land, made from that read. The send the limit cut is not taken back, and may still land after
-// the one sent again; it writes what it would have written had it been the only send, which is
-// what a send whose answer the JetStream wait ran out on, or the read back missed, could write
-// late before, so the limit adds no write that waiting for the answer did not. A send in flight
-// when ctx ends is abandoned, its answer dropped (Bounded), and the step ends naming ctx's cause.
+// Each send is waited for up to the read limit of ctx's run of reads and is handed that bound as
+// its context (limitedRead), so neither the step nor the request waits the JetStream context's own
+// wait, ten seconds: a member answers no update sent while the stream's group elects its leader
+// (a bucket's age set during its first election, 3 of 3), and the start once waited that whole
+// wait before the read that showed the update had landed. An update whose answer did not come
+// within the limit is read back, and sent again only when that read shows it did not land, made
+// from that read. A send in flight when ctx ends is abandoned, its answer dropped (Bounded), and
+// the step ends naming ctx's cause.
+//
+// The send the limit cut is not taken back: it can still be in the server's JetStream API queue,
+// whose workers can apply two requests in the other order (processJSAPIRoutedRequests, v2.15.1
+// server/jetstream_api.go), and land after the one sent again. It then writes the stream as the
+// read it was made from found it, over a change another writer made since that read, so that
+// change is lost. That is the window of every stream update, which has no compare-and-swap: an
+// update made from a read and applied late writes back what the read found, whether it is the only
+// send or one the limit cut, and waiting for the answer narrows that window without closing it.
+// The keeper bounds what it costs for the settings it keeps (keepStream): the keeper of the
+// program whose change was lost puts it back at its next pass, within one keeper period
+// (defaultKeepInterval), as it puts back a change any concurrent write took away
+// (TestTheKeeperPutsBackAChangeALateLandingUpdateWroteBack).
 //
 // The read after the update is a read of a stream's state, sent again while the server leaves it
 // unanswered, each send up to its read limit, for as long as ctx lasts (readAgain): an update
@@ -1210,9 +1329,11 @@ func updateStream(ctx context.Context, js nats.JetStreamContext, info *nats.Stre
 			return result, nil
 		}
 		result.sent = update
-		_, wait, answered, err := limitedRead(ctx, limits, func() (*nats.StreamInfo, error) { return js.UpdateStream(&update) })
+		_, wait, answered, err := limitedRead(ctx, limits, func(sendCtx context.Context) (*nats.StreamInfo, error) {
+			return js.UpdateStream(&update, nats.Context(sendCtx))
+		})
 		switch {
-		case !answered && ctx.Err() != nil:
+		case (!answered || unanswered(err)) && ctx.Err() != nil:
 			return result, fmt.Errorf("the update drew no answer when the wait ended: %w", context.Cause(ctx))
 		case !answered:
 			err = fmt.Errorf("no answer within %s: %w", wait, context.DeadlineExceeded)

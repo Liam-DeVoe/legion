@@ -79,7 +79,7 @@ type flapProxy struct {
 
 func newFlapProxy(t *testing.T, upstream string) *flapProxy {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := testnats.Listen()
 	if err != nil {
 		t.Fatalf("proxy listen: %v", err)
 	}

@@ -3598,7 +3598,7 @@ func (h *holdAfter) release() {
 // the URL to connect to.
 func stallingProxy(t *testing.T, target, trigger string, budget int, hold time.Duration) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testnats.Listen()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}

@@ -9,7 +9,8 @@
 // URL that survives a stop and a start (Server.Stop, Server.Start), a way to stop the bytes
 // moving in either direction without dropping a connection (Server.Freeze), a reload with no
 // client message in flight (Server.Reload), and a port no other test binary can take while the
-// test runs.
+// test runs. Every listener is on this binary's own loopback address (Loopback), so a client
+// another test binary left reconnecting reaches none of them once their ports are let go.
 //
 // A package's tests share one server rather than start one each, and each test gets it as the user
 // of a JetStream account no earlier test used (URL), so no test ever deletes and recreates a
@@ -25,7 +26,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -536,7 +536,7 @@ func (s *Server) running() bool { return s.natsServer() != nil }
 // nats-server warns on an empty configuration file ("config has no values or is empty"), and the
 // host it names here is the one this rig imposes on every server anyway. The file is never empty,
 // so a server started without a configuration can still be reloaded with one.
-const hostOnlyConfig = "host: 127.0.0.1\n"
+var hostOnlyConfig = fmt.Sprintf("host: %s\n", Loopback)
 
 // start runs a nats-server in this process whose whole configuration is config, with serverArgs as
 // its command line after it (so -js for JetStream, -DV for the protocol trace), behind a relay
@@ -553,7 +553,7 @@ func start(t testing.TB, config string, serverArgs []string) *Server {
 	if err != nil {
 		t.Fatalf("make the server's directory: %v", err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := Listen()
 	if err != nil {
 		_ = os.RemoveAll(dir)
 		t.Fatalf("hold the server's port: %v", err)
@@ -652,9 +652,9 @@ func serverOptions(path string, serverArgs []string, store string) (*natsserver.
 	if err != nil {
 		return nil, err
 	}
-	opts.Host = "127.0.0.1"
+	opts.Host = Loopback
 	opts.Port = -1
-	opts.HTTPHost = "127.0.0.1"
+	opts.HTTPHost = Loopback
 	opts.HTTPPort = -1
 	opts.StoreDir = store
 	opts.NoSigs = true

@@ -60,7 +60,7 @@ func StartProxy(t testing.TB, target string, options ...ProxyOption) *Proxy {
 	if err != nil || server.Host == "" {
 		t.Fatalf("read the NATS URL %q the proxy relays to: %v", target, err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := Listen()
 	if err != nil {
 		t.Fatalf("listen for the NATS proxy: %v", err)
 	}

@@ -739,3 +739,104 @@ func TestRestoredFieldsNamesTheConsumerCapTheKeeperRaised(t *testing.T) {
 		})
 	}
 }
+
+// lateKeepInterval is the keeper's period in TestTheKeeperPutsBackAChangeALateLandingUpdateWroteBack,
+// and latePassAllowance what the row allows the pass that period starts, a read and a write of the
+// stream on one server, which take milliseconds even on a loaded machine.
+const (
+	lateKeepInterval  = time.Second
+	latePassAllowance = time.Second
+	// lateMaxMsgs is the message limit the held update of that row sets, one no program's
+	// settings name, so no keeper or start writes it.
+	lateMaxMsgs = 1_000_000
+)
+
+// heldFirstUpdateJetStream holds the first update sent through it until release and then sends it
+// on, as a server applies an update that waited in its JetStream API queue: after its sender's
+// wait for it ended. Its sender's context has ended by then, so the update is sent on without it,
+// and landed takes the stream as the server answered it. Every later update is sent at once.
+type heldFirstUpdateJetStream struct {
+	nats.JetStreamContext
+	held    chan struct{}
+	release func()
+	landed  chan *nats.StreamInfo
+	updates atomic.Int32
+}
+
+func newHeldFirstUpdateJetStream(t *testing.T, js nats.JetStreamContext) *heldFirstUpdateJetStream {
+	held := make(chan struct{})
+	var once sync.Once
+	wrapper := &heldFirstUpdateJetStream{JetStreamContext: js, held: held, release: func() { once.Do(func() { close(held) }) }, landed: make(chan *nats.StreamInfo, 1)}
+	t.Cleanup(wrapper.release)
+	return wrapper
+}
+
+func (js *heldFirstUpdateJetStream) UpdateStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	if js.updates.Add(1) > 1 {
+		return js.JetStreamContext.UpdateStream(cfg, opts...)
+	}
+	<-js.held
+	info, err := js.JetStreamContext.UpdateStream(cfg)
+	if err != nil {
+		info = nil
+	}
+	js.landed <- info
+	return info, err
+}
+
+// A stream update has no compare-and-swap, so an update made from a read and applied late writes
+// the stream back as that read found it, over a change another writer made since. updateStream
+// sends an update whose answer has not come by its read limit again, made from a fresh read, so the
+// send the limit cut can land after the one sent again (updateStream). The row forces that order:
+// one program's update of the stream's message limit is held, its read limit cuts it, the update
+// sent again lands, another program's start sets its byte limit, and the held send lands last,
+// writing back the byte limit the first read found. That program's keeper puts its byte limit back
+// at its next pass, which starts within one keeper period of the loss.
+func TestTheKeeperPutsBackAChangeALateLandingUpdateWroteBack(t *testing.T) {
+	uri := testnats.URL(t)
+	js := streamTestJetStream(t)
+	own := parseConnectOptions([]ConnectOption(nil)).streamConfig()
+	if _, err := ensureStreamWithConfig(t.Context(), js, &own, capsAnUnsetStream, atStart); err != nil {
+		t.Fatalf("the first program's start: %v", err)
+	}
+	held := newHeldFirstUpdateJetStream(t, js)
+	limitMessages := func(current *nats.StreamInfo) (nats.StreamConfig, bool) {
+		limited := current.Config
+		limited.MaxMsgs = lateMaxMsgs
+		return limited, true
+	}
+	if _, err := updateStream(t.Context(), held, deployedStream(t, js), limitMessages, func(again *nats.StreamInfo) bool { return again.Config.MaxMsgs == lateMaxMsgs }); err != nil {
+		t.Fatalf("the update whose first send is held = %v, want the one sent again to land", err)
+	}
+	if sends := held.updates.Load(); sends != 2 {
+		t.Fatalf("updates sent = %d, want 2: the held one and the one sent again after its read limit", sends)
+	}
+
+	other, err := ConnectOwningStream([]string{uri}, WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(lateKeepInterval))
+	if err != nil {
+		t.Fatalf("the other program's start: %v", err)
+	}
+	t.Cleanup(other.Close)
+	if got := deployedStream(t, js).Config.MaxBytes; got != keeperByteLimit {
+		t.Fatalf("the other program's start left byte limit %d, want %d", got, keeperByteLimit)
+	}
+
+	held.release()
+	wroteBack := <-held.landed
+	lost := time.Now()
+	if wroteBack == nil || wroteBack.Config.MaxBytes == keeperByteLimit || wroteBack.Config.MaxMsgs != lateMaxMsgs {
+		t.Fatalf("the held send landed as %+v, want the message limit with the byte limit the first read found: the row lost no change", wroteBack)
+	}
+	bound := lateKeepInterval + latePassAllowance
+	for {
+		info := deployedStream(t, js)
+		if info.Config.MaxBytes == keeperByteLimit && info.Config.MaxMsgs == lateMaxMsgs {
+			break
+		}
+		if waited := time.Since(lost); waited > bound {
+			t.Fatalf("%s after the held send wrote back byte limit %d, the stream holds %d and message limit %d, want the other program's %d put back by its keeper's next pass and the message limit kept, within %s",
+				waited.Round(time.Millisecond), wroteBack.Config.MaxBytes, info.Config.MaxBytes, info.Config.MaxMsgs, keeperByteLimit, bound)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

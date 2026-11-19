@@ -7,14 +7,17 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -58,7 +61,8 @@ func accountInfoSubject() string { return "$JS.API.INFO" }
 // in openSubject and in createSubject, so a row dropping one of those touches only the requests
 // about its own bucket; accountInfoSubject holds no bucket name, so only a row that makes one
 // call may drop it. The sends a row's setup makes are counted apart from the sends of the call
-// it is about (arm).
+// it is about (arm). A relay told to hold its drops (holdNext) passes each of them on late instead,
+// as a request that waits in the server's JetStream API queue reaches it late.
 type unansweredRelay struct {
 	subject  string
 	url      string
@@ -66,7 +70,10 @@ type unansweredRelay struct {
 	mu       sync.Mutex
 	pass     int
 	drops    int
+	hold     time.Duration
 	sends    int
+	// written serializes what the relay writes to the server, a held send among it.
+	written sync.Mutex
 }
 
 // startUnansweredRelayOn relays to the NATS server at target, a client URL such as testnats.URL
@@ -82,7 +89,7 @@ func startUnansweredRelayOn(t *testing.T, target, subject string) *unansweredRel
 		t.Fatalf("read the NATS URL %q the relay relays to: %v", target, err)
 		return nil
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testnats.Listen()
 	if err != nil {
 		t.Fatalf("listen for the relay: %v", err)
 		return nil
@@ -106,6 +113,7 @@ func (r *unansweredRelay) arm(drops int) {
 	defer r.mu.Unlock()
 	r.pass = 0
 	r.drops = drops
+	r.hold = 0
 	r.sends = 0
 }
 
@@ -118,6 +126,19 @@ func (r *unansweredRelay) passThenDrop(pass, drops int) {
 	defer r.mu.Unlock()
 	r.pass = pass
 	r.drops = drops
+	r.hold = 0
+	r.sends = 0
+}
+
+// holdNext has the relay hold the next holds sends of its subject for hold each and pass them on
+// then, counting the sends from now: the server applies and answers each one hold after it was
+// sent, as it does a request that waited that long in its JetStream API queue.
+func (r *unansweredRelay) holdNext(holds int, hold time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pass = 0
+	r.drops = holds
+	r.hold = hold
 	r.sends = 0
 }
 
@@ -128,24 +149,37 @@ func (r *unansweredRelay) sent() int {
 	return r.sends
 }
 
-// send records one send of subject and reports whether it is dropped: it is while drops are left,
-// and each such send spends one.
-func (r *unansweredRelay) send(subject string) bool {
+// send records one send of subject and reports whether it is dropped, and for how long it is held
+// first when it is held rather than dropped: it is while drops are left, and each such send spends
+// one.
+func (r *unansweredRelay) send(subject string) (dropped bool, held time.Duration) {
 	if subject != r.subject {
-		return false
+		return false, 0
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sends++
 	if r.pass > 0 {
 		r.pass--
-		return false
+		return false, 0
 	}
 	if r.drops > 0 {
 		r.drops--
-		return true
+		return true, r.hold
 	}
-	return false
+	return false, 0
+}
+
+// write passes line, and the payload after it when there is one, on to server, whole: a held send
+// is written from a goroutine of its own, beside the relay's own writes.
+func (r *unansweredRelay) write(server net.Conn, line string, payload []byte) error {
+	r.written.Lock()
+	defer r.written.Unlock()
+	if _, err := io.WriteString(server, line); err != nil {
+		return err
+	}
+	_, err := server.Write(payload)
+	return err
 }
 
 // serve joins each connection the relay accepts to the server until the listener closes.
@@ -170,9 +204,9 @@ func (r *unansweredRelay) serve(target string) {
 }
 
 // filter relays what the client sends to the server, a protocol message at a time, leaving out the
-// publishes the relay drops. A client sends only CONNECT, SUB, UNSUB, PING, PONG and publishes, so
-// every line that is not a publish is passed on as it is, and a publish is passed on with the
-// payload its header counts.
+// publishes the relay drops and passing on the ones it holds once their hold has passed. A client
+// sends only CONNECT, SUB, UNSUB, PING, PONG and publishes, so every line that is not a publish is
+// passed on as it is, and a publish is passed on with the payload its header counts.
 func (r *unansweredRelay) filter(server, client net.Conn) {
 	defer func() {
 		_ = client.Close()
@@ -189,7 +223,7 @@ func (r *unansweredRelay) filter(server, client net.Conn) {
 		// each followed by that many bytes and a CRLF. A line with fewer than three fields is
 		// neither, whatever its first word says.
 		if len(fields) < 3 || (!strings.EqualFold(fields[0], "PUB") && !strings.EqualFold(fields[0], "HPUB")) {
-			if _, err := io.WriteString(server, line); err != nil {
+			if err := r.write(server, line, nil); err != nil {
 				return
 			}
 			continue
@@ -202,13 +236,13 @@ func (r *unansweredRelay) filter(server, client net.Conn) {
 		if _, err := io.ReadFull(reader, payload); err != nil {
 			return
 		}
-		if r.send(fields[1]) {
+		if dropped, held := r.send(fields[1]); dropped {
+			if held > 0 {
+				time.AfterFunc(held, func() { _ = r.write(server, line, payload) })
+			}
 			continue
 		}
-		if _, err := io.WriteString(server, line); err != nil {
-			return
-		}
-		if _, err := server.Write(payload); err != nil {
+		if err := r.write(server, line, payload); err != nil {
 			return
 		}
 	}
@@ -656,4 +690,243 @@ func TestAStartThatOpensAFoundBucketThroughEnsureKeyValueSendsTheOpenAgain(t *te
 		t.Fatalf("the start sent %d requests on the bucket's stream, want %d: a clean start's %d with the lost open sent again",
 			sends, answered+1, answered)
 	}
+}
+
+// A start that moves the role lanes off a stream that still carries them, and whose list of the
+// stream's consumers draws no answer, lists them again and moves the consumer's filter. nats.go's
+// legacy ConsumerNames reports no error, so the lost list was an empty one: the migration moved
+// nothing and said nothing, and the start went on with the consumer still filtering the lanes. The
+// relay drops the first list, on a single server, as a member whose meta leader changes leaves a
+// request unanswered.
+func TestALostListOfTheStreamsConsumersIsSentAgainAndTheMigrationMovesThem(t *testing.T) {
+	relay := startUnansweredRelayOn(t, testnats.URL(t), "$JS.API.CONSUMER.NAMES."+Stream)
+	_, js := relayedJetStream(t, relay)
+	legacy := *streamCfg
+	legacy.Subjects = []string{"notifications.>"}
+	if _, err := js.AddStream(&legacy); err != nil {
+		t.Fatalf("create the stream that carries the role lanes: %v", err)
+	}
+	const durable = "legacy-role-lane-durable"
+	if _, err := js.AddConsumer(Stream, &nats.ConsumerConfig{Durable: durable, FilterSubject: "notifications.>", AckPolicy: nats.AckExplicitPolicy}); err != nil {
+		t.Fatalf("create the durable that filters the role lanes: %v", err)
+	}
+
+	relay.arm(1)
+	cfg := *streamCfg
+	if _, err := ensureStreamWithConfig(t.Context(), js, &cfg, capsAnUnsetStream, atStart); err != nil {
+		t.Fatalf("a start whose list of the stream's consumers drew no answer = %v, want it to move the role lanes off", err)
+	}
+	info, err := js.ConsumerInfo(Stream, durable)
+	if err != nil {
+		t.Fatalf("read the durable after the start: %v", err)
+	}
+	if info.Config.FilterSubject != "" || !slices.Equal(info.Config.FilterSubjects, consumerFilterSubjects(streamCfg.Subjects)) {
+		t.Fatalf("the durable filters %q and %v after the start, want the stream's own subjects in place of notifications.>: the migration moved nothing",
+			info.Config.FilterSubject, info.Config.FilterSubjects)
+	}
+	if sends := relay.sent(); sends < 2 {
+		t.Fatalf("lists of the stream's consumers sent = %d, want the lost one and the one sent again", sends)
+	}
+}
+
+// shortListJetStream answers the first list of the stream's consumers with none and no error, as
+// nats.go's legacy ConsumerNames ends a list whose page the server answered with an error (a
+// member that sees its metadata leader gone answers JSClusterNotAvailError at once, rather than
+// leave the request unanswered). Every later list is js's own.
+type shortListJetStream struct {
+	nats.JetStreamContext
+	lists atomic.Int32
+}
+
+func (js *shortListJetStream) ConsumerNames(stream string, opts ...nats.JSOpt) <-chan string {
+	if js.lists.Add(1) == 1 {
+		none := make(chan string)
+		close(none)
+		return none
+	}
+	return js.JetStreamContext.ConsumerNames(stream, opts...)
+}
+
+// A list of the stream's consumers that ends short at once, with no error, is read again and the
+// migration moves the consumer: the list is read against the stream's own count of its consumers
+// (consumerNames). With no such count the list was taken as it came, the migration moved nothing,
+// and the start went on with the consumer still filtering the role lanes.
+func TestAListOfTheStreamsConsumersThatEndsShortIsReadAgainAndTheMigrationMovesThem(t *testing.T) {
+	js := streamTestJetStream(t)
+	legacyRoleLaneStream(t, js)
+	const durable = "legacy-role-lane-short-list"
+	if _, err := js.AddConsumer(Stream, &nats.ConsumerConfig{Durable: durable, FilterSubject: "notifications.>", AckPolicy: nats.AckExplicitPolicy}); err != nil {
+		t.Fatalf("create the durable that filters the role lanes: %v", err)
+	}
+
+	short := &shortListJetStream{JetStreamContext: js}
+	cfg := *streamCfg
+	if _, err := ensureStreamWithConfig(t.Context(), short, &cfg, capsAnUnsetStream, atStart); err != nil {
+		t.Fatalf("a start whose first list of the stream's consumers ended short = %v, want it to move the role lanes off", err)
+	}
+	info, err := js.ConsumerInfo(Stream, durable)
+	if err != nil {
+		t.Fatalf("read the durable after the start: %v", err)
+	}
+	if info.Config.FilterSubject != "" || !slices.Equal(info.Config.FilterSubjects, consumerFilterSubjects(streamCfg.Subjects)) {
+		t.Fatalf("the durable filters %q and %v after the start, want the stream's own subjects in place of notifications.>: the migration moved nothing",
+			info.Config.FilterSubject, info.Config.FilterSubjects)
+	}
+	if lists := short.lists.Load(); lists < 2 {
+		t.Fatalf("lists of the stream's consumers = %d, want the short one and the one read again", lists)
+	}
+}
+
+// heldRequest is how long the held rows below hold one request before it reaches the server: past
+// RequestTimeout, the JetStream wait of the context a program opens (relayedJetStream), which a
+// start once waited out for a write whose answer had not come. heldRequestBound is how long such a
+// start may take: a start that waited that wait out took all of it, and one that sends the write
+// again after its read limit (firstReadLimit) takes a fraction of a second, so the bound sits far
+// from both on a loaded machine.
+const (
+	heldRequest      = RequestTimeout + time.Second
+	heldRequestBound = RequestTimeout / 2
+)
+
+// A start whose raise of a bucket reaches the server only after the JetStream wait, as a raise that
+// waits in the server's JetStream API queue does, reads the stream after its read limit, finds the
+// raise not landed, sends it again from that read and goes on. It once waited the raise's whole
+// JetStream wait, ten seconds, before it read the stream.
+// The relay holds the first raise heldRequest; the start's own context, a hang guard of 36 s,
+// ends no send here. A start whose raise is never answered ends at its context instead
+// (TestARaiseTheServerNeverAnswersEndsAtTheHangGuardNamingNoSetting).
+func TestARaiseHeldPastTheJetStreamWaitIsSentAgainAfterItsReadLimit(t *testing.T) {
+	const bucket = "envoy_held_raise"
+	cluster := testnats.StartCluster(t, 3)
+	relay := startUnansweredRelayOn(t, cluster.Servers[0].URL(), updateSubject(bucket))
+	conn, js := relayedJetStream(t, relay)
+	if _, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
+		t.Fatalf("create the one-copy bucket the start raises: %v", err)
+	}
+
+	relay.holdNext(1, heldRequest)
+	started := time.Now()
+	_, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3})
+	took := time.Since(started)
+	if err != nil {
+		t.Fatalf("a start whose first raise was held %s = %v after %s, want it to go on", heldRequest, err, took.Round(time.Millisecond))
+	}
+	if took >= heldRequestBound {
+		t.Fatalf("the start answered %s after it began, want within %s: a raise whose answer has not come is read back after its read limit, %s, and not waited for up to the JetStream wait, %s",
+			took.Round(time.Millisecond), heldRequestBound, firstReadLimit, RequestTimeout)
+	}
+	if info, err := js.StreamInfo("KV_" + bucket); err != nil || info.Config.Replicas != 3 {
+		t.Fatalf("the raised stream = %+v (%v), want 3 copies", info, err)
+	}
+	if sends := relay.sent(); sends < 2 {
+		t.Fatalf("raises sent = %d, want the held one and the one sent again", sends)
+	}
+}
+
+// legacyRoleLaneStream creates, through js, the stream an Envoy release from before 2026-09-25
+// left deployed: its subjects capture the role lanes, and it holds one message on a role lane, so
+// a start that moves the lanes off it has a purge to make and a lane a read finds unpurged.
+func legacyRoleLaneStream(t *testing.T, js nats.JetStreamContext) {
+	t.Helper()
+	legacy := *streamCfg
+	legacy.Subjects = []string{"notifications.>"}
+	if _, err := js.AddStream(&legacy); err != nil {
+		t.Fatalf("create the stream that carries the role lanes: %v", err)
+	}
+	if _, err := js.Publish(contracts.RoleTopicPrefix+"reviewer", []byte("kept on the role lane")); err != nil {
+		t.Fatalf("store a message on a role lane: %v", err)
+	}
+}
+
+// A start that moves a consumer's filter off the role lanes, whose move reaches the server only
+// after the JetStream wait, reads the consumer after its read limit, finds it still on the legacy
+// filter, moves it again from that read and goes on. It once sent the move once and waited out its
+// JetStream wait, ten seconds, and the start failed "nats: timeout". The js the start is handed is
+// a client's, as in a program (readsRefusals).
+func TestAMoveOfAConsumerOffTheRoleLanesHeldPastTheJetStreamWaitIsSentAgain(t *testing.T) {
+	const durable = "legacy-role-lane-held"
+	relay := startUnansweredRelayOn(t, testnats.URL(t), "$JS.API.CONSUMER.CREATE."+Stream+"."+durable)
+	conn, js := relayedJetStream(t, relay)
+	legacyRoleLaneStream(t, js)
+	if _, err := js.AddConsumer(Stream, &nats.ConsumerConfig{Durable: durable, FilterSubject: "notifications.>", AckPolicy: nats.AckExplicitPolicy}); err != nil {
+		t.Fatalf("create the durable that filters the role lanes: %v", err)
+	}
+
+	relay.holdNext(1, heldRequest)
+	started := time.Now()
+	cfg := *streamCfg
+	_, err := ensureStreamWithConfig(t.Context(), readsRefusals(conn, js), &cfg, capsAnUnsetStream, atStart)
+	took := time.Since(started)
+	if err != nil {
+		t.Fatalf("a start whose first move of the durable was held %s = %v after %s, want it to go on", heldRequest, err, took.Round(time.Millisecond))
+	}
+	if took >= heldRequestBound {
+		t.Fatalf("the start answered %s after it began, want within %s: a move whose answer has not come is read back after its read limit, %s, and not waited for up to the JetStream wait, %s",
+			took.Round(time.Millisecond), heldRequestBound, firstReadLimit, RequestTimeout)
+	}
+	info, err := js.ConsumerInfo(Stream, durable)
+	if err != nil {
+		t.Fatalf("read the durable after the start: %v", err)
+	}
+	if info.Config.FilterSubject != "" || !slices.Equal(info.Config.FilterSubjects, consumerFilterSubjects(streamCfg.Subjects)) {
+		t.Fatalf("the durable filters %q and %v after the start, want the stream's own subjects in place of notifications.>",
+			info.Config.FilterSubject, info.Config.FilterSubjects)
+	}
+	if sends := relay.sent(); sends < 2 {
+		t.Fatalf("moves of the durable sent = %d, want the held one and the one sent again", sends)
+	}
+}
+
+// A start's purge of a role lane is sent under its read limit and its own context, so it waits no
+// JetStream wait: nats.go's PurgeStream ignores the context it is handed and waits the context's
+// own ten seconds (nats.go@v1.53.1 jsm.go:1477-1524), and a start once sent the purge once that way
+// and failed "nats: timeout" when its answer had not come by then. With the first purge held past
+// that wait, the start reads the lane after its read limit, finds its message still there, purges
+// it again and goes on. With every purge held, the start ends when its context ends, naming the
+// purge, and not when a held purge lands.
+func TestARoleLanePurgeHeldPastTheJetStreamWaitEndsAtAnAnswerOrTheContext(t *testing.T) {
+	t.Run("the first purge held", func(t *testing.T) {
+		relay := startUnansweredRelayOn(t, testnats.URL(t), jsAPI("STREAM.PURGE", Stream))
+		conn, js := relayedJetStream(t, relay)
+		legacyRoleLaneStream(t, js)
+
+		relay.holdNext(1, heldRequest)
+		started := time.Now()
+		cfg := *streamCfg
+		_, err := ensureStreamWithConfig(t.Context(), readsRefusals(conn, js), &cfg, capsAnUnsetStream, atStart)
+		took := time.Since(started)
+		if err != nil {
+			t.Fatalf("a start whose first purge was held %s = %v after %s, want it to go on", heldRequest, err, took.Round(time.Millisecond))
+		}
+		if took >= heldRequestBound {
+			t.Fatalf("the start answered %s after it began, want within %s: a purge whose answer has not come is read back after its read limit, %s, and not waited for up to the JetStream wait, %s",
+				took.Round(time.Millisecond), heldRequestBound, firstReadLimit, RequestTimeout)
+		}
+		if left, err := laneMessages(js, roleLaneSubjects[0]); err != nil || left != 0 {
+			t.Fatalf("messages left on %s = %d (%v), want none", roleLaneSubjects[0], left, err)
+		}
+		if sends := relay.sent(); sends < 2 {
+			t.Fatalf("purges sent = %d, want the held one and more", sends)
+		}
+	})
+	t.Run("every purge held", func(t *testing.T) {
+		relay := startUnansweredRelayOn(t, testnats.URL(t), jsAPI("STREAM.PURGE", Stream))
+		conn, js := relayedJetStream(t, relay)
+		legacyRoleLaneStream(t, js)
+
+		relay.holdNext(1<<30, heldRequest)
+		const wait = 3 * time.Second
+		ctx, cancel := context.WithTimeout(t.Context(), wait)
+		defer cancel()
+		started := time.Now()
+		cfg := *streamCfg
+		_, err := ensureStreamWithConfig(ctx, readsRefusals(conn, js), &cfg, capsAnUnsetStream, atStart)
+		took := time.Since(started)
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "the purge of "+roleLaneSubjects[0]) {
+			t.Fatalf("a start whose every purge is held = %v, want it to end with its context, naming the purge of %s", err, roleLaneSubjects[0])
+		}
+		if took >= heldRequest {
+			t.Fatalf("the start ended %s after it began, want at its context's %s, before a held purge lands", took.Round(time.Millisecond), wait)
+		}
+	})
 }
