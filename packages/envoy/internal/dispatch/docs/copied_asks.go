@@ -421,8 +421,20 @@ func copiesOf(ctx context.Context, tx pgx.Tx, document documentAsks) ([]string, 
 	return copies, nil
 }
 
-// documentOwner reads the owner of the document artifactID without locking it.
+// documentOwner reads the owner of the document artifactID without locking it: the owner this
+// transaction recorded for an artifacts row it is creating (Ledger.RegisterPendingArtifact), whose
+// insert is queued and which no read of the transaction finds before its write phase, else the
+// stored row's. A new document's own checks run before that insert - an upload's refusal of a
+// reading in a copy of an answered ask reads the owner whose documents the copy's source is
+// looked for among (shownAskAnswers) - as addressOfDocument answers for its address.
 func documentOwner(ctx context.Context, tx pgx.Tx, artifactID string) (artifactOwner, error) {
+	if address, pending := pendingArtifact(ctx, artifactID); pending {
+		owner := artifactOwner{Project: address.Project}
+		if address.IssueKey != "" {
+			owner.IssueKey = &address.IssueKey
+		}
+		return owner, nil
+	}
 	var owner artifactOwner
 	if err := tx.QueryRow(ctx, `
 		select issue_key, coalesce(project_key, '') from artifacts where id = $1

@@ -49,7 +49,7 @@ const storeStepWait = 30 * time.Second
 //     session's, in one statement in ascending (kind, id) and marked for their cause before the
 //     asks row that carries the ask's id (graphstore.AskFacts, which states the ask's author beside
 //     it), that row, the session's follow of the ask, which finds the session's node there
-//     (asks.PlanFollowAuthor), the ask.opened event, and then both nodes moved onto that event with
+//     (asks.PlanFollowNewAsk), the ask.opened event, and then both nodes moved onto that event with
 //     what each node write stated appended under it (graphstore.QueueCaused). The edit that wrote
 //     the block wrote its version too, as an agent's edit through the API does, so the settlement
 //     writes no version, which the run reads back;
@@ -635,7 +635,7 @@ func askRowStep() docsStep {
 // askerNodeStep is the node of the session that wrote the block a settlement opens an ask of, the
 // ask's author: createAskBlock's node write states it beside the ask's node (graphstore.AskFacts,
 // through AuthorFacts), in that one statement and after the ask's in ascending (kind, id), marked
-// for its cause, before the asks row. The follow after that row (asks.PlanFollowAuthor) finds the
+// for its cause, before the asks row. The follow after that row (asks.PlanFollowNewAsk) finds the
 // node there. It is one of the settlement's node rows, which the fence row comes before.
 func askerNodeStep() docsStep {
 	return docsStep{

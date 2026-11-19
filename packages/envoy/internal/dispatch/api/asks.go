@@ -288,14 +288,11 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	}
 	// The asker follows the ask it opened, and a session asker is a node of the store from this
 	// write on; its node learns the ask.opened event below, right after that event's insert. The
-	// follow is planned here, in the read phase (asks.PlanFollowAuthor: the ask is new, so its
-	// follower row is too, and the ask's node queued above is the one the row is marked with), and
-	// its step fills followed when the write phase runs it, before the step that causes it.
-	follow, err := asks.PlanFollowAuthor(r.Context(), tx, rowID, actor, ask.CreatedAt)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
+	// ask is new, so its follower row is too, and the follow is planned with no read
+	// (asks.PlanFollowNewAsk: the ask's node queued above is the one the row is marked with, and
+	// the row is dated by the ask's created_at); its step fills followed when the write phase runs
+	// it, before the step that causes it.
+	follow := asks.PlanFollowNewAsk(rowID, actor, ask.CreatedAt)
 	var followed graphstore.Uncaused
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		var err error

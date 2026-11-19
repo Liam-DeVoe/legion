@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -61,12 +62,14 @@ func (s *server) settleIssueBeforeClose(ctx context.Context, issueKey string) {
 // each, so their document work runs in the transaction's read phase, before its first write
 // (INFRA-636). The first half (prepareWithdrawal, prepareRestoration) reads the asks and writes
 // their blocks and copies into the issue's documents (docs.WriteIssueAskStates), whose writes queue
-// on ctx's ledger; the second (recordWithdrawnAsksTx, recordRestoredAsksTx) queues each ask's row
-// write and event after them, so in the write phase every document write comes before the first
-// ask event, as the close and the reopen order them. Each event's thread_logins is read by its own
-// insert, after its ask's write (events.ThreadLoginsOf). The reopen's second half also does its
-// follow of the versions a settlement wrote while the issue was closed, whose reads and renders
-// are document work, so a reopen runs both halves in its read phase, one after the other.
+// on ctx's ledger, and the close's first half plans each ask's withdrawal too, since the plan
+// reads the ask's row and node; the second (recordWithdrawnAsksTx, recordRestoredAsksTx) queues
+// each ask's row write and event after them, so in the write phase every document write comes
+// before the first ask event, as the close and the reopen order them. Each event's thread_logins
+// is read by its own insert, after its ask's write (events.ThreadLoginsOf). The reopen's second
+// half also does its follow of the versions a settlement wrote while the issue was closed, whose
+// reads and renders are document work, so a reopen runs both halves in its read phase, one after
+// the other.
 //
 // ctx is joined to tx (Docs.Join) and ledger is its ledger; the caller holds the issue's owner
 // lock and has locked every event owner it appends to (LockOwners) before calling, and commits
@@ -74,18 +77,51 @@ func (s *server) settleIssueBeforeClose(ctx context.Context, issueKey string) {
 
 // prepareWithdrawal is the close's first half: it reads every open ask of issueKey and writes the
 // blocks showing them in the issue's documents, and their copies, resolved, while the rows still
-// read open (docs.WriteIssueAskStates classifies copies by the rows as they stand). Unindexed
-// blocks are the close's final sweep's to mark (sweepClosedIssueAsks). It answers the open asks,
+// read open (docs.WriteIssueAskStates classifies copies by the rows as they stand), and then plans
+// each ask's withdrawal (planWithdrawal), all before the close's first write. Unindexed blocks are
+// the close's final sweep's to mark (sweepClosedIssueAsks). It answers the withdrawal planned,
 // oldest id first, for recordWithdrawnAsksTx.
-func (s *server) prepareWithdrawal(ctx context.Context, tx pgx.Tx, issueKey string, actor model.Actor) ([]model.Ask, error) {
+func (s *server) prepareWithdrawal(ctx context.Context, tx pgx.Tx, issueKey string, actor model.Actor) (withdrawal, error) {
 	open, shown, err := s.readOpenIssueAsks(ctx, tx, issueKey)
 	if err != nil {
-		return nil, err
+		return withdrawal{}, err
 	}
 	if _, err := s.deps.Docs.WriteIssueAskStates(ctx, issueKey, shown, actor, false); err != nil {
-		return nil, err
+		return withdrawal{}, err
 	}
-	return open, nil
+	return planWithdrawal(ctx, tx, issueKey, open, actor)
+}
+
+// withdrawal is what a close planned of its issue's open asks, for recordWithdrawnAsksTx: the
+// asks, oldest id first, as their withdrawal leaves them; each one's withdrawal, planned through
+// the one writer of an ask's answer state, by the ask's index; and what each withdrawal states on
+// its ask's node, held for that ask's ask.resolved, by the same index.
+type withdrawal struct {
+	asks    []model.Ask
+	settled []asks.Settled
+	held    []graphstore.Uncaused
+}
+
+// planWithdrawal plans the withdrawal of each of open, the open asks of issueKey readOpenIssueAsks
+// read: resolved with kind withdrawn, naming actor, the closer (docs.PlanAskResolution, through
+// the ledger joined to ctx, which records each plan as its ask's latest). It reads each ask's row
+// and node and writes nothing, so its caller runs it in the transaction's read phase, before the
+// close's first write gives the transaction its id; recordWithdrawnAsksTx queues what it planned.
+func planWithdrawal(ctx context.Context, tx pgx.Tx, issueKey string, open []model.Ask, actor model.Actor) (withdrawal, error) {
+	reason := withdrawnReason(issueKey)
+	planned := withdrawal{
+		asks:    make([]model.Ask, len(open)),
+		settled: make([]asks.Settled, len(open)),
+		held:    make([]graphstore.Uncaused, len(open)),
+	}
+	for index, ask := range open {
+		settled, withdrawn, err := docs.PlanAskResolution(ctx, tx, ask, model.AskResolutionWithdrawn, reason, actor, &planned.held[index])
+		if err != nil {
+			return withdrawal{}, err
+		}
+		planned.asks[index], planned.settled[index] = withdrawn, settled
+	}
+	return planned, nil
 }
 
 // readOpenIssueAsks reads every open ask of issueKey, oldest id first, in tx, which the caller holds
@@ -111,21 +147,19 @@ func (s *server) readOpenIssueAsks(ctx context.Context, tx pgx.Tx, issueKey stri
 	return open, shown, nil
 }
 
-// recordWithdrawnAsksTx is the close's second half: it records each of open, the open asks of
-// issueKey readOpenIssueAsks read, resolved with kind withdrawn, naming actor, the closer, and
-// queues one ask.resolved event for each, whose actor is the closer and whose owner is the issue.
-// It answers the asks as withdrawn and the events, filled in once Commit has run the write phase.
-func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, issueKey string, open []model.Ask, actor model.Actor) ([]model.Ask, []*model.Event, error) {
-	reason := withdrawnReason(issueKey)
-	withdrawn := make([]model.Ask, 0, len(open))
-	appended := make([]*model.Event, 0, len(open))
-	for _, ask := range open {
-		// The withdrawal goes through the one writer of an ask's answer state, queued on ctx's
-		// ledger (docs.WriteAskResolution); what it states on the ask's node waits for the
-		// ask.resolved queued below.
-		var held graphstore.Uncaused
-		ask, err := docs.WriteAskResolution(ctx, tx, ask, model.AskResolutionWithdrawn, reason, actor, &held)
-		if err != nil {
+// recordWithdrawnAsksTx is the close's second half: it queues each withdrawal planned, the asks
+// of issueKey planWithdrawal planned resolved with kind withdrawn, and one ask.resolved event for
+// each, whose actor is actor, the closer, and whose owner is the issue, and right after it the
+// append of what that withdrawal stated on the ask's node, under that event. It reads nothing,
+// so it runs after the close's first write. It answers the asks as withdrawn and the events,
+// filled in once Commit has run the write phase.
+func (s *server) recordWithdrawnAsksTx(ledger *docs.Ledger, issueKey string, planned withdrawal, actor model.Actor) ([]model.Ask, []*model.Event, error) {
+	appended := make([]*model.Event, 0, len(planned.asks))
+	for index, ask := range planned.asks {
+		// The withdrawal goes through the one writer of an ask's answer state, planned in the
+		// read phase (planWithdrawal) and queued here on the ledger; what it states on the ask's
+		// node waits for the ask.resolved queued below.
+		if err := ledger.Queue(planned.settled[index].Queue); err != nil {
 			return nil, nil, err
 		}
 		event, err := s.queueLoggedEvent(ledger, issueOwner(issueKey).event(
@@ -135,15 +169,15 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, ledger *d
 			return nil, nil, err
 		}
 		// What the withdrawal stated on the ask's node learns the event the step before appended.
+		held := planned.held[index]
 		if err := ledger.Queue(func(b *store.WriteBatch) error {
 			return graphstore.QueueCaused(b, held, graphstore.LatestEvent)
 		}); err != nil {
 			return nil, nil, err
 		}
-		withdrawn = append(withdrawn, ask)
 		appended = append(appended, event)
 	}
-	return withdrawn, appended, nil
+	return planned.asks, appended, nil
 }
 
 // restoredAsks is what the reopen's first half restored (prepareRestoration), for its second
