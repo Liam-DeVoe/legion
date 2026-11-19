@@ -15,6 +15,7 @@ import {
   settingsSubmitButton,
 } from "../settings/classes";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useHoldUntilDrawn } from "./useHoldUntilDrawn";
 
 /** The characters that separate the entries of a list field, as a character class's body: line
  *  breaks, and commas or spaces too, since neither a GitHub login nor an `owner/repo` can hold
@@ -135,11 +136,31 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
     record = settings.data;
   }
   // Keyed by the record's write time, so a save (anyone's) starts the fields over from the record
-  // as the server stored it, and so does a caller handing over another record.
-  return <DeliverySettingsFields key={record?.updated_at ?? "unset"} record={record} />;
+  // as the server stored it, and so does a caller handing over another record. A caller that holds
+  // the record reads it itself, so its own read is what moves once a save lands.
+  return (
+    <DeliverySettingsFields
+      key={record?.updated_at ?? "unset"}
+      record={record}
+      replacedByCaller={initial !== undefined}
+    />
+  );
 }
 
-function DeliverySettingsFields({ record }: { record: DeliverySettings | null }): ReactNode {
+/** The form's fields and its Save. Save is held, and the fields with it, while the save is out
+ *  and until what it changes is drawn, so the press is still the cause of the form's going
+ *  (`causedByReader`): through the record's own read, which draws these fields anew under the
+ *  stored record's key, or - where the caller holds the record (`replacedByCaller`), as the
+ *  Delivery page's live view does, drawing the timeline in the form's place once its snapshot
+ *  comes - until the caller replaces the form (`useHoldUntilDrawn`). A refusal lets them go at
+ *  once, with its reason under the form. */
+function DeliverySettingsFields({
+  record,
+  replacedByCaller,
+}: {
+  record: DeliverySettings | null;
+  replacedByCaller: boolean;
+}): ReactNode {
   const queryClient = useQueryClient();
   const id = useId();
   const submitGuard = useSubmitGuard();
@@ -155,6 +176,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
     staging_apply_job_name: record?.staging_apply_job_name ?? "",
     staging_e2e_job_name: record?.staging_e2e_job_name ?? "",
   }));
+  const [drawing, holdUntilDrawn] = useHoldUntilDrawn();
   // The form shows its own refusal, under the fields it was refused over.
   const save = useKeyedWrite({
     write: (input: DeliverySettingsInput, bounds) => api.putDeliverySettings(input, bounds),
@@ -162,23 +184,28 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
     label: () => "Delivery settings saved",
     onSettled: () => submitGuard.release(),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: deliverySettingsQuery().queryKey });
+      if (replacedByCaller) holdUntilDrawn();
+      // Pending through the record's own read, which a caller holding the record has none of.
+      const read = queryClient.invalidateQueries({ queryKey: deliverySettingsQuery().queryKey });
       // A live view learns of the save from Dispatch, as a delta, or as the snapshot a page that
       // had none (DELIVERY_NOT_CONFIGURED) is answered once a configuration exists.
       void queryClient.invalidateQueries({
         queryKey: ["delivery"],
         predicate: (query) => !isLiveQuery(query),
       });
+      return read;
     },
   });
-  // The fields and Save are held, not disabled, while a save is out: whichever holds the focus
-  // keeps it (`heldPress`), an edit made then is dropped, and `submitGuard` sends no second save.
-  const held = save.isPending;
+  // The fields and Save are held, not disabled, while a save is out and until what it changes is
+  // drawn: whichever holds the focus keeps it, an edit made then is dropped, and a submit then
+  // sends nothing (`submitGuard` covers only the save's own round trip).
+  const held = save.isPending || drawing;
   const edit = (next: Draft) => {
     if (!held) setDraft(next);
   };
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (held) return;
     submitGuard.guard(() =>
       save.mutate({
         deploy_repo: draft.deploy_repo,

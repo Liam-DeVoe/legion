@@ -6,7 +6,18 @@ import {
   card,
   cardHoverBorder,
   dangerText,
+  focusBorder,
   inputClasses,
+  pageFailedText,
+  pageHairBorder,
+  pageInkText,
+  pageLineBorder,
+  pageMarkBg,
+  pageMutedText,
+  pagePaneBg,
+  pagePaperBg,
+  pageQuietText,
+  pageRowHoverBg,
   selectedCardBg,
   selectedCardBorder,
   surfaceMutedBg,
@@ -19,6 +30,7 @@ import { type ControlName, type ControlSize, controlPadding } from "./control-na
 import { ChevronIcon } from "./DisclosureToggle";
 import { focusLost } from "./focus-place";
 import { TruncatedText } from "./TruncatedText";
+import { useTooltips } from "./tooltips";
 
 function fold(value: string | undefined): string {
   return (value ?? "").trim().toLocaleLowerCase();
@@ -70,6 +82,34 @@ export interface ListMarks {
   readonly search?: Readonly<Record<`data-${string}`, string>>;
   readonly trigger?: Readonly<Record<`data-${string}`, string>>;
 }
+
+/**
+ * Each colour the picker draws inside `NoTooltips`, the new issue page's, by the role `main`'s
+ * colour has: the trigger is the page's header control (its rule and muted words on the
+ * paper); the popover is the page's menu (the prototype's `#menu`: the hairline rule on the
+ * paper), whose rows are its items, in the ink with the mark grey under the pointer and on the
+ * active row; an empty list is quiet words, a refusal the failed red, and Clear the page's pane
+ * with muted words. A detail is muted words too, not quiet ones: it is drawn on its row's mark
+ * grey under the pointer and on the active row, where the quiet grey reads 4.11:1 in the light
+ * scheme, under the 4.5:1 its words need. The search box keeps `main`'s focus rule, the one
+ * focus indicator of the application.
+ *
+ * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
+ * pairs each text class with the nearest enclosing ground of the same file across both branches
+ * of a ternary: a page colour written beside `main`'s would pair `main`'s words with the page's
+ * paper and the page's words with `main`'s card. Each pair here is one `theme/classes.ts`
+ * registers for the page, which `shared-controls.tooltips.test.tsx` holds.
+ */
+const ON_PAGE = {
+  checkbox: pageHairBorder,
+  clear: `${pagePaneBg} ${pageMutedText}`,
+  detail: pageMutedText,
+  empty: pageQuietText,
+  failure: `${pageLineBorder} ${pageFailedText}`,
+  panel: `${pageHairBorder} ${pagePaperBg}`,
+  search: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
+  trigger: `min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold ${pageLineBorder} ${pagePaperBg} ${pageMutedText}`,
+} as const;
 
 interface SharedProps {
   /** Trigger content. A multi-select's defaults to the label with the selection count
@@ -129,7 +169,8 @@ interface SharedProps {
    *  a bare count. Defaults to that text. */
   readonly optionDetailLabel?: (value: string) => string;
   readonly searchLabel: string;
-  /** How much room the default trigger takes; a `triggerClassName` decides for itself. */
+  /** How much room the default trigger takes outside `NoTooltips`; a `triggerClassName` decides
+   *  for itself. */
   readonly size?: ControlSize;
   /** A multi-select trigger's accessible name in place of its text; a single pick's trigger's
    *  name starts with it in place of `label`, before what the trigger shows. */
@@ -228,7 +269,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     searchLabel,
     size = "comfortable",
     triggerAriaLabel,
-    triggerClassName = `rounded-lg border text-sm font-semibold ${controlPadding[size]} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`,
+    triggerClassName,
     triggerTextClassName = "",
     triggerTitle,
   } = props;
@@ -238,6 +279,12 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     props.mode !== "single" ? props.selected : props.value === undefined ? [] : [props.value];
   const id = useId();
   const panelId = `${id}-panel`;
+  const tooltips = useTooltips();
+  const trigger =
+    triggerClassName ??
+    (tooltips
+      ? `rounded-lg border text-sm font-semibold ${controlPadding[size]} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`
+      : ON_PAGE.trigger);
   const listboxId = `${id}-options`;
   const nameId = `${id}-name`;
   const shownId = `${id}-shown`;
@@ -362,6 +409,9 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    // A key that ends or moves an IME composition is the input method's: Enter commits the
+    // composed text into the box and picks nothing, and Tab leaves the list open.
+    if (event.nativeEvent.isComposing) return;
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       const next = stepTo(event.key, rows, activeRow);
       if (next !== undefined) {
@@ -390,9 +440,13 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   };
 
   const rowClassName = (active: boolean) =>
-    `flex min-h-11 w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder} ${
-      active ? `${selectedCardBg} ${selectedCardBorder}` : ""
-    }`;
+    tooltips
+      ? `flex min-h-11 w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder} ${
+          active ? `${selectedCardBg} ${selectedCardBorder}` : ""
+        }`
+      : `flex min-h-11 w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 ${pageLineBorder} ${pageInkText} ${pageRowHoverBg} ${
+          active ? pageMarkBg : ""
+        }`;
   // The picked value's row text, which a single pick's trigger shows unless its host passes
   // words of its own.
   const pickedLabel = single && selected[0] !== undefined ? labelOf(selected[0]) : undefined;
@@ -428,7 +482,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
         aria-haspopup="listbox"
         aria-label={single ? undefined : triggerAriaLabel}
         aria-labelledby={namedBy}
-        className={triggerClassName}
+        className={trigger}
         data-control={control}
         {...marks?.trigger}
         disabled={disabled}
@@ -448,14 +502,21 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
           // takes the room the chevron leaves and ends in an ellipsis where that is too little
           // (a single pick's whole value is its `title`, unless its host passes its own), and the
           // chevron stays whole at the trigger's end, at the right edge of a trigger as wide as
-          // its box.
+          // its box. Inside `NoTooltips` (the new issue page) no `title` can give back what an
+          // ellipsis cut, so the text wraps there instead and is read whole.
           <span className="flex min-w-0 grow items-center gap-1" id={single ? shownId : undefined}>
-            <TruncatedText
-              className={`min-w-0 grow ${triggerTextClassName}`}
-              title={triggerTitle ?? pickedLabel}
-            >
-              {triggerText}
-            </TruncatedText>
+            {tooltips ? (
+              <TruncatedText
+                className={`min-w-0 grow ${triggerTextClassName}`}
+                title={triggerTitle ?? pickedLabel}
+              >
+                {triggerText}
+              </TruncatedText>
+            ) : (
+              <span className={`min-w-0 grow [overflow-wrap:anywhere] ${triggerTextClassName}`}>
+                {triggerText}
+              </span>
+            )}
             <ChevronIcon expanded={open} />
           </span>
         ) : single ? (
@@ -467,12 +528,12 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
       {open ? (
         <AnchoredPanel
           anchorRef={triggerRef}
-          className={`max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${card} ${borderDefault}`}
+          className={`max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${tooltips ? `${card} ${borderDefault}` : ON_PAGE.panel}`}
           focusOnOpen={focusOnOpen}
           id={panelId}
           onDismiss={(how) => onOpenChange(false, how)}
         >
-          <div className={`sticky top-0 border-b p-2 ${card}`}>
+          <div className={`sticky top-0 border-b p-2 ${tooltips ? card : ON_PAGE.panel}`}>
             <input
               aria-activedescendant={activeRow === undefined ? undefined : optionId(activeRow)}
               aria-autocomplete="list"
@@ -480,7 +541,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
               aria-expanded="true"
               aria-label={searchLabel}
               {...marks?.search}
-              className={`block min-h-11 w-full rounded-lg px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
+              className={`block min-h-11 w-full rounded-lg px-3 py-2 text-sm outline-none ${tooltips ? inputClasses(true) : ON_PAGE.search}`}
               disabled={disabled}
               onChange={(event) => {
                 setQuery(event.target.value);
@@ -523,16 +584,24 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
                     className={
                       single
                         ? "w-4 shrink-0 text-center"
-                        : `grid size-4 shrink-0 place-items-center rounded border text-xs leading-none ${borderStrong}`
+                        : `grid size-4 shrink-0 place-items-center rounded border text-xs leading-none ${tooltips ? borderStrong : ON_PAGE.checkbox}`
                     }
                   >
                     {isSelected ? "✓" : ""}
                   </span>
-                  <TruncatedText className="min-w-0 flex-1" title={label}>
-                    {label}
-                  </TruncatedText>
+                  {tooltips ? (
+                    <TruncatedText className="min-w-0 flex-1" title={label}>
+                      {label}
+                    </TruncatedText>
+                  ) : (
+                    // Inside `NoTooltips` (the new issue page) no `title` can give back what an
+                    // ellipsis cut, so the label wraps instead and is read whole.
+                    <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{label}</span>
+                  )}
                   {detail === undefined ? null : (
-                    <span className={`shrink-0 text-xs tabular-nums ${textMutedOnSurface}`}>
+                    <span
+                      className={`shrink-0 text-xs tabular-nums ${tooltips ? textMutedOnSurface : ON_PAGE.detail}`}
+                    >
                       {detail}
                     </span>
                   )}
@@ -540,7 +609,9 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
               );
             })}
             {showsEmpty ? (
-              <p className={`px-3 py-2 text-sm ${textMutedOnSurface}`}>{emptyMessage}</p>
+              <p className={`px-3 py-2 text-sm ${tooltips ? textMutedOnSurface : ON_PAGE.empty}`}>
+                {emptyMessage}
+              </p>
             ) : null}
             {createValue === undefined ? null : (
               <button
@@ -561,12 +632,16 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
             )}
           </div>
           {error === null ? null : (
-            <p className={`border-t px-3 py-2 text-sm ${borderDefault} ${dangerText}`}>{error}</p>
+            <p
+              className={`border-t px-3 py-2 text-sm ${tooltips ? `${borderDefault} ${dangerText}` : ON_PAGE.failure}`}
+            >
+              {error}
+            </p>
           )}
           {props.mode === "single" || selected.length === 0 ? null : (
-            <div className={`sticky bottom-0 border-t p-2 ${card}`}>
+            <div className={`sticky bottom-0 border-t p-2 ${tooltips ? card : ON_PAGE.panel}`}>
               <button
-                className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${surfaceMutedBg} ${textSecondaryOnSurface}`}
+                className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}
                 disabled={disabled}
                 onClick={() => props.onChange([])}
                 onMouseDown={(event) => event.preventDefault()}

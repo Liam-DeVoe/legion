@@ -211,8 +211,11 @@ function AgentExchangeReply({
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${label} again, as ${MODE_LABELS[delivery]}`,
+    // Pending through the read that draws the new attempt: Retry and the mode changes stay
+    // disabled until that read takes them away, so the press is still the cause of their going
+    // (`causedByReader`). The read settles either way, and a failed one lets them go.
     onSuccess: () =>
-      void queryClient.invalidateQueries({
+      queryClient.invalidateQueries({
         queryKey: agentMessagesQuery(agent.session_id).queryKey,
       }),
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
@@ -288,8 +291,9 @@ function AgentTargetedMessage({
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${label} again, as ${MODE_LABELS[delivery]}`,
+    // Pending through the read that draws the new attempt, as a reply's retry is.
     onSuccess: () =>
-      void queryClient.invalidateQueries({
+      queryClient.invalidateQueries({
         queryKey: agentMessagesQuery(agent.session_id).queryKey,
       }),
     write: (delivery, bounds) => api.createMessageDelivery(read.message.id, delivery, bounds),

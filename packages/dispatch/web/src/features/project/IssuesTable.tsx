@@ -13,6 +13,7 @@ import { useFocusPlace } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import type { PagerOptions } from "../../components/Pager";
+import { TABLE_FRAME_MARK } from "../../components/table-keys";
 import { useTableLayout } from "../../components/table-layout";
 import {
   addressPath,
@@ -421,8 +422,16 @@ export function IssuesTable({
   // filters back to the open issues, which a List opened on the closed ones has never read -
   // puts the skeleton in place of the table alone, and the control pressed, with the keyboard
   // focus on it, stays where it was. Everything else here needs the listing and waits for it.
+  // The section is the table's frame: its toolbar, box and pager, which another table's
+  // page-wide keys leave to it (`TABLE_FRAME_ATTRIBUTE`).
   return (
-    <section aria-label={name} className="space-y-3 sm:pb-24" onFocus={noteFocus} ref={sectionRef}>
+    <section
+      aria-label={name}
+      className="space-y-3 sm:pb-24"
+      {...TABLE_FRAME_MARK}
+      onFocus={noteFocus}
+      ref={sectionRef}
+    >
       <div className="space-y-3" ref={attachAbove}>
         {loaded ? (
           <>
@@ -564,6 +573,7 @@ export function IssuesTable({
             pager={ISSUE_TABLE_PAGER}
             renderGroup={({ entry, index, measure }) => (
               <GroupRow
+                busy={busy}
                 columns={visibleColumns}
                 viewportWidth={boxWidth}
                 continued={entry.continued}

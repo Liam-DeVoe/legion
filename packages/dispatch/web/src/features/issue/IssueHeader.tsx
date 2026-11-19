@@ -474,16 +474,15 @@ export function IssueHeader({
                 value={drafts.title}
               />
             ) : (
+              // The heading opens its editor when the reader activates it - a click, Enter or
+              // Space - and never as it takes the focus: an editor that opens on focus changes
+              // the page on focus (WCAG 2.2, 3.2.1 On Focus), and the heading can take the focus
+              // with no act of the reader's, from the page's focus rescue.
               <h1
                 className={`min-w-0 flex-1 break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface} ${
                   isClosed ? "" : `cursor-text ${borderStrongHover}`
                 }`}
                 onClick={() => {
-                  if (!isClosed) {
-                    setEditingTitle(true);
-                  }
-                }}
-                onFocus={() => {
                   if (!isClosed) {
                     setEditingTitle(true);
                   }

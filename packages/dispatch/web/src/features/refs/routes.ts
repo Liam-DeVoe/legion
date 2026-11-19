@@ -12,6 +12,7 @@ import { matchPath } from "react-router-dom";
 import type { ArtifactOwner } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
+import { addressPath } from "../../lib/page-address";
 import { INBOX_ROW_TYPES } from "../inbox/list-row";
 import {
   type BlockTarget,
@@ -967,8 +968,7 @@ export function buildProjectPath(route: ProjectRoute): string {
   if (route.item !== undefined) {
     query.set(route.item.kind, route.item.id);
   }
-  const search = query.toString();
-  return search === "" ? document : `${document}?${search}`;
+  return addressPath(document, query);
 }
 
 /**

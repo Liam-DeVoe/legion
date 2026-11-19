@@ -402,7 +402,9 @@ test("the bar emptied by the reader's Clear selection hands the focus to what re
 
 // INFRA-2160: the bar's Snooze is a menu, portalled out of the bar, and a pick in it hands the focus
 // back to the bar's trigger before its write takes the bar away. The pick is the reader's press in
-// the bar, though it landed in the menu, so the bar hands the focus on to what the page names.
+// the bar, though it landed in the menu, so the bar hands the focus on to what the page names. The
+// trigger is held while the write is out, as the Inbox holds it, which keeps the press the cause
+// until the write lands (`answerPress`).
 test("the bar emptied by a pick in a menu its own trigger opened hands the focus to what returnFocus names", async () => {
   const rescue = renderHook(() => useFocusRescue({ current: null }));
   const user = userEvent.setup();
@@ -412,28 +414,35 @@ test("the bar emptied by a pick in a menu its own trigger opened hands the focus
     return rowBox("CORE-2");
   };
   const picked: string[] = [];
-  const bar = (count: number) => (
-    <>
-      {["CORE-1", "CORE-2"].map((key) => (
-        <div data-inbox-row={key} key={key}>
-          <input aria-label={`Select ${key}`} type="checkbox" />
-        </div>
-      ))}
-      <SelectionBar count={count} label="Selected rows" returnFocus={returnFocus}>
-        <ChoiceMenu
-          choices={[{ digit: "1", label: "Later today", value: "later" }]}
-          face="Snooze"
-          label="Snooze selected asks"
-          marks={{}}
-          onChoose={(value) => picked.push(value)}
-          triggerClassName=""
-        >
-          Snooze
-        </ChoiceMenu>
-      </SelectionBar>
-    </>
-  );
-  const view = render(bar(2));
+  function Bar({ count }: { count: number }): ReactNode {
+    const [held, setHeld] = useState(false);
+    return (
+      <>
+        {["CORE-1", "CORE-2"].map((key) => (
+          <div data-inbox-row={key} key={key}>
+            <input aria-label={`Select ${key}`} type="checkbox" />
+          </div>
+        ))}
+        <SelectionBar count={count} label="Selected rows" returnFocus={returnFocus}>
+          <ChoiceMenu
+            choices={[{ digit: "1", label: "Later today", value: "later" }]}
+            face="Snooze"
+            held={held}
+            label="Snooze selected asks"
+            marks={{}}
+            onChoose={(value) => {
+              picked.push(value);
+              setHeld(true);
+            }}
+            triggerClassName=""
+          >
+            Snooze
+          </ChoiceMenu>
+        </SelectionBar>
+      </>
+    );
+  }
+  const view = render(<Bar count={2} />);
   try {
     const trigger = screen.getByRole("button", { name: "Snooze selected asks" });
     act(() => trigger.focus());
@@ -443,7 +452,7 @@ test("the bar emptied by a pick in a menu its own trigger opened hands the focus
     expect(picked).toEqual(["later"]);
     expect(trigger).toHaveFocus();
     // The write lands and the marked rows leave: the bar goes with its trigger.
-    view.rerender(bar(0));
+    view.rerender(<Bar count={0} />);
     expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
     expect(rowBox("CORE-2")).toHaveFocus();
     expect(asked).toBe(1);

@@ -352,9 +352,12 @@ test("a press on the trigger or in its menu stays out of a draggable parent", as
 });
 
 /** Two keyed rows of one list, the first with a menu whose pick moves its row below the other,
- *  as a snooze moves its row down into Later: React takes the row's node out and puts it back. */
-function MovingRows() {
+ *  as a snooze moves its row down into Later: React takes the row's node out and puts it back.
+ *  With `holds`, the pick's write is out from then on, and the menu's trigger is held, as the
+ *  Inbox holds a snooze's while its write is out. */
+function MovingRows({ holds = false }: { holds?: boolean }) {
   const [order, setOrder] = useState(["ask-a", "ask-b"]);
+  const [held, setHeld] = useState(false);
   return (
     <ul>
       {order.map((id) => (
@@ -363,9 +366,13 @@ function MovingRows() {
             <ChoiceMenu
               choices={CHOICES}
               face="Snooze"
+              held={held}
               label="Snooze CORE-1"
               marks={{}}
-              onChoose={() => setOrder(["ask-b", "ask-a"])}
+              onChoose={() => {
+                setOrder(["ask-b", "ask-a"]);
+                if (holds) setHeld(true);
+              }}
               triggerClassName=""
             >
               Snooze
@@ -383,11 +390,12 @@ function MovingRows() {
 // menu is portalled out of that control's row. So the focus the pick's write takes away with the
 // row - a snooze that folds the card, a priority that moves the card into another lane, a bulk
 // snooze that takes the selection bar away - is a loss the reader caused, which the page hands on
-// to the control now at its place and scrolls into view, rather than leaving it on the body.
+// to the control now at its place and scrolls into view, rather than leaving it on the body. The
+// press is that cause while the write it made is out, its trigger held (`answerPress`).
 test("a pick in the menu is the reader's own press on its trigger and the row it sits in", async () => {
   const rescue = renderHook(() => useFocusRescue({ current: null }));
   const user = userEvent.setup();
-  const view = render(<MovingRows />);
+  const view = render(<MovingRows holds />);
   try {
     const trigger = screen.getByRole("button", { name: "Snooze CORE-1" });
     const other = screen.getByRole("button", { name: "Other row" });

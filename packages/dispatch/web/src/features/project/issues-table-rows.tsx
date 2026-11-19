@@ -78,8 +78,9 @@ export function IssueRow({
 }
 
 /** A group's header row: its value, how many issues, its issues by status, and for an epic its
- *  actions. */
+ *  actions, whose trigger is held while a table action is out (`busy`). */
 export function GroupRow({
+  busy,
   row,
   grouping,
   columns,
@@ -93,6 +94,7 @@ export function GroupRow({
   shown,
   viewportWidth,
 }: {
+  busy: boolean;
   /** A repeat of the header of a group the page opens in the middle of. */
   continued?: boolean;
   /** How many of the group's rows this page holds, when that is fewer than the group has. */
@@ -180,6 +182,7 @@ export function GroupRow({
           </span>
           {epicKey === undefined ? null : (
             <EpicActions
+              busy={busy}
               epicKey={epicKey}
               epics={epics}
               onMerge={onMerge === undefined ? undefined : (into) => onMerge(epicKey, into)}
@@ -194,13 +197,20 @@ export function GroupRow({
   );
 }
 
+/** An epic's actions, behind one trigger. While a table action is out (`busy`) the trigger is
+ *  held (`PanelTrigger`'s `ariaDisabled`): it keeps the focus the closed panel or the merge's
+ *  confirmation handed back to it, and the page's rescue reads the group row's going - the merge
+ *  moving the epic's last issue out - as the reader's own (`causedByReader`), so the focus goes to
+ *  the control now at the row's place. */
 function EpicActions({
+  busy,
   epicKey,
   epics,
   onRename,
   onMerge,
   onStartAll,
 }: {
+  busy: boolean;
   epicKey: string;
   epics: readonly IssueSummary[];
   onRename: () => void;
@@ -215,6 +225,7 @@ function EpicActions({
     <span className="ml-auto">
       <PanelTrigger
         align="right"
+        ariaDisabled={busy}
         label="Epic actions ▾"
         onOpenChange={setOpen}
         open={open}

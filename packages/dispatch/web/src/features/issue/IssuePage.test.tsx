@@ -791,6 +791,46 @@ test("IssuePage returns focus to the label trigger when Escape closes an unchang
   }
 });
 
+// The issue header's Assignee was a `<select>`, which takes a page's single keys as its own; its
+// list's trigger is a button, and the keymap reads it as the select it replaced, so a digit
+// pressed on it writes no priority. The same keys pressed on the page write it, which shows the
+// binding was there to fire.
+test("IssuePage writes no priority from a digit pressed on the Assignee trigger, and writes it from the page", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, priority: 3 });
+  // Reaching for the trigger reads the people it lists.
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([]);
+  const view = renderIssuePage();
+
+  try {
+    const assignee = await screen.findByRole("button", { name: /^Assignee of CORE-1\b/ });
+    // Focused with no press, so the trigger's list stays shut: a closed trigger is the case.
+    await act(async () => assignee.focus());
+    expect(document.activeElement === assignee).toBe(true);
+    await user.keyboard("2");
+    // This tree's closed trigger takes the list's keys (`keysOnTrigger`, INFRA-2160's R6): the
+    // digit opened the list with "2" in its text box, which writes nothing, as a select's
+    // type-ahead does. Escape closes it, back onto the trigger.
+    const box = await screen.findByRole("combobox", { name: "Search people" });
+    expect((box as HTMLInputElement).value).toBe("2");
+    await user.keyboard("{Escape}");
+    expect(document.activeElement === assignee).toBe(true);
+    await act(async () => assignee.blur());
+    await user.keyboard("3");
+
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 3 }, keyedAttempt)
+    );
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    listUsers.mockRestore();
+    restore();
+  }
+});
+
 test("IssuePage shows a retryable error and hides the section when the subscribers lookup fails", async () => {
   const restore = stubIssuePage(issue);
   api.getIssueSubscribers = async () => {

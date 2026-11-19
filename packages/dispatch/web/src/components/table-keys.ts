@@ -6,6 +6,15 @@ import { linkHref, openLinkInNewTab } from "../features/shell/new-tab";
 import { closestMatching } from "../features/shell/roving";
 import { CONTROL } from "./control-names";
 
+/** The attribute a page puts on the element that holds one table's control row, its box and its
+ *  pager (the issue table's section), so another table's page-wide keys read a focus anywhere in
+ *  it as in that table, not only in its box (`useRowKeymap`'s `moveFrom`). */
+export const TABLE_FRAME_ATTRIBUTE = "data-table-frame";
+
+/** The frame's mark, spread on the element that holds the table's control row, box and pager
+ *  (`TABLE_FRAME_ATTRIBUTE`). */
+export const TABLE_FRAME_MARK = { [TABLE_FRAME_ATTRIBUTE]: "" };
+
 /** What the table's keys are and where they apply. Each key is an action of the keymap's
  *  catalogue, which gives its label and its keys: the palette and the shortcut help read the
  *  catalogue's words, so they are the page's and not the table's. The lists of one scope share
@@ -125,17 +134,21 @@ export function useRowKeymap<TData>({
   const openFocusedRow = () => focusedLink()?.click();
   // Where the moving keys apply (`RowKeymap.moveFrom`): one of this table's rows must hold the
   // focus for keys the page answers itself everywhere else; for the others the table need only
-  // hold a row, and the focus be in no other table, whose own keys are its to answer.
+  // hold a row, and the focus be in no other table, whose own keys are its to answer. Another
+  // table is its box, or the frame its page draws around its control row, box and pager
+  // (`TABLE_FRAME_ATTRIBUTE`), so a key pressed on an issue table's Columns menu or its Next ›
+  // on the Priorities page walks no priority. This table's own frame holds its box.
   const canMove =
     keymap.moveFrom === "row"
       ? () => focusedRow() !== null
       : () => {
-          const table = closestMatching(
+          const around = closestMatching(
             document.activeElement,
-            `[data-control="${CONTROL.dataTable}"]`
+            `[${TABLE_FRAME_ATTRIBUTE}], [data-control="${CONTROL.dataTable}"]`
           );
           return (
-            (table === null || table === scrollRef.current) &&
+            (around === null ||
+              (scrollRef.current !== null && around.contains(scrollRef.current))) &&
             displayRows.some(({ row }) => !row.getIsGrouped())
           );
         };

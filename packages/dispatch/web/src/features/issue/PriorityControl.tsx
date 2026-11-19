@@ -3,8 +3,22 @@ import type { ReactNode } from "react";
 import type { IssuePriority } from "../../api/types";
 import { ChoiceMenu, type MenuChoice } from "../../components/ChoiceMenu";
 import { QueryError } from "../../components/QueryError";
-import { badgeLow, priorityBadge } from "../../theme/classes";
-import { badgeMenuTrigger, badgeSelectBadge } from "./badge-select";
+import { usePageWords } from "../../components/tooltips";
+import {
+  badgeLow,
+  pageInkText,
+  pageLabelChip,
+  pagePaneBg,
+  pageQuietText,
+  priorityBadge,
+} from "../../theme/classes";
+import {
+  badgeMenuHeaderTrigger,
+  badgeMenuPageTrigger,
+  badgeMenuTrigger,
+  badgeSelectBadge,
+  badgeSelectPageBadge,
+} from "./badge-select";
 import { type IssuePriorityWrite, useIssuePriority } from "./useIssuePriority";
 
 /** The priority menu: Unset, then P0 to P3 on their own digits. A choice's value is the priority
@@ -65,6 +79,11 @@ export function PriorityControl({
  * priority rows, so one refusal is reported once, here, by the control the reader is looking at.
  * `held` is the host's own write out (the issue page's other field writes): the trigger keeps the
  * focus and its Tab stop and opens nothing (`ChoiceMenu`'s `held`).
+ *
+ * `variant="header"` draws the new issue page header's shape (the prototype's `.prio`): three
+ * bars filled by how urgent the priority is, beside `P1` in the ink, or the word Priority in the
+ * quiet grey while it has none, on a trigger of the header line's 24 px
+ * (`badgeMenuHeaderTrigger`). The menu it opens, and the trigger's name, are the same either way.
  */
 export function PriorityEditor({
   disabled = false,
@@ -72,6 +91,7 @@ export function PriorityEditor({
   issueKey,
   priority,
   shortcutKeys,
+  variant = "badge",
   write,
 }: {
   disabled?: boolean;
@@ -80,25 +100,64 @@ export function PriorityEditor({
   priority: IssuePriority | null;
   /** The keys that open the menu, named on its trigger and the first drawn inside it. */
   shortcutKeys?: readonly string[];
+  variant?: "badge" | "header";
   write: IssuePriorityWrite;
 }): ReactNode {
+  const page = usePageWords();
   const tone = priority === null ? badgeLow : priorityBadge[priority];
-  const face = priority === null ? "Priority" : `P${priority}`;
+  // Inside `NoTooltips` the badge is the new issue page's label chip, and the word Priority its
+  // quiet words on the same ground, as the header variant says it in the quiet grey: each colour
+  // there is one of that page's. The prototype's `.prio` draws how urgent a priority is by its
+  // bars and its word, never by a colour, so P0 and P3 wear the same chip.
+  const badgeTone =
+    page === null
+      ? `${tone.bg} ${tone.text}`
+      : priority === null
+        ? `${pagePaneBg} ${pageQuietText}`
+        : pageLabelChip;
+  const shown = priority === null ? (page?.PROPERTY_LABELS.priority ?? "Priority") : `P${priority}`;
+  const mark = priority === null ? page?.pageChrome : page?.authorText;
+  // Inside `NoTooltips` the priority is a value, so it keeps `max-w-full` and breaks anywhere,
+  // and its trigger narrows to the line rather than keep its width. The header variant is the
+  // new page's shape alone, so it wraps on every surface.
+  const trigger =
+    variant === "header"
+      ? badgeMenuHeaderTrigger
+      : page === null
+        ? badgeMenuTrigger
+        : badgeMenuPageTrigger;
   return (
     <>
       <ChoiceMenu
         checked={priority === null ? "" : `${priority}`}
         choices={priorityChoices}
         disabled={disabled}
-        face={face}
+        face={shown}
         held={held}
         label={`Priority of ${issueKey}`}
         marks={{ "data-priority-menu": "" }}
         onChoose={(value) => write.submit(value === "" ? null : (Number(value) as IssuePriority))}
         shortcutKeys={shortcutKeys}
-        triggerClassName={badgeMenuTrigger}
+        triggerClassName={trigger}
       >
-        <span className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>{face}</span>
+        {variant === "header" ? (
+          <span
+            className={`inline-flex min-w-0 max-w-full items-center gap-[5px] text-sm leading-5 font-semibold [overflow-wrap:anywhere] ${
+              priority === null ? pageQuietText : pageInkText
+            }`}
+            {...mark}
+          >
+            <PriorityBars priority={priority} />
+            {shown}
+          </span>
+        ) : (
+          <span
+            className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} ${badgeTone}`}
+            {...mark}
+          >
+            {shown}
+          </span>
+        )}
       </ChoiceMenu>
       {write.failed ? (
         <QueryError
@@ -108,5 +167,30 @@ export function PriorityEditor({
         />
       ) : null}
     </>
+  );
+}
+
+/** The prototype's priority shape: three rising bars, as many filled as the priority is urgent
+ *  - three for P0, none for P3 or none set. `P1` beside it says the same in words. */
+function PriorityBars({ priority }: { priority: IssuePriority | null }): ReactNode {
+  const filled = priority === null ? 0 : 3 - priority;
+  return (
+    <svg aria-hidden="true" className="size-3.5 shrink-0" viewBox="0 0 14 14">
+      {[
+        { height: 5, x: 1, y: 8 },
+        { height: 8, x: 5.5, y: 5 },
+        { height: 11, x: 10, y: 2 },
+      ].map((bar, index) => (
+        <rect
+          className={index < filled ? "fill-page-ink" : "fill-page-hair"}
+          height={bar.height}
+          key={bar.x}
+          rx="1"
+          width="3"
+          x={bar.x}
+          y={bar.y}
+        />
+      ))}
+    </svg>
   );
 }

@@ -388,6 +388,41 @@ test("only a key pressed inside a panel is masked: a panel standing open with th
   }
 });
 
+// INFRA-3135's review round 2: an option list's trigger replaced a `<select>` or a text box,
+// where a page's single keys did nothing; a plain button, it let them through, so a digit on the
+// issue header's Assignee wrote the priority. Closed or open, the trigger takes a select's keys.
+test("a key pressed on an option list's trigger fires only inEditable bindings, open or closed", () => {
+  const { keymap, press } = harness();
+  const next = binding("next", "j");
+  const digit = binding("digit", "2");
+  const search = binding("search", "$mod+k", { inEditable: true });
+  keymap.register("global", [next.definition, digit.definition, search.definition]);
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.setAttribute("aria-haspopup", "listbox");
+  const panelTrigger = document.createElement("button");
+  panelTrigger.type = "button";
+  panelTrigger.setAttribute("aria-haspopup", "dialog");
+  document.body.append(trigger, panelTrigger);
+  try {
+    for (const expanded of ["false", "true"]) {
+      trigger.setAttribute("aria-expanded", expanded);
+      expect(press("j", { target: trigger }), `j, expanded ${expanded}`).toBe(false);
+      expect(press("2", { target: trigger }), `2, expanded ${expanded}`).toBe(false);
+      expect(press("k", { ctrlKey: true, target: trigger }), "$mod+k").toBe(true);
+    }
+    expect(next.fired()).toBe(0);
+    expect(digit.fired()).toBe(0);
+    expect(search.fired()).toBe(2);
+    // A trigger that opens a dialog - a filter panel's, the display menu's - is a plain button.
+    expect(press("j", { target: panelTrigger }), "j on a panel's trigger").toBe(true);
+    expect(next.fired()).toBe(1);
+  } finally {
+    trigger.remove();
+    panelTrigger.remove();
+  }
+});
+
 test("an already-handled key (defaultPrevented) or one mid-IME-composition is left alone", () => {
   const { keymap, press } = harness();
   const next = binding("next", "j");
