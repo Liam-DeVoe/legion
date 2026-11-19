@@ -384,12 +384,19 @@ test("a thread agents wrote among themselves is one entry with its replies, unti
   ]);
 });
 
+/** `hour`:`minute` of the reader's own `day` of November 2026, as the log writes a moment. The
+ *  history heads the reader's local days, so a case that names the day an event falls on builds
+ *  the event here: a UTC instant falls on another local day in a zone far from UTC. */
+function november(day: number, hour: number, minute = 0): string {
+  return new Date(2026, 10, day, hour, minute).toISOString();
+}
+
 test("each day is headed, newest first, and the read mark falls between read and unread", () => {
   seq = 0;
   const events = [
-    event("handoff.recorded", "2026-11-13T09:00:00Z", {}),
-    event("handoff.recorded", "2026-11-14T09:00:00Z", {}),
-    event("handoff.recorded", "2026-11-15T09:00:00Z", {}),
+    event("handoff.recorded", november(13, 9), {}),
+    event("handoff.recorded", november(14, 9), {}),
+    event("handoff.recorded", november(15, 9), {}),
   ];
   const days = buildHistory({
     artifacts: [],
@@ -473,13 +480,11 @@ test("a thread that began before the oldest event read so far waits for its page
 // pages remain, and a day after it is whole.
 test("the day the pages of the log read so far end in is partial until the log is in", () => {
   seq = 0;
-  const older = ["12:01", "12:02", "12:03"].map((time) =>
-    event("issue.claimed", `2026-11-13T${time}:00Z`, {})
-  );
+  const older = [1, 2, 3].map((minute) => event("issue.claimed", november(13, 12, minute), {}));
   const read = [
-    event("issue.claimed", "2026-11-13T12:04:00Z", {}),
-    event("issue.claimed", "2026-11-13T12:05:00Z", {}),
-    event("issue.claimed", "2026-11-14T12:00:00Z", {}),
+    event("issue.claimed", november(13, 12, 4), {}),
+    event("issue.claimed", november(13, 12, 5), {}),
+    event("issue.claimed", november(14, 12), {}),
   ];
   const days = (events: readonly DispatchEvent[], loadedFrom: string | undefined) =>
     buildHistory({
@@ -494,7 +499,7 @@ test("the day the pages of the log read so far end in is partial until the log i
     }).map((day) => [day.date, day.partial, day.entries.length]);
 
   expect(
-    days(read, "2026-11-13T12:04:00Z"),
+    days(read, november(13, 12, 4)),
     "the day the first page ends in is drawn as whole"
   ).toEqual([
     ["2026-11-14", false, 1],

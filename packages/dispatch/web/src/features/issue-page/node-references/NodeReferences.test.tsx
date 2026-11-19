@@ -109,6 +109,13 @@ const NOON = new Date(2026, 10, 19, 12, 0, 0, 0);
 beforeEach(() => setSystemTime(NOON));
 afterEach(() => setSystemTime());
 
+/** `hour` o'clock of the reader's own `day` of November 2026, as the read writes a moment. A
+ *  reference's day is the reader's local day, so a case that names it builds the moment here: a
+ *  UTC instant falls on another local day in a zone far from UTC. */
+function november(day: number, hour: number): string {
+  return new Date(2026, 10, day, hour).toISOString();
+}
+
 let restore: (() => void) | undefined;
 afterEach(() => {
   restore?.();
@@ -438,7 +445,7 @@ test("an edge of a kind or to a node this page does not know is left out", async
 // the reference was made.
 test("a comment's block that mentions the row reads as that comment, with where it is from and when", async () => {
   const block = (id: string, text: string): GraphEdge => ({
-    created_at: "2026-11-14T10:00:00Z",
+    created_at: november(14, 10),
     direction: "in",
     excerpt: { text },
     kind: "mentions",
@@ -462,7 +469,7 @@ test("a comment's block that mentions the row reads as that comment, with where 
     edges: [
       block("b1", "It cites the statement from another issue."),
       block("b2", "Twice."),
-      mention,
+      { ...mention, created_at: november(15, 10) },
     ],
   });
   await userEvent.click(
@@ -490,7 +497,7 @@ test("a comment's block that mentions the row reads as that comment, with where 
 test("a citing node of another issue is drawn by its kind's word with its issue and its time, never its excerpt", async () => {
   const stored = "The **rail** follows [the statement](dispatch://LAY-2/spec#b-r1) closely.";
   const elsewhere: GraphEdge = {
-    created_at: "2026-11-13T10:00:00Z",
+    created_at: november(13, 10),
     direction: "in",
     excerpt: { block_id: "r4", text: stored },
     kind: "mentions",
