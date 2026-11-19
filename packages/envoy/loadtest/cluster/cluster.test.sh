@@ -161,10 +161,11 @@
 # giving no exit status, so a whole step command whose runner pod stops answering exec ends
 # non-zero within that bound and its heartbeat renews the lock no more, while a TERM that lands
 # between the disk watcher's failed act and its next nap leaves it without a second act, and one
-# that lands inside the watcher's read of the volume leaves it without acting at all; and (ff) a
+# that lands inside the watcher's read of the volume leaves it without acting at all; (ff) a
 # daemon that outlives its SIGTERM makes stop_daemon fail, naming it and keeping its pidfile, and
 # down go on with its delete and then fail, naming it, while a daemon that ends on its SIGTERM is
-# stopped and its pidfile removed.
+# stopped and its pidfile removed; and (gg) a step shell that a signal ends inside its stop of the
+# disk watcher names that watcher, in its EXIT trap, as not shown gone.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -3814,12 +3815,16 @@ stuck_out=$fake/stuck.out
     stand_in_fail "stop_daemon did not name the heartbeat daemon (pid $STAND_IN) it could not stop: $(cat "$stuck_out")"
   [ "$(cat "$RUN_DIR/heartbeat.pid" 2>/dev/null)" = "$STAND_IN" ] ||
     stand_in_fail "stop_daemon removed the pidfile of the heartbeat daemon (pid $STAND_IN) it did not stop"
+  # The delete is read from the fake kubectl's own log of its calls, emptied here, so only a
+  # delete this down sent passes; down's printed listing comes after the delete whether or not
+  # one was sent.
+  : >"$fake/kubectl.log"
   down_rc=0
   (down_run) >"$stuck_out" 2>&1 || down_rc=$?
   ((down_rc != 0)) ||
     stand_in_fail "down exited 0 although the heartbeat daemon (pid $STAND_IN) of its run did not stop: $(cat "$stuck_out")"
-  grep -qF "\$ kubectl -n $ns get" "$stuck_out" ||
-    stand_in_fail "down did not go on with its delete after the heartbeat daemon that did not stop: $(cat "$stuck_out")"
+  grep -qxF -- "-n $ns delete $DELETE_KINDS -l $RUN_LABEL=$RUN --ignore-not-found --wait=false" "$fake/kubectl.log" ||
+    stand_in_fail "down did not go on with its delete of run $RUN's objects after the heartbeat daemon that did not stop: $(cat "$fake/kubectl.log")"
   grep -qF "down: the heartbeat daemon of run $RUN did not stop (named above)" "$stuck_out" ||
     stand_in_fail "down did not say which daemon of run $RUN did not stop: $(cat "$stuck_out")"
   kill -KILL -- "-$STAND_IN" 2>/dev/null || true
@@ -3835,3 +3840,52 @@ stuck_out=$fake/stuck.out
   [ ! -e "$RUN_DIR/heartbeat.pid" ] || fail "stop_daemon left the pidfile of the heartbeat daemon it stopped"
 )
 pass "a daemon that outlives its SIGTERM makes stop_daemon fail, naming it and keeping its pidfile, and down go on with its delete and then fail, naming it; a daemon that ends on its SIGTERM is stopped and its pidfile removed"
+
+# (gg) A stop of the disk watcher that a signal cuts short. pg_disk_watch_stop clears the watcher's
+# pid before it sends its TERM, so a step shell that a signal ends inside that stop runs its EXIT
+# trap's stop of the watcher, which found no watcher and returned as though it had ended one. Now
+# the stop names the watcher it is ending until it has ended it, and the EXIT trap's stop names
+# that watcher as not shown gone. The watcher is a stand-in of the step shell's own that writes
+# down each TERM and runs on, and the step shell is sent its TERM once the stand-in has taken the
+# stop's.
+reset_fake
+cutw_dir=$fake/cut-watcher
+mkdir -p "$cutw_dir"
+cutw_rc=0
+(
+  # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
+  source "$cluster"
+  trap step_at_exit EXIT
+  step_shell=$BASHPID
+  (
+    trap 'echo TERM >>"$cutw_dir/term"' TERM
+    echo "$BASHPID" >"$cutw_dir/pid"
+    while :; do "$real_sleep" 0.1; done
+  ) &
+  PG_DISK_WATCHER=$! PG_DISK_WATCH_STEP=cutwatch
+  until [ -s "$cutw_dir/pid" ]; do "$real_sleep" 0.05; done
+  (
+    until [ -s "$cutw_dir/term" ]; do "$real_sleep" 0.05; done
+    # no-wait: the TERM ends the step shell, whose exit the case reads below.
+    kill -TERM "$step_shell"
+  ) &
+  PG_DISK_STOP_SECONDS=300
+  pg_disk_watch_stop
+  echo "the stop returned"
+) >"$cutw_dir/out" 2>&1 || cutw_rc=$?
+cutw_pid=$(cat "$cutw_dir/pid" 2>/dev/null || echo none)
+# The stand-in outlives the step shell, its parent, so no wait here reaps it: it is waited until it
+# has left the table or is a zombie, which has ended.
+[ "$cutw_pid" = none ] || kill -KILL "$cutw_pid" 2>/dev/null || true
+cutw_at=$SECONDS
+while [ -e "/proc/$cutw_pid" ] && [ "$(awk '{print $3}' "/proc/$cutw_pid/stat" 2>/dev/null)" != Z ]; do
+  ((SECONDS - cutw_at <= 10)) || fail "the stand-in disk watcher (pid $cutw_pid) still runs 10 s after its SIGKILL"
+  "$real_sleep" 0.1
+done
+((cutw_rc == 143)) ||
+  fail "the step shell that a TERM ended inside its stop of the disk watcher ended with $cutw_rc, not 143: $(cat "$cutw_dir/out")"
+grep -qF "the stop of step cutwatch's disk watcher (pid $cutw_pid) was cut short, so nothing shows it gone" "$cutw_dir/out" ||
+  fail "the step shell that a TERM ended inside its stop of the disk watcher does not name that watcher as not shown gone: $(cat "$cutw_dir/out")"
+! grep -qF "the stop returned" "$cutw_dir/out" ||
+  fail "the stop of the disk watcher returned, so the TERM did not land inside it: $(cat "$cutw_dir/out")"
+pass "a step shell that a signal ends inside its stop of the disk watcher names that watcher, in its EXIT trap, as not shown gone"
