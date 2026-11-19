@@ -32,9 +32,12 @@ export type TemporaryDirectoryOptions = {
 export type TemporaryDirectoryMaker = (suffix?: string) => string;
 
 /**
- * The limit each hook of this fixture gives Bun: 0, which Bun 1.4.4 reads as none, for a
- * synchronous hook and an asynchronous one alike (a probe's afterEach and afterAll of 6.5 s each
- * passed under it, where Bun's own 5 s failed the afterAll).
+ * The limit each hook of this fixture gives Bun: `Infinity`, which Bun 1.4.4 reads as none
+ * whether a hook waits for a process through `Bun.spawnSync`, as these hooks do, or awaits the
+ * `exited` of a `Bun.spawn`. A limit of 0 is not the same: under it a hook that awaits a
+ * `Bun.spawn`'s `exited` ends at about 5 s with no failure, and Bun kills the process as a
+ * dangling one, while a hook that runs `Bun.spawnSync` waits for the process's end (a probe of
+ * each form, for an afterEach and an afterAll, with a process of 7 s).
  *
  * What a hook waits for is the removal, and the removal runs as a process of its own
  * (`remove-trees.ts`) through spawnWithin, on a clock of its own at the limit the running file
@@ -49,12 +52,13 @@ export type TemporaryDirectoryMaker = (suffix?: string) => string;
  * few files ran past Bun's 5 s at a 1-minute load of 476, and failed a row whose assertions had
  * all passed; a removal of a copy of the role texts took 36 s at a load of about 690
  * (`rule-search.test.ts`); and the afterAll of `score.test.ts`, removing its staged runs, ran past
- * a limit of 60 s at a load of 570.
+ * a limit of 60 s at a load of 570. Now that the removal is a process, a limit of Bun's kills that
+ * process at the limit and fails the hook, a removal that would have ended among them.
  *
  * The making stays in this process: it is one `mkdirSync`, no tree to walk, under the same limit
  * of none.
  */
-const NO_HOOK_LIMIT = 0;
+const NO_HOOK_LIMIT = Number.POSITIVE_INFINITY;
 
 /** The script each removal runs, as a process of its own. */
 const REMOVAL_SCRIPT = join(import.meta.dir, "remove-trees.ts");
