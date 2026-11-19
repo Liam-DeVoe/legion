@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -187,9 +188,9 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 		t.Fatalf("decode the controller's payload %q: %v", taken.Payload, err)
 	}
 	// The tree architect's own worker-died carries no failure record, so its reason carries the
-	// launch failure's sentence instead (workflow's deathReason).
+	// launch failure's sentence instead, quoted as workflow's deathReason quotes it (strconv.Quote).
 	if want := (record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning,
-		Reason: "launch failures ran out: pane launch failed"}); !reflect.DeepEqual(payload, want) {
+		Reason: strconv.Quote("launch failures ran out: pane launch failed")}); !reflect.DeepEqual(payload, want) {
 		t.Fatalf("the controller's payload = %+v, want the architect's own notice %+v", payload, want)
 	}
 }

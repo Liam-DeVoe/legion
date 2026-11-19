@@ -175,8 +175,10 @@ issue records it. Each refusal below says what to do:
 - `NO_CLAIM`: the issue is not one of your project's, or the daemon runs no claim of it. There
   is no pod of it to replace. It opens nothing.
 - `NO_POD`: no role of the issue runs in a pod now, or the pod's roles have no worker the round
-  could ask. Ask again once a role of the issue runs in its pod, if the pod must still go; where
-  each claim of the issue that has a session has failed, `retry` one first. It opens nothing.
+  could ask. Ask again once a role of the issue runs in its pod, if the pod must still go. Where
+  each claim of the issue that has a session has failed, who retries which claim is as
+  `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled`
+  says. It opens nothing.
 - `POD_CHANGING` or `POD_UPDATE_LIMITED`: a replacement is in flight, or a limit of the project
   holds the round back, and the sentence names the limit. Ask again at a later wake. It opens
   nothing.
@@ -201,7 +203,10 @@ does not end at its bound is told as an `update-stalled` wake. An architect's su
 to the architect that owns the held claim, and every other hold is told to you. You are also told
 of an architect's suspension that no architect can act on, and of one whose notice to that
 architect ended undelivered: `skill://legion-controller/references/wakes.md`, the
-`update-stalled` row, names each case.
+`update-stalled` row, names each case. An undelivered notice to an architect reaches you only
+where its tree neither lingers nor has closed, and only while at least one claim the round asked
+has neither failed nor retired since: otherwise nobody is told, since nothing of that tree runs, or
+nothing holds the round.
 
 ## A re-run of a CI run
 

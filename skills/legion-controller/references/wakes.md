@@ -487,9 +487,11 @@ replacement; no process in the pod; or two pods. An architect's suspension is to
 architect that owns the held claim instead, unless that architect's claim has failed or been
 retired, there is none, or the hold is over the tree root's own architect. It reaches you in that
 architect's place, too, where the daemon's notice to that architect ended undelivered in a tree
-that does not linger, whether or not that architect still runs: its claim ended before the
-delivery, its session does not advertise the delivery mode, the listener's NATS grant denies the
-forward, or the notice was queued again the most times a notice is. Handle it as
+that neither lingers nor has closed, whether or not that architect still runs: its claim ended
+before the delivery, its session does not advertise the delivery mode, the listener's NATS grant
+denies the forward, or the notice was queued again the most times a notice is. Such a notice
+reaches you only while at least one claim the round asked has neither failed nor retired; where
+every one has, nobody is told, since nothing holds the round. Handle it as
 `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled`
 says.
 
