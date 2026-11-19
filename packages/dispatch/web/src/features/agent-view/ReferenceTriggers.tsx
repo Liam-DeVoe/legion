@@ -29,6 +29,7 @@ import { RefKindIcon } from "../refs/kind-icons";
 import { RefPartsControl, RefPickerNotes, RefRowLabel } from "../refs/RefPickerList";
 import {
   insertionText,
+  isCompositionKey,
   orderedRows,
   REF_PICKER_HEADINGS,
   REF_PICKER_TRIGGERS,
@@ -300,6 +301,19 @@ export function ReferenceTriggers({ keys }: { keys: RefObject<ReferenceKeys | nu
   rowsNow.current = rows;
   useEffect(() => {
     keys.current = (event) => {
+      // A composition's keys are the input method's: its arrows move between the word's segments.
+      if (isCompositionKey(event.nativeEvent)) {
+        // assistant-ui skips a key marked `isComposing` itself, but not Safari's confirming
+        // Enter, which carries only the IME key code 229. Its default is prevented, so the
+        // library's own key handler never runs: Radix's `composeEventHandlers` skips it after a
+        // host `onKeyDown` that prevented the default. No other composition key is prevented:
+        // Chrome's first key of a composition (`Process`) carries the same code, and preventing
+        // it stops the input method. Safari's confirming Escape is out of this handler's reach:
+        // the library reads Escape on a capture listener of the document, which runs first.
+        const { isComposing, keyCode } = event.nativeEvent;
+        if (event.key === "Enter" && !isComposing && keyCode === 229) event.preventDefault();
+        return;
+      }
       if (event.key === "ArrowLeft") {
         if (pickerNow.current.pressKey("ArrowLeft").action !== "ignored") event.preventDefault();
         return;

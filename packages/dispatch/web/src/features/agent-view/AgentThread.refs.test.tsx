@@ -5,7 +5,8 @@ import {
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
 import { type AgentStreamCommand, dispatchWritingBox } from "@legion/contracts";
-import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: the keys of an IME composition, and Safari's key code 229, which user-event has no form for
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -204,6 +205,17 @@ async function type(user: UserEvent, input: HTMLTextAreaElement, value: string):
   await user.paste(value);
 }
 
+/** Lets the search debounce's length pass inside act after a key that should do nothing: long
+ *  enough for any read the key started to answer and its rows to draw, so a check made after it
+ *  would see them, where a check made at once would find nothing whether the key acted or not. */
+async function afterTheKey(): Promise<void> {
+  await act(async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, SEARCH_DEBOUNCE_MS);
+    await promise;
+  });
+}
+
 /** The picker's rows in the order they are drawn, each as `<heading>: <words>`: a row's
  *  heading is the nearest element before it that is not a row. */
 function drawnRows(): string[] {
@@ -332,6 +344,57 @@ test("ArrowRight opens the highlighted row's parts, and nothing on a row that ho
   );
   await user.keyboard("{Enter}");
   await waitFor(() => expect(input.value).toBe("dispatch://CORE-2/message/message-1#b-block-1 "));
+  expect(pane?.sent).toEqual([]);
+});
+
+// An input method's arrows move between the segments of the word it is composing, so an
+// ArrowRight of a composition opens no parts, on a row that holds some.
+test("ArrowRight in the middle of a composition opens no parts", async () => {
+  const user = userEvent.setup();
+  const input = renderThread();
+
+  await type(user, input, "#relay");
+  await waitFor(() =>
+    expect(drawnRows()).toEqual([
+      "Issues: Relay drops a reply",
+      "Messages: I told the relay to retry",
+    ])
+  );
+  await user.keyboard("{ArrowDown}");
+  await waitFor(() =>
+    expect(screen.getByRole("option", { selected: true })).toHaveTextContent(
+      "I told the relay to retry"
+    )
+  );
+  // user-event has no form for this: it cannot mark a key as an IME composition.
+  fireEvent.keyDown(input, { isComposing: true, key: "ArrowRight" });
+  await afterTheKey();
+  expect(drawnRows().filter((row) => row.startsWith("Message blocks:"))).toEqual([]);
+  expect(pane?.getReferences).not.toHaveBeenCalled();
+});
+
+// Safari ends the composition before the Enter that confirms it, so that Enter carries only the
+// IME's key code 229, and assistant-ui, which skips a key marked composing, would take the row.
+test("Safari's Enter that confirms a composition takes no row, where a plain Enter does", async () => {
+  const user = userEvent.setup();
+  const input = renderThread();
+
+  await type(user, input, "#relay");
+  await waitFor(() =>
+    expect(drawnRows()).toEqual([
+      "Issues: Relay drops a reply",
+      "Messages: I told the relay to retry",
+    ])
+  );
+  // user-event has no form for this: it cannot mark a key as an IME composition.
+  fireEvent.keyDown(input, { isComposing: false, key: "Enter", keyCode: 229 });
+  await afterTheKey();
+  expect(input.value).toBe("#relay");
+  expect(pane?.sent).toEqual([]);
+
+  // The same Enter with no IME code is the list's: it takes the highlighted issue.
+  fireEvent.keyDown(input, { key: "Enter" });
+  await waitFor(() => expect(input.value).toBe("dispatch://CORE-2 "));
   expect(pane?.sent).toEqual([]);
 });
 

@@ -23,7 +23,7 @@ import {
 } from "../../theme/classes";
 import { draftParties } from "../refs/party-references";
 import { RefPickerList } from "../refs/RefPickerList";
-import { applyInsertion, type RefPickerInsertion } from "../refs/ref-picker";
+import { applyInsertion, isCompositionKey, type RefPickerInsertion } from "../refs/ref-picker";
 import { useRefPicker } from "../refs/useRefPicker";
 import type { TextEditRange } from "./block-spans";
 
@@ -236,6 +236,8 @@ export function MentionField({
    *  being bound again. */
   const pickerKey = useRef<(event: globalThis.KeyboardEvent) => void>(() => {});
   pickerKey.current = (event) => {
+    // A composition's keys are the input method's: it confirms, cancels or moves in its word.
+    if (isCompositionKey(event)) return;
     if (!pickerNow.current.open) return;
     // A modified Enter is not the picker's: Ctrl/Cmd+Enter is the host's submit and Shift+Enter
     // the reader's newline, picker or no picker.

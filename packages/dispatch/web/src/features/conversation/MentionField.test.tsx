@@ -5,7 +5,8 @@ import {
   dispatchWritingBox,
 } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: the keys of an IME composition, which user-event has no form for
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -96,6 +97,33 @@ test("an open picker takes the arrows, Enter, Tab and Escape ahead of the host",
     await user.keyboard("{Escape}");
     expect(keys.fromField).toEqual([]);
     expect(keys.fromWindow).toEqual([]);
+  } finally {
+    restore();
+  }
+});
+
+// A key of an input method's composition is the input method's, open picker or not: the Enter
+// that confirms a word takes no row, and the Escape that cancels it closes no list. Safari ends
+// the composition before the Enter that confirms it, which carries the IME's key code 229 alone.
+test("an open picker leaves a composition's Enter and Escape to the host", async () => {
+  const user = userEvent.setup();
+  const { keys, restore } = renderField();
+
+  try {
+    const field = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await user.click(field);
+    await user.paste("@");
+    await screen.findByText("Planner");
+    keys.fromField.length = 0;
+    keys.fromWindow.length = 0;
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(field, { isComposing: true, key: "Enter" });
+    fireEvent.keyDown(field, { isComposing: true, key: "Escape" });
+    fireEvent.keyDown(field, { isComposing: false, key: "Enter", keyCode: 229 });
+    expect(field.value).toBe("@");
+    expect(screen.getByText("Planner")).toBeInTheDocument();
+    expect(keys.fromField).toEqual(["Enter", "Escape", "Enter"]);
+    expect(keys.fromWindow).toEqual(["Enter", "Escape", "Enter"]);
   } finally {
     restore();
   }
