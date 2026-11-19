@@ -1057,6 +1057,78 @@
         "capture": "fixture/split-user-info-no-at"
       },
       {
+        "row": "excerpt-shift-short-token-shifts-the-cut",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/excerpt/excerpt_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "excerpt.shift/short-token-shifts-the-cut"
+      },
+      {
+        "row": "excerpt-shift-double-encoded-at",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/excerpt/excerpt_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "excerpt.shift/double-encoded-at"
+      },
+      {
+        "row": "excerpt-shift-double-encoded-query",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/excerpt/excerpt_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "excerpt.shift/double-encoded-query"
+      },
+      {
+        "row": "excerpt-shift-nbsp-before-split-query",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/excerpt/excerpt_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "excerpt.shift/nbsp-before-split-query"
+      },
+      {
+        "row": "excerpt-shift-mdash-before-split-query",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/excerpt/excerpt_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "excerpt.shift/mdash-before-split-query"
+      },
+      {
+        "row": "body-references-query-once",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/unescape_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "redact.body-references/query-once"
+      },
+      {
+        "row": "body-references-query-twice",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/unescape_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "redact.body-references/query-twice"
+      },
+      {
+        "row": "body-references-at-twice",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/unescape_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "redact.body-references/at-twice"
+      },
+      {
         "row": "marker-between-apostrophe-ts",
         "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
         "files": [
@@ -2262,8 +2334,8 @@
       "capture": "redact.oauth2-body",
       "mutation": {
         "file": "packages/envoy/internal/redact/oauth2.go",
-        "preimage": "[]byte(Field(Tokens(string(re.Body), -1, carried...)))",
-        "replacement": "[]byte(Tokens(string(re.Body), -1, carried...))"
+        "preimage": "[]byte(Field(Tokens(UnescapeHTML(string(re.Body)), -1, carried...)))",
+        "replacement": "[]byte(Tokens(UnescapeHTML(string(re.Body)), -1, carried...))"
       }
     },
     {
@@ -2507,8 +2579,8 @@
       "capture": "excerpt.text-tokens",
       "mutation": {
         "file": "packages/envoy/excerpt/excerpt.go",
-        "preimage": "redact.Tokens(read, ScanLimit, tokens...)",
-        "replacement": "read"
+        "preimage": "redact.Tokens(strings.ToValidUTF8(read, \"\\uFFFD\"), -1, tokens...)",
+        "replacement": "strings.ToValidUTF8(read, \"\\uFFFD\")"
       }
     },
     {
@@ -2521,9 +2593,65 @@
       "capture": "excerpt.text-remote",
       "mutation": {
         "file": "packages/envoy/excerpt/excerpt.go",
-        "preimage": "redact.Remote(html.UnescapeString(plain))",
-        "replacement": "html.UnescapeString(plain), true"
+        "preimage": "redact.Remote(redact.UnescapeHTML(plain))",
+        "replacement": "redact.UnescapeHTML(plain), true"
       }
+    },
+    {
+      "id": "excerpt-shift-short-token-shifts-the-cut",
+      "requirement": "r3-each-site",
+      "package": "./excerpt",
+      "test": "TestTextCutsBeforeItRedactsAndDecodesEveryReference/short-token-shifts-the-cut",
+      "production": "excerpt.Text: the cut before redact.Tokens, redact.UnescapeHTML"
+    },
+    {
+      "id": "excerpt-shift-double-encoded-at",
+      "requirement": "r3-each-site",
+      "package": "./excerpt",
+      "test": "TestTextCutsBeforeItRedactsAndDecodesEveryReference/double-encoded-at",
+      "production": "excerpt.Text: the cut before redact.Tokens, redact.UnescapeHTML"
+    },
+    {
+      "id": "excerpt-shift-double-encoded-query",
+      "requirement": "r3-each-site",
+      "package": "./excerpt",
+      "test": "TestTextCutsBeforeItRedactsAndDecodesEveryReference/double-encoded-query",
+      "production": "excerpt.Text: the cut before redact.Tokens, redact.UnescapeHTML"
+    },
+    {
+      "id": "excerpt-shift-nbsp-before-split-query",
+      "requirement": "r3-each-site",
+      "package": "./excerpt",
+      "test": "TestTextCutsBeforeItRedactsAndDecodesEveryReference/nbsp-before-split-query",
+      "production": "excerpt.Text: the cut before redact.Tokens, redact.UnescapeHTML"
+    },
+    {
+      "id": "excerpt-shift-mdash-before-split-query",
+      "requirement": "r3-each-site",
+      "package": "./excerpt",
+      "test": "TestTextCutsBeforeItRedactsAndDecodesEveryReference/mdash-before-split-query",
+      "production": "excerpt.Text: the cut before redact.Tokens, redact.UnescapeHTML"
+    },
+    {
+      "id": "body-references-query-once",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestTheBoundaryReadsAnAnswersBodyWithItsReferencesDecoded/query-once",
+      "production": "redact.OAuth2's answer body, redact.UnescapeHTML"
+    },
+    {
+      "id": "body-references-query-twice",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestTheBoundaryReadsAnAnswersBodyWithItsReferencesDecoded/query-twice",
+      "production": "redact.OAuth2's answer body, redact.UnescapeHTML"
+    },
+    {
+      "id": "body-references-at-twice",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestTheBoundaryReadsAnAnswersBodyWithItsReferencesDecoded/at-twice",
+      "production": "redact.OAuth2's answer body, redact.UnescapeHTML"
     },
     {
       "id": "excerpt-hidden-reference-question-equals",
@@ -3081,8 +3209,8 @@
       "capture": "redact.tokens-answer-body",
       "mutation": {
         "file": "packages/envoy/internal/redact/oauth2.go",
-        "preimage": "Tokens(string(re.Body), -1, carried...)",
-        "replacement": "string(re.Body) + Tokens(\"\", -1, carried...)"
+        "preimage": "Tokens(UnescapeHTML(string(re.Body)), -1, carried...)",
+        "replacement": "UnescapeHTML(string(re.Body)) + Tokens(\"\", -1, carried...)"
       }
     },
     {

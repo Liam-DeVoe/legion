@@ -22,7 +22,6 @@ package excerpt
 import (
 	"encoding/json"
 	"fmt"
-	"html"
 	"regexp"
 	"strconv"
 	"strings"
@@ -68,29 +67,30 @@ var (
 )
 
 // Text is text a gateway chose (a body, or a reason phrase) as one line of plain text safe to
-// quote (excerpt). Three kinds of credential are redacted: first every piece of each of tokens,
-// trimmed as a header sends it (redact.Tokens, over the first ScanLimit characters); then, after
-// scripts, styles and tags are dropped and the page's character references decoded (&quest;,
-// &#64; and the rest), each URL's user info and parameter values (redact.Remote, which reads the
-// plain text as a reader of the page reads it); then the value after `Authorization:` (its scheme
-// kept: Bearer, Basic, Digest, token or DPoP), after `Bearer` and after `DPoP`. A plain text
-// Remote cannot read as clean is redact.WordsNotReadable, never the text. All of it runs before
-// the cut to one line, so a cut never leaves a credential's first characters behind. Only the
-// first ScanLimit characters are read, and where the limit falls inside a word, as it can inside
-// a URL, that word is dropped: the excerpt ends at the last whitespace before the limit. Bytes
-// that are not UTF-8 read as U+FFFD, and every rule runs in linear time, so a body of any size or
-// shape costs a bounded amount of work.
+// quote (excerpt). Only the first ScanLimit characters are read, and where the limit falls inside
+// a word, as it can inside a URL, that word is dropped: the excerpt ends at the last whitespace
+// before the limit. That cut is made first, on the text as it came, so no redaction can move it.
+// Three kinds of credential are then redacted: every piece of each of tokens, trimmed as a header
+// sends it (redact.Tokens); after scripts, styles and tags are dropped and the page's character
+// references decoded until none is left (redact.UnescapeHTML: &quest;, &#64;, &amp;quest; and
+// the rest), each URL's user info and parameter values (redact.Remote, which reads the plain text
+// as a reader of the page reads it); then the value after `Authorization:` (its scheme kept:
+// Bearer, Basic, Digest, token or DPoP), after `Bearer` and after `DPoP`. A plain text Remote
+// cannot read as clean is redact.WordsNotReadable, never the text. All of it runs before the cut
+// to one line, so that cut never leaves a credential's first characters behind. Bytes that are
+// not UTF-8 read as U+FFFD, and every rule runs in linear time, so a body of any size or shape
+// costs a bounded amount of work.
 func Text(text string, tokens ...string) string {
-	read := strings.ToValidUTF8(text[:runeOffset(text, ScanLimit+redact.TokenPiece-1)], "\uFFFD")
-	plain := redact.Tokens(read, ScanLimit, tokens...)
-	if rest := text[runeOffset(text, ScanLimit):]; rest != "" {
+	read := text[:runeOffset(text, ScanLimit)]
+	if rest := text[len(read):]; rest != "" {
 		if after, _ := utf8.DecodeRuneInString(rest); !isSpace(after) {
-			plain = plain[:max(strings.LastIndexFunc(plain, isSpace), 0)]
+			read = read[:max(strings.LastIndexFunc(read, isSpace), 0)]
 		}
 	}
+	plain := redact.Tokens(strings.ToValidUTF8(read, "\uFFFD"), -1, tokens...)
 	plain = scriptOrStyle.ReplaceAllString(plain, " ")
 	plain = tag.ReplaceAllString(plain, " ")
-	plain, readable := redact.Remote(html.UnescapeString(plain))
+	plain, readable := redact.Remote(redact.UnescapeHTML(plain))
 	if !readable {
 		return redact.WordsNotReadable
 	}

@@ -136,7 +136,9 @@ func newOAuthAnswer(re *oauth2.RetrieveError) *OAuthAnswer {
 		ErrorURI:         ruled(Tokens(re.ErrorURI, -1, carried...)),
 	}
 	if len(re.Body) > 0 {
-		answer.Body = []byte(Field(Tokens(string(re.Body), -1, carried...)))
+		// An HTML page can write a URL's separators as character references, which a reader of
+		// the page decodes: the rule reads the body as that reader does (UnescapeHTML).
+		answer.Body = []byte(Field(Tokens(UnescapeHTML(string(re.Body)), -1, carried...)))
 	}
 	if r := re.Response; r != nil {
 		answer.Response = &http.Response{Status: statusLine(r.StatusCode), StatusCode: r.StatusCode, Header: retryAfter(r.Header)}
