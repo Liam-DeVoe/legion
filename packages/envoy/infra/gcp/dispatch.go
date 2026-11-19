@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 
@@ -1272,29 +1271,6 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, ownHost, owner string, sign
 // (https://cloud.google.com/compute/docs/naming-resources).
 var negNameRule = regexp.MustCompile(`^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
 
-// serviceAccountSubjectRule is a Kubernetes service account's subject as its projected token
-// carries it, the form Dispatch's boot holds DISPATCH_OIDC_ACCOUNTS and DISPATCH_ACCESS_ACCOUNTS to
-// (cmd/dispatch, serviceAccountSubject). It admits no comma, so an entry cannot split in two when
-// the list is rendered comma-joined.
-var serviceAccountSubjectRule = regexp.MustCompile(`^system:serviceaccount:[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?:[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)
-
-// ownerFallbackEmail reports whether value is a person as Dispatch stores one, the form its boot
-// holds DISPATCH_PROJECT_OWNER_FALLBACK to (cmd/dispatch checkAccessSettings, by
-// internal/dispatch/access PersonPrincipal): already trimmed and lowercase, an @ with something on
-// each side, no space or comma, at most 320 bytes, and no control or bidi character.
-func ownerFallbackEmail(value string) bool {
-	at := strings.IndexByte(value, '@')
-	if value != model.CanonicalLogin(value) || at <= 0 || at == len(value)-1 || strings.ContainsAny(value, " \t\r\n,") || len(value) > 320 {
-		return false
-	}
-	for _, r := range value {
-		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) {
-			return false
-		}
-	}
-	return true
-}
-
 // refuseDispatchAccessValues refuses, when the stack plans, the access values Dispatch refuses at
 // boot (cmd/dispatch checkAccessSettings), naming the input, so one typo never reaches a Deployment
 // whose one replica would then not start: an account that is not a service account's subject, an
@@ -1305,7 +1281,7 @@ func refuseDispatchAccessValues(args *DispatchArgs) error {
 		accounts []string
 	}{{"oidcAccounts", args.OidcAccounts}, {"accessAccounts", args.AccessAccounts}} {
 		for i, account := range list.accounts {
-			if !serviceAccountSubjectRule.MatchString(account) {
+			if !model.ServiceAccountSubject.MatchString(account) {
 				return fmt.Errorf("%s[%d] %q is not a Kubernetes service account's subject, system:serviceaccount:<namespace>:<name>, one account to an entry", list.input, i, account)
 			}
 		}
@@ -1317,8 +1293,10 @@ func refuseDispatchAccessValues(args *DispatchArgs) error {
 			}
 		}
 	}
-	if fallback := args.ProjectOwnerFallback; fallback != "" && !ownerFallbackEmail(fallback) {
-		return errors.New("projectOwnerFallback must be a lowercase email, the one a full member signed in with")
+	if fallback := args.ProjectOwnerFallback; fallback != "" {
+		if login, err := model.PersonLogin(fallback); err != nil || login != fallback {
+			return errors.New("projectOwnerFallback must be a lowercase email, the one a full member signed in with")
+		}
 	}
 	return nil
 }

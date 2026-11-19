@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
@@ -51,20 +50,12 @@ var groupName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 func ValidGroupName(name string) bool { return groupName.MatchString(name) }
 
 // PersonPrincipal is the stored form of a person an access list or a group names: the trimmed,
-// lowercase email. It refuses a value that is no email, and one holding a control character or a
-// bidi control, which would show one address and store another, as a project name refuses them.
+// lowercase email (model.PersonLogin), refused as ErrPrincipalInput when it is no email or holds a
+// control or bidi character.
 func PersonPrincipal(email string) (string, error) {
-	login := model.CanonicalLogin(email)
-	if at := strings.IndexByte(login, '@'); at <= 0 || at == len(login)-1 || strings.ContainsAny(login, " \t\r\n,") || len(login) > 320 {
-		return "", fmt.Errorf("%w: %q is no email", ErrPrincipalInput, strings.TrimSpace(email))
-	}
-	for _, r := range login {
-		switch {
-		case unicode.IsControl(r):
-			return "", fmt.Errorf("%w: %q holds a control character", ErrPrincipalInput, login)
-		case unicode.Is(unicode.Bidi_Control, r):
-			return "", fmt.Errorf("%w: %q holds a bidi control", ErrPrincipalInput, login)
-		}
+	login, err := model.PersonLogin(email)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrPrincipalInput, err)
 	}
 	return login, nil
 }
