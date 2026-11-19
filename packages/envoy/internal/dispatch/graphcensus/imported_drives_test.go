@@ -395,7 +395,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	}, {
 		// The session's reply to that message, a message of the same issue's project.
 		Name: "api/message_delivery.go#insertSessionReply", Database: r.database,
-		Sites: []string{"api/message_delivery.go#insertSessionReply"},
+		Sites: []string{"api/message_delivery.go#insertSessionReply", "api/server.go#appendCausingEvent"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/messages/"+r.message+"/reply", map[string]any{
 				"actor": sessionActor(messageSession), "attempt": 1, "body": "On it.",
@@ -406,7 +406,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		// A broadcast to the message's session: the copy it stores for that session, a message on
 		// no issue, between alice and the session, whose node names those parties.
 		Name: "api/broadcasts.go#writeBroadcast", Database: r.database,
-		Sites: []string{"api/broadcasts.go#writeBroadcast"},
+		Sites: []string{"api/broadcasts.go#writeBroadcast", "api/server.go#appendCausingEvent"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/broadcasts", map[string]any{
 				"body": "To everyone.", "delivery": "btw", "session_ids": []string{messageSession},
@@ -430,7 +430,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		// The removal of an untouched document of the issue, made just before by typing a title:
 		// its node stated gone, which the term artifact_removed counts.
 		Name: "api/artifact_removal.go#removeArtifact", Database: r.database,
-		Sites: []string{"api/artifact_removal.go#removeArtifact"},
+		Sites: []string{"api/artifact_removal.go#removeArtifact", "api/server.go#appendCausingEvent"},
 		Ready: func(t *testing.T) {
 			r.removable = decoded[struct {
 				Artifact model.Artifact `json:"artifact"`

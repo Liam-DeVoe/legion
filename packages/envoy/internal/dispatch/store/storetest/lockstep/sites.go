@@ -65,8 +65,9 @@ var storeWriteCallSites = map[string]string{
 	// are listed above for their block index and follow, and their drivers hold the node step too;
 	// these are the others. Their order - the owner lock their path already takes, the node before
 	// the row, the event before the tuples - is the order of the write they share (QueueNodes, then
-	// QueueCaused, or WriteUncaused, then Caused, where a route appends its event at once), and
-	// api's TestEveryObjectNodeWriterTakesTheStoreLockOrder drives each of them through it.
+	// QueueCaused; a route that appends its event at once queues the cause in the event's own
+	// batch, appendCausingEvent), and api's TestEveryObjectNodeWriterTakesTheStoreLockOrder drives
+	// each of them through it.
 	"api/broadcasts.go#writeBroadcast":           "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	"api/message_delivery.go#insertSessionReply": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	"api/messages.go#createStoredMessage":        "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
@@ -75,7 +76,7 @@ var storeWriteCallSites = map[string]string{
 	// The removal of an untouched document states its node gone, before its row goes, caused by
 	// the artifact.removed event it appends after the row (Write of the node the document's
 	// create would have written, for a document an earlier build made with none, then
-	// WriteUncaused, then Caused).
+	// WriteUncaused, then the event and the gone statement in one batch, appendCausingEvent).
 	"api/artifact_removal.go#removeArtifact": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	// The seed's comments, with their author's person node and each comment's authored_by
 	// tuple, which its one batch write states as a seeded database's own writer, the session
