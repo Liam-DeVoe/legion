@@ -213,28 +213,29 @@ func (k *reachKeeper) recordOf(c supervise.Claim) supervise.Reach {
 // launch, and its generation is taken in; once the launch records one, that one is. Either is
 // taken in while the episode has told no exit, and no launch of the relaunch's own is told as one.
 func relaunchTakenIn(c supervise.Claim, rec supervise.Reach) supervise.Reach {
+	launched := relaunchGeneration(c)
 	if !c.LastRelaunch.After(rec.RelaunchedAt) {
-		if c.LastRelaunch.Equal(rec.RelaunchedAt) && rec.Relaunched && !rec.ExitTold {
-			launched := c.LastRelaunchGeneration
-			if launched == 0 {
-				launched = c.Generation
-			}
-			if launched > rec.Generation {
-				rec.Generation = launched
-			}
+		if c.LastRelaunch.Equal(rec.RelaunchedAt) && rec.Relaunched && !rec.ExitTold && launched > rec.Generation {
+			rec.Generation = launched
 		}
 		return rec
 	}
 	rec.RelaunchedAt = c.LastRelaunch
 	if rec.Unreachable() {
-		launched := c.Generation
-		if c.LastRelaunchGeneration != 0 {
-			launched = c.LastRelaunchGeneration
-		}
 		rec.Relaunched, rec.Generation, rec.NotBackTold = true, launched, false
 		rec.GuardRefusedAt, rec.ReadyTold, rec.HeldTold = time.Time{}, false, false
 	}
 	return rec
+}
+
+// relaunchGeneration is the generation c's last relaunch counts its launches from: the one that
+// relaunch's own launch recorded (LastRelaunchGeneration), or else, while that launch has recorded
+// none, the claim's own generation as c holds it (relaunchTakenIn).
+func relaunchGeneration(c supervise.Claim) uint64 {
+	if c.LastRelaunchGeneration != 0 {
+		return c.LastRelaunchGeneration
+	}
+	return c.Generation
 }
 
 // store keeps next as token's record, and writes it through when it changed or an earlier write
