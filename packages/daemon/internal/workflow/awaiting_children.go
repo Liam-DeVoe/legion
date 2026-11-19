@@ -85,8 +85,10 @@ type childrenHold struct {
 //   - marks the issue moved, since this is a phase write (the rule in dispatchIssue);
 //   - cancels every open backstop of the parent's pod, since no role of it has a phase for one to
 //     wake it into (R11), where the engine holds the pod tables (Config.Pods);
-//   - tells the parent's architect once (awaitingChildrenNotice), in place of the phase-finished or
-//     checks-red notice the start would have sent (R10);
+//   - drops the merge forward the pull request's record holds (clearMergeForward), so no message
+//     of it wakes a role of the waiting parent (R11);
+//   - tells the parent's architect once (awaitingChildrenNotice), in place of the phase-finished
+//     notice the start would have sent (R10);
 //   - and tells the role whose phase the move ends, where there is one, that its phase ended
 //     and no task of it follows (record.PhaseEnded into awaiting_children).
 //
@@ -126,6 +128,14 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 		if err := e.cfg.Pods.CancelPodBackstops(ctx, tx, issue.Key); err != nil {
 			return err
 		}
+	}
+	// A merge forward a conflict asked before the move goes with it, as it goes on a move into
+	// implementing (clearMergeForward): no role of a waiting parent works (dispatch://INFRA-3320
+	// R11), so its queued ask, hold and landed messages finish undelivered (MergeForwardAt), and
+	// the return's implementing round merges the default branch forward itself. No merge forward
+	// is asked during the wait, since awaiting_children is in no phase of record.MergeForwardPhases.
+	if err := e.clearMergeForward(ctx, tx, issue.Key); err != nil {
+		return err
 	}
 	e.logOnCommit(ctx, "workflow: a parent waits on its open children", "issue", issue.Key, "tree", issue.Tree,
 		"from", from, "holds", hold.Start, "children", openChildNames(hold.Open))
@@ -491,12 +501,6 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 		"tree", issue.Tree, "held", held.Start, "to", back.Phase, "merged", merged)
 	role := RoleFor(back.Phase)
 	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
-		return err
-	}
-	// The return is a move into the phase it starts, so the merge forward a conflict asked before
-	// the wait follows it as it follows a transition's move (mergeForwardOnEntry): a return into
-	// implementing drops it, since the implementing round merges the default branch forward itself.
-	if err := e.mergeForwardOnEntry(ctx, tx, back, phase.AwaitingChildren); err != nil {
 		return err
 	}
 	if role != "" && role != claim.RoleArchitect {

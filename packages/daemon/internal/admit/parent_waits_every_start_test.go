@@ -441,7 +441,8 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 	// the open child to hold. The admission pass the fact runs then finds the tester in the middle
 	// of its phase and stops it, as it stops any worker with an open child under its issue: the
 	// parent holds testing, not the implementing a conflict started before #4464, no worker starts,
-	// and the tester is told in the R10 message.
+	// and the tester is told in the R10 message. The move drops the merge forward (R11: no role of
+	// a waiting parent works), so the queued ask and hold finish undelivered and wake no role.
 	t.Run("a conflicting head from testing starts no phase, and the pass stops the tester", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := pwAdmission(t, 2)
@@ -469,6 +470,19 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 0 {
 			t.Fatalf("worker starts = %+v, want none: the conflict started no phase", starts)
 		}
+		inTx(t, pool, func(tx pgx.Tx) {
+			pr, err := record.NewStore().PullRequest(context.Background(), tx, spParent)
+			if err != nil || pr == nil || pr.MergeForward != nil {
+				t.Fatalf("the pull request after the move = %+v (%v), want its merge forward dropped", pr, err)
+			}
+			for _, message := range asked {
+				_, _, left, err := workflow.MergeForwardAt(context.Background(), record.NewStore(), tx, spParent, message.Step, message.Head)
+				if err != nil || left != "the record holds no merge forward" {
+					t.Fatalf("the queued %s message to the %s is left %q (%v), want it undelivered: the record holds no merge forward",
+						message.Step, message.Role, left, err)
+				}
+			}
+		})
 	})
 
 	// The request for changes that reaches the cap counts its round as today, and the cap's
