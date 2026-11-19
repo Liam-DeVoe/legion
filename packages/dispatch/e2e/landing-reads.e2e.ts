@@ -1,5 +1,6 @@
 /**
- * The dashboard's landing waterfall, measured on four cold pages (INFRA-1109, R3).
+ * The dashboard's landing waterfall, measured on four cold pages and one cold issue tab
+ * (INFRA-1109, R3).
  *
  * Why this row exists. Opening a page of Dispatch before dispatch://INFRA-1109 cost a chain of
  * dependent round trips before anything the reader asked for was drawn: `AuthGate`
@@ -32,21 +33,26 @@
  * A page drawn from one wave asks for everything at once; a page drawn from five asks four
  * questions whose answers it already had the means to ask for.
  *
- * What the row drives. Four cold landings - an issue page, the board, the inbox and a document
- * page - each in a browser context of its own, so no query cache, no HTTP cache and no warmed
- * chunk of an earlier landing can answer a read this one should have sent. Each landing is
- * measured from its own navigation until that page's OWN content is on the screen. "On the
- * screen" has no observable of its own, so each page names the locator the suite already waits
- * for when it lands there, and each comment beside a locator names the row it was taken from, so
- * that the two cannot drift apart: a locator that stopped meaning "this page is drawn" would
- * otherwise leave this row measuring a window that ends somewhere else.
+ * What the row drives. Five cold landings - an issue page, the board, the inbox, a document
+ * page and one tab of the issue page other than the Spec - each in a browser context of its own,
+ * so no query cache, no HTTP cache and no warmed chunk of an earlier landing can answer a read
+ * this one should have sent. Each landing is measured from its own navigation until that page's
+ * OWN content is on the screen. "On the screen" has no observable of its own, so each page names
+ * the locator the suite already waits for when it lands there, and each comment beside a locator
+ * names the row it was taken from, so that the two cannot drift apart: a locator that stopped
+ * meaning "this page is drawn" would otherwise leave this row measuring a window that ends
+ * somewhere else.
  *
  * What the row holds besides the waves. Each page's own route chunk is asked for before the
  * landing read answers. The entry starts it beside that read, before React renders anything
  * (`web/src/app.tsx`, `preloadRouteChunk`, called from `web/src/main.tsx`); without that start,
  * `AuthGate` draws its skeleton until the landing read answers and the router asks for the chunk
  * only then, so the page's own reads wait on a chunk as well as on the landing. A chunk is no
- * read, so the waves alone would not see that start go.
+ * read, so the waves alone would not see that start go. A landing on an issue tab other than the
+ * Spec has its tab's chunk started there too (`preloadRouteChunk`'s tab arm, through
+ * `web/src/features/issue/tab-chunks.ts`), so the tab landing's route chunk is that tab's own:
+ * without the start, the tab's panel asks for its chunk only once the page has rendered, after
+ * the landing read has answered.
  *
  * Everything here is made up: this repository is public, so nothing names a real person, host or
  * project.
@@ -65,7 +71,7 @@ import { asUser } from "./users";
 const ISSUE_READ_BOUND = 12;
 const WAVE_BOUND = 2;
 
-/** R3's bound on every one of the four pages: the reads the shell sends before the page's own
+/** R3's bound on every one of the landings: the reads the shell sends before the page's own
  *  data can start are one wave, never a chain of them. */
 const SHELL_WAVE_BOUND = 1;
 
@@ -75,9 +81,10 @@ const SHELL_WAVE_BOUND = 1;
  *  after that can have caused none of them. */
 const ANSWER_SETTLE_MS = 2_000;
 
-/** The pages, in the order this row drives them. The assertion names the same four, so a landing
- *  dropped from here fails the row rather than quietly shrinking what "every page" covers. */
-const PAGES = ["issue page", "board", "inbox", "document page"] as const;
+/** The landings, in the order this row drives them. The assertion names the same five, so a
+ *  landing dropped from here fails the row rather than quietly shrinking what "every page"
+ *  covers. */
+const PAGES = ["issue page", "board", "inbox", "document page", "issue tab"] as const;
 
 /**
  * One read of one landing: a GET under `/api/` or `/auth/`, with the time it started and the time
@@ -130,7 +137,7 @@ interface Landing {
   readonly bounds?: { readonly reads: number; readonly waves: number };
 }
 
-/** What the seed left behind for the four landings to open. */
+/** What the seed left behind for the five landings to open. */
 interface World {
   readonly issue: string;
   /** The slug of the project document the document landing opens. It is a document of the
@@ -304,8 +311,8 @@ async function land(browser: Browser, landing: Landing): Promise<Measurement> {
   }
 }
 
-/** The world the four landings open: one project with a document of its own, one issue with a
- *  spec, and one comment thread, so the inbox has a thread card to draw. */
+/** The world the five landings open: one project with a document of its own, one issue with a
+ *  spec and no plan, and one comment thread, so the inbox has a thread card to draw. */
 async function seedWorld(): Promise<World> {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "CORE", name: "Core" });
@@ -401,11 +408,26 @@ function landingsOf(world: World): Landing[] {
         read.pathname === `/api/v1/projects/CORE/artifacts/${world.document}` ||
         landingFor(read, "document"),
     },
+    {
+      address: `/issues/${world.issue}/plan`,
+      // One tab of the issue page other than the Spec, whose panel is a chunk of its own
+      // (`web/src/features/issue/tab-chunks.ts`). The issue has no plan document, so the Plan
+      // tab draws its empty state from what the landing answered and sends no read of its own;
+      // what this landing holds is that the entry starts the tab's chunk beside the landing read
+      // (`web/src/app.tsx`, `preloadRouteChunk`'s tab arm). The locator is the rolling-deploy
+      // walk's (`e2e/two-builds.multiprocess.e2e.ts`), which opens `/issues/<key>/plan` and waits
+      // for `#issue-plan-panel`'s `plan-empty` or `plan-tab`.
+      content: (page) => page.locator("#issue-plan-panel").getByTestId("plan-empty"),
+      name: "issue tab",
+      routeChunk: /\/assets\/PlanTab-[\w-]{8}\.js$/u,
+      ownData: (read) =>
+        read.pathname === `/api/v1/issues/${world.issue}` || landingFor(read, "issue"),
+    },
   ];
 }
 
-// SLOW(>=2s): four cold landings, each in a context of its own - a fresh Chromium context, the
-// cold parse of the dashboard bundle it cannot cache, and the landing's own reads, four times
+// SLOW(>=2s): five cold landings, each in a context of its own - a fresh Chromium context, the
+// cold parse of the dashboard bundle it cannot cache, and the landing's own reads, five times
 // over. The cost is the measurement: a warm context would answer reads from its query cache and
 // count waves that a person opening the page never pays.
 // No `@pr` tag: the pull-request lane's real-stack budget is full. It runs on the full lane at the
@@ -421,12 +443,12 @@ test("a cold landing draws each page from at most two waves of reads", async ({ 
   const waterfall = measured.map(waterfallOf).join("\n\n");
   console.log(`LANDING-READS\n${waterfall}`);
 
-  // The count of pages driven is asserted first, and by name: "on each of the four pages" is true
-  // of no pages at all, so a landing that was dropped or never ran has to fail the row rather
-  // than make the bounds below vacuous.
+  // The count of landings driven is asserted first, and by name: "on each of the five landings"
+  // is true of no landings at all, so a landing that was dropped or never ran has to fail the row
+  // rather than make the bounds below vacuous.
   expect(
     measured.map(({ landing }) => landing.name),
-    "the row drives four cold landings"
+    "the row drives five cold landings"
   ).toEqual([...PAGES]);
 
   const faults: string[] = [];
