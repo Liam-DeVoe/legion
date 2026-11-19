@@ -872,7 +872,11 @@ test("a reply or a BTW answer Dispatch refused is said not posted, with Dispatch
 for (const [name, failure, tail] of [
   [
     "a write left unsettled",
-    new DispatchWriteUnsettledError(new DispatchServiceError("RATE_LIMITED", 429, "slow down"), 2),
+    new DispatchWriteUnsettledError(
+      new DispatchServiceError("RATE_LIMITED", 429, "slow down"),
+      2,
+      "reply-key",
+    ),
     "RATE_LIMITED: slow down (the last of 2 attempts), and an earlier attempt of the write may have reached Dispatch, so it may or may not have taken effect: check whether it did before retrying it.",
   ],
   [

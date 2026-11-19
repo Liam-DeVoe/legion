@@ -20,6 +20,7 @@ import { askAnswerText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
 import { humanEditHead } from "../human-edit";
 import { approvalLine, documentListLines } from "./document-targets";
+import { linkFor } from "./links";
 
 /** The Components line of an issue read: the effective set with where it came from. */
 function componentsLine(components: IssueComponents): string {
@@ -295,7 +296,7 @@ export function issueSummary(
   events: readonly DispatchEvent[],
   references: IssueReferences | string,
   graph: readonly string[],
-  linkBase: string,
+  linkBase: string | undefined,
   coverage: IssueCoverage | string,
   agents?: LiveAgents
 ): string {
@@ -317,8 +318,9 @@ export function issueSummary(
     `Title: ${issue.title}`,
     `Key: ${issue.key}`,
     // The issue's page, on the dashboard people open (DISPATCH_PUBLIC_URL when set), so an agent
-    // asked about the issue repeats a link rather than building one.
-    `Link: ${new URL(`/issues/${encodeURIComponent(issue.key)}`, linkBase).toString()}`,
+    // asked about the issue repeats a link rather than building one; its reference where no base
+    // prints (`linkFor`).
+    `Link: ${linkFor(`/issues/${encodeURIComponent(issue.key)}`, linkBase)}`,
     `Status: ${issue.status}`,
     `Assignee: ${issue.assignee ?? "unassigned"}`,
     `Claimed by: ${issue.claim === null ? "nobody" : claimText(issue.claim, agents, issue)}`,

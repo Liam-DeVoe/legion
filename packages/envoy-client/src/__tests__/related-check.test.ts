@@ -155,7 +155,7 @@ describe("the related-item check's hits", () => {
         search: "meaning_and_keywords",
         related: [hit("comment", "CORE-7", "c-1"), hit("message", "CORE-8", "m-1")],
       },
-      { project: "CORE", text: "Retry webhook deliveries", configUrl: CONFIG_URL }
+      { project: "CORE", text: "Retry webhook deliveries", linkBase: CONFIG_URL }
     );
 
     expect(lines).toEqual([

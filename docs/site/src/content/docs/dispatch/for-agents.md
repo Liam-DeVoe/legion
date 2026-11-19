@@ -388,23 +388,29 @@ the whole command within 60. Once an attempt got no answer for 20 seconds or was
 command does, so the command keeps asking every 3 seconds or less (longer only when Dispatch's
 `Retry-After` asks), starting no ask in the last 5 seconds of its 60, to collect the answer; an
 upload of a megabyte or more, whose every ask sends the whole file again, keeps the five attempts.
-It asks again only of a Dispatch that judges the key: one whose answer
-carried the key back, or whose `/healthz` said `idempotency_keys: true` in the last five minutes,
-whatever its status; any other would make a repeated write twice. Dispatch makes the write once per
-key, so the command never makes a write twice. A repeat of a comment's or an issue message's
-create, a broadcast or a message to a session is answered with what the write made, read now; a
-repeat of a comment's edit, resolve, reopen, accept, reject or reply, or of an issue message's edit
-or reply, with that post as it stands now. Any other repeat gets the first answer, or, where
-Dispatch gives no copy (a first answer over 1 MiB, or a success holding a comment or an issue
-message deleted since, or a document version a delete renamed), the first answer's status and the
-code `ANSWER_NOT_KEPT`. When the
-write landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a replayed answer
-reading `ANSWER_NOT_KEPT`), the command exits 0 and says it was made: read it back to see it. A call
-that writes nothing (`dispatch related`, the check an upload runs first) is asked once more under a
-new key, and exits 1 if Dispatch keeps no answer again. When no attempt got an answer, the command
-says the write may or may not have taken effect: read it back before
-you run the command again, since a new command is a new key. Reads, and the `PUT` and `DELETE` of
-`dispatch follow` and `dispatch claim --release`, carry no key and go once. A script that calls
+Once an attempt may have reached Dispatch, it asks again only of a Dispatch that judges the key:
+one whose answer carried the key back, or whose `/healthz` said `idempotency_keys: true` in the
+last five minutes, whatever its status; any other would make a repeated write twice. An attempt
+that reached nothing (a refused connection, a credential whose trade goes on) is asked again
+without that check, since its repeat is no second write. Dispatch makes the write once per key, so
+the command never makes a write twice. A repeat of a comment's or an issue message's create, a
+broadcast or a message to a session is answered with what the write made, read now; a repeat of a
+comment's edit, resolve, reopen, accept, reject or reply, or of an issue message's edit or reply,
+with that post as it stands now. Any other repeat gets the first answer, or, where Dispatch gives
+no copy (a first answer over 1 MiB, or a success holding a comment or an issue message deleted
+since, or a document version a delete renamed), the first answer's status and the code
+`ANSWER_NOT_KEPT`. When the write landed but Dispatch has no answer to give for it
+(`409 KEY_COMMITTED`, or a replayed answer reading `ANSWER_NOT_KEPT`), the command exits 0 and says
+it was made: read it back to see it. A call that writes nothing (`dispatch related`, the check an
+upload runs first) is asked once more under a new key, and exits 1 if Dispatch keeps no answer
+again. When an attempt may have reached Dispatch and the command got no answer Dispatch's keyed
+layer gave (no attempt answered, a page something in Dispatch's place wrote, a 2xx that is empty,
+not typed JSON or not JSON, but a bodiless 204 or 205), the command says the write may or may not
+have taken effect: read it back before you run the command again, since a new command is a new key.
+Reads, and the `PUT` and `DELETE` of `dispatch follow` and `dispatch claim --release`, carry no
+key. Each goes once, and again only where Dispatch did nothing with it: once more after Dispatch
+calls the token it presented dead, and on an old build's "no route" during a rolling release. A
+script that calls
 the API directly can send its own key on any `POST` or `PATCH`: 1 to 128 letters, digits, `.`,
 `_`, `:` and `-`, the same on every retry of one write and new for every new write. Dispatch keeps
 each key's answer for 24 hours; the same key with a different request is refused

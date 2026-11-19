@@ -40,6 +40,7 @@ import type {
 } from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
 import { stubMatchMedia } from "../margin/margin-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
@@ -365,6 +366,12 @@ function withScrollY(run: () => Promise<void>): () => Promise<void> {
   };
 }
 
+/** Stubs `scrollIntoView` on Element, the prototype that owns the method: patching HTMLElement
+ *  would leave an own property behind that shadows every later patch on Element. */
+function stubScrollIntoView() {
+  return spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {});
+}
+
 afterEach(() => {
   jest.useRealTimers();
 });
@@ -568,7 +575,11 @@ test("a scroll event measures the reader position in O(1) rect reads", async () 
     await screen.findByText("Message 0");
 
     rectSpy.mockClear();
-    window.dispatchEvent(new Event("scroll"));
+    // The scroll listener sets the follow state, as a reader's scroll does, so the event goes
+    // inside `act` like every other scroll of this file.
+    act(() => {
+      window.dispatchEvent(new Event("scroll"));
+    });
 
     // ViewportAnchor measures only in the commit phase, immediately before a content reflow; a
     // scroll alone must do no layout reads. This guards both against O(n) scans over every card
@@ -1012,8 +1023,7 @@ test("a retracted ask is listed, and landing on one resets a filter that hides i
     comments: [comment("comment-1", { body: "An open thread" })],
   });
   const queryClient = newQueryClient();
-  const scrollIntoView = HTMLElement.prototype.scrollIntoView;
-  HTMLElement.prototype.scrollIntoView = () => {};
+  const scrollIntoView = stubScrollIntoView();
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
 
   try {
@@ -1031,7 +1041,7 @@ test("a retracted ask is listed, and landing on one resets a filter that hides i
     expect(card?.getAttribute("aria-current")).toBe("true");
   } finally {
     view.unmount();
-    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    scrollIntoView.mockRestore();
     stub.restore();
   }
 });
@@ -1141,8 +1151,7 @@ test("a handoff is Closed, and landing on one resets a filter that hides it", as
     handoffs: [handoffRecord("handoff-1", 1, "{}", "2026-09-10T09:00:00Z")],
   });
   const queryClient = newQueryClient();
-  const scrollIntoView = HTMLElement.prototype.scrollIntoView;
-  HTMLElement.prototype.scrollIntoView = () => {};
+  const scrollIntoView = stubScrollIntoView();
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
 
   try {
@@ -1163,7 +1172,7 @@ test("a handoff is Closed, and landing on one resets a filter that hides it", as
     expect(card?.getAttribute("aria-current")).toBe("true");
   } finally {
     view.unmount();
-    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    scrollIntoView.mockRestore();
     stub.restore();
   }
 });
@@ -1189,8 +1198,7 @@ test("landing on a reply under an ask marks that ask's card and the reply's own 
   const getAsk = spyOn(api, "getAsk");
   const stub = stubLists({ asks: [askRow({}, replies)], comments: replies });
   const queryClient = newQueryClient();
-  const scrollIntoView = HTMLElement.prototype.scrollIntoView;
-  HTMLElement.prototype.scrollIntoView = () => {};
+  const scrollIntoView = stubScrollIntoView();
   const view = render(
     tab({ "CORE-1": issueState() }, true, queryClient, false, new Map(), "reply-1")
   );
@@ -1208,7 +1216,7 @@ test("landing on a reply under an ask marks that ask's card and the reply's own 
   } finally {
     view.unmount();
     getAsk.mockRestore();
-    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    scrollIntoView.mockRestore();
     stub.restore();
   }
 });
@@ -2141,8 +2149,7 @@ function renderThreads(lists: Lists, unread: readonly string[], focusItemId?: st
   const stub = stubLists(lists);
   const putIssueState = answerIssueStates().mockImplementation(async () => issueState());
   const mark = answerThreadReads().mockResolvedValue(undefined);
-  const scrollIntoView = HTMLElement.prototype.scrollIntoView;
-  HTMLElement.prototype.scrollIntoView = () => {};
+  const scrollIntoView = stubScrollIntoView();
   const queryClient = newQueryClient();
   seedUnread(queryClient, { issue: "CORE-1" }, unread);
   const view = render(
@@ -2154,7 +2161,7 @@ function renderThreads(lists: Lists, unread: readonly string[], focusItemId?: st
       putIssueState.mockRestore();
       mark.mockRestore();
       stub.restore();
-      HTMLElement.prototype.scrollIntoView = scrollIntoView;
+      scrollIntoView.mockRestore();
       viewport.restore();
     },
     mark,
@@ -2311,6 +2318,9 @@ test("landing on a comment's reply opens the thread it belongs to and marks that
 });
 
 test("on a phone, landing on a comment opens its thread dialog and reading it marks it", async () => {
+  // The reply is read in the commit that mounts the dialog, which only a loaded engine draws
+  // (`MarkdownBody`): the first body of a file takes the asynchronous path.
+  await warmMarkdownRenderer();
   const restoreViewport = stubMatchMedia(true);
   const root = comment("root-comment", { body: "Root comment" });
   const reply = comment("reply-comment", {
