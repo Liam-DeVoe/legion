@@ -1075,9 +1075,10 @@ test("IssuePage sends no second title after an Escape while a title's write is o
   }
 });
 
-// A title queued behind the write out follows the reader's text: typed back to the title of that
-// write, it asks for nothing. Left queued, it went once that write landed, and its landing put it
-// into the editor under the reader, who had typed the saved title back.
+// A title queued behind the write out is the reader's last ended choice, which typing does not
+// move: typed back to the title of that write, the reader withdraws it. Left queued, it went once
+// that write landed, and its landing put it into the editor under the reader, who had typed the
+// saved title back.
 test("IssuePage sends only the saved title when a title queued behind it is typed back to it with the editor open", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
@@ -1170,6 +1171,7 @@ test("IssuePage sends the queued title and not the title the reader is still typ
       ],
     });
 
+    // Blur has no user-event form; it is what the title editor saves on.
     fireEvent.blur(title);
     await waitFor(() => expect(queryClient.isMutating()).toBe(0));
     expect(patchIssue.mock.calls.slice(2)).toEqual([["CORE-1", { title: "abc" }, keyedAttempt]]);
@@ -1298,11 +1300,11 @@ test("IssuePage sends only the route after a refused save with the issue's title
   }
 });
 
-// A draft queued behind a write of another field follows the reader's text. Here a route waits
-// behind a status write that fails: the failure settles no route, so the route stays queued, the
-// reader's choice. The reader then clears the route back to the issue's own, which asks for
-// nothing, and saves a parent, which goes alone. Left queued, the route went ahead of the parent,
-// though the reader had cleared it.
+// A draft queued behind a write of another field stays the reader's last ended choice until they
+// undo it. Here a route waits behind a status write that fails: the failure settles no route, so
+// the route stays queued, the reader's choice. The reader then clears the route back to the
+// issue's own, which withdraws it, and saves a parent, which goes alone. Left queued, the route
+// went ahead of the parent, though the reader had cleared it.
 test("IssuePage sends no route that waited behind a failed status write and was then cleared back to the issue's route", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();

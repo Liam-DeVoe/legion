@@ -36,7 +36,7 @@ export interface IssueDrafts {
   title: string;
   titleDirty: boolean;
   titleError: string | null;
-  /** Whether a send of the title's draft was asked for and has not gone yet. */
+  /** Whether a title the reader chose at the end of an edit waits to be sent. */
   titleQueued: boolean;
   writeParent: (next: string) => void;
   writeRoute: (next: string) => void;
@@ -53,7 +53,7 @@ interface FieldState {
   out: string | null;
   /** The reader's text, raw. */
   draft: string;
-  /** What the draft would send now, once a send was asked for; else null. */
+  /** The reader's last ended choice, normalized, until it is sent or withdrawn; else null. */
   queued: string | null;
 }
 
@@ -103,17 +103,10 @@ const reference = (state: FieldState): string => state.out ?? state.server;
 const changed = (rules: FieldRules, state: FieldState): boolean =>
   rules.normalize(state.draft) !== reference(state);
 
-/** The value the draft would send now: a changed draft Dispatch would take, else null. */
-function wouldSend(rules: FieldRules, state: FieldState): string | null {
-  const value = rules.normalize(state.draft);
-  return value !== reference(state) && rules.valid(value) ? value : null;
-}
-
-/** A send asked for follows the draft and its reference; with none asked for, none is made. */
-const requeued = (rules: FieldRules, state: FieldState): FieldState => ({
-  ...state,
-  queued: state.queued === null ? null : wouldSend(rules, state),
-});
+/** Drops a queued value the reference has become: the issue holds it, or is about to, so there
+ *  is nothing left to send. */
+const dropQueuedReference = (state: FieldState): FieldState =>
+  state.queued === reference(state) ? { ...state, queued: null } : state;
 
 function requestOutcome(
   rules: FieldRules,
@@ -126,11 +119,15 @@ function requestOutcome(
 
 /**
  * One field's draft, as one pure step per event. `reference` is the value out, else the
- * issue's; a draft is `changed` when its text normalized differs from it, and `wouldSend` is
- * that text, if Dispatch would take it.
+ * issue's, and a draft is `changed` when its text normalized differs from it. `queued` is the
+ * reader's last ended choice not yet sent (decision 324), which the hook's drain sends once the
+ * guard lets a write go.
  *
- * - `write(text)`, the reader's typing: the draft is the text, and a send asked for follows it,
- *   so a draft typed back to the reference asks for nothing.
+ * - `write(text)`, the reader's typing: the draft is the text, and a queued value stays as it
+ *   was, since typing ends no edit and so chooses nothing. Moved with each keystroke, the queued
+ *   value went as the write ahead of it landed, half typed, and the title the reader had saved
+ *   never went. A draft typed back to the value out or to the issue's value withdraws it: the
+ *   reader has undone the edit that chose it.
  * - `request`, the end of an edit, a blur, a switch's send: refused for a closed issue or a
  *   value Dispatch would not take, which asks for nothing; an unchanged draft takes the
  *   reference and asks for nothing; a changed one is queued as its text normalized, which the
@@ -144,12 +141,17 @@ function requestOutcome(
  *   takes the value it landed with. A refusal keeps the draft, which is then changed against the
  *   issue's value: the reader's unsent choice, which Retry and the end of the next edit send.
  *
- * After `server` and `settled` a send asked for follows the draft against its new reference.
+ * After `server` and `settled` a queued value is kept: it was valid when the reader ended the
+ * edit that chose it, and a new reference does not undo that choice. It is dropped only once the
+ * new reference is that value, which leaves it nothing to send.
  */
 function reduceField(rules: FieldRules, state: FieldState, event: FieldEvent): FieldState {
   switch (event.type) {
-    case "write":
-      return requeued(rules, { ...state, draft: event.text });
+    case "write": {
+      const value = rules.normalize(event.text);
+      const withdrawn = value === state.out || value === state.server;
+      return { ...state, draft: event.text, queued: withdrawn ? null : state.queued };
+    }
     case "request": {
       const outcome = requestOutcome(rules, state, event.closed);
       if (outcome === "queued") return { ...state, queued: rules.normalize(state.draft) };
@@ -165,7 +167,7 @@ function reduceField(rules: FieldRules, state: FieldState, event: FieldEvent): F
       return { ...state, out: event.value, queued: null };
     case "server": {
       const follows = state.out === null && !changed(rules, state);
-      return requeued(rules, {
+      return dropQueuedReference({
         ...state,
         draft: follows ? event.value : state.draft,
         server: event.value,
@@ -174,7 +176,11 @@ function reduceField(rules: FieldRules, state: FieldState, event: FieldEvent): F
     case "settled": {
       if (state.out === null) return state;
       const took = event.landed && rules.normalize(state.draft) === state.out;
-      return requeued(rules, { ...state, draft: took ? state.server : state.draft, out: null });
+      return dropQueuedReference({
+        ...state,
+        draft: took ? state.server : state.draft,
+        out: null,
+      });
     }
   }
 }

@@ -13,8 +13,9 @@ import {
 // The title draft of both issue headers is one hook, and the bugs found in it have each been one
 // particular order of typing, saving, escaping and answers from Dispatch. Rather than wait for the
 // next order to be found by hand, this file plays every order up to five events long and checks,
-// after every event, the four things decision 316 says a reader can rely on. The three orders a
-// review found come last, each as its own test, so a fix can be read against them by name.
+// after every event, the four things decisions 316 and 324 say a reader can rely on. The orders
+// a review or a sweep of the pages found come last, each as its own test, so a fix can be read
+// against them by name.
 
 const startIssue: Issue = {
   advances: [],
@@ -52,12 +53,6 @@ interface HookProps {
   updateIssue: IssueUpdateMutation;
 }
 
-/** A write the fake received, with the draft the field showed once the step that sent it ended. */
-interface Sent {
-  input: IssueUpdateInput;
-  draft: string;
-}
-
 /**
  * One mounted hook, the fake mutation it writes through, and the issue its prop holds. The fake
  * records each write in order and never answers by itself: when a write lands or is refused is the
@@ -88,30 +83,30 @@ class Session {
   }
 
   /** Runs one step inside `act` and returns the writes the fake received during it. */
-  step(action: () => void): Sent[] {
+  step(action: () => void): IssueUpdateInput[] {
     const before = this.received.length;
     act(action);
-    const sent = this.received.slice(before).map((input) => ({ input, draft: this.drafts.title }));
+    const sent = this.received.slice(before);
     const last = sent.at(-1);
-    if (last !== undefined) this.out = last.input;
+    if (last !== undefined) this.out = last;
     return sent;
   }
 
-  type(value: string): Sent[] {
+  type(value: string): IssueUpdateInput[] {
     return this.step(() => this.drafts.writeTitle(value));
   }
 
   /** The end of an edit: a blur, Enter, or a switch's send. */
-  end(): Sent[] {
+  end(): IssueUpdateInput[] {
     return this.step(() => this.drafts.requestTitleSubmit());
   }
 
-  escape(): Sent[] {
+  escape(): IssueUpdateInput[] {
     return this.step(() => this.drafts.discardTitle());
   }
 
   /** The write out lands: the issue takes the title it carried, then Dispatch's answer arrives. */
-  land(): Sent[] {
+  land(): IssueUpdateInput[] {
     const input = this.takeOut();
     const shown =
       input.title === undefined ? [] : this.showIssue({ ...this.issue, title: input.title });
@@ -123,12 +118,12 @@ class Session {
     return [...shown, ...answered];
   }
 
-  refuse(): Sent[] {
+  refuse(): IssueUpdateInput[] {
     this.takeOut();
     return this.step(() => this.drafts.onIssueSettled(new Error("refused")));
   }
 
-  otherReader(title: string): Sent[] {
+  otherReader(title: string): IssueUpdateInput[] {
     return this.showIssue({ ...this.issue, title });
   }
 
@@ -136,7 +131,7 @@ class Session {
    * Another field's write lands carrying another reader's title, as the new header's status pick
    * does. Its answer reaches the hook, but it is not the hook's own write, so nothing settles.
    */
-  otherFieldLands(title: string): Sent[] {
+  otherFieldLands(title: string): IssueUpdateInput[] {
     const next = { ...this.issue, title, status: "in_progress" };
     const answered = this.step(() => this.drafts.onIssueSuccess(next, { status: "in_progress" }));
     return [...answered, ...this.showIssue(next)];
@@ -153,7 +148,7 @@ class Session {
     return input;
   }
 
-  private showIssue(next: Issue): Sent[] {
+  private showIssue(next: Issue): IssueUpdateInput[] {
     this.issue = next;
     return this.step(() => this.hook.rerender({ issue: next, updateIssue: this.updateIssue }));
   }
@@ -163,6 +158,8 @@ const alphabet = [
   "typeNew",
   "typeServer",
   "typeOut",
+  "typeMore",
+  "saveNew",
   "end",
   "escape",
   "land",
@@ -189,8 +186,17 @@ interface TitleWrite {
  */
 class Reader {
   readonly session = new Session();
-  /** Set by an end whose draft differs from what it is compared with; a send or escape clears it. */
+  /**
+   * Set by an end whose draft is not empty and differs from what it is compared with; a send or
+   * an escape clears it.
+   */
   private intent = false;
+  /**
+   * The reader's last ended choice (decision 324): the trimmed draft of the end that set
+   * `intent`. An end that chose nothing, an escape, typing back to the title out or the issue's
+   * title, and its send withdraw it.
+   */
+  private chosen: string | null = null;
   /**
    * The reader's own choice the field may show: the text of the last type event, or what an
    * escape put back while a write was out; none after an escape with nothing out, nor once a
@@ -218,12 +224,23 @@ class Reader {
   }
 
   /** Plays one event and returns what the writes it sent broke of I1, I2 and I3. */
-  play(event: EventName): { sent: Sent[]; findings: Finding[] } {
+  play(event: EventName): { sent: IssueUpdateInput[]; findings: Finding[] } {
+    // A save is a fresh title typed and the edit ended, each played and judged as that event is
+    // alone. Two saves queue a title behind the write out, which takes four single events, so
+    // a sequence of five can still type on or type back after them and let the write land.
+    if (event === "saveNew") {
+      const typed = this.play("typeNew");
+      const ended = this.play("end");
+      return {
+        sent: [...typed.sent, ...ended.sent],
+        findings: [...typed.findings, ...ended.findings],
+      };
+    }
     const sent = this.apply(event);
     return { sent, findings: sent.flatMap((write) => this.judge(write)) };
   }
 
-  private apply(event: EventName): Sent[] {
+  private apply(event: Exclude<EventName, "saveNew">): IssueUpdateInput[] {
     const { session } = this;
     switch (event) {
       case "typeNew":
@@ -233,16 +250,24 @@ class Reader {
         return this.type(session.issue.title);
       case "typeOut":
         return this.type(session.out?.title ?? "");
+      case "typeMore":
+        // One character onto the end of the draft, as a reader goes on writing without ending
+        // the edit.
+        return this.type(`${session.drafts.title}x`);
       case "end": {
         // While a title write is out the draft is compared with the title it carries, since the
         // issue is about to hold that title; otherwise with the issue's own.
         const against = session.out?.title ?? session.issue.title;
-        if (session.drafts.title.trim() !== against.trim()) this.intent = true;
+        const draft = session.drafts.title.trim();
+        const chose = draft !== "" && draft !== against.trim();
+        this.chosen = chose ? draft : null;
+        if (chose) this.intent = true;
         return session.end();
       }
       case "escape": {
         const before = session.drafts.title.trim();
         this.intent = false;
+        this.chosen = null;
         // An escape while a title write is out puts back the title that write carries: the reader
         // chose it when they ended the edit that sent it, so it is their choice again, and a
         // refusal of that write leaves it in the field as the choice not yet sent.
@@ -272,13 +297,17 @@ class Reader {
     }
   }
 
-  private type(value: string): Sent[] {
+  private type(value: string): IssueUpdateInput[] {
+    const { session } = this;
+    const text = value.trim();
+    // Typed back to the title out or the issue's, the draft undoes the end that chose a title.
+    if (text === session.out?.title || text === session.issue.title) this.chosen = null;
     this.lastTyped = value;
-    this.discarded.delete(value.trim());
-    return this.session.type(value);
+    this.discarded.delete(text);
+    return session.type(value);
   }
 
-  private judge({ input, draft }: Sent): Finding[] {
+  private judge(input: IssueUpdateInput): Finding[] {
     const { title } = input;
     if (title === undefined) {
       this.titleWriteOut = null;
@@ -286,15 +315,13 @@ class Reader {
     }
     const findings: Finding[] = [];
     const quoted = JSON.stringify(title);
-    // A title the reader never typed, such as the issue's old title an escape put back, is no
-    // choice of theirs even when the field shows it as an end sends it.
-    const chosen = this.lastTyped?.trim() ?? null;
+    // I1 holds a title sent to the reader's last ended choice (decision 324), not to the field's
+    // text or to what the reader typed last: a queued title goes as the write ahead of it lands,
+    // while the reader may be typing something else in an editor opened again.
+    const choice = this.chosen === null ? "none" : JSON.stringify(this.chosen);
     const unchosen = [
       ...(this.intent ? [] : ["with no end choosing it"]),
-      ...(title === draft.trim() ? [] : [`while the field showed ${JSON.stringify(draft)}`]),
-      ...(title === chosen
-        ? []
-        : [`while the reader's choice was ${chosen === null ? "none" : JSON.stringify(chosen)}`]),
+      ...(title === this.chosen ? [] : [`while the reader's last ended choice was ${choice}`]),
     ];
     if (unchosen.length > 0) {
       findings.push({ invariant: "I1", read: `sent ${quoted} ${unchosen.join(" and ")}` });
@@ -307,6 +334,7 @@ class Reader {
       findings.push({ invariant: "I3", read: `sent ${quoted} twice in a row` });
     }
     this.intent = false;
+    this.chosen = null;
     const write = { title, refused: false };
     this.lastTitleWrite = write;
     this.titleWriteOut = write;
@@ -417,30 +445,38 @@ function explore(): Violation[] {
 }
 
 // The four tests below share one exploration: it is the slow part, and it judges all four at once.
+// It plays about 57,000 sequences, near a minute on one core, so each of the four has a time limit
+// of its own above the suite's minute: whichever runs first pays for the exploration.
 let explored: Violation[] | undefined;
 function exploration(): Violation[] {
   explored ??= explore();
   return explored;
 }
+const explorationTimeout = 300_000;
 
-// I2 names a send that I1 also refuses: I1 holds a sent title to the reader's last choice, and
-// typing a value again takes it out of what an escape put away, so a discarded value that is sent
-// breaks both, and I2 says which of I1's sends was a value an escape put away.
+// I2 and I1 overlap: an escape withdraws the reader's last ended choice, so a value it put away
+// goes again only if a later end chooses it, and typing it again takes it out of what was put
+// away. I2 says which of the sends I1 judges was a value an escape put away and the reader never
+// typed again.
 const invariants: [Invariant, string][] = [
-  ["I1", "nothing is sent the reader did not last choose"],
+  ["I1", "nothing is sent but the reader's last ended choice"],
   ["I2", "a discarded value is never sent later"],
   ["I3", "no value is sent twice in a row, unless the first was refused"],
   ["I4", "at rest the field shows the server's value or the reader's unsent choice"],
 ];
 
 for (const [invariant, statement] of invariants) {
-  test(`every sequence of one to five events keeps ${invariant}: ${statement}`, () => {
-    const broken = exploration().filter((v) => v.invariant === invariant);
-    expect({
-      sequences: new Set(broken.map((v) => v.sequence)).size,
-      shortest: broken.slice(0, 5).map((v) => `${v.sequence}: ${v.invariant} ${v.read}`),
-    }).toEqual({ sequences: 0, shortest: [] });
-  });
+  test(
+    `every sequence of one to five events keeps ${invariant}: ${statement}`,
+    () => {
+      const broken = exploration().filter((v) => v.invariant === invariant);
+      expect({
+        sequences: new Set(broken.map((v) => v.sequence)).size,
+        shortest: broken.slice(0, 5).map((v) => `${v.sequence}: ${v.invariant} ${v.read}`),
+      }).toEqual({ sequences: 0, shortest: [] });
+    },
+    explorationTimeout
+  );
 }
 
 // The three orders below were found in review, each a way the hook sent or showed a title the
@@ -505,4 +541,43 @@ test("a title write that lands with no answer keeps the title it sent", () => {
     changed: session.drafts.titleDirty,
     sent: session.titlesSent(),
   }).toEqual({ title: "a", changed: false, sent: ["a"] });
+});
+
+// The order a sweep of the pages found (decision 324): a title saved behind the write out, and the
+// editor opened again to type on with no end. The landing sends the saved title, the reader's
+// last ended choice, and the field keeps what the reader is still typing. That title goes at the
+// end of the edit, once the saved title's own write has landed.
+test("a title typed on behind a queued save is not sent as the write ahead lands, and the end of the edit sends it", () => {
+  const session = new Session();
+  session.type("a");
+  session.end();
+  session.type("ab");
+  session.end();
+  // One character typed onto the end, with no end of the edit.
+  session.type("abc");
+  session.land();
+  const landed = { title: session.drafts.title, sent: session.titlesSent() };
+  session.land();
+  session.end();
+  expect({ landed, ended: session.titlesSent() }).toEqual({
+    landed: { title: "abc", sent: ["a", "ab"] },
+    ended: ["a", "ab", "abc"],
+  });
+});
+
+// A title saved while a status write is out waits behind it, one write of the issue's fields at a
+// time. Another reader sets the issue to that very title meanwhile, so it has nothing left to
+// send: sent as the status write lands, it would be a second write of a title the issue holds.
+test("a title queued behind another field's write is not sent once another reader sets the issue to it", () => {
+  const session = new Session();
+  session.step(() => session.drafts.requestStatusSubmit("done"));
+  session.type("X");
+  session.end();
+  session.otherReader("X");
+  const landed = { ...session.issue, status: "done" };
+  session.step(() => {
+    session.drafts.onIssueSuccess(landed, { status: "done" });
+    session.drafts.onIssueSettled(null);
+  });
+  expect(session.received).toEqual([{ status: "done" }]);
 });
