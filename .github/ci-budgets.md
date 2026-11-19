@@ -364,14 +364,14 @@ A called workflow's legs are jobs of that workflow, and one job of it - the merg
 
 ## The race lane
 
-The race lane: delivery (its intake handler reads the routing settings the poll loop publishes, from NATS's delivery goroutine), the Dispatch store (the pool's one-connection guard, and the hold mark of its own each concurrent read takes), the bus (two connects on one SOCKS5 dialer record each dial's error in one record and read it back, TestConnectsSharingADialerRecordItsLastError), the listener, where the role claim watcher, the session and interest watchers and the request handlers meet, with the role claim view, its lock and its epoch in the registry store and the watchers' completeness and rescans in kvwatch (INFRA-141), the session cache, whose reads take its shared lock beside watcher writes and the expiry timer's callback as kvwatch's resume point is read while a replaced watcher still applies, the Dispatch API and the document service - all under the race detector.
+The race lane: delivery (its intake handler reads the routing settings the poll loop publishes, from NATS's delivery goroutine), the Dispatch store (the pool's one-connection guard, and the hold mark of its own each concurrent read takes), the bus (two connects on one SOCKS5 dialer record each dial's error in one record and read it back, TestConnectsSharingADialerRecordItsLastError), the listener, where the role claim watcher, the session and interest watchers and the request handlers meet, with the role claim view, its lock and its epoch in the registry store and the watchers' completeness and rescans in kvwatch (INFRA-141), the session cache, whose reads take its shared lock beside watcher writes and the expiry timer's callback as kvwatch's resume point is read while a replaced watcher still applies, natscred, whose service keeper probes with the connection's options while internal/bus may be setting its handlers (natscred/probe_race_test.go, which only the race build compiles, so this lane is its one run), the NATS auth service (internal/broker/natscallout), which starts a goroutine per request from nats.go's delivery callback, counts those waiting for a decision slot and waits them out at Close, and the Dispatch API and the document service - all under the race detector.
 A read that walks a live document without its lock races the room's peers, which no ordinary run shows:
 envoy-go's unit-test step runs without -race (LEGION-499).
 The lane sits beside envoy-go because -race runs these packages several times slower, and each job carries a package deadline of its own, since go test's ten-minute default is a whole package's.
 envoy-go runs none of these packages plain any more (INFRA-1408):
 its unit step leaves out exactly what the lane runs, and the one plain run it keeps of them is the step named "Test what the race build cannot run at all or at full size", which runs the handful of assertions the detector makes impossible or shrinks and nothing else.
 
-The lane is three jobs: envoy-go-race (delivery, the Dispatch store, the bus, the listener, the registry store, the session cache and kvwatch), envoy-go-race-api and envoy-go-race-docs, whose own comment below says why the document service runs alone.
+The lane is three jobs: envoy-go-race (delivery, the Dispatch store, the bus, the listener, the registry store, the session cache, kvwatch, natscred and the NATS auth service), envoy-go-race-api and envoy-go-race-docs, whose own comment below says why the document service runs alone.
 
 api sits apart because isolation is what made it fast:
 sharing a runner, the race binaries contended for the four vCPUs, and alone api fell from 1099.487 s to 746.718 s.
@@ -385,11 +385,11 @@ Its product code is still race-instrumented wherever a race job compiles it, sin
 what went is the second, race-built run of pmdoc's own tests.
 
 No job of this lane installs Bun: pmdoc's tests, which shell out to the generated TypeScript fixtures under internal/dispatch/pmdoc/gen and refuse to run without bun in CI (render_readback_test.go), were the only ones here that needed it, and they run in envoy-go's unit step now, while the "Check pmdoc fixtures are up to date" step that keeps those fixtures current is envoy-go-checks'.
-delivery's and the bus's NATS runs in the test process (internal/testnats), so no job here needs a container runtime of its own.
+delivery's, the bus's, natscred's and the auth service's NATS runs in the test process (internal/testnats), so no job here needs a container runtime of its own.
 
-Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache and kvwatch share this runner.
+Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache, kvwatch, natscred and the NATS auth service share this runner.
 The Dispatch store's tests (store_test.go:28) and delivery's take their databases from storetest.Open (storetest.go:64-66), which reads DISPATCH_TEST_DATABASE_URL and skips without it, and cmd/listener/dispatch_resolution_test.go:158 gets its database through internal/testpg, so the job carries the lane's Postgres service;
-the registry store itself is the NATS KV view and needs none.
+the registry store itself is the NATS KV view, and natscred's and the auth service's tests open no store, so they need none.
 
 ## The download-retry job's rig
 
