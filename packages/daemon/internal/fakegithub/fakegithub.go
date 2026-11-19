@@ -7,9 +7,10 @@
 // the server's listener (internal/kindtest).
 //
 // What it holds is the test's: the repositories it serves (Serve, NewRepository), the tokens it
-// takes (Grant) and the Apps that mint them (AddApp), and the pull requests, reviews, collaborator
+// takes (Grant) and the Apps that mint them (AddApp), the pull requests, reviews, collaborator
 // permissions and branch activity it answers (AddPullRequest, AddReview, SetPermission,
-// AddActivity). What it refuses is what GitHub refuses: a git request with no credential, or one
+// AddActivity), and the webhook its push and pull request events go to, signed as GitHub signs
+// them (Webhooks, webhook.go). What it refuses is what GitHub refuses: a git request with no credential, or one
 // GitHub does not take, answers 401 with GitHub's Basic challenge, but a read of a public
 // repository with none; a push with a token that may not write answers 403; a REST read of a
 // private repository the caller's token does not reach answers 404, and a REST write such a token
@@ -108,6 +109,12 @@ type Server struct {
 	attempts  int
 	passwords []string
 	requests  []string
+	// hook is where the server delivers its events (Webhooks), nil for none, and delivered what
+	// came of each delivery made.
+	hook      *webhook
+	delivered []string
+	// tokenLifetime is how long an installation token lives (SetTokenLifetime); zero is an hour.
+	tokenLifetime time.Duration
 }
 
 // Repository is one repository the server serves: its owner and name as GitHub spells them, the
@@ -460,7 +467,21 @@ func (s *Server) serveGit(w http.ResponseWriter, r *http.Request, owner, name, e
 			}
 		}
 	}
+	if push && r.Method == http.MethodPost && s.hookSet() {
+		// A push the backend takes moves refs, and each ref it moved is one push event.
+		before := s.refs(repo.Bare)
+		s.backend.ServeHTTP(w, r)
+		s.pushed(repo, held.login, before, s.refs(repo.Bare))
+		return
+	}
 	s.backend.ServeHTTP(w, r)
+}
+
+// hookSet is whether the server delivers its events anywhere.
+func (s *Server) hookSet() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hook != nil
 }
 
 // packRequest is whether r, whose body is body, is a protocol v2 pack request.

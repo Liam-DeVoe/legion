@@ -76,7 +76,6 @@ const drivers = gitNames(["ls-files", "-z", "--", "*.sh"]).filter(
 
 /** The drivers known to start a NATS server, a floor under the scan: a scan finding none fails. */
 const knownDrivers = [
-  "scripts/e2e/claude-backend-sandbox.sh",
   "docs/site/media/walkthroughs/legion-operator/record-casts.sh",
   "packages/pi-legion/scripts/skill-scenarios/rig.sh",
 ];

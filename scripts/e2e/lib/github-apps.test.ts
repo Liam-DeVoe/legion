@@ -4,7 +4,6 @@
 // the stand-in GitHub of stand-in-github-fixtures.ts.
 import { beforeAll, describe, expect, test } from "bun:test";
 import {
-  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -17,7 +16,6 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { appCredentialSources } from "./app-logins";
-import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./script-functions";
 import {
   appPrivateKey,
   holdsNoKey,
@@ -175,17 +173,6 @@ const tokenCommand = (name: string) =>
 // The review role's private_key_command in every block the lib writes: a `cat` of the key file it
 // resolved the operator's command into, under the credential directory the caller named.
 const keyFileCommand = (dir: string) => `cat -- '${join(dir, "review", "key.pem")}'`;
-// The teardown of the App credential directory the sandbox proof runs, taken from that script by
-// name rather than written again here: claude-backend-sandbox.sh's remove_app_tokens, which stops
-// the refresher this lib starts and removes the directory the proof set app_tokens_dir to. A row
-// that drives it puts `sandboxTeardown` in its shell after setting app_tokens_dir, so a change to
-// that function reaches the rows below.
-const sandboxScript = join(import.meta.dir, "..", "claude-backend-sandbox.sh");
-// nameMissingHelpers names a helper remove_app_tokens calls that neither this harness's `. "$LIB"`
-// nor the extraction defines, rather than leaving the run a bare exit 127.
-const sandboxTeardown = `${nameMissingHelpers(sandboxScript)}
-${scriptFunctions(sandboxScript)("remove_app_tokens")}`;
-
 describe("lib/github-apps.sh", () => {
   const proveBoth = `require_app_inputs implement review
 write_github_apps --key-dir "$work/app-key" implement review
@@ -783,10 +770,9 @@ echo "logins $github_app_logins"`
   });
 
   // What this issue is for: the review App's key reaches the one file the daemon's container
-  // reads it from, and nothing else of the run — no shell variable, no child's environment, no
-  // argv the broker client was given, no message — and the run's own teardown takes that file
-  // with it.
-  test("the key reaches its file alone, and the run's teardown leaves neither it nor its directory", async () => {
+  // reads it from, and nothing else of the run: no shell variable, no child's environment, no
+  // argv the broker client was given, no message.
+  test("the key reaches its file alone", async () => {
     const tokenDir = mkdtempSync(join(dir, "tokens."));
     const argvLog = join(dir, "argv-key-leak");
     rmSync(argvLog, { force: true });
@@ -805,15 +791,7 @@ echo "key file mode $(stat -c %a -- "$TOKEN_DIR/review/key.pem")"
 cmp -s -- "$TOKEN_DIR/review/key.pem" "$KEY_FILE" && echo "the key file holds the key"
 # Every file of the run's work and token directories holding any line of the key, by name alone.
 grep -r -l -F -f "$KEY_FILE" -- "$work" "$TOKEN_DIR" |
-  sed "s|^$TOKEN_DIR|TOKEN_DIR|; s|^|holds the key: |"
-# The teardown the sandbox proof runs over this directory, that script's own function rather than
-# a copy of it here: claude-backend-sandbox.sh's remove_app_tokens, over the directory its caller
-# names in app_tokens_dir.
-app_tokens_dir=$TOKEN_DIR
-${sandboxTeardown}
-remove_app_tokens && echo "the teardown returned 0" || echo "the teardown returned $?"
-[ -e "$TOKEN_DIR" ] && echo "the App credential files remain" ||
-  echo "the key file and its directory are gone"`
+  sed "s|^$TOKEN_DIR|TOKEN_DIR|; s|^|holds the key: |"`
     );
     expect(stderr).toBe("");
     expect(code).toBe(0);
@@ -826,48 +804,10 @@ remove_app_tokens && echo "the teardown returned 0" || echo "the teardown return
     expect(stdout.split("\n").filter((l) => l.startsWith("holds the key: "))).toEqual([
       "holds the key: TOKEN_DIR/review/key.pem",
     ]);
-    expect(stdout).toContain("the key file and its directory are gone");
-    expect(stdout).toContain("the teardown returned 0");
-    expectNoMissingHelpers(stdout, stderr);
-    expect(existsSync(tokenDir)).toBe(false);
     holdsNoKey(stdout, keyIDs);
     holdsNoKey(stderr, keyIDs);
     holdsNoKey(readFileSync(argvLog, "utf8"), keyIDs);
     holdsNoToken(stdout + stderr);
-  });
-
-  // The other half of that teardown: a directory it could not empty is a key left on the devbox,
-  // which the run must say out loud rather than pass over.
-  test("the teardown fails, naming the directory, when the App credential files cannot be removed", async () => {
-    const tokenDir = mkdtempSync(join(dir, "tokens."));
-    const review = join(tokenDir, "review");
-    mkdirSync(review, { mode: 0o700 });
-    writeFileSync(join(review, "key.pem"), reviewKey, { mode: 0o600 });
-    // A key file `rm -rf` cannot unlink, since its directory admits no write: what a credential
-    // directory of another owner, or one on a read-only mount, leaves the teardown with.
-    chmodSync(review, 0o500);
-    try {
-      const { code, stdout, stderr } = await githubApps(
-        { ...appInputs, TOKEN_DIR: tokenDir },
-        `app_tokens_dir=$TOKEN_DIR
-${sandboxTeardown}
-remove_app_tokens && echo "the teardown returned 0" || echo "the teardown returned $?"`
-      );
-      // The shell around it ends well: the teardown's refusal is its return value and its FAIL
-      // line, never an exit that would hide the rest of a run's cleanup.
-      expect(code).toBe(0);
-      expect(stdout).toContain("the teardown returned 1");
-      expect(stderr).toContain(`FAIL cleanup: the App credential files remain in ${tokenDir}`);
-      expectNoMissingHelpers(stdout, stderr);
-      // The key is still there, which is what that FAIL line is about.
-      expect(readFileSync(join(review, "key.pem"), "utf8")).toBe(reviewKey);
-      holdsNoKey(stdout, keyIDs);
-      holdsNoKey(stderr, keyIDs);
-    } finally {
-      // The mode given back, so the directory this file reserved can be removed when the run
-      // ends.
-      chmodSync(review, 0o700);
-    }
   });
 
   // The check every proof's teardown ends with, over the directory write_github_apps --key-dir
@@ -885,8 +825,8 @@ app_key_left "$work/app-key" && echo "gone: returned 0"
 app_key_left --check-line "$work/app-key" && echo "gone under --check-line: returned 0"`
     );
     expect(code).toBe(0);
-    // While the key is there: the proof's own FAIL line on stderr, or the teardown check line
-    // stage4b-sandbox-tree.sh writes on stdout, and a return of 1 for the caller to act on.
+    // While the key is there: the proof's own FAIL line on stderr, or the teardown check line on
+    // stdout, and a return of 1 for the caller to act on.
     expect(stdout).toContain("left: returned 1");
     expect(stderr).toBe(
       `FAIL cleanup: the review App's private key remains in ${join(work, "app-key")}`

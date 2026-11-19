@@ -1767,15 +1767,27 @@ KIND_PACKAGE_FILES = {
                                   "live_secrets_test.go", "live_sessions_test.go", "live_setup_test.go", "live_test.go"],
                                  ["TestStage4aSandboxRuntimeLive"]),
 }
+# The tree part's tests: the daemon's two whole-tree tests of internal/daemon, which boot the whole
+# daemon on the rig with Dispatch, the Envoy listener and natsd built from the checkout and real
+# agents in issue pods (kind_tree_rig_live_test.go, their shared rig): Stage 4b's tree, one subtest
+# per checkpoint, and the Claude Code backend in an issue pod. Each brings up a rig of its own and
+# runs for most of an hour, so they run in a part of their own, beside the rig part's.
+KIND_TREE_FILES = {
+    "internal/daemon": (["claude_backend_kind_live_test.go", "kind_tree_rig_live_test.go", "stage4b_kind_live_test.go"],
+                        ["TestStage4bSandboxTreeOnTheKindRigLive",
+                         "TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive"]),
+}
 KIND_PACKAGES = list(KIND_PACKAGE_FILES)
-KIND_TESTS = [test for _, tests in KIND_PACKAGE_FILES.values() for test in tests]
+KIND_RIG_TESTS = [test for _, tests in KIND_PACKAGE_FILES.values() for test in tests]
+KIND_TREE_TESTS = [test for _, tests in KIND_TREE_FILES.values() for test in tests]
+KIND_TESTS = KIND_RIG_TESTS + KIND_TREE_TESTS
 KIND_JOB = "kind"
 KIND_WORKFLOW = job_file(KIND_JOB)
 KIND_IMAGE = "image"
 KIND_IMAGE_STEP = "Build the worker image into a docker archive"
 KIND_RIG = "rig"
 KIND_STEP = "Run the kind tests"
-KIND_PATTERN = f"'^({'|'.join(sorted(KIND_TESTS))})$'"
+KIND_PATTERN = f"'^({'|'.join(sorted(KIND_RIG_TESTS))})$'"
 # -p 1: each package's tests bring up a rig of their own, a kind cluster, a registry and the worker
 # image in Docker, which one runner holds one of at a time. -timeout is each test binary's own: the
 # sandbox runtime's, the longest, is one rig (about five minutes in the rig's first CI run), the
@@ -1783,9 +1795,17 @@ KIND_PATTERN = f"'^({'|'.join(sorted(KIND_TESTS))})$'"
 # gVisor or a wait of a minute or two, so about an hour; 90m leaves half again over it.
 KIND_SCRIPT = (f"go test -v -count=1 -p 1 -timeout 90m -run {KIND_PATTERN} "
                + " ".join(f"./{package}/" for package in KIND_PACKAGES))
-for _package, (_files, _tests) in KIND_PACKAGE_FILES.items():
-    hold_whole_files(KIND_JOB, _package, _files, _tests, f"KIND_PACKAGE_FILES[{_package!r}]'s files",
-                     f"KIND_PACKAGE_FILES[{_package!r}]'s tests", both_steps=True)
+KIND_TREE = "tree"
+KIND_TREE_STEP = "Run the tree tests"
+# The two run one after the other in one test binary, each on a rig of its own: the Claude Code
+# test's three checks over one issue pod, and the tree's fourteen checkpoints, a credential
+# refresh and two daemon restarts that relaunch every claim among them, so -timeout is two hours.
+KIND_TREE_SCRIPT = (f"go test -v -count=1 -timeout 120m -run '^({'|'.join(sorted(KIND_TREE_TESTS))})$' "
+                    + " ".join(f"./{package}/" for package in KIND_TREE_FILES))
+for _files_of, _name in ((KIND_PACKAGE_FILES, "KIND_PACKAGE_FILES"), (KIND_TREE_FILES, "KIND_TREE_FILES")):
+    for _package, (_files, _tests) in _files_of.items():
+        hold_whole_files(KIND_JOB, _package, _files, _tests, f"{_name}[{_package!r}]'s files",
+                         f"{_name}[{_package!r}]'s tests", both_steps=True)
 # The rig's own files beside the worker image's: the library every piece of it is a function of,
 # and the Agent Sandbox CRD and manifest kind_sandbox_install_agent_sandbox applies.
 KIND_LIB = "scripts/e2e/lib/kind-sandbox.sh"
@@ -1795,6 +1815,11 @@ KIND_TESTDATA = f"{DAEMON}/internal/runtime/sandbox/testdata"
 def at_kind_rig(step):
     """A citation of a step of the kind job's rig part."""
     return at(KIND_RIG, step, KIND_WORKFLOW)
+
+
+def at_kind_tree(step):
+    """A citation of a step of the kind job's tree part."""
+    return at(KIND_TREE, step, KIND_WORKFLOW)
 
 
 WORKER_IMAGE_FILTER = "worker_image"
@@ -3233,8 +3258,9 @@ GATES = [
       + bun_job(AGENT_HARNESS_PLUGIN_SMOKES, AGENT_HARNESS_WORKFLOW)
       + CI_SELF + job_self(AGENT_HARNESS_JOB), workflow=CI),
 
-    # The kind job: its rig part runs the tests of KIND_TESTS, which both daemon-go steps skip by
-    # name, and compiles the packages they are in to do it, so this filter is those packages' whole
+    # The kind job: its rig part runs the tests of KIND_PACKAGE_FILES and its tree part those of
+    # KIND_TREE_FILES, which both daemon-go steps skip by name (KIND_TESTS), and each compiles the
+    # packages its tests are in to do it, so this filter is those packages' whole
     # test closure - internal/kindtest and the fake GitHub it serves, internal/fakegithub,
     # internal/daemon, internal/runtime/sandbox and the broker's test rig they reach through
     # envoy's public brokertest - as well as what the rig reads beyond it: scripts/e2e/lib/
@@ -3246,14 +3272,26 @@ GATES = [
     # filter to the image job's build as it holds worker_image to worker-image.yaml's. Beside them
     # are the live tests' own reads: the operator route's files, the role-namespace helper, the
     # plugin pack and the frozen bun install it needs, and the checkout's agent-secrets, which the
-    # sandbox runtime's test builds. Those reads are declared here, keyed on the job, rather than in
-    # RULES rows of the tests' files, which the daemon-go steps compile and run none of. The called
-    # file's jobs carry ids of their own, so this gate keeps `workflow=CI`, as agent_harness does.
+    # sandbox runtime's test builds; and the tree part's: the `legion` buildProofLegion builds, and
+    # the Envoy listener and natsd its rig builds from packages/envoy (Dispatch is
+    # outbox_scratch_dispatch_test.go's RULES row). Those reads are declared here, keyed on the
+    # job, rather than in RULES rows of the tests' files, which the daemon-go steps compile and run
+    # none of. The called file's jobs carry ids of their own, so this gate keeps `workflow=CI`, as
+    # agent_harness does.
     gate("kind", KIND_JOB, exact=[
         pinned_step(KIND_RIG, KIND_STEP, DAEMON, KIND_SCRIPT, [
             (DAEMON, [f"./{package}/" for package in KIND_PACKAGES], "go test -run over the packages the kind tests are in", {}),
             (ENVOY, ["./cmd/agent-secrets"], "internal/runtime/sandbox/live_test.go:434 newKindLiveEnv runs go build "
                                             "./cmd/agent-secrets in packages/envoy", {"mode": "build"}),
+        ], workflow=KIND_WORKFLOW),
+        pinned_step(KIND_TREE, KIND_TREE_STEP, DAEMON, KIND_TREE_SCRIPT, [
+            (DAEMON, [f"./{package}/" for package in KIND_TREE_FILES], "go test -run over the package the tree tests are in", {}),
+            (ENVOY, ["./cmd/listener", "./internal/testnats/cmd/natsd"],
+             "internal/daemon/kind_tree_rig_live_test.go:803,830 testbuild.EnvoyBinary, which runs go build "
+             "./internal/testnats/cmd/natsd and ./cmd/listener in packages/envoy (internal/testbuild/testbuild.go:112)",
+             {"mode": "build"}),
+            (DAEMON, [LEGION_BUILD], "internal/daemon/live_agent_proof_test.go buildProofLegion, which "
+                                     "kind_tree_rig_live_test.go:197 calls, runs go build ./cmd/legion", {"mode": "build"}),
         ], workflow=KIND_WORKFLOW),
     ], reads=reads(
         (KIND_LIB, f"{at_kind_rig(KIND_STEP)}: packages/daemon/internal/kindtest/kindtest.go:470 sources it for each "
@@ -3266,8 +3304,8 @@ GATES = [
                                                         "for the run's operator route ConfigMap"),
         ("deploy/kubernetes/operator-route/overlay.yml", "internal/runtime/sandbox/live_test.go:425 newKindLiveEnv puts it "
                                                          "in the run's operator route ConfigMap"),
-        ("scripts/e2e/lib/role-namespaces.sh", "internal/daemon/share_volumes_live_test.go:180 sources it for "
-                                               "role_enter_sh"),
+        ("scripts/e2e/lib/role-namespaces.sh", "internal/daemon/share_volumes_live_test.go:180 and "
+                                               "kind_tree_rig_live_test.go:208 source it for role_enter_sh"),
         ("scripts/e2e/lib/pack-plugin.sh", "internal/runtime/sandbox/live_test.go:505 packLivePlugins runs it for "
                                            "pi-envoy and pi-legion"),
     ) + [
@@ -3278,6 +3316,7 @@ GATES = [
                            f"from it, as .github/workflows/worker-image.yaml's build does, whose image a pull request's "
                            f"run hands {at_kind_rig(KIND_STEP)} instead")
       + setup_go(KIND_RIG, f"{DAEMON}/go.mod", KIND_WORKFLOW)
+      + setup_go(KIND_TREE, f"{DAEMON}/go.mod", KIND_WORKFLOW)
       + bun_job(KIND_RIG, KIND_WORKFLOW)
       + CI_SELF + job_self(KIND_JOB), workflow=CI),
 
@@ -3334,14 +3373,6 @@ GATES = [
         ("skills/approval-review/references/never-decide.md",
          f"{at('test', 'Test the approval-eval statistics')}: scripts/approval-eval/never-decide.ts:184 reads "
          "it, through refusals.ts:725, which __tests__/refusals.test.ts:165-177 runs"),
-        (f"{FIX}/daemon-api/**", "scripts/e2e/lib/stage4b-boot-capabilities.test.ts:17"),
-        (f"{DAEMON}/internal/daemon/controller.go", "scripts/e2e/lib/controller-liveness-verdict.test.ts:344-345 reads it as text"),
-        (f"{DAEMON}/internal/controller/liveness.go", "scripts/e2e/lib/controller-liveness-verdict.test.ts:347"),
-        (f"{DAEMON}/internal/supervise/machine.go", "scripts/e2e/lib/controller-liveness-verdict.test.ts:350"),
-        (f"{DAEMON}/internal/intake/consume.go", "scripts/e2e/lib/stage4b-consumers.test.ts:23-26"),
-        (f"{DAEMON}/internal/capabilities/testdata/web-search-open-planner.json", "scripts/e2e/lib/stage4b-capabilities.test.ts:13-22"),
-        (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root.json", "scripts/e2e/lib/stage4b-pods.test.ts:22-35"),
-        (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root-operator-route.json", "scripts/e2e/lib/stage4b-pods.test.ts:180-190"),
         ("packages/pi-shared/src/**", "packages/claude-envoy's build bundles it; scripts/sessions and scripts/dispatch typecheck against it"),
         (".github/actions/install-changie/**", at("test", "./.github/actions/install-changie")),
         (".github/ci-tools.yaml", ".github/actions/install-changie/action.yml:28-29 installs the tarball of the changie row, "

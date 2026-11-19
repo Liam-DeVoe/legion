@@ -301,6 +301,49 @@ func LeakCheck(t *testing.T) *leakguard.Source {
 	return &leakguard.Source{API: LeakCheckAPI(t, leakCheckToken), Token: func(context.Context) (string, error) { return leakCheckToken, nil }}
 }
 
+// leakCheckTagPin is the worker image's pin of the shared public leak check's tag, as
+// packages/daemon/docker/worker.Dockerfile writes it (leakguard.TagVariable's source).
+var leakCheckTagPin = regexp.MustCompile(`(?m)^ARG LEAK_CHECK_TAG=(\S+)$`)
+
+// ServeLeakCheck serves the shared public leak check's repository (leakguard.CheckSlug) from the
+// rig's fake GitHub, private, with standInLeakCheck as the check its leak-check directory holds, at
+// the tag the worker image pins, and returns that tag: the check a whole daemon reads through its
+// GitHub REST root with the implement App's read lease on the check's owner, which that App must
+// be installed on (fakegithub.Server.AddApp), and pushes to each pod's launcher.
+func (r *Rig) ServeLeakCheck(t *testing.T) string {
+	t.Helper()
+	dockerfile, err := os.ReadFile(filepath.Join(RepositoryRoot(t), "packages", "daemon", "docker", "worker.Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin := leakCheckTagPin.FindSubmatch(dockerfile)
+	if pin == nil {
+		t.Fatal("worker.Dockerfile pins no LEAK_CHECK_TAG")
+	}
+	tag := string(pin[1])
+	repo := r.GitHub.NewRepository(t, leakguard.CheckRepository.Owner(), leakguard.CheckRepository.Name(), false)
+	git := func(stdin string, args ...string) string {
+		t.Helper()
+		command := exec.Command("git", append([]string{"--git-dir=" + repo.Bare}, args...)...)
+		command.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+			"GIT_AUTHOR_NAME=kind", "GIT_AUTHOR_EMAIL=kind@example.com", "GIT_COMMITTER_NAME=kind", "GIT_COMMITTER_EMAIL=kind@example.com")
+		command.Stdin = strings.NewReader(stdin)
+		out, err := command.Output()
+		if err != nil {
+			t.Fatalf("seed %s: git %s: %v", repo.Slug(), strings.Join(args, " "), err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	check := git("#!/bin/sh\n"+standInLeakCheck, "hash-object", "-w", "--stdin")
+	directory := git("100755 blob "+check+"\t"+leakguardtest.CheckName+"\n", "mktree")
+	readme := git("the rest of the repository\n", "hash-object", "-w", "--stdin")
+	tree := git("100644 blob "+readme+"\tREADME.md\n040000 tree "+directory+"\tleak-check\n", "mktree")
+	commit := git("", "commit-tree", tree, "-p", "main", "-m", "The stand-in leak check")
+	git("", "update-ref", "refs/heads/main", commit)
+	git("", "update-ref", "refs/tags/"+tag, commit)
+	return tag
+}
+
 // AppTokenCommand is a github_apps.<role>.token_command for app, installed on owners, whose every
 // token the fake GitHub takes: the stand-in for a secrets broker's release of an App's
 // installation tokens (appauth's token mode, tokencommand.go). The command asks a server of this

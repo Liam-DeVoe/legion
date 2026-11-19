@@ -9,7 +9,7 @@ Add a new item next to the item it belongs with, never at the end of a list unle
 `bun scripts/semantic-line-breaks.ts docs/kubernetes.md` checks the layout, and `--write` fixes it.
 
 The Go coordinator (`packages/daemon`, LEGION-208) runs each process as an Agent Sandbox;
-its live proof is `scripts/e2e/stage4b-sandbox-tree.sh` on the production cluster.
+its live proof is `TestStage4bSandboxTreeOnTheKindRigLive` (`packages/daemon/internal/daemon/stage4b_kind_live_test.go`), which the kind job of `ci.yaml` runs on a kind cluster with Agent Sandbox and gVisor.
 The TypeScript daemon no longer runs on Kubernetes:
 it refuses `runtime: kubernetes` at config load and names the Go daemon (LEGION-286), and its sources were deleted on 2026-10-03.
 Its runtime's section below is kept for reference until someone removes it (LEGION-223).
@@ -502,7 +502,7 @@ the same two probes, run by the daemon's own code, plus two only the image runs
 that root's built channel server (`dist/envoy-channel.js`) and generated Legion plugin (`legion/.claude-plugin/plugin.json`), each a regular file, and the root's own declared `legion.daemonApiVersion`;
 and Claude Code's pin, which must name one exact version and lock that release and its `linux-x64` package, the one whose binary a pod's install runs, at that version with the `sha512` integrity `npm ci` holds each tarball to.
 The lane reads the pin and fetches nothing:
-installing from it would make the publish and every boot probe depend on the npm registry and could not promise a pod's later fetch anyway, so the image proves it is self-consistent and the fetch is proved where it happens, by each Claude launch's start script and by `scripts/e2e/claude-backend-sandbox.sh` (`verifyClaude`, `packages/daemon/internal/daemon/bootgate.go`).
+installing from it would make the publish and every boot probe depend on the npm registry and could not promise a pod's later fetch anyway, so the image proves it is self-consistent and the fetch is proved where it happens, by each Claude launch's start script and by the kind job's `TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive` (`verifyClaude`, `packages/daemon/internal/daemon/bootgate.go`).
 Each of the lane's refusals names a build of the image from this daemon's commit.
 The two probes the daemon shares hold the Legion plugin to the daemon API contract (`legion.daemonApiVersion`), the Envoy plugin's interface to the one the Legion plugin speaks, and resolve every task agent and skill Legion's prompts name (`task(agent="…")`, `skill://…`) by name through the same launch (the agents and skills each plugin ships are listed below), so a build whose OMP or plugins are broken fails instead of publishing.
 
@@ -4974,8 +4974,8 @@ its task goes back to waiting and is sent again once the relaunched agent is rea
 A claim whose suspension was held for that turn's end is suspended instead, as it is when its process dies.
 
 The record costs one API write per generation started, the annotation's patch (844 bytes in the runtime's tests, with Dispatch and the broker unset), where a start in a running issue pod made none before.
-Stage 4b drives both cases with real agents on the cluster:
-`address-moved-env-same-pod` respells `envoy_url`'s host, and `address-moved-stream-new-pod` swaps the daemon's API and worker-stream ports ([`scripts/e2e/README.md`](../scripts/e2e/README.md#stage4b-sandbox-treesh)).
+The kind job's Stage 4b test drives both cases with real agents in issue pods:
+`address-moved-env-same-pod` hands the pods another address of the same Envoy listener, and `address-moved-stream-new-pod` swaps the daemon's API and worker-stream ports (`TestStage4bSandboxTreeOnTheKindRigLive`, `packages/daemon/internal/daemon/stage4b_kind_live_test.go`).
 
 ### A shell on an issue's disk
 
@@ -6708,8 +6708,8 @@ It has no pod create or delete and no PVC verb (LEGION-206 Requirement 8).
 
 ### The live proof
 
-`scripts/e2e/stage4b-sandbox-tree.sh` drives three real issue trees through the Go daemon on this runtime, in the production cluster's namespace `legion`, against production Dispatch, the Envoy listener and NATS, with real agents.
-What it holds, and what it touches in production, is in [`scripts/e2e/README.md`](../scripts/e2e/README.md#stage4b-sandbox-treesh).
+`TestStage4bSandboxTreeOnTheKindRigLive` (`packages/daemon/internal/daemon/stage4b_kind_live_test.go`) drives an issue tree through the Go daemon on this runtime, in a kind cluster with Agent Sandbox and gVisor, against Dispatch, the Envoy listener and NATS built from the checkout and a fake GitHub, with real agents on a Messages stand-in, one subtest per checkpoint.
+The kind job of `ci.yaml` runs it in its `tree` part.
 
 ### Probing a configuration before the daemon boots on it
 
@@ -7756,7 +7756,6 @@ While the registry holds the controller role for nobody, the daemon also logs `c
 liveness: the controller role has no live holder; the controller is gone` at every check.
 Both modes log both lines on the same schedule, and every line names the mode (`mode`;
 the not-registered line also says whether a session holds the record, `registered`), so one log query on either line's text counts either mode.
-Stage 4b's `daemon-controller-liveness` checkpoint shows both lines for a daemon-launched controller whose pod is gone and whose relaunches cannot schedule, and neither while it runs ([`scripts/e2e/README.md`](../scripts/e2e/README.md#stage4b-sandbox-treesh)).
 
 ### Daemon-launched controller
 

@@ -29,11 +29,13 @@ name: CI job kind
 # worker_image filter's own paths, so a change the image is built from runs this job whichever
 # of the two builds the run's image comes from.
 #
-# rig is the job's one part for now: it runs every Go test .github/scripts/ci_job_reads.py's
-# KIND_TESTS names, which daemon-go's two steps skip by name, one package at a time, each test on a
-# rig of its own. Grouping them by measured time into parts of their own is a later change. The
-# rig's measuring test times each piece of the rig by name (the pinned kind's build, the cluster,
-# Agent Sandbox, gVisor, the registry, the fake GitHub, the worker image's pull or load, the build
+# rig runs every Go test .github/scripts/ci_job_reads.py's KIND_PACKAGE_FILES names, and tree the
+# two of its KIND_TREE_FILES, which boot the whole daemon on the rig with real agents in issue pods;
+# daemon-go's two steps skip both lists by name (KIND_TESTS). Each part runs one package at a
+# time, each test on a rig of its own. Grouping them by measured time into more parts is a later
+# change. The rig's measuring test times each piece of the rig by name (the pinned kind's build,
+# the cluster, Agent Sandbox, gVisor, the registry, the fake GitHub, the worker image's pull or
+# load, the build
 # FROM it of the image that trusts the fake GitHub's authority, the push of both into the registry
 # and the load into the node), then runs a Burstable Sandbox under gVisor that clones a private
 # repository from the fake GitHub and a gVisor pod that mounts an NFS share of a server in the
@@ -218,6 +220,74 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: kind-rig-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: kind
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  tree:
+    needs: image
+    # Past the image job the caller's worker-image input skipped, and never past one that failed,
+    # whose own report has posted the failure.
+    if: ${{ !cancelled() && needs.image.result != 'failure' }}
+    runs-on: ubuntu-24.04
+    # The step runs internal/daemon's two whole-tree tests, one after the other, each on a rig of
+    # its own (about five minutes): the Claude Code backend's three checks over one issue pod, and
+    # Stage 4b's tree, whose fourteen checkpoints include a credential refresh and two restarts that
+    # relaunch every claim. The test binary has two hours; the rest is the disk's cleanup, the
+    # archive's download and the binaries' builds.
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The rig part's comment says what the runner image gives the rig and why its disk is
+      # cleared first.
+      - name: Free the runner's disk of toolchains the rig does not use
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Download the worker image the image job built
+        if: inputs.worker-image == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: kind-worker-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-image
+
+      # The tests build their package's test binary, the `legion` every pod's launcher and the
+      # fence's worker-shim are, and Dispatch, the Envoy listener and natsd from packages/envoy.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # The tests, by name. .github/scripts/ci_job_reads.py builds this text from KIND_TREE_FILES,
+      # whose tests daemon-go's two `-skip`s name with the rig part's, and holds the step to it.
+      # The image comes as the rig part's does, and a failed test's state goes to kind-logs.
+      - name: Run the tree tests
+        env:
+          LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
+          LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
+          LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+        run: go test -v -count=1 -timeout 120m -run '^(TestStage4bSandboxTreeOnTheKindRigLive|TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive)$' ./internal/daemon/
+        working-directory: packages/daemon
+
+      # A failed test's state, one directory per test: the rig part's, and the daemon's, Dispatch's
+      # and the listener's own logs beside it.
+      - name: Upload the rig's state at the failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-tree-logs-${{ github.run_attempt }}
           path: ${{ runner.temp }}/kind-logs
 
       - name: Report ci-ok when this job decides a merge-group run

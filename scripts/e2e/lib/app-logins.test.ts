@@ -1,14 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import {
-  constants,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { constants, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   type AppCredentialSource,
@@ -91,40 +82,6 @@ async function run(path: string, env: Record<string, string> = {}, api = standIn
     child.exited,
   ]);
   return { code, stdout: stdout.trim(), stderr: stderr.trim() };
-}
-
-// read_app_logins as a stage proof calls it: lib/workflow.sh sourced under the stage scripts' shell
-// options and check helpers (the lib reads repo as it is sourced), with the config as
-// $work/github-apps.yaml, the file write_github_apps writes, then `then`. The one seam is bun,
-// which is handed `api` after the helper's own arguments, the GitHub API URL the helper takes.
-async function readAppLogins(path: string, then: string, api = standIn) {
-  const work = mkdtempSync(join(dir, "work."));
-  copyFileSync(path, join(work, "github-apps.yaml"));
-  const shell = `set -Eeuo pipefail
-check=boot repo=sjawhar/legion-smoke
-note() { printf '   %s\\n' "$*"; }
-fail() { printf 'FAIL %s: %s\\n' "$check" "$*" >&2; exit 1; }
-bun() { command bun "$@" "$API"; }
-. "$LIB"
-read_app_logins
-${then}`;
-  const child = Bun.spawn(["bash", "-c", shell], {
-    env: {
-      PATH: process.env.PATH ?? "",
-      HOME: home,
-      LIB: join(import.meta.dir, "workflow.sh"),
-      work,
-      API: api,
-    },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  return { code, stdout: stdout.trimEnd(), stderr: stderr.trim() };
 }
 
 // A failure names the App it could not read by its role and app id, on one line of stderr.
@@ -759,47 +716,5 @@ describe("app-logins.ts", () => {
         'github_apps:\n  implement: { app_id: "1", token_command: "true", private_key_command: "true" }\n  review: { app_id: "2", token_command: "true" }\n'
       )
     ).toThrow("github_apps.implement names both a token_command and a private_key_command");
-  });
-});
-
-describe("read_app_logins", () => {
-  test("gives each role its App's login as GitHub answered it, and GraphQL the bare slug", async () => {
-    const roles = [
-      "implementer",
-      "merger",
-      "planner",
-      "tester",
-      "reviewer",
-      "architect",
-      "controller",
-    ];
-    const { code, stdout, stderr } = await readAppLogins(
-      config(app("101"), app("202")),
-      `for role in ${roles.join(" ")}; do echo "$role $(role_app "$role") $(role_app_slug "$role")"; done`
-    );
-    expect(stderr).toBe("");
-    expect(code).toBe(0);
-    const answers = stdout.split("\n").filter((line) => roles.includes(line.split(" ")[0]));
-    expect(answers).toEqual([
-      "implementer example-implement[bot] example-implement",
-      "merger example-implement[bot] example-implement",
-      "planner example-review[bot] example-review",
-      "tester example-review[bot] example-review",
-      "reviewer example-review[bot] example-review",
-      "architect example-review[bot] example-review",
-      "controller example-review[bot] example-review",
-    ]);
-  });
-
-  test("a GitHub that never answers fails the run, naming the App it could not read", async () => {
-    const { code, stdout, stderr } = await readAppLogins(
-      config(app("101"), app("202")),
-      "echo after-read",
-      unreachable
-    );
-    expect(code).toBe(1);
-    expect(stdout).not.toContain("after-read");
-    expect(stderr).toMatch(namesApp("implement", "101"));
-    expect(stderr).toMatch(/^FAIL boot: /m);
   });
 });

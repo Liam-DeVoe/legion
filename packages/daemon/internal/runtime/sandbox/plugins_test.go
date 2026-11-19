@@ -101,7 +101,7 @@ func TestAnInstallingLaunchWrapsTheAgentArgvInTheInstallScript(t *testing.T) {
 
 // A plain launch (spec.Plugins nil) carries no install wrapper: the agent command starts with the
 // agent's own path, naming the image's two extension roots, byte for byte what a fresh planner's
-// argv names today (stage4b-sandbox-tree.sh).
+// argv names today.
 func TestAPlainLaunchCarriesNoInstallWrapperAndTheImagesRoots(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {

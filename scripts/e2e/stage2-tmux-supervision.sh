@@ -133,7 +133,7 @@ cleanup() {
   local status=$? p
   # A second Ctrl-C, TERM or HUP must not end the teardown part way: its own signal traps would
   # exit from inside this one, leaving panes running. Every wait below is bounded, so ignoring them
-  # costs at most those bounds (lib/teardown.sh and stage4b-sandbox-tree.sh do the same).
+  # costs at most those bounds.
   trap '' HUP INT TERM
   # First, before anything slower can hang or be SIGKILLed mid-teardown: the key-file route's own
   # key command, which bakes in the key file's resolved path, must never survive this script on

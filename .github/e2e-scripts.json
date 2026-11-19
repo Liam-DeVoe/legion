@@ -45,10 +45,6 @@
   ],
   "elsewhere": [
     {
-      "script": "claude-backend-sandbox.sh",
-      "needs": "a real cluster (LEGION_E2E_RUNTIME_CONTEXT and a worker image by digest), a devbox daemon, a real Claude Code and Oh My Pi on a model route, and the smoke repository"
-    },
-    {
       "script": "clean-session-stop-tmux.sh",
       "needs": "ci.yaml's agent-harness job, which runs it in its tmux-scripts part: tmux, the pinned Oh My Pi (LEGION_TEST_OMP), Claude Code (LEGION_TEST_CLAUDE) and a loopback PostgreSQL (LEGION_TEST_PG_DSN); it starts its own NATS, listener, model stand-in and legion daemon"
     },
@@ -75,10 +71,6 @@
     {
       "script": "stage2-tmux-supervision.sh",
       "needs": "ci.yaml's agent-harness job, which runs it in its tmux-scripts part: tmux, socat, the pinned Oh My Pi (LEGION_TEST_OMP) and a loopback PostgreSQL (LEGION_TEST_PG_DSN); it starts its own NATS, listener, model stand-in and legion daemons"
-    },
-    {
-      "script": "stage4b-sandbox-tree.sh",
-      "needs": "the production cluster from the devbox, against production Dispatch, the production Envoy listener and production NATS, with real agents in the smoke repository"
     },
     {
       "script": "step-records-read.sh",

@@ -554,19 +554,12 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   an implementer `worker_backends` puts on claude registers its transcript, is reminded by Claude Code's own `Stop` hook when a turn ends with its phase open, completes its phase through the `legion` MCP tool's handoff_complete with its handoff recorded on the Dispatch issue, and resumes the same Claude Code session after its pane is killed;
   the architect and the planner run on the fake runtime, the model is a Messages stand-in, and GitHub is a stand-in with a local bare remote (`packages/daemon/internal/daemon/claude_backend_live_test.go`)
 
-- `LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=<worker image@sha256> LEGION_E2E_STORAGE_CLASS=<StorageClass> LEGION_E2E_POD_SERVICE_ACCOUNT=<ServiceAccount the pods run as> LEGION_E2E_CLAUDE_KEY_FILE=<file holding an Anthropic API key> LEGION_E2E_CLAUDE_MODEL=<model id> LEGION_E2E_POD_REACHABILITY=aws-private-ip LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> LEGION_E2E_SESSION_DB_PORT=<port> LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' bash scripts/e2e/claude-backend-sandbox.sh`
+- `LEGION_TEST_KIND_IMAGE_ARCHIVE=<docker save of the worker image> go test -count=1 -v -timeout 120m -run '^(TestStage4bSandboxTreeOnTheKindRigLive|TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive)$' ./internal/daemon/` (in packages/daemon)
 
-  The same backend's devbox-only live proof under the Kubernetes runtime:
-  the implementer runs `legion claude-bridge -- claude -p …` in its issue pod on the Claude Code its generation's start script installed from the worker image's pin (the image carries the pin and no Claude Code), resumes its own transcript in a replacement pod that installs its own copy, and is reminded when a turn ends with its phase open;
-  this is the aws-private-ip/gateway shape
-  — LEGION_E2E_POD_REACHABILITY=bridge LEGION_E2E_MODEL_ROUTE=key-file (no LEGION_E2E_MODEL_GATEWAY_URL/AUDIENCE) proves the same backend against a cluster whose pods cannot reach the devbox at all, and needs docker;
-  `LEGION_E2E_MODEL_BASE_URL=<gateway base URL>` with a gateway key in the key file puts the pod's Claude Code and (under key-file) its Oh My Pi roles on that Anthropic-compatible gateway, so no Anthropic key is needed, and `LEGION_E2E_MODEL_PREFLIGHT_BASE_URL=<the same gateway as the devbox reaches it>` serves a gateway the pods reach at a cluster-only address (scripts/e2e/README.md names every required port and input)
-
-- `LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=<worker image@sha256> LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> LEGION_E2E_POD_SERVICE_ACCOUNT=<ServiceAccount the pods run as> LEGION_E2E_DISPATCH_URL=<dispatch> LEGION_E2E_ENVOY_URL=<listener> LEGION_E2E_NATS_URL=nats://<nats>:4222 LEGION_E2E_DISPATCH_TOKEN_FILE=<0600 file> LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE=<email of a person who has signed in to that Dispatch> LEGION_E2E_ENVOY_TOKEN_SECRET_ID=<secret id> LEGION_E2E_SESSION_DB_PORT=<port> LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' bash scripts/e2e/stage4b-sandbox-tree.sh`
-
-  Stage 4b's live proof, devbox only: the Go daemon drives three real issue trees on the Agent Sandbox runtime in the production cluster (namespace legion), against production Dispatch (project LEGSMOKE), Envoy and NATS, with real agents, every pod keeping its Oh My Pi session in a scratch Postgres of the run's own at `LEGION_E2E_SESSION_DB_PORT` (required, no default:
-  the lane's third port) — admission under the cap, specs, the daemon bound to every interface with every pod dialing its advertise_host, issue independence (a root and two of its children at once, each pod on a disk of its own with no affinity, none able to read another's workspace) and a done child's release of its Sandbox, its pod and the disk that pod owned, while its parent runs, the repository-configuration fixture, the whole workflow to done with the review pair and a review round no review decides until the architect asks, then a changes-requested round whose approval does not wait for its thread to resolve, and a merge with every thread resolved, a head that starts conflicting with its base mid-test starting the implementer at once while the tester's turn, its background job and its session run on untouched, with the tester told on its own role topic that its phase ended, every worker's phase completion answered in the live session it keeps in its first pod until its issue closes, a finished role answering while another phase runs, token rotation, kill and fence, a daemon restart mid-tree relaunching nothing, a restart with only `envoy_url` respelled relaunching every role in its own issue pod and one with the worker stream and API moved replacing every issue pod, the operator's controller, a worker that dies with its task outstanding, a merge that leaves the root open while two children of its tree still run, told to its architect once and closing the root on the last of their parks, each park taking the child's Sandbox, pod and disk, the close suspending every role and taking each pod with its disk, node release, linger close, a re-admission that comes back on a pod and disk of its own with no lost-volume line anywhere in the daemon's log, every pod's shape and reservation, the pod watch, and an audit that the run wrote nothing outside LEGSMOKE;
-  one run at a time, `STAGE4B_UNTIL=<checkpoint>` for a development run (scripts/e2e/README.md)
+  The whole daemon on the kind rig, which the `tree` part of `ci.yaml`'s `kind` job runs:
+  Dispatch, the Envoy listener and natsd built from the checkout, PostgreSQL in the cluster, the fake GitHub, which sends its pushes and pull requests to the listener as signed webhooks, and real agents in issue pods on a Messages stand-in.
+  `TestStage4bSandboxTreeOnTheKindRigLive` drives a tree through Stage 4b's checkpoints, one subtest each;
+  `TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive` runs a Claude Code implementer in an issue pod on its pinned bridge and resumes its session after the pod and its disk are deleted (`packages/daemon/internal/daemon/kind_tree_rig_live_test.go`)
 
 ## Configuration
 
@@ -694,7 +687,7 @@ Each item below names a task and where its code is, then notes on it.
   A phase worker's role on `claude` runs `legion claude-bridge -- claude -p …` under either runtime, with claude-envoy's `dist/envoy-channel.js` (the `legion` MCP tool, its claim, Envoy, the phase reminder's hook endpoint) as its one MCP server and claude-envoy plus its generated `legion/` plugin as its plugins.
   Under tmux boot resolves `LEGION_CLAUDE_PATH`, `LEGION_BUN_PATH` and `LEGION_CLAUDE_PLUGIN_DIR`;
   a pod takes bun and the plugin from the worker image, which carries Claude Code's pin and no Claude Code (its licence grants no redistribution), and its start script installs the pinned release at every launch and verifies it, failing the launch when the fetch fails or does not verify (`claudeCodeBlock`, `packages/daemon/internal/runtime/sandbox/plugins.go`).
-  `docs/deployment.md` "How a harness plugs in", `docs/kubernetes.md`; live proofs `packages/daemon/internal/daemon/claude_backend_live_test.go` and `scripts/e2e/claude-backend-sandbox.sh`
+  `docs/deployment.md` "How a harness plugs in", `docs/kubernetes.md`; live proofs `packages/daemon/internal/daemon/claude_backend_live_test.go` and `packages/daemon/internal/daemon/claude_backend_kind_live_test.go`
 
 - Shared plugin interface — `packages/pi-shared/`
 
@@ -730,9 +723,9 @@ Each item below names a task and where its code is, then notes on it.
   The operator-side file `legion controller start` reads.
   See `docs/kubernetes.md` "Operator-launched controller"
 
-- Prove the Kubernetes runtime live — `scripts/e2e/stage4b-sandbox-tree.sh` (a full tree); the kind job of `ci.yaml` runs the runtime alone (`TestStage4aSandboxRuntimeLive`)
+- Prove the Kubernetes runtime live — the `kind` job of `ci.yaml`: `TestStage4aSandboxRuntimeLive` runs the runtime alone, and `TestStage4bSandboxTreeOnTheKindRigLive` drives a full tree through the whole daemon
 
-  The Go daemon on Agent Sandbox in the production cluster; `scripts/e2e/README.md`
+  Both run on the kind rig, with the fake GitHub, a Messages stand-in and Dispatch and the listener built from the checkout (`packages/daemon/internal/kindtest`)
 
 - Run a database, broker or server the work needs — `docs/kubernetes.md`, "Running a workload in the cluster from a role"
 

@@ -732,9 +732,8 @@ write_github_apps() {
 # its teardown to say whether the removals that teardown makes took the directory. A private key
 # never expires, so a run that leaves one behind leaves a usable credential on the driver,
 # whatever else its teardown did, and fails itself for it. The failure is the proof's own line:
-# `FAIL cleanup: …` on stderr, as the sandbox proof's remove_app_tokens prints for the credential
-# files it could not remove, or, with --check-line, the `CHECK app-key: FAIL: …` line on stdout
-# that stage4b-sandbox-tree.sh writes its teardown checks in. The caller decides what the failure
+# `FAIL cleanup: …` on stderr, or, with --check-line, the `CHECK app-key: FAIL: …` line on stdout
+# a proof writes its teardown checks in. The caller decides what the failure
 # costs the run: an exit, a status, or a named teardown check.
 app_key_left() {
   local check=

@@ -848,7 +848,7 @@ check "a third-party default fails" "$(is "$status" 1)"
 check "names the image the build fetches" "$(contains "$out" 'docker.io/library/debian:trixie-slim')"
 
 echo "case: a file of the \`no CI job runs it\` ground, moved into CI's reach"
-# scripts/e2e/stage4b-sandbox-tree.sh may name mirror.gcr.io, because no CI job runs it. The
+# packages/envoy/scripts/corpus-copy.sh may name mirror.gcr.io, because no CI job runs it. The
 # same line in stage1-skeleton.sh, which the test job runs, is refused.
 root=$(fixture mirror-in-reach-script)
 cat > "$root/scripts/e2e/stage1-skeleton.sh" <<'YAML'
@@ -883,13 +883,14 @@ check "says it is in neither list" "$(contains "$out" "in neither CI's reach nor
 check "and names both grounds" "$(contains "$out" 'no CI job runs it')"
 
 echo "case: an exception the tree outgrew"
-# scripts/e2e/README.md is in the exception list. A tree holding it without mirror.gcr.io in it
-# is a ground that holds nothing any more.
+# packages/envoy/scripts/corpus-copy.sh is in the exception list. A tree holding it without
+# mirror.gcr.io in it is a ground that holds nothing any more.
 root=$(fixture exception-stale)
-printf 'The live proofs.\n' > "$root/scripts/e2e/README.md"
+mkdir -p "$root/packages/envoy/scripts"
+printf '#!/usr/bin/env bash\necho copies the corpus\n' > "$root/packages/envoy/scripts/corpus-copy.sh"
 run_check tree "$root"
 check "fails" "$(is "$status" 1)"
-check "names the file" "$(contains "$out" 'scripts/e2e/README.md:1:')"
+check "names the file" "$(contains "$out" 'packages/envoy/scripts/corpus-copy.sh:1:')"
 check "says what to delete" "$(contains "$out" 'Delete its line from EXCEPTIONS')"
 
 echo "case: a file of CI's reach that is gone"

@@ -395,7 +395,7 @@ st=0
 out=$(legion issue status "$project-1" backlog --operator-token-file "$work/operator-token" --port "$daemon_port" 2>&1) || st=$?
 # This rig has no Dispatch, so the route that took the minted grant answers 500 naming it: the
 # bearer minted a grant and the status request reached the Dispatch client. The status write
-# itself is the full-tree proof's (stage4b-sandbox-tree.sh, controller), against a real Dispatch.
+# itself is the whole-tree kind test's (TestStage4bSandboxTreeOnTheKindRigLive), against a real Dispatch.
 grep -qF 'the daemon answered 500 Internal Server Error: Dispatch is unavailable' <<<"$out" || fail "exit $st: $out"
 note "operator bearer → controller grant → status route reached Dispatch (this rig has none): exit $st: $out"
 printf 'not-the-operator-token\n' >"$work/wrong-token" && chmod 600 "$work/wrong-token"

@@ -1780,14 +1780,6 @@ jobs:
               # libraries and the census script import contracts and envoy-client, which
               # claude_envoy_build names.
               - 'scripts/e2e/**'
-              - 'packages/contracts/fixtures/daemon-api/**'
-              - 'packages/daemon/internal/daemon/controller.go'
-              - 'packages/daemon/internal/controller/liveness.go'
-              - 'packages/daemon/internal/supervise/machine.go'
-              - 'packages/daemon/internal/intake/consume.go'
-              - 'packages/daemon/internal/capabilities/testdata/web-search-open-planner.json'
-              - 'packages/daemon/internal/runtime/sandbox/testdata/golden/root.json'
-              - 'packages/daemon/internal/runtime/sandbox/testdata/golden/root-operator-route.json'
               - 'packages/envoy-client/test/fake-dispatch.ts'
               - 'scripts/dispatch/**'
               - 'scripts/github-apps/**'

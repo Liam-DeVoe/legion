@@ -140,7 +140,6 @@ type Activity struct {
 func (s *Server) AddPullRequest(t testing.TB, slug string, pr PullRequest) PullRequest {
 	t.Helper()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	repo := s.served(t, slug)
 	if pr.Number == 0 {
 		pr.Number = len(repo.pulls) + 1
@@ -151,6 +150,14 @@ func (s *Server) AddPullRequest(t testing.TB, slug string, pr PullRequest) PullR
 	}
 	held := pr
 	repo.pulls = append(repo.pulls, &held)
+	s.mu.Unlock()
+	// The webhook's pull_request event of the opening (webhook.go), naming the head the branch
+	// holds when HeadSHA names none.
+	head := pr.HeadSHA
+	if head == "" {
+		head, _ = s.gitOutput(repo.Bare, "", "rev-parse", "refs/heads/"+pr.Head)
+	}
+	s.opened(repo, pr, strings.TrimSpace(head))
 	return pr
 }
 
@@ -415,18 +422,27 @@ func (s *Server) InstallationToken(t testing.TB, app App, owner string, write bo
 	return token, installation, expires
 }
 
-// grantInstallation has the server take a fresh token of found's installation, for an hour: its
-// bot's, reaching that installation's owner alone, and one that may push when write is true.
+// grantInstallation has the server take a fresh token of found's installation, for an hour, or for
+// what SetTokenLifetime set: its bot's, reaching that installation's owner alone, and one that may
+// push when write is true.
 func (s *Server) grantInstallation(found *app, installation int64, write bool) (string, time.Time) {
 	secret := make([]byte, 18)
 	_, _ = rand.Read(secret)
 	value := "ghs_" + hex.EncodeToString(secret)
-	expires := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	expires := time.Now().Add(cmp.Or(s.tokenLifetime, time.Hour)).UTC().Truncate(time.Second)
 	s.tokens[value] = &grant{write: write, login: found.Slug + "[bot]",
 		owner: found.owners[installation], installation: installation, expires: expires}
 	return value, expires
+}
+
+// SetTokenLifetime has every installation token minted from now on live for lifetime rather than
+// GitHub's hour, so a test sees a holder of one refresh it within the test's own time.
+func (s *Server) SetTokenLifetime(lifetime time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tokenLifetime = lifetime
 }
 
 // appBySlug is GET /apps/{slug}: the App's id, which token mode holds to its configured app_id.
