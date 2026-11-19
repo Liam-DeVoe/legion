@@ -330,7 +330,7 @@ const legionClaimView = z.object({
    * optional. */
   leakCheckCause: nonEmptyString.optional(),
   /** `api.ClaimView.Unreachable`: when the daemon found this claim's session out of Envoy's
-   * reach, and absent while the claim is reachable (contract 178). */
+   * reach, and absent while the claim is reachable (contract 180). */
   unreachable: legionUnreachableView.optional(),
 });
 
@@ -962,7 +962,8 @@ const legionHeldIssue = z.object({
  * issue before its review is missing from `active` too, other than the three roots that keep
  * their slot through such a wait: it holds no slot while it waits and stands in `waiting` and in
  * `blocked`, which is how a reader tells it from an issue a person parked, which stands in none
- * of the three (the rule: "Admission" in the root AGENTS.md). An issue holding a slot is in
+ * of the three (the rule: "Admission and the `legion` label" in
+ * docs/site/src/content/docs/legion/concepts.md). An issue holding a slot is in
  * `waiting` as well while its work comes back to it, an answered root until the pass that
  * resumes it. `trees` is the root of every live tree, sorted, which a reader needs because a
  * running tree may hold no slot at all — the controller reads it where it read `active` as the
@@ -1010,7 +1011,7 @@ const legionControllerLocator = z.object({
   /** 0 = no contract recorded. */
   pluginContract: z.number().int().nonnegative(),
   /** `api.ControllerLocator.Unreachable`: when the daemon found the controller's session out of
-   * Envoy's reach, as a claim view carries it, and absent while it is reachable (contract 178).
+   * Envoy's reach, as a claim view carries it, and absent while it is reachable (contract 180).
    * Nobody else can relaunch the controller, so the daemon relaunches it on its same session
    * itself, at most once in 6 hours; a controller this key still names after that is a person's
    * to recover. */

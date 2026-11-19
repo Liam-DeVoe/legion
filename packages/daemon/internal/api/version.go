@@ -21,8 +21,7 @@ package api
 // and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
 // `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
 // the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
-// and the plugin's field together. The same commit also writes this bump into the contract
-// history of `packages/pi-legion/AGENTS.md` as the last bump.
+// and the plugin's field together.
 // `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
 // disagrees with this constant.
 //
@@ -2421,14 +2420,14 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 178: a claim Envoy cannot reach, and its relaunch on its same session.
+// 180: a claim Envoy cannot reach, and its relaunch on its same session.
 // Every claim view of `GET /legion/v1/state` (`read_state` and `read_record`) and the controller's
 // locator gain `unreachable`, `{since, lastSeen?}`: the daemon's mark of a claim whose session's
 // last registration with Envoy is more than 20 minutes old, counted from the latest of that
 // registration, the daemon's boot, the session's first ready and the daemon's last failed or empty
 // read of Envoy's list (supervise.Reach, the daemon's reach keeper). The claim keeps its state;
 // the key is absent while it is reachable, and absent from every view the route serves a caller
-// below 178 (api.stateFor, withoutUnreachable), whose plugin reads claim views with a schema that
+// below 180 (api.stateFor, withoutUnreachable), whose plugin reads claim views with a schema that
 // knows no such key. The `legion` tool's controller gains `relaunch`, which posts
 // `POST /legion/v1/claims/relaunch` (`api.RelaunchRequest`: `grantId` and `claim`, the claim's
 // token as the notices name it). Its answers (api.claimRelaunch, relaunchRefusal) are: 200
@@ -2483,5 +2482,9 @@ package api
 // right above: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 242
 // open pull requests, made at 2026-11-19T20:24Z, gave 168 at the 55 heads that had merged that main,
 // and 169 to 177 at twenty heads, so 178 was the lowest number above the base's 168 that no open
-// head declared.)
-const DaemonAPIVersion = 178
+// head declared. It took 180 at the forward merge of 2026-11-19 that brought main in at d7c7c53143:
+// a reading at refs/pull/<n>/head for each of the 239 open pull requests, made at
+// 2026-11-19T22:54Z, gave 178 at two other heads (cybermonklabs/legion#3831 among them, which
+// declared it first) and 179 at two, so 180 was the lowest number above 178 that no open head
+// declared.)
+const DaemonAPIVersion = 180
