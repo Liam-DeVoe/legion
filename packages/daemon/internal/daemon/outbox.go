@@ -2394,11 +2394,18 @@ func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
 // session, and the start waits on the row's backoff: a claim in a turn holds the suspension for the
 // turn's end and a launching one until its agent is ready (supervise's suspend rows), as
 // stopElsewhere's suspension is held, so the step before it is not cut off mid-turn. Once the claim
-// runs nothing it takes the role (supervise.Machine.Rerole), which judges under the machine's lock
-// that the step still stands (stepStands) and is supervise.ErrStepLeft where it does not, and the
-// start resumes it on its session with that role. This is the one place a claim's role changes.
+// runs nothing it takes the role (supervise.Machine.Rerole), and the start resumes it on its
+// session with that role. This is the one place a claim's role changes.
+//
+// The suspension and the re-role are asked with the step's standing (supervise.Standing,
+// stepStands): each is judged under the machine's lock, the first of them to pass commits the
+// start, and a step the issue left before it is supervise.ErrStepLeft, with nothing of the claim
+// changed. A suspension the machine holds for the turn's end lands at that end on the judgment it
+// passed when it was asked: a move back in between costs the claim that one suspension, and the
+// move back's own start resumes it on its session in the role it holds.
 func (r *outbox) reroleForStep(ctx context.Context, machine *supervise.Machine, token claim.Token, row record.OutboxRow, payload record.SuperviseRequest) error {
 	role := payload.Role
+	ctx = supervise.Standing(ctx, func(ctx context.Context) (bool, error) { return r.stepStands(ctx, row, payload) })
 	if held := machine.Claim(); !held.RunsNothing() {
 		err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByDaemon,
 			Reason: fmt.Sprintf("its agent's next step on %s is the %s's", row.Issue, role)})
@@ -2410,15 +2417,15 @@ func (r *outbox) reroleForStep(ctx context.Context, machine *supervise.Machine, 
 			return wait.Errorf("the %s step of %s waits for its claim %s to end its turn as %s", role, row.Issue, token, held.Role)
 		}
 	}
-	return machine.Rerole(ctx, role, func(ctx context.Context) (bool, error) { return r.stepStands(ctx, row, payload) })
+	return machine.Rerole(ctx, role)
 }
 
 // stepStands says whether the step a start of a phase entry (payload) is for is still the work its
 // issue asks of the role, read from the record again: the issue runs the generation and stands in
 // the phase the start serves, and the role's phases row names no later entry than the start's. They
-// are the start's own fences (supervise), which the re-role of its claim judges again under the
-// machine's lock (supervise.Machine.Rerole), since a move back or a later entry can commit between
-// the fences' read and that lock.
+// are the start's own fences (supervise), which the suspension and the re-role a start asks of its
+// claim judge again under the machine's lock (supervise.Standing, reroleForStep), since a move back
+// or a later entry can commit between the fences' read and that lock.
 func (r *outbox) stepStands(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest) (bool, error) {
 	stands := false
 	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {

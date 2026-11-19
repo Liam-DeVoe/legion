@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -239,10 +240,62 @@ func (m *Machine) Retree(ctx context.Context, tree string) error {
 // started with the claim's role's prompt and App, so the role it holds is the one it runs.
 var ErrRunsAProcess = errors.New("the claim still runs a process")
 
-// ErrStepLeft is Rerole's refusal of a role whose step its issue no longer asks for: the record
-// moved on after the start that asked read it, and the start of the step the issue stands in now
-// gives the claim its role.
-var ErrStepLeft = errors.New("the issue no longer asks for the step the role is for")
+// ErrStepLeft is a machine's refusal of a request whose reading of the record no longer holds
+// under the machine's lock (Standing): the claim it read as the worker on a role's step works it no
+// more, or the step a start is for is one its issue has left. Nothing of the claim changed.
+var ErrStepLeft = errors.New("the record no longer asks this claim for the step the request was made for")
+
+// standingKey is the context key Standing puts a request's standing under.
+type standingKey struct{}
+
+// standing is a request's reading of the record (Standing), and whether an act of the request has
+// passed it under a machine's lock.
+type standing struct {
+	stands func(context.Context) (bool, error)
+	mu     sync.Mutex
+	passed bool
+}
+
+// Standing is ctx carrying stands, the reading of the record a request on a claim was made on: the
+// claim a route read as the worker on a role's step (api's workerToken), the step a start is for
+// (the daemon's outbox). The request reads the record before any lock its acts take, so each act a
+// machine decides for it under its lock — Handle, and so Compact, and Rerole — judges that reading
+// again there, before anything acts, and refuses with ErrStepLeft where it no longer holds.
+//
+// A request is the record's from the first act that passes: stands is asked until it first answers
+// true under a machine's lock, and every later act of the same request reads nothing again. Its
+// acts are several decisions under several takings of the lock, so a move that commits after the
+// first finds the request under way, as it would had the whole request run before it, and no
+// request is left half done by a move after it began. A request whose first act is refused did
+// nothing at all. The judgment a suspension makes before it cancels a start in flight (Handle) is
+// a filter, and passes nothing: the one that counts is under the lock.
+func Standing(ctx context.Context, stands func(context.Context) (bool, error)) context.Context {
+	return context.WithValue(ctx, standingKey{}, &standing{stands: stands})
+}
+
+// judgeStanding judges the standing ctx carries for an act on the claim token (Standing), and
+// answers nil for a ctx that carries none. pass is whether this judgment is one under a machine's
+// lock, which commits the request once it holds.
+func judgeStanding(ctx context.Context, token claim.Token, pass bool) error {
+	s, ok := ctx.Value(standingKey{}).(*standing)
+	if !ok {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.passed {
+		return nil
+	}
+	holds, err := s.stands(ctx)
+	if err != nil {
+		return fmt.Errorf("supervise: read again what the request on %s was made on: %w", token, err)
+	}
+	if !holds {
+		return fmt.Errorf("supervise: claim %s: %w", token, ErrStepLeft)
+	}
+	s.passed = pass
+	return nil
+}
 
 // Rerole gives a claim the role of its agent's next step, which a step of another role than the
 // claim holds asks for (the daemon's outbox, the start of a phase entry): one key is one claim
@@ -252,11 +305,11 @@ var ErrStepLeft = errors.New("the issue no longer asks for the step the role is 
 // its session, and waits for its turn to end. The claim keeps its session, so its next generation
 // resumes it.
 //
-// The start read the step from the record before this lock, so the step is judged again under
-// it, by stands, the start's own reading of the record: a step the issue has left since, by a move
-// back or a later entry, is ErrStepLeft, and the claim keeps the role it holds. Judged here, a
-// role is never stored for a step the record no longer asks for, whatever reaches the claim next.
-func (m *Machine) Rerole(ctx context.Context, role claim.Role, stands func(context.Context) (bool, error)) error {
+// The start read the step from the record before this lock, so it asks with the step's standing
+// (Standing), judged here under the lock: a step its issue has left since, by a move back or a
+// later entry, is ErrStepLeft, and the claim keeps the role it holds. A role is never stored for
+// a step the record no longer asks for, whatever reaches the claim next.
+func (m *Machine) Rerole(ctx context.Context, role claim.Role) error {
 	m.mu.Lock()
 	defer m.unlock()
 	if m.claim.Role == role {
@@ -266,12 +319,8 @@ func (m *Machine) Rerole(ctx context.Context, role claim.Role, stands func(conte
 		return fmt.Errorf("give claim %s the role %s for its agent's next step: it is %s as %s: %w",
 			m.claim.Token, role, m.claim.State, m.claim.Role, ErrRunsAProcess)
 	}
-	ok, err := stands(ctx)
-	if err != nil {
-		return fmt.Errorf("give claim %s the role %s: read its step: %w", m.claim.Token, role, err)
-	}
-	if !ok {
-		return fmt.Errorf("give claim %s the role %s for its agent's next step: %w", m.claim.Token, role, ErrStepLeft)
+	if err := judgeStanding(ctx, m.claim.Token, true); err != nil {
+		return fmt.Errorf("give claim %s the role %s for its agent's next step: %w", m.claim.Token, role, err)
 	}
 	m.log.Info("supervise: the claim takes the role of its agent's next step", "claim", m.claim.Token, "from", m.claim.Role, "to", role)
 	m.claim.Role = role

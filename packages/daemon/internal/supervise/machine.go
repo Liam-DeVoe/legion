@@ -1476,6 +1476,13 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // process to stop (holdSuspendUntilReady).
 func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	if _, suspending := ev.(RequestSuspend); suspending {
+		// A suspension cancels the start in flight before it takes the lock, so a request made on
+		// a reading of the record judges it first (Standing): a start is never cancelled for a
+		// suspension the record no longer asks for. The judgment that decides is the one under
+		// the lock below.
+		if err := judgeStanding(ctx, claimOf(ev), false); err != nil {
+			return err
+		}
 		m.stopStart("a suspension of the claim is waiting for its start")
 	}
 	m.mu.Lock()
@@ -1483,6 +1490,9 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	m.decide(ev)
 	if token := claimOf(ev); token != m.claim.Token {
 		return fmt.Errorf("supervise: %T for claim %s reached the machine of %s", ev, token, m.claim.Token)
+	}
+	if err := judgeStanding(ctx, m.claim.Token, true); err != nil {
+		return err
 	}
 	// The write a decision owes is made before anything reads or writes the claim again: settle
 	// can retire a delivery, and the repair must write what the failed decision left.

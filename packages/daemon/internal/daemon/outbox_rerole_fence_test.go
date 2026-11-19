@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -128,5 +130,91 @@ func TestAStartsReroleForAStepTheIssueLeftIsNotMade(t *testing.T) {
 				t.Errorf("after a move back overtook the tester's start the claim is %s, want it suspended, running nothing", got)
 			}
 		})
+	}
+}
+
+// The start of the tester's entry finds key a's claim in a turn as the implementer, so the
+// suspension it asks is judged on the step then and held for the turn's end (reroleForStep). A
+// move back to implementing that commits before the turn ends raises the implementer's entry on
+// the same claim, and the held suspension lands at the turn's end on the judgment it passed when it
+// was asked. What that costs is one suspension and one resume of the claim on its own session, and
+// nothing else: the tester's start finishes without acting on its next attempt (the issue left
+// testing), the claim keeps the implementer's role, and the move back's own start resumes it as the
+// implementer on the session it recorded and hands it the implementer's task.
+func TestAHeldSuspensionAMoveBackOvertakesCostsOneSuspendAndResume(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+		Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing"}
+	putOutboxIssue(t, pool, records, issue)
+	keyed := mustClaimToken(t, issue.Key, claim.RoleImplementer)
+	putPhaseRow(t, pool, records, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: keyed, StepTask: "t", StepPlace: 1, Entry: 1})
+	putPhaseRow(t, pool, records, record.PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: keyed, StepTask: "t", StepPlace: 2, Entry: 2})
+	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+	machine, _, err := sup.Create(ctx, supervise.Claim{Token: keyed, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
+		Role: claim.RoleImplementer, State: supervise.StateQueued}, "")
+	if err != nil {
+		t.Fatalf("create the claim of key a: %v", err)
+	}
+	runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, notices: &outboxPublisher{},
+		trees: outboxTreeStore(t, pool, issue.Tree), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
+		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
+			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
+		},
+	}
+	if err := machine.Handle(ctx, supervise.RequestSpawn{Claim: keyed, Exempt: true}); err != nil {
+		t.Fatalf("spawn key a's agent: %v", err)
+	}
+	launch := machine.Claim().Generation
+	if err := machine.Handle(ctx, supervise.RequestRegister{Claim: keyed, Generation: launch, Session: "ses-a", SessionFile: "/tmp/a.jsonl"}); err != nil {
+		t.Fatalf("register key a's agent: %v", err)
+	}
+	if err := machine.Handle(ctx, supervise.RequestReady{Claim: keyed, Generation: launch, Session: "ses-a"}); err != nil {
+		t.Fatalf("ready key a's agent: %v", err)
+	}
+	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: keyed}); err != nil {
+		t.Fatalf("key a's agent's turn: %v", err)
+	}
+	suspends, resumes := len(rt.CallsOf("Suspend")), len(rt.CallsOf("Resume"))
+
+	tester := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleTester, Phase: phase.Testing,
+		Entry: 2, Task: "Test it.", Generation: 1}, time.Now())
+	tester.ID = 71
+	if err := runner.execute(ctx, tester); !errors.Is(err, wait.ErrWaiting) {
+		t.Fatalf("the tester's start during the implementer's turn = %v, want a wait", err)
+	}
+	if view := machine.View(); !view.SuspensionHeld || view.State != supervise.StateWorking {
+		t.Fatalf("key a's claim is %s with a suspension held = %t, want working with the suspension held: the case's premise", view.State, view.SuspensionHeld)
+	}
+	// The tester's fail: the issue moves back to implementing, and the implementer's entry rises
+	// on the same claim.
+	back := issue
+	back.Phase, back.Status = phase.Implementing, "in_progress"
+	putOutboxIssue(t, pool, records, back)
+	putPhaseRow(t, pool, records, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: keyed, StepTask: "t", StepPlace: 1, Entry: 3})
+
+	if err := machine.Handle(ctx, supervise.StreamTurnEnd{Claim: keyed}); err != nil {
+		t.Fatalf("end key a's agent's turn: %v", err)
+	}
+	if err := runner.execute(ctx, tester); err != nil {
+		t.Fatalf("the tester's start after the move back: %v", err)
+	}
+	implementer := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleImplementer, Phase: phase.Implementing,
+		Entry: 3, Task: "Implement it again.", Generation: 1}, time.Now())
+	implementer.ID = 72
+	if err := runner.execute(ctx, implementer); err != nil {
+		t.Fatalf("the move back's start of the implementer: %v", err)
+	}
+
+	if got := len(rt.CallsOf("Suspend")) - suspends; got != 1 {
+		t.Fatalf("the claim's process was stopped %d times, want the one held suspension", got)
+	}
+	calls := rt.CallsOf("Resume")[resumes:]
+	if len(calls) != 1 || calls[0].Spec.Role != claim.RoleImplementer || calls[0].Spec.ResumeSessionFile != "/tmp/a.jsonl" {
+		t.Fatalf("the claim was relaunched as %+v, want once, as the implementer, on its own session /tmp/a.jsonl", calls)
+	}
+	if got := machine.Claim(); got.Role != claim.RoleImplementer || got.Pending == nil || got.Pending.ID != "outbox:72" {
+		t.Fatalf("the claim holds the role %s and the task %+v, want the implementer holding the move back's task outbox:72", got.Role, got.Pending)
 	}
 }
