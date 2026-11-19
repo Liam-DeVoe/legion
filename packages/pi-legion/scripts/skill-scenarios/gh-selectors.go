@@ -12,7 +12,8 @@
 //	quirk	<leaf path>	<field>	<value>	every field ghLeafQuirks sets for a leaf
 //	quirk-slot	<leaf path>	<argument name>	<kind>	<many>	a leaf's own argument kinds
 //	rank	<kind>	<rank>	ghKindRank, which kind a slot of several names takes
-//	pattern	<variable>	<expression>	each regular expression of patternVars
+//	pattern	<variable>	<expression>	<file>	each regular expression of patternVars, and the
+//						file under the module it is declared in
 //
 // It is the world's reading of the wrapper as daemon-routes.go is of the daemon's API: a program
 // of its own that imports the standard library alone and belongs to no module, which
@@ -67,9 +68,11 @@ var patternVars = []string{
 
 // table is every line of the wrapper's table, read from the package-level declarations of the
 // packages of the daemon module at module (their non-test files): the four maps and the patterns,
-// each found by its name.
+// each found by its name, each pattern with the file it is declared in, under module, so a reader
+// that refuses one names where it was read.
 func table(module string) ([]string, error) {
 	values := map[string]ast.Expr{}
+	files := map[string]string{}
 	for _, dir := range packages {
 		sources, err := filepath.Glob(filepath.Join(module, dir, "*.go"))
 		if err != nil || len(sources) == 0 {
@@ -95,6 +98,7 @@ func table(module string) ([]string, error) {
 					}
 					for i, name := range value.Names {
 						values[name.Name] = value.Values[i]
+						files[name.Name] = filepath.ToSlash(filepath.Join(dir, filepath.Base(source)))
 					}
 				}
 			}
@@ -144,7 +148,7 @@ func table(module string) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("the wrapper's %s: %w", name, err)
 		}
-		add("pattern", name, pattern)
+		add("pattern", name, pattern, files[name])
 	}
 	if len(unprintable) > 0 {
 		return nil, fmt.Errorf("the wrapper's table holds %q, which a line of this printout cannot carry (a tab or a newline)", unprintable)

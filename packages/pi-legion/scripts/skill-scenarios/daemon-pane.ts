@@ -385,7 +385,9 @@ export function labelRoutes(checkout: string): readonly string[] {
  * which parses their files and compiles none of them, and kept in the facts cache keyed by those
  * packages' bytes, as the routes are. So each label's is read from its own checkout, and a
  * selector form its wrapper learns is read with no edit, or refused, naming it, where this rig
- * does not model it (gh-selectors.ts's `tableOf`). Throws what the reading refused. */
+ * does not model it (gh-selectors.ts's `tableOf`). Each pattern's file is named under the
+ * checkout's daemon module, which the printout, kept for any checkout of the same sources, does
+ * not name. Throws what the reading refused. */
 export function labelGhTable(checkout: string): GhTable {
   const daemon = daemonOf(checkout);
   return tableOf(
@@ -398,7 +400,8 @@ export function labelGhTable(checkout: string): GhTable {
         ...goSources(path.join(daemon, "cmd", "legion")),
         ...goSources(path.join(daemon, "internal", "ghconfig")),
       ]
-    )
+    ),
+    daemon
   );
 }
 

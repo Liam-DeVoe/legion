@@ -1421,53 +1421,54 @@ describe("the label's build and its facts", () => {
     600_000
   );
 
+  /** A checkout under the row's directory holding what facts reads, copied from this one as
+   * gh-standin.test.ts's per-label rows copy the wrapper: the daemon's API package and engine.go,
+   * the seven other files the source shapes are read from (labelShapes), and the wrapper's
+   * package, internal/ghconfig and saved gh help, with `edit` applied to the wrapper's
+   * gh_help.go: a later wrapper's own source. */
+  function factsCheckout(at: string, edit: (source: string) => string): string {
+    const checkout = path.join(rig, at);
+    const daemon = path.join(checkout, "packages", "daemon");
+    for (const dir of ["internal/api", "cmd/legion", "internal/ghconfig"]) {
+      mkdirSync(path.join(daemon, dir), { recursive: true });
+      for (const name of readdirSync(path.join(DAEMON_MODULE, dir)))
+        if (name.endsWith(".go") && !name.endsWith("_test.go"))
+          cpSync(path.join(DAEMON_MODULE, dir, name), path.join(daemon, dir, name));
+    }
+    for (const file of [
+      "internal/workflow/engine.go",
+      "internal/workflow/effects.go",
+      "internal/workflow/review_round.go",
+      "internal/workflow/review.go",
+      "internal/reviewround/reviewround.go",
+      "internal/dispatch/client.go",
+      "internal/record/outbox.go",
+      "cmd/legion/testdata/gh-help",
+    ]) {
+      mkdirSync(path.dirname(path.join(daemon, file)), { recursive: true });
+      cpSync(path.join(DAEMON_MODULE, file), path.join(daemon, file), { recursive: true });
+    }
+    const routes = path.join("packages", "envoy", "internal", "dispatch", "api", "routes_table.go");
+    mkdirSync(path.dirname(path.join(checkout, routes)), { recursive: true });
+    cpSync(path.join(DAEMON_MODULE, "..", "..", routes), path.join(checkout, routes));
+    const help = path.join(daemon, "cmd", "legion", "gh_help.go");
+    writeFileSync(help, edit(readFileSync(help, "utf8")));
+    return checkout;
+  }
+
   // The gh selectors facts reads once every boot's facts are read (daemon-pane.ts's
   // labelGhSelectors), by which the gh stand-in of every run of the label refuses an owner. The
-  // checkout holds what facts reads, copied from this one as gh-standin.test.ts's per-label rows
-  // copy the wrapper: the daemon's API package and engine.go, the seven other files the source
-  // shapes are read from (labelShapes), and the wrapper's package, internal/ghconfig and saved gh
-  // help, with an option kind the world's gh does not model added
+  // checkout is factsCheckout's, with an option kind the world's gh does not model added
   // to the wrapper's table. Catches: a facts read that passes over the label's gh selectors,
   // which leaves that form to worker_boot to refuse run by run, after the batch started.
   test.skipIf(skip)(
     "a selector form the label's wrapper holds that the world does not model fails the read, naming it",
     () => {
-      const checkout = path.join(rig, "facts-unmodelled-checkout");
-      const daemon = path.join(checkout, "packages", "daemon");
-      for (const dir of ["internal/api", "cmd/legion", "internal/ghconfig"]) {
-        mkdirSync(path.join(daemon, dir), { recursive: true });
-        for (const name of readdirSync(path.join(DAEMON_MODULE, dir)))
-          if (name.endsWith(".go") && !name.endsWith("_test.go"))
-            cpSync(path.join(DAEMON_MODULE, dir, name), path.join(daemon, dir, name));
-      }
-      for (const file of [
-        "internal/workflow/engine.go",
-        "internal/workflow/effects.go",
-        "internal/workflow/review_round.go",
-        "internal/workflow/review.go",
-        "internal/reviewround/reviewround.go",
-        "internal/dispatch/client.go",
-        "internal/record/outbox.go",
-        "cmd/legion/testdata/gh-help",
-      ]) {
-        mkdirSync(path.dirname(path.join(daemon, file)), { recursive: true });
-        cpSync(path.join(DAEMON_MODULE, file), path.join(daemon, file), { recursive: true });
-      }
-      const routes = path.join(
-        "packages",
-        "envoy",
-        "internal",
-        "dispatch",
-        "api",
-        "routes_table.go"
-      );
-      mkdirSync(path.dirname(path.join(checkout, routes)), { recursive: true });
-      cpSync(path.join(DAEMON_MODULE, "..", "..", routes), path.join(checkout, routes));
-      const help = path.join(daemon, "cmd", "legion", "gh_help.go");
       const table = "var ghOptionKinds = map[string]string{\n";
-      const source = readFileSync(help, "utf8");
-      expect(source).toContain(table);
-      writeFileSync(help, source.replace(table, `${table}\t"--mirror string": "mirror",\n`));
+      const checkout = factsCheckout("facts-unmodelled-checkout", (source) => {
+        expect(source).toContain(table);
+        return source.replace(table, `${table}\t"--mirror string": "mirror",\n`);
+      });
       const read = facts(
         {
           SKILL_SCENARIOS_WORK: path.join(rig, "facts-unmodelled"),
@@ -1479,6 +1480,39 @@ describe("the label's build and its facts", () => {
       expect(read.stderr.toString()).toContain(
         `daemon-pane facts: the gh stand-in: the wrapper's table holds the option kind "mirror" (ghOptionKinds --mirror string), which the world's gh does not model (gh-selectors.ts's MODELLED)`
       );
+    },
+    600_000
+  );
+
+  // The wrapper's ghFlagLine has had two shapes, 4 capture groups before #4418 and 5 since
+  // (gh-selectors.ts's optionLines); here a third, the pattern of #4418 with an empty group added
+  // at its end, which reads every option line as that one does. Catches: a pattern of a shape the
+  // world does not read taken as one it does (a reader taking any count of 5 or more as five),
+  // which reads the help's options by the wrong groups and says nothing; a refusal left to
+  // worker_boot, inside each run, rather than made by facts, which label_facts runs at services_up
+  // before any run of the batch starts; and a refusal that names neither the file the pattern was
+  // read from nor the counts the world reads.
+  test.skipIf(skip)(
+    "a ghFlagLine of neither shape the world reads fails the read, naming its file, its count and the two the world reads",
+    () => {
+      const six = String.raw`^\s+(?:-([A-Za-z0-9]), )?--([A-Za-z0-9][A-Za-z0-9-]*)(\[=true\|false\])?(?: (\S+))?(?:\s{2,}(.*)|\s*)()$`;
+      const declaration = /^(\s*ghFlagLine\s*=\s*regexp\.MustCompile\()`[^`]*`\)/m;
+      const checkout = factsCheckout("facts-six-groups-checkout", (source) => {
+        expect(source).toMatch(declaration);
+        return source.replace(declaration, (_, opening: string) => `${opening}\`${six}\`)`);
+      });
+      const read = facts(
+        {
+          SKILL_SCENARIOS_WORK: path.join(rig, "facts-six-groups"),
+          SKILL_SCENARIOS_DAEMON_PANE: fakeBuild(path.join(rig, "facts-six-groups-build")),
+        },
+        checkout
+      );
+      const file = path.join(checkout, "packages", "daemon", "cmd", "legion", "gh_help.go");
+      expect({ code: read.exitCode, stderr: read.stderr.toString() }).toEqual({
+        code: 1,
+        stderr: `daemon-pane facts: the gh stand-in: the wrapper's ghFlagLine ${JSON.stringify(six)}, read from ${file}, has 6 capture groups, which is neither shape of its option line this reads: 4 before #4418 (shorthand, name, placeholder, description), or 5 since (the boolean marker after the name third)\n`,
+      });
     },
     600_000
   );

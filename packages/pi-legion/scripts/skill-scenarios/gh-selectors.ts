@@ -88,18 +88,21 @@ export interface GhTable {
   >;
   readonly ranks: Readonly<Record<string, number>>;
   readonly patterns: Readonly<Record<PatternName, string>>;
+  /** The file each pattern is declared in, under the daemon module the table was read from. */
+  readonly declared: Readonly<Record<PatternName, string>>;
 }
 
-/** The table gh-selectors.go printed as `printed`, every kind and quirk held to MODELLED. Throws
- * naming the first line it cannot read and the first entry of a kind or a quirk this reading does
- * not model. */
-export function tableOf(printed: string): GhTable {
+/** The table gh-selectors.go printed as `printed` over the daemon module `module`, every kind and
+ * quirk held to MODELLED, and each pattern's file named under `module`. Throws naming the first
+ * line it cannot read and the first entry of a kind or a quirk this reading does not model. */
+export function tableOf(printed: string, module: string): GhTable {
   const slots: Record<string, ArgKind> = {};
   const options: Record<string, string> = {};
   const quirks: Record<string, { fields: Record<string, string>; slots: Record<string, ArgKind> }> =
     {};
   const ranks: Record<string, number> = {};
   const patterns: Partial<Record<PatternName, string>> = {};
+  const declared: Partial<Record<PatternName, string>> = {};
   const quirkOf = (leaf: string) => {
     quirks[leaf] ??= { fields: {}, slots: {} };
     return quirks[leaf];
@@ -134,11 +137,12 @@ export function tableOf(printed: string): GhTable {
       ranks[a] = Number(b);
     } else if (
       type === "pattern" &&
-      fields.length === 2 &&
+      fields.length === 3 &&
       (PATTERNS as readonly string[]).includes(a)
-    )
+    ) {
       patterns[a as PatternName] = b;
-    else
+      declared[a as PatternName] = path.join(module, c);
+    } else
       throw new Error(
         `gh-selectors printed ${JSON.stringify(line)}, which is no line of its table`
       );
@@ -148,7 +152,14 @@ export function tableOf(printed: string): GhTable {
     throw new Error(
       `gh-selectors printed no ${missing.length > 0 ? `pattern ${missing.join(", ")}` : "argument or option kinds"}, so the wrapper's table is not read whole`
     );
-  return { slots, options, quirks, ranks, patterns: patterns as Record<PatternName, string> };
+  return {
+    slots,
+    options,
+    quirks,
+    ranks,
+    patterns: patterns as Record<PatternName, string>,
+    declared: declared as Record<PatternName, string>,
+  };
 }
 
 /** A pattern as the wrapper spells it, compiled: Go's leading `(?i)` is JavaScript's `i` flag. */
@@ -425,17 +436,21 @@ export interface OptionLine {
   readonly description: string;
 }
 /** The reader of an option line under the wrapper's pattern `flagLine` (gh_help.go's
- * ghFlagLine and addFlag), which answers undefined for a line the pattern does not read. The
- * pattern has had two shapes, told apart by its capture groups: four before #4418 — the
- * shorthand, the name, the placeholder and the description — and five since, with the boolean
- * marker `[=true|false]` gh 2.104.0 prints right after a boolean option's name as the third. A
- * pattern of any other shape throws here, naming it, and a line that marks its option boolean and
- * names a value, which the wrapper refuses, throws when it is read. */
-export function optionLines(flagLine: RegExp): (line: string) => OptionLine | undefined {
+ * ghFlagLine and addFlag), read from the file `file`, which answers undefined for a line the
+ * pattern does not read. The pattern has had two shapes, told apart by its capture groups: 4
+ * before #4418 — the shorthand, the name, the placeholder and the description — and 5 since, with
+ * the boolean marker `[=true|false]` gh 2.104.0 prints right after a boolean option's name as the
+ * third. A pattern of any other count throws here, naming it, its file, its count and the two
+ * counts this reads, and no line is read by it as either shape; a line that marks its option
+ * boolean and names a value, which the wrapper refuses, throws when it is read. */
+export function optionLines(
+  flagLine: RegExp,
+  file: string
+): (line: string) => OptionLine | undefined {
   const groups = (new RegExp(`${flagLine.source}|`).exec("")?.length ?? 1) - 1;
   if (groups !== 4 && groups !== 5)
     throw new Error(
-      `the wrapper's ghFlagLine ${JSON.stringify(flagLine.source)} has ${groups} capture groups, which is no shape of its option line this reads: four before #4418 (shorthand, name, placeholder, description), or five since (the boolean marker after the name third)`
+      `the wrapper's ghFlagLine ${JSON.stringify(flagLine.source)}, read from ${file}, has ${groups} capture groups, which is neither shape of its option line this reads: 4 before #4418 (shorthand, name, placeholder, description), or 5 since (the boolean marker after the name third)`
     );
   return (line) => {
     const match = flagLine.exec(line);
@@ -506,7 +521,7 @@ export function selectorsOf(
 ): GhSelectors {
   const word = compiled(table.patterns.ghCommandWord);
   const flagLine = compiled(table.patterns.ghFlagLine);
-  const option = optionLines(flagLine);
+  const option = optionLines(flagLine, table.declared.ghFlagLine);
   const slotName = compiled(table.patterns.ghSlotName);
   const mentions = compiled(table.patterns.ghMentionsSelector);
   const savedHelp = (leaf: readonly string[]) => {

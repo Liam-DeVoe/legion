@@ -1577,9 +1577,11 @@ test("every form the wrapper's selector table holds, naming an owner outside the
 // GH_REPO was never read beside an argument. Each shape reads its own groups, a line the wrapper
 // refuses (a boolean marker and a value both) is refused, and so is a pattern of a third shape.
 test("an option line is read by the shape of the wrapper's pattern: four groups before #4418, five since", () => {
-  const since = optionLines(new RegExp(labelGhTable(CHECKOUT).patterns.ghFlagLine));
+  const table = labelGhTable(CHECKOUT);
+  const since = optionLines(new RegExp(table.patterns.ghFlagLine), table.declared.ghFlagLine);
   const before = optionLines(
-    /^\s+(?:-([A-Za-z0-9]), )?--([A-Za-z0-9][A-Za-z0-9-]*)(?: (\S+))?(?:\s{2,}(.*)|\s*)$/
+    /^\s+(?:-([A-Za-z0-9]), )?--([A-Za-z0-9][A-Za-z0-9-]*)(?: (\S+))?(?:\s{2,}(.*)|\s*)$/,
+    "gh_help.go before #4418"
   );
   const repo = "  -R, --repo [HOST/]OWNER/REPO   Select another repository";
   for (const read of [since, before])
@@ -1603,7 +1605,7 @@ test("an option line is read by the shape of the wrapper's pattern: four groups 
   expect(() => since("      --web[=true|false] string   Open it")).toThrow(
     "which marks its option boolean and names a value"
   );
-  expect(() => optionLines(/^--([a-z]+)$/)).toThrow("has 1 capture groups");
+  expect(() => optionLines(/^--([a-z]+)$/, "gh_help.go")).toThrow("has 1 capture groups");
 });
 
 // Catches: a refusal for one role and not another; a refusal read from text a call sends (a body
