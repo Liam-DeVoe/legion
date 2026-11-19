@@ -23,13 +23,15 @@
 // a list (forms.go). A call of a form, or of a wrapper of one, is judged by the argument in that
 // place (judge.go):
 //   - read by the formatter: the value pgsetting.ParseConfig or ParsePoolConfig answered, or a
-//     value a call of pgsetting.Refuse, ParseConfig or ParsePoolConfig guards: the call's error
-//     ends the function (`if <call> != nil { … return }`, or its error tested so right after it),
-//     it runs on every path to the opener (a statement of a block that holds the opener, before
-//     it, in the same function literal), and the opener passes the very variable, or field of
-//     one, the call read, which is the function's own, no pointer reaches, and no line writes
-//     between the two (a closure's write, or one later in a loop that holds the opener and not
-//     the call, counts as between);
+//     value one of those parses guards: the parse's error ends the function (`if _, err :=
+//     <parse>; err != nil { … return }`, or its error tested so right after it), it runs on every
+//     path to the opener (a statement of a block that holds the opener, before it, in the same
+//     function literal), and the opener passes the very variable, or field of one, the parse read,
+//     which is the function's own, no pointer reaches, and no line writes between the two (a
+//     closure's write, or one later in a loop that holds the opener and not the parse, counts as
+//     between). pgsetting.Refuse guards nothing: it refuses only the shapes pgx reads apart, and a
+//     value it admits can still be one pgx cannot parse, whose parse error, the opener's own, quotes
+//     the user part;
 //   - a constant, or a zero value: it holds no setting;
 //   - the configuration another listed parse answered, or the configuration of a pool or a
 //     connection that is already open, whose own opener is listed and judged;
@@ -46,7 +48,7 @@
 // It prints one JSON line for each form ({"form": …}), each call ({"call": …}), what the planted
 // shapes gave when any was not as marked ({"blind": […]}), and a summary ({"summary": …}). A
 // call's argument is its whole source text, its white space folded, so that a judgement names the
-// call whole. The planted shapes (planted.go) are one more file of the package the second argument
+// call whole. The planted shapes (planted.go) are more files of the package the second argument
 // names, read with it: a line marked `planted: unjudged` must be listed unjudged, one marked
 // `planted: judged` must be listed and judged, and a line marked neither must not be listed.
 package main
@@ -55,7 +57,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 )
 
@@ -119,20 +120,27 @@ func main() {
 	for _, name := range formNames {
 		must(encoder.Encode(map[string]any{"form": forms[name]}))
 	}
-	planted := map[int]string{}
-	plantedArguments := map[int][]string{}
+	planted := map[string]map[int]string{}
+	plantedArguments := map[string]map[int][]string{}
+	plantedNames := map[string]bool{}
+	for _, f := range plantedFiles {
+		plantedNames[f.name] = true
+	}
 	counts := map[string]int{}
 	for _, key := range order {
 		rec := merged[key].rec
 		counts[rec.Verdict]++
-		if rec.File == filepath.ToSlash(plantedName) {
+		if plantedNames[rec.File] {
+			if planted[rec.File] == nil {
+				planted[rec.File], plantedArguments[rec.File] = map[int]string{}, map[int][]string{}
+			}
 			// A line listed twice reads as both verdicts, which matches no mark.
 			verdict := rec.Verdict
-			if before, twice := planted[rec.Line]; twice {
+			if before, twice := planted[rec.File][rec.Line]; twice {
 				verdict = before + " and " + verdict
 			}
-			planted[rec.Line] = verdict
-			plantedArguments[rec.Line] = append(plantedArguments[rec.Line], rec.Argument)
+			planted[rec.File][rec.Line] = verdict
+			plantedArguments[rec.File][rec.Line] = append(plantedArguments[rec.File][rec.Line], rec.Argument)
 		}
 		must(encoder.Encode(map[string]any{"call": rec}))
 	}

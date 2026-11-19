@@ -1706,7 +1706,9 @@ func TestLoadRefusesPGSSLROOTCERTSystemForAnIAMURL(t *testing.T) {
 // 15 minutes, never goes over a link that has not verified the server: an IAM-form URL that pgx
 // would not read as one host with sslmode=verify-full and a root certificate pool from
 // sslrootcert refuses to start, naming the host and not the URL. sslmode=require encrypts and
-// verifies nothing, and a repeated sslmode takes its last value, as libpq does.
+// verifies nothing, and a repeated sslmode takes its last value, as libpq does. A user pgx cannot
+// decode (a %00 net/url takes), which pgx's own error quotes and which can be a token written
+// where the user stands, is named by none of its text: the refusal says the settings do not parse.
 func TestLoadRefusesAnIAMURLThatDoesNotVerifyTheServer(t *testing.T) {
 	isolatePostgresDefaults(t)
 	base := "postgres://agent_secrets_broker@" + rdsHost + ":5432/agent_secrets"
@@ -1723,6 +1725,7 @@ func TestLoadRefusesAnIAMURLThatDoesNotVerifyTheServer(t *testing.T) {
 		"an sslrootcert that holds no certificate": {base + "?sslmode=verify-full&sslrootcert=config_test.go", "unable to add CA to cert pool"},
 		"sslrootcert=system":                       {base + "?sslmode=verify-full&sslrootcert=system", "sslrootcert=system"},
 		"sslrootcert=system under sslmode=require": {base + "?sslmode=require&sslrootcert=system", "sslrootcert=system"},
+		"a user pgx cannot decode":                 {"postgres://not-a-secret-tok5e1%00x@" + rdsHost + ":5432/agent_secrets?sslmode=verify-full&sslrootcert=" + rdsBundle, "its connection settings do not parse"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := validEnv()
@@ -1736,8 +1739,8 @@ func TestLoadRefusesAnIAMURLThatDoesNotVerifyTheServer(t *testing.T) {
 					t.Errorf("refusal %q does not say %q", err, want)
 				}
 			}
-			if strings.Contains(err.Error(), "postgres://") {
-				t.Errorf("refusal %q quotes the URL; it should name the host alone", err)
+			if strings.Contains(err.Error(), "postgres://") || strings.Contains(err.Error(), "not-a-secret-tok5e1") {
+				t.Errorf("refusal %q quotes the URL or its user; it should name the host alone", err)
 			}
 		})
 	}

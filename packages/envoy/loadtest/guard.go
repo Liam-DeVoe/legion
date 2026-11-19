@@ -524,19 +524,19 @@ func withoutCredentials(u *url.URL) *url.URL {
 // parsePG is pgx's own parse of a -pg value, and ok is false when pgx would not read raw as a
 // URL: raw must start with postgres:// or postgresql:// (the prefixes pgconn.ParseConfig checks,
 // case-sensitive; any other value goes to its keyword/value parser, whose error can quote the
-// value) and pgconn.ParseConfig, the parser pgx.Connect uses, must accept it. ParseConfig also
-// reads the PG* environment variables and may read the passfile, as pgx.Connect does. A value
-// whose user part pgx reads apart (pgsetting.Refuse) is not ok either: a host pgx read from it can
-// be a piece of that user part, and redactPG prints the hosts.
+// value) and the formatter's parse (pgsetting.ParseConfig, pgx.Connect's own parse after the
+// formatter's refusals) must accept it. It also reads the PG* environment variables and may read
+// the passfile, as pgx.Connect does. A value whose user part pgx reads apart is not ok either: a
+// host pgx read from it can be a piece of that user part, and redactPG prints the hosts.
 func parsePG(raw string) (config *pgconn.Config, ok bool) {
 	if !strings.HasPrefix(raw, "postgres://") && !strings.HasPrefix(raw, "postgresql://") {
 		return nil, false
 	}
-	if pgsetting.Refuse("-pg", raw) != nil {
+	parsed, err := pgsetting.ParseConfig("-pg", raw)
+	if err != nil {
 		return nil, false
 	}
-	config, err := pgconn.ParseConfig(raw)
-	return config, err == nil
+	return &parsed.Config, true
 }
 
 // redactPG is a -pg value as it is recorded or printed, built from parsePG's result alone:

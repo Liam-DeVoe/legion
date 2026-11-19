@@ -7,9 +7,10 @@
  * A Postgres connection string a person configured can carry a user and a password, and a user
  * part written with a raw @ or / is read by pgx in part as the host or the database, which its
  * errors print. So each opener reads its string through the one formatter, `pgsetting` in the Go
- * module of Envoy (`ParseConfig`, `ParsePoolConfig`, or `Refuse` before the call), or is handed a
- * value that holds no setting, or this search's list (`db-openers.judged.ts`) says why its value
- * cannot be printed.
+ * module of Envoy (`ParseConfig` or `ParsePoolConfig`, whose error names the value by its length,
+ * before the call; `Refuse` alone refuses only the shapes pgx reads apart, so it guards nothing),
+ * or is handed a value that holds no setting, or this search's list (`db-openers.judged.ts`) says
+ * why its value cannot be printed.
  *
  * It reads every Go module of the repository (each `go.mod` git tracks; a module the workspace's
  * go.work does not name is read with GOWORK=off) with its Go half, `scripts/checks/db-openers/go/`,
@@ -24,8 +25,8 @@
  *
  * It exits 0 when every call it lists is judged by reading or by an entry of the list, and 1 when a
  * call is neither, when an entry names no call it lists, or when it cannot say: when it listed no
- * call at all, read no file of a module, or a planted shape (`db-openers/go/planted.go`, one more
- * file of the Dispatch command's package, and `db-openers/planted.ts`) was not listed as marked. A
+ * call at all, read no file of a module, or a planted shape (`db-openers/go/planted.go`, more files
+ * of the Dispatch command's package, and `db-openers/planted.ts`) was not listed as marked. A
  * search that cannot see those shapes would say the same about the tree whether it looked or not,
  * so it prints UNKNOWN then.
  */
@@ -209,9 +210,11 @@ export function run(
     blind.push(
       `no Go module read is ${GO_PLANT.module}, which holds the Go half's planted shapes, so they were not read`
     );
-  const plantedFiles = new Set([plantedName, "scripts/checks/db-openers.planted.go"]);
+  // The planted shapes' files all start so: the TypeScript half's (plantedName), and the Go half's
+  // (`plantedFiles` in `db-openers/go/planted.go`).
+  const plantedPrefix = "scripts/checks/db-openers.planted";
   const calls = [...read.go.flatMap((g) => g.listed), ...typescript].filter(
-    (c) => !plantedFiles.has(c.file)
+    (c) => !c.file.startsWith(plantedPrefix)
   );
   const used = new Set<JudgedOpener>();
   let byReading = 0;
@@ -249,7 +252,7 @@ export function run(
     const s = g.summary ?? {};
     const builds = Array.isArray(s.builds) ? s.builds.length : 0;
     print(
-      `${g.module}: ${s.files ?? 0} Go files read (${s.constrained ?? 0} that only a build tag or another system builds), in ${builds} builds, ${s.forms ?? 0} opener forms, ${g.listed.filter((c) => !plantedFiles.has(c.file)).length} calls`
+      `${g.module}: ${s.files ?? 0} Go files read (${s.constrained ?? 0} that only a build tag or another system builds), in ${builds} builds, ${s.forms ?? 0} opener forms, ${g.listed.filter((c) => !c.file.startsWith(plantedPrefix)).length} calls`
     );
   }
   print(

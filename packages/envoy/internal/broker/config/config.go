@@ -1413,14 +1413,18 @@ func databaseIAM(databaseURL string) (bool, error) {
 	}
 	conn, err := pgconn.ParseConfig(databaseURL)
 	if err != nil {
-		// A ParseConfigError's own text quotes the URL; what it wraps says what was wrong.
-		var parseErr *pgconn.ParseConfigError
-		if errors.As(err, &parseErr) && errors.Unwrap(parseErr) != nil {
-			err = errors.Unwrap(parseErr)
-		} else {
-			err = errors.New("its connection settings do not parse")
+		// A ParseConfigError's own text quotes the URL, and what it wraps can quote the user part
+		// (pgx's decode of a user it cannot read, which can be a token written where the user
+		// stands), so only the sslrootcert file's failures, which name that file and no part of
+		// the user, are told; any other says that the settings do not parse.
+		var file *os.PathError
+		switch {
+		case errors.As(err, &file):
+			return refuse("pgx cannot read it: unable to read CA file: " + file.Error())
+		case errors.Unwrap(err) != nil && errors.Unwrap(err).Error() == "unable to add CA to cert pool":
+			return refuse("pgx cannot read it: unable to add CA to cert pool")
 		}
-		return refuse("pgx cannot read it: " + err.Error())
+		return refuse("pgx cannot read it: its connection settings do not parse")
 	}
 	// pgx signs in with the password it reads, which net/url can miss: a query pair holding a ';'
 	// (net/url drops it), PGPASSWORD, or a passfile entry. A connection that has one signs in with

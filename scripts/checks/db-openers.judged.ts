@@ -135,6 +135,13 @@ export const JUDGED: readonly JudgedOpener[] = [
     why: DAEMON_DSN,
   },
   {
+    file: "packages/envoy/internal/broker/config/config.go",
+    function: "Load",
+    callee: "github.com/sjawhar/envoy/internal/broker/config.databaseIAM",
+    argument: "cfg.DatabaseURL",
+    why: "databaseIAM parses BROKER_DATABASE_URL with pgconn.ParseConfig, after pgsetting.Refuse refused a user part pgx reads apart, and keeps pgx's error from every line: its refusal names the RDS host net/url read and, of pgx's parse error, only an sslrootcert file's failure (the file and its error, or a pool it added no CA to), saying of any other that the settings do not parse; the configuration is read for its password, hosts and TLS settings, and the broker opens the database through pgsetting.ParsePoolConfig (store.Open)",
+  },
+  {
     file: BROKER_STORETEST,
     function: "URL",
     callee: "github.com/sjawhar/envoy/internal/broker/store/storetest.admin",

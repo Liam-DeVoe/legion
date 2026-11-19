@@ -357,7 +357,7 @@ func (a *analysis) judge(fd *ast.FuncDecl, params map[types.Object]int, e ast.Ex
 		}
 		callee := funcName(fn)
 		switch {
-		case formatterAnswers[callee]:
+		case formatterParses[callee]:
 			return verdict{judged: true, why: "read through " + strings.TrimPrefix(callee, "github.com/sjawhar/envoy/")}
 		case a.forms[callee].Callee != "":
 			return verdict{judged: true, why: fmt.Sprintf("the configuration the parse at line %d answered, which is listed itself", a.m.fset.Position(x.Pos()).Line)}
@@ -459,12 +459,12 @@ func (a *analysis) assigned(fd *ast.FuncDecl, obj types.Object) ([]ast.Expr, str
 	return values, unknown
 }
 
-// guard is the line of a call of the formatter (pgsetting.Refuse, ParseConfig or ParsePoolConfig)
-// in fd that guards e at pos, and which call it is; 0 when none does. A call guards e when its
-// error ends the function (refusal), it is a statement of a block that holds pos, before the
-// statement that holds pos, in the same function literal as pos, it read the very variable or
-// field e names (same), and no line can change that value between the two (unwritten). A goto in
-// fd can jump past the call, so fd then has no guard.
+// guard is the line of a parse of the formatter (pgsetting.ParseConfig or ParsePoolConfig) in fd
+// that guards e at pos, and which parse it is; 0 when none does. A parse guards e when its error
+// ends the function (refusal), it is a statement of a block that holds pos, before the statement
+// that holds pos, in the same function literal as pos, it read the very variable or field e names
+// (same), and no line can change that value between the two (unwritten). A goto in fd can jump
+// past the parse, so fd then has no guard. pgsetting.Refuse guards nothing (formatterParses).
 func (a *analysis) guard(fd *ast.FuncDecl, e ast.Expr, pos token.Pos) (int, string) {
 	if fd == nil || hasGoto(fd) {
 		return 0, ""
@@ -541,18 +541,12 @@ func hasGoto(fd *ast.FuncDecl) bool {
 	return found
 }
 
-// refusal is the formatter's call s makes whose error ends the function: `if <call> != nil {
-// … return }`, `if err := <call>; err != nil { … return }` (or `_, err :=`), or `err := <call>`
-// (or `x, err :=`, or `=`) with next `if err != nil { … return }`; nil otherwise.
+// refusal is the formatter's parse s makes whose error ends the function: `if _, err := <call>;
+// err != nil { … return }`, or `_, err := <call>` (or `=`) with next `if err != nil { … return }`;
+// nil otherwise.
 func (a *analysis) refusal(s, next ast.Stmt) *ast.CallExpr {
 	switch x := s.(type) {
 	case *ast.IfStmt:
-		if x.Init == nil {
-			if c := a.formatterCall(nilTested(x)); c != nil && endsFunction(x) {
-				return c
-			}
-			return nil
-		}
 		if c, err := a.errorOf(x.Init); c != nil && a.testsError(x, err) {
 			return c
 		}
@@ -566,8 +560,8 @@ func (a *analysis) refusal(s, next ast.Stmt) *ast.CallExpr {
 	return nil
 }
 
-// errorOf is the formatter's call s assigns and the variable it puts the call's error in, when s
-// is `err := <call>`, `x, err := <call>` or the same with `=`.
+// errorOf is the formatter's parse s assigns and the variable it puts the parse's error in, when s
+// is `x, err := <call>` or the same with `=`.
 func (a *analysis) errorOf(s ast.Stmt) (*ast.CallExpr, types.Object) {
 	assign, ok := s.(*ast.AssignStmt)
 	if !ok || len(assign.Rhs) != 1 || (assign.Tok != token.DEFINE && assign.Tok != token.ASSIGN) {
@@ -623,8 +617,8 @@ func endsFunction(x *ast.IfStmt) bool {
 	return ok
 }
 
-// formatterCall is e when it is a call of pgsetting.Refuse, ParseConfig or ParsePoolConfig with
-// the value as its second argument, and nil otherwise.
+// formatterCall is e when it is a parse of the formatter (formatterParses) with the value as its
+// second argument, and nil otherwise.
 func (a *analysis) formatterCall(e ast.Expr) *ast.CallExpr {
 	if e == nil {
 		return nil
@@ -634,7 +628,7 @@ func (a *analysis) formatterCall(e ast.Expr) *ast.CallExpr {
 		return nil
 	}
 	fn := calleeOf(c, a.m.info)
-	if fn == nil || !formatterReads[funcName(fn)] {
+	if fn == nil || !formatterParses[funcName(fn)] {
 		return nil
 	}
 	return c

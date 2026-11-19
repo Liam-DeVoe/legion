@@ -30,8 +30,8 @@ import (
 // their real signatures. Every other package outside the module is an empty one.
 var openerPackages = regexp.MustCompile(`^(database/sql|github\.com/jackc/pgx(/v[0-9]+)?(/pgconn|/pgxpool|/stdlib)?|github\.com/jackc/pgconn|github\.com/lib/pq|github\.com/sjawhar/envoy/pgsetting)$`)
 
-// plantedTag is the build tag that alone builds the planted shapes' file, so that a run which
-// leaves out a file only a build tag builds reads none of them, and says so.
+// plantedTag is the build tag every planted shapes' file needs, so that a run which leaves out a
+// file only a build tag builds reads none of them, and says so.
 const plantedTag = "db_openers_planted"
 
 // module is one build of a module: the files one build context compiles, read from source and
@@ -78,7 +78,7 @@ var moduleLine = regexp.MustCompile(`(?m)^module\s+"?([^"\s]+)"?`)
 // that context's build reads every file it compiles. A file no context compiles is read in a build
 // of its own with the host's files. Each build is type-checked on its own, so that a file and the
 // file it stands in for on another system never meet. The planted shapes, when plantDir names a
-// package, are one more file of it, which only plantedTag builds.
+// package, are more files of it (plantedFiles), which only plantedTag and other tags build.
 func load(root, moduleDir, plantDir string) loaded {
 	dir := filepath.Join(root, moduleDir)
 	goMod, err := os.ReadFile(filepath.Join(dir, "go.mod"))
@@ -126,14 +126,18 @@ func load(root, moduleDir, plantDir string) loaded {
 	if walkErr != nil {
 		fail(walkErr)
 	}
-	plantedPath := filepath.Join(root, plantedName)
+	plantedPaths := map[string]bool{}
 	if plantDir != "" {
 		pkgDir := filepath.Join(dir, plantDir)
 		name := majority(sources, pkgDir)
 		if name == "" {
 			fail(fmt.Errorf("no package of %s is in %s, the planted shapes' package", moduleDir, plantDir))
 		}
-		sources = append(sources, read(pkgDir, plantedPath, []byte(strings.Replace(planted, "package main", "package "+name, 1)), reserved))
+		for _, f := range plantedFiles {
+			p := filepath.Join(root, f.name)
+			plantedPaths[p] = true
+			sources = append(sources, read(pkgDir, p, []byte(strings.Replace(f.text, "package main", "package "+name, 1)), reserved))
+		}
 	}
 
 	host := build.Default
@@ -151,7 +155,7 @@ func load(root, moduleDir, plantDir string) loaded {
 	result := loaded{}
 	for _, s := range sources {
 		result.files++
-		if !covered[s] && s.path != plantedPath {
+		if !covered[s] && !plantedPaths[s.path] {
 			result.constrained++
 		}
 	}

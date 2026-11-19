@@ -11,16 +11,16 @@ import (
 // pgsetting is the import path of the one formatter.
 const pgsetting = "github.com/sjawhar/envoy/pgsetting"
 
-// formatterReads are pgsetting's functions that read a connection string (their second argument)
-// before any opener: a value one of them read is read by the formatter.
-var formatterReads = map[string]bool{
-	pgsetting + ".Refuse":          true,
-	pgsetting + ".ParseConfig":     true,
-	pgsetting + ".ParsePoolConfig": true,
-}
-
-// formatterAnswers are pgsetting's functions whose answer is a configuration the formatter read.
-var formatterAnswers = map[string]bool{
+// formatterParses are pgsetting's parses of a connection string (their second argument): each
+// answers a configuration the formatter read, and refuses the value by its length when pgx cannot
+// parse it, before pgx's own parse error could quote its user part. So the configuration one of
+// them answered is read by the formatter, and so is a value one of them parsed whose error ends the
+// function (judge.go's guard). pgsetting.Refuse is none of them: it refuses only the shapes pgx
+// reads apart, and a value it admits can still be one pgx cannot parse, whose parse error, the
+// opener's own, quotes the user part (a token written where the user stands). So Refuse guards no
+// opener of the raw value, and an opener of an already-parsed configuration is judged by the parse
+// that answered it, which is listed itself.
+var formatterParses = map[string]bool{
 	pgsetting + ".ParseConfig":     true,
 	pgsetting + ".ParsePoolConfig": true,
 }
