@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
 
 import type { DispatchEvent } from "../../api/types";
 import { activityDescription } from "../activity/activity-model";
@@ -501,25 +502,32 @@ test("the issue log keeps the session an unsubscribe or a follower names", () =>
   expect(eventDescription(sessionEvent("ask.follower_added"))).toEqual([agent, " follows an ask"]);
 });
 
+const receipt = (
+  type: "message.delivery" | "comment.delivery",
+  state: "sent" | "queued" | "failed",
+  duplicate: boolean,
+  error?: string
+) =>
+  ({
+    actor: { id: "system", kind: "system" },
+    created_at: "2026-11-02T09:15:00Z",
+    id: 11,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      delivery: "aside",
+      duplicate,
+      state,
+      target: "session:planner",
+      ...(error === undefined ? {} : { error }),
+    },
+    seq: 11,
+    type,
+  }) as DispatchEvent;
+
 // A queued attempt waits for a session that is not running, so the line says queued even when the
 // stream already held the message: "already delivered" would say the session has it.
 test("the issue log reads a queued delivery receipt as queued, a queued repeat included", () => {
-  const receipt = (
-    type: "message.delivery" | "comment.delivery",
-    state: "sent" | "queued",
-    duplicate: boolean
-  ) =>
-    ({
-      actor: { id: "system", kind: "system" },
-      created_at: "2026-11-02T09:15:00Z",
-      id: 11,
-      issue_key: "CORE-1",
-      notify: false,
-      payload: { delivery: "aside", duplicate, state, target: "session:planner" },
-      seq: 11,
-      type,
-    }) as DispatchEvent;
-
   expect(eventDescription(receipt("message.delivery", "queued", true))).toEqual([
     "Message queued: Aside",
   ]);
@@ -532,4 +540,22 @@ test("the issue log reads a queued delivery receipt as queued, a queued repeat i
   expect(eventDescription(receipt("comment.delivery", "sent", true))).toEqual([
     "Comment already delivered: Aside",
   ]);
+});
+
+// A delete appends one failed receipt per send of its post it ended, with its own words. That
+// receipt is no failed send: the line says the post's delete ended the send, as the Activity
+// tab's does, while any other failure still reads as failed.
+test("the issue log reads a receipt the post's delete appended as the delete ending the send", () => {
+  expect(
+    eventDescription(receipt("comment.delivery", "failed", false, DELETED_POST_DELIVERY_ERROR))
+  ).toEqual(["Comment send ended by the post's delete: Aside"]);
+  expect(
+    eventDescription(receipt("comment.delivery", "failed", false, "no live session planner"))
+  ).toEqual(["Comment failed: Aside"]);
+  expect(
+    eventDescription(receipt("message.delivery", "failed", false, DELETED_POST_DELIVERY_ERROR))
+  ).toEqual(["Message send ended by the post's delete: Aside"]);
+  expect(
+    eventDescription(receipt("message.delivery", "failed", false, "no live session planner"))
+  ).toEqual(["Message failed: Aside"]);
 });

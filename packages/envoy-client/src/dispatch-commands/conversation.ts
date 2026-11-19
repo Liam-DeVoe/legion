@@ -214,9 +214,11 @@ async function throughDelete<T>(
     return await throughPostCorrections(context.input.tool, context.configUrl, call, post);
   } catch (error) {
     if (dispatchAnswered(error, 409) && error.code === "DELETE_CONTENDED") {
+      // Dispatch's own words already say nothing was written, so the clause says only what that
+      // leaves and what to do.
       throw refusalWithCode(
         error,
-        `nothing was written, so ${post.kind} ${post.id} stands: run the same dispatch delete-${post.kind} command again`
+        `${post.kind} ${post.id} stands: run the same dispatch delete-${post.kind} command again`
       );
     }
     throw error;

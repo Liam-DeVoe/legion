@@ -16548,7 +16548,9 @@ test("deletes an issue message by bare id and says no read of it gives its body 
 // DELETE_CONTENDED means a send of the post moved while the delete was being written, and the
 // delete wrote nothing, so the same call again is the whole remedy. Unwrapped it reached the
 // caller as the server's prose with its code hidden, which reads as a failure to work out rather
-// than a write to repeat: the refusal `dispatch result` gives CHECK_CONTENDED the same way.
+// than a write to repeat: the refusal `dispatch result` gives CHECK_CONTENDED the same way. The
+// server's prose already says nothing was written, so the command's clause says it no second
+// time: only that the post stands and to run the same command again.
 for (const [tool, args, kind, id] of [
   ["dispatch_delete_comment", { comment: correctedComment }, "comment", correctedComment],
   ["dispatch_delete_message", { message: correctedMessage }, "message", correctedMessage],
@@ -16575,7 +16577,7 @@ for (const [tool, args, kind, id] of [
         fetchImpl: fetchImpl as typeof fetch,
       })
     ).rejects.toThrow(
-      `DELETE_CONTENDED: ${refusal}; nothing was written, so ${kind} ${id} stands: run the same dispatch delete-${kind} command again`
+      `DELETE_CONTENDED: ${refusal}; ${kind} ${id} stands: run the same dispatch delete-${kind} command again`
     );
   });
 }
