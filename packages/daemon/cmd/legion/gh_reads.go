@@ -13,6 +13,13 @@ import (
 // repository.
 const ghCheckedOnlyVisibility = "checked-only"
 
+// ghNoRulesVisibility is the call log's visibility for a call that skipped the private-name step
+// because the deployment names no rule file (leakguard.GhAnswer.NoRules): the shared check read
+// it, and nothing read its repository's visibility, since without a rule there is nothing the
+// visibility would decide. It is neither checked-only, which is a read the shared check alone
+// clears whatever rules are named, nor the empty value of a call that named no repository.
+const ghNoRulesVisibility = "no-rules"
+
 // ghReadsProvenCheck is the shared check ghWritesNothing's rule was proven against: its tag,
 // which is the tag the worker image pins (`ARG LEAK_CHECK_TAG` in
 // packages/daemon/docker/worker.Dockerfile, which TestGhReadsAreProvenAgainstThePinnedCheck holds
@@ -41,9 +48,11 @@ func ghRateLimitRead(argv []string) bool {
 	return slices.Equal(argv, []string{"api", "rate_limit"})
 }
 
-// ghUnguardedUnset are the variables a call no private-name pass reads runs gh without: the
-// browser programs gh would hand a page to (go-gh's browser.New reads GH_BROWSER, then gh's
-// config `browser`, then BROWSER).
+// ghUnguardedUnset are the variables a call that went around the private-name pass runs gh
+// without — the two exact reads that run no guard, and a call the shared check alone read (runGh
+// says why a call that skipped the step because no rule is named keeps them): the browser
+// programs gh would hand a page to (go-gh's browser.New reads GH_BROWSER, then gh's config
+// `browser`, then BROWSER).
 var ghUnguardedUnset = map[string]bool{"GH_BROWSER": true, "BROWSER": true}
 
 // ghReadLeaves are the leaves that send GitHub no request that writes, by the canonical path the

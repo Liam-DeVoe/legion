@@ -407,8 +407,11 @@ const (
 // ghGuardRig answers a run of `legion gh args…` with stdin against the shared check at the path
 // check (ghCheckAt), a stand-in gh that answers the visibility read `public` and every call with
 // exit 7 after recording it, and a state directory of the run's own, so no visibility is kept
-// from another run. The caller's environment names a pager and two browsers.
-func ghGuardRig(t *testing.T) func(t *testing.T, check, stdin string, args ...string) ghGuardRecord {
+// from another run. The caller's environment names a pager and two browsers, and rules, where it
+// is not "", as the deployment's rule file (LEGION_PRIVATE_NAME_RULES_FILE): a call guarded whole
+// reads its destination's visibility and runs the private-name pass only where a rule file is
+// named, so a rig of a test that reads either names the fixture's (leakguardtest.WriteRules).
+func ghGuardRig(t *testing.T, rules string) func(t *testing.T, check, stdin string, args ...string) ghGuardRecord {
 	t.Helper()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -434,6 +437,9 @@ func ghGuardRig(t *testing.T) func(t *testing.T, check, stdin string, args ...st
 			"GH_STANDIN_RECORD": ghRecord, "LEAK_CHECK_RECORD": checkRecord, "XDG_STATE_HOME": state,
 			"LEGION_ROLE": "merger", "LEGION_ISSUE": "issue-9", "LEAK_CHECK_STANDIN_TARGET": "acme/widgets",
 			"GH_PAGER": "rig-pager", "GH_BROWSER": "rig-gh-browser", "BROWSER": "rig-browser",
+		}
+		if rules != "" {
+			env[leakguard.RulesFileVar] = rules
 		}
 		code, _, stderr := legionGhIn(t, t.TempDir(), env, stdin, args...)
 		return ghGuardRecord{
@@ -485,7 +491,7 @@ func ghCheckWithProgram(t *testing.T, script, program string) string {
 // BROWSER, though the caller set all three. Its line in the call log says
 // `visibility="checked-only"` and names the repository the call resolved.
 func TestLegionGhChecksAReadAndReadsNoVisibility(t *testing.T) {
-	run := ghGuardRig(t)
+	run := ghGuardRig(t, "")
 	const stdin = "a line on standard input\n"
 	for _, args := range ghReadCalls() {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
@@ -522,7 +528,7 @@ func TestLegionGhChecksAReadAndReadsNoVisibility(t *testing.T) {
 // refuses a credential in every call the wrapper counts as a read (ghWritesNothing). Each of
 // these is in a read grammar as typed, and the refusal comes before any visibility read.
 func TestLegionGhRefusesAReadThatCarriesACredential(t *testing.T) {
-	run := ghGuardRig(t)
+	run := ghGuardRig(t, "")
 	for _, args := range [][]string{
 		{"pr", "list", "-R", "acme/widgets", "--search", ghFakeToken},
 		{"api", "repos/acme/widgets/issues?q=" + ghFakeToken},
@@ -551,7 +557,7 @@ func TestLegionGhRefusesAReadThatCarriesACredential(t *testing.T) {
 // guard's setup error, and never reaches gh: a check that is not there, and one that exits with
 // its own setup error (exit 2), have cleared nothing.
 func TestLegionGhRefusesAReadWhoseGuardCannotRun(t *testing.T) {
-	run := ghGuardRig(t)
+	run := ghGuardRig(t, "")
 	for _, tc := range []struct {
 		name  string
 		check func(t *testing.T) string
@@ -636,10 +642,10 @@ func TestLegionGhRefusesAReadWhoseGuardIsStopped(t *testing.T) {
 
 // A listed read under a shared check that is not the one the read rule was proven against — its
 // public_leak_check.py another file, or no such file, as a tmux pane's check of another version
-// may be — gets the whole guard, the visibility read included, and its log line is no
-// checked-only one.
+// may be — gets the whole guard, the visibility read included where the deployment names its
+// rule file, and its log line is no checked-only one.
 func TestLegionGhGuardsAReadWholeUnderAnUnprovenCheck(t *testing.T) {
-	run := ghGuardRig(t)
+	run := ghGuardRig(t, leakguardtest.WriteRules(t, t.TempDir()))
 	for _, program := range []struct{ name, text string }{
 		{"another program", ghProvenProgram + "# an edit under the same tag\n"},
 		{"no program", ""},
@@ -659,7 +665,7 @@ func TestLegionGhGuardsAReadWholeUnderAnUnprovenCheck(t *testing.T) {
 // the check recorded its run of the call, the guard asked gh the visibility of the repository the
 // call names (none for a call naming none, such as a GraphQL call, which the guard scans for that
 // reason), and only then did gh run, with the pager and the browsers the caller set, and the log
-// line is no checked-only one.
+// line is neither a checked-only one nor a no-rules one.
 func guardedWhole(t *testing.T, got ghGuardRecord, args []string) {
 	t.Helper()
 	if got.code != 7 {
@@ -678,16 +684,19 @@ func guardedWhole(t *testing.T, got ghGuardRecord, args []string) {
 	if want := "gh " + strings.Join(args, " ") + "\n" + ghRigEnv; !strings.Contains(got.gh, want) {
 		t.Errorf("gh recorded %q, want the call %q after the guard, with the caller's pager and browsers", got.gh, want)
 	}
-	if strings.Contains(got.log, `visibility="checked-only"`) {
-		t.Errorf("the call log reads a call the guard read whole as checked-only: %q", got.log)
+	for _, partial := range []string{ghCheckedOnlyVisibility, ghNoRulesVisibility} {
+		if strings.Contains(got.log, "visibility="+ghCallLogValue(partial)) {
+			t.Errorf("the call log reads a call the guard read whole as %s: %q", partial, got.log)
+		}
 	}
 }
 
-// Every other call runs the whole guard as before, one visibility read included: the calls of
-// commands other than gh api, calls of listed leaves typed outside their grammar, and gh api calls
-// with a guarded option, the spellings review 5911414081 named among them, or a guarded endpoint.
+// Every other call runs the whole guard as before, one visibility read included, where the
+// deployment names its rule file: the calls of commands other than gh api, calls of listed leaves
+// typed outside their grammar, and gh api calls with a guarded option, the spellings review
+// 5911414081 named among them, or a guarded endpoint.
 func TestLegionGhGuardsEveryWrite(t *testing.T) {
-	run := ghGuardRig(t)
+	run := ghGuardRig(t, leakguardtest.WriteRules(t, t.TempDir()))
 	for _, args := range slices.Concat(ghGuardedCalls, ghGuardedLeafSpellings, ghGuardedAPICalls()) {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			guardedWhole(t, run(t, ghCheckAt(t, ghCheckPasses), "", args...), args)
@@ -700,5 +709,45 @@ func TestLegionGhGuardsEveryWrite(t *testing.T) {
 	got := run(t, ghCheckAt(t, ghCheckRefuses), "", args...)
 	if got.code != 2 || !strings.Contains(got.stderr, "LEAK CHECK: refusing") || strings.Contains(got.gh, "gh ") {
 		t.Errorf("legion gh %q under a check that refuses = exit %d, stderr %q, gh %q; want exit 2, the guard's refusal and no gh run", args, got.code, got.stderr, got.gh)
+	}
+}
+
+// With no rule file named, a write `legion gh` guards gets the shared check alone: the check
+// runs, no visibility is read, gh runs the call with the pager and browsers the caller set, the
+// call's log line says no-rules, and standard error holds noRulesLine, once, though the body file
+// names the fixture's host, which the fixture's rules refuse. A read the shared check alone
+// clears skips no private-name step, so it prints nothing, and its log line stays checked-only.
+func TestLegionGhRunsAWriteWithNoRuleFileAndSaysSo(t *testing.T) {
+	run := ghGuardRig(t, "")
+	body := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(body, []byte("the runner answers at "+leakguardtest.RulesHost+" today\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		env        string
+		stderr     string
+		visibility string
+	}{
+		{"a write", []string{"pr", "create", "-R", "acme/widgets", "--title", "a title", "--body-file", body}, ghRigEnv, noRulesLine + "\n", ghNoRulesVisibility},
+		{"a read", []string{"pr", "view", "1", "-R", "acme/widgets"}, ghRigReadEnv, "", ghCheckedOnlyVisibility},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := run(t, ghCheckAt(t, ghCheckPasses), "", tc.args...)
+			if got.code != 7 || got.stderr != tc.stderr {
+				t.Errorf("legion gh %q with no rule file = exit %d, stderr %q; want gh's own 7 and %q", tc.args, got.code, got.stderr, tc.stderr)
+			}
+			if want := "checked gh-guard " + strings.Join(tc.args, " ") + "\n"; got.checked != want {
+				t.Errorf("the shared check recorded %q, want its one run of the call, %q", got.checked, want)
+			}
+			// The call alone, and so no visibility read before it.
+			if want := "gh " + strings.Join(tc.args, " ") + "\n" + tc.env + "stdin \n"; got.gh != want {
+				t.Errorf("gh recorded %q, want %q", got.gh, want)
+			}
+			if wants := []string{"visibility=" + ghCallLogValue(tc.visibility), "repository=" + ghCallLogValue("acme/widgets"), "status=7"}; strings.Count(got.log, "\n") != 1 || slices.ContainsFunc(wants, func(want string) bool { return !strings.Contains(got.log, want) }) {
+				t.Errorf("the call log reads %q, want one line naming %q", got.log, wants)
+			}
+		})
 	}
 }
