@@ -334,10 +334,9 @@ export function isDeliveryNotConfigured(error: unknown): boolean {
   );
 }
 
-// Dispatch refuses a restricted member every read of the deployment's own rows with this 403
-// (`readclass.Deployment` in `api/read_classes.go`). The dashboard asks such a member for none of
-// them (`useRestrictedMember`), so a page meets it only where the viewer's credential changed
-// while it was open: the section that read it leaves itself out rather than drawing a failure.
+// A read of the whole deployment - the pending credential requests among them - answers this 403
+// to a viewer that is not open: a restricted member, or a credential that lists its projects. It
+// is definitive like the 404s above: the viewer is what it is, and retrying changes nothing.
 export function isDeploymentReadRefused(error: unknown): boolean {
   return (
     error instanceof ApiError && error.status === 403 && error.code === "DEPLOYMENT_READ_REFUSED"
@@ -410,13 +409,16 @@ export function isAgentListRefilling(error: unknown): boolean {
   return error instanceof ApiError && error.status === 503 && error.code === "ENVOY_REFILLING";
 }
 
-// The retry policy every query in the app shares: an auth outcome (401), a missing architecture
-// source, an unconfigured credential broker or delivery timeline, a stored document outside
-// Proof's schema, or a stored history that cannot load is definitive and retrying it changes
-// nothing; any other failure (dropped connection, a read past its deadline, 5xx, a document
-// holding content this build cannot read yet) is worth a couple of automatic attempts before
-// surfacing a Retry affordance to the user.
+// The retry policy every query in the app shares: an auth outcome (401), any 403, a missing
+// architecture source, an unconfigured credential broker or delivery timeline, a stored document
+// outside Proof's schema, or a stored history that cannot load is definitive and retrying it
+// changes nothing; any other failure (dropped connection, a read past its deadline, 5xx, a
+// document holding content this build cannot read yet) is worth a couple of automatic attempts
+// before surfacing a Retry affordance to the user. A 403 is Dispatch's permanent answer to the
+// credential the request carried (a deployment read refused to a restricted member, a role the
+// caller does not hold), and a retry carries the same credential.
 export function isRetryableQueryError(error: unknown): boolean {
+  if (error instanceof ApiError && error.status === 403) return false;
   return (
     !isUnauthorized(error) &&
     !isSourceNotFound(error) &&
