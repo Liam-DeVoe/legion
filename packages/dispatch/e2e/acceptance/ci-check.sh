@@ -413,10 +413,14 @@ unconcluded() {
   no_line "$1" "$3 prints no fail either" "- $3 (before_merge): fail at"
 }
 
-# no_rows SECTION WHAT ARTIFACT BLOCK: check_results holds no row for block BLOCK of ARTIFACT.
+# no_rows SECTION WHAT ARTIFACT BLOCK: check_results holds no row for block BLOCK of ARTIFACT. A
+# result's row is keyed by the artifact its check's block row is keyed by: the document itself, or
+# the tree artifact of the issue room the document is edited in, whose block ids are unique.
 no_rows() {
   sql "$1" "$2" -v artifact="$3" -v block="$4" <<'SQL'
-select count(*) from check_results where check_artifact_id = :'artifact' and check_block_id = :'block';
+select count(*) from check_results
+where check_block_id = :'block'
+  and check_artifact_id in (:'artifact', coalesce((select room from document_rooms where artifact_id = :'artifact'), :'artifact'));
 SQL
   [[ "$(<"$work/sql")" == 0 ]] || fail "$1" "$2" "check_results holds $(<"$work/sql") rows for $4"
   pass "$1" "$2"

@@ -38,9 +38,11 @@ const storeStepWait = 20 * time.Second
 // issue's own field write made for a run (patchIssue), which writes the issue's node; an edit of
 // an ask's words and of a comment's words made for a run (editAsk, editComment), which write the
 // ask's and the comment's node; the removal of an untouched document (removeArtifact), which
-// states the document's node gone; and an accept that finds a suggestion's mark gone
+// states the document's node gone; an accept that finds a suggestion's mark gone
 // (orphanCommentAnchor), which retracts the comment's anchored_in (T17b of dispatch://INFRA-1253's
-// plan).
+// plan); and the record and the retraction of a check's result (writeRecordedResult,
+// stateResultRetracted), which write the result's node and tuples and its retracted value (T11 of
+// this branch's plan).
 //
 // The order they are held to is the one written on api/inbox_read.go's markInboxReadThreads, which
 // graphstore's TestEveryStoreWriteTakesOneLockOrder reads: the owner row comes first; a node's
@@ -70,6 +72,7 @@ func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 		rig.mentionReply(), rig.commentDeliverySettle(), rig.messageDeliverySettle(),
 		rig.goingRecord(), rig.goingFrame(), rig.issuePatchForRun(), rig.issuePatchRelations(), rig.issuePatchFiledFrom(), rig.artifactRemoval(),
 		rig.askEditForRun(), rig.commentEditForRun(), rig.architectureSourceRemoval(), rig.commentAnchorOrphaning(),
+		rig.resultRecord(), rig.resultRetraction(),
 	} {
 		t.Run(writer.name, func(t *testing.T) {
 			requireTheWrittenOrderAdmits(t, writer)

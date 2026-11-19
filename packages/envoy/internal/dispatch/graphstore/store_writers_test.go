@@ -306,6 +306,22 @@ var storeWriteCallSites = []string{
 	// again under them, then the mentions tuples each row owes through Write at the sentinel
 	// (graphcensus' TestTheReferenceBatchTakesTheStoreLockOrder).
 	"graphcensus/census_refs.go#writeReferenceBatch",
+	// A recorded result (T11 of this branch's plan, R12): the record route's transaction holds the
+	// rows of the recording issue and of the check's issue (lockIssueRows), appends
+	// result.recorded, writes the check_results row, and then the result's node, the recorder's
+	// nodes and every tuple in one Write caused by that event (writeRecordedResult); a retraction
+	// takes the result's check_results row `for update`, appends result.retracted under the check's
+	// issue row, writes the check_result_retractions row, and then appends the result's retracted
+	// value through Write under that event (stateResultRetracted). api's
+	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds both to those steps. The backfill's passes
+	// over the results and the retractions an earlier release wrote take the rows of the batch's
+	// check issues first, then read the rows again under them, then write the nodes and tuples, or
+	// the retracted values, in one Write at the sentinel (graphcensus'
+	// TestTheResultBatchTakesTheStoreLockOrder and TestTheResultRetractionBatchTakesTheStoreLockOrder).
+	"api/results.go#writeRecordedResult",
+	"api/results_retract.go#stateResultRetracted",
+	"graphcensus/census_results.go#writeResultBatch",
+	"graphcensus/census_results.go#writeResultRetractionBatch",
 	// The backfill's passes over the components a process of the release before wrote with no
 	// node (dispatch://INFRA-1253 R9): the architecture source rows of the batch's projects first,
 	// in ascending (project, id), then the rows read again under them, then the component nodes and

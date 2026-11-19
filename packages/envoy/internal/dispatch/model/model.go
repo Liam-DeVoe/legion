@@ -3328,7 +3328,7 @@ type ArtifactReferences struct {
 // whole current text, or a run's whole words, which an edge at the run shows only the head of as
 // its excerpt, and Pin answers a reference pinned to a version.
 type GraphNode struct {
-	Kind           string      `json:"kind" enum:"artifact,ask,ask_block,attribute,block,comment,comment_block,component,constraint,interaction,issue,lens,lens_block,lens_kind,message,message_block,page,person,risk,role,session,supertag"`
+	Kind           string      `json:"kind" enum:"artifact,ask,ask_block,attribute,block,comment,comment_block,component,constraint,interaction,issue,lens,lens_block,lens_kind,message,message_block,page,person,result,risk,role,session,supertag"`
 	ID             string      `json:"id"`
 	BlockID        string      `json:"block_id,omitempty"`
 	IssueKey       *string     `json:"issue_key,omitempty"`

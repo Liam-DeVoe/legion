@@ -289,6 +289,19 @@ func AsksOfDocumentSQL(alias, document string) string {
 	return `(` + alias + `.block_artifact_id = ` + DocumentRoomSQL(document) + ` and ` + AskBlockDocumentSQL(alias) + ` = ` + document + `)`
 }
 
+// CheckResultsOfDocumentSQL is true of the check_results row aliased alias while it is a result of
+// a check of the document the uuid SQL expression document names: a row keyed by that document,
+// which a document that is its own room, and every result recorded before the issue room, holds;
+// or a row keyed by the room that document is edited in (DocumentRoomSQL), the tree artifact of an
+// issue room, whose block that document holds or last held (RoomBlockDocumentSQL). A result's row
+// is keyed by the artifact its check's document_blocks row is keyed by (T11 of this branch's plan),
+// so every read of a document's results by the document's id reads them so, never by the row's key
+// alone.
+func CheckResultsOfDocumentSQL(alias, document string) string {
+	return `(` + alias + `.check_artifact_id = ` + document + ` or (` + alias + `.check_artifact_id = ` + DocumentRoomSQL(document) +
+		` and ` + RoomBlockDocumentSQL(alias+".check_artifact_id", alias+".check_block_id") + ` = ` + document + `))`
+}
+
 // AsksOfFragmentBlocksSQL is true of the ask aliased alias while it is the ask of one of the
 // blocks under the ids the text[] SQL expression blocks names, read off the document's own
 // fragment (its live tree or one of its versions), in the room the document the uuid SQL

@@ -10,13 +10,17 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // results_retract.go retracts one recorded result. A retraction is a record of its own
 // (check_result_retractions): it names the result, carries the reason and the actor, and
 // updates and deletes nothing, so a reader sees the result and its retraction together. A
-// retracted result is no evidence, and the record says who said so and why.
+// retracted result is no evidence, and the record says who said so and why. The store holds it as
+// the result node's retracted value, appended in the transaction that writes the row, of which the
+// row is the projection (stateResultRetracted); the node itself never changes.
 //
 // It is taken on a closed issue, and for a check of any `when`, which is what the record route
 // refuses (ISSUE_CLOSED in results.go). A closed issue's results are the production record,
@@ -119,6 +123,10 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		ResultID: resultID, Reason: reason, Session: sessionOf(actor), Actor: actor, EventSeq: &seq,
 	}
 	if err := insertCheckResultRetraction(r.Context(), tx, &retraction); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := stateResultRetracted(r.Context(), tx, &retraction, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -227,11 +235,13 @@ func resultIsRetracted(ctx context.Context, q queryer, id string) (bool, error) 
 func loadCheckResultRetractions(
 	ctx context.Context, q queryer, artifactID string,
 ) (map[string]model.CheckResultRetracted, error) {
+	// A document of an issue room keys its results by the room's tree artifact, so they are read
+	// through its room, as loadCheckResults reads them (refs.CheckResultsOfDocumentSQL).
 	rows, err := q.Query(ctx, `
 		select retraction.result_id, retraction.reason, retraction.actor, retraction.created_at
 		from check_result_retractions retraction
 		join check_results result on result.id = retraction.result_id
-		where result.check_artifact_id = $1::uuid
+		where `+refs.CheckResultsOfDocumentSQL("result", "$1::uuid")+`
 	`, artifactID)
 	if err != nil {
 		return nil, fmt.Errorf("read the retractions of document %s: %w", artifactID, err)
@@ -269,4 +279,28 @@ func insertCheckResultRetraction(ctx context.Context, tx pgx.Tx, retraction *mod
 		returning created_at
 	`, retraction.ResultID, retraction.Reason, retraction.Session, actorJSON, retraction.EventSeq,
 	).Scan(&retraction.CreatedAt)
+}
+
+// stateResultRetracted appends, in tx, the retraction's own transaction, the retracted value of
+// the result it names (graphstore.ResultRetracted): its reason, stated by the retraction's actor at
+// the row's created_at and caused by event, the result.retracted event, of which the
+// check_result_retractions row just written is the projection. A result whose node the store
+// does not hold yet - a row an earlier release wrote, which the backfill has not reached - takes
+// no value here: the backfill writes its node and then its retracted value from the row
+// (graphcensus' census_results.go).
+//
+// The node is read after the event's append, which holds the check's issue row, the row the
+// backfill writes a result's node and its retracted value under, so a node it wrote meanwhile is
+// one this read finds, and one it writes later reads this retraction's row.
+func stateResultRetracted(ctx context.Context, tx pgx.Tx, retraction *model.CheckResultRetraction, event int64) error {
+	var held bool
+	if err := tx.QueryRow(ctx, `select exists(select 1 from graph_nodes where kind = $1 and id = $2)`,
+		graphstore.KindResult, retraction.ResultID).Scan(&held); err != nil {
+		return fmt.Errorf("read the node of result %s: %w", retraction.ResultID, err)
+	}
+	if !held {
+		return nil
+	}
+	return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{graphstore.ResultRetracted(
+		retraction.ResultID, retraction.Reason, retraction.Actor, retraction.CreatedAt, event)})
 }

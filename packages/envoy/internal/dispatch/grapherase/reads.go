@@ -990,8 +990,10 @@ func projectionRows(reference referencingColumn, table string) string {
 // projection row states): a block inside an erased block (its part_of and its parent_block_id), a
 // block that cites it (its mentions or pointer tuple and its block_refs row), a decision that
 // names it (its shaped, from_ask or decided_by and its block_refs row), a comment or an ask its
-// author is (its authored_by and its author), and an ask's documents, followers and answerer (the
-// tuples its asks and ask_followers rows state). The erase deletes the tuples into the node, so
+// author is (its authored_by and its author), an ask's documents, followers and answerer (the
+// tuples its asks and ask_followers rows state), and a recorded result whose check, recorder,
+// run's session or screenshot this node is (its result_of, part_of, authored_by, run_session or
+// screenshot and its check_results row). The erase deletes the tuples into the node, so
 // such a row would go on stating a tuple the store no longer holds, which is a difference
 // `census --store` reads. A tuple of a kind no row states - a changed_by_run a write made for a
 // run appended out of a comment, a block or an ask, a requirement's constrained_by - is the
@@ -1029,10 +1031,13 @@ func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, read *erasedRead)
 			}
 		}
 	}
-	projected := make([]string, len(projectedTables))
+	projected := make([]string, len(projectedTables), len(projectedTables)+1)
 	for index, held := range projectedTables {
 		projected[index] = `exists (select 1 from ` + held.Table + ` p where p.node_kind = t.from_kind and p.node_address = t.from_id)`
 	}
+	// A result's check_results row names its node by the row's own id, not by node columns, so a
+	// recorded result whose row stands is held here by that row (graphcensus.ProjectedResult).
+	projected = append(projected, graphcensus.ProjectedResult("t"))
 	into := graphstore.NodeTuplesIntoSQL("t.", "$1", "$2", "$3") + ` and not (t.from_kind = $1 and t.from_id = $2)`
 	addressed := graphstore.AddressKind(e.Kind, e.ID)
 	if err := e.readStating(ctx, tx, `

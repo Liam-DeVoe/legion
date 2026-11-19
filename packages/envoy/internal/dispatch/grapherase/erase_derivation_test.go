@@ -348,6 +348,36 @@ func TestTheEraseRefusesABlockThatHoldsBlocksUntilTheyGo(t *testing.T) {
 	requireCensusZero(t, database, "after the erases")
 }
 
+// A recorded result is a node whose check_results row states its part_of and its result_of to its
+// check (T11 of this branch's plan), and the row names the node by its own id rather than by node
+// columns. An erase of the check would delete both tuples and leave the row stating them, which
+// the census reads as a difference. So the erase of the inner block, whose run a result an earlier
+// release recorded and the backfill gave its node, refuses, naming the result for each tuple, and
+// changes nothing; the census reads zero before the erase and after it.
+func TestTheEraseRefusesACheckARecordedResultNames(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	seeded := seedAgreeingStore(t, database)
+	var result string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into check_results (issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
+			check_sha256, role, commit_sha, verdict, failed, actor)
+		values ('CORE-1', 'CORE-1', $1::uuid, 'inner', 1, 'inner-sum', 'implementer',
+		        '1111111111111111111111111111111111111111', 'fail', 1, '{"kind":"user","id":"alice"}')
+		returning id::text
+	`, seeded.document.artifactID).Scan(&result); err != nil {
+		t.Fatalf("write the result an earlier release recorded against the inner block: %v", err)
+	}
+	if _, err := graphcensus.Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("give the result its node: %v", err)
+	}
+	requireCensusZero(t, database, "once the backfill gave the result its node")
+	for _, kind := range []string{graphstore.TuplePartOf, graphstore.TupleResultOf} {
+		requireRefused(t, database, refs.BlockNodeKind, seeded.inner, graphstore.KindResult+":"+result+" states "+kind)
+	}
+	requireCensusZero(t, database, "after the refused erase")
+}
+
 // A comment anchored in a block states its anchored_in to that block (T17b of
 // dispatch://INFRA-1253's plan), and the erase treats it as it treats the comment's anchored_to and
 // its row: no blocker. The comment, which the agreeing store's build wrote anchored on the inner

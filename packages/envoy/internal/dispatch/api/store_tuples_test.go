@@ -200,12 +200,13 @@ func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
 	// kind it resolves has an entry, and a kind the map does not declare is counted for nothing.
 	// The kinds are the registry's own list and not a list written here, so a kind the reader
 	// learns to resolve and the map never learns to count fails this loop the day it is added.
-	// The reader resolves no node of a supertag or an attribute (refs' unresolvedKind), so the
-	// two are the registry's kinds no count is owed for.
+	// The reader resolves no node of a kind the registry carries no loader for (refs'
+	// unresolvedKind: a supertag, an attribute, a result), so those are the registry's kinds no
+	// count is owed for, read off the registry's own answer (refs.ResolvesNodeKind).
 	counted := refs.BacklinkKinds()
 	resolved := 0
 	for _, kind := range refs.VisibilityKinds() {
-		if kind == "supertag" || kind == "attribute" {
+		if !refs.ResolvesNodeKind(kind) {
 			continue
 		}
 		resolved++
@@ -217,7 +218,7 @@ func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
 		t.Fatal("the registry declares no kind the reader resolves, so the loop above held nothing")
 	}
 	for _, kind := range counted {
-		if kind == "supertag" || kind == "attribute" || !slices.Contains(refs.VisibilityKinds(), kind) {
+		if !refs.ResolvesNodeKind(kind) || !slices.Contains(refs.VisibilityKinds(), kind) {
 			t.Errorf("the backlink arms map declares %s, which the reader resolves no node of", kind)
 		}
 	}

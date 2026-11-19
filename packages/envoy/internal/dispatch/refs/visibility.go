@@ -193,6 +193,10 @@ func init() {
 		graphstore.KindLensBlock:   authoredKind(loadReasoningNodes).storedAs(BlockNodeKind),
 		graphstore.KindRisk:        authoredKind(loadReasoningNodes),
 		graphstore.KindInteraction: credentialAuthoredKind(loadInteractionNodes),
+		// A recorded result of a check (graphstore.KindResult), which recordCheckResult writes
+		// beside its check_results row: project-visible, and resolved by no read of the graph yet,
+		// so its entry carries no loader.
+		graphstore.KindResult: unresolvedKind(nodeVisibility{}),
 		// The block schema's own nodes, which a type is (migration 20261109051232). Nothing
 		// writes one outside a migration, every one of them is project-visible and no read of
 		// the graph resolves one, but they are nodes of the store like any other, so the

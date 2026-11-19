@@ -500,9 +500,10 @@ func kindIn(column string, kinds []string) string {
 // DigestedTuple is true of a tuple t (an alias of graph_tuples) of a kind a projection row of the
 // node it goes out of states, so of a kind this census digests against that row: a comment's
 // anchored_to, owned_by and authored_by, a document block's in_document and part_of, every kind
-// block_refs projects and a decision's ties, a run's authored_by, and an ask's relations. It is
-// the one definition the census's projections read their link kinds from (commentLinkKinds,
-// blockPlacementKinds, tieKinds, runLinkKinds, askLinkKinds) and the erase reads its blockers by
+// block_refs projects and a decision's ties, a run's authored_by, an ask's relations, and a
+// result's relations its check_results row states. It is the one definition the census's
+// projections read their link kinds from (commentLinkKinds, blockPlacementKinds, tieKinds,
+// runLinkKinds, askLinkKinds, resultLinkKinds) and the erase reads its blockers by
 // (grapherase's readBlockers): a tuple of any other kind into a node - a requirement's
 // constrained_by to a constraint, a changed_by_run to a run - is no row's to state, so erasing the
 // node it points at, and the tuple with it, leaves no row stating a link the store no longer
@@ -515,7 +516,8 @@ func DigestedTuple(t string) string {
 		    and (` + kindIn(t+".kind", blockPlacementKinds) + ` or ` + kindIn(t+".kind", tieKinds) + `
 		         or ` + t + `.kind in (` + refs.BlockRefKindsSQL + `)))
 		or (` + t + `.from_kind = '` + graphstore.KindInteraction + `' and ` + kindIn(t+".kind", runLinkKinds) + `)
-		or (` + t + `.from_kind = '` + graphstore.KindAsk + `' and ` + kindIn(t+".kind", askLinkKinds) + `))`
+		or (` + t + `.from_kind = '` + graphstore.KindAsk + `' and ` + kindIn(t+".kind", askLinkKinds) + `)
+		or (` + t + `.from_kind = '` + graphstore.KindResult + `' and ` + kindIn(t+".kind", resultLinkKinds) + `))`
 }
 
 // statedLinks is the links a projection row states, as one value its digest can carry: links are
