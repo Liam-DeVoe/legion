@@ -227,11 +227,11 @@ func (t ghTool) Close() error { return t.answer.Close() }
 
 // controllerPassOn passes a question to the controller: in one transaction it marks the question
 // passed by its id (processed_events, store.QuestionPassedSource) and queues its agent-question
-// notice, a controller notice row the outbox publishes to the controller topic as it does every
-// controller notice, so the notice survives a restart, and a restart that finds the question not
-// yet marked passed on and calls this again queues nothing more. records wakes the outbox once the
-// transaction commits (projectRecords). `legion state` lists the question from the mark
-// (questionsForController).
+// notice, naming every gh write the question's recorded calls ran (ghtool.Writes), a controller
+// notice row the outbox publishes to the controller topic as it does every controller notice, so
+// the notice survives a restart, and a restart that finds the question not yet marked passed on
+// and calls this again queues nothing more. records wakes the outbox once the transaction commits
+// (projectRecords). `legion state` lists the question from the mark (questionsForController).
 type controllerPassOn struct {
 	pool    *store.Pool
 	records record.Store
@@ -240,16 +240,6 @@ type controllerPassOn struct {
 }
 
 func (p controllerPassOn) PassOn(ctx context.Context, q store.AnswerQuestion, reason answerloop.Reason, origin answerloop.Origin) error {
-	row, err := record.NewOutboxRow(q.Issue, record.ControllerNotice{
-		Kind: record.AgentQuestionNotice, Role: q.Role, Reason: string(reason),
-		Question: &record.AgentQuestion{
-			ID: q.ID, Issue: q.Issue, Session: q.Session, Asker: origin.Asker, Ref: origin.Ref,
-			Text: record.AgentQuestionText(origin.Text, origin.Ref),
-		},
-	}, p.now())
-	if err != nil {
-		return fmt.Errorf("the agent-question notice of %s: %w", q.ID, err)
-	}
 	queued := false
 	// The pass is its own transaction, so it owns the commit hook the row's write registers.
 	scoped, committed := intake.WithCommitHooks(ctx)
@@ -257,6 +247,23 @@ func (p controllerPassOn) PassOn(ctx context.Context, q store.AnswerQuestion, re
 		fresh, err := p.records.MarkProcessed(scoped, tx, store.QuestionPassedSource, q.ID)
 		if err != nil || !fresh {
 			return err
+		}
+		calls, err := store.AnswerToolCallsTx(scoped, tx, []string{q.ID})
+		if err != nil {
+			return err
+		}
+		question := &record.AgentQuestion{
+			ID: q.ID, Issue: q.Issue, Session: q.Session, Asker: origin.Asker, Ref: origin.Ref,
+			Text: record.AgentQuestionText(origin.Text, origin.Ref),
+		}
+		for _, w := range ghtool.Writes(calls[q.ID]) {
+			question.Writes = append(question.Writes, record.AgentQuestionWrite{Seq: w.Seq, Command: w.Command, Repository: w.Repository, Exit: w.Exit})
+		}
+		row, err := record.NewOutboxRow(q.Issue, record.ControllerNotice{
+			Kind: record.AgentQuestionNotice, Role: q.Role, Reason: string(reason), Question: question,
+		}, p.now())
+		if err != nil {
+			return fmt.Errorf("the agent-question notice of %s: %w", q.ID, err)
 		}
 		queued = true
 		return p.records.Enqueue(scoped, tx, row)
@@ -273,10 +280,19 @@ func (p controllerPassOn) PassOn(ctx context.Context, q store.AnswerQuestion, re
 
 // questionsForController is the project's questions passed to the controller in the
 // api.QuestionsForControllerWindow before now, newest first, at most api.QuestionsForControllerLimit,
-// read through tx, each with who asked and where as its recorded hand-off says. A hand-off that no
-// longer reads names no asker and no ref; the question is listed all the same.
+// read through tx, each with who asked and where as its recorded hand-off says, and every gh write
+// its recorded calls ran (ghtool.Writes). A hand-off that no longer reads names no asker and no
+// ref; the question is listed all the same.
 func questionsForController(ctx context.Context, tx pgx.Tx, st *store.Store, project string, now time.Time) ([]api.QuestionForController, error) {
 	passed, err := st.PassedQuestionsTx(ctx, tx, project, now.Add(-api.QuestionsForControllerWindow), api.QuestionsForControllerLimit)
+	if err != nil || len(passed) == 0 {
+		return nil, err
+	}
+	ids := make([]string, len(passed))
+	for i, p := range passed {
+		ids[i] = p.ID
+	}
+	calls, err := store.AnswerToolCallsTx(ctx, tx, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -284,6 +300,9 @@ func questionsForController(ctx context.Context, tx pgx.Tx, st *store.Store, pro
 	for i, p := range passed {
 		questions[i] = api.QuestionForController{
 			ID: p.ID, Issue: p.Issue, Role: p.Role, Session: p.Session, Reason: p.PassReason, PassedAt: p.PassedAt.UTC(),
+		}
+		for _, w := range ghtool.Writes(calls[p.ID]) {
+			questions[i].Writes = append(questions[i].Writes, api.QuestionWrite{Seq: w.Seq, Command: w.Command, Repository: w.Repository, Exit: w.Exit})
 		}
 		if h, err := intake.DecodeHandoff(p.Handoff); err == nil {
 			if origin, err := answerloop.ReadOrigin(h); err == nil {

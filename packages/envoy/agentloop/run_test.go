@@ -1097,6 +1097,39 @@ func TestARunPastItsTimeBoundIsAFault(t *testing.T) {
 	}
 }
 
+// A run cut by its time after an OpenAI Responses call finished with a tool call still gives that
+// step its call's own output items, byte for byte, as a run that answers does: a caller writing the
+// steps of a faulted run into a conversation writes an OpenAI turn from them. The call in progress
+// when the time ran out is no step.
+func TestARunPastItsTimeBoundKeepsEachFinishedStepsOutputItems(t *testing.T) {
+	t.Parallel()
+	stepOne := []string{
+		openaiReasoning("rs_t1", "gAAAAtime+/one==", "Reading the note"),
+		openaiToolCall("fc_t1", "call_t1", toolName, map[string]any{"path": "note.txt"}),
+	}
+	answered := openaiStream(openaiUsage{Input: 20, Output: 5}, "", openaiMessage("msg_t2", "It said plum."))
+	s := newStandIn(t,
+		openaiStream(openaiUsage{Input: 10, Output: 5}, "", stepOne...),
+		reply{delay: 30 * time.Second, body: answered.body},
+	)
+	f := newFixture(t, s, OpenAIResponses, 3)
+	f.req.Bounds.Time = 2 * time.Second
+	result, err := Run(context.Background(), f.req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Fault != FaultTime || len(result.Steps) != 1 {
+		t.Fatalf("fault %q with %d steps, want %q after the one finished step: %s", result.Fault, len(result.Steps), FaultTime, result.Detail)
+	}
+	var native []string
+	for _, item := range result.Steps[0].Native {
+		native = append(native, string(item))
+	}
+	if !reflect.DeepEqual(native, stepOne) {
+		t.Errorf("the finished step's native items %q, want its call's %q", native, stepOne)
+	}
+}
+
 // The cost of a run of a request that sets no cache field is every call's tokens at the model's
 // prices, its cache writes and reads included, and every step carries its own call's.
 func TestTheCostSumsEveryCallWithItsCacheWrites(t *testing.T) {

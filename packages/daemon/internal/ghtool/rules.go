@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // allowedCommands are the tool's commands by first word, each with the second words it allows:
@@ -542,6 +543,92 @@ func writeOf(words []string) string {
 	}
 	return ""
 }
+
+// reads are the commands of the allow list that send GitHub no write, by the words optionSpecs
+// holds them under; so is every search. Every other command the tool runs writes, or may
+// (Writes): a comment or review it adds the footer to (writes), and every write that posts none,
+// pr merge, pr edit, run rerun and workflow run among them, which run as they are (withFooter).
+var reads = map[string]bool{
+	"pr checks": true, "pr diff": true, "pr list": true, "pr status": true, "pr view": true,
+	"run list": true, "run view": true, "run watch": true, "workflow list": true, "workflow view": true,
+	"repo view": true, "release list": true, "release view": true, "issue list": true, "issue view": true,
+	"label list": true, "cache list": true,
+}
+
+// Write is a recorded call of an answer that writes (Writes): its seq among the question's calls;
+// its command words as gh reads them (`pr merge`), for gh api its method and endpoint (`api PUT
+// repos/acme/widgets/pulls/7/merge`); the repository its arguments name, "<owner>/<name>", or ""
+// where they name none; and gh's exit status, nil where gh answered none, since it could not
+// start or the daemon stopped while it ran.
+type Write struct {
+	Seq        int
+	Command    string
+	Repository string
+	Exit       *int
+}
+
+// Writes are the calls of calls, as answer_tool_calls records them, that write and that the tool
+// let gh run, in their order: every one but a read (reads, and a gh api GET, HEAD or GraphQL
+// query), a call asking for help, and one the tool refused, which it records with no owner
+// (Answer.refuse) and gh never started. A call the daemon stopped during is one, since gh may have
+// made its write.
+func Writes(calls []store.AnswerToolCall) []Write {
+	var written []Write
+	for _, call := range calls {
+		if call.Owner == "" {
+			continue
+		}
+		if command, repository, ok := writeCommand(call.Args); ok {
+			written = append(written, Write{Seq: call.Seq, Command: command, Repository: repository, Exit: call.Exit})
+		}
+	}
+	return written
+}
+
+// writeCommand is the command words and repository of argv, a call the tool ran, and whether it
+// writes (Writes). A call whose arguments parseArgs cannot read is judged by its words alone: it
+// writes unless they name a read, and it names no repository, so no write is left out for want of
+// a reading. A gh api POST to graphql is a query, since the tool refuses a mutation before it runs
+// (apiWithFooter).
+func writeCommand(argv []string) (string, string, bool) {
+	words := commandWords(argv)
+	spec, key := specOf(words)
+	if key == "" {
+		return "", "", false
+	}
+	parsed, err := parseArgs(argv, spec, key)
+	read := err == nil
+	if read && parsed.set("help") {
+		return "", "", false
+	}
+	if key == "api" {
+		if !read || len(parsed.positionals) < 2 {
+			return "api", "", true
+		}
+		endpoint, method := apiPath(parsed.positionals[1]), apiMethod(parsed)
+		if method == "GET" || method == "HEAD" || endpoint == "graphql" {
+			return "", "", false
+		}
+		repository := ""
+		if m := apiRepository.FindStringSubmatch(endpoint); m != nil {
+			if named, err := ghrepo.Parse("its endpoint's repository", m[1]); err == nil {
+				repository = named.String()
+			}
+		}
+		return "api " + method + " " + endpoint, repository, true
+	}
+	if reads[key] || words[0] == "search" {
+		return "", "", false
+	}
+	repository := ""
+	if read {
+		repository, _, _, _ = namedTarget(parsed)
+	}
+	return key, repository, true
+}
+
+// apiRepository is the repository a gh api REST endpoint names, $1, `<owner>/<name>`.
+var apiRepository = regexp.MustCompile(`^repos/([^/]+/[^/]+)(?:/|$)`)
 
 // occurrence is one option given: its long name, the argument that spelled it (a shorthand run's
 // whole word, `-ew`, for each option of the run), and for one taking a value the value and the

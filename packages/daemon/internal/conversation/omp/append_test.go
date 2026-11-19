@@ -257,6 +257,51 @@ func TestEncodeWritesTheMessageATurnWasAskedAgainWithAfterIt(t *testing.T) {
 	}
 }
 
+// An exchange with no answer (conversation.Append.NoAnswer) is the run's turns, its last one a
+// tool call with its result, and then the daemon's note, written as a user message entry of its
+// own as a message the loop asked again with is. Without the note the same turns are refused, as
+// an answer whose last turn calls a tool is. Read back, the session's conversation holds the
+// question, the turn, its result and the note, and the marker names the question.
+func TestEncodeWritesTheNoteOfAnExchangeWithNoAnswerAfterItsTurns(t *testing.T) {
+	f := baseSession()
+	s := read(t, f.bytes())
+	unanswered := claudeAnswer()
+	unanswered.Turns = unanswered.Turns[:1]
+	if _, err := s.Encode(unanswered, appendedAt); err == nil {
+		t.Fatal("an exchange whose last turn calls a tool encoded with no note")
+	}
+	const note = "The Legion daemon ended this answer with no reply from you (model_calls)."
+	unanswered.NoAnswer = note
+	data, err := s.Encode(unanswered, appendedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []map[string]any
+	for _, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("appended line %q: %v", line, err)
+		}
+		entries = append(entries, entry)
+	}
+	if len(entries) != 5 {
+		t.Fatalf("%d appended entries, want the question, the turn, its result, the note and the marker", len(entries))
+	}
+	if noted := entries[3]["message"].(map[string]any); noted["role"] != "user" || noted["attribution"] != "user" || noted["content"].([]any)[0].(map[string]any)["text"] != note {
+		t.Errorf("the entry after the result = %v, want a user message holding the note", noted)
+	}
+	again := read(t, append(f.bytes(), data...))
+	assertMessages(t, again.Messages[2:], []conversation.Message{
+		user("What does the note say?"),
+		claude(thinking("Read it.", "c2lnLWE="), conversation.Block{Type: conversation.RedactedThinking, Data: "cmVk"}, call("toolu_q7", "read", `{"path":"note.txt"}`)),
+		result("toolu_q7", "read", "plum", false),
+		user(note),
+	})
+	if !again.Answered("q-7") || again.Leaf != entries[4]["id"] {
+		t.Errorf("answered %t, leaf %q; want the question answered and the marker the leaf", again.Answered("q-7"), again.Leaf)
+	}
+}
+
 // A file append is one write after exactly the content the session was read at: a file that grew
 // since is refused with ErrMoved and left as it is.
 func TestAppendFileRefusesASessionThatMoved(t *testing.T) {

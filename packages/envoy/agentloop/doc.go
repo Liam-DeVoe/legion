@@ -42,7 +42,8 @@
 // # The provider's own chunks
 //
 // Step.Native is the output items an openai-responses call sent, each byte for byte as its
-// stream carried it, and a Chat Completions refusal is what an openai-chat call says in place of
+// stream carried it, on every step a run returns, a run that ended on a fault or an error
+// included, and a Chat Completions refusal is what an openai-chat call says in place of
 // a reply. Both are read off the SDK's stream of raw provider chunks, which the run asks for on
 // those two protocols and no other. The HTTP transport keeps no response body of its own: it is
 // the token, the endpoint's query parameters and the retry, and nothing else.

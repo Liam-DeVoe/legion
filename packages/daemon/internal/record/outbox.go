@@ -539,14 +539,27 @@ func (v VolumeNearFull) MarshalJSON() ([]byte, error) {
 // controller (an agent-question notice): the question's id (answer_questions), the agent's issue
 // and session, who asked (`user:<login>`, or `session:<id>` with the asking session's title when
 // the listener stamped one), where it was asked (a dispatch:// reference, or `envoy:<event id>`),
-// and its text, cut at AgentQuestionTextLimit characters with a note saying so.
+// its text, cut at AgentQuestionTextLimit characters with a note saying so, and every gh call that
+// writes which the loop ran for it before it was passed on, absent for none.
 type AgentQuestion struct {
-	ID      string `json:"id"`
-	Issue   string `json:"issue"`
-	Session string `json:"session"`
-	Asker   string `json:"asker"`
-	Ref     string `json:"ref"`
-	Text    string `json:"text"`
+	ID      string               `json:"id"`
+	Issue   string               `json:"issue"`
+	Session string               `json:"session"`
+	Asker   string               `json:"asker"`
+	Ref     string               `json:"ref"`
+	Text    string               `json:"text"`
+	Writes  []AgentQuestionWrite `json:"writes,omitempty"`
+}
+
+// AgentQuestionWrite is one gh call that writes which the answer loop ran for a question
+// (ghtool.Writes): its seq among the question's calls, its command words (for gh api its method
+// and endpoint), the repository its arguments name ("" for none), and gh's exit status, null
+// where gh answered none, since it could not start or the daemon stopped while it ran.
+type AgentQuestionWrite struct {
+	Seq        int    `json:"seq"`
+	Command    string `json:"command"`
+	Repository string `json:"repository"`
+	Exit       *int   `json:"exit"`
 }
 
 // AgentDecision is a person's decision on an ask a stopped agent opened, which the daemon's answer

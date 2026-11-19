@@ -558,9 +558,10 @@ func TestAnAnswersCostIsAddedToTheDaysSpend(t *testing.T) {
 
 // An answer the provider metered nothing for is no answer (answer.Unmetered): it is unpriced, so
 // it would move the day's spend by nothing however many calls it made and `daily_usd` would bound
-// no answer. The daemon replies in the agent's name, the agent's conversation is left as it was,
-// the day's spend stands where it stood, and the question goes to the controller under that
-// reason, as an unpriced model's question does.
+// no answer. The daemon replies in the agent's name, the agent's conversation is left as it was
+// (this run returned no turns; a run's turns are appended as any fault's are), the day's spend
+// stands where it stood, and the question goes to the controller under that reason, as an
+// unpriced model's question does.
 func TestAnAnswerNothingMeteredIsPassedOnAndTheSpendStands(t *testing.T) {
 	r := newRig(t)
 	path := r.conversation("ses_tester", testerToken, 0)
@@ -590,10 +591,10 @@ func TestAnAnswerNothingMeteredIsPassedOnAndTheSpendStands(t *testing.T) {
 	}
 }
 
-// What the model gives decides what is posted and whether the question is passed on: a fault is the
-// daemon's reply naming it, nothing appended; an answer the agent could not give, or a request for
-// work, is its own text, appended, and passed on; a message that asks nothing is appended and gets
-// no reply.
+// What the model gives decides what is posted and whether the question is passed on: a fault whose
+// run returned no turns is the daemon's reply naming it, nothing appended; an answer the agent
+// could not give, or a request for work, is its own text, appended, and passed on; a message that
+// asks nothing is appended and gets no reply.
 func TestTheReplyKindDecidesWhatIsPostedAndPassedOn(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -647,5 +648,64 @@ func TestTheReplyKindDecidesWhatIsPostedAndPassedOn(t *testing.T) {
 				t.Fatalf("passed on = %+v; want %q", r.rec.passed, tc.reason)
 			}
 		})
+	}
+}
+
+// An answer that ran gh and then passed model_calls is the daemon's reply naming each write the
+// question's recorded calls ran, by its command, repository and exit, and no read and no refused
+// call; the run's turns are appended with the daemon's note quoting that reply; and the question
+// is passed on under the fault. The reply is recorded before the append, so a pass whose mark of
+// the question appended fails finds the exchange on its next try and posts that reply, with the
+// model called once and the exchange in the conversation once.
+func TestAFaultedAnswerNamesItsWritesAndAppendsItsTurnsOnce(t *testing.T) {
+	r := newRig(t)
+	path := r.conversation("ses_tester", testerToken, 0)
+	r.cfg.Store = &failAppendedMark{Store: r.cfg.Store}
+	r.restart()
+	merge := `{"args":["pr","merge","7","-R","acme/widgets","--squash"]}`
+	r.answer = func(req answer.Request) (answer.Reply, error) {
+		zero := 0
+		for _, call := range []store.AnswerToolCall{
+			{Seq: 1, Args: []string{"pr", "merge", "7", "-R", "acme/widgets", "--squash"}, Owner: "acme", Exit: &zero},
+			{Seq: 2, Args: []string{"pr", "view", "7", "-R", "acme/widgets"}, Owner: "acme", Exit: &zero},
+			{Seq: 3, Args: []string{"pr", "review", "7", "-R", "acme/widgets", "--approve"}},
+		} {
+			call.Question, call.App, call.StartedAt = req.Question.ID, "implement", testNow
+			if err := r.st.StartAnswerToolCall(r.ctx, call); err != nil {
+				return answer.Reply{}, err
+			}
+			if err := r.st.FinishAnswerToolCall(r.ctx, req.Question.ID, call.Seq, "done", call.Exit, testNow); err != nil {
+				return answer.Reply{}, err
+			}
+		}
+		return answer.Reply{Kind: answer.NotAnswered, Fault: answer.ModelCalls, CostUSD: 0.25, Append: conversation.Append{
+			QuestionID: req.Question.ID, Question: req.Question.Text, Provider: "anthropic", API: "anthropic-messages", Model: "claude-opus-5-5",
+			Turns: []conversation.Turn{{
+				Content: []conversation.Block{{Type: conversation.ToolCall, ToolCallID: "toolu_1", ToolName: "gh", Arguments: json.RawMessage(merge)}},
+				Results: []conversation.Block{{Type: conversation.ToolResult, ToolCallID: "toolu_1", ToolName: "gh",
+					Content: []conversation.Block{{Type: conversation.Text, Text: "✓ Squashed and merged pull request acme/widgets#7"}}}},
+			}},
+		}}, nil
+	}
+	r.receive(messageHandoff("ses_tester", "m-1", 1, "Merge PR 7?"))
+	r.drain()
+	r.drain()
+	const reply = "I could not answer within the bound of 8 model calls. I had already run these gh writes: `gh pr merge` on acme/widgets (exit 0). " +
+		"I passed your question to the Legion controller."
+	q := r.only()
+	posts := r.dispatch.posts()
+	switch {
+	case r.answerCount() != 1:
+		t.Errorf("the model was called %d times; want once", r.answerCount())
+	case len(posts) != 1 || !strings.HasPrefix(posts[0].Body["body"].(string), reply+"\n\n"+AnswerMarker):
+		t.Errorf("posts = %s; want one reply naming the merge alone: %q", describe(posts), reply)
+	case q.State != store.QuestionPassedOn || len(r.rec.passed) != 1 || r.rec.passed[0].Reason != "model_calls":
+		t.Errorf("question = %s, passed on %+v; want it passed on once as model_calls", q.State, r.rec.passed)
+	}
+	content := fileContent(t, path)
+	call, result := strings.Index(content, `"arguments":`+merge), strings.Index(content, "Squashed and merged pull request acme/widgets#7")
+	note := strings.Index(content, "The Legion daemon ended this answer with no reply from you (model_calls), and posted this reply in your name")
+	if call < 0 || result < call || note < result || strings.Count(content, `"customType":"legion-answer"`) != 1 || strings.Count(content, "Merge PR 7?") != 1 {
+		t.Errorf("the conversation holds no merge, its result and then the note once, in that order (at %d, %d, %d):\n%s", call, result, note, content)
 	}
 }

@@ -44,7 +44,10 @@ func (l *Loop) process(ctx context.Context, q store.AnswerQuestion) error {
 // earlier pass appended it and stopped before the question was marked appended: it is posted,
 // never answered again), its claim runs the conversation (forwarded) or the day's spend is over
 // the limit (the daemon's reply). It records the reply, adds the exchange to the conversation,
-// then posts the reply.
+// then posts the reply. An answer the model gave none to is the daemon's reply naming the fault
+// and every gh write the question's calls ran (faultText); when a model call returned anything,
+// the run's turns and that reply are the exchange it adds (conversation.Append.NoAnswer), so the
+// agent's conversation holds every call it made, a write among them.
 func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Origin) error {
 	conv, ok, err := l.cfg.Store.AgentConversation(ctx, q.Session)
 	if err != nil {
@@ -134,24 +137,34 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 	if err != nil {
 		return err
 	}
-	if reply.Fault != "" {
+	if reply.Fault != "" && len(reply.Append.Turns) == 0 {
 		return l.decideFault(ctx, q, origin, Reason(reply.Fault))
 	}
 	// The reply is recorded before the exchange is written into the conversation: a pass that
 	// stops between the two, killed or refused by the store, finds the exchange by the question's
 	// marker on its next try and posts this reply rather than answering again.
-	q.ReplyKind, q.ReplyText, q.PassReason = string(reply.Kind), reply.Text, ""
-	switch reply.Kind {
-	case answer.NotAnswered:
-		q.PassReason = string(ReasonNotAnswered)
-	case answer.NeedsWork:
-		q.PassReason = string(ReasonNeedsWork)
+	exchange := reply.Append
+	if reply.Fault != "" {
+		text, err := l.faultText(ctx, q.ID, Reason(reply.Fault))
+		if err != nil {
+			return err
+		}
+		q.ReplyKind, q.ReplyText, q.PassReason = "", text, string(reply.Fault)
+		exchange.NoAnswer = noAnswerNote(Reason(reply.Fault), text)
+	} else {
+		q.ReplyKind, q.ReplyText, q.PassReason = string(reply.Kind), reply.Text, ""
+		switch reply.Kind {
+		case answer.NotAnswered:
+			q.PassReason = string(ReasonNotAnswered)
+		case answer.NeedsWork:
+			q.PassReason = string(ReasonNeedsWork)
+		}
 	}
 	if err := l.move(ctx, &q, store.QuestionGenerating, store.QuestionGenerating); err != nil {
 		return err
 	}
 	ran, err := l.cfg.Gate.Append(conv.Token, conv.Session, func() error {
-		return session.Append(ctx, reply.Append, l.cfg.Now())
+		return session.Append(ctx, exchange, l.cfg.Now())
 	})
 	switch {
 	case !ran || errors.Is(err, conversation.ErrMoved):
@@ -159,6 +172,10 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 			"question", q.ID, "session", q.Session, "started", !ran, "error", err)
 		q.ReplyKind, q.ReplyText, q.PassReason = "", "", ""
 		return l.forward(ctx, q, origin)
+	case err != nil && reply.Fault != "":
+		// The reply naming the fault and the writes is posted and passed on all the same: the
+		// conversation lacks the run, which the controller's notice names the writes of.
+		l.cfg.Log.Error("answers: the faulted answer's turns could not be added to the conversation", "question", q.ID, "session", q.Session, "error", err)
 	case err != nil:
 		l.cfg.Log.Error("answers: the answer could not be added to the conversation", "question", q.ID, "session", q.Session, "error", err)
 		return l.decideFault(ctx, q, origin, ReasonUnknownFormat)
@@ -218,47 +235,96 @@ func (l *Loop) earlierCalls(ctx context.Context, q store.AnswerQuestion, tool To
 }
 
 // decideFault fixes the daemon's own reply in the agent's name for a question the model gave no
-// answer to, naming the bound or fault, and posts it; the question is passed on.
+// answer to, naming the bound or fault and every gh write the question's calls ran (faultText),
+// and posts it; the question is passed on.
 func (l *Loop) decideFault(ctx context.Context, q store.AnswerQuestion, origin Origin, reason Reason) error {
 	from := q.State
-	q.ReplyKind, q.ReplyText, q.PassReason = "", l.faultReply(reason), string(reason)
+	text, err := l.faultText(ctx, q.ID, reason)
+	if err != nil {
+		return err
+	}
+	q.ReplyKind, q.ReplyText, q.PassReason = "", text, string(reason)
 	if err := l.move(ctx, &q, store.QuestionAppended, from); err != nil {
 		return err
 	}
 	return l.post(ctx, q, origin)
 }
 
-// faultReply is the daemon's reply, as the agent, for reason.
-func (l *Loop) faultReply(reason Reason) string {
+// faultText is the daemon's reply for question, which got no answer for reason: faultReply over
+// the gh writes its recorded calls ran (ghtool.Writes), this run's and an earlier one's.
+func (l *Loop) faultText(ctx context.Context, question string, reason Reason) (string, error) {
+	calls, err := l.cfg.Store.AnswerToolCalls(ctx, question)
+	if err != nil {
+		return "", err
+	}
+	return l.faultReply(reason, ghtool.Writes(calls)), nil
+}
+
+// faultReply is the daemon's reply, as the agent, for reason, naming each of writes (ranWrites):
+// an asker told only that the agent could not answer would not know that it already approved,
+// merged or commented.
+func (l *Loop) faultReply(reason Reason, writes []ghtool.Write) string {
+	return l.faultSentence(reason) + ranWrites(writes) + " I passed your question to the Legion controller."
+}
+
+// faultSentence is what the daemon's reply says of reason.
+func (l *Loop) faultSentence(reason Reason) string {
 	b := l.cfg.Answers.Bounds
-	const passed = " I passed your question to the Legion controller."
 	switch reason {
 	case Reason(answer.AnswerSeconds):
-		return fmt.Sprintf("I could not answer within the %d-second bound.", int(b.Answer.Seconds())) + passed
+		return fmt.Sprintf("I could not answer within the %d-second bound.", int(b.Answer.Seconds()))
 	case Reason(answer.ModelCalls):
-		return fmt.Sprintf("I could not answer within the bound of %d model calls.", b.ModelCalls) + passed
+		return fmt.Sprintf("I could not answer within the bound of %d model calls.", b.ModelCalls)
 	case Reason(answer.Length):
-		return fmt.Sprintf("My answer was cut off at the %d-token output bound.", b.OutputTokens) + passed
+		return fmt.Sprintf("My answer was cut off at the %d-token output bound.", b.OutputTokens)
 	case Reason(answer.Refusal):
-		return "My model refused to answer." + passed
+		return "My model refused to answer."
 	case Reason(answer.Malformed):
-		return "My reply was not in the form the daemon checks, so it is not posted." + passed
+		return "My reply was not in the form the daemon checks, so it is not posted."
 	case Reason(answer.ProviderError):
-		return "My model provider failed to answer." + passed
+		return "My model provider failed to answer."
 	case ReasonNoProvider:
-		return "No model provider is configured for the model my conversation ran on." + passed
+		return "No model provider is configured for the model my conversation ran on."
 	case ReasonNoPrice:
-		return "No price is configured for the model my conversation ran on, so I am not answered on it." + passed
+		return "No price is configured for the model my conversation ran on, so I am not answered on it."
 	case ReasonUnmetered:
-		return "My model provider reported no usage for the calls that answered, so my answer cannot be priced and I am not answered on it." + passed
+		return "My model provider reported no usage for the calls that answered, so my answer cannot be priced and I am not answered on it."
 	case ReasonUnknownFormat:
-		return "My conversation holds a format the daemon cannot read or write, so I cannot answer from it." + passed
+		return "My conversation holds a format the daemon cannot read or write, so I cannot answer from it."
 	case ReasonNoConversation:
-		return "My conversation is no longer kept, so I cannot answer from it." + passed
+		return "My conversation is no longer kept, so I cannot answer from it."
 	case ReasonOverLimit:
-		return fmt.Sprintf("I am over the project's daily limit of $%s for answers.", strconv.FormatFloat(b.DailyUSD, 'f', -1, 64)) + passed
+		return fmt.Sprintf("I am over the project's daily limit of $%s for answers.", strconv.FormatFloat(b.DailyUSD, 'f', -1, 64))
 	}
-	return "I could not answer (" + string(reason) + ")." + passed
+	return "I could not answer (" + string(reason) + ")."
+}
+
+// ranWrites is the sentence of the daemon's reply naming each of writes by its command, its
+// repository and gh's exit, "" for none.
+func ranWrites(writes []ghtool.Write) string {
+	if len(writes) == 0 {
+		return ""
+	}
+	named := make([]string, len(writes))
+	for i, w := range writes {
+		exit := "no exit status"
+		if w.Exit != nil {
+			exit = fmt.Sprintf("exit %d", *w.Exit)
+		}
+		if w.Repository == "" {
+			named[i] = fmt.Sprintf("`gh %s` (naming no repository, %s)", w.Command, exit)
+		} else {
+			named[i] = fmt.Sprintf("`gh %s` on %s (%s)", w.Command, w.Repository, exit)
+		}
+	}
+	return " I had already run these gh writes: " + strings.Join(named, "; ") + "."
+}
+
+// noAnswerNote is what the agent reads after the turns of its answer that got none for reason
+// (conversation.Append.NoAnswer): that the run ended with no reply of its own, and the reply
+// the daemon posted in its name in that reply's place.
+func noAnswerNote(reason Reason, reply string) string {
+	return fmt.Sprintf("The Legion daemon ended this answer with no reply from you (%s), and posted this reply in your name where the question was asked:\n\n%s", reason, reply)
 }
 
 // post posts q's reply where it was asked, in the agent's name, once: every route is safe to call

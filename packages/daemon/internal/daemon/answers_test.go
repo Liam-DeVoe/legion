@@ -1,8 +1,10 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -24,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
@@ -649,6 +653,240 @@ func TestQuestionsForControllerListsAPassedQuestionForSevenDays(t *testing.T) {
 	later := older.Add(api.QuestionsForControllerWindow + time.Second)
 	if got := listed(later); !reflect.DeepEqual(got, []api.QuestionForController{newerEntry}) {
 		t.Fatalf("questions for the controller seven days after the older was passed = %+v, want the newer alone", got)
+	}
+}
+
+// recordingTool is the gh tool of one answer as ghtool.Run records its calls (answer_tool_calls):
+// each call started under the routed owner before it runs and finished with its output and exit
+// after, here with gh's output for a merge or a read and exit 0.
+type recordingTool struct {
+	st       *store.Store
+	question string
+	now      time.Time
+}
+
+func (r recordingTool) Run(ctx context.Context, seq int, args string) ghtool.Result {
+	var argv []string
+	if err := json.Unmarshal([]byte(args), &argv); err != nil {
+		return ghtool.Result{Output: err.Error(), Exit: -1}
+	}
+	if err := r.st.StartAnswerToolCall(ctx, store.AnswerToolCall{Question: r.question, Seq: seq, Args: argv, App: "implement", Owner: "acme", StartedAt: r.now}); err != nil {
+		return ghtool.Result{Output: err.Error(), Exit: -1}
+	}
+	output := "title:\tFix the leak\nstate:\tMERGED"
+	if len(argv) > 1 && argv[1] == "merge" {
+		output = "✓ Squashed and merged pull request acme/widgets#7 (Fix the leak)"
+	}
+	exit := 0
+	if err := r.st.FinishAnswerToolCall(ctx, r.question, seq, output, &exit, r.now); err != nil {
+		return ghtool.Result{Output: err.Error(), Exit: -1}
+	}
+	return ghtool.Result{Output: output, Exit: exit, Ran: true}
+}
+
+func (recordingTool) Lookup(context.Context, int) (ghtool.Found, error) {
+	return ghtool.Found{}, ghtool.ErrNotAWrite
+}
+
+func (recordingTool) Close() error { return nil }
+
+type recordingTools struct {
+	st  *store.Store
+	now time.Time
+}
+
+func (r recordingTools) Open(_ context.Context, _ ghtool.Agent, question string) (answerloop.Tool, error) {
+	return recordingTool{st: r.st, question: question, now: r.now}, nil
+}
+
+type issueFacts answerloop.IssueFacts
+
+func (f issueFacts) Facts(context.Context, string) (answerloop.IssueFacts, error) {
+	return answerloop.IssueFacts(f), nil
+}
+
+// anthropicGHCall is the Messages API's event stream of a reply that calls the gh tool with args
+// and stops for it to run, with the usage a metered call reports.
+func anthropicGHCall(id string, args ...string) []byte {
+	var b bytes.Buffer
+	event := func(name string, v any) {
+		data, err := json.Marshal(v)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Fprintf(&b, "event: %s\ndata: %s\n\n", name, data)
+	}
+	usage := map[string]any{"input_tokens": 40, "output_tokens": 12, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
+	input, err := json.Marshal(map[string]any{"args": args})
+	if err != nil {
+		panic(err)
+	}
+	event("message_start", map[string]any{"type": "message_start", "message": map[string]any{
+		"id": "msg_" + id, "type": "message", "role": "assistant", "model": "claude-opus-5-5", "content": []any{},
+		"stop_reason": nil, "stop_sequence": nil, "usage": usage,
+	}})
+	event("content_block_start", map[string]any{"type": "content_block_start", "index": 0, "content_block": map[string]any{"type": "tool_use", "id": id, "name": "gh", "input": map[string]any{}}})
+	event("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "input_json_delta", "partial_json": string(input)}})
+	event("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+	event("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": "tool_use", "stop_sequence": nil}, "usage": usage})
+	event("message_stop", map[string]any{"type": "message_stop"})
+	return b.Bytes()
+}
+
+// A gh write the stopped agent's answer made before a fault is in every record the agent, the
+// asker and the controller read, through the real loop, the real answer on a stand-in model, the
+// store's record of the calls and the controller's pass: the tester's answer merges the pull
+// request with gh, then still calls gh on the last of its two model calls, which is past
+// model_calls. Its conversation holds the question, the merge and its result, the read after it,
+// and the daemon's note naming the merge, in that order; the reply posted in its name names the
+// merge by its command, repository and exit, and no read; and the controller's agent-question
+// notice and the questions `legion state` lists name the merge alone.
+func TestAGhWriteBeforeAFaultIsInTheConversationTheReplyAndTheControllersRecords(t *testing.T) {
+	ctx := context.Background()
+	st := testpg.CloneStore(t, "legion_daemon_fault_writes")
+	path := filepath.Join(t.TempDir(), "ses_tester.jsonl")
+	session := `{"type":"session","version":3,"id":"s","timestamp":"2026-10-26T00:00:00.000Z","cwd":"/work"}` + "\n" +
+		`{"id":"e0000001","parentId":null,"timestamp":"2026-10-26T00:00:00.000Z","type":"model_change","model":"anthropic/claude-opus-5-5"}` + "\n" +
+		`{"id":"e0000002","parentId":"e0000001","timestamp":"2026-10-26T00:00:00.000Z","type":"message","message":{"role":"user","content":[{"type":"text","text":"Test it."}],"attribution":"user","timestamp":1}}` + "\n" +
+		`{"id":"e0000003","parentId":"e0000002","timestamp":"2026-10-26T00:00:00.000Z","type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Tested."}],"api":"anthropic-messages","provider":"anthropic","model":"claude-opus-5-5","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":2}}` + "\n"
+	if err := os.WriteFile(path, []byte(session), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	if _, err := st.RegisterConversation(ctx, store.AgentConversation{
+		Session: "ses_tester", Project: "legion", Issue: "LEGION-9", Role: claim.RoleTester, Token: gateToken,
+		Harness: runtime.BackendOmp, Location: path, StartedAt: now, RecordedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	merge := []string{"pr", "merge", "7", "-R", "acme/widgets", "--squash"}
+	var mu sync.Mutex
+	replies := [][]byte{anthropicGHCall("toolu_1", merge...), anthropicGHCall("toolu_2", "pr", "view", "7", "-R", "acme/widgets")}
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(replies) == 0 {
+			http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"no more replies"}}`, http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write(replies[0])
+		replies = replies[1:]
+	}))
+	defer model.Close()
+	key := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(key, []byte("sk-ant-standin\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var sends []string
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if r.URL.Path == "/v1/messages/send" {
+			mu.Lock()
+			sends = append(sends, fmt.Sprint(body["message"]))
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer listener.Close()
+	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusCreated) }))
+	defer dispatchServer.Close()
+
+	records := record.NewStore()
+	gate, _, _ := newTestGate(t)
+	loop := answerloop.New(answerloop.Config{
+		Project: "legion",
+		Answers: config.Answers{
+			Providers: map[config.AnswerProvider]config.AnswerEndpoint{config.AnswerAnthropic: {BaseURL: model.URL, Credential: config.AnswerCredential{File: key}}},
+			Prices:    map[string]config.AnswerPrice{"anthropic/claude-opus-5-5": {Input: 5, Output: 25, CacheWrite: 6.25, CacheRead: 0.5}},
+			Bounds: config.AnswerBounds{Answer: time.Minute, ModelCalls: 2, OutputTokens: 1000, GHCall: 30 * time.Second, GHOutputChars: 60000,
+				GHCalls: 20, Concurrent: 1, DailyUSD: 50},
+		},
+		Store: st, Dispatch: dispatch.New(dispatchServer.URL, "t"), Envoy: notify.New(listener.URL, "t"), Gate: gate,
+		Issues: issueFacts{Recorded: true, DispatchStatus: "in_progress", Phase: "testing", Repository: ghrepo.MustParse("acme/widgets")},
+		Tools:  recordingTools{st: st, now: now}, Conversations: answerloop.Harnesses{},
+		PassOn:    controllerPassOn{pool: st.Pool(), records: records, now: func() time.Time { return now }, log: quietLogger()},
+		Decisions: routedDecisions{},
+		Answer:    answer.Answer, Now: func() time.Time { return now }, Log: quietLogger(),
+	})
+	handoff := intake.Handoff{
+		OriginalTopic: "notifications.agent.ses_tester", TargetSession: "ses_tester", RoleToken: string(gateToken), Project: "legion",
+		Envelope: intake.HandoffEnvelope{EventID: "evt-1", Source: "agent", SourceEventID: "s", SourceSession: "ses_asker",
+			Topic: "notifications.agent.ses_tester", DedupeKey: "agent.ses_tester.0123456789abcdef0123456789abcdef", PayloadSummary: "Is PR 7 merged?", TraceID: "t"},
+	}
+	raw, _ := json.Marshal(handoff)
+	if err := loop.Receive(ctx, handoff, raw); err != nil {
+		t.Fatal(err)
+	}
+	running, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { loop.Run(running); close(done) }()
+	testwait.Eventually(t, "the question passed to the controller", func() bool {
+		var passed bool
+		err := st.Pool().QueryRow(ctx, "select count(*) = 1 from answer_questions where state = $1", string(store.QuestionPassedOn)).Scan(&passed)
+		return err == nil && passed
+	})
+	stop()
+	<-done
+
+	// The conversation: the merge, its result and then the daemon's note naming it.
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(merge)
+	written := string(content[len(session):])
+	call := strings.Index(written, `"args":`+string(args))
+	result := strings.Index(written, "Squashed and merged pull request acme/widgets#7")
+	note := strings.LastIndex(written, "posted this reply in your name where the question was asked:\\n\\nI could not answer within the bound of 2 model calls. "+
+		"I had already run these gh writes: `gh pr merge` on acme/widgets (exit 0).")
+	if call < 0 || result < call || note < result {
+		t.Errorf("the conversation's append holds no merge, its result and then the daemon's note naming it, in that order (at %d, %d, %d):\n%s", call, result, note, written)
+	}
+
+	// The reply posted in the agent's name.
+	const reply = "I could not answer within the bound of 2 model calls. I had already run these gh writes: `gh pr merge` on acme/widgets (exit 0). " +
+		"I passed your question to the Legion controller."
+	mu.Lock()
+	posted := append([]string(nil), sends...)
+	mu.Unlock()
+	if len(posted) != 1 || !strings.HasPrefix(posted[0], reply+"\n\n"+answerloop.AnswerMarker) {
+		t.Errorf("replies posted = %q; want one naming the merge and no read: %q", posted, reply)
+	}
+
+	// The controller's agent-question notice.
+	publisher := &outboxPublisher{}
+	runner := &outbox{pool: st.Pool(), project: "legion", dispatchProject: "LEGION", records: records, notices: publisher, now: func() time.Time { return now }, log: quietLogger()}
+	if err := runner.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	published := publisher.publishes()
+	if len(published) != 1 {
+		t.Fatalf("publishes = %+v; want the one agent-question notice", published)
+	}
+	body, err := json.Marshal(published[0].payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"reason":"model_calls","question":{`; !strings.Contains(string(body), want) ||
+		!strings.HasSuffix(string(body), `"writes":[{"seq":1,"command":"pr merge","repository":"acme/widgets","exit":0}]}}`) {
+		t.Errorf("notice body = %s; want the model_calls question naming the merge alone", body)
+	}
+
+	// The questions `legion state` lists.
+	var questions []api.QuestionForController
+	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		var err error
+		questions, err = questionsForController(ctx, tx, st, "legion", time.Now())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	zero := 0
+	if len(questions) != 1 || questions[0].Reason != "model_calls" ||
+		!reflect.DeepEqual(questions[0].Writes, []api.QuestionWrite{{Seq: 1, Command: "pr merge", Repository: "acme/widgets", Exit: &zero}}) {
+		t.Errorf("questions for the controller = %+v; want the model_calls question naming the merge alone", questions)
 	}
 }
 

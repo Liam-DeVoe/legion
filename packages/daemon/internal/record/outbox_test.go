@@ -51,6 +51,15 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ControllerNotice{Kind: AgentQuestionNotice, Role: claim.RoleTester, Reason: "not_answered", Question: &AgentQuestion{
 			ID: "q-1", Issue: "LEGION-208", Session: "ses_tester", Asker: "user:person", Ref: "dispatch://LEGION-208/message/m-1", Text: "Is PR 7 green?",
 		}},
+		// A question whose answer merged with gh before it passed model_calls names the merge, and
+		// a comment the daemon stopped during, whose exit gh never answered.
+		ControllerNotice{Kind: AgentQuestionNotice, Role: claim.RoleTester, Reason: "model_calls", Question: &AgentQuestion{
+			ID: "q-2", Issue: "LEGION-208", Session: "ses_tester", Asker: "user:person", Ref: "dispatch://LEGION-208/message/m-2", Text: "Merge PR 7?",
+			Writes: []AgentQuestionWrite{
+				{Seq: 1, Command: "pr merge", Repository: "acme/widgets", Exit: new(int)},
+				{Seq: 2, Command: "api POST repos/acme/widgets/issues/7/comments", Repository: "acme/widgets"},
+			},
+		}},
 		Notice{Kind: AgentDecisionNotice, Role: claim.RoleTester, AgentDecision: &AgentDecision{
 			ID: "dispatch:34", Issue: "LEGION-209", Session: "ses_tester", Asker: "user:person", Ref: "dispatch://LEGION-209/ask/a-1", Text: "Selected: B",
 		}},

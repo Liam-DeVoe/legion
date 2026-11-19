@@ -687,8 +687,9 @@ func TestEveryCallCarriesTheConfiguredEndpointAndTheKeyFilesKey(t *testing.T) {
 }
 
 // Each way a run ends short of an answer is no answer under the daemon's own name for it, which
-// is the reason the controller reads and the daemon's reply to the asker names, and nothing is
-// appended.
+// is the reason the controller reads and the daemon's reply to the asker names, and the turn its
+// one call returned is kept for the caller to append: none where the call returned nothing, a
+// provider that failed or a reply past the time bound, or an empty refusal.
 func TestEveryAgentloopFaultIsNoAnswerUnderTheDaemonsOwnName(t *testing.T) {
 	answered := `{"kind":"answered","text":"Yes.","needs":""}`
 	for _, c := range []struct {
@@ -697,9 +698,11 @@ func TestEveryAgentloopFaultIsNoAnswerUnderTheDaemonsOwnName(t *testing.T) {
 		openai  bool
 		answer  time.Duration
 		want    Fault
+		// nothing is a run whose call returned nothing to append.
+		nothing bool
 	}{
 		{name: "cut off", replies: []reply{anthropicStream("max_tokens", anthropicUsage{Output: 4000}, anthropicText(`{"kind":"answered","text":"Ye`))}, want: Length},
-		{name: "refused", replies: []reply{anthropicStream("refusal", anthropicUsage{Output: 1}, anthropicText(""))}, want: Refusal},
+		{name: "refused", replies: []reply{anthropicStream("refusal", anthropicUsage{Output: 1}, anthropicText(""))}, want: Refusal, nothing: true},
 		{name: "OpenAI refusal", openai: true, replies: []reply{openaiStream(openaiUsage{Output: 1}, "",
 			`{"id":"msg_r","type":"message","role":"assistant","status":"completed","content":[{"type":"refusal","refusal":"I can't help with that."}]}`)}, want: Refusal},
 		{name: "OpenAI cut off", openai: true, replies: []reply{openaiStream(openaiUsage{Output: 4000}, "max_output_tokens", openaiMessage("msg_l", `{"kind":"answered","text":"Ye`))}, want: Length},
@@ -712,8 +715,8 @@ func TestEveryAgentloopFaultIsNoAnswerUnderTheDaemonsOwnName(t *testing.T) {
 		{name: "not answered naming no need", replies: []reply{anthropicStream("end_turn", anthropicUsage{Output: 1}, anthropicText(`{"kind":"not_answered","text":"I cannot tell.","needs":""}`))}, want: Malformed},
 		{name: "answered with no text", replies: []reply{anthropicStream("end_turn", anthropicUsage{Output: 1}, anthropicText(`{"kind":"answered","text":"  ","needs":""}`))}, want: Malformed},
 		{name: "a placeholder on the last allowed call", replies: []reply{anthropicStream("end_turn", anthropicUsage{Output: 1}, anthropicText(`{"kind":"answered","text":"x","needs":""}`))}, want: Malformed},
-		{name: "the provider failed", replies: []reply{{status: http.StatusBadRequest, body: []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}`)}}, want: ProviderError},
-		{name: "past the time bound", replies: []reply{{delay: 5 * time.Second, body: anthropicStream("end_turn", anthropicUsage{}, anthropicText(answered)).body}}, answer: time.Second, want: AnswerSeconds},
+		{name: "the provider failed", replies: []reply{{status: http.StatusBadRequest, body: []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}`)}}, want: ProviderError, nothing: true},
+		{name: "past the time bound", replies: []reply{{delay: 5 * time.Second, body: anthropicStream("end_turn", anthropicUsage{}, anthropicText(answered)).body}}, answer: time.Second, want: AnswerSeconds, nothing: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s := newStandIn(t, c.replies...)
@@ -728,8 +731,12 @@ func TestEveryAgentloopFaultIsNoAnswerUnderTheDaemonsOwnName(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Fault != c.want || got.Kind != NotAnswered || got.Text != "" || len(got.Append.Turns) != 0 {
-				t.Errorf("reply %+v, want no answer with fault %s", got, c.want)
+			turns := 1
+			if c.nothing {
+				turns = 0
+			}
+			if got.Fault != c.want || got.Kind != NotAnswered || got.Text != "" || len(got.Append.Turns) != turns {
+				t.Errorf("reply %+v, want no answer with fault %s and %d turn(s) to append", got, c.want, turns)
 			}
 		})
 	}
@@ -1074,7 +1081,7 @@ func TestACutReplyIsMadeAgainAndTheAppendHoldsNoTraceOfIt(t *testing.T) {
 
 // A reply cut at output_tokens again after the call made again is no answer under length, as a
 // cut on the last model call model_calls allows is: the answer made each call it could, counts
-// and prices them all, and appends nothing.
+// and prices them all, and keeps the last cut reply alone to append, the one made again dropped.
 func TestACutReplyCutAgainIsALengthFault(t *testing.T) {
 	cut := func() reply {
 		return anthropicStream("max_tokens", anthropicUsage{Input: 30, Output: 4000}, anthropicText(cutReply))
@@ -1096,8 +1103,11 @@ func TestACutReplyCutAgainIsALengthFault(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if reply.Fault != Length || reply.Kind != NotAnswered || reply.Text != "" || len(reply.Append.Turns) != 0 {
+			if reply.Fault != Length || reply.Kind != NotAnswered || reply.Text != "" {
 				t.Fatalf("reply %+v, want no answer with fault %s", reply, Length)
+			}
+			if turns := reply.Append.Turns; len(turns) != 1 || turns[0].Content[0].Text != cutReply {
+				t.Fatalf("turns %+v, want the last cut reply's alone", turns)
 			}
 			if n := len(s.requests()); n != c.calls || reply.Calls != c.calls || reply.Usage.OutputTokens != int64(4000*c.calls) {
 				t.Errorf("%d model calls, reply calls %d, usage %+v; want %d cut calls counted", n, reply.Calls, reply.Usage, c.calls)
@@ -1113,9 +1123,9 @@ func TestACutReplyCutAgainIsALengthFault(t *testing.T) {
 // response carries none, which agentloop reports as no counts at all (Usage.Metered false), and
 // the Messages stream whose message carries none, which the Anthropic adapter answers with zero
 // counts, so the zeros are what say it. The reply the model gave in the form goes with either:
-// nothing is appended, and the question is the controller's, as an unpriced model's is. The same
-// stream with its usage object answers and is priced, so it is the counts and nothing else that
-// decide.
+// its turn is kept to append as any fault's is, and the question is the controller's, as an
+// unpriced model's is. The same stream with its usage object answers and is priced, so it is the
+// counts and nothing else that decide.
 func TestARunTheProviderMeteredNothingForIsNoAnswer(t *testing.T) {
 	const form = `{"kind":"answered","text":"PR 7 is green.","needs":""}`
 	for _, c := range []struct {
@@ -1141,8 +1151,8 @@ func TestARunTheProviderMeteredNothingForIsNoAnswer(t *testing.T) {
 			switch {
 			case err != nil:
 				t.Fatal(err)
-			case got.Fault != Unmetered || got.Kind != NotAnswered || got.Text != "" || len(got.Append.Turns) != 0:
-				t.Fatalf("reply = %+v; want no answer, faulted %s, with nothing to append", got, Unmetered)
+			case got.Fault != Unmetered || got.Kind != NotAnswered || got.Text != "" || len(got.Append.Turns) != 1:
+				t.Fatalf("reply = %+v; want no answer, faulted %s, with the one call's turn to append", got, Unmetered)
 			case got.Calls != 1 || got.CostUSD != 0 || got.Usage != (conversation.Usage{}):
 				t.Fatalf("reply = %+v; want the one call it made, no usage and no cost", got)
 			}
@@ -1163,6 +1173,61 @@ func TestTheLastCallStillCallingAToolIsPastTheModelCallsBound(t *testing.T) {
 	got, err := Answer(context.Background(), anthropicRequest(t, s, &stubGH{}, 1))
 	if err != nil || got.Fault != ModelCalls || got.Calls != 1 {
 		t.Errorf("reply %+v, %v; want no answer past model_calls after 1 call", got, err)
+	}
+}
+
+// A run that writes with gh and then passes model_calls keeps its turns for the caller to append:
+// the model merges the pull request, then still calls gh on the last call the bound allows. The
+// reply is no answer past model_calls, and its append holds the question and both calls' turns,
+// each gh call with its result, the merge among them, and nothing of the last call's message.
+// Ended with the caller's note (conversation.Append.NoAnswer), Oh My Pi's and Claude Code's
+// appenders write it, the merge and its result before the note, so the agent's conversation holds
+// the write it made before the fault.
+func TestAWriteBeforeAModelCallsFaultIsKeptToAppend(t *testing.T) {
+	merge := []string{"pr", "merge", "7", "-R", "acme/widgets", "--squash"}
+	s := newStandIn(t,
+		anthropicStream("tool_use", anthropicUsage{Input: 10, Output: 5}, anthropicThinking("Merge it.", "sig-merge"), anthropicGH("toolu_1", merge...)),
+		anthropicStream("tool_use", anthropicUsage{Input: 12, Output: 4}, anthropicGH("toolu_2", "pr", "view", "7", "-R", "acme/widgets")),
+	)
+	gh := &stubGH{}
+	reply, err := Answer(context.Background(), anthropicRequest(t, s, gh, 2))
+	if err != nil || reply.Fault != ModelCalls || reply.Kind != NotAnswered || reply.Text != "" || reply.Calls != 2 {
+		t.Fatalf("reply %+v, %v; want no answer past model_calls after 2 calls", reply, err)
+	}
+	if calls := gh.made(); len(calls) != 2 {
+		t.Fatalf("gh calls %+v, want the merge and the last call's read", calls)
+	}
+	args, _ := json.Marshal(merge)
+	appended := reply.Append
+	turns := appended.Turns
+	if len(turns) != 2 || appended.QuestionID != "dispatch:m-1" || !strings.Contains(appended.Question, "Is PR 7 green?") {
+		t.Fatalf("append %+v, want the question and both calls' turns", appended)
+	}
+	if call := turns[0].Content[1]; call.Type != conversation.ToolCall || !bytes.Contains(call.Arguments, args) {
+		t.Errorf("the first turn's call %+v, want the merge", call)
+	}
+	if results := turns[0].Results; len(results) != 1 || results[0].Content[0].Text != "output of "+string(args) {
+		t.Errorf("the first turn's results %+v, want the merge's output", results)
+	}
+	if len(turns[1].Results) != 1 {
+		t.Errorf("the last turn's results %+v, want the read's", turns[1].Results)
+	}
+	if encoded, err := json.Marshal(appended); err != nil || bytes.Contains(encoded, []byte(lastCall)) {
+		t.Errorf("the append %s (%v) holds the last call's message", encoded, err)
+	}
+	const note = "The daemon posted its own reply in your name."
+	appended.NoAnswer = note
+	for name, encode := range map[string]func(conversation.Append, time.Time) ([]byte, error){
+		"Oh My Pi": ompSession(t).Encode, "Claude Code": claudeSession(t).Encode,
+	} {
+		data, err := encode(appended, time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC))
+		if err != nil {
+			t.Fatalf("%s's appender refuses the faulted run's append: %v", name, err)
+		}
+		call, result := bytes.Index(data, []byte(`"args":`+string(args))), bytes.Index(data, []byte(`output of [\"pr\",\"merge\"`))
+		if call < 0 || result < call || bytes.LastIndex(data, []byte(note)) < result || bytes.Contains(data, []byte(lastCall)) {
+			t.Errorf("%s's appender writes no merge, its result and then the note, or writes the last call's message:\n%s", name, data)
+		}
 	}
 }
 

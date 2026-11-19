@@ -2100,9 +2100,11 @@ test("the state golden names the held lifecycle rows, and the list cannot be dro
   expect(LegionStateResponse.safeParse(dropped).success).toBeFalse();
 });
 
-// The questions passed to the controller (contract 170): the golden carries the question LEGION-207's
-// stopped tester could not answer, a state with none carries an empty list rather than none, and a
-// question names its role and when it was passed. The key is not required, for the reason
+// The questions passed to the controller (contract 170): the golden carries the question LEGION-208's
+// stopped implementer passed model_calls on after it merged with gh, naming that merge and a
+// comment whose exit gh never answered, and the one LEGION-207's stopped tester could not answer;
+// a state with none carries an empty list rather than none, and a question names its role, when it
+// was passed and its writes, an empty list for none. The key is not required, for the reason
 // `wakesWaiting` is not: a daemon at this contract leaves it off the state it serves a caller whose
 // pod's claims record a contract below 170, since a reader before it refuses the key however empty
 // (`api.stateFor`, `withoutQuestionsForController`). So a body without the key parses, and a reader
@@ -2110,6 +2112,25 @@ test("the state golden names the held lifecycle rows, and the list cannot be dro
 test("the state golden lists the questions passed to the controller, and the key may be absent", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   expect(state.questionsForController).toEqual([
+    {
+      id: "9e2b7c41d05a3f68e1c4a7b0d9f2e536",
+      issue: "LEGION-208",
+      role: "implementer",
+      session: "ses_implementer_208",
+      asker: "session:ses_architect_208 (LEGION-208 architect)",
+      ref: "envoy:evt-5521",
+      reason: "model_calls",
+      passedAt: "2026-09-22T09:16:40Z",
+      writes: [
+        { seq: 1, command: "pr merge", repository: "acme/widgets", exit: 0 },
+        {
+          seq: 3,
+          command: "api POST repos/acme/widgets/issues/208/comments",
+          repository: "acme/widgets",
+          exit: null,
+        },
+      ],
+    },
     {
       id: "5f0c2a9e7b14d3866a1e0c4b9d2f7a35",
       issue: "LEGION-207",
@@ -2119,6 +2140,7 @@ test("the state golden lists the questions passed to the controller, and the key
       ref: "dispatch://LEGION-207/message/m-4411",
       reason: "not_answered",
       passedAt: "2026-09-22T09:14:03Z",
+      writes: [],
     },
   ]);
   expect(LegionStateResponse.parse(fixture("state-stage3.json")).questionsForController).toEqual(
@@ -2133,6 +2155,19 @@ test("the state golden lists the questions passed to the controller, and the key
   const { passedAt: _, ...withoutPassedAt } = undated.questionsForController[0] ?? {};
   undated.questionsForController = [withoutPassedAt];
   expect(LegionStateResponse.safeParse(undated).success).toBeFalse();
+
+  const unwritten = fixture("state.json") as { questionsForController: Record<string, unknown>[] };
+  const { writes: __, ...withoutWrites } = unwritten.questionsForController[1] ?? {};
+  unwritten.questionsForController = [withoutWrites];
+  expect(LegionStateResponse.safeParse(unwritten).success).toBeFalse();
+
+  const uncommanded = fixture("state.json") as {
+    questionsForController: { writes: Record<string, unknown>[] }[];
+  };
+  const [merged] = uncommanded.questionsForController;
+  if (merged === undefined) throw new Error("the golden lists no question");
+  merged.writes = [{ ...merged.writes[0], command: "" }];
+  expect(LegionStateResponse.safeParse(uncommanded).success).toBeFalse();
 
   const stripped = fixture("state.json") as Record<string, unknown>;
   delete stripped.questionsForController;

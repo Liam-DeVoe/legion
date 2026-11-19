@@ -153,28 +153,53 @@ func (s *Store) UpdateQuestion(ctx context.Context, q AnswerQuestion, from ...Qu
 
 // AnswerToolCalls is every recorded gh call of question, in seq order.
 func (s *Store) AnswerToolCalls(ctx context.Context, question string) ([]AnswerToolCall, error) {
-	rows, err := s.pool.Query(ctx, `select seq, args, app, owner, started_at, result, exit, finished_at
-		from answer_tool_calls where question = $1 order by seq`, question)
+	rows, err := s.pool.Query(ctx, `select `+toolCallColumns+` from answer_tool_calls where question = $1 order by seq`, question)
 	if err != nil {
 		return nil, fmt.Errorf("read the gh calls of %s: %w", question, err)
 	}
-	defer rows.Close()
-	var calls []AnswerToolCall
-	for rows.Next() {
-		call := AnswerToolCall{Question: question}
-		var args []byte
-		if err := rows.Scan(&call.Seq, &args, &call.App, &call.Owner, &call.StartedAt, &call.Result, &call.Exit, &call.FinishedAt); err != nil {
-			return nil, fmt.Errorf("read the gh calls of %s: %w", question, err)
-		}
-		if err := json.Unmarshal(args, &call.Args); err != nil {
-			return nil, fmt.Errorf("read gh call %s.%d: decode its arguments: %w", question, call.Seq, err)
-		}
-		calls = append(calls, call)
-	}
-	if err := rows.Err(); err != nil {
+	calls, err := scanToolCalls(rows)
+	if err != nil {
 		return nil, fmt.Errorf("read the gh calls of %s: %w", question, err)
 	}
 	return calls, nil
+}
+
+// AnswerToolCallsTx is every recorded gh call of each of questions, read through tx, by question
+// and in seq order; a question with no recorded call has none.
+func AnswerToolCallsTx(ctx context.Context, tx pgx.Tx, questions []string) (map[string][]AnswerToolCall, error) {
+	rows, err := tx.Query(ctx, `select `+toolCallColumns+` from answer_tool_calls where question = any($1) order by question, seq`, questions)
+	if err != nil {
+		return nil, fmt.Errorf("read the gh calls of %d questions: %w", len(questions), err)
+	}
+	calls, err := scanToolCalls(rows)
+	if err != nil {
+		return nil, fmt.Errorf("read the gh calls of %d questions: %w", len(questions), err)
+	}
+	byQuestion := make(map[string][]AnswerToolCall)
+	for _, call := range calls {
+		byQuestion[call.Question] = append(byQuestion[call.Question], call)
+	}
+	return byQuestion, nil
+}
+
+const toolCallColumns = `question, seq, args, app, owner, started_at, result, exit, finished_at`
+
+// scanToolCalls is rows of toolCallColumns, which it closes.
+func scanToolCalls(rows pgx.Rows) ([]AnswerToolCall, error) {
+	defer rows.Close()
+	var calls []AnswerToolCall
+	for rows.Next() {
+		var call AnswerToolCall
+		var args []byte
+		if err := rows.Scan(&call.Question, &call.Seq, &args, &call.App, &call.Owner, &call.StartedAt, &call.Result, &call.Exit, &call.FinishedAt); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(args, &call.Args); err != nil {
+			return nil, fmt.Errorf("gh call %s.%d: decode its arguments: %w", call.Question, call.Seq, err)
+		}
+		calls = append(calls, call)
+	}
+	return calls, rows.Err()
 }
 
 // AnswerSpend is what the project's answers cost on the UTC day of at, in US dollars.

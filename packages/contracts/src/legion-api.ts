@@ -643,13 +643,28 @@ const legionHeldOutboxRow = z.object({
   waitsOn: z.number().int().positive(),
 });
 
+/** `api.QuestionWrite` — one `gh` call that writes which the daemon's answer loop ran for a
+ * question before it passed the question on (contract 170), a read never one: its seq among the
+ * question's calls, its command words (`pr merge`; for `gh api` its method and endpoint, `api PUT
+ * repos/acme/widgets/pulls/7/merge`), the repository its arguments name (`""` for none), and gh's
+ * exit status, `null` where gh answered none, since it could not start or the daemon stopped
+ * while it ran. */
+const legionQuestionWrite = z.object({
+  seq: z.number().int().positive(),
+  command: nonEmptyString,
+  repository: z.string(),
+  exit: z.number().int().nullable(),
+});
+
 /** `api.QuestionForController` — one question to a stopped agent that the daemon's answer loop
  * passed to the controller (its `agent-question` notice, contract 170): the question's id, the
  * agent's issue, role and session, who asked (`user:<login>`, or `session:<id>` with the asking
  * session's title when known), where (a `dispatch://` reference, or `envoy:<event id>`), why it was
  * passed on (`not_answered`, `needs_work`, a bound or fault, `over_limit`, `unknown_format`,
- * `no_provider`, `no_price`, `unmetered`, `no_conversation`, `post_refused`), and when. `asker`
- * and `ref` are empty for a question whose recorded hand-off no longer reads. */
+ * `no_provider`, `no_price`, `unmetered`, `no_conversation`, `post_refused`), when, and every `gh`
+ * write the loop ran for it (`writes`, never null), so the controller does not decide on the
+ * question without knowing what the agent already merged, approved or posted. `asker` and `ref`
+ * are empty for a question whose recorded hand-off no longer reads. */
 const legionQuestionForController = z.object({
   id: nonEmptyString,
   issue: issueKey,
@@ -659,6 +674,7 @@ const legionQuestionForController = z.object({
   ref: z.string(),
   reason: nonEmptyString,
   passedAt: timestamp,
+  writes: z.array(legionQuestionWrite),
 });
 
 /** `api.WakeWaiting` — one wake the daemon's pacing is holding until its turn

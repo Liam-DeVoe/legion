@@ -211,6 +211,58 @@ func TestEncodeWritesTheMessageATurnWasAskedAgainWithAfterIt(t *testing.T) {
 	}
 }
 
+// An exchange with no answer (conversation.Append.NoAnswer) is the run's turns, its last one a
+// tool call with its result, and then the daemon's note, written as a prompt line of its own after
+// the result, as a message the loop asked again with is. Without the note the same turns are
+// refused, as an answer whose last turn calls a tool is. Read back, the transcript's conversation
+// ends in the note as a user turn, which Claude Code closes with its synthetic reply as it does a
+// delivered message, the question is answered, and the last-prompt checkpoint names the note's
+// line.
+func TestEncodeWritesTheNoteOfAnExchangeWithNoAnswerAfterItsTurns(t *testing.T) {
+	f := baseTranscript()
+	s := read(t, f.bytes())
+	unanswered := toolAnswer()
+	unanswered.Turns = unanswered.Turns[:1]
+	if _, err := s.Encode(unanswered, appendedAt); err == nil {
+		t.Fatal("an exchange whose last turn calls a tool encoded with no note")
+	}
+	const note = "The Legion daemon ended this answer with no reply from you (model_calls)."
+	unanswered.NoAnswer = note
+	data, err := s.Encode(unanswered, appendedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var records []map[string]any
+	for _, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("appended line %q: %v", line, err)
+		}
+		records = append(records, record)
+	}
+	types := []string{"user", "assistant", "assistant", "assistant", "user", "user", "legion-answer", "last-prompt"}
+	if len(records) != len(types) {
+		t.Fatalf("%d appended lines, want %d", len(records), len(types))
+	}
+	for i, record := range records {
+		if record["type"] != types[i] {
+			t.Errorf("line %d is a %v line, want %s", i, record["type"], types[i])
+		}
+	}
+	noted := records[5]
+	if m := noted["message"].(map[string]any); m["role"] != "user" || m["content"] != note || noted["parentUuid"] != records[4]["uuid"] {
+		t.Errorf("the line after the result %v, want a prompt holding the note, after the result", noted)
+	}
+	if last := records[7]; last["leafUuid"] != noted["uuid"] {
+		t.Errorf("the last-prompt line %v, want it to name the note's line", last)
+	}
+	back := read(t, append(f.bytes(), data...))
+	assertMessages(t, back.Messages[len(back.Messages)-2:], []conversation.Message{user(text(note)), synthetic()})
+	if !back.Answered("q-7") || back.Leaf != noted["uuid"] {
+		t.Errorf("answered %t, leaf %q; want the question answered and the note the leaf", back.Answered("q-7"), back.Leaf)
+	}
+}
+
 // AppendFile writes the append in one write after exactly the content the session was read from,
 // and refuses with ErrMoved once the file has grown since.
 func TestAppendFileRefusesATranscriptThatMoved(t *testing.T) {

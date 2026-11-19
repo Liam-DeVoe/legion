@@ -104,6 +104,9 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	for {
 		stream := r.ask(runCtx, model, opts, messages)
 		result := r.result()
+		// Every path below returns the steps the run finished, a fault's among them, so each
+		// is given its call's own output items before any path is taken.
+		r.native(&result)
 		switch failure := r.failure(); {
 		case failure != nil:
 			return result, failure
@@ -551,10 +554,10 @@ func (r *run) result() Result {
 	return result
 }
 
-// finish reads the last model call into result: its output items, the refusal the call may have
-// ended on, the fault it ended on, and the object the reply was required to be when the request
-// asked for one. It is the only reader of the raw chunks drain kept, and runs once drain has
-// returned, so every chunk of every call is in by now.
+// finish reads the last model call into result: the refusal the call may have ended on, the
+// fault it ended on, and the object the reply was required to be when the request asked for one.
+// It runs once drain has returned, so every chunk of every call is in by now; the output items
+// those chunks carry are native's, which Run gives every result.
 func (r *run) finish(result *Result, stream *aisdk.StreamTextResult) {
 	r.mu.Lock()
 	reason := r.reason
@@ -568,9 +571,6 @@ func (r *run) finish(result *Result, stream *aisdk.StreamTextResult) {
 	}
 	switch r.kind {
 	case OpenAIResponses:
-		for i := range result.Steps {
-			result.Steps[i].Native = r.calls[i].items
-		}
 		if refused(r.calls[len(result.Steps)-1].items) {
 			result.Fault, result.Detail = FaultRefusal, "the last reply is a refusal"
 			return
@@ -615,6 +615,22 @@ func (r *run) finish(result *Result, stream *aisdk.StreamTextResult) {
 		return
 	}
 	result.Value = value
+}
+
+// native gives each step of result, on a kind whose steps carry their call's own output items
+// (OpenAI Responses), those items, which drain kept from the call's raw chunks. A step is in the
+// result only once its call finished, so the items of that call are whole; r.calls may hold one
+// call more than the steps, the one in progress when the run ended, which no step names, and a
+// step whose chunks never came gets none (finish faults such a run).
+func (r *run) native(result *Result) {
+	if r.kind != OpenAIResponses {
+		return
+	}
+	for i := range result.Steps {
+		if i < len(r.calls) {
+			result.Steps[i].Native = r.calls[i].items
+		}
+	}
 }
 
 // refused is whether a call's output items hold a refusal.

@@ -41,9 +41,10 @@ func answeredQuestion(e *entry) (string, bool) {
 // Encode is what an append of a after the session writes, as Oh My Pi writes them: one message
 // entry for the question, one for each model turn and one for each of its tool results, and after
 // a turn the loop asked again a user message entry holding what it asked, written as the
-// question's is; then the legion-answer custom entry. Each entry has a fresh 8-hex id and the
-// previous entry, the session's leaf first, as its parent. When the session's content does not
-// end in a newline the bytes start with one. now stamps every entry.
+// question's is, as is the daemon's note after the turns of an exchange with no answer
+// (conversation.Append.NoAnswer); then the legion-answer custom entry. Each entry has a fresh
+// 8-hex id and the previous entry, the session's leaf first, as its parent. When the session's
+// content does not end in a newline the bytes start with one. now stamps every entry.
 func (s *Session) Encode(a conversation.Append, now time.Time) ([]byte, error) {
 	if err := a.Validate(); err != nil {
 		return nil, err
@@ -95,6 +96,11 @@ func (s *Session) Encode(a conversation.Append, now time.Time) ([]byte, error) {
 			if err := w.message(userOut{Role: "user", Content: []any{textOut{Type: "text", Text: turn.AskedAgain}}, Attribution: "user", Timestamp: ms}); err != nil {
 				return nil, err
 			}
+		}
+	}
+	if a.NoAnswer != "" {
+		if err := w.message(userOut{Role: "user", Content: []any{textOut{Type: "text", Text: a.NoAnswer}}, Attribution: "user", Timestamp: ms}); err != nil {
+			return nil, err
 		}
 	}
 	if err := w.custom(AnswerEntryType, map[string]string{"questionId": a.QuestionID}); err != nil {

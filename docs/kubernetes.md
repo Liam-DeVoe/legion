@@ -1627,9 +1627,18 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   — and a conversation its store no longer holds (`no_conversation`):
   the daemon replies in the agent's name, naming the bound or the fault and that it passed the question to the Legion controller, and passes it on.
   A reply Dispatch or the listener refuses for good is passed on as `post_refused`.
+  The reply also names each `gh` write the question's calls ran, this run's and an earlier run's, by its command, its repository and gh's exit, so an asker who reads that the agent could not answer also reads what it already merged, approved or posted:
+  ``I could not answer within the bound of 8 model calls. I had already run these gh writes: `gh pr merge` on acme/widgets (exit 0). I passed your question to the Legion controller.``
+  A write is every call but a read: a comment, a review, `pr merge`, `pr edit`, `run rerun`, `workflow run` and a `gh api` call of any method but `GET` and `HEAD`, among the rest.
+  A read (`pr view`, `run view`, a search, a `gh api` `GET` or `HEAD`, a GraphQL query), a call asking for `--help` and a call the tool refused are not named, and a write the daemon stopped during is named with no exit.
+  When a model call returned anything before the fault, the run's turns are appended to the agent's conversation as an answer's are, each `gh` call with its result, without the cut reply made again or the last call's message, and after them a message from the daemon saying that the answer ended with no reply and quoting the reply it posted, so the agent finds its writes when it next resumes.
+  A fault decided before any model call, or a first call that returned nothing, appends nothing.
 
 - **Passing on.**
-  The controller gets one `agent-question` notice per question on its controller topic (`{kind, role, reason, question: {id, issue, session, asker, ref, text}}`, the text cut at 2,000 characters), and, because that topic is a live wake only, `legion state` lists every question passed on in the last seven days, newest first and at most 100, as `questionsForController` (daemon API contract 170), which the controller reads at its start.
+  The controller gets one `agent-question` notice per question on its controller topic (`{kind, role, reason, question: {id, issue, session, asker, ref, text, writes}}`, the text cut at 2,000 characters), and, because that topic is a live wake only, `legion state` lists every question passed on in the last seven days, newest first and at most 100, as `questionsForController` (daemon API contract 170), which the controller reads at its start.
+  Both name each `gh` write the question's calls ran, as the reply does, so the controller never decides on a question without knowing what the agent already did:
+  `writes` is a list of `{seq, command, repository, exit}`, `command` being the command's words (for `gh api` its method and endpoint, `api PUT repos/acme/widgets/pulls/7/merge`), `repository` `""` where the call named none, and `exit` `null` where gh answered no status.
+  The notice leaves `writes` out when there is none, and `questionsForController` carries `[]`.
 
 - **Posting**, in the agent's name and once:
   a Dispatch message through its delivery's reply route, a mention through the comment's reply route, an ask thread as a comment carrying the reply's marker (the thread is read for it before a post is made again), an Envoy message by a direct message to its sender in reply to it.

@@ -16,8 +16,9 @@
 // names, whose key is read again for every call), decides the faults that need no model call
 // (no_provider, no_price, unknown_format), refuses an answer whose calls the provider metered
 // nothing for (unmetered), maps agentloop's faults onto the daemon's own reasons, and reads the
-// run back as the agent's reply, the turns to append, a cut call agentloop made again left out,
-// and what the answer cost.
+// run back as the agent's reply, the turns to append (an answer's, or those of a run that gave
+// none, for the caller to end with its own reply), a cut call agentloop made again left out, and
+// what the answer cost.
 package answer
 
 import (
@@ -99,8 +100,8 @@ const (
 	// provider whose counts are never absent, only zero (the Anthropic adapter fills them in).
 	// Either way the answer cannot be priced and would cost the project's daily bound nothing
 	// however many calls it made. An answer nothing meters is no answer: the reply is dropped,
-	// nothing is appended to the agent's conversation, and the question goes to the controller,
-	// as an unpriced model's does (NoPrice).
+	// the run's turns are appended to the agent's conversation as any fault's are, and the
+	// question goes to the controller, as an unpriced model's does (NoPrice).
 	Unmetered Fault = "unmetered"
 )
 
@@ -192,10 +193,14 @@ type Reply struct {
 	Detail string
 	// Append is the question and the model's turns (thinking with its signatures or OpenAI
 	// reasoning items, each tool call with its result, a reply the form refused with the
-	// sentence it was asked again with, the reply), for the conversation's appender; set when
-	// the model replied in the form. It holds nothing else the loop told the model: not the
-	// system prompt, and not the message the last model call carries (lastCall), which is the
-	// loop's own instruction to that call and no part of what the agent did, so the agent's
+	// sentence it was asked again with, the reply), for the conversation's appender. With a
+	// Fault it holds every turn a model call returned before the run ended and no answer, which
+	// the caller ends with its own reply in the agent's name (conversation.Append.NoAnswer), so
+	// the agent's conversation holds every gh call the run made, a write among them; it holds
+	// no turns where no call returned anything (a fault decided before any model call, or a
+	// first call that failed). It holds nothing else the loop told the model: not the system
+	// prompt, and not the message the last model call carries (lastCall), which is the loop's
+	// own instruction to that call and no part of what the agent did, so the agent's
 	// conversation never holds it. Nor does it hold a reply the provider cut at output_tokens
 	// whose call agentloop made again (agentloop.Step.Dropped): no later call was sent it.
 	Append conversation.Append
@@ -353,30 +358,30 @@ func answer(ctx context.Context, req Request) (Reply, error) {
 		// not one with more to say: the one such reply of 415 calls measured on 2026-11-19
 		// was a whole answer and then newline escapes to the bound, where the longest reply
 		// it did not cut used 567 tokens. agentloop makes that call once again without the
-		// cut reply, within the same bounds, and marks the cut step Dropped, which finish
+		// cut reply, within the same bounds, and marks the cut step Dropped, which exchange
 		// appends nothing of. A second cut is the length fault.
 		CallAgainWhenCut: 1,
 		// The last call, which offers no tool, is told so (lastCall). agentloop puts the
-		// message on that call alone and in no step, so finish appends nothing of it.
+		// message on that call alone and in no step, so exchange appends nothing of it.
 		LastCall: lastCall,
 	})
 	reply := Reply{Calls: len(result.Steps), Usage: usageOf(result.Usage, r.price), CostUSD: result.Usage.CostUSD}
-	switch {
-	case runErr != nil && ctx.Err() != nil:
+	if runErr != nil && ctx.Err() != nil {
 		return reply, fmt.Errorf("answer: %w", ctx.Err())
+	}
+	reply.Append = exchange(req, r, result, front)
+	switch {
 	case runErr != nil:
 		reply.Fault, reply.Detail = ProviderError, runErr.Error()
-		return reply, nil
 	case result.Fault != "":
 		reply.Fault, reply.Detail = faultOf(result.Fault), result.Detail
-		return reply, nil
 	case unmetered(result):
 		// The run answered and nothing counted it, so its cost is unknown and the day's spend
 		// would not move: the answer is dropped rather than given away (Unmetered).
 		reply.Fault, reply.Detail = Unmetered, fmt.Sprintf("the provider reported no usage for the answer's %d model call(s)", len(result.Steps))
-		return reply, nil
+	default:
+		finish(&reply, req, result, front)
 	}
-	finish(&reply, req, r, result, front)
 	return reply, nil
 }
 
@@ -418,7 +423,7 @@ func (f *inFront) read(value json.RawMessage, mayAskNothing bool) (form, error) 
 //
 // The guard's own exchange is left out: a user message whose one block is the placeholder
 // sentence (errPlaceholder), and the reply before it that the sentence refused. An earlier
-// answer appends both to the conversation (finish), and the refused reply holds its
+// answer appends both to the conversation (exchange), and the refused reply holds its
 // placeholder, so without the skip the same placeholder would pass on every later question.
 func (f *inFront) holds(word string) bool {
 	inText := func(text string) bool {
@@ -512,19 +517,12 @@ func firstToolIndex(earlier []store.AnswerToolCall) int {
 	return first
 }
 
-// finish reads the run's last reply into reply by the form's own rules (front's read): the
-// agent's reply in the form, or no answer when the rules refuse it, which they do once agentloop
-// has asked again where its bounds let it; and, with it, the turns to append under front's
-// question, every call of the run in order but a cut one whose call agentloop made again, which
-// no later call was sent and the conversation never holds.
-func finish(reply *Reply, req Request, r route, result agentloop.Result, front *inFront) {
-	form, err := front.read(result.Value, req.MayAskNothing)
-	if err != nil {
-		reply.Fault, reply.Detail = Malformed, fmt.Sprintf("%v: %.500q", err, result.Text)
-		return
-	}
-	reply.Kind, reply.Text, reply.Needs = form.kind, form.text, form.needs
-	reply.Append = conversation.Append{
+// exchange is the run as the turns to append under front's question: every call of the run in
+// order but a cut one whose call agentloop made again, which no later call was sent and the
+// conversation never holds, and one that returned nothing at all, which no harness writes as a
+// turn. A run whose calls returned nothing has no turns.
+func exchange(req Request, r route, result agentloop.Result, front *inFront) conversation.Append {
+	a := conversation.Append{
 		QuestionID: req.Question.ID, Question: front.question,
 		Provider: string(r.provider), API: string(r.kind), Model: r.model,
 	}
@@ -532,11 +530,29 @@ func finish(reply *Reply, req Request, r route, result agentloop.Result, front *
 		if step.Dropped {
 			continue
 		}
-		reply.Append.Turns = append(reply.Append.Turns, turnOf(step, r.price))
+		if turn := turnOf(step, r.price); len(turn.Content) > 0 || len(turn.Native) > 0 {
+			a.Turns = append(a.Turns, turn)
+		}
+	}
+	return a
+}
+
+// finish reads the run's last reply into reply by the form's own rules (front's read): the
+// agent's reply in the form, or no answer when the rules refuse it, which they do once agentloop
+// has asked again where its bounds let it, or when the reply's exchange is none an appender could
+// write as an answer. A reply with no answer keeps its exchange, which the caller ends with its
+// own reply.
+func finish(reply *Reply, req Request, result agentloop.Result, front *inFront) {
+	form, err := front.read(result.Value, req.MayAskNothing)
+	if err != nil {
+		reply.Fault, reply.Detail = Malformed, fmt.Sprintf("%v: %.500q", err, result.Text)
+		return
 	}
 	if err := reply.Append.Validate(); err != nil {
-		*reply = Reply{Calls: reply.Calls, Usage: reply.Usage, CostUSD: reply.CostUSD, Fault: Malformed, Detail: err.Error()}
+		reply.Fault, reply.Detail = Malformed, err.Error()
+		return
 	}
+	reply.Kind, reply.Text, reply.Needs = form.kind, form.text, form.needs
 }
 
 // turnOf is one model call as a turn of the append: its thinking (with its signature), redacted

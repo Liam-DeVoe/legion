@@ -3,7 +3,8 @@ body: |-
   Daemon API contract 170: `legion state` and the controller's `read_state` carry
   `questionsForController`, every question to a stopped agent that the daemon's answer loop passed
   to the controller in the last seven days (`id`, `issue`, `role`, `session`, `asker`, `ref`,
-  `reason`, `passedAt`), newest first and at most 100. The daemon's `agent-question` notice on the
+  `reason`, `passedAt`, and `writes`, each `gh` call that writes which the loop ran for the
+  question), newest first and at most 100. The daemon's `agent-question` notice on the
   controller topic is a live wake only, so a controller that starts later reads what it missed
   here. The daemon serves the state without the key to a caller in a pod whose claims record a
   contract below 170, since a plugin built before it refuses the key. Install this release with a

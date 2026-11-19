@@ -1843,3 +1843,65 @@ func TestTheGuardReadsTheCallsRepositoryAndFiles(t *testing.T) {
 		}
 	})
 }
+
+// The recorded calls of an answer that write are the ones Writes names, in their order, each by
+// its command words, the repository its arguments name and gh's exit: a merge, a review, a
+// comment, a workflow run, a run's rerun, a close, an edit, and a gh api call of every method but
+// GET and HEAD, whatever form names the repository. A read is none of them (a pr, run or issue
+// read, a search, a gh api GET or HEAD, a GraphQL query), and neither is a call asking for help
+// or one the tool refused, which it records with no owner. A write the daemon stopped during is
+// one, with no exit, and one naming no repository is named with none.
+func TestWritesNamesEveryCallThatWritesAndNoRead(t *testing.T) {
+	exit := func(n int) *int { return &n }
+	ran := func(seq int, code *int, argv ...string) store.AnswerToolCall {
+		return store.AnswerToolCall{Question: "q-1", Seq: seq, Args: argv, App: "implement", Owner: "acme", Exit: code}
+	}
+	calls := []store.AnswerToolCall{
+		ran(1, exit(0), "pr", "view", "7", "-R", "acme/widgets", "--json", "title"),
+		ran(2, exit(0), "pr", "merge", "7", "-R", "acme/widgets", "--squash"),
+		ran(3, exit(0), "pr", "review", "https://github.com/acme/widgets/pull/7", "--approve", "--body", "Looks right."),
+		ran(4, exit(1), "-R", "acme/widgets", "issue", "comment", "9", "--body", "On it."),
+		ran(5, exit(0), "workflow", "run", "ci.yml", "--repo", "acme/widgets", "-f", "level=1"),
+		ran(6, exit(0), "run", "rerun", "41", "-R", "acme/widgets", "--failed"),
+		ran(7, exit(0), "api", "-X", "PUT", "repos/acme/widgets/pulls/7/merge"),
+		ran(8, exit(0), "api", "repos/acme/widgets/issues/9/comments", "-f", "body=Done."),
+		ran(9, exit(0), "api", "--method", "delete", "/repos/acme/widgets/issues/comments/3"),
+		ran(10, exit(0), "api", "repos/acme/widgets/pulls/7"),
+		ran(11, exit(0), "api", "-X", "HEAD", "repos/acme/widgets"),
+		ran(12, exit(0), "api", "graphql", "-f", "query={ viewer { login } }"),
+		ran(13, exit(0), "search", "prs", "--repo", "acme/widgets", "leak"),
+		ran(14, exit(0), "run", "view", "41", "-R", "acme/widgets", "--log-failed"),
+		ran(15, exit(0), "issue", "list", "-R", "acme/widgets"),
+		ran(16, exit(0), "pr", "merge", "--help"),
+		ran(17, nil, "pr", "close", "7", "-R", "acme/widgets", "--comment", "Superseded."),
+		{Question: "q-1", Seq: 18, Args: []string{"pr", "merge", "8", "-R", "acme/widgets"}, App: "implement"},
+		ran(19, exit(1), "pr", "edit", "7", "--add-label", "ready"),
+	}
+	want := []Write{
+		{Seq: 2, Command: "pr merge", Repository: "acme/widgets", Exit: exit(0)},
+		{Seq: 3, Command: "pr review", Repository: "acme/widgets", Exit: exit(0)},
+		{Seq: 4, Command: "issue comment", Repository: "acme/widgets", Exit: exit(1)},
+		{Seq: 5, Command: "workflow run", Repository: "acme/widgets", Exit: exit(0)},
+		{Seq: 6, Command: "run rerun", Repository: "acme/widgets", Exit: exit(0)},
+		{Seq: 7, Command: "api PUT repos/acme/widgets/pulls/7/merge", Repository: "acme/widgets", Exit: exit(0)},
+		{Seq: 8, Command: "api POST repos/acme/widgets/issues/9/comments", Repository: "acme/widgets", Exit: exit(0)},
+		{Seq: 9, Command: "api DELETE repos/acme/widgets/issues/comments/3", Repository: "acme/widgets", Exit: exit(0)},
+		{Seq: 17, Command: "pr close", Repository: "acme/widgets"},
+		{Seq: 19, Command: "pr edit", Exit: exit(1)},
+	}
+	got := Writes(calls)
+	if !reflect.DeepEqual(got, want) {
+		describe := func(writes []Write) string {
+			var lines []string
+			for _, w := range writes {
+				exit := "none"
+				if w.Exit != nil {
+					exit = fmt.Sprint(*w.Exit)
+				}
+				lines = append(lines, fmt.Sprintf("%d %q on %q, exit %s", w.Seq, w.Command, w.Repository, exit))
+			}
+			return strings.Join(lines, "\n")
+		}
+		t.Fatalf("Writes =\n%s\nwant\n%s", describe(got), describe(want))
+	}
+}

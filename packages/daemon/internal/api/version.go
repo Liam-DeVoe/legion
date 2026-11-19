@@ -2385,9 +2385,10 @@ package api
 //
 // 170: INFRA-204 (cybermonklabs/legion) -- api.State gains `questionsForController`, every
 // question to a stopped agent that the daemon's answer loop passed to the controller in the last
-// seven days (id, issue, role, session, asker, ref, reason, passedAt), newest first and at most
-// 100: the controller's `agent-question` notice is a live wake only, so a controller that starts
-// later reads what it missed here. A body this contract writes carries it on every state, never
+// seven days (id, issue, role, session, asker, ref, reason, passedAt, and writes, each gh call
+// that writes which the loop ran for it), newest first and at most 100: the controller's
+// `agent-question` notice is a live wake only, so a controller that starts later reads what it
+// missed here. A body this contract writes carries it on every state, never
 // null, and a caller from a pod whose claims record a contract under 170 is served the state
 // without the key (stateNarrowings, questionsForControllerContract), since the strict reader
 // before 170 refuses it. The 170 reader takes it as optional for that body alone, as it takes

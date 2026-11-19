@@ -157,7 +157,8 @@ func Unknown(format string, args ...any) error {
 // written only after the very content it was built from.
 var ErrMoved = errors.New("the session changed since it was read")
 
-// Append is a question and the model's answer to it, which an appender writes into the session.
+// Append is a question and the model's answer to it, or the turns of a run that ended with none
+// and the daemon's note of that (NoAnswer), which an appender writes into the session.
 type Append struct {
 	// QuestionID names the question; the appender records it with the answer.
 	QuestionID string
@@ -171,8 +172,15 @@ type Append struct {
 	// Turns are the model's turns, in order. Every turn but the last either made tool calls and
 	// carries their results, or made none and carries the sentence it was asked again with
 	// (AskedAgain), which the next turn answers; the last made none and its Text blocks are the
-	// answer.
+	// answer, unless the exchange has no answer (NoAnswer).
 	Turns []Turn
+	// NoAnswer is, for an exchange the model gave no answer in (a run that ended on a fault after
+	// a model call returned), the daemon's note of how it ended and of the reply it posted in the
+	// agent's name, which an appender writes as a user message after the turns, as it writes a
+	// turn's AskedAgain, so the agent reads it when it resumes. The last turn is then whatever the
+	// run's last call returned: it may make tool calls, hold no text, or be asked again. It is ""
+	// for an exchange the model answered.
+	NoAnswer string
 }
 
 // Turn is one model turn of an Append.
@@ -187,8 +195,9 @@ type Turn struct {
 	Results []Block
 	// AskedAgain is the user message the loop sent after the turn's reply when it refused that
 	// reply and asked for it again: the next turn is the reply to it. An appender writes it as a
-	// user message between the two turns. Only a turn that made no tool call and is not the
-	// last carries one.
+	// user message between the two turns. Only a turn that made no tool call carries one, and it
+	// is not the last, but in an exchange with no answer (Append.NoAnswer), which the run may
+	// have ended before the reply to it.
 	AskedAgain string
 	// Usage is what the turn's model call used.
 	Usage Usage
@@ -234,12 +243,13 @@ func (a Append) Validate() error {
 			}
 		}
 		last := i == len(a.Turns)-1
+		answers := last && a.NoAnswer == ""
 		switch {
-		case last && len(calls) > 0:
+		case answers && len(calls) > 0:
 			return fmt.Errorf("append: the last turn makes %d tool calls; it must answer", len(calls))
-		case last && turn.AskedAgain != "":
+		case answers && turn.AskedAgain != "":
 			return errors.New("append: the last turn is asked again, and no turn answers it")
-		case last && !hasText(turn.Content):
+		case answers && !hasText(turn.Content):
 			return errors.New("append: the last turn holds no answer text")
 		case len(calls) > 0 && turn.AskedAgain != "":
 			return fmt.Errorf("append: turn %d makes %d tool calls and is asked again", i+1, len(calls))
