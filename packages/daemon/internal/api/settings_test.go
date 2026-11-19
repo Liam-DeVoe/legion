@@ -63,6 +63,7 @@ var settingsEmitted = map[string]string{
 	"Config.OmpLaunchPrefix":                         "omp_launch_prefix",
 	"Config.ProviderKeys":                            "provider_keys (the variable names alone)",
 	"Config.InstructionsPath":                        "instructions",
+	"Config.PrivateNameRulesFile":                    "private_name_rules_file (the path alone, never the rules)",
 	"Config.WorkerBootTimeout":                       "worker_boot_timeout_seconds",
 	"Config.WorkerRPCTimeout":                        "worker_rpc_timeout_seconds",
 	"Config.WorkerStopTimeout":                       "worker_stop_timeout_seconds",
@@ -220,6 +221,7 @@ var settingsExcluded = map[string]string{
 	"Config.Warnings":                 "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `legion config check` prints",
 	"Project.CommitIssueTrailerRepos": "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
 	"Config.StallLimits":              "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session; no legion.yaml key names them",
+	"Config.PrivateNameRulesNamedBy":  "derived: which of private_name_rules_file and LEGION_PRIVATE_NAME_RULES_FILE named the rule file, which a refusal of the file at boot names; the settings carry the path under private_name_rules_file either way",
 	"StallLimits.CallBound":           "derived: LEGION_STALL_CALL_BOUND_MS in the daemon's environment, not a legion.yaml key",
 	"StallLimits.CallGrace":           "derived: LEGION_STALL_CALL_GRACE_MS in the daemon's environment, not a legion.yaml key",
 	"StallLimits.Step":                "derived: LEGION_STALL_STEP_MS in the daemon's environment, not a legion.yaml key",
@@ -623,6 +625,29 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 	set := SettingsOf(loadSettingsFile(t, minimalSettingsFile+"review_round_cap: 5\n"))
 	if set.ReviewRoundCap != 5 {
 		t.Errorf("review_round_cap = %d, want the file's 5", set.ReviewRoundCap)
+	}
+}
+
+// The deployment's private-name rule file reaches the settings by its path alone, under
+// private_name_rules_file, as `instructions` carries a path and never its text: the rules name the
+// deployment's private names, and the route that carries the settings authenticates nobody. A
+// file that names none carries no key at all, so the shapes the state golden pins do not move.
+func TestSettingsOfNamesThePrivateNameRuleFileByItsPathAlone(t *testing.T) {
+	const path = "/etc/legion/private-names.toml"
+	encoded, err := json.Marshal(SettingsOf(loadSettingsFile(t, minimalSettingsFile+"private_name_rules_file: "+path+"\n")))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got, want := string(keysOf(t, encoded)["private_name_rules_file"]), `"`+path+`"`; got != want {
+		t.Errorf("private_name_rules_file = %s, want %s", got, want)
+	}
+
+	none, err := json.Marshal(SettingsOf(minimalSettingsConfig(t)))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if raw, present := keysOf(t, none)["private_name_rules_file"]; present {
+		t.Errorf("private_name_rules_file = %s for a file that names none, want absent", raw)
 	}
 }
 
