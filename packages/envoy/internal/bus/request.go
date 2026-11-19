@@ -69,12 +69,13 @@ func (e *connectionLost) Is(target error) bool { return target == ErrConnectionL
 // connected again within ctx, so the caller sends the request again: it waits for the reconnect as
 // a publish does (ensureConnWithContext), and dials a replacement for a connection nats.go has
 // closed, until one is connected, ctx ends, the client stops, or each of the dial's ten attempts
-// (connectWithContext) has failed, whether no server answered, the server refused the credential,
-// the host did not resolve or the attempt's connect timeout passed. It reports true only once the
-// client's connection is connected, so a caller that retries on it does not retry before, and
-// false for each other end of that wait. Any other err, and a ctx that has ended, report false at
-// once: the caller answers err as it always did. The caller releases what it holds before it calls
-// this, since the wait lasts as long as the outage.
+// (connectWithContext) has failed, for whatever reason nats.go's dial gave: no server answered,
+// the server refused the credential or closed the connection during the handshake, the host did
+// not resolve, or the attempt's connect timeout passed. It reports true only once the client's
+// connection is connected, so a caller that retries on it does not retry before, and false for
+// each other end of that wait. Any other err, and a ctx that has ended, report false at once: the
+// caller answers err as it always did. The caller releases what it holds before it calls this,
+// since the wait lasts as long as the outage.
 func Reconnected(ctx context.Context, err error) bool {
 	var lost *connectionLost
 	if !errors.As(err, &lost) || ctx.Err() != nil {

@@ -798,8 +798,9 @@ func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 				}
 				// The client stopped (the listener is shutting down), or Reconnected's dial of a
 				// closed connection's replacement ended unconnected: each of its ten attempts
-				// failed, whether no server answered, the server refused the credential, the host
-				// did not resolve or the attempt's connect timeout passed. Wait out the retry
+				// failed, for whatever reason nats.go's dial gave: no server answered, the server
+				// refused the credential or closed the connection during the handshake, the host
+				// did not resolve, or the attempt's connect timeout passed. Wait out the retry
 				// backoff, and the next restart says which.
 				if !run.waitRetry(ctx, retry) {
 					return

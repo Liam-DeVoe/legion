@@ -157,12 +157,13 @@ func awaitStreamLeader(ctx context.Context, js nats.JetStreamContext, step strea
 // (bucketAppliedInterval): after a create (streamStep.awaitsApply) that answer is read again. A
 // read the server leaves unanswered (unanswered) says nothing of the stream, so it is read again,
 // as sentAgain sends a request again. A read the connection's loss cut off (ErrConnectionLost,
-// which unanswered counts) is read again once the client is connected again (awaitReconnect), as
-// sentAgain sends one: a read made while the connection is down fails at once, unsent, so a pause
-// alone would read every bucketAppliedInterval for the whole outage. Each read is waited for up to
-// the read limit of ctx's run of reads (limitedRead), so one lost read costs the start a fraction
-// of a second rather than the caller's whole ten second wait after the fact it waits for is true;
-// a read in flight when ctx ends is abandoned too.
+// which unanswered counts) is read again once the client is connected again, or once
+// awaitReconnect's RequestTimeout has passed, whichever comes first (awaitReconnect), as sentAgain
+// sends one: a read made while the connection is down fails at once, unsent, so a pause alone
+// would read every bucketAppliedInterval for the whole outage. Each read is waited for up to the
+// read limit of ctx's run of reads (limitedRead), so one lost read costs the start a fraction of a
+// second rather than the caller's whole ten second wait after the fact it waits for is true; a
+// read in flight when ctx ends is abandoned too.
 func awaitStream(ctx context.Context, js nats.JetStreamContext, step streamStep, stream, want, waiting string, short func(*nats.StreamInfo) string) error {
 	behind := "no read of the stream answered yet"
 	limits := readLimitOf(ctx)
