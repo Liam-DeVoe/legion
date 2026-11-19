@@ -262,7 +262,7 @@ type RequestRelaunch struct {
 // and any other error of that check — a store that did not answer — is ErrTreeCheckFailed, which
 // says nothing was stopped and the relaunch may be asked for again, and which its caller writes
 // to the log once (api's claimRelaunch, internal/daemon's relaunchOwnController). A launch left to
-// be tried again after the stop (relaunchLater, whose error says so: launchWaits) is no refusal:
+// be tried again after the stop (relaunchLater, whose error says so: launchRetried) is no refusal:
 // the process is stopped, the relaunch is recorded and the daemon makes the launch itself, so the
 // relaunch answers as one that ran, with the error the launch met written to the log (launchMade).
 // Every other error of the launch after the stop — a refusal of the tree's, or a claim failed at
@@ -397,12 +397,12 @@ func (m *Machine) launchOnceTakenBack(ctx context.Context) error {
 }
 
 // launchMade is the relaunch's answer once its stop has let the process go: err, the answer of its
-// launch, except a launch left to be tried again (launchWaits), which the daemon makes itself,
+// launch, except a launch left to be tried again (launchRetried), which the daemon makes itself,
 // so the relaunch is made and answers nil, with that launch's error written to the log. Every
 // other error — a refusal of the tree's after the stop, or the claim failed at its launch budget —
 // arms no retry and is answered.
 func (m *Machine) launchMade(err error) error {
-	if !errors.As(err, new(launchWaits)) {
+	if !errors.As(err, new(launchRetried)) {
 		return err
 	}
 	m.log.Warn("supervise: the relaunch's launch waits for the store and is tried again at the probe interval; the relaunch is made",

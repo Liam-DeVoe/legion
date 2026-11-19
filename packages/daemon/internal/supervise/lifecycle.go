@@ -126,7 +126,7 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // lifecycle for the tree's next start to bind and launch, since every later try would meet the
 // same refusal. Any other failure is not the tree's — a store that did not answer — and ends
 // nothing: the relaunch waits (relaunchLater), as a stop that fails does, and the error it
-// returns says so (launchWaits).
+// returns says so (launchRetried).
 func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Context) error, err error) error {
 	if m.claim.Locator != nil || !slices.Contains(live, m.claim.State) {
 		return err
@@ -195,23 +195,25 @@ func (m *Machine) watchAgain() {
 // (launchOnceTakenBack). Nothing else would relaunch such a claim before a restart, which takes it
 // up from what the store last holds.
 //
-// It answers cause, the failure that left the launch waiting, as a launchWaits, which is what its
+// It answers cause, the failure that left the launch waiting, as a launchRetried, which is what its
 // caller returns: a reader that must tell a launch still to come from one that met a refusal reads
 // that type by errors.As (launchMade), not the timer.
 func (m *Machine) relaunchLater(wait time.Duration, relaunch func(context.Context) error, cause error) error {
 	m.claim.State = StateLaunching
 	m.relaunch = relaunch
 	m.arm(TimerRelaunch, wait, "")
-	return launchWaits{err: cause}
+	return launchRetried{err: cause}
 }
 
-// launchWaits is the failure that left a launch waiting (relaunchLater): the process is let go,
-// and the machine makes the launch itself when its timer fires. It reads as that failure, word for
-// word, and unwraps to it, so every reader of the failure itself is unchanged.
-type launchWaits struct{ err error }
+// launchRetried is the failure that left a launch waiting (relaunchLater): the process is let go,
+// and the machine makes the launch itself when its timer fires (TimerRelaunch), which sets no
+// wake, so the machine's launchWaits, a launch the wake pacing holds, is no reading of it. It reads
+// as that failure, word for word, and unwraps to it, so every reader of the failure itself is
+// unchanged.
+type launchRetried struct{ err error }
 
-func (w launchWaits) Error() string { return w.err.Error() }
-func (w launchWaits) Unwrap() error { return w.err }
+func (w launchRetried) Error() string { return w.err.Error() }
+func (w launchRetried) Unwrap() error { return w.err }
 
 // relaunchAgain is the relaunch relaunchLater left waiting (TimerRelaunch). A suspension held
 // meanwhile ends here, with no process left to stop, rather than in a relaunch; otherwise the
