@@ -21,6 +21,7 @@ import { pageFocusedRow } from "../../../theme/classes";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import { parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { measureNearWords } from "../clamp-fixtures";
@@ -37,6 +38,7 @@ import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
 import type { OutlineRequest } from "../IssueTree";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { shortDay } from "../node-time";
+import { TWO_THREADS } from "../outline-fixtures";
 import { OutlineRequestProvider } from "../outline-request";
 import { AUTHOR_TEXT_ATTRIBUTE, KEY_REPORTS } from "../page-structure";
 import {
@@ -50,7 +52,8 @@ import {
 } from "../page-words";
 import { presetView } from "../presets";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "../reference-names";
-import { ViewStage } from "../slots/stage";
+import { ProvidersSlot } from "../slots/providers";
+import { StageSlot, ViewStage } from "../slots/stage";
 import { decisionBehind } from "../tree-keys";
 import { check, checkNode, result } from "../verification-filter/verification-fixtures";
 import { SpecFilterBody } from "./SpecFilterBody";
@@ -849,6 +852,78 @@ test("an address naming a statement puts the focus on it", async () => {
   } finally {
     view.unmount();
     read.mockRestore();
+  }
+});
+
+/** The page's stage at the address the router holds, as the page's root draws it
+ *  (`IssueOutlinePage.tsx`): the route read from the address, under the page's providers, with
+ *  the real views and each slot as its part filled it (`VIEW_SLOTS`, `SLOT_FILLED`). */
+function AddressedStage({ issue }: { issue: IssueDetails }): ReactNode {
+  const { pathname, search } = useLocation();
+  const route = parseIssuePath(pathname, search) ?? ({ key: KEY, kind: "issue" } as const);
+  return (
+    <ProvidersSlot issue={issue} route={route}>
+      <IssueScope />
+      <StageSlot issue={issue} route={route} />
+    </ProvidersSlot>
+  );
+}
+
+// Part J fills the Spec view's slot (`SLOT_FILLED`), so an address that names an item beside the
+// view's own - `/spec?comment=<id>`, as `documentItemPath` writes the address of an item of the
+// spec - is the view's to draw: the stage draws the Spec view and no outline, and the view lands
+// on the item in its own tree, with the focus on the item's row. The stage is the page's own,
+// with its real views and its slots as filled, so a slot left unfilled draws the outline here.
+test("with the Spec view's slot filled, a spec item's address lands on the item in the Spec view's tree and draws no outline", async () => {
+  const issue: IssueDetails = { ...issueDetails(), artifacts: [] };
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  // Every read the page's tree is built from, answered: the issue holds two threads of comments
+  // and nothing else, as the outline's own cases seed them (`IssueTree.test.tsx`'s
+  // `seedBodyReads`).
+  client.setQueryData(["whoami"], { kind: "user", login: READER });
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
+  client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
+  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
+  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(["comments", KEY], TWO_THREADS);
+  client.setQueryData(["issue-messages", KEY], []);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const view = render(
+    <MemoryRouter initialEntries={[`/issues/${KEY}/spec?comment=reply-b`]}>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <AddressedStage issue={issue} />
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const { container } = view;
+    await waitFor(() => {
+      const row = container.querySelector<HTMLElement>(
+        '[data-spec-tree] [data-node-row][data-node-id="reply-b"]'
+      );
+      expect(row, "the Spec view's tree drew no row for the item the address names").not.toBeNull();
+      expect(
+        row?.contains(document.activeElement),
+        `the item's address left the focus on ${document.activeElement?.tagName}, not its row`
+      ).toBe(true);
+    });
+    expect(
+      container.querySelector("[data-spec-body]"),
+      "the stage drew no Spec view"
+    ).not.toBeNull();
+    expect(
+      container.querySelector("[data-issue-body]"),
+      "the stage drew the outline in the Spec view's place"
+    ).toBeNull();
+  } finally {
+    view.unmount();
+    names.mockRestore();
   }
 });
 
