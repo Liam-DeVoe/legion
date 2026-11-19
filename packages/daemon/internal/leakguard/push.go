@@ -275,18 +275,20 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, held, objects 
 
 // tagRecords are the records of the tag object sha names, where it names one, and of each tag that
 // tag is of in turn, until the object a tag is of is no tag: one for each header of each tag's but
-// the object it is of and that object's type, which the chain is followed by, and one for its
+// the object it is of and that object's type, which the chain is followed by, and those of its
 // message, labelled as a commit's headers and message are (Guard.commitRecords): "tag <short> name"
 // for the name the tag holds, and every other header read whole, its name with its value, labelled
 // by its name where git itself writes a tag header of that name, such as "tag <short> tagger" for
 // the tagger, and "tag <short> header" else (headerRecord, tagHeaders), a header of more than one
-// line with its every line (objectHeaders). The object and the type followed are the first object
-// line and the first type line, which are the ones git follows a tag by, and a later line of either
-// is a header like any other. A tag object holds its own name, which it publishes as it publishes
-// its message, and a chain's inner tag publishes a name no ref need name. A tag in read, one the
-// destination holds or one this push read already, is not read, nor is the tag it is of, which the
-// destination holds or this push read with it. A tag object's headers name the object it is of and
-// that object's type, so git is asked the type of sha alone:
+// line with its every line (objectHeaders). The message is read as the tag object holds it, which
+// is what git shows of it too, and as the guard decodes it where the tag's first encoding header
+// names an encoding of the UTF-16 or the UTF-32 family (appendMessage). The object and the type
+// followed are the first object line and the first type line, which are the ones git follows a tag
+// by, and a later line of either is a header like any other. A tag object holds its own name, which
+// it publishes as it publishes its message, and a chain's inner tag publishes a name no ref need
+// name. A tag in read, one the destination holds or one this push read already, is not read, nor
+// is the tag it is of, which the destination holds or this push read with it. A tag object's
+// headers name the object it is of and that object's type, so git is asked the type of sha alone:
 //
 //	git cat-file -t <sha>
 //	git cat-file tag <sha>
@@ -314,7 +316,11 @@ func (g *Guard) tagRecords(ctx context.Context, dir, sha string, read map[string
 		headers, message, _ := strings.Cut(out, "\n\n")
 		label := "tag " + short(sha)
 		sha, kind = "", ""
+		var encoding string
 		for name, value := range objectHeaders(headers) {
+			if name == "encoding" && encoding == "" {
+				encoding = value
+			}
 			switch {
 			case name == "object" && sha == "":
 				sha = value
@@ -326,7 +332,7 @@ func (g *Guard) tagRecords(ctx context.Context, dir, sha string, read map[string
 				records = append(records, headerRecord(label, name, value, tagHeaders))
 			}
 		}
-		records = append(records, Record{Label: label + " message", Text: message})
+		records = appendMessage(records, label, encoding, message, message)
 	}
 	if read[sha] {
 		return records, "", "", nil

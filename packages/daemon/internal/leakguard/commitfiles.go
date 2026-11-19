@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf16"
+	"unicode/utf8"
 )
 
 // commitRecords is one commit as records. The identities, the commit's other headers and the
@@ -16,20 +18,24 @@ import (
 // and those at which it differs from every parent where it is a merge (mergeChanges), each shape's
 // files read from their blobs alike (Guard.addedLines). The records come in one order whatever the
 // shape, so that a report lists its lines alike from one run to the next: the identities, the
-// other headers in the commit's own order, the message, the paths in path order, then the lines
-// in path order and, within a file, the file's own order.
+// other headers in the commit's own order, the message's records (appendMessage), the paths in
+// path order, then the lines in path order and, within a file, the file's own order.
 //
-// The identities are the author's and the committer's name and email, and the message is the
-// whole message, as git show formats them. A commit publishes every header it holds, and git show
-// formats no other: a merge of a signed tag holds that whole tag object in its mergetag header, the
-// tag's name, its tagger and its message, and a signed commit holds its signature. So each header
-// is read too, from the commit object as the push's one cat-file --batch answers it (batch,
-// Guard.pushRecords), a header of more than one line with its every line (objectHeaders), as a
-// record of the whole header, its name with its value (headerRecord), unless the commit's other
-// records hold it already: a tree or a parent line that holds an object id, which names nothing,
-// and an author or a committer line that holds the identity read as that record and its date alone
-// (identityLine). git show formats the last author line and the last committer line of a commit
-// that holds two, so an earlier one that holds anything else is read as a header of its own.
+// The identities are the author's and the committer's name and email as git show formats them.
+// The message is read as the commit object holds it, which is what the destination keeps and
+// serves, and as git show formats it where that differs, since git decodes it by the commit's
+// encoding header and cuts it at its first zero byte (appendMessage). A commit publishes every
+// header it holds, and git show formats no other: a merge of a signed tag holds that whole tag
+// object in its mergetag header, the tag's name, its tagger and its message, and a signed commit
+// holds its signature. So each header is read too, from the commit object as the push's one
+// cat-file --batch answers it (batch, Guard.pushRecords), a header of more than one line with its
+// every line (objectHeaders), as a record of the whole header, its name with its value
+// (headerRecord), unless the commit's other records hold it already: a tree or a parent line that
+// holds an object id, which names nothing, and an author or a committer line that holds the
+// identity read as that record and its date alone (identityLine), which an identity git show
+// decodes by the encoding header does not. git show formats the last author line and the last
+// committer line of a commit that holds two, so an earlier one that holds anything else is read as
+// a header of its own.
 //
 // A record about a file carries that file's path as its label and the line or the path as its
 // text, so that the engine reads the path as a path: the rule file's one path-scoped allowlist
@@ -62,8 +68,12 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string, batch *bl
 		{Label: label + " author", Text: parts[1]},
 		{Label: label + " committer", Text: parts[2]},
 	}
-	headers, _, _ := strings.Cut(object, "\n\n")
+	headers, message, _ := strings.Cut(object, "\n\n")
+	var encoding string
 	for name, value := range objectHeaders(headers) {
+		if name == "encoding" && encoding == "" {
+			encoding = value
+		}
 		if (name == "tree" || name == "parent") && isObjectID(value) ||
 			name == "author" && identityLine(value, parts[1]) ||
 			name == "committer" && identityLine(value, parts[2]) {
@@ -71,7 +81,7 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string, batch *bl
 		}
 		records = append(records, headerRecord(label, name, value, commitHeaders))
 	}
-	records = append(records, Record{Label: label + " message", Text: parts[4]})
+	records = appendMessage(records, label, encoding, message, parts[4])
 	var paths []string
 	var changes []fileChange
 	kind := "commit"
@@ -407,6 +417,113 @@ var identityDate = regexp.MustCompile(`^ [0-9]+ [+-][0-9]{4}$`)
 func identityLine(value, identity string) bool {
 	date, ok := strings.CutPrefix(value, identity)
 	return ok && identityDate.MatchString(date)
+}
+
+// appendMessage is records with the records of message appended, the message of the commit or the
+// tag label names ("commit 1a2b3c4") as its object holds it, after its first blank line: one of
+// message itself, "<label> message"; one of shown, the message as git show formats it, where that
+// differs, "<label> message as git shows it", which a tag's never does (Guard.tagRecords); and one
+// of the message as the guard decodes it, "<label> message decoded as UTF-16" or "... UTF-32",
+// where encoding, the object's first encoding header, the one git reads, names an encoding of
+// either family (wideEncoding, wideText), with one more, "<label> message decoded as UTF-16,
+// little-endian" or "... UTF-32, little-endian", where that name gives no order and the message
+// opens with no byte-order mark. git decodes a message through iconv, but cuts it at its first
+// zero byte, which a message in UTF-16 or UTF-32 holds beside each ASCII letter, so neither git
+// show's text nor the object's bytes hold a word of such a message whole.
+func appendMessage(records []Record, label, encoding, message, shown string) []Record {
+	records = append(records, Record{Label: label + " message", Text: message})
+	if shown != message {
+		records = append(records, Record{Label: label + " message as git shows it", Text: shown})
+	}
+	family, size, little, ordered := wideEncoding(encoding)
+	if family == "" {
+		return records
+	}
+	text, marked := wideText(message, size, little)
+	records = append(records, Record{Label: label + " message decoded as " + family, Text: text})
+	if !ordered && !marked {
+		text, _ = wideText(message, size, true)
+		records = append(records, Record{Label: label + " message decoded as " + family + ", little-endian", Text: text})
+	}
+	return records
+}
+
+// wideText is message decoded from UTF-16 (size 2) or UTF-32 (size 4), little-endian where little
+// and big-endian else, and whether it opens with a byte-order mark, which then decides its order
+// alone and is no part of the text. A unit that is no character, an unpaired surrogate, or in
+// UTF-32 a surrogate or a value above U+10FFFF, and the bytes after the last whole unit, are each
+// read as U+FFFD, and the decode goes on: what follows them is read, and nothing fails the push.
+func wideText(message string, size int, little bool) (text string, marked bool) {
+	// unit is the code unit at the head of s, which holds one, in the order little says.
+	unit := func(s string, little bool) rune {
+		var r rune
+		for i := range size {
+			b := s[i]
+			if little {
+				b = s[size-1-i]
+			}
+			r = r<<8 | rune(b)
+		}
+		return r
+	}
+	rest := message
+	for _, order := range []bool{false, true} {
+		if len(rest) >= size && unit(rest, order) == '\ufeff' {
+			little, rest, marked = order, rest[size:], true
+			break
+		}
+	}
+	var decoded strings.Builder
+	decoded.Grow(len(rest))
+	for ; len(rest) >= size; rest = rest[size:] {
+		r := unit(rest, little)
+		if size == 2 && utf16.IsSurrogate(r) && len(rest) >= 4 {
+			if pair := utf16.DecodeRune(r, unit(rest[2:], little)); pair != utf8.RuneError {
+				r, rest = pair, rest[2:]
+			}
+		}
+		decoded.WriteRune(r)
+	}
+	if rest != "" {
+		decoded.WriteRune(utf8.RuneError)
+	}
+	return decoded.String(), marked
+}
+
+// wideEncoding is the family of the encoding name names, "UTF-16" or "UTF-32", the size of its code
+// unit, whether it is little-endian, and whether name gives that order, which a name that ends in
+// LE or BE, or names one, does; and no family where name names neither. name is matched in any
+// case, without the space around it, a slash it ends with or a "//" suffix such as "//IGNORE",
+// since glibc's iconv_open, and so git, reads such a name as the encoding it is put on (measured
+// with git 2.47.3 in an issue pod). The names are the family's own and the aliases glibc's iconv -l
+// lists for them in that pod: UTF16, UTF16LE, UTF16BE, UTF32, UTF32LE and UTF32BE; UCS-2, UCS2,
+// UCS-2LE, UCS-2BE, UNICODEBIG, UNICODELITTLE and ISO-10646/UCS2, since UCS-2 is UTF-16 with no
+// surrogate, and UNICODE and CSUNICODE, glibc's UCS-2 with a byte-order mark; UCS-4, UCS4, UCS-4LE,
+// UCS-4BE, CSUCS4, ISO-10646, ISO-10646/UCS4, 10646-1:1993 and 10646-1:1993/UCS4, since UCS-4 is
+// UTF-32 with a wider range, a value above U+10FFFF of which is read as U+FFFD; and WCHAR_T,
+// glibc's UCS-4 in the host's order, little-endian on the amd64 and arm64 machines Legion runs on.
+// A message with no mark under a name that gives no order is read in both orders (appendMessage),
+// big-endian first: the Unicode standard reads UTF-16 and UTF-32 with no mark as big-endian, and
+// glibc reads UTF-16, UTF-32, UCS-2 and UNICODE with no mark in its host's order, little-endian on
+// amd64 and arm64 (measured in an issue pod with glibc 2.41).
+func wideEncoding(name string) (family string, size int, little, ordered bool) {
+	name, _, _ = strings.Cut(strings.TrimSpace(name), "//")
+	switch strings.ToUpper(strings.TrimSuffix(name, "/")) {
+	case "UTF-16", "UTF16", "UCS-2", "UCS2", "ISO-10646/UCS2", "UNICODE", "CSUNICODE":
+		return "UTF-16", 2, false, false
+	case "UTF-16BE", "UTF16BE", "UCS-2BE", "UNICODEBIG":
+		return "UTF-16", 2, false, true
+	case "UTF-16LE", "UTF16LE", "UCS-2LE", "UNICODELITTLE":
+		return "UTF-16", 2, true, true
+	case "UTF-32", "UTF32", "UCS-4", "UCS4", "CSUCS4", "ISO-10646", "ISO-10646/UCS4", "10646-1:1993",
+		"10646-1:1993/UCS4":
+		return "UTF-32", 4, false, false
+	case "UTF-32BE", "UTF32BE", "UCS-4BE":
+		return "UTF-32", 4, false, true
+	case "UTF-32LE", "UTF32LE", "UCS-4LE", "WCHAR_T":
+		return "UTF-32", 4, true, true
+	}
+	return "", 0, false, false
 }
 
 // rawEntry is one entry of diff-tree's raw format, which -z writes as

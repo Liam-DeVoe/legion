@@ -1,6 +1,7 @@
 package leakguard
 
 import (
+	"cmp"
 	"maps"
 	"os"
 	"os/exec"
@@ -426,6 +427,170 @@ func TestAMessageIsReadAsTheCommitObjectHoldsIt(t *testing.T) {
 		if !strings.HasSuffix(line, ": "+theClass) {
 			t.Errorf("the report line %q does not name the message's class, %q", line, theClass)
 		}
+	}
+}
+
+// wide is text, which is ASCII, in UTF-16 (size 2) or UTF-32 (size 4), little-endian where little
+// and big-endian else: each of its bytes as one code unit.
+func wide(text string, size int, little bool) string {
+	var out strings.Builder
+	pad := strings.Repeat("\x00", size-1)
+	for _, b := range []byte(text) {
+		if !little {
+			out.WriteString(pad)
+		}
+		out.WriteByte(b)
+		if little {
+			out.WriteString(pad)
+		}
+	}
+	return out.String()
+}
+
+// A message in UTF-16 or UTF-32 holds a zero byte beside each ASCII letter, so the host it names is
+// in no line git show prints, which ends at the first such byte, nor in any run of the object's
+// bytes, while a reader that decodes the message by the encoding its object's header names reads
+// the host whole. So the push decodes a commit's or a tag's message in either family itself: by the
+// byte-order mark it opens with, and else by the name, read in any case and in both orders where it
+// gives none, a run that decodes to no character read as U+FFFD and the decode going on; and
+// refuses one that names a host, whatever label its report gives the line. A message in either that
+// names nothing is passed. The author line of a commit under such a header is read as the object
+// holds it, since git show decodes the identity with the message (identityLine). Each object is
+// written with --literally: git's own check of a commit, hash-object's and a destination's that
+// runs receive.fsckObjects, refuses a zero byte in its body (nulInCommit), but a destination that
+// runs no such check, git's default, keeps it, and the check takes such a tag. The report never
+// holds the text it refused (refusal).
+func TestAMessageInUTF16OrUTF32IsReadDecoded(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	repo := filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	base := commitFiles(t, fixture, repo, map[string]string{"README.md": "one\n"}, "the commit the destination holds")
+	destination := destinationAt(t, fixture, repo, base+":refs/heads/main")
+	tree := fixture.Run(repo, "git", "rev-parse", base+"^{tree}")
+	const identity = "builder <builder@example.invalid> 1700000000 +0000"
+	named := "the runner answers at " + theHost + "\n"
+	for _, tc := range []struct {
+		name string
+		// tag is whether the object pushed is a tag rather than a commit, and author the commit's
+		// author line, identity where the case leaves it empty.
+		tag      bool
+		author   string
+		encoding string
+		message  string
+		// named is whether the push is refused.
+		named bool
+	}{
+		{name: "a message in UTF-16LE", encoding: "UTF-16LE", message: wide(named, 2, true), named: true},
+		{name: "a message in UTF-16LE after its byte-order mark", encoding: "UTF-16LE", message: "\xff\xfe" + wide(named, 2, true), named: true},
+		{name: "a message in UTF-16LE after its byte-order mark under UTF-16", encoding: "UTF-16", message: "\xff\xfe" + wide(named, 2, true), named: true},
+		{name: "a message in UTF-16BE with no byte-order mark under UTF-16", encoding: "UTF-16", message: wide(named, 2, false), named: true},
+		{name: "a message in UTF-16LE with no byte-order mark under UTF-16", encoding: "UTF-16", message: wide(named, 2, true), named: true},
+		{name: "a message in UTF-32LE with no byte-order mark under UTF-32", encoding: "UTF-32", message: wide(named, 4, true), named: true},
+		{name: "a message in UTF-16LE under utf-16le", encoding: "utf-16le", message: wide(named, 2, true), named: true},
+		{name: "a message in UTF-16LE under a name with a suffix iconv takes off", encoding: "UTF-16LE//IGNORE", message: wide(named, 2, true), named: true},
+		{name: "a message in UTF-32LE", encoding: "UTF-32LE", message: wide(named, 4, true), named: true},
+		{name: "a message in UTF-16LE with an unpaired surrogate before the host", encoding: "UTF-16LE", message: wide("a ", 2, true) + "\x00\xd8" + wide(named, 2, true), named: true},
+		{name: "a tag's message in UTF-16LE", tag: true, encoding: "UTF-16LE", message: wide(named, 2, true), named: true},
+		{name: "an author line under UTF-16LE", author: "builder <builder@" + theHost + "> 1700000000 +0000", encoding: "UTF-16LE", message: "a message of no interest\n", named: true},
+		{name: "a message in UTF-16LE that names nothing", encoding: "UTF-16LE", message: wide("a message of no interest\n", 2, true)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			kind, ref, object := "commit", "refs/heads/pushed", "tree "+tree+"\nparent "+base+"\nauthor "+cmp.Or(tc.author, identity)+"\ncommitter "+identity+"\n"
+			if tc.tag {
+				kind, ref, object = "tag", "refs/tags/pushed", "object "+base+"\ntype commit\ntag x\ntagger "+identity+"\n"
+			}
+			pushed := fixture.Fed(repo, object+"encoding "+tc.encoding+"\n\n"+tc.message, "git", "hash-object", "-t", kind, "-w", "--stdin", "--literally")
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			err := guard.Push(bound(t), PushRequest{
+				Dir:     repo,
+				Remote:  "origin",
+				URL:     destination,
+				Updates: []Update{{LocalRef: ref, LocalSHA: pushed, RemoteRef: ref, RemoteSHA: noSHA}},
+			})
+			if !tc.named {
+				wantRefused(t, err, nil)
+				return
+			}
+			refused := refusal(t, err)
+			if len(refused.Lines) == 0 {
+				t.Fatalf("the refusal names no line: %v", err)
+			}
+			for _, line := range refused.Lines {
+				if !strings.HasSuffix(line, ": "+theClass) {
+					t.Errorf("the report line %q does not name the message's class, %q", line, theClass)
+				}
+			}
+		})
+	}
+}
+
+// A message git show decodes by its commit's encoding header into other bytes, such as one in
+// ISO-8859-1, is read both as the object holds it, which a reader of the destination's object
+// reads, and as git show prints it, which a reader of git log reads, the second a record of its
+// own. iconv decodes ISO-8859-1, so the guard decodes none of it itself. A push of such a message
+// that names a host is refused, whatever label its report gives the line, and one that names
+// nothing is passed. The report never holds the text it refused (refusal).
+func TestAMessageGitShowsDecodedIsReadAsGitShowsItToo(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	repo := filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	base := commitFiles(t, fixture, repo, map[string]string{"README.md": "one\n"}, "the commit the destination holds")
+	destination := destinationAt(t, fixture, repo, base+":refs/heads/main")
+	tree := fixture.Run(repo, "git", "rev-parse", base+"^{tree}")
+	const who = "builder <builder@example.invalid>"
+	for _, tc := range []struct {
+		name    string
+		message string
+		named   bool
+	}{
+		{name: "an ISO-8859-1 message that names a host", message: "caf\xe9 at " + theHost + "\n", named: true},
+		{name: "an ISO-8859-1 message that names nothing", message: "caf\xe9 of no interest\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pushed := fixture.Fed(repo, "tree "+tree+"\nparent "+base+"\nauthor "+who+" 1700000000 +0000\ncommitter "+who+" 1700000000 +0000\nencoding ISO-8859-1\n\n"+tc.message, "git", "hash-object", "-t", "commit", "-w", "--stdin")
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			ctx := bound(t)
+			batch, err := guard.readBlobs(ctx, repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			records, err := guard.commitRecords(ctx, repo, pushed, batch)
+			if err = batch.close(err); err != nil {
+				t.Fatalf("read the commit: %v", err)
+			}
+			label := "commit " + short(pushed)
+			want := []Record{
+				{Label: label + " author", Text: who},
+				{Label: label + " committer", Text: who},
+				{Label: label + " encoding", Text: "encoding ISO-8859-1"},
+				{Label: label + " message", Text: tc.message},
+				{Label: label + " message as git shows it", Text: strings.ReplaceAll(tc.message, "\xe9", "\u00e9")},
+			}
+			if !slices.Equal(records, want) {
+				t.Errorf("the records are %q, want %q", records, want)
+			}
+			err = guard.Push(bound(t), PushRequest{
+				Dir:     repo,
+				Remote:  "origin",
+				URL:     destination,
+				Updates: []Update{{LocalRef: "refs/heads/pushed", LocalSHA: pushed, RemoteRef: "refs/heads/pushed", RemoteSHA: noSHA}},
+			})
+			if !tc.named {
+				wantRefused(t, err, nil)
+				return
+			}
+			refused := refusal(t, err)
+			if len(refused.Lines) == 0 {
+				t.Fatalf("the refusal names no line: %v", err)
+			}
+			for _, line := range refused.Lines {
+				if !strings.HasSuffix(line, ": "+theClass) {
+					t.Errorf("the report line %q does not name the message's class, %q", line, theClass)
+				}
+			}
+		})
 	}
 }
 
