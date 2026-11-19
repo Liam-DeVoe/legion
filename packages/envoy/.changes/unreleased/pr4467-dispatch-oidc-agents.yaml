@@ -1,0 +1,10 @@
+kind: Added
+custom:
+  Issue: pr4467
+body: |-
+  Dispatch boots with `DISPATCH_OIDC_ISSUER` and `DISPATCH_OIDC_AUDIENCE` alone: `DISPATCH_AGENT_TOKEN`
+  is required only without the pair, and with neither the boot is refused naming all three. With the
+  pair and no token, no bearer is taken as a shared token, and an agent presents a projected
+  ServiceAccount token or a personal token. `gcp:Dispatch` takes `agentAuth`: `token`, the default,
+  renders the generated shared token as before; `oidc` needs `oidcAudience` and generates, stores and
+  renders no token, and outputs `agentToken` as an empty string.

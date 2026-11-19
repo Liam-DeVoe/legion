@@ -1,0 +1,6 @@
+kind: Changed
+custom:
+  Issue: pr4467
+body: |-
+  `DISPATCH_TOKEN_FILE` and `ENVOY_TOKEN_FILE` are read again for every request, so a session that
+  started with a projected service-account token keeps presenting the one the kubelet renews in place.

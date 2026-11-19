@@ -1,0 +1,7 @@
+kind: Changed
+custom:
+  Issue: pr4467
+body: |-
+  The daemon's own Dispatch client reads `dispatch_token_file` at every request, so a projected
+  service-account token the kubelet renews in place reaches Dispatch as it is then. The token the
+  daemon copies into each pane's token file and each claim's Secret is still the one it read at boot.
