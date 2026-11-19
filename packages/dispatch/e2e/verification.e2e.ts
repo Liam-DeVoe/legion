@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Page, TestInfo } from "@playwright/test";
 
 import {
   createIssue,
@@ -352,10 +353,65 @@ A retracted pass stands for nothing.
   }
 });
 
+/** The lines of the heads the real `dispatch results` prints for issueKey, each without the
+ *  indent and the `- ` that start it, in the command's own order. */
+async function headLinesPrinted(issueKey: string): Promise<string[]> {
+  const home = mkdtempSync(join(tmpdir(), "dispatch-verification-each-head-"));
+  try {
+    const read = await runDispatch(["results", "--issue", issueKey], home);
+    expect(read.code, read.stderr).toBe(0);
+    return read.stdout
+      .split("\n")
+      .filter((line) => /^ {2}- (?:[\w.-]+\/[\w.-]+)?#\d+ at /.test(line))
+      .map((line) => line.slice(4));
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+}
+
+/** The rows of the heads the Verification tab of issueKey shows under its one check, read at each
+ *  width of widths, a screenshot kept under the name a width carries. At each width the pill stays
+ *  and shows the answer of the whole check, no here, and under it is one row for each line of
+ *  wanted, in its words. The server lists the heads newest learned first, so the rows are compared
+ *  with wanted as a set and answered in the tab's own order. */
+async function headRowsShown(
+  page: Page,
+  testInfo: TestInfo,
+  issueKey: string,
+  wanted: readonly string[],
+  widths: readonly (readonly [width: number, height: number, screenshot?: string])[]
+): Promise<string[]> {
+  let rows: string[] = [];
+  for (const [width, height, screenshot] of widths) {
+    await page.setViewportSize({ height, width });
+    await page.goto(`/issues/${issueKey}/verification`);
+    const check = page.getByTestId("verification-check");
+    await expect(check).toHaveCount(1);
+    const heads = check.getByTestId("verification-check-head");
+    await expect(heads).toHaveCount(wanted.length);
+    rows = await heads.allTextContents();
+    expect([...rows].sort()).toEqual([...wanted].sort());
+    await expect(check).toHaveAttribute("data-pass-stands", "no");
+    await expect(check.getByTestId("verification-check-pass-stands")).toHaveText("No pass stands");
+    await expect(check.getByTestId("verification-check-merged")).toHaveCount(0);
+    if (screenshot !== undefined) {
+      await page.screenshot({ fullPage: true, path: testInfo.outputPath(screenshot) });
+    }
+  }
+  return rows;
+}
+
 // SLOW(>=2s): a project, its default repository, two open pull requests in the fake GitHub and one
 // of another repository the issue links, a Verification document of one check, three recorded
-// results, two of them reading through to that fake for their pull request's head, one run of the
-// real `dispatch results`, then one load of the tab at a desktop width and one at a phone width.
+// results, two of them reading through to that fake for their pull request's head, two runs of the
+// real `dispatch results`, and three loads of the tab: one at a desktop width over the issue's own
+// two heads, then one at a desktop width and one at a phone width over all three.
+//
+// Each time, the tab is read before the command, and the two heads of the issue's own repository
+// are read before the head of the other one is staged. So a build whose tab shows the pill alone
+// fails on the rows of the heads, `verification-check-head`, whatever its command prints and
+// whether or not it takes a result at a commit of another repository (R17). That is the fault the
+// negative control of v-page-each-head names: this file, run at a commit before the rows.
 test("the Verification tab shows the state at each open head", async ({ browser }, testInfo) => {
   await createProject({ key: "VER", name: "Verification" });
   await putRepoProject(repository, { default: true, project: "VER" });
@@ -405,68 +461,52 @@ A pass must stand at each open head.
     role: "tester",
     verdict: "fail",
   });
-  // A pull request of another repository that the issue links by its URL is the issue's (R19), so
-  // its head is a head of the check like the others. The harness runs with NATS disabled, so the
-  // head is staged as the `pull_request` envelope would have stored it: one `pull_request_heads`
-  // row, attributed to the issue by its link. A result at that head is taken with no read of
-  // GitHub (R17), and its line and its row name its repository beside its number (R18).
-  const infraPull = `https://github.com/${otherRepository}/pull/9`;
-  await patchIssue(issue.key, { external_links: [{ url: infraPull }] });
-  await sql(
-    `INSERT INTO pull_request_heads (repo, number, head_sha, state, issue_key, attribution_source, title, url, checked_at)
-     VALUES ('${otherRepository}', 9, '${thirdHead}', 'open', '${issue.key}', 'external_link', 'Move the deploy job', '${infraPull}', now())`
-  );
-  const infra = await recordCheckResult(issue.key, {
-    check: "c-each",
-    commit: thirdHead,
-    observed: "12 passed",
-    role: "tester",
-    verdict: "pass",
-  });
-
-  // The lines of the heads that the real command prints for the same issue.
-  const home = mkdtempSync(join(tmpdir(), "dispatch-verification-each-head-"));
-  let printed: string[];
-  try {
-    const read = await runDispatch(["results", "--issue", issue.key], home);
-    expect(read.code, read.stderr).toBe(0);
-    printed = read.stdout
-      .split("\n")
-      .filter((line) => /^ {2}- (?:[\w.-]+\/[\w.-]+)?#\d+ at /.test(line))
-      .map((line) => line.slice(4));
-  } finally {
-    rmSync(home, { force: true, recursive: true });
-  }
-  // The server lists the heads newest learned first, so the command's lines are compared as a set,
-  // and the tab's rows with the command's lines in the command's own order.
-  const wanted = [
+  const ownHeads = [
     `#7 at ${firstHead}: yes, from tester. Pass ${pass.result.id} decides it.`,
     `#8 at ${secondHead}: no, as fail ${fail.result.id} counts there.`,
-    `${otherRepository}#9 at ${thirdHead}: yes, from tester. Pass ${infra.result.id} decides it.`,
   ];
-  expect([...printed].sort()).toEqual(wanted);
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    for (const [width, height, name] of [
-      [1440, 900, "verification-each-head-1440.png"],
-      [390, 844, "verification-each-head-phone.png"],
-    ] as const) {
-      await page.setViewportSize({ height, width });
-      await page.goto(`/issues/${issue.key}/verification`);
-      const check = page.getByTestId("verification-check");
-      await expect(check).toHaveCount(1);
-      // The pill stays, and it shows the answer of the whole check; under it, one row for each
-      // open head, in the words of the command.
-      await expect(check).toHaveAttribute("data-pass-stands", "no");
-      await expect(check.getByTestId("verification-check-pass-stands")).toHaveText(
-        "No pass stands"
-      );
-      await expect(check.getByTestId("verification-check-head")).toHaveText(printed);
-      await expect(check.getByTestId("verification-check-merged")).toHaveCount(0);
-      await page.screenshot({ fullPage: true, path: testInfo.outputPath(name) });
-    }
+    // One row for each open head of the issue's own repository, then the command's lines of the
+    // same heads, which are the tab's rows in the tab's own order.
+    const ownRows = await headRowsShown(page, testInfo, issue.key, ownHeads, [[1440, 900]]);
+    expect(await headLinesPrinted(issue.key)).toEqual(ownRows);
+
+    // A pull request of another repository that the issue links by its URL is the issue's (R19),
+    // so its head is a head of the check like the others. The harness runs with NATS disabled, so
+    // the head is staged as the `pull_request` envelope would have stored it: one
+    // `pull_request_heads` row, attributed to the issue by its link. A result at that head is taken
+    // with no read of GitHub (R17), and its line and its row name its repository beside its number
+    // (R18).
+    const infraPull = `https://github.com/${otherRepository}/pull/9`;
+    await patchIssue(issue.key, { external_links: [{ url: infraPull }] });
+    await sql(
+      `INSERT INTO pull_request_heads (repo, number, head_sha, state, issue_key, attribution_source, title, url, checked_at)
+       VALUES ('${otherRepository}', 9, '${thirdHead}', 'open', '${issue.key}', 'external_link', 'Move the deploy job', '${infraPull}', now())`
+    );
+    const infra = await recordCheckResult(issue.key, {
+      check: "c-each",
+      commit: thirdHead,
+      observed: "12 passed",
+      role: "tester",
+      verdict: "pass",
+    });
+    const rows = await headRowsShown(
+      page,
+      testInfo,
+      issue.key,
+      [
+        ...ownHeads,
+        `${otherRepository}#9 at ${thirdHead}: yes, from tester. Pass ${infra.result.id} decides it.`,
+      ],
+      [
+        [1440, 900, "verification-each-head-1440.png"],
+        [390, 844, "verification-each-head-phone.png"],
+      ]
+    );
+    expect(await headLinesPrinted(issue.key)).toEqual(rows);
   } finally {
     await alice.close();
   }
