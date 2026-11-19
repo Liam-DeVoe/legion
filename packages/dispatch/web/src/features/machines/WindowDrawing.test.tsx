@@ -33,8 +33,8 @@ const TWO_FLOATING_38 =
  *  after the root, front first. */
 const TWO_FLOATING_37C =
   "e84f,80x24,0,0[80x12,0,0,0,80x11,0,13,1,30x10,10,8,2,30x10,20,10,3]<30x10,20,10,3,30x10,10,8,2>";
-/** tmux 3.8: a floating pane made from the left pane, reaching over the right one, which the
- *  string names after it (the acceptance gate's recording). */
+/** tmux 3.8: a window split left (%0) and right (%1), then `new-pane -t %0`, a floating pane
+ *  reaching over the right pane, which the string names after it. */
 const FLOATING_OVER_LATER_TILED_38 =
   '{"V":2,"L":{"t":"h","w":80,"h":24,"x":0,"y":0,"c":[{"t":"p","w":40,"h":24,"x":0,"y":0,"a":true,"i":0,"I":"%0"},{"t":"p","w":28,"h":8,"x":31,"y":6,"i":2,"z":0,"I":"%2"},{"t":"p","w":39,"h":24,"x":41,"y":0,"i":1,"I":"%1"}]}}';
 /** tmux 3.8: the tiled pane killed, so the layout is the one floating pane's cell, at 11,6 in

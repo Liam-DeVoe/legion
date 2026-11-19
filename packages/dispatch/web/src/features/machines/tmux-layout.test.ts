@@ -66,16 +66,15 @@ function at(x: number, y: number, width: number, height: number): TmuxBox {
 const WINDOW_80X24: TmuxSize = { height: 24, width: 80 };
 
 /**
- * tmux 3.8's floating panes, recorded on a server of its own (`impl-2/evidence/01-layouts-tmux38.log`
- * of the lane that wrote these; the review's `00-tmux38-floating-layouts.log` and the deep audit's
- * `01-tmux38-floating-layouts.log` recorded the same windows). In each, a floating pane's cell
- * sits right after the pane it was made from, so its place in the string is neither its index
- * nor where tmux paints it.
+ * tmux 3.8's floating panes, each window built by the commands its comment names on an 80x24
+ * window of a tmux 3.8 server of its own, with `list-panes` read in the same moment. In each, a
+ * floating pane's cell sits right after the pane it was made from, so its place in the string is
+ * neither its index nor where tmux paints it.
  */
 const TMUX_38: readonly Recording[] = [
   {
-    // The review's case A and the deep audit's SPLIT_THEN_FLOATING: `split-window`, then
-    // `new-pane` from the top pane. The floating %2 is written before the tiled %1 it overlaps.
+    // `split-window`, then `new-pane` from the top pane. The floating %2 is written before the
+    // tiled %1 it overlaps.
     layout:
       '{"V":2,"L":{"t":"v","w":80,"h":24,"x":0,"y":0,"c":[{"t":"p","w":80,"h":12,"x":0,"y":0,"a":true,"i":0,"I":"%0"},{"t":"p","w":28,"h":8,"x":11,"y":9,"i":2,"z":0,"I":"%2"},{"t":"p","w":80,"h":11,"x":0,"y":13,"i":1,"I":"%1"}]}}',
     name: "a floating pane made from the top pane of a split",
@@ -88,7 +87,7 @@ const TMUX_38: readonly Recording[] = [
     window: WINDOW_80X24,
   },
   {
-    // The review's case B: a second floating pane from the same pane, which tmux puts in front.
+    // A second floating pane from the same pane, which tmux puts in front.
     layout:
       '{"V":2,"L":{"t":"v","w":80,"h":24,"x":0,"y":0,"c":[{"t":"p","w":80,"h":12,"x":0,"y":0,"a":true,"i":0,"I":"%0"},{"t":"p","w":28,"h":8,"x":21,"y":11,"i":3,"z":0,"I":"%3"},{"t":"p","w":28,"h":8,"x":11,"y":9,"i":2,"z":1,"I":"%2"},{"t":"p","w":80,"h":11,"x":0,"y":13,"i":1,"I":"%1"}]}}',
     name: "two floating panes made from the same pane",
@@ -102,8 +101,8 @@ const TMUX_38: readonly Recording[] = [
     window: WINDOW_80X24,
   },
   {
-    // The review's case C: the same window after `select-pane -t %2`, which brings %2 to the
-    // front while the string keeps its order.
+    // The same window after `select-pane -t %2`, which brings %2 to the front while the string
+    // keeps its order.
     layout:
       '{"V":2,"L":{"t":"v","w":80,"h":24,"x":0,"y":0,"c":[{"t":"p","w":80,"h":12,"x":0,"y":0,"l":0,"i":0,"I":"%0"},{"t":"p","w":28,"h":8,"x":21,"y":11,"i":3,"z":1,"I":"%3"},{"t":"p","w":28,"h":8,"x":11,"y":9,"a":true,"i":2,"z":0,"I":"%2"},{"t":"p","w":80,"h":11,"x":0,"y":13,"i":1,"I":"%1"}]}}',
     name: "the older of two floating panes selected",
@@ -117,8 +116,8 @@ const TMUX_38: readonly Recording[] = [
     window: WINDOW_80X24,
   },
   {
-    // The deep audit's TILED_AFTER_FLOATING: `split-window -f` after a floating pane, so the
-    // tiled %9 comes after the floating %8 it lies under.
+    // `split-window -f` after a floating pane, so the tiled %9 comes after the floating %8 it lies
+    // under.
     layout:
       '{"V":2,"L":{"t":"v","w":80,"h":24,"x":0,"y":0,"c":[{"t":"p","w":80,"h":12,"x":0,"y":0,"a":true,"i":0,"I":"%7"},{"t":"p","w":28,"h":18,"x":11,"y":3,"i":1,"z":0,"I":"%8"},{"t":"p","w":80,"h":11,"x":0,"y":13,"i":2,"I":"%9"}]}}',
     name: "a tiled pane split off after a floating pane",
@@ -131,7 +130,8 @@ const TMUX_38: readonly Recording[] = [
     window: WINDOW_80X24,
   },
   {
-    // The deep audit's TWO_FLOATING after `select-pane -t .1`: the pane of index 1 in front.
+    // Two floating panes over one tiled pane, after `select-pane -t .1`: the pane of index 1 in
+    // front.
     layout:
       '{"V":2,"L":{"t":"v","w":80,"h":24,"x":0,"y":0,"c":[{"t":"p","w":80,"h":24,"x":0,"y":0,"l":0,"i":0,"I":"%4"},{"t":"p","w":28,"h":8,"x":21,"y":9,"i":2,"z":1,"I":"%6"},{"t":"p","w":28,"h":8,"x":11,"y":6,"a":true,"i":1,"z":0,"I":"%5"}]}}',
     name: "two floating panes over one tiled pane, the first made selected",
@@ -144,7 +144,7 @@ const TMUX_38: readonly Recording[] = [
     window: WINDOW_80X24,
   },
   {
-    // The review's case E: `resize-pane -x 60` takes the box past the right edge.
+    // `resize-pane -x 60` takes the box past the right edge.
     layout:
       '{"V":2,"L":{"t":"v","w":80,"h":24,"x":0,"y":0,"c":[{"t":"p","w":80,"h":24,"x":0,"y":0,"a":true,"i":0,"I":"%0"},{"t":"p","w":58,"h":8,"x":61,"y":16,"i":1,"z":0,"I":"%1"}]}}',
     name: "a floating pane resized past the right edge",
@@ -156,7 +156,7 @@ const TMUX_38: readonly Recording[] = [
     window: WINDOW_80X24,
   },
   {
-    // The review's case F: `move-pane -X -5 -Y -3` takes it left of and above the window.
+    // `move-pane -X -5 -Y -3` takes it left of and above the window.
     layout:
       '{"V":2,"L":{"t":"v","w":80,"h":24,"x":0,"y":0,"c":[{"t":"p","w":80,"h":24,"x":0,"y":0,"a":true,"i":0,"I":"%0"},{"t":"p","w":48,"h":18,"x":-4,"y":-2,"i":1,"z":0,"I":"%1"}]}}',
     name: "a floating pane moved left of and above the window",
@@ -168,7 +168,7 @@ const TMUX_38: readonly Recording[] = [
     window: WINDOW_80X24,
   },
   {
-    // The deep audit's FLOATING_OFF_WINDOW: `move-pane -X -40 -Y -20`, wholly outside.
+    // `move-pane -X -40 -Y -20`: wholly outside the window.
     layout:
       '{"V":2,"L":{"t":"v","w":80,"h":24,"x":0,"y":0,"c":[{"t":"p","w":80,"h":24,"x":0,"y":0,"a":true,"i":0,"I":"%10"},{"t":"p","w":28,"h":8,"x":-39,"y":-19,"i":1,"z":0,"I":"%11"}]}}',
     name: "a floating pane moved wholly above and left of the window",
@@ -180,7 +180,7 @@ const TMUX_38: readonly Recording[] = [
     window: WINDOW_80X24,
   },
   {
-    // The deep audit's same window after `move-pane -X 79 -Y 23`: past the bottom right corner.
+    // The same window after `move-pane -X 79 -Y 23`: past the bottom right corner.
     layout:
       '{"V":2,"L":{"t":"v","w":80,"h":24,"x":0,"y":0,"c":[{"t":"p","w":80,"h":24,"x":0,"y":0,"a":true,"i":0,"I":"%10"},{"t":"p","w":28,"h":8,"x":80,"y":24,"i":1,"z":0,"I":"%11"}]}}',
     name: "a floating pane moved wholly past the bottom right corner",
@@ -192,9 +192,8 @@ const TMUX_38: readonly Recording[] = [
     window: WINDOW_80X24,
   },
   {
-    // The review's case D and the deep audit's FLOATING_ONLY: the tiled pane killed, so the
-    // layout is the floating pane's cell alone and states no window size; tmux lists the window
-    // as 80x24.
+    // The tiled pane killed, so the layout is the floating pane's cell alone and states no window
+    // size; tmux lists the window as 80x24.
     layout: '{"V":2,"L":{"t":"p","w":28,"h":8,"x":11,"y":6,"a":true,"i":0,"z":0,"I":"%1"}}',
     name: "a window whose one pane floats",
     paintOrder: ["%1"],
@@ -216,8 +215,8 @@ const TMUX_38: readonly Recording[] = [
 ];
 
 /**
- * The same windows as tmux 3.7c writes them, in version 1 (built from tmux's release tarball,
- * checksum-pinned, `impl-2/evidence/01-layouts-tmux37c.log`). Each floating pane's cell is among
+ * The same windows as tmux 3.7c writes them, in version 1 (tmux 3.7c built from its release
+ * tarball, checked against its published checksum). Each floating pane's cell is among
  * the tiled cells, and the `<…>` group after the root names the floating panes again, front
  * first. tmux 3.7c moves and resizes a floating pane only with the mouse, so its windows with a
  * box left of or above the window could not be made by a command.
@@ -615,7 +614,7 @@ test("a floating box past the window's edges is drawn as the part of it inside t
     TMUX_38,
     "a floating pane moved wholly past the bottom right corner"
   );
-  // The review's case E: 58 wide from column 61 of 80 leaves 19; 8 high from row 16 of 24 all.
+  // 58 wide from column 61 of 80 leaves 19; 8 high from row 16 of 24 is all of it.
   expect(drawWindow(parsed(pastRight.layout), undefined)?.shown.at(-1)?.box).toEqual(
     at(61, 16, 19, 8)
   );
