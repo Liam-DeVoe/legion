@@ -314,14 +314,19 @@ const TESTING = "the testing phase of LEGION-208";
 interface StandInDaemon {
   /** What the claim owes, read through the real client. */
   readonly owed: (input: OwedInput, signal: AbortSignal) => Promise<LegionOwed>;
+  /** The daemon moves the issue out of the claim's phase. From then on the owed route answers
+   * that the claim owes nothing, as `owedBy` (`packages/daemon/internal/api/owed.go`) answers once
+   * the issue's phase is another role's. */
+  readonly move: () => void;
   /** How many times anything asked the stand-in for the daemon's whole state. */
   readonly stateReads: () => number;
 }
 
 /** The real daemon client (`createLegionDaemonClient`) over a stand-in daemon whose owed route
- * answers `owed` and whose `GET /legion/v1/state` never answers, as INFRA's whole-state read ran
- * past every bound. */
+ * answers `owed` until `move` is called, and whose `GET /legion/v1/state` never answers, as
+ * INFRA's whole-state read ran past every bound. */
 function standInDaemon(owed: LegionOwed): StandInDaemon {
+  let answer = owed;
   let stateReads = 0;
   const client = createLegionDaemonClient("http://daemon.test", (async (
     input: string | URL | Request
@@ -331,11 +336,14 @@ function standInDaemon(owed: LegionOwed): StandInDaemon {
       stateReads += 1;
       return new Promise<Response>(() => {});
     }
-    if (path === "/legion/v1/claims/owed") return Response.json(owed);
+    if (path === "/legion/v1/claims/owed") return Response.json(answer);
     return Response.json({ error: "no stand-in route" }, { status: 404 });
   }) as unknown as typeof fetch);
   return {
     owed: (input, signal) => client.owed(input, { signal }),
+    move: () => {
+      answer = OWES_NOTHING;
+    },
     stateReads: () => stateReads,
   };
 }
@@ -727,6 +735,138 @@ test("still tells the architect for a role that works the current phase", async 
     work: TESTING,
   });
   expect(daemon.stateReads()).toBe(0);
+});
+
+// R8: the daemon moves an issue out of a role's phase while the role's turn runs. On 2026-11-17 a
+// conflict moved INFRA-1117 and INFRA-3080 out of testing, and their testers were reminded at
+// every turn end after it. From the move on the daemon answers that the tester owes nothing, so
+// the turn ends with no continuation, no timer after it reminds, and no run of settles past
+// `architectAfter` tells the architect. The tester made no completion call: the daemon's answer
+// alone ends the reminding.
+test("a tester the daemon moved out of its phase while in a turn ends that turn with no reminder, having made no handoff_complete call", async () => {
+  const daemon = standInDaemon({ owes: true, work: TESTING });
+  const run = rig({ claim: tester, owed: daemon.owed });
+
+  // The daemon's task starts the turn while the testing phase is open, and the tester runs the
+  // suite: tool calls, none of them handoff_complete.
+  run.reminder.turnStarted();
+  run.reminder.apply({ kind: "inbound" });
+  run.reminder.apply({ kind: "tool-call" });
+  // The daemon moves the issue back to implementing while the turn runs.
+  daemon.move();
+
+  expect(await run.reminder.settle(said("Ran the suite; two tests fail."))).toBeUndefined();
+  await settlePastTheThreshold(run);
+
+  expect(run.sent).toEqual([]);
+  expect(run.published).toEqual([]);
+  // The daemon was asked at each decision: at three settles, and at the two timers of the quiet
+  // wait, which fired and sent nothing.
+  expect(run.asked()).toBe(5);
+  expect(run.timers.map((timer) => timer.delayMs)).toEqual([
+    DEFAULT_STALL_LIMITS.waitingMs,
+    DEFAULT_STALL_LIMITS.waitingMs,
+  ]);
+  expect(daemon.stateReads()).toBe(0);
+});
+
+/** The reviewer of LEGION-208, and the work the daemon answers is its own while the issue is in
+ * review. */
+const reviewer: ClaimCapability = {
+  ...implementer,
+  role: "reviewer",
+  claimToken: "legion-legion-legion-208-reviewer",
+};
+const REVIEWING = "the reviewing phase of LEGION-208";
+
+// R8: a role's own backward move is a move out of its phase too. The reviewer finds the change
+// wrong and calls request_backward_move, which the daemon takes: the issue is back in
+// implementing, and from then on the daemon answers that the reviewer owes nothing. The reviewer
+// made no completion call, and nothing reminds it: not the turn's end, not a timer, not a run of
+// settles past `architectAfter`.
+test("a reviewer moved out of its phase by its own request_backward_move is reminded of nothing", async () => {
+  const daemon = standInDaemon({ owes: true, work: REVIEWING });
+  const run = rig({ claim: reviewer, owed: daemon.owed });
+
+  // The daemon's task starts the turn while the issue is in review. The reviewer reads the change
+  // and calls request_backward_move, and the daemon moves the issue as the call runs.
+  run.reminder.turnStarted();
+  run.reminder.apply({ kind: "inbound" });
+  run.reminder.apply({ kind: "tool-call" });
+  daemon.move();
+
+  expect(
+    await run.reminder.settle(said("Sent the change back to implementing: the retry never ends."))
+  ).toBeUndefined();
+  await settlePastTheThreshold(run);
+
+  expect(run.sent).toEqual([]);
+  expect(run.published).toEqual([]);
+  expect(run.asked()).toBe(5);
+  expect(run.timers).toHaveLength(2);
+  expect(daemon.stateReads()).toBe(0);
+});
+
+// The control: the same turn of the tester, and no move. The daemon still answers that the
+// tester owes its open phase, so the turn that ended with no completion is continued, each timer
+// after it reminds, and the run tells the architect once it reaches `architectAfter`.
+test("a tester not moved out of its phase is still reminded when its turn ends with no completion", async () => {
+  const daemon = standInDaemon({ owes: true, work: TESTING });
+  const run = rig({ claim: tester, owed: daemon.owed });
+
+  run.reminder.turnStarted();
+  run.reminder.apply({ kind: "inbound" });
+  run.reminder.apply({ kind: "tool-call" });
+
+  expect(await run.reminder.settle(said("Ran the suite; two tests fail."))).toBe(
+    reminderText("Ran the suite; two tests fail.", TESTING)
+  );
+  await settlePastTheThreshold(run);
+
+  expect(run.sent).toEqual(
+    ["Pushed.", "Still here.", "WAITING on CI.", "Still here."].map((text) =>
+      reminderText(text, TESTING)
+    )
+  );
+  expect(run.published).toHaveLength(1);
+  expect(JSON.parse(String(run.published[0]?.payload))).toMatchObject({
+    role: "tester",
+    work: TESTING,
+  });
+  expect(daemon.stateReads()).toBe(0);
+});
+
+// R8 and R1's last sentence: a timer armed while the daemon answers that the tester owes its
+// phase fires after the daemon moved the issue out of that phase. Its check reads the answer of
+// the moment it fires, which is that the tester owes nothing: it sends nothing, arms nothing, and
+// clears the wake it was armed with, and it asks the host to report that. A wake left live past
+// its due time holds the issue's pod from its idle release; at #3712's head the check returned
+// and left that wake live.
+test("a reminder timer armed before the daemon moved the issue out of its phase fires after the move, sends no reminder and clears its wake", async () => {
+  const daemon = standInDaemon({ owes: true, work: TESTING });
+  const run = rig({ claim: tester, owed: daemon.owed });
+
+  // The tester's turn ends while its phase is open, and the continuation goes. The turn the
+  // continuation starts ends with no completion too, and its settle arms the timer of the next
+  // reminder.
+  expect(await run.reminder.settle(said("Ran the suite; two tests fail."))).toBe(
+    reminderText("Ran the suite; two tests fail.", TESTING)
+  );
+  run.reminder.turnStarted();
+  expect(await run.reminder.settle(said("Still running the suite."))).toBeUndefined();
+  expect(run.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.reminderMs]);
+  expect(run.reminder.phaseWake().nextReminderAt).not.toBeNull();
+
+  // The daemon moves the issue back to implementing, and then the timer fires.
+  daemon.move();
+  await fireLast(run.timers);
+
+  expect(run.sent).toEqual([]);
+  expect(run.published).toEqual([]);
+  expect(run.timers).toHaveLength(1);
+  expect(run.reminder.phaseWake()).toEqual({ nextReminderAt: null });
+  expect(run.wakesChanged()).toBe(1);
+  expect(run.asked()).toBe(2);
 });
 
 // A turn whose read failed counts no reminder toward the notice: a worker one reminder short of it
