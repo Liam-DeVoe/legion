@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -183,6 +184,46 @@ func TestACommentWritesItsPointersAsTuples(t *testing.T) {
 	}
 	if listed := viewBacklinks(t, database, graphstore.KindComment, reply.ID); counted[reply.ID] != listed {
 		t.Errorf("after the retraction the reply is counted %d and listed %d times, want them equal", counted[reply.ID], listed)
+	}
+}
+
+// A comment on an ask names that ask by its one id however the request spells it: the comment
+// route reads ask_id with uuid.Parse, which takes capitals, braces, no hyphens and the urn form as
+// well as the canonical spelling, and the comment's replies_to and part_of then point at the ask's
+// own node, and the comment answers that one spelling. A comment that mentions a session reads the
+// ask's routes before its transaction (readCommentRoutes), by that same one spelling.
+func TestACommentNamesItsAskByOneSpellingOfItsID(t *testing.T) {
+	listener, _ := newMentionListener(t)
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: time.Second})
+	issue := createInteractionIssue(t, handler, "CASK", "Ask id spellings", "The spec.\n")
+	ask := createPartAsk(t, handler, issue.Key, "Which day do we ship?", map[string]string{"label": "Monday"})
+	onAsk := graphstore.KindAsk + ":" + ask.ID
+	for _, spelling := range []struct {
+		name, askID string
+		mentions    bool
+	}{
+		{"in capitals", strings.ToUpper(ask.ID), false},
+		{"in braces", "{" + ask.ID + "}", false},
+		{"without hyphens", strings.ReplaceAll(ask.ID, "-", ""), false},
+		{"in the urn form", "urn:uuid:" + ask.ID, false},
+		{"in the urn form, with a mention", "urn:uuid:" + ask.ID, true},
+	} {
+		t.Run(spelling.name, func(t *testing.T) {
+			body := map[string]any{"body": "Monday, " + spelling.name + ".", "ask_id": spelling.askID}
+			if spelling.mentions {
+				body["mentions"] = []map[string]any{{"target": "session:s1"}}
+			}
+			response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", body, "alice")
+			if response.Code != http.StatusCreated {
+				t.Fatalf("comment on the ask with ask_id %q: status=%d body=%s", spelling.askID, response.Code, response.Body.String())
+			}
+			comment := decodeBody[model.Comment](t, response)
+			if got := deref(comment.AskID); got != ask.ID {
+				t.Errorf("the comment with ask_id %q answers ask_id %q, want the ask's own id %s", spelling.askID, got, ask.ID)
+			}
+			requireCommentWrite(t, database, comment.ID, "comment.created", "a comment naming its ask "+spelling.name,
+				"replies_to>"+onAsk, "part_of>"+onAsk)
+		})
 	}
 }
 

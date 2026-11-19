@@ -620,6 +620,16 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	if input.Suggestion != nil {
 		input.Suggestion.ReplaceWith = pmdoc.LineFeeds(input.Suggestion.ReplaceWith)
 	}
+	// The ask a reply names, in one spelling for the whole request: the one its node and every
+	// pointer to it name. uuid.Parse also takes capitals, braces, no hyphens and the urn form, none
+	// of which a pointer may copy and the last of which Postgres refuses (readCommentRoutes). An id
+	// it refuses stays as sent, for normalizeCommentThreadTarget to refuse.
+	if input.AskID != nil {
+		if parsed, err := uuid.Parse(*input.AskID); err == nil {
+			askID := parsed.String()
+			input.AskID = &askID
+		}
+	}
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
