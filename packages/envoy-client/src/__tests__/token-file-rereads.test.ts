@@ -13,7 +13,7 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { bearerCredential } from "../bearer";
 import { DispatchClient } from "../dispatch-http";
 import { sessionSettings } from "../session-settings";
-import { createEnvoyClient } from "../transport";
+import { createEnvoyClient, EnvoySendUnconfirmedError } from "../transport";
 
 const tempDir = temporaryDirectories("token-file-rereads");
 
@@ -135,7 +135,8 @@ test("a DISPATCH_TOKEN_FILE that is gone or blank at a request sends nothing", a
 // The Envoy transport refuses the same way. ENVOY_TOKEN_FILE names a bearer, so a request whose
 // file is gone or blank is not sent at all, rather than sent with no Authorization header, which
 // the transport does only for a broker that could not mint; the error names the variable and never
-// the path or a token. Control: while the file holds a token the same client sends it, and once the
+// the path or a token. A send it refuses stored nothing, so it is the refusal itself and not an
+// unconfirmed send. Control: while the file holds a token the same client sends it, and once the
 // file holds one again the next request carries the new one.
 test("an ENVOY_TOKEN_FILE that is gone or blank at a request sends nothing", async () => {
   const file = tokenFile("first-listener-not-a-secret");
@@ -169,6 +170,18 @@ test("an ENVOY_TOKEN_FILE that is gone or blank at a request sends nothing", asy
     expect(refused, state).not.toContain("first-listener-not-a-secret");
     expect(asked, `a ${state} file sends nothing`).toHaveLength(1);
   }
+
+  const send = await client
+    .send({ sourceSessionID: "ses_rotating", targetSessionID: "ses_target", message: "hello" })
+    .then(
+      () => null,
+      (error: unknown) => error
+    );
+  expect(send, "a refused send is no unconfirmed one").not.toBeInstanceOf(
+    EnvoySendUnconfirmedError
+  );
+  expect(String(send)).toContain("ENVOY_TOKEN_FILE names a file");
+  expect(asked, "a refused send sends nothing").toHaveLength(1);
 
   writeFileSync(file, "second-listener-not-a-secret\n");
   await client.unregisterSession({ sessionID: "ses_rotating" });

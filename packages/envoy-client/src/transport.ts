@@ -1078,7 +1078,13 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         options.timeoutMs ?? timeoutMs,
         options.actingSession
       );
-      if ("refused" in outcome) throw outcome.refused;
+      if ("refused" in outcome) {
+        // A refused request reached no route of the listener, so a send it ends stored nothing
+        // in this attempt; it is not sent again, since the next read of the file is no likelier to
+        // succeed.
+        options.onNotSent?.();
+        throw outcome.refused;
+      }
       if ("unanswered" in outcome) {
         options.onUnanswered?.();
         if (attempt + 1 < tries) {
