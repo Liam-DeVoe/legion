@@ -303,7 +303,9 @@
 #      times, whose entry writes the rig's one `ci_tools_fetch`, 1708 s: none of the three runs
 #      calls a function that fetches.
 #   4. A DECLARATION, keyed as the tree keys it: a DECLARED_LOOPS entry names a workflow step by
-#      its file, its name and the verb, or a script by its file and the verb, with no step; a
+#      its file, its name and the verb, or a script by its file and the verb, with no step, and
+#      may name the loop it answers for by that loop's first line, which check-pr-text.sh's
+#      three `gh api` loops each need (dispatch://INFRA-1545, the merge of main's #4256); a
 #      DECLARED_LIBRARIES entry names a workflow step by its file and its name, or a script or a
 #      composite action by its file, with no step; a DECLARED_CALLS entry names a script and
 #      the variable. An entry keyed any other way matches nothing and fails this check, so two
@@ -486,7 +488,8 @@
 # being refused where it runs (the reach under item 1), and the Python a `python3` heredoc of a
 # script runs is read by rule 6 alone.
 # The harnesses left out are named at TEST_HARNESS below, with the two network calls they hold
-# today and why a retry at either would destroy what the test measures.
+# today and why a retry at either would destroy what the test measures, and the one harness
+# library left out with them at HARNESS_LIBRARY.
 #
 # AND A BUILD CAN FETCH, which is the limit of the verb list rather than of the reading set.
 # `go build`, `go test`, `go vet` and `go run` download a module this job's cache restore did not
@@ -764,8 +767,8 @@
 #          sits in read_list's `while :`, a loop this check cannot count, so the fold stops
 #          there and never reaches the `for ((…))` over `lists` that runs read_list once per
 #          list, whose passes this check reads no more than it reads the `while :`'s. The three
-#          lists are carried by hand instead, in that script's DeclaredArithmetic entry below,
-#          which writes the 3 x in its own sum.
+#          lists are carried by hand instead, in that script's DeclaredArithmetic entry below
+#          that names the `while :`, which writes the 3 x in its own sum.
 #        * the loop a step wraps around the script it runs. The script's whole arithmetic is
 #          the step's once per pass, as a call written in the `run:` would be.
 #
@@ -1216,6 +1219,16 @@ SELF = ".github/scripts/check-download-retry.sh"
 # `gh run cancel` is a line of a workflow fixture it writes for the checker to read, which
 # nothing runs. A retry around any of them would wrap a shell function or a string.
 TEST_HARNESS = ".test.sh"
+# A harness's library: a `*-test-lib.sh` directly in .github/scripts/, which the `.test.sh`
+# harnesses beside it source and nothing else does. The tree holds one,
+# check-private-names-test-lib.sh, which main's #4256 split out of check-private-names.test.sh:
+# the three private-name harnesses source it for the fixtures and the stand-in `gh` they share,
+# and its run_pr_text runs check-pr-text.sh, every read of which lands on that stand-in, from a
+# function each case calls. It is not read, as a harness is not; unlike a harness it stays a file
+# this check does not read (unread_files below), so a step, an action or a script that names it
+# is refused, and only a harness, which this check does not read either, can source it
+# (dispatch://INFRA-1545).
+HARNESS_LIBRARY = "-test-lib.sh"
 # What names a script: a word holding `/<name>.sh`, wherever on the line it sits —
 # `.github/scripts/x.sh`, `"$script_dir/x.sh"`, `"$GITHUB_ACTION_PATH/../../scripts/x.sh"`,
 # `tag=$(.github/scripts/x.sh)`, `. .github/scripts/ci-retry.sh`. Only the name is read, and only
@@ -3273,8 +3286,11 @@ def bound_spelled(site: Site) -> bool:
 
 
 def declared_arithmetic(site: Site) -> "DeclaredArithmetic | None":
-    """The declaration that carries this site's own arithmetic, where one is written."""
-    return next((entry for entry in DECLARED_LOOPS if entry.covers(site)), None)
+    """The declaration that carries this site's own arithmetic, where one is written: the entry
+    naming the site's loop, before one naming no loop (DeclaredArithmetic)."""
+    covering = [entry for entry in DECLARED_LOOPS if entry.covers(site)]
+    return next((entry for entry in covering if entry.loop is not None),
+                covering[0] if covering else None)
 
 
 def around(loops: Loops, lines: list[int]) -> tuple[int | None, int, int | None]:
@@ -4099,6 +4115,19 @@ EXEMPTIONS = [
 # ------------------------------------ what a reader declares where this check's reading stops
 
 
+# The text of each file a DeclaredArithmetic entry naming its loop is matched against, by path,
+# read once.
+FILE_LINES: dict[str, list[str]] = {}
+
+
+def file_line(path: str, number: int) -> str:
+    """Line `number` of the tree's file at `path` as it is written, or "" past its end."""
+    if path not in FILE_LINES:
+        FILE_LINES[path] = Path(path).read_text().split("\n")
+    lines = FILE_LINES[path]
+    return lines[number - 1] if 0 < number <= len(lines) else ""
+
+
 class DeclaredArithmetic:
     """One figure a reader writes down where rule 8's own reading stops, matched to a site by
     the file, the step and the verb it names. It answers for a site whose pass count this
@@ -4119,14 +4148,25 @@ class DeclaredArithmetic:
     one; and a figure below one call of the site is refused with that floor, because a site
     costs at least one call of itself, whatever the run finds for it to do. That floor is
     asked of the sites that have a figure: where the bound is the unread half there is no one
-    call to compare, and the entry's own `why` is the whole of what a reader checks."""
+    call to compare, and the entry's own `why` is the whole of what a reader checks.
 
-    def __init__(self, path: str, step: str | None, verb: str, seconds: int, why: str) -> None:
+    An entry may also name its loop, `loop`: the first line of the loop whose passes this check
+    could not read, as the file writes it, its indentation aside. It then answers for the sites
+    of that loop alone, so one file, step and verb can hold as many such loops as there are
+    entries naming them, each with a figure of its own: check-pr-text.sh holds three `gh api`
+    loops, read_list's pages and the two main's #4256 added, the releases its issue-key rule
+    reads and the new commits it reads the files of (dispatch://INFRA-1545). An entry naming no
+    loop answers for every loop of its file, step and verb that no entry names, and a loop's
+    line that changes leaves the entry naming it matching nothing, which fails this check."""
+
+    def __init__(self, path: str, step: str | None, verb: str, seconds: int, why: str,
+                 loop: str | None = None) -> None:
         self.path = path
         self.step = step
         self.verb = verb
         self.seconds = seconds
         self.why = why
+        self.loop = loop
         self.used = 0
         self.loops: set[int] = set()
         # The sites whose one call costs more than this entry's whole figure, each with that
@@ -4137,11 +4177,15 @@ class DeclaredArithmetic:
         # A step's site is matched by its step's name and a script's, read with no step, by
         # None, the two forms this tree writes; until round 37 None matched every step of a
         # workflow too (dispatch://INFRA-1545, round 37).
-        return (site.path, self.step or "-", site.verb) == (self.path, site.step, self.verb)
+        if (site.path, self.step or "-", site.verb) != (self.path, site.step, self.verb):
+            return False
+        return self.loop is None or (site.blocked is not None
+                                     and file_line(site.path, site.blocked).strip() == self.loop)
 
     def names(self) -> str:
         """How a refusal names this entry."""
-        return self.path + (f" step '{self.step}'" if self.step else "") + f" `{self.verb}`"
+        return (self.path + (f" step '{self.step}'" if self.step else "") + f" `{self.verb}`"
+                + (f" in the loop `{self.loop}`" if self.loop else ""))
 
     def figure(self) -> str:
         return f"{self.seconds} s"
@@ -4197,7 +4241,8 @@ DECLARED_LOOPS: list[DeclaredArithmetic] = [
                        "beside the list's (main's #4253 added the step; dispatch://INFRA-1545, "
                        "round 38)"),
     # A script site is read with no job and no step, so these entries name no step: the call at
-    # the `for path in scripts:` loop below passes step="-".
+    # the `for path in scripts:` loop below passes step="-". check-pr-text.sh's three `gh api`
+    # loops each name their loop, since one file and one verb hold all three.
     DeclaredArithmetic(".github/scripts/check-pr-text.sh", None, "gh api", 900,
                        "the page read of one list route, over the three lists this script "
                        "reads. read_list's loop reads pages until a short one, which is no "
@@ -4207,9 +4252,31 @@ DECLARED_LOOPS: list[DeclaredArithmetic] = [
                        "for the one page the common pull request answers. The "
                        "`for ((i = 0; i < ${#lists[@]}; i += 2))` under it runs read_list "
                        "once for each of three lists, so three lists at one page each is "
-                       "3 x 1 x (5 x 30 + 150) = 900 s. The two reads this script writes "
-                       "outside that loop are counted where they are written and are no part "
-                       "of this figure"),
+                       "3 x 1 x (5 x 30 + 150) = 900 s. The reads this script writes outside "
+                       "its three loops are counted where they are written and are no part "
+                       "of this figure",
+                       loop="while :; do"),
+    DeclaredArithmetic(".github/scripts/check-pr-text.sh", None, "gh api", 600,
+                       "the release read of the issue-key rule's cutoff (main's #4256), one "
+                       "per legion-v tag that contains the marker commit, in version order, "
+                       "until the first published release and the one after it, which is "
+                       "read to check the order: the `while read` over the tags git lists is "
+                       "no count this check can make, and a tag with no release yet is one "
+                       "more read, a 404 the read takes as its answer. The budgets reaching "
+                       "it are written for the two reads that script's own comment says a "
+                       "run makes, a release or two: 2 x (5 x 30 + 150) = 600 s",
+                       loop="while IFS= read -r tag; do"),
+    DeclaredArithmetic(".github/scripts/check-pr-text.sh", None, "gh api", 7200,
+                       "the files read of each commit the issue-key rule reads (main's "
+                       "#4256): one per commit of the pull request dated at or after the "
+                       "cutoff that is no merge, which the `while read` over the compare "
+                       "route's commits makes as many times as the pull request holds such "
+                       "commits, no count this check can make. The budgets reaching it are "
+                       "written for the 24 the common pull request holds: the 30 most recently "
+                       "merged pull requests of cybermonklabs/legion on 2026-11-19 held 1 to "
+                       "232 commits that are no merge, 23.5 at the median, so "
+                       "24 x (5 x 30 + 150) = 7200 s",
+                       loop="while IFS= read -r sha; do"),
     DeclaredArithmetic(".github/scripts/ci-ok-reconcile.sh", None, "gh api", 900,
                        "one PATCH per other ci-ok on the head that needs one, and three is "
                        "what the ci-ok step's budget is written for: 3 x (5 x 30 + 150) = "
@@ -4510,10 +4577,11 @@ scripts = [
     path for path in files
     if Path(path).parent == SCRIPTS
     and path.endswith(".sh")
-    and not path.endswith(TEST_HARNESS)
+    and not path.endswith((TEST_HARNESS, HARNESS_LIBRARY))
 ]
 # THE ONE DIRECTORY'S TOP LEVEL IS THE WHOLE SET OF SCRIPTS (dispatch://INFRA-1545, round 37).
-# `scripts` is every `.sh` directly in .github/scripts/ but the `.test.sh` harnesses, and this
+# `scripts` is every `.sh` directly in .github/scripts/ but the `.test.sh` harnesses and their
+# `-test-lib.sh` libraries (HARNESS_LIBRARY), and this
 # check reads no other file there: a script with no suffix, one ending `.bash` and a `.sh` in a
 # subdirectory each passed, its own fetches held to no floor and a step running it charged
 # nothing for it, or charged the top-level script of its name, which is all SCRIPT_CALL reads of
@@ -4606,7 +4674,8 @@ for path in files:
 # or by a name a variable or a missing directory leaves, anywhere but where this tree writes one
 # (unread_uses): every file there that `scripts` does not hold, at any depth, but a `*.test.sh`
 # harness directly in that directory. A harness is not read, as TEST_HARNESS says, and a run of
-# one is left as that reading leaves it (dispatch://INFRA-1545, round 38).
+# one is left as that reading leaves it (dispatch://INFRA-1545, round 38); a harness library is
+# not read either, and stays here, so only a harness can name it (HARNESS_LIBRARY).
 tree_files = set(files)
 unread_files = {path for path in tree_files - set(scripts)
                 if SCRIPTS in Path(path).parents
@@ -6049,7 +6118,8 @@ UNREAD_USE = (
 UNREAD_CURE = ("Run a Python program with `python3 .github/scripts/<name>.py …` and read a jq "
                "filter with `jq -f .github/scripts/<name>.jq …`; a shell script goes in "
                ".github/scripts/<name>.sh, its name lowercase letters, digits and `-`, and runs "
-               "by that path")
+               "by that path; a `-test-lib.sh` there is a harness's library, which only a "
+               "`.test.sh` harness sources (HARNESS_LIBRARY)")
 # The programs whose arguments may name such a file: `echo`, `printf` and `grep` print or search
 # text no shell runs, and `pkill` matches a pattern against running processes, which reads no
 # file (unread_place; dispatch://INFRA-1545, round 38).
@@ -8404,8 +8474,9 @@ for entry in DECLARED_LOOPS:
                 + ", and it writes one figure. A loop's passes are that loop's own, so an "
                 "entry that two of them match hands the second a figure nobody wrote for it: "
                 "one of those loops is counting something else. Write the count where this "
-                "check reads it off the loop, or give the two loops steps or verbs that tell "
-                f"them apart. This entry said {entry.figure()}, because {entry.why}.")
+                "check reads it off the loop, give the two loops steps or verbs that tell "
+                "them apart, or write an entry for each that names its loop by its first "
+                f"line (`loop=`). This entry said {entry.figure()}, because {entry.why}.")
         continue
     if entry.below:
         line, floor = sorted(entry.below.items())[0]

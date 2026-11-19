@@ -261,6 +261,9 @@ jobs:
             retry_fetch "the deletion of go-envoy-infra entry $id" 30 -- gh cache delete "$id"
           done <<<"$ids"
 YAML
+  # check-pr-text.sh's three `gh api` loops, read_list's pages and the two main's #4256 added,
+  # each of which a DECLARED_LOOPS entry names by its first line, so every fixture carries all
+  # three and each entry matches its own.
   cat > "$root/.github/scripts/check-pr-text.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -271,6 +274,13 @@ while :; do
   [ "$(jq length "$work/answer")" = 100 ] || break
   page=$((page + 1))
 done
+while IFS= read -r tag; do
+  retry_fetch "the release of $tag" 30 -- gh api "repos/$repository/releases/tags/$tag" > "$work/release"
+done < "$work/containing"
+while IFS= read -r sha; do
+  retry_fetch "the files of commit $sha" 30 -- \
+    gh api "repos/$repository/commits/$sha?per_page=100" --paginate > "$work/commit-$sha"
+done < "$work/new-commits"
 SH
   cat > "$root/.github/scripts/ci-ok-reconcile.sh" <<'SH'
 #!/usr/bin/env bash
@@ -3980,6 +3990,94 @@ check "exits 1" "$(is "$status" 1)"
 check "names the entry and the two loops it covers" \
   "$(contains "$out" 'the declared loop for .github/scripts/ci-ok-reconcile.sh .gh api. covers the loops at lines 4, 8')"
 check "says what the entry was written for" "$(contains "$out" 'This entry said 900 s')"
+
+# An entry may name its loop by that loop's first line, and then answers for that loop alone, so
+# one file and one verb can hold two loops each priced by an entry of its own, as
+# check-pr-text.sh's three `gh api` loops are since main's #4256. The baseline's entry for
+# ci-ok-reconcile.sh names no loop, so it keeps the first loop here and the named one takes the
+# second: a step running the script waits for 900 + 300 = 1200 s, a whole number of minutes.
+echo "case: a declaration naming its loop answers for that loop alone"
+for minutes in 20 21; do
+  root=$(fixture "declaration-named-loop-$minutes")
+  cat > "$root/.github/scripts/ci-ok-reconcile.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+while read -r id status was marker; do
+  retry_fetch "the PATCH of ci-ok check run $id" 30 -- \
+    gh api --silent --method PATCH "repos/$GITHUB_REPOSITORY/check-runs/$id" --input "$body"
+done <<<"$runs"
+while read -r id; do
+  retry_fetch "the ci-ok of run $id" 30 -- \
+    gh api "repos/$GITHUB_REPOSITORY/check-runs/$id"
+done <<<"$others"
+SH
+  cat > "$root/.github/workflows/case.yaml" <<YAML
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reconcile the ci-ok check runs
+        timeout-minutes: $minutes
+        run: .github/scripts/ci-ok-reconcile.sh
+YAML
+  declare_entry "$root" '    DeclaredArithmetic(".github/scripts/ci-ok-reconcile.sh", None, "gh api", 300, "one read of the other ci-oks: 1 x (5 x 30 + 150) = 300 s", loop="while read -r id; do"),'
+  run_check "$root"
+  if [ "$minutes" = 20 ]; then
+    check "a budget of 20 minutes exits 1" "$(is "$status" 1)"
+    check "charges both loops, each at its own entry's figure" \
+      "$(contains "$out" "step 'Reconcile the ci-ok check runs' carries .timeout-minutes: 20., 1200 s, and its own retries take 1200 s to exhaust")"
+    check "and refuses no entry for covering two loops" "$(is "$(contains "$out" 'covers the loops at lines')" false)"
+  else
+    check "a budget of 21 minutes exits 0" "$(is "$status" 0)"
+  fi
+done
+
+# A named loop whose first line the file no longer writes is a declaration outliving its loop,
+# refused as any stale entry is, by the loop it names.
+echo "case: a declaration naming a loop the file does not write fails"
+root=$(fixture declaration-named-loop-gone)
+declare_entry "$root" '    DeclaredArithmetic(".github/scripts/ci-ok-reconcile.sh", None, "gh api", 300, "one read of a loop that has gone: 1 x (5 x 30 + 150) = 300 s", loop="while read -r gone; do"),'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the entry by its loop" \
+  "$(contains "$out" 'the declared arithmetic for .github/scripts/ci-ok-reconcile.sh .gh api. in the loop .while read -r gone; do. matches no retried call this check could not price of itself')"
+
+# A harness's library, a `-test-lib.sh` directly in .github/scripts/, is no script a job runs:
+# the harnesses source it, and the gh its functions reach is their stand-in. It is not read, as
+# a harness is not, so its unretried call, its path held in a variable and its run of a script
+# that fetches through that variable pass; and it stays a file this check does not read, so a
+# step that sources it is refused by name (main's #4256 split check-private-names-test-lib.sh out
+# of its harness; dispatch://INFRA-1545).
+echo "case: a harness library is not read, and a step naming it is refused"
+root=$(fixture harness-library)
+cat > "$root/.github/scripts/r41-test-lib.sh" <<'SH'
+#!/usr/bin/env bash
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+pr_text_script="$script_dir/check-pr-text.sh"
+gh api "repos/example/repo/pulls/7"
+run_pr_text() { "$pr_text_script"; }
+SH
+run_check "$root"
+check "the library alone exits 0" "$(is "$status" 0)"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Source the harness library
+        run: . .github/scripts/r41-test-lib.sh
+YAML
+run_check "$root"
+check "a step sourcing it exits 1" "$(is "$status" 1)"
+check "refuses the step by name, as a file this check does not read" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=8::step 'Source the harness library' of job 'build' writes ..github/scripts/r41-test-lib.sh. as an argument of .\.., and it names .github/scripts/r41-test-lib.sh, a file under .github/scripts/ this check does not read as a script")"
+check "and says only a harness sources one" "$(contains "$out" 'a .-test-lib.sh. there is a harness.s library, which only a ..test.sh. harness sources')"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
 # Rule 8 reads a curl's own attempts off the ladder rule 1 holds it to, not off a fixed eight:
 # `--retry 10` is eleven attempts at `--max-time` with 1, 2, 4, …, 512 s between them, so
