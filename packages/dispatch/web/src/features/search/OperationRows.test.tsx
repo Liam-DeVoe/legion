@@ -292,7 +292,11 @@ test("a submit pressed again while the turn's writes are out, and again once the
     // The first invocation is out, the second waits behind it on the run's line.
     await waitFor(() => expect(written).toHaveBeenCalledTimes(1));
     await submit(user);
-    first.resolve(landedLine({ approved: "auto", invocation: 0, offer: "dispatch_issue_update" }));
+    await act(async () => {
+      first.resolve(
+        landedLine({ approved: "auto", invocation: 0, offer: "dispatch_issue_update" })
+      );
+    });
     const lines = await screen.findAllByTestId("going-write-line");
     await waitFor(() =>
       expect(lines.map((line) => line.getAttribute("data-state"))).toEqual(["done", "done"])
@@ -1368,18 +1372,21 @@ test("a new issue the run made is the issue its write names, with no read of it 
   );
   // A read of the issue after its create would fail here, as a timed-out read does.
   const getIssue = spyOn(api, "getIssue").mockRejectedValue(new Error("the read timed out"));
-  written.mockImplementation(
-    async (_run, input) =>
-      ({
-        action: input.offer,
-        before: null,
-        fields: null,
-        item: "LEGION-9",
-        now: { key: "LEGION-9" },
-        outcome: { code: "", message: "", ok: true, status: 201 },
-        write_id: "write-issue",
-      }) satisfies GoingWriteLine
-  );
+  // The create's answer, held and given inside `act` once the press is out, as
+  // packages/dispatch/AGENTS.md's act rule says.
+  const created = Promise.withResolvers<void>();
+  written.mockImplementation(async (_run, input) => {
+    await created.promise;
+    return {
+      action: input.offer,
+      before: null,
+      fields: null,
+      item: "LEGION-9",
+      now: { key: "LEGION-9" },
+      outcome: { code: "", message: "", ok: true, status: 201 },
+      write_id: "write-issue",
+    } satisfies GoingWriteLine;
+  });
   const user = userOnFakeClock();
   const bar = renderBar();
   try {
@@ -1409,6 +1416,9 @@ test("a new issue the run made is the issue its write names, with no read of it 
     );
 
     await user.click(await screen.findByRole("option", { name: /^Make a new issue from/ }));
+    await act(async () => {
+      created.resolve();
+    });
 
     await waitFor(() =>
       expect(screen.getByTestId("search-new-issue-said")).toHaveTextContent("LEGION-9 is made.")

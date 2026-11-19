@@ -2239,8 +2239,10 @@ func TestGoingWritesRefuseIdenticallyThroughTheWritesRouteAndTheNetwork(t *testi
 
 // TestGoingWritesCarryOnlyTheCallersFiveCredentialHeaders: an in-process write carries the
 // caller's Authorization, Cookie, Origin, Sec-Fetch-Site and Dispatch-Login, and no other header
-// of the caller's request - the configured identity header besides, on a deployment that names its
-// people by one and on no other - and resolves its caller itself rather than taking the one the
+// of the caller's request - the header its deployment names its people by besides, on a deployment
+// that names them by one and on no other: a header-identity deployment's trusted header, and on an
+// IAP deployment, where a browser's credential is that assertion and no cookie, the assertion
+// Identity-Aware Proxy signs - and resolves its caller itself rather than taking the one the
 // caller's request already resolved.
 func TestGoingWritesCarryOnlyTheCallersFiveCredentialHeaders(t *testing.T) {
 	five := []string{"Authorization", "Cookie", contracts.DispatchLoginHeader, "Origin", "Sec-Fetch-Site"}
@@ -2251,6 +2253,7 @@ func TestGoingWritesCarryOnlyTheCallersFiveCredentialHeaders(t *testing.T) {
 	}{
 		{"a cookie deployment", "", five},
 		{"a header-identity deployment", "X-Dispatch-User", append(slices.Clone(five), "X-Dispatch-User")},
+		{"an IAP deployment", identity.IAPAssertionHeader, append(slices.Clone(five), http.CanonicalHeaderKey(identity.IAPAssertionHeader))},
 	} {
 		t.Run(mode.name, func(t *testing.T) {
 			var seen *http.Request
@@ -2262,8 +2265,8 @@ func TestGoingWritesCarryOnlyTheCallersFiveCredentialHeaders(t *testing.T) {
 			for name, value := range map[string]string{
 				"Authorization": "Bearer dsp_token", "Cookie": "dispatch_session=abc", "Origin": testServerURL,
 				"Sec-Fetch-Site": "same-origin", contracts.DispatchLoginHeader: "alice",
-				"X-Dispatch-User": "alice", "X-Forwarded-User": "bob", "Idempotency-Key": "key-1",
-				"Accept-Encoding": "gzip", "Dispatch-Trees": "1",
+				"X-Dispatch-User": "alice", identity.IAPAssertionHeader: "an.iap.assertion", "X-Forwarded-User": "bob",
+				"Idempotency-Key": "key-1", "Accept-Encoding": "gzip", "Dispatch-Trees": "1",
 			} {
 				caller.Header.Set(name, value)
 			}
@@ -2285,6 +2288,33 @@ func TestGoingWritesCarryOnlyTheCallersFiveCredentialHeaders(t *testing.T) {
 			}
 			if _, resolved := seen.Context().Value(resolvedCallerKey{}).(resolvedCaller); resolved {
 				t.Fatal("the in-process write carried the caller its caller's request had resolved")
+			}
+		})
+	}
+}
+
+// TestGoingDoerCarriesTheHeaderItsDeploymentNamesItsPeopleBy: the route table called in-process as
+// a caller reads that caller from the header its deployment names its people by - IAP's assertion
+// on an IAP deployment, the configured header on a header-identity deployment - and from no
+// header of its own on a cookie deployment, so the write is made as its caller on each.
+func TestGoingDoerCarriesTheHeaderItsDeploymentNamesItsPeopleBy(t *testing.T) {
+	caller := httptest.NewRequest(http.MethodPost, "/api/v1/going/runs/x/writes", nil)
+	for _, deployment := range []struct {
+		name   string
+		people identity.Identity
+		want   string
+	}{
+		{"an IAP deployment", identity.IAPIdentity{}, identity.IAPAssertionHeader},
+		{"a header-identity deployment", identity.HeaderIdentity{Header: "X-Dispatch-User"}, "X-Dispatch-User"},
+		{"a cookie deployment", identity.CookieIdentity{}, ""},
+	} {
+		t.Run(deployment.name, func(t *testing.T) {
+			doer, inProcess := (&server{deps: Deps{Identity: deployment.people}}).goingDoer(caller).(goingInProcess)
+			if !inProcess {
+				t.Fatalf("goingDoer answered %T, want the route table called in-process", doer)
+			}
+			if doer.identityHeader != deployment.want {
+				t.Fatalf("the in-process write reads its caller from %q, want %q", doer.identityHeader, deployment.want)
 			}
 		})
 	}

@@ -4,7 +4,7 @@ import { ApiError, api, goingUndoRequest, goingWriteRequest } from "../../api/cl
 import { goingSettingsQuery } from "../../api/queries";
 import type { GoingUndoLine, GoingWriteInput, GoingWriteLine } from "../../api/types";
 import { WriteDiscardedError } from "../writes/keyed-write";
-import { defineWriteKind, type Write, type Writes, writeUnsettled } from "../writes/write-store";
+import { defineWriteKind, isLive, type Write, type Writes } from "../writes/write-store";
 import { refusalText } from "./offer";
 
 /**
@@ -382,7 +382,7 @@ function writesSettled(writes: Writes, inRun: (runId: string) => boolean): Promi
   const out = () =>
     writes.rows().some((write) => {
       const runId = runOfTarget(write.target);
-      return runId !== undefined && inRun(runId) && writeUnsettled(write);
+      return runId !== undefined && inRun(runId) && isLive(write);
     });
   if (!out()) return Promise.resolve();
   const { promise, resolve } = Promise.withResolvers<void>();
@@ -496,7 +496,7 @@ export async function undoNewestGoingTurn(writes: Writes): Promise<void> {
   if (lastUndo?.state === "undoing") return;
   const writing = writes
     .rows()
-    .filter((write) => runOfTarget(write.target) !== undefined && writeUnsettled(write))
+    .filter((write) => runOfTarget(write.target) !== undefined && isLive(write))
     .reduce<Write | undefined>(
       (newest, write) =>
         newest === undefined || write.pressedAt > newest.pressedAt ? write : newest,

@@ -53,6 +53,13 @@ async function type(user: UserEvent, words: string): Promise<void> {
   await waitFor(() => expect(screen.getAllByRole("option").length).toBeGreaterThan(0));
 }
 
+/** Hands `stream` `frames`, in order, as the server writes them. */
+function send(stream: OpenedStream | undefined, ...frames: GoingEvent[]): void {
+  act(() => {
+    for (const frame of frames) stream?.send(frame);
+  });
+}
+
 const pauseRest = MEANING_PAUSE_MS - KEYSTROKE_DEBOUNCE_MS;
 
 /** Waits for the panel's mark on an answer kept from words the person typed past, and reads that
@@ -83,7 +90,7 @@ test("the pause asks once with the chip's context, and the next keystroke cancel
       },
     ]);
     const first = streams[0];
-    first?.send({ data: { text: "The first answer" }, event: "text" });
+    send(first, { data: { text: "The first answer" }, event: "text" });
     await waitFor(() =>
       expect(screen.getByTestId("going-answer-text")).toHaveTextContent("The first answer")
     );
@@ -100,12 +107,12 @@ test("the pause asks once with the chip's context, and the next keystroke cancel
       "astrolabe",
       "astrolabes",
     ]);
-    streams[1]?.send({ data: { text: "The second answer" }, event: "text" });
+    send(streams[1], { data: { text: "The second answer" }, event: "text" });
     await waitFor(() =>
       expect(screen.getByTestId("going-answer-text")).toHaveTextContent("The second answer")
     );
     // A frame the let-go stream still delivers reaches no panel, the new run's included.
-    first?.send({ data: { text: " and more" }, event: "text" });
+    send(first, { data: { text: " and more" }, event: "text" });
     await tick(0);
     expect(screen.getByTestId("going-answer-text").textContent).toBe("The second answer");
   } finally {
@@ -123,16 +130,15 @@ test("one more letter keeps the answer on the screen as the earlier words', with
     await tick(pauseRest);
     await waitFor(() => expect(streams).toHaveLength(1));
     const first = streams[0];
-    for (const frame of [
+    send(
+      first,
       { data: { text: "The first answer" }, event: "text" },
       {
         data: { href: "/issues/LEGION-3", id: "LEGION-3", kind: "issue", title: "Instruments" },
         event: "item",
       },
-      { data: { age_ms: 4200, source: "live" }, event: "roster" },
-    ] satisfies GoingEvent[]) {
-      first?.send(frame);
-    }
+      { data: { age_ms: 4200, source: "live" }, event: "roster" }
+    );
     await waitFor(() =>
       expect(screen.getByTestId("going-answer-item")).toHaveAttribute("href", "/issues/LEGION-3")
     );
@@ -153,14 +159,14 @@ test("one more letter keeps the answer on the screen as the earlier words', with
     ]);
     expect(within(panel).getByTestId("going-answer-roster")).toHaveTextContent("roster 4 s old");
     // A frame the let-go stream still delivers changes nothing of what the panel keeps.
-    first?.send({ data: { text: " and more" }, event: "text" });
+    send(first, { data: { text: " and more" }, event: "text" });
     await tick(0);
     expect(screen.getByTestId("going-answer-text").textContent).toBe("The first answer");
 
     // Through the pause, the next question and its first frame, which is no text, it stays.
     await tick(MEANING_PAUSE_MS);
     await waitFor(() => expect(streams).toHaveLength(2));
-    streams[1]?.send({
+    send(streams[1], {
       data: {
         act: false,
         actions: [{ action: "none", confidence: 0.9, probability: null }],
@@ -174,7 +180,7 @@ test("one more letter keeps the answer on the screen as the earlier words', with
     expect(screen.getByTestId("going-answer-text").textContent).toBe("The first answer");
 
     // The next answer's first words take its place, and nothing of the kept answer stays.
-    streams[1]?.send({ data: { text: "The second answer" }, event: "text" });
+    send(streams[1], { data: { text: "The second answer" }, event: "text" });
     await waitFor(() =>
       expect(screen.getByTestId("going-answer-text").textContent).toBe("The second answer")
     );
@@ -211,7 +217,7 @@ test("the render the next letter makes already draws the answer typed past, mark
     await type(user, "astrolabe");
     await tick(pauseRest);
     await waitFor(() => expect(streams).toHaveLength(1));
-    streams[0]?.send({ data: { text: "The first answer" }, event: "text" });
+    send(streams[0], { data: { text: "The first answer" }, event: "text" });
     await waitFor(() =>
       expect(screen.getByTestId("going-answer-text")).toHaveTextContent("The first answer")
     );
@@ -241,8 +247,11 @@ test("a kept answer cut off before it finished says so beside the words it answe
     await type(user, "astrolabe");
     await tick(pauseRest);
     await waitFor(() => expect(streams).toHaveLength(1));
-    streams[0]?.send({ data: { text: "The first answer" }, event: "text" });
-    streams[0]?.send({ data: { items: 0, words: 3 }, event: "end" });
+    send(
+      streams[0],
+      { data: { text: "The first answer" }, event: "text" },
+      { data: { items: 0, words: 3 }, event: "end" }
+    );
     await waitFor(() =>
       expect(screen.getByTestId("going-answer")).toHaveAttribute("data-state", "ended")
     );
@@ -256,7 +265,7 @@ test("a kept answer cut off before it finished says so beside the words it answe
     // its line says it stopped there.
     await tick(MEANING_PAUSE_MS);
     await waitFor(() => expect(streams).toHaveLength(2));
-    streams[1]?.send({ data: { text: "The second" }, event: "text" });
+    send(streams[1], { data: { text: "The second" }, event: "text" });
     await waitFor(() =>
       expect(screen.getByTestId("going-answer-text")).toHaveTextContent("The second")
     );
@@ -278,8 +287,11 @@ test("a next run that finds no answer or fails takes the kept answer's place, an
     await type(user, "astrolabe");
     await tick(pauseRest);
     await waitFor(() => expect(streams).toHaveLength(1));
-    streams[0]?.send({ data: { text: "The first answer" }, event: "text" });
-    streams[0]?.send({ data: { items: 0, words: 3 }, event: "end" });
+    send(
+      streams[0],
+      { data: { text: "The first answer" }, event: "text" },
+      { data: { items: 0, words: 3 }, event: "end" }
+    );
     await waitFor(() =>
       expect(screen.getByTestId("going-answer")).toHaveAttribute("data-state", "ended")
     );
@@ -290,12 +302,12 @@ test("a next run that finds no answer or fails takes the kept answer's place, an
     // earlier words' answer is gone.
     await tick(MEANING_PAUSE_MS);
     await waitFor(() => expect(streams).toHaveLength(2));
-    streams[1]?.send({ data: {}, event: "none" });
+    send(streams[1], { data: {}, event: "none" });
     await screen.findByTestId("going-answer-none");
     expect(screen.queryByTestId("going-answer-stale")).not.toBeInTheDocument();
     expect(screen.queryByTestId("going-answer-text")).not.toBeInTheDocument();
     expect(screen.getAllByRole("option").length).toBeGreaterThan(0);
-    streams[1]?.send({ data: { items: 0, words: 0 }, event: "end" });
+    send(streams[1], { data: { items: 0, words: 0 }, event: "end" });
 
     // Typed past an answer that had no words, the panel has nothing to keep.
     await type(user, "e");
@@ -304,7 +316,7 @@ test("a next run that finds no answer or fails takes the kept answer's place, an
     // And a failure takes the kept answer's place as a none does.
     await tick(pauseRest);
     await waitFor(() => expect(streams).toHaveLength(3));
-    streams[2]?.send({ data: { text: "The third answer" }, event: "text" });
+    send(streams[2], { data: { text: "The third answer" }, event: "text" });
     await waitFor(() =>
       expect(screen.getByTestId("going-answer-text")).toHaveTextContent("The third answer")
     );
@@ -312,7 +324,7 @@ test("a next run that finds no answer or fails takes the kept answer's place, an
     await expectKeptFor("astrolabese");
     await tick(MEANING_PAUSE_MS);
     await waitFor(() => expect(streams).toHaveLength(4));
-    streams[3]?.send({ data: { code: GOING_ERROR_ANSWER_FAILED }, event: "error" });
+    send(streams[3], { data: { code: GOING_ERROR_ANSWER_FAILED }, event: "error" });
     expect(await screen.findByTestId("going-answer-error")).toHaveAttribute("role", "alert");
     expect(screen.queryByTestId("going-answer-stale")).not.toBeInTheDocument();
     expect(screen.queryByTestId("going-answer-text")).not.toBeInTheDocument();
@@ -331,7 +343,7 @@ test("emptying the box lets the kept answer go for good, and so does closing the
     await type(user, "astrolabe");
     await tick(pauseRest);
     await waitFor(() => expect(streams).toHaveLength(1));
-    streams[0]?.send({ data: { text: "The first answer" }, event: "text" });
+    send(streams[0], { data: { text: "The first answer" }, event: "text" });
     await user.keyboard("s");
     await expectKeptFor("astrolabe");
 
@@ -344,8 +356,11 @@ test("emptying the box lets the kept answer go for good, and so does closing the
     // An answer to these words, typed past and kept, then the bar closed.
     await tick(pauseRest);
     await waitFor(() => expect(streams).toHaveLength(2));
-    streams[1]?.send({ data: { text: "The sextant answer" }, event: "text" });
-    streams[1]?.send({ data: { items: 0, words: 3 }, event: "end" });
+    send(
+      streams[1],
+      { data: { text: "The sextant answer" }, event: "text" },
+      { data: { items: 0, words: 3 }, event: "end" }
+    );
     await waitFor(() =>
       expect(screen.getByTestId("going-answer")).toHaveAttribute("data-state", "ended")
     );
@@ -373,7 +388,7 @@ async function keepAnAnswer(user: UserEvent): Promise<void> {
   await type(user, "astrolabe");
   await tick(pauseRest);
   await waitFor(() => expect(streams).toHaveLength(1));
-  streams[0]?.send({ data: { text: "The first answer" }, event: "text" });
+  send(streams[0], { data: { text: "The first answer" }, event: "text" });
   await waitFor(() =>
     expect(screen.getByTestId("going-answer-text")).toHaveTextContent("The first answer")
   );
@@ -445,7 +460,7 @@ test("closing the bar cancels the run out, and a run that ended is never cancell
     await type(user, "sextant");
     await tick(pauseRest);
     await waitFor(() => expect(streams).toHaveLength(2));
-    streams[1]?.send({ data: { items: 0, words: 2 }, event: "end" });
+    send(streams[1], { data: { items: 0, words: 2 }, event: "end" });
     await waitFor(() =>
       expect(screen.getByTestId("going-answer")).toHaveAttribute("data-state", "ended")
     );
@@ -464,8 +479,8 @@ test("each frame of the stream is drawn as its own line, and the item frames are
     await type(user, "astrolabe");
     await tick(pauseRest);
     await waitFor(() => expect(streams).toHaveLength(1));
-    const stream = streams[0];
-    for (const frame of [
+    send(
+      streams[0],
       {
         // As the server sends it: every punctuation byte escaped, and no word a renderer would
         // link on its own (the server drops those).
@@ -481,10 +496,8 @@ test("each frame of the stream is drawn as its own line, and the item frames are
       { data: { words: 120 }, event: "cut" },
       { data: { dropped: 1 }, event: "changed" },
       { data: { age_ms: 4200, source: "live" }, event: "roster" },
-      { data: { items: 1, words: 120 }, event: "end" },
-    ] satisfies GoingEvent[]) {
-      stream?.send(frame);
-    }
+      { data: { items: 1, words: 120 }, event: "end" }
+    );
     const text = await screen.findByTestId("going-answer-text");
     await waitFor(() =>
       expect(text).toHaveTextContent(
@@ -514,8 +527,7 @@ test("no answer text says none was found, and an answer citing nothing says it r
     await type(user, "astrolabe");
     await tick(pauseRest);
     await waitFor(() => expect(streams).toHaveLength(1));
-    streams[0]?.send({ data: {}, event: "none" });
-    streams[0]?.send({ data: { items: 0, words: 0 }, event: "end" });
+    send(streams[0], { data: {}, event: "none" }, { data: { items: 0, words: 0 }, event: "end" });
     await screen.findByTestId("going-answer-none");
     expect(screen.queryByTestId("going-answer-no-source")).not.toBeInTheDocument();
     expect(screen.getAllByRole("option").length).toBeGreaterThan(0);
@@ -523,9 +535,12 @@ test("no answer text says none was found, and an answer citing nothing says it r
     await user.keyboard("s");
     await tick(MEANING_PAUSE_MS);
     await waitFor(() => expect(streams).toHaveLength(2));
-    streams[1]?.send({ data: { text: "Plain words" }, event: "text" });
-    streams[1]?.send({ data: { age_ms: 0, source: "stored" }, event: "roster" });
-    streams[1]?.send({ data: { items: 0, words: 2 }, event: "end" });
+    send(
+      streams[1],
+      { data: { text: "Plain words" }, event: "text" },
+      { data: { age_ms: 0, source: "stored" }, event: "roster" },
+      { data: { items: 0, words: 2 }, event: "end" }
+    );
     await screen.findByTestId("going-answer-no-source");
     expect(screen.getByTestId("going-answer-roster")).toHaveTextContent("live roster unavailable");
     expect(screen.queryByTestId("going-answer-none")).not.toBeInTheDocument();
@@ -540,7 +555,7 @@ test("reopening the bar draws the last answered run again from its stream's firs
   await type(user, "astrolabe");
   await tick(pauseRest);
   await waitFor(() => expect(streams).toHaveLength(1));
-  streams[0]?.send({ data: { items: 0, words: 1 }, event: "end" });
+  send(streams[0], { data: { items: 0, words: 1 }, event: "end" });
   await waitFor(() =>
     expect(screen.getByTestId("going-answer")).toHaveAttribute("data-state", "ended")
   );

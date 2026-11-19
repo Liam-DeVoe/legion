@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE } from "@legion/contracts";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
@@ -44,8 +44,10 @@ async function askAndAnswer(user: UserEvent, words: string, text: string): Promi
   await waitFor(() => expect(screen.getAllByRole("option").length).toBeGreaterThan(0));
   await tick(MEANING_PAUSE_MS - KEYSTROKE_DEBOUNCE_MS);
   await waitFor(() => expect(spies.streams).toHaveLength(asked + 1));
-  spies.streams[asked]?.send({ data: { text }, event: "text" });
-  spies.streams[asked]?.send({ data: { items: 0, words: 2 }, event: "end" });
+  act(() => {
+    spies.streams[asked]?.send({ data: { text }, event: "text" });
+    spies.streams[asked]?.send({ data: { items: 0, words: 2 }, event: "end" });
+  });
   await waitFor(() => expect(screen.getByTestId("going-answer-text")).toHaveTextContent(text));
 }
 

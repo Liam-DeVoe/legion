@@ -7,21 +7,23 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 )
 
-// EnforceCookieOrigin is the cross-site check every write a browser's session cookie carries is
-// held to: a POST, PUT, PATCH or DELETE that presents the cookie and no Authorization header runs
-// only when its Origin is this deployment's public origin (PublicOrigin), or when it sends no
-// Origin and the browser says the request is same-origin (Sec-Fetch-Site). Any other is 403
-// {"error": "invalid request origin"}, before the route sees it. A bearer, and a request with no
-// cookie, pass through: a page on another site cannot make a browser send either.
+// EnforceCookieOrigin is the cross-site check every write a browser's credential carries is held
+// to: a POST, PUT, PATCH or DELETE that presents a session cookie or an IAP assertion (under IAP
+// the browser sends IAP's cookie, for which IAP adds a valid assertion) and no Authorization
+// header runs only when its Origin is this deployment's public origin (PublicOrigin), or when it
+// sends no Origin and the browser says the request is same-origin (Sec-Fetch-Site). Any other is
+// 403 {"error": "invalid request origin"}, before the route sees it. A bearer, and a request with
+// neither credential, pass through: a page on another site cannot make a browser send either.
 //
 // It is the one check: routes.New wraps the whole server in it, and register wraps the route
 // table the going writes call in-process in it too (server.inProcess), so a write the command bar
 // performs as its caller is held to the origin exactly as the caller's own request was.
 func EnforceCookieOrigin(serverURL string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if !unsafeMethod(req.Method) || strings.TrimSpace(req.Header.Get("Authorization")) != "" || !auth.HasSessionCookie(req) {
+		if !unsafeMethod(req.Method) || strings.TrimSpace(req.Header.Get("Authorization")) != "" || !auth.HasSessionCookie(req) && !identity.HasIAPAssertion(req) {
 			next.ServeHTTP(w, req)
 			return
 		}

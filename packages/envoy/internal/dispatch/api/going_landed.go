@@ -70,10 +70,12 @@ type goingAnswerSink struct {
 	answer atomic.Pointer[goingSunkAnswer]
 }
 
-// goingSunkAnswer is one answer a route handed its request's landing.
+// goingSunkAnswer is one answer a route handed its request's landing: the status, and the value
+// the landing encodes in the commit step (goingLanding.step), a func() any being called there
+// first.
 type goingSunkAnswer struct {
 	status int
-	body   json.RawMessage
+	value  any
 }
 
 // goingRecordAnswer hands the landing of the request ctx belongs to the status and the value its
@@ -83,19 +85,19 @@ type goingSunkAnswer struct {
 // just before their commit - an issue's update, create, claim and release, an ask's edit and open,
 // a thread's resolve, a follow, a document's edit and upload, an approval request, and a send to
 // an agent, whose answer names the message it stored - and nothing else is changed of them: off
-// the bar's in-process path it does nothing. A value that does not encode is logged and recorded
-// as none, which leaves a write taken over after its process ended with what it left unread.
+// the bar's in-process path it does nothing. The value is encoded in the commit step, after the
+// transaction's queued writes have run, and a route whose answer holds what that write phase
+// fills in - the id of the event it queued, as an opened ask's opened_event_id, or the last_seq
+// an issue update's events leave - hands a func() any building it, which the step calls then, so
+// the record holds what the route answers once its Commit has run. A value that does not encode
+// is logged and recorded as none, which leaves a write taken over after its process ended with
+// what it left unread.
 func goingRecordAnswer(ctx context.Context, status int, value any) {
 	sink, carries := ctx.Value(goingAnswerKey{}).(*goingAnswerSink)
 	if !carries {
 		return
 	}
-	body, err := json.Marshal(value)
-	if err != nil {
-		slog.Warn("dispatch: hand a going request's landing what its route answers", "error", err)
-		return
-	}
-	sink.answer.Store(&goingSunkAnswer{status: status, body: body})
+	sink.answer.Store(&goingSunkAnswer{status: status, value: value})
 }
 
 // goingWithoutAnswers is requests without the answers their routes recorded beside their landings
@@ -296,7 +298,15 @@ func (landing goingLanding) step(running *atomic.Bool, sink *goingAnswerSink) st
 		}
 		request := landing.request
 		if sunk := sink.answer.Load(); sunk != nil {
-			request.Outcome.Status, request.Answer = sunk.status, sunk.body
+			value := sunk.value
+			if build, deferred := value.(func() any); deferred {
+				value = build()
+			}
+			if body, err := json.Marshal(value); err != nil {
+				slog.Warn("dispatch: hand a going request's landing what its route answers", "error", err)
+			} else {
+				request.Outcome.Status, request.Answer = sunk.status, body
+			}
 		}
 		encoded, err := json.Marshal(request)
 		if err != nil {

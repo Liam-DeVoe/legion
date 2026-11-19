@@ -20,7 +20,7 @@ import { deliveryOutcomeState } from "../conversation/delivery";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { SendExpiredError, SendInterruptedError, SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
-import { useWriteSelection, useWrites, writeUnsettled } from "../writes/write-store";
+import { isLive, useWriteSelection, useWrites } from "../writes/write-store";
 import {
   type BroadcastSend,
   type BroadcastSendRow,
@@ -189,7 +189,7 @@ export function BroadcastSends({
                 className={row.status === "failed" ? dangerText : textSecondaryOnSurface}
                 role="status"
               >
-                {row.signingOutElsewhere && writeUnsettled(row) ? (
+                {row.signingOutElsewhere && isLive(row) ? (
                   `Waiting for a sign-out in another tab: to ${count}`
                 ) : row.status === "queued" ? (
                   `Queued: to ${count}`

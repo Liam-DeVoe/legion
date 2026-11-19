@@ -42,15 +42,17 @@ import (
 // carries: the two credentials, the two the cross-site check reads, and the login the write was
 // pressed as (refuseChangedLogin). No other header of the caller's rides along, so nothing the
 // caller sent can change what a route decides beyond what the caller's own request to that route
-// would have. The one exception is a deployment that names its people by a trusted header
-// (identity.HeaderIdentity, a local and test mode): there that header is the caller's credential,
-// so it is carried too, and it alone.
+// would have. The one exception is a deployment that names its people by a header: one that
+// trusts a header of its own (identity.HeaderIdentity, a local and test mode), and one behind
+// Identity-Aware Proxy, which names them by the assertion IAP signs (identity.IAPIdentity). There
+// that header is the caller's credential, so it is carried too, and it alone.
 var goingCredentialHeaders = []string{"Authorization", "Cookie", "Origin", "Sec-Fetch-Site", contracts.DispatchLoginHeader}
 
 // goingInProcess is the server's own route table called as one caller: every request it is given
 // carries that caller's credential headers, its host and its peer, and is served by the whole
-// chain a request off the network is (server.inProcess). identityHeader is the trusted header a
-// header-identity deployment names its people by, "" on every other.
+// chain a request off the network is (server.inProcess). identityHeader is the header a
+// deployment that names its people by one reads the caller from - its own trusted header, or
+// IAP's assertion - and "" on every other.
 type goingInProcess struct {
 	handler        http.Handler
 	caller         *http.Request
@@ -60,8 +62,11 @@ type goingInProcess struct {
 // goingDoer is the route table called in-process as the caller of r.
 func (s *server) goingDoer(r *http.Request) GoingDoer {
 	doer := goingInProcess{handler: s.inProcess, caller: r}
-	if header, trusted := s.deps.Identity.(identity.HeaderIdentity); trusted {
-		doer.identityHeader = header.Header
+	switch deployed := s.deps.Identity.(type) {
+	case identity.HeaderIdentity:
+		doer.identityHeader = deployed.Header
+	case identity.IAPIdentity:
+		doer.identityHeader = identity.IAPAssertionHeader
 	}
 	return doer
 }
