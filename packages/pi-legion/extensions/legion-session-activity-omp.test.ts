@@ -21,6 +21,7 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { taskStandIn } from "@legion/pi-shared/test/task-stand-in";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 // What the pinned Oh My Pi reports of a role session's own background work (INFRA-945), which is
 // the whole input to the daemon's idle rule: a claim that reports background work keeps its pod,
@@ -58,6 +59,9 @@ const { skip, setup } = ompNatsGuard();
 const ROLE = "implementer";
 const TREE = "ACT-1";
 const ISSUE = "ACT-2";
+
+/** The registration secret the stand-in daemon answers. */
+const REGISTRATION_SECRET = fixtureSecret("reg");
 
 /**
  * The daemon's assignment, a task the pane takes. Every turn of the role's own conversation
@@ -221,7 +225,7 @@ async function startRolePane(): Promise<RolePane> {
         issue: ISSUE,
         role: ROLE,
         generation: 1,
-        secret: "act-secret",
+        secret: REGISTRATION_SECRET,
         ...tasks.registered(),
       });
     }

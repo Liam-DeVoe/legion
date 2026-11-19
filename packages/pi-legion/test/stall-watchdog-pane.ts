@@ -20,6 +20,7 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { taskStandIn } from "@legion/pi-shared/test/task-stand-in";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { writtenLines } from "@legion/test-fixtures/transcript-lines";
 import { STALL_RESTART_MESSAGE } from "../src/stall-abort";
 import {
@@ -42,6 +43,11 @@ const PROJECT = "watch";
 export const ROLE = "implementer";
 const TREE = "WATCH-1";
 export const ISSUE = "WATCH-2";
+
+/** The registration secret the stand-in daemon answers, and the boot token the pane starts with:
+ * random, as the daemon's are, since the pane holds each (`@legion/contracts/held-secrets`). */
+const REGISTRATION_SECRET = fixtureSecret("reg");
+const BOOT_TOKEN = fixtureSecret("boot");
 
 /** The daemon's assignment, a task the pane takes. Every turn of the pane's own conversation
  * carries it, which is what tells a turn from a side request. */
@@ -415,7 +421,7 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
         issue: ISSUE,
         role: ROLE,
         generation: 1,
-        secret: `${PROJECT}-secret`,
+        secret: REGISTRATION_SECRET,
         ...tasks.registered(),
       });
     }
@@ -499,7 +505,7 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
         LEGION_ISSUE: ISSUE,
         LEGION_GENERATION: "1",
         LEGION_PROJECT: PROJECT,
-        LEGION_BOOT_TOKEN: `${PROJECT}-boot`,
+        LEGION_BOOT_TOKEN: BOOT_TOKEN,
         LEGION_STATE_DIR: options.stateDir,
         LEGION_WORKSPACE: workspace,
         LEGION_STALL_CALL_GRACE_MS: "1000",

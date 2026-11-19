@@ -50,6 +50,7 @@ import {
   spawnRpc,
 } from "@legion/pi-shared/test/omp-harness";
 import { publishTaskFrame, taskStandIn } from "@legion/pi-shared/test/task-stand-in";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { connect } from "nats";
 
 const [cooldownArg, driveArg, evidence] = process.argv.slice(2);
@@ -464,6 +465,10 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
   const tasks = taskStandIn();
   const claimToken = `legion-${run.label}-${run.key.toLowerCase()}-architect`;
   let paneSession = "";
+  // The pane's registration secret and boot token: random, as the daemon's are, since the pane
+  // holds each and scrubs it from every line it prints (`@legion/contracts/held-secrets`).
+  const registrationSecret = fixtureSecret("reg");
+  const bootToken = fixtureSecret("boot");
 
   const record = (at: number, model: string, what: string): void => {
     pane.served.push({ at, model, answer: what });
@@ -502,7 +507,7 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
         issue: run.key,
         role: "architect",
         generation: 1,
-        secret: `${run.label}-secret`,
+        secret: registrationSecret,
         ...tasks.registered(),
       });
     }
@@ -551,7 +556,7 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
         LEGION_TREE: run.key,
         LEGION_ISSUE: run.key,
         LEGION_GENERATION: "1",
-        LEGION_BOOT_TOKEN: `${run.label}-boot`,
+        LEGION_BOOT_TOKEN: bootToken,
         LEGION_STATE_DIR: state,
         LEGION_WORKSPACE: workspace,
         LEGION_REFUSAL_COOLDOWN_MS: String(cooldownMs),

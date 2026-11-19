@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { LegionTakeResponse, type LegionTask } from "@legion/contracts/legion-api";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { claimCaller, createLegionDaemonClient } from "./daemon-client";
 import {
   envoyPluginInterface,
@@ -23,8 +24,10 @@ function daemonFixture(name: string): Record<string, unknown> {
 const registered = daemonFixture("register.json");
 const current = daemonFixture("task.json");
 const claimToken = String(registered.claimToken);
+/** The boot token the pane hands a registering session. */
+const BOOT_TOKEN = fixtureSecret("boot");
 const registration = {
-  bootToken: "boot-token-from-the-pane",
+  bootToken: BOOT_TOKEN,
   sessionId: "ses_claim",
   ompSessionFile: "/sessions/ses_claim.jsonl",
   agentId: "ses_claim",

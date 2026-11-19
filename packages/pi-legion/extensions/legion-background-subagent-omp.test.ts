@@ -18,6 +18,7 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { taskStandIn } from "@legion/pi-shared/test/task-stand-in";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 // On the real Oh My Pi: a Legion role pane dispatches `deep-worker`, gets its
 // `task` call back while the subagent is still running, reads a message that arrives in the
@@ -43,6 +44,10 @@ const { skip, setup } = ompNatsGuard();
 const ROLE = "implementer";
 const TREE = "BGSUB-1";
 const ISSUE = "BGSUB-2";
+
+/** The registration secret the stand-in daemon answers, and the boot token the pane starts with. */
+const REGISTRATION_SECRET = fixtureSecret("reg");
+const BOOT_TOKEN = fixtureSecret("boot");
 
 /**
  * The daemon's assignment, a task the pane takes. Every turn of the role's own conversation
@@ -406,7 +411,7 @@ async function startRolePane(): Promise<RolePane> {
         issue: ISSUE,
         role: ROLE,
         generation: 1,
-        secret: "bgsub-secret",
+        secret: REGISTRATION_SECRET,
         ...tasks.registered(),
       });
     }
@@ -467,7 +472,7 @@ async function startRolePane(): Promise<RolePane> {
         LEGION_ISSUE: ISSUE,
         LEGION_GENERATION: "1",
         LEGION_PROJECT: "bgsub",
-        LEGION_BOOT_TOKEN: "bgsub-boot",
+        LEGION_BOOT_TOKEN: BOOT_TOKEN,
         LEGION_STATE_DIR: path.join(workspace, ".state"),
         LEGION_WORKSPACE: workspace,
       },
