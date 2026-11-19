@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"time"
@@ -831,6 +832,14 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 	if err != nil {
 		slog.Info("dispatch: GitHub named no pull request for a result's commit",
 			"repo", *repo, "commit", result.CommitSHA, "error", err)
+		if errors.Is(err, delivery.ErrReadThroughNotStored) {
+			// Nothing was stored, so the claim protects no GitHub answer: give it back, so the
+			// next read asks again at once rather than CommitPullReadStaleAfter later.
+			if err := c.server.commitPulls.ReleaseAcrossProcesses(ctx, c.server.deps.Store.Pool, *repo, result.CommitSHA, now); err != nil {
+				slog.Info("dispatch: the claim of a read that stored nothing was not given back, so the next read waits it out",
+					"repo", *repo, "commit", result.CommitSHA, "error", err)
+			}
+		}
 		return
 	}
 	if written > 0 && !atHead {

@@ -211,9 +211,13 @@ const claimCommitPullReadSQL = `
 
 // SettleAcrossProcesses is Settle for every process: it records CommitPullSettledFor past now in
 // this process's memory and in the claim every process shares, where it keeps the later of that
-// moment and the one held.
+// moment and the one held. The write runs on a context its caller's end cannot cancel, bounded by
+// commitPullRecordTimeout: its caller is a request, and a client that hangs up after GitHub
+// answered must not cost the next read a second ask within the hour.
 func (c *CommitPullReads) SettleAcrossProcesses(ctx context.Context, pool *store.Pool, repoFull, sha string, now time.Time) error {
 	c.Settle(repoFull, sha, now)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitPullRecordTimeout)
+	defer cancel()
 	if _, err := pool.Exec(ctx, `
 		insert into commit_pull_reads as held (repo, sha, not_before) values ($1, $2, $3)
 		on conflict (repo, sha) do update set not_before = greatest(held.not_before, excluded.not_before)`,
@@ -222,3 +226,34 @@ func (c *CommitPullReads) SettleAcrossProcesses(ctx context.Context, pool *store
 	}
 	return nil
 }
+
+// ReleaseAcrossProcesses gives back the claim ClaimAcrossProcesses granted at now, in this
+// process's memory and in the claim every process shares, so the next read of the pair asks
+// GitHub at once. Its one caller is a read-through whose answer was not stored
+// (ErrReadThroughNotStored): the claim bounds how often GitHub is asked, and a read that stored
+// nothing has left nothing for the bound to protect, so holding it would leave the result at no
+// head for CommitPullReadStaleAfter for no saving. It gives back only that claim: a moment later
+// than it, which a settle or another process's later claim recorded, stays. The write runs on a
+// context its caller's end cannot cancel, bounded by commitPullRecordTimeout, as the settle's does.
+func (c *CommitPullReads) ReleaseAcrossProcesses(ctx context.Context, pool *store.Pool, repoFull, sha string, now time.Time) error {
+	claimed := now.Add(CommitPullReadStaleAfter)
+	key := commitPullKey{repo: repoFull, sha: sha}
+	c.mu.Lock()
+	if until, found := c.notBefore[key]; found && !until.After(claimed) {
+		delete(c.notBefore, key)
+	}
+	c.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitPullRecordTimeout)
+	defer cancel()
+	if _, err := pool.Exec(ctx, `delete from commit_pull_reads where repo = $1 and sha = $2 and not_before <= $3`,
+		repoFull, sha, claimed); err != nil {
+		return fmt.Errorf("give back the claim of the read of the pull requests of %s at %s: %w", repoFull, sha, err)
+	}
+	return nil
+}
+
+// commitPullRecordTimeout bounds one write of the claim every process shares that a read-through
+// makes after GitHub answered (SettleAcrossProcesses, ReleaseAcrossProcesses). Each is one
+// statement, which a healthy database answers in milliseconds, as githubapp bounds its one write
+// of a limit (limitRecordTimeout).
+const commitPullRecordTimeout = 5 * time.Second

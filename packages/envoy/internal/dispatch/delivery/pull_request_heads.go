@@ -1179,13 +1179,24 @@ func repositoryUnreadable(err error) bool {
 // function's key is its argument's, not its caller's, and a caller that hands over a name it
 // has not canonicalised must still write no row under a name a repository was renamed away
 // from.
+//
+// The read runs on a context its caller's end cannot cancel, bounded by ReadThroughTimeout. Both
+// callers are requests (api/results.go, api/results_comparison.go), and a client that hangs up
+// cancels its request: on the caller's own context that cut the head write short, and the read's
+// claim (CommitPullReads) then held the commit off for CommitPullReadStaleAfter with nothing
+// stored (2026-11-19T17:09:59Z, cybermonklabs/legion#4490, "context canceled"). A failure of
+// Dispatch's own database before or after GitHub's answer is ErrReadThroughNotStored, which the
+// read-time caller answers by giving its claim back (CommitPullReads.ReleaseAcrossProcesses); a
+// failure of GitHub's is not, since GitHub was asked and the claim bounds how often it is.
 func ReadThroughCommitPulls(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client,
 	repoFull, sha string, now time.Time,
 ) (written int, atHead bool, err error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ReadThroughTimeout)
+	defer cancel()
 	canonical, err := refs.CanonicalRepo(ctx, pool, repoFull)
 	if err != nil {
-		return 0, false, err
+		return 0, false, readThroughNotStored(err)
 	}
 	owner, repo, token, err := repositoryRead(ctx, client, canonical)
 	if err != nil {
@@ -1194,7 +1205,7 @@ func ReadThroughCommitPulls(
 	owed := owedReadsIn(ctx, pool, canonical)
 	began, err := startRead(ctx, pool)
 	if err != nil {
-		return 0, false, err
+		return 0, false, readThroughNotStored(err)
 	}
 	pulls, err := fetchCommitPullPayloads(ctx, client, token, owner, repo, sha)
 	if err != nil {
@@ -1207,14 +1218,14 @@ func ReadThroughCommitPulls(
 		if PullRequestHeadState(pull.State, pull.Merged || pull.MergedAt != nil) == "closed" {
 			held, err := pullRequestHeld(ctx, pool, canonical, pull.Number)
 			if err != nil {
-				return written, atHead, err
+				return written, atHead, readThroughNotStored(err)
 			}
 			if !held {
 				continue
 			}
 		}
 		if _, err := storePullRequestFacts(ctx, pool, client, token, canonical, repoFull, pull, &now, began, false, false); err != nil {
-			return written, atHead, err
+			return written, atHead, readThroughNotStored(err)
 		}
 		written++
 		for _, read := range owed[pull.Number] {
@@ -1225,6 +1236,24 @@ func ReadThroughCommitPulls(
 		}
 	}
 	return written, atHead, nil
+}
+
+// ReadThroughTimeout bounds one read-through (ReadThroughCommitPulls) from its first read to its
+// last write. It is the bound intakeMessageTimeout gives the same work for one envelope: a read
+// of GitHub's pull requests (githubapp.RequestTimeout each call, githubPageAttempts each page),
+// the pages of commit messages a pull request needs, and the head write. A var so a test can
+// shrink it; nothing outside a test writes it.
+var ReadThroughTimeout = time.Minute
+
+// ErrReadThroughNotStored marks a read-through that failed in Dispatch's own database: before it
+// asked GitHub (the canonical name, the start of the read) or after GitHub answered (a stored
+// row read, the write of a pull request's facts). No claim of the read may outlast it: what
+// GitHub answered, or would have, is not stored, and nothing but another read stores it.
+var ErrReadThroughNotStored = errors.New("the read-through's answer was not stored")
+
+// readThroughNotStored marks err as ErrReadThroughNotStored, keeping err itself inside the mark.
+func readThroughNotStored(err error) error {
+	return fmt.Errorf("%w: %w", ErrReadThroughNotStored, err)
 }
 
 // pullRequestHeld reports whether Dispatch holds a results row of pull request number of the
