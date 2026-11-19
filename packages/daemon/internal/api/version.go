@@ -2161,7 +2161,8 @@ package api
 // that step would walk (the newest plan its owner gave, or the project's default steps) and stops
 // that plan's task, and a task the plan does not hold is refused before anything is written. A
 // stopped task starts again at its first step on a later version of the plan that changes it
-// (register_plan), or on a root on a person's `todo`. `POST
+// (register_plan), or on a root on a person's `todo`; one that never started waits for its gate
+// and its line first, as any task does before its first step. `POST
 // /legion/v1/handoff/complete` takes one optional field, `returnTo`, the place of the step of the
 // issue's running task, 1 for its first, that a tester's completion with the verdict `fail` sends
 // the task back to: below 1 it is refused `400 INVALID_RETURN_TO`, and on any completion that
