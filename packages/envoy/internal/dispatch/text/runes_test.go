@@ -95,15 +95,18 @@ type pair struct {
 }
 
 // copiesNothing fails t when HeadRunes makes an allocation for any of pairs, each of which has an
-// answer that is, by the reference, a slice of its value. It counts all of them at once, then one
-// at a time to name the pair that copied.
+// answer that is, by the reference, a slice of its value. A copy that HeadRunes makes of a pair on
+// each call is found by one counted run of all the pairs, and ten counted runs confirm it, since
+// their mean, a whole number, leaves out fewer than ten allocations of something else. It then
+// counts the pairs one at a time to name the pair that copied.
 func copiesNothing(t *testing.T, pairs []pair) {
 	t.Helper()
-	if testing.AllocsPerRun(10, func() {
+	all := func() {
 		for _, p := range pairs {
 			sink = HeadRunes(p.value, p.limit)
 		}
-	}) == 0 {
+	}
+	if testing.AllocsPerRun(1, all) == 0 || testing.AllocsPerRun(10, all) == 0 {
 		return
 	}
 	for _, p := range pairs {
@@ -212,8 +215,12 @@ func tableRunes(table *unicode.RangeTable) []rune {
 // code point, not a grapheme cluster. A count keyed on code points that no row cuts together can
 // pass, such as a mark after a code point that is no letter of its script and not among its 128
 // code points (U+0301 after e, or a tag after U+1F3F4), an Inherited mark after a letter that is
-// not the first of its script, a consonant after a linker that comes after a code point that is no
-// letter of its script (U+093C, the nukta) or after a linker and two InCB=Extend, or a pictograph
+// not the first of its script, a consonant that GB9c keeps after a linker in any case but the three
+// the rows cut (each letter of the script of the linker's consonant after each letter of that
+// script and the linker, or after the consonant, the linker and one code point of joined, and any
+// code point after the consonant and the linker), so one of another script, one after a code point
+// before the linker that is no letter of that script (U+093C, the nukta), one after a letter other
+// than the consonant, the linker and an InCB=Extend, and one after two InCB=Extend, or a pictograph
 // after another and a joiner, where the first is neither U+00A9 nor U+1F44D and the second is not
 // U+00A9.
 //
@@ -225,14 +232,17 @@ func tableRunes(table *unicode.RangeTable) []rune {
 //
 // An answer that is, by the reference, the value's own first bytes is a slice of the value, and
 // HeadRunes copies nothing for it. One row for each shape of such a pair (shapeOf) cuts every
-// pair of that shape and wants no allocation, so a copy of any one pair fails its row; two rows
-// cut four values, one of letters and one each of characters of two, three and four bytes, at each
-// length from 0 to 8,001 bytes, at every 32nd from 8,001 to 32,001 and at every 199th from 32,001
-// to 128,001, to its own length and to one character short, since an embedding input of any script
-// reaches each of those lengths. The last rows hold values longer than five bytes, each cut to a
-// slice with no copy, up to 32,000 characters, the most an embedding input keeps. Among them, a cut
-// after characters outside the BMP fails a count of UTF-16 units, and a cut before a combining mark
-// fails a count that keeps a mark with its letter.
+// pair of that shape and wants no allocation, so a copy of any one pair fails its row. Two rows
+// cut values at each length from 0 to 8,001 bytes, at every 32nd from 8,001 to 32,001 and at every
+// 199th from 32,001 to 128,001, to their own length and to one character short, since an embedding
+// input of any script reaches each of those lengths: one of letters and, for each of é, 界 and
+// U+1F54C, characters of two, three and four bytes, each arrangement of letters and one run of the
+// character: the character as a run or once, first, last or between letters, and the run alone. A
+// copy keyed on a value with two runs of wider characters or more, such as one at each end, or
+// with characters of two widths besides letters, can pass. The last rows hold values longer than
+// five bytes, each cut to a slice with no copy, up to 32,000 characters, the most an embedding
+// input keeps. Among them, a cut after characters outside the BMP fails a count of UTF-16 units,
+// and a cut before a combining mark fails a count that keeps a mark with its letter.
 func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 	const longest, limits = 5, 6
 	var values []string
@@ -382,6 +392,11 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		if joins(r) {
 			joined = append(joined, r)
 		}
+	}
+	// The fifth and sixth rows cut before the code points of joined; with none, both would hold no
+	// mark and still pass, since each of them makes other cuts too.
+	if len(joined) == 0 {
+		t.Fatal("joins holds no code point, so the fifth and sixth rows would cut before no mark")
 	}
 
 	t.Run("a cut before each code point leaves it out, after the code point itself and after each of 62 strings of one or two code points", func(t *testing.T) {
@@ -536,32 +551,62 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		cuts.check("before a mark")
 	})
 
-	// lengthPairs gives four values at every step-th length from from to to bytes, each cut to its
-	// own length in characters and to one short: one of letters, and one each of é, 界 and U+1F54C,
-	// characters of two, three and four bytes, with at its end as many letters as its length leaves
-	// over. Each value is the end of one string of its character and its letters, so it is a slice
-	// of that string and the row makes no value of its own.
+	// lengthPairs gives values at every step-th length from from to to bytes, each cut to its own
+	// length in characters and to one short. One is of letters. For each of é, 界 and U+1F54C,
+	// characters of two, three and four bytes, the others hold the character and letters, one for
+	// each arrangement of letters and one run of it: the character as a run or once, each first with
+	// letters after it, last with letters before it, or between letters, and the run alone. A run
+	// first ends in as many letters as the length leaves over; where it leaves some, the run alone is
+	// as long as the length rounded down to the character's width. A run last has one to four
+	// letters before it, and a run between letters one letter before it and one to four after it,
+	// as many as the length needs; the character once between letters stands in the middle. Each
+	// value but the run between letters is a slice of one string of its character and its letters,
+	// so for each length the row makes only that one value of its own.
 	lengthPairs := func(from, to, step int) []pair {
 		var pairs []pair
-		for _, character := range []string{"a", "é", "界", "\U0001F54C"} {
+		add := func(value string) {
+			characters := utf8.RuneCountInString(value)
+			pairs = append(pairs, pair{value, characters}, pair{value, max(characters-1, 0)})
+		}
+		letters := strings.Repeat("a", to)
+		for n := from; n <= to; n += step {
+			add(letters[:n])
+		}
+		for _, character := range []string{"é", "界", "\U0001F54C"} {
 			width := len(character)
-			ends := make([]string, width)
-			for over := range ends {
-				ends[over] = strings.Repeat(character, to/width) + strings.Repeat("a", over)
+			run := strings.Repeat(character, to/width)
+			// first[over] is the run then over letters, last[over] is over+1 letters then the run,
+			// and once is the character between two runs of letters.
+			first, last := make([]string, width), make([]string, width)
+			for over := range width {
+				first[over] = run + letters[:over]
+				last[over] = letters[:over+1] + run
 			}
+			once := letters + character + letters
 			for n := from; n <= to; n += step {
-				end := ends[n%width]
-				value := end[len(end)-n:]
-				characters := utf8.RuneCountInString(value)
-				pairs = append(pairs, pair{value, characters}, pair{value, max(characters-1, 0)})
+				end := first[n%width]
+				add(end[len(end)-n:])
+				if n < width+2 {
+					continue
+				}
+				add(last[(n-1)%width][:n])
+				after := (n-2)%width + 1
+				add("a" + run[:n-1-after] + letters[:after])
+				add(once[to : to+n])
+				add(once[to+width-n : to+width])
+				before := (n - width) / 2
+				add(once[to-before : to-before+n])
+				if n%width != 0 {
+					add(run[:n-n%width])
+				}
 			}
 		}
 		return pairs
 	}
-	t.Run("a value of letters or of characters of two, three or four bytes, of each length up to 8,001 bytes, unchanged or cut one short, copies nothing", func(t *testing.T) {
+	t.Run("a value of letters, or of a run or one of a character of two, three or four bytes first, last or between letters or alone, of each length up to 8,001 bytes, unchanged or cut one short, copies nothing", func(t *testing.T) {
 		copiesNothing(t, lengthPairs(0, 8001, 1))
 	})
-	t.Run("a value of letters or of characters of two, three or four bytes, of every 32nd length from 8,001 to 32,001 bytes and of every 199th to 128,001, unchanged or cut one short, copies nothing", func(t *testing.T) {
+	t.Run("a value of letters, or of a run or one of a character of two, three or four bytes first, last or between letters or alone, of every 32nd length from 8,001 to 32,001 bytes and of every 199th to 128,001, unchanged or cut one short, copies nothing", func(t *testing.T) {
 		copiesNothing(t, append(lengthPairs(8001, 32001, 32), lengthPairs(32001, 128001, 199)...))
 	})
 
