@@ -879,7 +879,11 @@ func (r *Runtime) waitedOut(ctx context.Context, s *sandbox) string {
 // The Secret holds the role's own directories, where the pod projects only the ones every role
 // holds (l.gitHubDirs, gitHubBundles): a key outside that projection is written and never read,
 // and the refresher keeps it current with the rest (refreshGitHubCredential), so the role's next
-// pod projects it the moment every role's bundle holds it.
+// pod projects it the moment every role's bundle holds it. Each Secret records the role its slot's
+// process runs as (launchedRoleAnnotation): the launching claim's role for its own slot, and
+// nothing, an empty record, for every other slot, whose process went with the pod this one
+// replaces, so the refresher renders those for their claims' stored roles until each one's
+// launch records its own.
 func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launch) error {
 	bundles, err := r.gitHubBundles(ctx, l)
 	if err != nil {
@@ -896,8 +900,17 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 			rendered := bundle.Dirs[dir]
 			data[GitHubHostsKey(dir)], data[GitHubConfigKey(dir)] = []byte(rendered.Hosts), []byte(rendered.Config)
 		}
+		meta := r.secretMeta(s, *l, roleSecretName(s.Name, role))
+		launched := ""
+		if role == slotOf(l.spec.Claim) {
+			launched = string(l.spec.Role)
+		}
+		if meta.Annotations == nil {
+			meta.Annotations = map[string]string{}
+		}
+		meta.Annotations[launchedRoleAnnotation] = launched
 		if err := r.upsertSecret(ctx, corev1.Secret{
-			ObjectMeta: r.secretMeta(s, *l, roleSecretName(s.Name, role)),
+			ObjectMeta: meta,
 			Type:       corev1.SecretTypeOpaque,
 			Data:       data,
 		}); err != nil {
@@ -966,7 +979,7 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 			bundle, err = r.controllerCredential(minting, "")
 		} else {
 			var role claim.Role
-			if role, err = r.slotAppRole(minting, holders, l.name, slot); err == nil {
+			if role, err = r.slotAppRole(minting, holders, l.name, slot, ""); err == nil {
 				bundle, err = r.gitHubCredential(minting, role, l.spec.Repository)
 			}
 		}
