@@ -48,11 +48,14 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // naming an owner the bundle holds no directory for — an owner the role's App is not installed
 // on — and one naming a repository a pair moved to an owner the bundle holds no directory for are
 // refused, exit 2, naming why, and the real gh never runs: no token is ever sent for a repository
-// it cannot reach. Under a GH_TOKEN or GITHUB_TOKEN, which gh sends in place of any directory's
-// token, every command is refused the same way but these: the guard's own visibility reads, which
-// run with that token (ghVisibilityRead), the shared check's visibility read
-// (sharedCheckVisibilityRead), the exact `gh api rate_limit` (ghRateLimitRead) and `gh auth
-// git-credential`.
+// it cannot reach, but by one exception, R4 of dispatch://INFRA-3399 (ghroute.TargetOf): a call
+// that writes nothing, names only owners the bundle holds no directory for and names no
+// repository a configured rename moves, in a working directory whose remotes name no github.com
+// repository for it, keeps GH_CONFIG_DIR, as a command naming no owner does. Under a GH_TOKEN or
+// GITHUB_TOKEN, which gh sends in place of any directory's token, every command is refused the
+// same way but these: the guard's own visibility reads, which run with that token
+// (ghVisibilityRead), the shared check's visibility read (sharedCheckVisibilityRead), the exact
+// `gh api rate_limit` (ghRateLimitRead) and `gh auth git-credential`.
 //
 // ghroute.TargetOf reads each command from gh's own help, which gh prints the same way until its
 // binary, its configuration, its extensions or the variables it prints under change: runGh keeps

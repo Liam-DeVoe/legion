@@ -129,7 +129,8 @@ func legionGhIn(t *testing.T, dir string, env map[string]string, stdin string, a
 // reads each command from the real gh's own help. The real gh runs with GH_PATH naming the `gh`
 // wrapper first on PATH, so the git gh runs asks `legion gh auth git-credential`, which answers by
 // the path's owner as `legion git-credential` does; with useHttpPath on for github.com, and gh's
-// update check and prompts off. A command naming an owner the bundle holds no directory for is
+// update check and prompts off. A read naming only an owner the bundle holds no directory for
+// runs with GH_CONFIG_DIR's directory (R4 of dispatch://INFRA-3399); a write naming one is
 // refused, exit 2, naming the owner, and so are one it cannot read, a gh alias, and any command
 // when PATH's first gh is the real gh; the real gh never runs. In a clone of an owner's
 // repository, a command naming none runs as that repository's. Each of the three variables it needs is
@@ -195,12 +196,27 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		}
 	}
 
+	// A read naming only an owner the bundle holds no directory for runs with GH_CONFIG_DIR's
+	// directory, as a command naming no owner does (R4 of dispatch://INFRA-3399). It runs under
+	// the stand-in the tests count as the shared check the read rule was proven against
+	// (testProvenCheckEnv), which the guard runs alone for a call that writes nothing; the whole
+	// guard would first read the repository's visibility, which `legion gh` refuses for an owner
+	// it holds no directory for, and then ask GitHub itself, with no credential (git ls-remote).
+	proven := maps.Clone(env)
+	proven["PUBLIC_LEAK_CHECK"], proven[testProvenCheckEnv] = ghCheckAt(t, ghCheckPasses), ghProvenProgramSHA256
+	for _, args := range [][]string{{"pr", "view", "https://github.com/other/thing/pull/1"}, {"api", "repos/Other/thing"}} {
+		code, stdout, stderr := legionGh(t, proven, args...)
+		if want := stub + "|" + defaultDir + "|" + strings.Join(args, " ") + "\n" + wantEnv; code != 0 || stdout != want {
+			t.Errorf("legion gh %q = exit %d, stdout %q, stderr %q; want exit 0 and %q", args, code, stdout, stderr, want)
+		}
+	}
+
 	for _, tc := range []struct {
 		args []string
 		want string
 	}{
-		{[]string{"pr", "view", "https://github.com/other/thing/pull/1"}, `the role's GitHub App is not installed on "other"`},
-		{[]string{"api", "repos/Other/thing"}, `the role's GitHub App is not installed on "other"`},
+		{[]string{"pr", "create", "-R", "other/thing", "--fill"}, `the role's GitHub App is not installed on "other"`},
+		{[]string{"api", "-X", "POST", "repos/Other/thing/issues", "-f", "title=t"}, `the role's GitHub App is not installed on "other"`},
 		// An absolute `gh api` endpoint that is not GitHub's own https://api.github.com/…: the
 		// real gh would send the bundle's token over the scheme it names.
 		{[]string{"api", "http://api.github.com/repos/sjawhar/legion"}, "is not https"},

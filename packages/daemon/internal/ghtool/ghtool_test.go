@@ -437,8 +437,9 @@ func TestOpenWritesTheAgentsBundleAsAPanesAndCloseRemovesIt(t *testing.T) {
 // browser, gh api's --hostname, and every write form whose text the tool cannot add the footer to;
 // arguments that are no JSON array of strings. A command whose gh directory cannot be read for
 // certain, or that names an owner the role's App is not installed on, is refused once gh's help
-// is read, the command itself never run. Each refusal names what it refuses, is what the model
-// reads, and is recorded with no exit.
+// is read, the command itself never run: all but a read naming only such owners, which runs with
+// the bundle's default directory as a pane's `legion gh` runs it (R4 of dispatch://INFRA-3399).
+// Each refusal names what it refuses, is what the model reads, and is recorded with no exit.
 func TestRefusedFormsNeverRun(t *testing.T) {
 	f := newFixture(t, implementer, behaviour{Stdout: "ran"})
 	for i, tc := range []struct {
@@ -488,7 +489,7 @@ func TestRefusedFormsNeverRun(t *testing.T) {
 		{argv: []string{"pr", "create", "-R", "acme/widgets", "--recover", "state.json"}, want: "reads a file on the daemon's host"},
 		{raw: `pr view 5`, want: "takes gh's arguments as a JSON array of strings"},
 		{raw: `["pr", 5]`, want: "takes gh's arguments as a JSON array of strings"},
-		{argv: []string{"api", "repos/other/thing"}, want: `the role's GitHub App is not installed on "other"`, readHelp: true},
+		{argv: []string{"api", "-X", "POST", "repos/other/thing/issues/5/comments", "-f", "body=Done."}, want: `the role's GitHub App is not installed on "other"`, readHelp: true},
 		{argv: []string{"pr", "view", "5", "-R", "acme/widgets", "--bogus"}, want: `"--bogus" is no option`, readHelp: true},
 		{argv: []string{"pr", "view", "https://github.com/sjawhar/legion/pull/1", "-R", "acme/widgets"}, want: "more than one owner", readHelp: true},
 		// An absolute endpoint that is not GitHub's own https://api.github.com/…: gh sends the

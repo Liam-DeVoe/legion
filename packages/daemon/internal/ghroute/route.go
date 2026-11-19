@@ -146,18 +146,28 @@ func CallerToken(env map[string]string) string {
 // a repository, an owner, a team or an issue by URL (ghOptionKinds). So does the command's own
 // repository when gh resolves it, because no argument names it and the leaf reads one, or
 // whatever names it for a leaf that reads every remote (fromOwnRepository): GH_REPO for a leaf
-// that reads it, gh api's :owner and {repo} placeholders among them, and otherwise every
-// github.com repository the working directory's git remotes name (remotes), read as gh reads
-// them; a command naming no owner at all counts those too. Every repository they name, and every
-// owner one names alone — `orgs/<owner>/`, an owner:/org:/user: qualifier, an `<owner>` argument,
-// a team, a project, an owner option, since such a command reaches whatever else of that owner's
-// gh resolves — is routed through dirFor, the bundle's own pick (DirFor), and they must all route
-// to one directory; two are an error (selectors.dir). The target's repository is the one
-// repository they all name, which is none where a selector names an owner alone. A GraphQL query
-// naming its repository otherwise, by a node id or in the query text, names none gh could
-// resolve. GH_HOST naming another host than github.com, where gh would send no token of the
-// bundle's, and a GH_TOKEN or GITHUB_TOKEN, which gh sends in place of any directory's token, are
-// errors, and so is a command of refusedCommands and an option of refusedOptions on any leaf.
+// that reads it, gh api's :owner and {repo} placeholders among them, and otherwise the working
+// directory's git remotes (remotes), read as gh reads them: origin's fetch URL alone where the
+// leaf honours gh's default marker (honoursDefaultMarker) and `remote.origin.gh-resolved base`
+// makes origin's repository gh's own, and every github.com repository they name otherwise
+// (fromWorkingDirectory); a command naming no owner at all counts those too. Every repository
+// they name, and every owner one names alone — `orgs/<owner>/`, an owner:/org:/user: qualifier,
+// an `<owner>` argument, a team, a project, an owner option, since such a command reaches
+// whatever else of that owner's gh resolves — is routed through dirFor, the bundle's own pick
+// (DirFor), and they must all route to one directory; two are an error (selectors.dir). A call
+// that writes nothing (writesNothing, or a GraphQL query graphQLQueryRead admits), whose every
+// item is an owner the bundle holds no directory for, which names no repository a configured
+// rename moves (dirFor answers one with the pair's own refusal, or routes it to the `to` owner's
+// directory) and whose working directory's remotes named no github.com repository for it, runs
+// with GH_CONFIG_DIR's directory, the one a command naming no owner runs with, rather than being
+// refused (R4 of dispatch://INFRA-3399); every other call is routed and refused by the rule
+// above. The target's WritesNothing stays writesNothing's alone, which a caller's guard reads the
+// call by. The target's repository is the one repository they all name, which is none where a
+// selector names an owner alone. A GraphQL query naming its repository otherwise, by a node id or
+// in the query text, names none gh could resolve. GH_HOST naming another host than github.com,
+// where gh would send no token of the bundle's, and a GH_TOKEN or GITHUB_TOKEN, which gh sends in
+// place of any directory's token, are errors, and so is a command of refusedCommands and an
+// option of refusedOptions on any leaf.
 func TargetOf(argv []string, env map[string]string, help func(path []string) (string, error), remotes func() ([]Remote, error), dirFor func(owner, name string) (string, error)) (Target, error) {
 	if host := env["GH_HOST"]; host != "" && !strings.EqualFold(host, "github.com") {
 		return Target{}, fmt.Errorf("GH_HOST is %q, another host than github.com, so it sends no token; unset GH_HOST", host)
@@ -231,7 +241,11 @@ func TargetOf(argv []string, env map[string]string, help func(path []string) (st
 	}
 	files := sentFiles(parsed)
 	reads := writesNothing(argv, cmd.path)
-	dir, err := sel.dir(dirFor)
+	fallback := ""
+	if reads || graphQLQueryRead(argv) {
+		fallback = env["GH_CONFIG_DIR"]
+	}
+	dir, err := sel.dir(dirFor, fallback)
 	if err != nil {
 		return Target{}, err
 	}
@@ -249,10 +263,12 @@ func cannotPlace(arg, why string, api bool) error {
 }
 
 // ghArgs is a leaf's arguments as pflag reads them: its positional arguments in order, every
-// value given each option, by long name, and whether gh only prints the leaf's help.
+// value given each option, by long name, the last value given each boolean option but --help, by
+// long name, and whether gh only prints the leaf's help.
 type ghArgs struct {
 	positionals []string
 	values      map[string][]string
+	booleans    map[string]bool
 	help        bool
 }
 
@@ -267,7 +283,7 @@ type ghArgs struct {
 // (cloneGitFlags).
 func (c *ghCommand) parse(args []string) (ghArgs, error) {
 	api, leaf := c.isAPI(), c.quoted()
-	parsed := ghArgs{values: map[string][]string{}}
+	parsed := ghArgs{values: map[string][]string{}, booleans: map[string]bool{}}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
@@ -426,8 +442,10 @@ func cloneGitFlagList() string {
 	return strings.Join(slices.Sorted(maps.Keys(cloneGitFlagTakes)), ", ")
 }
 
-// set records value given the option name: --help's as a boolean, any other's taking a value in
-// the order given. An option of refusedOptions is refused, naming the argument it came in.
+// set records value given the option name: --help's as a boolean; another boolean's as pflag
+// reads it (strconv.ParseBool), the last given deciding, and false for a value that is no boolean,
+// which gh refuses itself; any other's taking a value in the order given. An option of
+// refusedOptions is refused first, naming the argument it came in.
 func (p *ghArgs) set(name string, flag ghFlag, value, arg string, api bool) error {
 	if why, refused := refusedOptions[name]; refused {
 		return fmt.Errorf("%q %s, so it sends nothing", arg, why)
@@ -441,6 +459,8 @@ func (p *ghArgs) set(name string, flag ghFlag, value, arg string, api bool) erro
 		p.help = help
 	case flag.value:
 		p.values[name] = append(p.values[name], value)
+	default:
+		p.booleans[name], _ = strconv.ParseBool(value)
 	}
 	return nil
 }

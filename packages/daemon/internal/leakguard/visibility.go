@@ -456,8 +456,8 @@ func ownerNotServedLine(owner, ownersDir string) string {
 // in the guard's environment, which is the environment gh ran with. Anything else says nothing of
 // the owner and stays the failure it was: another refusal of `legion gh`, these words for another
 // owner or another bundle, these words beside other words in one line (the refusal of a
-// configured rename whose new owner the bundle holds no directory for, cmd/legion's
-// ghConfigDirFor), these words beside other output, and these words under another exit status.
+// configured rename whose new owner the bundle holds no directory for, ghroute.DirFor), these
+// words beside other output, and these words under another exit status.
 func (g *Guard) unservedOwner(status int, printed, slug string) *unservedOwnerError {
 	if status != 2 {
 		return nil

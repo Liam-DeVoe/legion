@@ -207,11 +207,15 @@ var guardNames = map[string]bool{
 // command names routes to: the owner's own, whose lease reaches every repository its
 // installation holds, except for a repository a configured rename moved, which is answered from
 // the directory of the owner holding it now. The owner is the one that directory is named for
-// (ghconfig.Dir). The bundle's default, the directory the issue's own repository routes to,
-// serves a command naming none. The working directory is the answer's empty one, which has no
-// git remotes. A command TargetOf refuses is refused: among them one whose repositories route to
-// two directories, one naming an owner the bundle holds no directory for (an owner the role's App
-// is not installed on), and one naming a repository a configured rename moved to such an owner.
+// (ghconfig.Dir). The bundle's default, the directory the issue's own repository routes to and
+// the call's GH_CONFIG_DIR, serves a command naming none, and a read naming only owners the
+// bundle holds no directory for and no repository a configured rename moves (R4 of
+// dispatch://INFRA-3399): a call TargetOf reads as one that writes nothing, or a GraphQL query
+// holding neither `mutation` nor `subscription`. The working directory is the answer's empty one,
+// which has no git remotes, so none is ever read for such a read. A command TargetOf refuses is
+// refused: among them one whose repositories route to two directories, every other one naming an
+// owner the bundle holds no directory for (an owner the role's App is not installed on), and one
+// naming a repository a configured rename moved to such an owner.
 func (a *Answer) route(ctx context.Context, argv []string) (ghroute.Target, string, string, error) {
 	env := a.env(ghconfig.Dir(a.owners, a.bundle.Default))
 	vars := make(map[string]string, len(env))

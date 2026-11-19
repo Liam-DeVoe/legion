@@ -234,8 +234,9 @@ const noRepository = "not a git repository"
 // in a form the agent's footer cannot be added to; a review is refused after reading its pull
 // request's head, with the review itself never run, when that head is not the one the agent's
 // recorded round read (Answer.headRefusal); a call is refused after reading gh's help, with the
-// command itself never run, when the gh directory it needs cannot be read for certain or the
-// bundle holds none for it, or gh's help names its command otherwise than its words do, and when
+// command itself never run, when the gh directory it needs cannot be read for certain, or the
+// bundle holds none for it and the call writes (a read naming only such owners runs with the
+// bundle's default directory, as ghroute.TargetOf routes it), or gh's help names its command otherwise than its words do, and when
 // the leak guard refuses it or could not be made to run (Answer.leakGuard), which is checked last
 // of all, once the call's repository and the files it would send are known and before anything
 // is recorded or started. Every other call runs with the footer added to what it posts (a
