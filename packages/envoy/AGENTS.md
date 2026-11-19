@@ -2678,7 +2678,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - The listing's three time bounds.
   `closed_since` (inclusive) and `closed_before` (exclusive) are RFC3339 bounds on `closed_at`, so an open issue matches neither, and a reader of the issues closed in a window reads those alone rather than the whole listing;
   `listIssues` (`api/issue_queries.go`) refuses a malformed one as `400 INVALID_CLOSED_SINCE` or `400 INVALID_CLOSED_BEFORE`, as it refuses a malformed `updated_since` (`400 INVALID_UPDATED_SINCE`), and a `closed_before` at or before `closed_since` as `400 INVALID_CLOSED_WINDOW`.
-  The three bounds reach the statement rounded up to the next microsecond (`store.MicrosecondCeiling`), since Postgres stores a time to the microsecond and pgx would otherwise truncate a finer bound and move `>=` and `<` onto a time stored before it;
+  The three bounds reach the statement rounded up to the next microsecond (`microsecondCeiling`), since Postgres stores a time to the microsecond and pgx would otherwise truncate a finer bound and move `>=` and `<` onto a time stored before it;
   the window refusal judges the bounds as the caller wrote them.
 
 - The listing's paging, which is `GET /api/v1/issues`' own.
@@ -3624,7 +3624,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   a U+0000, which neither its text nor its jsonb holds, is `400 NUL_CHARACTER` reading `<field> holds a NUL character (U+0000) at character N, which Dispatch cannot store`, and a byte that is not UTF-8, which its text does not hold, is `400 INVALID_UTF8` reading `<field> holds a byte that is not UTF-8 (0xFF) at character N, which Dispatch cannot store`.
   A name the caller wrote (a JSON member's, a query parameter's, a multipart field's) is named with a U+0000 in it written as the six characters `\u0000`, so no refusal sends the character back.
   The input layer checks once, not each route:
-  `decodeJSON` walks every string and member name of the body it decoded, in the order the body writes them and each copy of a repeated member among them, since the typed decode merges a repeated object into its first copy and keeps a string a later copy leaves out or sets to null (`unstorableJSON`, naming `title`, `options[1].label`, `ops[0].attributes.title`), and so do the two readers that read a JSON body themselves (an artifact upload's, a credential relay's);
+  `decodeJSON` walks every string and member name of the body it decoded (`unstorableJSON`, naming `title`, `options[1].label`, `ops[0].attributes.title`), and so do the two readers that read a JSON body themselves (an artifact upload's, a credential relay's);
   JSON carries no byte that is not UTF-8 past decoding, which writes it as U+FFFD, so these refuse only a U+0000.
   A multipart upload checks every field, its markdown file (`file`) and a binary file part's `Content-Type`, which it stores as the artifact's type (`file Content-Type`;
   a markdown file stores no part header); and `Register` wraps every route, the document websocket's too, so a path or query parameter is refused before its handler runs (`refuseUnstorableParameters`:
