@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for `disk_watch.py`: `start` writes the state file and leaves a sampler that outlives it,
-# the sampler's least value falls when the watched file system fills, it writes a tick of the
+# the sampler's least value falls when free space falls, the free kB it reads of a path is df's,
+# it writes a tick of the
 # series every second it is given and keeps the least memory and the greatest load it has seen,
 # a sampler held off the CPU leaves the seconds it never ran in out of the series rather than
 # writing them afterwards, `report` stops the sampler and prints the series, the three worst
@@ -12,8 +13,12 @@
 # that is the runner this script must work on too (no Go toolchain, no Docker daemon, no
 # database), and it proves the two tools are named and skipped rather than failing the step. The
 # two margins are driven from state files written here by hand, so the numbers in the line are
-# chosen rather than measured; the falling-least case is measured, against 64 MiB of real writes,
-# and the stall case is measured against a real sampler stopped with SIGSTOP for four seconds.
+# chosen rather than measured. So is the fall in free space: on a shared file system other writers
+# move free space by gigabytes in seconds, so 64 MiB of this test's own writes left the least above
+# before_kb in 13 of 19 trials on a busy one. The fall is written to a file the sampler reads in
+# place of the disk (DISK_WATCH_TEST_FREE_KB_FILE), and the reading it stands in for is measured
+# against `df` of the same path. The stall case is measured against a real sampler stopped with
+# SIGSTOP for four seconds.
 # Everything is written under $TMPDIR (mktemp -d honours it), never /tmp by name.
 #
 # Run from anywhere: .github/scripts/disk_watch.test.sh
@@ -59,11 +64,12 @@ if [[ "$python" != /* || ! -x "$python" ]]; then
 fi
 ln -s "$python" "$work/bin/python3"
 
-# run_watch <arguments...>: runs the script under test with that bare PATH, leaving its merged
-# output in $out and its status in $status.
+# run_watch <arguments...>: runs the script under test with that bare PATH, and whatever a case
+# puts in watch_env, leaving its merged output in $out and its status in $status.
+watch_env=()
 run_watch() {
   set +e
-  out=$(env -i PATH="$work/bin" HOME="$work" TMPDIR="$work" "$watch" "$@" 2>&1)
+  out=$(env -i PATH="$work/bin" HOME="$work" TMPDIR="$work" ${watch_env[@]+"${watch_env[@]}"} "$watch" "$@" 2>&1)
   status=$?
   set -e
 }
@@ -155,18 +161,56 @@ check "start seeded all three worst readings itself, each with its time" \
 echo "case: the detached sampler outlives the process that started it"
 check "the sampler is alive after start returned" "$(alive "$pid")"
 
-echo "case: the least value falls when the watched file system fills"
-dd if=/dev/zero of="$watched/filler" bs=1M count=64 status=none
-least=$before
+echo "case: the least value falls when free space falls"
+# A sampler of its own, reading free kB from the file set_free writes: the fall is written, since
+# the file system's own free space moves under other writers (see the top of this file).
+fall_state="$work/fall.json"
+free_file="$work/free-kb"
+# set_free KB makes KB what every reading returns, replacing the file whole, so a reading never
+# meets it half written.
+set_free() {
+  printf '%s\n' "$1" >"$free_file.new"
+  mv -f "$free_file.new" "$free_file"
+}
+set_free 5000000
+watch_env=(DISK_WATCH_TEST_FREE_KB_FILE="$free_file")
+run_watch start --path "$watched" --state "$fall_state"
+watch_env=()
+check "start exits 0" "$(is "$status" 0)"
+check "before_kb is the free kB the file holds" "$(is "$(field "$fall_state" before_kb)" 5000000)"
+set_free 4934464
+least=5000000
 for _ in $(seq 20); do
   sleep 0.5
-  least=$(field "$state" least_kb)
-  [ "$least" -lt "$before" ] && break
+  least=$(field "$fall_state" least_kb)
+  [ "$least" -lt 5000000 ] && break
 done
-check "least_kb fell below before_kb after 64 MiB was written" \
-  "$([ "$least" -lt "$before" ] && echo true || echo false)"
-check "before_kb is unchanged" "$(is "$(field "$state" before_kb)" "$before")"
-rm -f "$watched/filler"
+check "least_kb fell below before_kb when free fell by 64 MiB" "$([ "$least" -lt 5000000 ] && echo true || echo false)"
+check "to the free kB the fall left" "$(is "$least" 4934464)"
+set_free 5100000
+ticks=$(wc -l <"$fall_state.series")
+for _ in $(seq 20); do
+  sleep 0.5
+  [ "$(wc -l <"$fall_state.series")" -ge $((ticks + 2)) ] && break
+done
+check "a rise after it, two ticks on, leaves least_kb at the fall" "$(is "$(field "$fall_state" least_kb)" 4934464)"
+check "before_kb is unchanged" "$(is "$(field "$fall_state" before_kb)" 5000000)"
+run_watch report --state "$fall_state"
+check "report stopped that sampler" "$(is "$status" 0)"
+
+echo "case: the free kB it reads of a path is df's available kB of that path"
+# The reading the written fall stands in for, measured: disk_watch.py's own free_kb of the watched
+# directory lies between two reads of `df -k --output=avail` of it, one just before and one just
+# after, however other writers moved free space between them.
+df_before=$(df -k --output=avail "$watched" | tail -n 1 | tr -d ' ')
+reading=$(env -i PATH="$work/bin" HOME="$work" python3 -B -I -c \
+  'import sys; sys.path.insert(0, sys.argv[1]); import disk_watch; print(disk_watch.free_kb(sys.argv[2]))' \
+  "$script_dir" "$watched")
+df_after=$(df -k --output=avail "$watched" | tail -n 1 | tr -d ' ')
+low=$df_before high=$df_after
+[ "$low" -le "$high" ] || { low=$df_after high=$df_before; }
+check "disk_watch.py read $reading kB, within df's $df_before kB before it and $df_after kB after" \
+  "$([ "$reading" -ge "$low" ] && [ "$reading" -le "$high" ] && echo true || echo false)"
 
 echo "case: the sampler writes the machine to a series file beside the state"
 series="$state.series"
