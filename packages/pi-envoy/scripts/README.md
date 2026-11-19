@@ -574,6 +574,49 @@ does (`score.ts`: a review, a reply, a thread's resolve or listing, a body it wr
 read, a `bun` run; `health.ts`: a refused call, a write), and a GET of the repository that exits 0
 with no body is none of them.
 
+The remote answers each push as GitHub answers the App that makes it. Production's review App
+(architect, planner, tester, reviewer) holds `contents: write` and no `workflows` permission, and
+the implement App (implementer, merger) holds `workflows: write`
+(`packages/daemon/internal/appauth/permissions.go`'s `writePermissions`,
+`scripts/github-apps/review.json` and `implement.json`). GitHub refuses a push of an App without
+`workflows` whose commits create, update or delete a file under `.github/workflows/`, and the
+world's remote does too (`rig.sh`'s `fixture_first_commit`, in the same `proc-receive` hook as the
+base's ruleset): `git push` prints ` ! [remote rejected] <src> -> <dst> (refusing to allow a GitHub
+App to create or update workflow `<path>` without `workflows` permission)` with no `remote:` line
+and exits 1, `jj git push` prints `Warning: The remote rejected the following updates:` and the ref
+with the same reason and exits 1, and the ref does not move and `pushes.log` gets no line. The
+reason is GitHub's, as a reviewer's refused push printed it
+(`docs/solutions/github/moving-a-package-between-jobs-moves-its-reasons-too-and-only-the-implementer-pushes-a-workflow-file-pr2516.md`,
+and the LEGION-779 page it extends). A path counts where a commit of the push that is on no ref of
+the remote yet creates, changes or deletes it, and its content there is on no branch the remote
+holds, GitHub's documented exception for "the same file (with both the same path and contents)"
+on another branch (Scopes for OAuth apps, `workflow`); a merge that takes one side's version of
+the path counts for nothing. A push that breaks both this rule and the base's ruleset prints the
+workflow line alone. Unmeasured: a deletion pushed (GitHub asks `workflows` of a workflow file's
+`DELETE` through the contents API, Permissions required for GitHub Apps), which path the line
+names when a push touches several (the world names the first in byte order), and that order of
+the two refusals.
+
+The remote reads the App off the transport, as GitHub reads it off the push's token. The issue
+workspace's helper exports `GITHUB_APP`, the slug of the App it pushes as, over whatever the
+caller's environment holds (`world_remote_app`): `world_remote` writes it for the implement App,
+the App the workspace is provisioned with, and `worker_boot` writes it for each role before that
+role's agent starts. Measured on 2026-11-19 with a hook that wrote what reached it, at a `git push
+origin` and a `jj git push` from a reviewer's pane: the helper ran for both, no credential was
+asked, and the pane's environment arrived whole but for the repository variables, `LEGION_ROLE`
+and the identity variables among it. Those variables are the agent's to set for one command,
+which would give a reviewer the implement App's push with no credential at all, and the
+credential reaches the remote only if something reads the token, which no stand-in does; so
+the App is the transport's own, written per role as the daemon renders a role's gh bundle at the
+pane's spawn. A push that names `<run>/remote.git` itself carries no App and is taken, as the
+world's build's own pushes are. A refused push is no push to the readers: `score.ts`'s
+`pushesOf` reads `pushes.log`, which `tester-proof` (its pushes and their tip),
+`reviewer-text-findings` (`pushes === 0` for the text-only case) and `threads-closed` (the pushes
+onto the issue branch and the diff of the last, `fixed`, and the code-defect case's no push) count
+from; and `health.ts` reads `pushes.log` and the branch's tip for rule 19 (`headUnmoved`) and a
+tool result for the leak check's own refusals alone for rule 6 (`GUARD_REFUSAL`), which no
+` ! [remote rejected]` line is.
+
 A phase worker whose claim boot is refused before its first turn is launched once more, in the
 same run, as production's daemon relaunches an agent whose process exits at its boot: the daemon
 stand-in refused its `claims/register`, or its plugin printed its sentence for a claim boot that
@@ -1237,10 +1280,12 @@ it meets nothing of the world that does.
 
 - `deletion`, `non_fast_forward`, `required_linear_history` — **modelled** at the run's remote
   (`rig.sh`'s `fixture_first_commit`): once the base is pushed, its `proc-receive` hook takes every
-  push command on `refs/heads/<base>` and refuses it, printing `remote:` lines that name each rule
+  push command and refuses each on `refs/heads/<base>`, printing `remote:` lines that name each rule
   the push breaks and git's ` ! [remote rejected] <src> -> <base> (push declined due to
-  repository rule violations)`, exit 1; a push to any other branch is taken as before. A deletion
-  breaks `deletion` (`- Cannot delete this branch`); an update breaks `non_fast_forward` where the
+  repository rule violations)`, exit 1; a push to any other branch is taken, but for a workflow
+  change by an App without `workflows`, which the hook refuses first, on the base too (the
+  remote's answer to each App, under *skill-scenarios/rig.sh* above). A deletion breaks
+  `deletion` (`- Cannot delete this branch`); an update breaks `non_fast_forward` where the
   base's tip is not its ancestor (`- Cannot force-push to this branch`), `required_linear_history`
   where a commit it adds is a merge (`- This branch must not contain merge commits.`, then `Found
   1 violation:` or `Found <n> violations:` and each merge), and, since the base changes only
@@ -1668,7 +1713,9 @@ Stated limits, each known and kept so:
   and the pane's PATH a helper no pod's does, `<run>/bin/git-remote-ghapp`: the transport that takes
   origin's fetches and pushes to the run's remote. It takes a call of origin by its name alone; a
   call naming `https://github.com/<owner>/<repo>` reaches the live github.com, which health calls
-  off the world.
+  off the world. The helper names the App the remote reads a push as (`GITHUB_APP`), where a pod's
+  push carries it in its token, and a push that names `<run>/remote.git` itself, which no pod can
+  make, carries none, and the remote refuses it no workflow change.
 - The pane's `PUBLIC_LEAK_CHECK` names the world's run of the shared check,
   `<run>/lib/public-leak-check.sh`, where a pod's names the check itself: the run that gives the
   check's own git the world's exec path (`<run>/lib/git-core`), so its `ls-remote` of origin's URL
@@ -1704,7 +1751,12 @@ The checks:
   (`gh-writes.json`) is called, through the gh stand-in in a copy of the world. A refusal is no
   finding. A success is modelled only where a read of the world (`gh pr view`, the reviews, the
   review comments, the conversation, the review threads) answers otherwise after it. No route may
-  answer a call to a path where the world holds nothing.
+  answer a call to a path where the world holds nothing. Each App's push permission follows
+  `appauth/permissions.go`'s `writePermissions`: in a copy of each world, the role each App serves
+  (the implementer, the reviewer) pushes a commit that changes `.github/workflows/greet.yml` over
+  the pull request's branch through the remote helper `rig.sh` writes for it (`world_remote_app`),
+  and an App holding `workflows: write` must be taken and one without it refused with GitHub's
+  line.
 - Reads. Each GET the world serves (the gh world's `WORLD_ROUTES`, the GitHub stand-in's
   `GITHUB_ROUTES`, the daemon stand-in's) must be asked by a pinned read of
   `production-shapes.json`, which `gh-standin.test.ts`'s coverage row holds to a row, or be named

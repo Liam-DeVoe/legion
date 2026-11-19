@@ -3088,7 +3088,9 @@ function worldDir(
     "round_world",
     "role_identity",
     "role_env",
-    ...(workspace ? ["fixture_workspace", "workspace_form", "world_remote"] : []),
+    ...(workspace
+      ? ["fixture_workspace", "workspace_form", "world_remote", "world_remote_app"]
+      : []),
     world,
   ];
   const built = spawnChecked(

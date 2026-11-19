@@ -221,22 +221,29 @@ function scriptDefinitions(script: string): string[] {
   return found;
 }
 
+/** The shell a script of the tree's rig.sh starts with to run the rig's own functions: `set -euo
+ * pipefail`, every function of the script defined as the script writes it, and its world's values
+ * (`worker_repo`, `worker_base`, `world_*`, `text_finding_*`) as it assigns them. */
+function rigShell(tree: Tree): string[] {
+  const script = tree.text(rig("rig.sh"));
+  const values = script.match(
+    /^(?:worker_repo|worker_base|world_[a-z_]+|text_finding_[a-z_]+)=.*$/gm
+  );
+  return ["set -euo pipefail", ...scriptDefinitions(script), ...(values ?? [])];
+}
+
 /** The worlds rig.sh builds, each built under `into` by rig.sh's own worker_fixture, for every
  * case of every scenario run-names.ts's SCENARIOS gives a worker world (its one case, "", for a
- * scenario of none): every function of the script defined as the script writes it, its world's
- * values (`worker_repo`, `worker_base`, `world_*`, `text_finding_*`) as it assigns them, and
- * fixture_workspace alone left out, since it clones the remote into the issue workspace with jj
- * and writes neither fixtures.json nor world.json. Each world is given the checkout's gh
+ * scenario of none), in the rig's own shell (`rigShell`), with fixture_workspace alone left out,
+ * since it clones the remote into the issue workspace with jj and writes neither fixtures.json nor
+ * world.json. Each world is given the checkout's gh
  * selectors (gh-selectors.ts's RUN_SELECTORS), as worker_boot gives them, without which the gh
  * stand-in answers no call. Each build runs under the caller's PATH, a HOME of its own and the
  * caller's PUBLIC_LEAK_CHECK, as a pane carries it (leak-check-env.ts): its pushes to the world's
  * remote.git meet the guard of the `git` on PATH, which on a pod finds the shared check through
  * that variable. */
 export function buildWorlds(tree: Tree, into: string): BuiltWorld[] {
-  const script = tree.text(rig("rig.sh"));
-  const values = script.match(
-    /^(?:worker_repo|worker_base|world_[a-z_]+|text_finding_[a-z_]+)=.*$/gm
-  );
+  const shell = rigShell(tree);
   const selectors = `${JSON.stringify(labelGhSelectors(tree.root))}\n`;
   const built: BuiltWorld[] = [];
   for (const [scenario, { cases }] of Object.entries(SCENARIOS)) {
@@ -250,9 +257,7 @@ export function buildWorlds(tree: Tree, into: string): BuiltWorld[] {
           "bash",
           "-c",
           [
-            "set -euo pipefail",
-            ...scriptDefinitions(script),
-            ...(values ?? []),
+            ...shell,
             "fixture_workspace() { :; }",
             "R=$1 worker_key=$2",
             'worker_fixture 1 100 "$3"',
@@ -761,6 +766,122 @@ const noCatchAll: Check = {
             ];
       });
     }),
+};
+
+/** appauth's permission sets, one an App: what each App's token is minted with. */
+const PERMISSIONS = "packages/daemon/internal/appauth/permissions.go";
+/** The world role whose pane acts as each App of appauth's sets (identity.go's `AppRoleFor`: the
+ * implementer and the merger are the implement App's, every other role the review App's). */
+const APP_ROLES: Readonly<Record<string, string>> = {
+  Implement: "implementer",
+  Review: "reviewer",
+};
+/** The workflow file a push of the check changes, the one the round worlds carry. */
+const WORKFLOW = ".github/workflows/greet.yml";
+
+/** Each App of appauth's writePermissions as the map names it (`Implement`, `Review`), and whether
+ * its set holds `workflows: write`, read off the map's lines. */
+export function workflowGrants(tree: Tree): { app: string; workflows: boolean }[] {
+  const lines = tree.lines(PERMISSIONS);
+  const start = lines.findIndex((line) => line.startsWith("var writePermissions = map[AppRole]"));
+  const grants: { app: string; workflows: boolean }[] = [];
+  for (const line of start < 0 ? [] : lines.slice(start + 1)) {
+    const entry = /^\t(\w+):\s+\{(.*)\},$/.exec(line);
+    if (entry === null) break;
+    grants.push({ app: entry[1] ?? "", workflows: /"workflows": "write"/.test(entry[2] ?? "") });
+  }
+  if (grants.length === 0) throw new Error(`${PERMISSIONS} holds no writePermissions entry`);
+  return grants;
+}
+
+/** The push ROLE's App makes of a commit adding a line to WORKFLOW over the pull request's branch
+ * of a copy of `world`, through the issue workspace's remote helper rig.sh writes for ROLE
+ * (world_remote, then world_remote_app, as worker_boot writes it before ROLE's agent starts), from
+ * a clone of the world's remote whose origin names that helper (`remote.origin.vcs`): its exit
+ * and git's stderr. */
+function appPush(tree: Tree, worlds: Worlds, world: BuiltWorld, role: string) {
+  const dir = worlds.copy(world);
+  const env = { PATH: process.env.PATH ?? "", HOME: worlds.scratch, ...leakCheckEnv() };
+  const made = Bun.spawnSync(
+    [
+      "bash",
+      "-c",
+      [
+        ...rigShell(tree),
+        'R=$1 work=$1/push-work && world_remote && world_remote_app "$2"',
+        'git clone -q -b "$3" "$R/remote.git" "$work"',
+        'git -C "$work" config remote.origin.vcs "$world_remote_vcs"',
+        'mkdir -p "$(dirname "$work/$4")" && printf "# %s\\n" "$5" >>"$work/$4" && git -C "$work" add -A',
+        'git -C "$work" -c user.name=probe -c user.email=probe@example.invalid commit -qm "$5"',
+      ].join("\n"),
+      "-",
+      dir,
+      role,
+      world.world.branch,
+      WORKFLOW,
+      SENT,
+    ],
+    { env }
+  );
+  if (made.exitCode !== 0)
+    throw new Error(`${world.name}: the ${role}'s push could not be made: ${made.stderr}`);
+  const pushed = Bun.spawnSync(
+    [
+      "git",
+      "-C",
+      path.join(dir, "push-work"),
+      "push",
+      "origin",
+      `HEAD:refs/heads/${world.world.branch}`,
+    ],
+    { env: { ...env, PATH: `${path.join(dir, "bin")}:${env.PATH}` } }
+  );
+  return { code: pushed.exitCode, err: pushed.stderr.toString() };
+}
+
+const appPushes: Check = {
+  name: "writes: each App's workflow push is answered as GitHub answers that App",
+  class: "A push the world's remote answers otherwise than GitHub answers the App that makes it.",
+  reading: `appauth's writePermissions (${PERMISSIONS}): whether each App's set holds \`workflows: write\`; then, in a copy of each world rig.sh's worker_fixture builds, a \`git push\` of a commit adding a line to ${WORKFLOW} over the pull request's branch, through the remote helper rig.sh writes for the role that App's token serves (world_remote_app; identity.go's AppRoleFor)`,
+  rule: "the push of an App holding `workflows: write` taken, and the push of an App without it refused with GitHub's ` ! [remote rejected] <src> -> <branch> (refusing to allow a GitHub App to create or update workflow `<path>` without `workflows` permission)`, are true statements; any other answer is an instance",
+  run: (tree, worlds) =>
+    worlds.all().flatMap((world) =>
+      workflowGrants(tree).map(({ app, workflows }) => {
+        const role = APP_ROLES[app];
+        if (role === undefined)
+          throw new Error(
+            `${PERMISSIONS} names the App ${app}, which no role of the world acts as`
+          );
+        const { code, err } = appPush(tree, worlds, world, role);
+        const refusal = ` ! [remote rejected] HEAD -> ${world.world.branch} (refusing to allow a GitHub App to create or update workflow \`${WORKFLOW}\` without \`workflows\` permission)`;
+        const refused = err.split("\n").some((line) => line.trimEnd() === refusal);
+        const at = `${world.name}: the ${app} App's push of ${WORKFLOW}`;
+        const text = `git push as the ${role} (${app} App): exit ${code}${refused ? ", GitHub's refusal" : ""}`;
+        if (workflows)
+          return code === 0
+            ? {
+                at,
+                text,
+                ...holds("taken, as GitHub takes the push of an App holding `workflows: write`"),
+              }
+            : {
+                at,
+                text,
+                ...instance(`refused, where the App holds \`workflows: write\`: ${cut(err)}`),
+              };
+        if (code !== 0 && refused)
+          return { at, text, ...holds("refused with GitHub's line: the App holds no `workflows`") };
+        return {
+          at,
+          text,
+          ...instance(
+            code === 0
+              ? "taken, where GitHub refuses an App without `workflows` a push that changes a workflow"
+              : `refused in other words than GitHub's: ${cut(err)}`
+          ),
+        };
+      })
+    ),
 };
 
 // The reads.
@@ -1710,6 +1831,7 @@ export const CHECKS: readonly Check[] = [
   writeRoutes,
   ghWriteCommands,
   noCatchAll,
+  appPushes,
   reads,
   productionAnswers,
   remoteHelperKey,

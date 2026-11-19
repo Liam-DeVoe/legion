@@ -354,6 +354,40 @@ describe("the writes and the reads of the world", () => {
     }
   }, 600_000);
 
+  // GitHub refuses the review App, which holds no `workflows` permission (appauth's
+  // writePermissions), a push that changes a workflow, and takes the implement App's. Catches: a
+  // world whose remote takes the review App's workflow push, here one whose remote hands no
+  // command to its proc-receive hook (no receive.procReceiveRefs), which the rig's remote was until
+  // INFRA-764 found the review App's fix of a workflow comment taken where production refuses it.
+  // At this checkout the check finds both Apps answered as GitHub answers them.
+  test("a world whose remote takes the review App's workflow push fails the push check, naming it", async () => {
+    const name = "writes: each App's workflow push is answered as GitHub answers that App";
+    const unplanted = new Worlds(tree, [approved]);
+    const dir = worlds.copy(approved);
+    const unset = spawnChecked(
+      ["git", "-C", path.join(dir, "remote.git"), "config", "--unset", "receive.procReceiveRefs"],
+      { env: process.env }
+    );
+    expect(unset.exitCode).toBe(0);
+    const on = new Worlds(tree, [worldOfDir("planted", dir)]);
+    try {
+      const own = await checkNamed(name).run(tree, unplanted);
+      expect(own.map((hit) => [hit.at, hit.verdict])).toEqual([
+        [
+          "threads-closed-text-fixes: the Implement App's push of .github/workflows/greet.yml",
+          "true",
+        ],
+        ["threads-closed-text-fixes: the Review App's push of .github/workflows/greet.yml", "true"],
+      ]);
+      expect(instances(await checkNamed(name).run(tree, on))).toEqual([
+        "planted: the Review App's push of .github/workflows/greet.yml",
+      ]);
+    } finally {
+      unplanted.done();
+      on.done();
+    }
+  }, 600_000);
+
   // Catches: a read production refuses (the 403 a role App gets for a branch's protection) that
   // the world answers, which tells an agent what production would not.
   test("a read production refuses that the world answers fails, naming it", async () => {

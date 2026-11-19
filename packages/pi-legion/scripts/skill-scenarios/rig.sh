@@ -3030,13 +3030,13 @@ fixture_docs_before() {
 # gh-standin.ts's `commitJson` reads both files.
 #
 # Once the base is pushed its ruleset protects it at the remote as GitHub protects production's
-# `main` (base_ruleset_routes): every push that updates or deletes the base is refused, and a
-# push to any other branch is taken as before. The remote hands each command on the base to its
-# proc-receive hook (receive.procReceiveRefs), which refuses it the way GitHub does — `remote:`
-# lines naming each rule the push breaks, then ` ! [remote rejected] <src> -> <base> (push
-# declined due to repository rule violations)`, exit 1 — where a pre-receive hook can only make
-# git print `(pre-receive hook declined)`, which no GitHub push prints. The rules a push breaks,
-# in the ruleset's order: a deletion breaks `deletion` alone (`Cannot delete this branch`); an
+# `main` (base_ruleset_routes): every push that updates or deletes the base is refused. The remote
+# hands every command to its proc-receive hook (receive.procReceiveRefs `refs/`), which refuses
+# one on the base the way GitHub does — `remote:` lines naming each rule the push breaks, then
+# ` ! [remote rejected] <src> -> <base> (push declined due to repository rule violations)`, exit
+# 1 — where a pre-receive hook can only make git print `(pre-receive hook declined)`, which no
+# GitHub push prints. The rules a push breaks, in the ruleset's order: a deletion breaks
+# `deletion` alone (`Cannot delete this branch`); an
 # update breaks `non_fast_forward` where the base's tip is not an ancestor of the new one
 # (`Cannot force-push to this branch`), `required_linear_history` where a commit it adds is a
 # merge (`This branch must not contain merge commits.`, then the violations), and `pull_request`,
@@ -3048,6 +3048,36 @@ fixture_docs_before() {
 # check and its merge queue); the lines of the other rules, the count line for several checks
 # and the rejection line are GitHub's form as public reports of a rejected push print it,
 # unmeasured here, since no read-only call makes GitHub refuse a push.
+#
+# The same hook refuses the push of an App without the `workflows` permission whose commits
+# create, update or delete a file under `.github/workflows/`, as GitHub refuses it: `git push`
+# prints ` ! [remote rejected] <src> -> <dst> (refusing to allow a GitHub App to create or update
+# workflow `<path>` without `workflows` permission)`, with no `remote:` line, and exits 1, and
+# the ref does not move. The reason is GitHub's words as the review App's refused pushes printed
+# them (docs/solutions/github/moving-a-package-between-jobs-moves-its-reasons-too-and-only-the-
+# implementer-pushes-a-workflow-file-pr2516.md, and the LEGION-779 page under docs/solutions/
+# testing/ it extends); the line around them is git's for a ref a hook refuses. The App is the
+# one the push reached the remote as (GITHUB_APP, which the world's remote helper sets,
+# world_remote_app), and the implement App alone holds `workflows` (packages/daemon/internal/
+# appauth's writePermissions; scripts/github-apps/implement.json and review.json). A push that
+# carries no App, the world's build's own, is taken. What touches a workflow is GitHub's rule as
+# its documentation gives it (docs.github.com, read 2026-11-19): the `workflow` scope "Grants the
+# ability to add and update GitHub Actions workflow files. Workflow files can be committed without
+# this scope if the same file (with both the same path and contents) exists on another branch in
+# the same repository" (Scopes for OAuth apps), and an App's `workflows` permission is asked of a
+# workflow file's delete as of its write (Permissions required for GitHub Apps, "Workflows": `PUT`
+# and `DELETE /repos/{owner}/{repo}/contents/{path}`). So a path under `.github/workflows/`
+# counts where a commit of the push that is on no ref of the remote yet creates, changes or
+# deletes it and its content at that commit is on no branch the remote holds; a merge that takes
+# one side's version of the path counts for nothing (`git diff-tree -c` names only a path a merge
+# leaves unlike every parent). Unmeasured: a deletion pushed, since the delete above is the
+# contents API's; which path the line names when a push touches several (here, the first in byte
+# order); and the order of the two refusals, where a push breaks both: the workflow line alone,
+# since GitHub refuses a token what its permission does not grant before it reads a ruleset.
+#
+# Every command the hook takes it applies itself, as git leaves a proc-receive hook its commands'
+# updates (`git update-ref` with the old value the client sent), and the post-receive hook logs
+# it in pushes.log as before; a refused one is applied and logged nowhere.
 fixture_first_commit() {
   local login=${world_author_email%%@*}
   rm -f "$R/signing-key" "$R/signing-key.pub"
@@ -3063,13 +3093,14 @@ fixture_first_commit() {
   fixture_git add -A &&
     fixture_git -c gpg.format=ssh -c user.signingkey="$R/signing-key" commit -S -qm "init"
   fixture_git push -q "$R/remote.git" "$worker_base"
-  local checks
+  local checks workflows
+  IFS=$'\t' read -r workflows _ < <(role_identity implementer)
   checks=$(base_ruleset_routes | jq -r '.[] | select(.match | test("/rules/branches/")) | .stdout[]
     | select(.type == "required_status_checks") | .parameters.required_status_checks
     | if length == 1 then "Required status check \"\(.[0].context)\" is expected."
       else "\(length) of \(length) required status checks are expected." end')
   {
-    printf '#!/bin/sh\nrepo=%q base=%q checks=%q\n' "$worker_repo" "$worker_base" "$checks"
+    printf '#!/bin/sh\nrepo=%q base=%q checks=%q workflows=%q\n' "$worker_repo" "$worker_base" "$checks" "${workflows%'[bot]'}"
     cat <<'EOF'
 pkt() { len=$(head -c 4) && [ -n "$len" ] && [ "$len" != 0000 ] && line=$(head -c $((0x$len - 4)) | tr '\0' ' '); }
 out() { printf '%04x%s\n' $((${#1} + 5)) "$1"; }
@@ -3079,9 +3110,36 @@ printf 0000
 set --
 while pkt; do set -- "$@" "$line"; done
 zero=0000000000000000000000000000000000000000
+held() (
+  blob=$(git rev-parse -q --verify "$1:$2") || exit 1
+  for tip in $(git for-each-ref --format='%(objectname)' refs/heads/); do
+    [ "$(git rev-parse -q --verify "$tip:$2")" != "$blob" ] || exit 0
+  done
+  exit 1
+)
+workflow() (
+  for commit in $(git rev-list "$1" --not --all); do
+    git diff-tree -r -c --root --no-commit-id --name-only "$commit" -- .github/workflows/ |
+      while read -r path; do held "$commit" "$path" || printf '%s\n' "$path"; done
+  done | LC_ALL=C sort | head -n 1
+)
 for command; do
   old=${command%% *} new=${command#* } ref=${command##* }
   new=${new%% *}
+  path=
+  [ "$new" = "$zero" ] || [ -z "${GITHUB_APP:-}" ] || [ "$GITHUB_APP" = "$workflows" ] || path=$(workflow "$new")
+  if [ -n "$path" ]; then
+    out "ng $ref refusing to allow a GitHub App to create or update workflow \`$path\` without \`workflows\` permission"
+    continue
+  fi
+  if [ "$ref" != "refs/heads/$base" ]; then
+    if [ "$new" = "$zero" ]; then
+      git update-ref -d "$ref" "$old"
+    else
+      git update-ref "$ref" "$new" "$old"
+    fi && out "ok $ref" || out "ng $ref failed to update ref"
+    continue
+  fi
   {
     printf 'error: GH013: Repository rule violations found for %s.\n' "$ref"
     printf 'Review all repository rules at http://github.com/%s/rules?ref=refs%%2Fheads%%2F%s\n\n' "$repo" "$base"
@@ -3113,7 +3171,7 @@ printf 0000
 EOF
   } >"$R/remote.git/hooks/proc-receive"
   chmod +x "$R/remote.git/hooks/proc-receive"
-  git -C "$R/remote.git" config receive.procReceiveRefs "refs/heads/$worker_base"
+  git -C "$R/remote.git" config receive.procReceiveRefs refs/
   fixture_git checkout -qb "legion/$worker_key"
 }
 
@@ -3284,26 +3342,55 @@ fixture_test_handoff() {
 # (`git ls-remote https://github.com/<owner>/<repo>`) is no call of origin by its name: git takes
 # it to github.com, and health calls it off the world.
 #
+# The helper is written for one role's App at a time (world_remote_app): the implement App's here,
+# the App the workspace is provisioned with, and each booted role's by worker_boot.
+#
 # And $R/lib/git-core, the exec path the shared leak check's own git runs with (push_guard): a
 # link to every program of git's own exec path but git-remote-https, which sends the world's own
 # URL, with `.git` or without, to the same helper, and every other URL to git's own.
 world_remote() {
-  local real remote=$R/remote.git url=https://github.com/$worker_repo entry
+  local real url=https://github.com/$worker_repo entry
   real=$(git --exec-path)
   mkdir -p "$R/bin" "$R/lib/git-core"
-  # remote-ext splits its command at each space and reads `%` as a placeholder's start: `% ` and
-  # `%%` are the literal two.
-  remote=${remote//%/%%}
-  # shellcheck disable=SC2016 # the helper's own expansions
-  printf '#!/bin/sh\nunset $(git rev-parse --local-env-vars)\nexec git remote-ext "$1" %q\n' \
-    "git-%s ${remote// /% }" >"$R/bin/git-remote-$world_remote_vcs"
+  world_remote_app implementer
   for entry in "$real"/*; do ln -s "$entry" "$R/lib/git-core/${entry##*/}"; done
   rm "$R/lib/git-core/git-remote-https"
   # shellcheck disable=SC2016 # the helper's own expansions
   printf '#!/bin/sh\ncase $2 in %q | %q) unset GIT_EXEC_PATH; exec %q "$@" ;; esac\nexec %q "$@"\n' \
     "$url" "$url.git" "$R/bin/git-remote-$world_remote_vcs" "$real/git-remote-https" \
     >"$R/lib/git-core/git-remote-https"
-  chmod +x "$R/bin/git-remote-$world_remote_vcs" "$R/lib/git-core/git-remote-https"
+  chmod +x "$R/lib/git-core/git-remote-https"
+}
+
+# world_remote_app ROLE writes the issue workspace's remote helper ($R/bin/git-remote-<vcs>,
+# world_remote) for ROLE: every fetch and push of origin reaches the run's remote as ROLE's App
+# (role_identity's bot, its slug in GITHUB_APP), which the remote's proc-receive hook reads
+# (fixture_first_commit). Production's GitHub reads which App pushed off the token the push
+# presents, the token of the App the daemon gave the role (appauth's `AppRoleFor`), which `legion
+# git-credential` answers from the gh bundle the daemon renders for the role's pane at its
+# spawn. Measured on 2026-11-19 (git 2.47.3, jj 0.45.1) with a pre-receive hook that wrote what
+# reached it, at a `git push origin` and a `jj git push` from a reviewer's pane: this helper ran
+# for both, the parent of `git remote-ext` and so of git-receive-pack; no credential was asked,
+# since the helper asks none; and the pane's environment arrived whole but for the repository
+# variables the helper drops, LEGION_ROLE, GIT_AUTHOR_* and JJ_USER among it. A variable of that
+# environment is the agent's to set for one command (`LEGION_ROLE=implementer git push`), which
+# would give a reviewer the implement App's push with no credential at all, where production's
+# reviewer would need the implement App's token; and the credential reaches the remote only if
+# something reads the token, which no stand-in does (gh-standin.ts's PANE_GH_TOKEN_SHOWN). So the
+# App is the helper's own, written for the role as the daemon renders the role's bundle, and set
+# over whatever the caller's environment holds: to push as another App an agent must rewrite the
+# world's transport. A push that names $R/remote.git itself, as the world's build pushes, reaches
+# the remote with no App, and the remote takes it as a push of the repository's own developer.
+world_remote_app() {
+  local app remote=$R/remote.git
+  IFS=$'\t' read -r app _ < <(role_identity "$1")
+  # remote-ext splits its command at each space and reads `%` as a placeholder's start: `% ` and
+  # `%%` are the literal two.
+  remote=${remote//%/%%}
+  # shellcheck disable=SC2016 # the helper's own expansions
+  printf '#!/bin/sh\nunset $(git rev-parse --local-env-vars)\nexport GITHUB_APP=%q\nexec git remote-ext "$1" %q\n' \
+    "${app%'[bot]'}" "git-%s ${remote// /% }" >"$R/bin/git-remote-$world_remote_vcs"
+  chmod +x "$R/bin/git-remote-$world_remote_vcs"
 }
 
 # fixture_workspace makes $R/ws, the issue workspace every role of the run shares, as production's
@@ -3974,6 +4061,9 @@ worker_boot() {
   env -i "${pane_vars[@]}" "$pane_gh" --open ||
     fail "worker_boot: the pane's gh ($pane_gh) could not open $R/calls.jsonl"
   adopt_workspace "$role" || fail "worker_boot: $role could not take the issue workspace's working copy ($R/ws)"
+  # The issue workspace's origin reaches the run's remote as this role's App from here on, as a
+  # pod's git presents the token of the App the daemon gave the role (world_remote_app).
+  [ ! -e "$R/bin/git-remote-$world_remote_vcs" ] || world_remote_app "$role"
   boot_agent "$name" "$role"
   booted=$role
 }

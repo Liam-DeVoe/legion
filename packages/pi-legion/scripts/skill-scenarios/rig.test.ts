@@ -2111,6 +2111,7 @@ describe("childEnv", () => {
             "fixture_workspace",
             "workspace_form",
             "world_remote",
+            "world_remote_app",
             "role_identity",
             "role_env",
             "fixture_checks",
@@ -2459,7 +2460,8 @@ describe("worker_boot", () => {
    * no stand-in must leave behind. `before` is the role of an
    * agent the run booted and ran before this one, whose output is the run's out.txt. Each process
    * started keeps the run's boot record as it stood then (booted-at-<process>), and each `bun`
-   * the build of daemon-pane.go it was given (bun-builds) and its work directory (bun-works). */
+   * the build of daemon-pane.go it was given (bun-builds) and its work directory (bun-works).
+   * `remote` puts an issue workspace's remote helper (world_remote) in the run before the boot. */
   function bootResult(
     role: string,
     phase: string,
@@ -2468,6 +2470,7 @@ describe("worker_boot", () => {
       gh = recordingGh,
       panePath = (dir: string) => `${path.join(dir, "bin")}:${childEnv.PATH}`,
       before = "",
+      remote = false,
     } = {}
   ) {
     const dir = freshDir(`worker-boot-${role}`);
@@ -2480,6 +2483,10 @@ describe("worker_boot", () => {
       mkdirSync(path.join(dir, "home"));
     }
     writeFileSync(path.join(dir, "bin", "gh"), gh(dir), { mode: 0o755 });
+    if (remote)
+      writeFileSync(path.join(dir, "bin", `git-remote-${WORLD_REMOTE_VCS}`), "a helper\n", {
+        mode: 0o755,
+      });
     // The pane the daemon would give, carrying the Envoy address a pane whose environment
     // configures none gets (daemon-pane.ts's DEFAULT_ENVOY_URL), the PATH it hands the agent
     // (daemon-pane.ts's `path`, the run's own bin first), and the batch's services file,
@@ -2501,6 +2508,7 @@ describe("worker_boot", () => {
         fn("role_env"),
         fn("git_pairs"),
         fn("adopt_workspace"),
+        fn("world_remote_app"),
         fn("fixture_write"),
         fn("concluded_checks"),
         fn("base_ruleset_routes"),
@@ -2519,6 +2527,7 @@ describe("worker_boot", () => {
         assignment("world_author_email"),
         assignment("world_login"),
         ...WORLD_APPS.map(assignment),
+        assignment("world_remote_vcs"),
         "fixture_write '[]' '[]'",
         'worker_boot the-run "$4" "$5" "$6" "$7"',
       ].join("\n"),
@@ -2576,6 +2585,25 @@ describe("worker_boot", () => {
       "JJ_USER=widgets-reviewer[bot]",
       "JJ_EMAIL=318406277+widgets-reviewer[bot]@users.noreply.github.com",
     ]);
+  });
+
+  // Catches: a boot that leaves the issue workspace's remote helper presenting another role's
+  // App, so the remote takes or refuses a push by the App of the role booted before it, or by
+  // the implement App the world was built with (world_remote_app): the reviewer's workflow push
+  // would be taken where GitHub refuses the review App's. A run with no helper gets none.
+  test("the remote helper presents the booted role's App", () => {
+    const helperOf = (dir: string) =>
+      readFileSync(path.join(dir, "bin", `git-remote-${WORLD_REMOTE_VCS}`), "utf8");
+    const booted = (role: string) => {
+      const { dir, result } = bootResult(role, "reviewing", { remote: true });
+      expect(result).toMatchObject({ code: 0, stderr: "" });
+      return helperOf(dir).split("\n")[2];
+    };
+    expect(booted("reviewer")).toBe("export GITHUB_APP=widgets-reviewer");
+    expect(booted("tester")).toBe("export GITHUB_APP=widgets-reviewer");
+    expect(booted("implementer")).toBe("export GITHUB_APP=widgets-implementer");
+    const { dir } = boot("reviewer", "reviewing");
+    expect(existsSync(path.join(dir, "bin", `git-remote-${WORLD_REMOTE_VCS}`))).toBe(false);
   });
 
   // Catches: the pane's own ENVOY_URL left in beside the batch's, which is one fact in two
@@ -7543,6 +7571,7 @@ describe("what the rig writes into a run's world", () => {
           "fixture_workspace",
           "workspace_form",
           "world_remote",
+          "world_remote_app",
           "role_identity",
           "role_env",
           "fixture_checks",
@@ -7713,9 +7742,15 @@ describe("the issue workspace's remote", () => {
   /** The one key production's clone has not got, which the README names: the world's helper. */
   const RESIDUAL = `local\tremote.origin.vcs=${WORLD_REMOTE_VCS}`;
 
-  /** A tester_proof world under a run directory of its own, as cmd_run builds one before its first
-   * agent boots, with `env` over the caller's environment; its directory. */
-  function world(name: string, env: Record<string, string> = {}): string {
+  /** A world under a run directory of its own, as cmd_run builds one before its first agent boots,
+   * with `env` over the caller's environment; its directory. `builder` is the world function:
+   * tester_proof_world, or review_world, the text-only round whose head carries the workflow
+   * .github/workflows/greet.yml. */
+  function world(
+    name: string,
+    env: Record<string, string> = {},
+    builder: "tester_proof_world" | "review_world" = "tester_proof_world"
+  ): string {
     const R = freshDir(name);
     const result = bash(
       [
@@ -7729,6 +7764,7 @@ describe("the issue workspace's remote", () => {
           "fixture_workspace",
           "workspace_form",
           "world_remote",
+          "world_remote_app",
           "role_identity",
           "role_env",
           "fixture_checks",
@@ -7737,6 +7773,12 @@ describe("the issue workspace's remote", () => {
           "concluded_checks",
           "base_ruleset_routes",
           "tester_proof_world",
+          "fixture_docs_before",
+          "fixture_round_files",
+          "fixture_test_handoff",
+          "resolution_protection_routes",
+          "round_world",
+          "review_world",
           "standins",
           "push_guard",
         ].map(fn),
@@ -7749,9 +7791,11 @@ describe("the issue workspace's remote", () => {
           "world_login",
           ...WORLD_APPS,
           "world_remote_vcs",
+          "text_finding_doc_line",
+          "text_finding_trigger",
         ].map(assignment),
         `R=$1 here=$2 worker_key=${WORLD_PROJECT}-1`,
-        "tester_proof_world 1 100",
+        `${builder} 1 100 ''`,
         "standins",
         'push_guard >"$R/guard.env"',
       ].join("\n"),
@@ -8219,6 +8263,195 @@ describe("the issue workspace's remote", () => {
     expect(gitFetch.err).toContain(
       `From ${ORIGIN}\n   ${first.slice(0, 7)}..${second.slice(0, 7)}  main       -> origin/main\n`
     );
+  });
+
+  /** The pane worker_boot leaves ROLE's agent in R's issue workspace, over the implementer's: the
+   * remote helper written for ROLE's App (world_remote_app), ROLE's identity and its LEGION_ROLE. */
+  function paneAs(R: string, role: string): Record<string, string> {
+    const made = bash(
+      [
+        fn("role_identity"),
+        fn("role_env"),
+        fn("world_remote_app"),
+        ...WORLD_APPS.map(assignment),
+        assignment("world_remote_vcs"),
+        'R=$1 && world_remote_app "$2" && role_env "$2"',
+      ].join("\n"),
+      [R, role]
+    );
+    expect(made).toMatchObject({ code: 0, stderr: "" });
+    return { ...variables(made.stdout), LEGION_ROLE: role };
+  }
+  /** The pull request's branch of every world these rows build. */
+  const BRANCH = `legion/${WORLD_PROJECT}-1`;
+  /** The lines of a push's output that give the remote's answer: each `remote:` line, git's ` ! `
+   * line of a ref the remote refused, and jj's report of one, without what the pod's git wrapper
+   * and the leak check print beside them. */
+  const answered = (err: string) =>
+    err
+      .split("\n")
+      .filter((line) => /^(remote:| ! |Warning: The remote rejected| {2}refs\/)/.test(line))
+      .map((line) => line.trimEnd());
+  /** GitHub's reason for the push of an App without `workflows` that changes greet.yml (rig.sh's
+   * fixture_first_commit, docs/solutions/github/…-pr2516.md). */
+  const WORKFLOW_REFUSAL =
+    "refusing to allow a GitHub App to create or update workflow `.github/workflows/greet.yml` without `workflows` permission";
+  /** A commit of the review world's workspace that makes COMMAND's change, made with jj under
+   * PANE: its id. */
+  function committed(R: string, pane: Record<string, string>, command: string, message: string) {
+    const made = inWorkspace(
+      R,
+      `${command} && jj commit -m '${message}' >/dev/null 2>&1 && jj log -r @- --no-graph -T commit_id`,
+      pane
+    );
+    expect({ code: made.code, err: made.err }).toEqual({ code: 0, err: "" });
+    expect(made.out).toMatch(/^[0-9a-f]{40}$/);
+    return made.out;
+  }
+  /** The fix of the review world's workflow comment, the trigger it names that `on:` lacks. */
+  const FIX_WORKFLOW = "sed -i '1s/ and on every push to main//' .github/workflows/greet.yml";
+
+  // Catches: a remote that refuses the review App a push touching no workflow, which production
+  // takes from an App with `contents: write` (appauth's writePermissions): a refusal that reads
+  // every changed path as a workflow's, or every push of the review App as refused.
+  test("the remote takes the review App's push of a docs change, through git push and jj git push", () => {
+    const R = world("remote-docs-taken", {}, "review_world");
+    const reviewer = paneAs(R, "reviewer");
+    const head = remote(R, "rev-parse", BRANCH);
+    const first = committed(
+      R,
+      reviewer,
+      "printf 'It trims the spaces around the name.\\n' >>docs/cli.md",
+      "docs: say that the name is trimmed"
+    );
+    const gitPush = inWorkspace(R, `git push origin ${first}:refs/heads/${BRANCH}`, reviewer);
+    expect({ code: gitPush.code, answered: answered(gitPush.err) }).toEqual({
+      code: 0,
+      answered: [],
+    });
+    const second = committed(
+      R,
+      reviewer,
+      "printf 'A blank name exits 2.\\n' >>docs/cli.md",
+      "docs: say what a blank name does"
+    );
+    const jjPush = inWorkspace(
+      R,
+      `jj git fetch >/dev/null 2>&1 && jj bookmark set ${BRANCH} -r ${second} >/dev/null 2>&1 && jj git push --bookmark ${BRANCH}`,
+      reviewer
+    );
+    expect({ code: jjPush.code, answered: answered(jjPush.err) }).toEqual({
+      code: 0,
+      answered: [],
+    });
+    expect(remote(R, "rev-parse", BRANCH)).toBe(second);
+    expect(pushed(R, /./)).toEqual([
+      `refs/heads/${BRANCH} ${head} ${first}`,
+      `refs/heads/${BRANCH} ${first} ${second}`,
+    ]);
+  });
+
+  // GitHub refuses a push of an App without the `workflows` permission that creates, updates or
+  // deletes a workflow file, `refusing to allow a GitHub App to create or update workflow
+  // `<path>` without `workflows` permission` (a reviewer's push, docs/solutions/github/…-pr2516.md
+  // and …-LEGION-779.md), and production's review App holds none (appauth's writePermissions).
+  // Catches: a remote that takes the review App's fix of a workflow comment, which production
+  // refuses and which leaves the fix a review thread for the implementer; one that refuses it in
+  // other words, or moves the branch, or logs the push; and either client printing another
+  // answer.
+  test("the remote refuses the review App's push of a workflow change with GitHub's line, through git push and jj git push, and its branch does not move", () => {
+    const R = world("remote-workflow-refused", {}, "review_world");
+    const reviewer = paneAs(R, "reviewer");
+    const head = remote(R, "rev-parse", BRANCH);
+    const fix = committed(R, reviewer, FIX_WORKFLOW, "ci: say when the tests run");
+    const gitPush = inWorkspace(R, `git push origin ${fix}:refs/heads/${BRANCH}`, reviewer);
+    expect({ code: gitPush.code, answered: answered(gitPush.err) }).toEqual({
+      code: 1,
+      answered: [` ! [remote rejected] ${fix} -> ${BRANCH} (${WORKFLOW_REFUSAL})`],
+    });
+    expect(gitPush.err).toContain(`To ${ORIGIN}\n`);
+    expect(gitPush.err).toContain(`error: failed to push some refs to '${ORIGIN}'\n`);
+    const jjPush = inWorkspace(
+      R,
+      `jj bookmark set ${BRANCH} -r ${fix} >/dev/null 2>&1 && jj git push --bookmark ${BRANCH}`,
+      reviewer
+    );
+    expect({ code: jjPush.code, answered: answered(jjPush.err) }).toEqual({
+      code: 1,
+      answered: [
+        "Warning: The remote rejected the following updates:",
+        `  refs/heads/${BRANCH} (reason: ${WORKFLOW_REFUSAL})`,
+      ],
+    });
+    expect(jjPush.err).toContain("Error: Failed to push some bookmarks\n");
+    expect(remote(R, "rev-parse", BRANCH)).toBe(head);
+    expect(pushed(R, /./)).toEqual([]);
+  });
+
+  // Catches: a remote that refuses the implement App's workflow push, which production takes
+  // from the App that holds `workflows: write` (appauth's writePermissions), so the fix the
+  // reviewer could not push could not land at all; and a remote that refuses a commit by who
+  // made it rather than by the App that pushes it.
+  test("the remote takes the implement App's push of the workflow change it refused the review App", () => {
+    const R = world("remote-workflow-implementer", {}, "review_world");
+    const reviewer = paneAs(R, "reviewer");
+    const head = remote(R, "rev-parse", BRANCH);
+    const fix = committed(R, reviewer, FIX_WORKFLOW, "ci: say when the tests run");
+    expect(inWorkspace(R, `git push origin ${fix}:refs/heads/${BRANCH}`, reviewer).code).toBe(1);
+    const implementer = paneAs(R, "implementer");
+    const jjPush = inWorkspace(
+      R,
+      `jj bookmark set ${BRANCH} -r ${fix} >/dev/null 2>&1 && jj git push --bookmark ${BRANCH}`,
+      implementer
+    );
+    expect({ code: jjPush.code, answered: answered(jjPush.err) }).toEqual({
+      code: 0,
+      answered: [],
+    });
+    expect(remote(R, "rev-parse", BRANCH)).toBe(fix);
+    expect(pushed(R, /./)).toEqual([`refs/heads/${BRANCH} ${head} ${fix}`]);
+  });
+
+  // A push that breaks both the App's permission and the base's ruleset: GitHub refuses a token
+  // what its permission does not grant before it reads a ruleset (unmeasured, rig.sh's
+  // fixture_first_commit), so it prints the workflow line alone. Catches: a remote that reads the
+  // ruleset first and prints its `remote:` lines and `push declined due to repository rule
+  // violations` for the review App's push, or both refusals; and one whose workflow refusal
+  // spares the base.
+  test("the review App's push of a workflow change to the base reads as the workflow refusal alone", () => {
+    const R = world("remote-workflow-base", {}, "review_world");
+    const reviewer = paneAs(R, "reviewer");
+    const base = remote(R, "rev-parse", "main");
+    const fix = committed(R, reviewer, FIX_WORKFLOW, "ci: say when the tests run");
+    const gitPush = inWorkspace(R, `git push origin ${fix}:refs/heads/main`, reviewer);
+    expect({ code: gitPush.code, answered: answered(gitPush.err) }).toEqual({
+      code: 1,
+      answered: [` ! [remote rejected] ${fix} -> main (${WORKFLOW_REFUSAL})`],
+    });
+    const jjPush = inWorkspace(
+      R,
+      `jj bookmark set main -r ${fix} >/dev/null 2>&1 && jj git push --bookmark main`,
+      reviewer
+    );
+    expect({ code: jjPush.code, answered: answered(jjPush.err) }).toEqual({
+      code: 1,
+      answered: [
+        "Warning: The remote rejected the following updates:",
+        `  refs/heads/main (reason: ${WORKFLOW_REFUSAL})`,
+      ],
+    });
+    expect(remote(R, "rev-parse", "main")).toBe(base);
+    // The implement App's same push breaks the ruleset alone, and reads as that refusal.
+    const ruleset = inWorkspace(
+      R,
+      `git push origin ${fix}:refs/heads/main`,
+      paneAs(R, "implementer")
+    );
+    expect({ code: ruleset.code, last: answered(ruleset.err).at(-1) }).toEqual({
+      code: 1,
+      last: ` ! [remote rejected] ${fix} -> main (push declined due to repository rule violations)`,
+    });
+    expect(pushed(R, /./)).toEqual([]);
   });
 
   // Catches: a world whose push's leak check reaches the live GitHub. The shared check runs `git
