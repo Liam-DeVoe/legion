@@ -541,7 +541,12 @@ test("a bar is toned only where the target judges the statistic it draws: run su
       status: { ...fixtureMeasures.status, deploy_run_success: true },
     });
     const runs = chart("Deploy runs reaching production");
-    const toned = [chartBar.met, chartBar.missed, chartBar.metFaint, chartBar.missedFaint];
+    const toned: string[] = [
+      chartBar.met,
+      chartBar.missed,
+      chartBar.metFaint,
+      chartBar.missedFaint,
+    ];
     expect(runs.bars.filter((bar) => toned.includes(bar ?? ""))).toEqual([]);
     // 2026-09-11, the thirteenth day: 0% success, one concluded run.
     expect(runs.bars[12]).toBe(chartBar.neutral);
