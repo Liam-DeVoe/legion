@@ -150,7 +150,7 @@ func TestAChildsPlanIsNamedByItsOwnKey(t *testing.T) {
 	namespace := uuid.NewSHA1(uuid.NameSpaceOID, []byte("legion-plan-record"))
 	for _, child := range []struct{ key, name string }{{"LEGION-210", "LEGION-210/3"}, {"LEGION-209", "LEGION-209/3"}} {
 		stepChild(t, pool, child.key, phase.Admitted, nil)
-		move(t, pool, engine, child.key, TriggerGateOpened, "", record.PhaseRow{Issue: child.key, Role: claim.RoleArchitect})
+		firstStep(t, pool, engine, child.key)
 		want := record.PlanRecord{ID: uuid.NewSHA1(namespace, []byte(child.name)).String(), Generation: 3, Source: "default",
 			Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
 		if plans := planWrites(t, pool, child.key); len(plans) != 1 || !reflect.DeepEqual(plans[0], want) {

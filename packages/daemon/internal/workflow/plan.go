@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
@@ -77,14 +76,10 @@ func PlanID(issue string, generation uint64) string {
 // steps, with neither. Its task is the run's one task, with its steps in order, each a role or
 // `role:key` (plan.Step.String). The node is written at the start of the work and again, whole, at
 // each later version Legion takes (planGiven): Dispatch replaces all four fields for a version
-// above the one it holds. A run with no plan rows walks today's line, and its node is the default
-// steps of a project that names none (config.Project.RunsByDefault), as the release before wrote.
+// above the one it holds. Both read w with its plan rows: the start's first step writes them
+// (planFirstStep), and a version taken is one.
 func planNode(issue record.Issue, w Walk) record.PlanRecord {
 	node := record.PlanRecord{ID: PlanID(issue.Key, issue.Generation), Generation: issue.Generation, Source: record.PlanSourceDefault}
-	if !w.Stored {
-		node.Tasks = []record.PlanRecordTask{{ID: defaultTask, Steps: stepWords(config.Project{}.RunsByDefault())}}
-		return node
-	}
 	if w.Version.Source == record.PlanSourceOwner {
 		node.Source, node.PlanDocument = record.PlanSourceOwner, &record.PlanDocument{ArtifactID: w.Version.ArtifactID, Version: w.Version.Version}
 	}
@@ -867,10 +862,9 @@ func heldPlan(stored *record.StoredPlan) plan.Plan {
 // givenRows is the rows of fact's version, given at now over stored, the plan in force (nil for
 // none), of which changed are the tasks it changes, adds or removes. Each task takes the
 // version's block, and a task new to the generation waits at no act (PutPlan keeps where a task
-// the generation holds stands). A task the version leaves as it was keeps its stored steps, the
-// commit a review of each read included; any other task takes the steps its block names (StepsOf),
-// or, for a block that names none, defaults, the project's default steps (Config.DefaultSteps),
-// each with the type of its role (planSteps).
+// the generation holds stands). A task the version leaves as it was keeps its stored steps; any
+// other task takes the steps its block names (StepsOf), or, for a block that names none, defaults,
+// the project's default steps (Config.DefaultSteps), each with the type of its role (planSteps).
 func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []string, defaults []plan.Step, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
 	version := record.PlanVersion{Issue: fact.Issue, Generation: fact.Generation, Version: fact.Plan.Version, ArtifactID: fact.Plan.ArtifactID,
 		Source: record.PlanSourceOwner, GivenBy: fact.GivenBy, GivenAt: now}
