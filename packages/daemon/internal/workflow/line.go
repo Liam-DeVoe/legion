@@ -120,9 +120,10 @@ func issuePhaseOf(w Walk, place record.TaskPlace, state string) phase.Phase {
 }
 
 // moveTask is the one writer of where a task stands: it moves w's task to the place of to in state
-// (record.Store.MoveTask), keeping its place on a move to done, and sets issue.Phase to the phase
-// that place derives (issuePhaseOf), in the caller's transaction and before the caller's write of
-// issue (WriteIssue). w then stands where the task does, for whatever the caller reads of it after
+// (record.Store.MoveTask), keeping its place on a move to done and standing it at no act on a move
+// to admitted, where a task waits for its first step (waitForFirstStep), and sets issue.Phase to the
+// phase that place derives (issuePhaseOf), in the caller's transaction and before the caller's write
+// of issue (WriteIssue). w then stands where the task does, for whatever the caller reads of it after
 // the move. A run with no plan rows has no task to move, and issue.Phase is to, as it always was. A
 // move to where the task already stands writes nothing. The caller clears or keeps issue.Hold
 // itself.
@@ -132,7 +133,12 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 		return nil
 	}
 	place := w.Place
-	if to != phase.Done {
+	switch to {
+	case phase.Done:
+		// The task keeps its place.
+	case phase.Admitted:
+		place = record.TaskPlace{}
+	default:
 		var ok bool
 		if place, ok = w.PlaceOf(to); !ok {
 			return fmt.Errorf("move task %s of %s to %s: its line %v holds no such phase", w.Task, issue.Key, to, w.Line)

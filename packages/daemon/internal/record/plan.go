@@ -78,6 +78,13 @@ func (p TaskPlace) StepPlace(task string) StepPlace {
 	return StepPlace{Task: task, Kind: p.Kind, Place: p.Position}
 }
 
+// Started says whether a task standing at p has started its work: it stands at a step, its retro
+// or its merge. A task at no act has not: it waits there for its first step, and a stop keeps it
+// there (StopTask keeps the place), so a task stopped at no act is one whose work never ran.
+func (p TaskPlace) Started() bool {
+	return p != TaskPlace{}
+}
+
 // valid says whether p is a place a task can stand at.
 func (p TaskPlace) valid() bool {
 	switch p.Kind {

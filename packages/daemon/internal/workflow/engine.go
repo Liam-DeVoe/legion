@@ -497,10 +497,12 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 // no row at all. The row this line queues names the todo, so it is the one that writes.
 //
 // A hold of the root's plan (planHold) is not a failure a retry answers. A todo on a root held for
-// its stopped task starts the task again at its first step (restartTask), and its refusal of a
-// task done or left is this todo's answer, with the observation kept so admission records no todo
-// over the hold. A todo on a root held for the issues beneath it leaves the hold, since the last of
-// them to leave starts the retro, keeps the observation, and logs why.
+// its stopped task ends the stop: a task whose work ran starts again at its first step
+// (restartTask), and its refusal of a task done or left is this todo's answer, with the observation
+// kept so admission records no todo over the hold; a task stopped before its first step went out
+// waits for that step again (waitForFirstStep). A todo on a root held for the issues beneath it
+// leaves the hold, since the last of them to leave starts the retro, keeps the observation, and
+// logs why.
 func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (*intake.Refusal, error) {
 	released, err := e.observedIssue(ctx, tx, issue, fact)
 	if err != nil {
@@ -520,6 +522,9 @@ func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Is
 		if err != nil {
 			return nil, err
 		}
+		if !w.Place.Started() {
+			return nil, e.waitForFirstStep(ctx, tx, released, w, restartReason)
+		}
 		refusal, err := e.restartTask(ctx, tx, released, w, restartReason)
 		if err != nil || refusal == nil {
 			return nil, err
@@ -538,8 +543,9 @@ func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Is
 // of the status route names a reason of its own (R7).
 const releaseReason = "the issue was set to todo while its phase was held"
 
-// restartReason is the daemon's own reason for a todo's restart of a stopped task, which the task
-// of its first step's worker and the log line of the restart carry, for the same reason.
+// restartReason is the daemon's own reason for a todo's end of a stopped task's stop, which the task
+// of its first step's worker and the log line of the restart carry, for the same reason, and the log
+// line of a task stopped before its first step that waits for that step again.
 const restartReason = "the issue was set to todo while its task was stopped"
 
 // sessionStatusWrite takes a lifecycle status change written by a session whose write the workflow

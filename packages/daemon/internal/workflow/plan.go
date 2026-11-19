@@ -249,8 +249,9 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 // task (record.HoldTaskStopped), or, as a parent whose plan has no acceptance step, it waits for
 // the issues beneath it in place of its retro (record.HoldForChildren). No path that resumes the
 // work of a held issue resumes such a hold: a later version of the plan or a person's todo on a
-// root starts a stopped task again (restartTask), and the last issue beneath the parent to leave
-// starts its retro. An issue with no plan rows is never held so.
+// root ends a task's stop (restartTask, or waitForFirstStep for a task stopped before its first
+// step), and the last issue beneath the parent to leave starts its retro. An issue with no plan rows
+// is never held so.
 func planHold(issue record.Issue) bool {
 	return issue.Phase == phase.Held && issue.Hold != nil &&
 		(issue.Hold.Reason == record.HoldTaskStopped || issue.Hold.Reason == record.HoldForChildren)
@@ -482,9 +483,11 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 // restartTask starts w's task of issue again at its first step, in the
 // caller's transaction, for reason, which that step's worker is told. It runs on a person's todo
 // on a root held for the stopped task (releaseHeldRoot), and for a later version of the plan that
-// changes the stopped task or replaces it with a task of another id. issue is the record the
-// caller writes, with any observation it keeps, and w is the walk of the task to start, which the
-// caller read: the stopped task, or the new task of a later version, waiting at no act.
+// changes the stopped task or replaces it with a task of another id, where the work of the stopped
+// task ran: it stood at an act of its line (record.TaskPlace.Started). A task stopped before its
+// first step went out takes the way into that step instead (waitForFirstStep). issue is the record
+// the caller writes, with any observation it keeps, and w is the walk of the task to start, which
+// the caller read: the stopped task, or the new task of a later version, waiting at no act.
 //
 // The hold is cleared, the task runs at step 1 with its stop's reason gone (moveTask), and the
 // issue stands in the phase of step 1. The Dispatch status of that phase is queued over the
@@ -556,6 +559,34 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	}, true)
 }
 
+// waitForFirstStep ends the stop of w's task of issue, a task stopped before its first step went
+// out, which stands at no act (record.TaskPlace.Started), in the caller's transaction, for reason,
+// which its log line names. It runs where restartTask runs for a task whose work ran. Nothing of the
+// task ran, so it goes back the way a task that was never stopped goes into its first step: it waits
+// at no act again with its stop's reason gone (moveTask), the hold is cleared, and the issue stands
+// where the hold is from, admitted, or awaiting a person for a root that waits on one before its
+// first step (enterAwaiting). Nothing starts here: the design gate, the waiting line and admission
+// decide when the first step starts (StartFirstPhase), and no count is raised, since no run of the
+// task ended. Neither phase has a Dispatch status of its own (PhaseStatus), so none is written. The
+// issue leaves held, which is a movement (the rule in dispatchIssue). The act is task_released,
+// which the log line names.
+func (e *Engine) waitForFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, reason string) error {
+	from := record.StandsAt(issue)
+	if err := e.moveTask(ctx, tx, &issue, &w, phase.Admitted, record.TaskWaiting); err != nil {
+		return err
+	}
+	issue.Phase, issue.Hold = from, nil
+	if err := e.WriteIssue(ctx, tx, issue); err != nil {
+		return err
+	}
+	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a task stopped before its first step waits for that step again", "issue", issue.Key, "tree", issue.Tree,
+		"task", w.Task, "act", "task_released", "to", from, "reason", reason)
+	return nil
+}
+
 // planGiven is the plan an owner gave with register_plan, stored at the
 // generation the route gave it at: the issue's own, or 0 for an issue the daemon had not recorded,
 // whose plan waits there for the issue's first step. A generation's first plan is taken where its
@@ -571,11 +602,14 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // for each, and so is a task that is done or left the workflow. A version taken is stored as the
 // version in force (givenRows): each task it leaves as it was keeps its steps and where it stands,
 // each task it changes takes the steps its block now names, and each task it removes is deleted.
-// Where it changes the stopped task of an issue held for that task, the task the plan now holds
-// starts again at its first step (restartTask), and its worker is told which version did it. A
-// version taken after the work started writes the run's plan node again, whole (planNode): the
-// start wrote it at the version then in force, and the node names the plan the run walks now. A
-// version taken before the work starts writes none, since the start writes the version in force.
+// Where it changes the stopped task of an issue held for that task, the stop ends. Where the work
+// of the stopped task ran, which the place it stood at says (record.TaskPlace.Started), the task
+// the plan now holds starts again at its first step (restartTask), and its worker is told which
+// version did it. A task stopped before its first step went out waits for that step again, as a
+// task never stopped does (waitForFirstStep). A version taken after the work started writes the
+// run's plan node again, whole (planNode): the start wrote it at the version then in force, and the
+// node names the plan the run walks now. A version taken before the work starts writes none, since
+// the start writes the version in force.
 //
 // A plan given at a generation the issue has left, or in a lingering tree, is refused too. Each
 // refusal writes nothing and leaves the fact unspent, so the same registration, whose id names the
@@ -641,6 +675,10 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 
 	version, tasks, steps := givenRows(fact, stored, changed, e.cfg.DefaultSteps, e.now())
 	var removed, stopped []string
+	// started says whether the run's work started: a task of the version in force stood at an act of
+	// its line, read before this version changes, replaces or removes it. A first plan is taken only
+	// before the work (beforeItsWork), so without stored rows it did not.
+	started := false
 	if stored != nil {
 		for _, task := range stored.Tasks {
 			if !slices.ContainsFunc(fact.Plan.Tasks, func(given plan.Task) bool { return given.ID == task.Task }) {
@@ -649,6 +687,7 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 			if task.State == record.TaskStopped && slices.Contains(changed, task.Task) {
 				stopped = append(stopped, task.Task)
 			}
+			started = started || task.Place.Started()
 		}
 	}
 	if len(removed) > 0 {
@@ -661,22 +700,29 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 	}
 	e.logOnCommit(ctx, "workflow: an owner's plan is taken", "issue", fact.Issue, "generation", fact.Generation, "version", fact.Plan.Version,
 		"document", fact.Plan.ArtifactID, "given_by", fact.GivenBy, "changed", changed)
-	if !recorded || beforeItsWork(*issue) {
+	if !recorded {
+		return intake.Result{}, nil
+	}
+	ends := len(stopped) > 0 && planHold(*issue) && issue.Hold.Reason == record.HoldTaskStopped
+	if !started && !ends {
 		return intake.Result{}, nil
 	}
 	w, err := e.walk(ctx, tx, *issue)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	if recordsSteps(*issue) {
+	if started && recordsSteps(*issue) {
 		if err := e.enqueue(ctx, tx, issue.Key, planNode(*issue, w)); err != nil {
 			return intake.Result{}, err
 		}
 	}
-	if len(stopped) == 0 || !planHold(*issue) || issue.Hold.Reason != record.HoldTaskStopped {
+	if !ends {
 		return intake.Result{}, nil
 	}
 	reason := fmt.Sprintf("the owner gave version %d of the plan while task %s was stopped", fact.Plan.Version, strings.Join(stopped, ", "))
+	if !started {
+		return intake.Result{}, e.waitForFirstStep(ctx, tx, *issue, w, reason)
+	}
 	refusal, err := e.restartTask(ctx, tx, *issue, w, reason)
 	if err != nil {
 		return intake.Result{}, err

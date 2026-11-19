@@ -300,8 +300,9 @@ const HoldEscalated HoldReason = "escalated"
 
 // HoldTaskStopped is a hold whose issue's owner stopped the task it ran (workflow's taskStopped):
 // the task keeps its place and the reason it was stopped for (PlanTask.StoppedReason, StopTask).
-// A later version of the plan that changes the task, or a person's todo on a root, starts the
-// task again at its first step, which ends the hold.
+// A later version of the plan that changes the task, or a person's todo on a root, ends the hold:
+// a task whose work ran starts again at its first step, and a task stopped before its first step
+// (TaskPlace.Started) waits for that step again, as a task never stopped does.
 const HoldTaskStopped HoldReason = "task-stopped"
 
 // HoldForChildren is a hold that stands in place of the retro of an issue whose plan has no
