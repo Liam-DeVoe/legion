@@ -883,6 +883,15 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
 		{Kind: ClaimOutOfReachNotice, Role: claim.RoleImplementer, Phase: phase.Implementing, Claim: "legion-LEGION-208-implementer",
 			Reason: "Envoy has not heard from this claim's session since 2026-11-08T08:00:00Z, more than 20 minutes ago; it keeps its state and the controller decides whether to relaunch it"},
+		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
+			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
+			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",
+				UsedBytes: 48 << 30, FreeBytes: 2 << 30, FreedBytes: 1 << 30,
+				StopReason: "nothing left older than the minimum age", RefusedReads: []string{"pid 42"},
+				Sizes: []VolumeSize{{Path: "caches/uv", Bytes: 12 << 30, BytesOverHour: 11 << 30, BytesOverDay: 9 << 30,
+					Refused: "caches/uv/.../locked (depth 2)", Refusals: 3}},
+				SizesAt: answered, SizesPartial: true, SizesMissing: []VolumeMissing{{Path: "workspaces/LEGION-209", Reason: "openat: permission denied"}},
+				Faults: []string{"read the volume: panic: runtime error\nmain.go:1"}}},
 	}
 
 	byKind := make(map[NoticeKind]Notice, len(every))

@@ -9,7 +9,7 @@
 //     core.SessionPermissions: the issue pods' sessions present none;
 //   - the listener connects as a user of its own holding core.ListenerHostPermissions, the set the
 //     GKE listener's user carries (the deployment repository's envoy-cluster/Pulumi.prod.yaml);
-//   - the daemon connects as a user of its own holding daemonpermissions.Grant, read at this head,
+//   - the daemon connects as a user of its own holding natsgrant.Daemon, read at this head,
 //     since the daemon the rig runs is this head's (natsauth.DaemonSeed, `nats_daemon_nkey_seed_file`);
 //   - Dispatch connects as a user of its own holding core.DispatchPermissions;
 //   - the rig's own reads (a stored notice, a consumer) go through a user of the harness's that
@@ -41,7 +41,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/sjawhar/envoy/daemonpermissions"
+	"github.com/sjawhar/envoy/natsgrant"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
@@ -101,7 +101,7 @@ func readRigGrants(t *testing.T, path string) rigGrants {
 
 // daemonGrant is the daemon's own set, at this head.
 func daemonGrant() natsGrant {
-	grant := daemonpermissions.Grant()
+	grant := natsgrant.Daemon()
 	return natsGrant{Publish: natsRules{Allow: grant.Publish}, Subscribe: natsRules{Allow: grant.Subscribe}}
 }
 
@@ -187,7 +187,7 @@ func (n *rigNATS) configuration() string {
 	fmt.Fprintf(&b, "jetstream {\n  store_dir: %q\n}\n", filepath.Join(n.dir, "store"))
 	b.WriteString("authorization {\n  users = [\n")
 	b.WriteString(user("the listener's own user: core.ListenerHostPermissions("+n.grants.Machine+") at "+n.grants.Revision, n.listenerPublic, n.grants.Listener))
-	b.WriteString(user("the daemon's own user: daemonpermissions.Grant at this head", n.daemonPublic, daemonGrant()))
+	b.WriteString(user("the daemon's own user: natsgrant.Daemon at this head", n.daemonPublic, daemonGrant()))
 	b.WriteString("    # Dispatch's user: core.DispatchPermissions(" + n.grants.Machine + ") at " + n.grants.Revision + "\n    " + dispatch + "\n")
 	b.WriteString(user("the rig's own reads, which no process under test is handed", n.adminPublic, everything))
 	b.WriteString(user("members: core.SessionPermissions at "+n.grants.Revision+", the no_auth_user every session that presents no credential is", n.sessionPublic, n.grants.Sessions))

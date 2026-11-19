@@ -1961,7 +1961,7 @@ test("read_state's summary marks each claim Envoy cannot reach, and the controll
         generation: 1,
       },
     },
-    pluginContract: 159,
+    pluginContract: 168,
     lastTurnStart: "2026-11-12T15:45:39Z",
     ...(unreachable === undefined ? {} : { unreachable }),
   });
@@ -1971,7 +1971,7 @@ test("read_state's summary marks each claim Envoy cannot reach, and the controll
       external: true,
       sessionId: "ses_controller",
       registeredAt: "2026-11-12T10:00:00Z",
-      pluginContract: 159,
+      pluginContract: 168,
       unreachable: { since: "2026-11-12T18:20:00Z", lastSeen: "2026-11-12T17:59:00Z" },
     },
     issues: {

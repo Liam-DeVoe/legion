@@ -322,7 +322,7 @@ const legionClaimView = z.object({
    * optional. */
   leakCheckCause: nonEmptyString.optional(),
   /** `api.ClaimView.Unreachable`: when the daemon found this claim's session out of Envoy's
-   * reach, and absent while the claim is reachable (contract 159). */
+   * reach, and absent while the claim is reachable (contract 168). */
   unreachable: legionUnreachableView.optional(),
 });
 
@@ -1002,7 +1002,7 @@ const legionControllerLocator = z.object({
   /** 0 = no contract recorded. */
   pluginContract: z.number().int().nonnegative(),
   /** `api.ControllerLocator.Unreachable`: when the daemon found the controller's session out of
-   * Envoy's reach, as a claim view carries it, and absent while it is reachable (contract 159).
+   * Envoy's reach, as a claim view carries it, and absent while it is reachable (contract 168).
    * Nobody else can relaunch the controller, so the daemon relaunches it on its same session
    * itself, at most once in 6 hours; a controller this key still names after that is a person's
    * to recover. */

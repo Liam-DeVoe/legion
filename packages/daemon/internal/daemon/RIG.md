@@ -10,7 +10,7 @@ Every file is behind the `e2e` build tag.
 | Part | What runs | Where it is |
 | --- | --- | --- |
 | NATS | the real `nats-server` that `scripts/e2e/lib/live-daemon-proof.sh` installs (v2.15.1, its `nats_version`; the daemon refuses a server below v2.11.12, v2.12.4 or v2.14.0 at boot), JetStream on, `/connz` on | `rigNATS` |
-| Grants | a client that presents no credential is `members`, the `no_auth_user`, holding `core.SessionPermissions`; the listener holds `core.ListenerHostPermissions(legion-rig)`, Dispatch `core.DispatchPermissions(legion-rig)`, all three read at the listener's commit; the daemon holds `daemonpermissions.Grant` of this head | `rigGrants`, `scripts/e2e/lib/live-rig-grants.go` |
+| Grants | a client that presents no credential is `members`, the `no_auth_user`, holding `core.SessionPermissions`; the listener holds `core.ListenerHostPermissions(legion-rig)`, Dispatch `core.DispatchPermissions(legion-rig)`, all three read at the listener's commit; the daemon holds `natsgrant.Daemon` of this head | `rigGrants`, `scripts/e2e/lib/live-rig-grants.go` |
 | Envoy | the listener production pins, `testenvoy.PinnedRevision`, built from that commit as its image is built, with a session age of 5 minutes; with `LEGION_E2E_LISTENER_FROM_CHECKOUT=1`, the listener of the checkout's own commit, built the same way (below) | `testenvoy.RigBinary`, `r.listener` |
 | The listener's front | a reverse proxy every pane and the daemon reach the listener through | `r.front` |
 | The daemon | `run`, over a PostgreSQL database of the run's own, its own NATS user, and the rig's runtime | `r.boot`, `r.d` |

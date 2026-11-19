@@ -994,10 +994,10 @@ var stateNarrowings = []stateNarrowing{
 }
 
 // unreachableContract is the daemon contract that added `unreachable` to every claim view and to
-// the controller's locator (version.go's 159, R5): a plugin before it reads both with a schema that
+// the controller's locator (version.go's 168, R5): a plugin before it reads both with a schema that
 // knows no such key, so a caller from a pod below it is served the state without the mark
 // (withoutUnreachable).
-const unreachableContract = 159
+const unreachableContract = 168
 
 // carriesUnreachable is whether any claim view of state, or the controller's locator, carries the
 // mark. It is written only where a claim is marked, so it is asked of the state rather than

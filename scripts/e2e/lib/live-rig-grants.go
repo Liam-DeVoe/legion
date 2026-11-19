@@ -8,7 +8,7 @@
 // (core.ListenerHostPermissions is the set the GKE listener's user carries, envoy-cluster/
 // Pulumi.prod.yaml; core.SessionPermissions the hub's no_auth_user, which the issue pods' sessions
 // connect as, presenting nothing). The daemon's own user is the head's, read by the driver itself
-// (daemonpermissions.Grant), because the daemon the rig runs is the head's.
+// (natsgrant.Daemon), because the daemon the rig runs is the head's.
 //
 // Usage, from the infra module of that tree: go run ./live-rig-grants.go <machine id>
 package main
