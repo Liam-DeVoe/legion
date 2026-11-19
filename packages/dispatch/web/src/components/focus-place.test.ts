@@ -1876,3 +1876,77 @@ test("an agent's row taken away by its session's end hands the focus to no other
     }
   }
 });
+
+// (bi) A keystroke in a field that takes typed text edits the field and is no press of the
+// reader's (`isPress`), and nor is the `change` the field fires as it goes, its commit on blur,
+// which Chromium fires as an update takes the focused field away. So a live update that takes a
+// field away from under the reader's typing, in the task of that `change`, is a loss they did not
+// cause (ag): the focus lands in no row and on no field that takes typed text - not on the Reply
+// text box the update draws in the row's place - and nothing scrolls. Measured in Chromium with
+// the `change` read as the reader's pick: the loss read as caused, and the focus landed on that
+// Reply text box, where the reader's next key was typed. A `<textarea>` with a character key and
+// then Enter, which inserts a line there, and an `<input>` with a character key, each by
+// Chromium's `focusout` and by none. The issue title's Enter, which commits its `<input>`, is
+// still a press (ap).
+test("a keystroke in a text field, or the change its removal fires, makes no press, so an uncaused removal of the field takes the uncaused path", async () => {
+  const fields = [
+    {
+      keys: [
+        { code: "KeyA", key: "a" },
+        { code: "Enter", key: "Enter" },
+      ],
+      make: () => document.createElement("textarea"),
+    },
+    { keys: [{ code: "KeyA", key: "a" }], make: () => document.createElement("input") },
+  ];
+  for (const { keys, make } of fields) {
+    for (const withFocusout of [true, false]) {
+      const scrolls = spyOn(Element.prototype, "scrollIntoView");
+      try {
+        await withRescue(async () => {
+          const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+          const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+          const third = rows[2] as { mark: HTMLInputElement; row: HTMLElement };
+          const field = make();
+          field.setAttribute("aria-label", "Note");
+          second.row.append(field);
+          field.focus();
+          placeAt(field, 200);
+          box.dispatchEvent(new Event("scroll"));
+          for (const { code, key } of keys) {
+            field.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, code, key }));
+            field.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, code, key }));
+          }
+          // The update draws the row again in its place, holding a Reply form, its text box first.
+          const redrawn = document.createElement("div");
+          redrawn.setAttribute("data-inbox-row", "Two");
+          redrawn.setAttribute(ROW_MARKER_ATTRIBUTE, "");
+          redrawn.tabIndex = -1;
+          const reply = document.createElement("form");
+          const replyBox = document.createElement("textarea");
+          replyBox.setAttribute("aria-label", "Reply");
+          reply.append(replyBox);
+          buttonIn(reply, "Send");
+          redrawn.append(reply);
+          const replace = () => {
+            second.row.remove();
+            box.insertBefore(redrawn, third.row);
+          };
+          // The field's commit on blur, which Chromium fires as the update takes it away.
+          field.dispatchEvent(new Event("change", { bubbles: true }));
+          if (withFocusout) lose(field, replace);
+          else replace();
+          await settled();
+          const landed = document.activeElement as HTMLElement;
+          expect(box).toHaveFocus();
+          expect(inRow(landed)).toBe(false);
+          expect(takesText(landed)).toBe(false);
+          expect(replyBox).not.toHaveFocus();
+        });
+        expect(scrolls).not.toHaveBeenCalled();
+      } finally {
+        scrolls.mockRestore();
+      }
+    }
+  }
+});

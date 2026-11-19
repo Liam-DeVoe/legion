@@ -333,13 +333,13 @@ let rescueMounted = false;
  *  `held-press.ts`), or disabled, itself or through the fieldset around it. */
 const HELD = '[aria-disabled="true"], :disabled';
 
-/** The reader's latest act - a `pointerdown`, a `keydown`, or a `change` they committed - which
- *  tells a loss the reader caused from one an update made under them: where it landed, the dialog
- *  or panel it landed in (`DIALOG`) and the loss that region was opened from (`openedFrom`), the
- *  elements it can read as (`pressedOn`) that were already held when it was made (`heldBefore`,
- *  `heldAt`), its own release while that is still to come (`Release`; none for a change), whether
- *  it can still be the cause of a loss (`live`, `answerPress`), and what stops the timers and the
- *  watch that end it. */
+/** The reader's latest press (`isPress`) - a pointer press, a key that acts rather than edits a
+ *  field's text, or a pick - which tells a loss the reader caused from one an update made under
+ *  them: where it landed, the dialog or panel it landed in (`DIALOG`) and the loss that region was
+ *  opened from (`openedFrom`), the elements it can read as (`pressedOn`) that were already held
+ *  when it was made (`heldBefore`, `heldAt`), its own release while that is still to come
+ *  (`Release`; none for a pick's `change`), whether it can still be the cause of a loss (`live`,
+ *  `answerPress`), and what stops the timers and the watch that end it. */
 interface Press {
   readonly heldBefore: ReadonlySet<Element>;
   live: boolean;
@@ -372,6 +372,34 @@ const RELEASE: Readonly<Record<string, "keyup" | "pointerup">> = {
 function pressedBy(event: Event): number | string | null {
   if (event instanceof PointerEvent) return event.pointerId;
   return event instanceof KeyboardEvent ? event.code : null;
+}
+
+/** Whether `event` is a press of the reader's (`Press`), the act that can make a loss in its row,
+ *  dialog or panel theirs (`causedByReader`). A pointer press is one, and so is any key on a
+ *  control that takes no typed text - Enter, Space, Escape, the arrows, a page key. In a field
+ *  that takes typed text (`takesText`) only a key that acts on the page rather than on the text
+ *  is one: Escape, Tab, Enter in a single-line `<input>`, which commits it, as the issue title's
+ *  editor does, and a key held with Ctrl, Meta or Alt, a shortcut such as Ctrl+Enter that sends.
+ *  A character or editing key there - a printable key, Space, Backspace, Delete, the arrows, Home
+ *  and End, Enter in a `<textarea>` or a content-editable element, which inserts a line - only
+ *  edits the field. A `change` is one on a control that takes no typed text - a `<select>`'s
+ *  pick, a checkbox or a radio, which Playwright and assistive tech make without a key or a
+ *  pointer - and none on a field that takes typed text, where it is the field's commit on blur,
+ *  which Chromium fires as an update takes the focused field away. */
+function isPress(event: Event): boolean {
+  const { target } = event;
+  if (!(target instanceof Element)) return false;
+  if (event.type === "change") return !takesText(target);
+  if (!(event instanceof KeyboardEvent) || !takesText(target)) return true;
+  const { key } = event;
+  return (
+    key === "Escape" ||
+    key === "Tab" ||
+    (key === "Enter" && target instanceof HTMLInputElement) ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.altKey
+  );
 }
 
 /** The nearest of `opener` and the openers before it whose region is still in the page and drawn
@@ -499,15 +527,6 @@ function recentPress(): Press | null {
   return lastPress?.live ? lastPress : null;
 }
 
-/** Whether a press of the reader's is live (`answerPress`): their latest press, key or pick can
- *  still be the cause of what the page draws now. True wherever no rescue is mounted, as
- *  `causedByReader` is, since nothing records the reader's presses there. A composer reads it
- *  before it takes the focus for a reply target (`MentionComposer`), so a box an update drew
- *  under the reader takes no focus from where they hold it. */
-export function readerPressLive(): boolean {
-  return !rescueMounted || recentPress() !== null;
-}
-
 /** The places a press could have taken `element`'s focus from and still be the reader's own doing:
  *  the element itself, the row it is in, and the dialog, panel or selection bar it was lost from.
  *  A press in a list's panel is in that panel, so a pick that takes the panel away is the
@@ -522,16 +541,17 @@ function pressPlaces(element: Element): Element[] {
 }
 
 /**
- * Whether the reader caused the loss of `element`'s focus: their latest act - a `pointerdown`, a
- * `keydown`, or a `change` they committed (a select's pick) - is still live, its answer not yet
- * run (`answerPress`), and landed on the element, inside the row it was in, or inside the dialog,
- * panel or selection bar it was lost from (`pressPlaces`), read at every element the press reads
- * as now (`pressedOn`): a pick in a list, a confirm in a dialog, that has gone counts as a press on
- * the trigger the list or the dialog was opened from as well. A loss the reader caused keeps the
- * hand-off that pulls the focus to the control now at the lost one's place; one they did not - a
- * live update taking a row away, a refetch emptying a bar - moves the focus into no row and
- * scrolls nothing. The rescue and every component hand-off that can move the focus to a row read
- * this one rule.
+ * Whether the reader caused the loss of `element`'s focus: their latest press (`isPress`) - a
+ * pointer press, a key that acts rather than edits a field's text, or a pick - is still live, its
+ * answer not yet run (`answerPress`), and landed on the element, inside the row it was in, or
+ * inside the dialog, panel or selection bar it was lost from (`pressPlaces`), read at every element
+ * the press reads as now (`pressedOn`): a pick in a list, a confirm in a dialog, that has gone
+ * counts as a press on the trigger the list or the dialog was opened from as well. A loss the
+ * reader caused keeps the hand-off that pulls the focus to the control now at the lost one's place;
+ * one they did not - a live update taking a row away, a refetch emptying a bar - moves the focus
+ * into no row and scrolls nothing. The rescue and every component hand-off that can move the
+ * focus to another row read this one rule; a hand-off to the lost control's own row, as
+ * AskCard's is, is no move to another row.
  */
 export function causedByReader(element: Element): boolean {
   if (!rescueMounted) return true;
@@ -900,7 +920,14 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
  * `focusout` for it; Chromium fires one as well, and whichever comes first is the loss recorded.
  * Each loss holds its element, its region, its place among the controls the region draws, the
  * path, whether the page took the element (`taken`), whether the reader caused the loss
- * (`causedByReader`), and its dialog's opener. It holds where the element stood in the page too:
+ * (`causedByReader`), and its dialog's opener. The reader caused it when a press of theirs is
+ * still live in its row, dialog or panel (`isPress`): a pointer press; a key on a control that
+ * takes no typed text; in a field that does, only Escape, Tab, Enter in a single-line `<input>`
+ * and a key held with Ctrl, Meta or Alt, since a character or editing key, Enter in a `<textarea>`
+ * among them, only edits the field; and a `change` on a control that takes no typed text, since
+ * on a field that does it is the field's commit on blur, which Chromium fires as an update takes
+ * the focused field away. A key or a `change` that is no press neither starts a press nor ends the
+ * live one (`notePress`). It holds where the element stood in the page too:
  * the parent it stood in and the siblings either side of it, and the same for each parent of it
  * up to the region (`spotsOf`). For a `focusout` they are read there and then, while the element
  * is still in the page; for a control taken away with no `focusout`, the last record that took
@@ -1234,24 +1261,28 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       for (const box of clippingBoxes(watched.element)) watched.boxes.add(box);
       readSight(watched);
     };
-    /** Records the reader's own act - a `pointerdown`, a `keydown`, or a `change` they committed, a
-     *  select's pick that Playwright and assistive tech make without a key or a pointer - so a loss
-     *  while it is live can be told from one an update made under them (`causedByReader`), with
-     *  the dialog or panel it landed in and the loss that region was opened from, read now, while
-     *  the region is still in the page, for when a pick or a confirm takes it away (`pressedOn`),
-     *  the controls it can read as that are already held (`heldAt`), read before the act runs, and
-     *  the release it waits for (`Release`). A newer act ends the one before it, and the watch on
+    /** Records the reader's own act, a press (`isPress`) - a pointer press, a key that acts rather
+     *  than edits a field's text, or a pick, which Playwright and assistive tech make with a
+     *  `change` alone - so a loss while it is live can be told from one an update made under them
+     *  (`causedByReader`), with the dialog or panel it landed in and the loss that region was
+     *  opened from, read now, while the region is still in the page, for when a pick or a confirm
+     *  takes it away (`pressedOn`), the controls it can read as that are already held (`heldAt`),
+     *  read before the act runs, and the release it waits for (`Release`). A key or a `change`
+     *  that is no press - a character typed in a field, the field's commit on blur - neither
+     *  starts an act nor ends the live one. A newer act ends the one before it, and the watch on
      *  that one's hold with it, except an act on a control the live act holds by a hold that began
      *  after it, or on anything inside that control (`onHeldControl`) - a double click, a repeated
      *  Enter, any other key or pointer press on that control or on a span or an icon of it: the
      *  held control takes the act without a write, so the act before it stays the cause, with its
      *  release and its write deadline as they were (`noteRelease`). Tab, with Shift or without, is
-     *  the one key that is no such act: it moves the focus off the held control to another, and an
-     *  act is the cause only of the loss of its own control and of what it takes away, so the Tab
-     *  ends the act before it and is noted as a new act, and a loss of the control it moved the
-     *  focus to is judged on its own. */
+     *  the one key the rescue reads as a new act on a held control: it moves the focus off that
+     *  control to another, and an act is the cause only of the loss of its own control and of what
+     *  it takes away, so the Tab ends the act before it and is noted as a new act, and a loss of
+     *  the control it moved the focus to is judged on its own. Other keys that move the focus
+     *  away, such as the Inbox's j and k, are passed over like any other key on the held
+     *  control. */
     const notePress = (event: Event) => {
-      if (!(event.target instanceof Element)) return;
+      if (!(event.target instanceof Element) || !isPress(event)) return;
       const movesOff = event instanceof KeyboardEvent && event.key === "Tab";
       if (!movesOff && lastPress?.live === true && onHeldControl(lastPress, event.target)) return;
       lastPress?.stop();
