@@ -4,13 +4,16 @@
  *
  * An email link that a reader made from a bare address is read with the run of characters RFC
  * 5322 allows in a local part (its `atext` and `.`) in the decoded text just before it, which a
- * character outside that set ends. At any node that is no text the run ends too; when that node's
- * text ends in a character of the set, markup or a link a reader made splits the address, and the
- * link stays as remark-gfm made it. When every character of the run is one GFM links in a local
- * part (`[-.+_A-Za-z0-9]`), the link takes the run; when one is not, the link goes, and its text
- * joins the text around it, unless a web address GFM links in the joined text would then reach
- * into the address, when the link stays. With no run the link stands, and a link the writer wrote
- * is never changed. Go's reader applies the same rule (`wholeEmailLinks` in
+ * character outside that set ends, and which goes on through the text of a link a reader made
+ * from bare text, unless that link would read on into the character after it were it written
+ * bare, or stands next to an email link the writer wrote, or its text starts `_www.`. At any
+ * other node the run ends too; when that node's text ends in a character of the set, markup or
+ * that link splits the address, and the link stays as remark-gfm made it. When every
+ * character of the run is one GFM links in a local part (`[-.+_A-Za-z0-9]`), the link takes the
+ * run, unless the run reaches into a reader's link, when both stand; when one is not, the link
+ * goes, and its text joins the text around it, unless a web address GFM links in the joined text
+ * would then reach into the address, when the link stays. With no run the link stands, and a
+ * link the writer wrote is never changed. Go's reader applies the same rule (`wholeEmailLinks` in
  * `packages/envoy/internal/dispatch/pmdoc/autolink_transform.go`), and these are the rows its
  * tests hold it to; the last are the shapes a write was refused for before (Go's
  * `TestLinkifyStoresEveryRefusedShape`), which both read from one file.
@@ -201,6 +204,18 @@ const CHANGED_ROWS: readonly Row[] = [
       '<span data-proof="comment" data-id="c1" data-by="user:x">a</span>gent&#45;hosts@example.com',
     runs: [plain("a"), address("gent-hosts@example.com")],
   },
+  {
+    // Before: `alice@example.com`, `/bob-` and a link to `smith@example.com`. A `/` does not
+    // continue an email's domain, so the run reaches through `alice@example.com`'s link to its
+    // `@` and holds the `/`: the later link goes.
+    markdown: "alice@example.com/bob-smith@example.com",
+    runs: [address("alice@example.com"), plain("/bob-smith@example.com")],
+  },
+  {
+    // Before: `mail `, `a@b.co`, `&` and a link to `c-d@e.co`.
+    markdown: "mail a@b.co&c-d@e.co now",
+    runs: [plain("mail "), address("a@b.co"), plain("&c-d@e.co now")],
+  },
 ];
 
 /** The rows the rule leaves alone: each read this way before it too. */
@@ -230,14 +245,15 @@ const CONTROL_ROWS: readonly Row[] = [
     runs: [plain("xé"), address("-agent@example.com")],
   },
   {
-    // The run is GFM's characters and reaches into the email link remark-gfm made before it: a
-    // link a reader made ends the run as markup does, so both stand.
+    // The run is GFM's characters and reaches into the email link remark-gfm made before it,
+    // which a `+` does not continue: one link never takes another's text, so both stand.
     markdown: "a@b.co+c@d.co",
     runs: [address("a@b.co"), address("+c@d.co")],
   },
   {
-    // So it does whatever the run holds: the `'` before `b@c.test`, the `~`, `%`, `*` and `?` of
-    // these, each after a www link or an email link remark-gfm made.
+    // A link a reader made that, written bare, would read on into the text after it ends the
+    // run as markup does, whatever the run holds: a web link, which runs on through the `'`, `~`
+    // or `?` after it, and an email link before a `-`, which continues its domain.
     markdown: "www\\.a'b@c.test",
     runs: [{ text: "www.a", link: "http://www.a" }, plain("'"), address("b@c.test")],
   },
@@ -440,8 +456,9 @@ for (const context of CONTEXTS) {
 
 /**
  * A shape a write was refused for before the rule's last change, with the runs Go reads: the 66
- * the round-5 review of INFRA-4224 listed (its `infra-4224-r5-refused-shapes.jsonl`) and 5 more of
- * cause B. Go's `TestLinkifyStoresEveryRefusedShape` holds Go to the same file. Each is read
+ * the round-5 review of INFRA-4224 listed (its `infra-4224-r5-refused-shapes.jsonl`), 5 more of
+ * cause B, and the four a 50,000-shape probe found that the run rule refuses without its second
+ * exception. Go's `TestLinkifyStoresEveryRefusedShape` holds Go to the same file. Each is read
  * whole, in the block it is written in, in all three pipelines.
  */
 interface RefusedShape {

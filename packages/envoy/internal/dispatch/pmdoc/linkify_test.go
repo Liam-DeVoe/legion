@@ -16,8 +16,10 @@ import (
 // own rule after remark-gfm's (wholeEmailLinks): an address holding a character RFC 5322 allows
 // in a local part and GFM does not link, as a resource path's `/`, a `%` or a decoded `&` or `$`,
 // holds no link, a character reference inside an address of GFM's characters leaves it linked
-// whole, an address alone is linked whole, and an address that inline markup or a link a reader
-// made splits, or that a web address reaches into once its link went, keeps remark-gfm's reading.
+// whole, an address alone is linked whole, a later address a reader links from inside it after
+// an email link that would not read on into it holds no link, and an address that inline markup
+// or a link a reader made that would read on into it splits, or that a web address reaches into
+// once its link went, keeps remark-gfm's reading.
 func TestLinkifyReadsWhatTheEngineReads(t *testing.T) {
 	for _, test := range []struct{ markdown, want string }{
 		{"mail alice@example.com now", `text "mail " | text "alice@example.com" link mailto:alice@example.com | text " now"`},
@@ -62,6 +64,10 @@ func TestLinkifyReadsWhatTheEngineReads(t *testing.T) {
 		{"'_www.a.bhosts@example.com", `text "'" | text "_www.a.bhosts@example.com" link mailto:_www.a.bhosts@example.com`},
 		{"q/&#45;www.a.bhosts@example.com", `text "q/-" | text "www.a.bhosts@example.com" link mailto:www.a.bhosts@example.com`},
 		{"http://&#45;a.b@c.co", `text "http://-" | text "a.b@c.co" link mailto:a.b@c.co`},
+		{"alice@example.com/bob-smith@example.com", `text "alice@example.com" link mailto:alice@example.com | text "/bob-smith@example.com"`},
+		{"alice@example.com'bob-smith@example.com", `text "alice@example.com" link mailto:alice@example.com | text "'bob-smith@example.com"`},
+		{"alice@example.com%bob-smith@example.com", `text "alice@example.com" link mailto:alice@example.com | text "%bob-smith@example.com"`},
+		{"mail a@b.co&c-d@e.co now", `text "mail " | text "a@b.co" link mailto:a@b.co | text "&c-d@e.co now"`},
 	} {
 		doc, err := Parse(test.markdown)
 		if err != nil {
@@ -90,12 +96,13 @@ func TestLinkifyReadsWhatTheEngineReads(t *testing.T) {
 //
 // The rows whose reading the rule changes come first, each with what Go and the engine read before
 // it. The rest read the same before it, and are the controls: an address alone, a path that holds
-// no `-`, `.`, `+` or `_`, a link that already starts at its run's start, an address that a link
-// a reader made splits, whatever the run holds, which keeps both links, one that a web address
-// would reach into once its link went, which keeps the link, an address inline markup splits,
-// which keeps remark-gfm's reading, and the links a writer wrote, which are never changed - an
-// early link stored explicitly, as a rendering stored before the rule writes it, is written
-// unchanged.
+// no `-`, `.`, `+` or `_`, a link that already starts at its run's start, a run of GFM's
+// characters that reaches into an email link a reader made, which keeps both links, an address
+// that a link a reader made splits where it would read on into the address were it written bare,
+// whatever the run holds, which keeps both links, one that a web address would reach into once
+// its link went, which keeps the link, an address inline markup splits, which keeps remark-gfm's
+// reading, and the links a writer wrote, which are never changed - an early link stored
+// explicitly, as a rendering stored before the rule writes it, is written unchanged.
 func TestLinkifyLinksAnEmailWholeOrNotAtAll(t *testing.T) {
 	const callout = `:::callout{#c1 kind="note" title="T"}`
 	rows := []struct{ markdown, written string }{
@@ -135,15 +142,23 @@ func TestLinkifyLinksAnEmailWholeOrNotAtAll(t *testing.T) {
 		// Before: the code, `agent-` and a link to `hosts@…`. The code's text ends in `:`, so the
 		// run is `agent-`, and the link takes it.
 		{"`SA:`agent&#45;hosts@example.com", "`SA:`[agent-hosts@example.com](mailto:agent-hosts@example.com)"},
+		// Before: the email link, the text through `bob-` or the `&`, and a link to `smith@…` or
+		// `c-d@…`. Neither a `/` nor a `&` continues an email's domain, so the run reaches through
+		// the first address's link to its `@` and holds that character: the later link goes.
+		{"alice@example.com/bob-smith@example.com", "alice@example.com/bob-smith@example.com"},
+		{"mail a@b.co&c-d@e.co now", "mail a@b.co&c-d@e.co now"},
 		// The controls.
 		{"Grant act-as on agent-hosts@example-project.iam.gserviceaccount.com.", "Grant act-as on [agent-hosts@example-project.iam.gserviceaccount.com](mailto:agent-hosts@example-project.iam.gserviceaccount.com)."},
 		{"agent-hosts@example.com", "[agent-hosts@example.com](mailto:agent-hosts@example.com)"},
 		{"x agent-hosts@example.com", "x [agent-hosts@example.com](mailto:agent-hosts@example.com)"},
 		{"serviceAccounts/agenthosts@example.com", "serviceAccounts/agenthosts@example.com"},
 		{"xé-agent@example.com", "xé[-agent@example.com](mailto:-agent@example.com)"},
-		// A link a reader made ends the run as markup does: the run reaches into an email or a
-		// www link a reader made, so both stand, whatever the run holds.
+		// A run of GFM's characters that reaches into an email link a reader made, which a `+`
+		// does not continue: one link never takes another's text, so both stand.
 		{"a@b.co+c@d.co", "[a@b.co](mailto:a@b.co)[+c@d.co](mailto:+c@d.co)"},
+		// A link a reader made that, written bare, would read on into the text after it ends the
+		// run as markup does, whatever the run holds: a web link, which runs on through the `'`,
+		// `~` or `?` after it, and an email link before a `-`, which continues its domain.
 		{"www\\.a'b@c.test", "[www.a](http://www.a)'[b@c.test](mailto:b@c.test)"},
 		{"q/www.a.b~hosts@example.com", "q/[www.a.b~](http://www.a.b~)[hosts@example.com](mailto:hosts@example.com)"},
 		{"x@y.co&#45;%hosts@example.com", "[x@y.co](mailto:x@y.co)-%[hosts@example.com](mailto:hosts@example.com)"},
@@ -255,14 +270,16 @@ func TestLinkifyLinksAnEmailWholeOrNotAtAll(t *testing.T) {
 
 // refusedEmailShape is a row of testdata/refused-email-shapes.jsonl: a document holding an email
 // address, the set it came from, whether a write of it was refused before the rule's last change
-// (at c5fef1fc and f3de85fb, and at main 7ce89a9b), the cause, and its inline runs as Go and the
-// engine read it, each its text, or a node that is no text as its type in brackets, and the href of
-// the link over it, if any.
+// (at c5fef1fc, f3de85fb or the narrowed rule alone, and at main 7ce89a9b, where measured), the
+// cause, a note where the row's reading was ruled on, and its inline runs as Go and the engine
+// read it, each its text, or a node that is no text as its type in brackets, and the href of the
+// link over it, if any.
 type refusedEmailShape struct {
 	Set       string          `json:"set"`
 	Markdown  string          `json:"markdown"`
 	Refused   map[string]bool `json:"refused"`
 	Mechanism *string         `json:"mechanism"`
+	Note      string          `json:"note"`
 	Runs      []inlineRun     `json:"runs"`
 }
 
@@ -303,7 +320,13 @@ func inlineRuns(doc *Node) []inlineRun {
 // Each is read as the row says Go and the engine read it, a write of it is not refused
 // (ParseForWrite), its rendering reads back as its tree, and the engine reads the markdown and the
 // rendering as Go reads the markdown. A row of cause B keeps the email link the reader made and
-// gets no web-address link.
+// gets no web-address link. Four of the 11, noted as the architect's four, hold a second address
+// that a reader links from inside it, after an email link that would not read on into it
+// (`alice@example.com/bob-smith@example.com`): they store with no link on the second address, as
+// c5fef1fc stored them. The last four, noted as the probe's four, are the shapes the 50,000-shape
+// probe found that the narrowed rule refuses, where the earlier link the reader made stands next to
+// an email link the writer wrote or starts `_www.`: they store with the base's reading, the later
+// address linked as the reader linked it.
 func TestLinkifyStoresEveryRefusedShape(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("testdata", "refused-email-shapes.jsonl"))
 	if err != nil {
@@ -317,10 +340,11 @@ func TestLinkifyStoresEveryRefusedShape(t *testing.T) {
 		}
 		shapes = append(shapes, shape)
 	}
-	if len(shapes) != 71 {
-		t.Fatalf("testdata/refused-email-shapes.jsonl holds %d shapes, want the review's 66 and 5 more", len(shapes))
+	if len(shapes) != 75 {
+		t.Fatalf("testdata/refused-email-shapes.jsonl holds %d shapes, want the review's 66 and 9 more", len(shapes))
 	}
 	docs := make([]*Node, len(shapes))
+	noted := map[string]int{}
 	var markdowns []string
 	for index, shape := range shapes {
 		doc, err := Parse(shape.Markdown)
@@ -353,8 +377,26 @@ func TestLinkifyStoresEveryRefusedShape(t *testing.T) {
 				t.Errorf("%q holds no email link", shape.Markdown)
 			}
 		}
+		links := len(slices.DeleteFunc(slices.Clone(runs), func(run inlineRun) bool { return run.Link == "" }))
+		switch {
+		case strings.HasPrefix(shape.Note, "the architect's four"):
+			// The first address alone is linked.
+			noted["the architect's four"]++
+			if links != 1 {
+				t.Errorf("%q holds %d links, want the first address's alone", shape.Markdown, links)
+			}
+		case strings.HasPrefix(shape.Note, "the probe's four"):
+			// The base's reading: the earlier link and the later address's both.
+			noted["the probe's four"]++
+			if links < 2 {
+				t.Errorf("%q holds %d links, want the earlier link's and the later address's", shape.Markdown, links)
+			}
+		}
 		docs[index] = doc
 		markdowns = append(markdowns, shape.Markdown, rendering)
+	}
+	if noted["the architect's four"] != 4 || noted["the probe's four"] != 4 {
+		t.Errorf("testdata/refused-email-shapes.jsonl notes %v, want the architect's four and the probe's four", noted)
 	}
 	readings := engineReadings(t, markdowns)
 	for index, shape := range shapes {

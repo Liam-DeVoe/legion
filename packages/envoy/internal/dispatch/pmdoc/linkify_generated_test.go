@@ -8,12 +8,15 @@ import (
 	"time"
 )
 
-// emailShapeSeed and emailShapeBound fix the shapes TestLinkifyStoresEveryGeneratedAddress builds,
-// so a failure reproduces: the generator's seed, and how many shapes it draws.
-const (
-	emailShapeSeed  = 4224
-	emailShapeBound = 4000
-)
+// emailShapeSets fix the shapes TestLinkifyStoresEveryGeneratedAddress builds, so a failure
+// reproduces: each seed of the generator, and how many shapes it draws from it. Each bound is the
+// smallest that still draws its seed's shapes of the probe's four (testdata/refused-email-shapes.jsonl),
+// which the run rule refuses without its second exception (writtenExplicitOnly): seed 4224's
+// 11,598th shape, seed 7's 2,921st and 12,879th, and seed 99's 4,760th.
+var emailShapeSets = []struct {
+	seed  uint64
+	bound int
+}{{4224, 11598}, {7, 12879}, {99, 4760}}
 
 // emailShapeBefore is what the generator sets before an address, one to three of them in a row:
 // nothing, whitespace, each ASCII punctuation character, a letter outside ASCII, character
@@ -100,12 +103,11 @@ func emailShapes(seed uint64, bound int) []emailShape {
 // stand before an address, what its local part holds and the block it stands in, and holds each
 // to it: Parse reads it, a write of it is not refused (ParseForWrite), its rendering reads back
 // as its tree, and the browser editor's engine reads the markdown and the rendering as Go reads
-// the markdown. The shapes come from a fixed seed, so a failure reproduces; the test stops after
-// a few failures.
+// the markdown. The shapes come from fixed seeds, so a failure reproduces; the test stops after a
+// few failures. The engine reads each distinct markdown once.
 func TestLinkifyStoresEveryGeneratedAddress(t *testing.T) {
 	const most = 5
 	began := time.Now()
-	shapes := emailShapes(emailShapeSeed, emailShapeBound)
 	failures := 0
 	fail := func(format string, args ...any) {
 		t.Helper()
@@ -114,36 +116,53 @@ func TestLinkifyStoresEveryGeneratedAddress(t *testing.T) {
 			t.Fatalf("stopped after %d failures", most)
 		}
 	}
-	docs := make([]*Node, len(shapes))
-	markdowns := make([]string, 0, 2*len(shapes))
-	for index, shape := range shapes {
-		doc, err := Parse(shape.markdown)
-		if err != nil {
-			fail("%q in %s: Parse(%q): %v", shape.text, shape.container, shape.markdown, err)
-			markdowns = append(markdowns, shape.markdown, shape.markdown)
-			continue
-		}
-		if _, err := ParseForWrite(shape.markdown, nil); err != nil {
-			fail("%q in %s: a write of %q is refused: %v", shape.text, shape.container, shape.markdown, err)
-		}
-		rendering := mustRender(t, doc)
-		if back, err := Parse(rendering); err != nil || !back.Equal(doc) {
-			fail("%q in %s: %q is written %q, which Go reads back as %s (%v), not %s", shape.text, shape.container, shape.markdown, rendering, inlineSummaries(back), err, inlineSummaries(doc))
-		}
-		docs[index] = doc
-		markdowns = append(markdowns, shape.markdown, rendering)
+	// A shape drawn, where it was drawn, Go's reading of it, and where its markdown and its
+	// rendering stand among the engine's markdowns.
+	type drawn struct {
+		emailShape
+		seed                    uint64
+		index                   int
+		doc                     *Node
+		atMarkdown, atRendering int
 	}
-	t.Logf("seed %d, bound %d: %d shapes read and written in %v", emailShapeSeed, emailShapeBound, len(shapes), time.Since(began))
-	readings := engineReadings(t, markdowns)
-	for index, shape := range shapes {
-		if docs[index] == nil {
-			continue
+	var shapes []drawn
+	var markdowns []string
+	engineIndex := map[string]int{}
+	forEngine := func(markdown string) int {
+		index, ok := engineIndex[markdown]
+		if !ok {
+			index = len(markdowns)
+			engineIndex[markdown] = index
+			markdowns = append(markdowns, markdown)
 		}
-		for offset, markdown := range markdowns[2*index : 2*index+2] {
-			if engine := readings[2*index+offset]; engine == nil || !withoutBlockIDs(engine).Equal(withoutBlockIDs(docs[index])) {
-				fail("%q in %s: the engine reads %q as %s, and Go reads %q as %s", shape.text, shape.container, markdown, inlineSummaries(engine), shape.markdown, inlineSummaries(docs[index]))
+		return index
+	}
+	for _, set := range emailShapeSets {
+		for index, shape := range emailShapes(set.seed, set.bound) {
+			name := fmt.Sprintf("seed %d, shape %d: %q in %s", set.seed, index, shape.text, shape.container)
+			doc, err := Parse(shape.markdown)
+			if err != nil {
+				fail("%s: Parse(%q): %v", name, shape.markdown, err)
+				continue
+			}
+			if _, err := ParseForWrite(shape.markdown, nil); err != nil {
+				fail("%s: a write of %q is refused: %v", name, shape.markdown, err)
+			}
+			rendering := mustRender(t, doc)
+			if back, err := Parse(rendering); err != nil || !back.Equal(doc) {
+				fail("%s: %q is written %q, which Go reads back as %s (%v), not %s", name, shape.markdown, rendering, inlineSummaries(back), err, inlineSummaries(doc))
+			}
+			shapes = append(shapes, drawn{emailShape: shape, seed: set.seed, index: index, doc: doc, atMarkdown: forEngine(shape.markdown), atRendering: forEngine(rendering)})
+		}
+	}
+	t.Logf("seeds and bounds %v: %d shapes read and written in %v", emailShapeSets, len(shapes), time.Since(began))
+	readings := engineReadings(t, markdowns)
+	for _, shape := range shapes {
+		for _, at := range []int{shape.atMarkdown, shape.atRendering} {
+			if engine := readings[at]; engine == nil || !withoutBlockIDs(engine).Equal(withoutBlockIDs(shape.doc)) {
+				fail("seed %d, shape %d: %q in %s: the engine reads %q as %s, and Go reads %q as %s", shape.seed, shape.index, shape.text, shape.container, markdowns[at], inlineSummaries(engine), shape.markdown, inlineSummaries(shape.doc))
 			}
 		}
 	}
-	t.Logf("seed %d, bound %d: %d shapes, the engine's reading included, in %v", emailShapeSeed, emailShapeBound, len(shapes), time.Since(began))
+	t.Logf("seeds and bounds %v: %d shapes, %d distinct markdowns for the engine, in %v", emailShapeSets, len(shapes), len(markdowns), time.Since(began))
 }
