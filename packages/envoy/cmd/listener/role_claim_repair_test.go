@@ -182,8 +182,12 @@ func TestHealthzReportsTheRoleClaimRescanAndIsDegradedPastItsBound(t *testing.T)
 	rig := newHealthzRepairRig(t, machineID)
 
 	// A listener whose copy has completed no whole read: the view refuses, which /healthz names,
-	// and the repair's field names no read.
+	// and the repair's field names no read. Its interest copy's first read gates /healthz, which
+	// answers "starting" until it completes (interestCopyRead), so the row asks once it has.
 	restarted := unreadRegistry(t, rig.client, rig.clock)
+	waitFor(t, 5*time.Second, "the restarted listener's interest copy to complete its first read", func() bool {
+		return restarted.Servable() == nil
+	})
 	unread := reportsOver(&listenerDeps{client: rig.client, registry: restarted, sessions: rig.deps.sessions,
 		caches: listenerCaches(restarted, rig.deps.sessions, nil), receiver: rig.deps.receiver})
 	answer := unread.health(t, "no whole read of the role claims completed")

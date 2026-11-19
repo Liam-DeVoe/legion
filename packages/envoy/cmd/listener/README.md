@@ -265,8 +265,13 @@ The listener state bucket's grant refusal ends nothing either: the pod delivers 
 `/healthz` takes no credential and answers within 5 s (`healthzDeadline`): a check that has not answered by then makes the answer `503 {"status":"unhealthy"}`.
 
 - `503 {"status":"starting"}`:
-  Until the pod can serve: NATS connected, with broker access tokens configured the spent-proof bucket open, the webhook and `/v1` gates open over warm caches, the receive loop started and, with an OIDC issuer or a Google audience configured, each issuer's discovery succeeded.
+  Until the pod can serve: NATS connected, with broker access tokens configured the spent-proof bucket open, the webhook and `/v1` gates open, the receive loop started, with an OIDC issuer or a Google audience configured each issuer's discovery succeeded, and the interest copy's first read of its bucket since the process started complete (`interestCopyRead`).
   An issuer that does not answer keeps the pod here, up and retrying, and so do a NATS that does not answer, an answer from its cluster's state and a grant that refuses the spent-proof bucket ("Start" above); it never exits for any of them.
+  The start waits at most 30 s for the interest watcher and opens `/v1` when that wait runs out too, or once the watcher's first scan timed out, so `/v1` serves the routes that do not need the interest copy while `GET /v1/interests/` still answers `503` `refilling`:
+  the pod stays here until that first read completes.
+  Only the first read gates readiness.
+  Once the pod has been ready, a later read of the copy (after a reconnect, a scan that timed out, or a copy past its stale bound) leaves it ready, and the routes that need the copy answer their own `503` `refilling` meanwhile:
+  readiness that followed the copy at all times would turn a NATS blip, which makes every pod of the machine read its buckets again at once, into a Service with no endpoints, and every route would fail, not only the list.
 
 - `200 {"status":"healthy","role":"active",…}`:
   The pod receives the durable.
@@ -294,7 +299,7 @@ The listener state bucket's grant refusal ends nothing either: the pod delivers 
 
 Every healthy answer also carries the body fields it always did (`ci_cache`, the session registry's fields).
 A standby is ready: route traffic to it.
-A pod answers `503 starting` only while it cannot serve, so a readiness probe that sends traffic on `200` sends none too early.
+A pod answers `503 starting` only until it can serve, its interest list included, so a readiness probe that sends traffic on `200` sends none too early; a ready pod whose interest copy reads its bucket again stays ready (above).
 
 A probe contract that fits these answers:
 

@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,9 +17,11 @@ import (
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // hubListenerLoopback is the address the probes of the session listener's pod that
@@ -141,58 +148,212 @@ func hubInterestsServed(t *testing.T, listener *listenerProcess) (listed, sample
 	return status == http.StatusOK, sampled
 }
 
+// serveListRig serves rig's routes on a port of this machine's loopback for the rest of the test,
+// as a listener serves its own on 9020, and returns the port, for runHubProbe.
+func serveListRig(t *testing.T, rig *listRig) int {
+	t.Helper()
+	server := httptest.NewServer(rig.handler)
+	t.Cleanup(server.Close)
+	return server.Listener.Addr().(*net.TCPAddr).Port
+}
+
+// rigHealth is the status code of rig's /healthz answer and the status its body names.
+func rigHealth(t *testing.T, rig *listRig) (int, string) {
+	t.Helper()
+	response := rig.get("/healthz")
+	var body listenerwire.Health
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode the /healthz answer (status %d): %v", response.StatusCode, err)
+	}
+	return response.StatusCode, body.Status
+}
+
 // TestHubListenerIsReadyOnlyOnceItsV1Serves ties the readiness probe gcp:ClusteredNatsHub renders
 // for this command's pod to this listener: the probe's command, read out of the pod's golden, is
-// run against a listener started before its NATS answers, with the listener's own port in place of
-// the pod's 9020. While NATS is away the start waits for it, /v1 stays closed, so GET
-// /v1/interests/ answers the refilling 503 and /metrics carries envoy_active_interests' HELP and
-// TYPE lines and no sample, and the probe exits 22, curl -f's status for the 503 "starting"
-// /healthz answers: the pod is not Ready, so its Service sends it nothing and the rolling update
-// keeps the old pod serving. Once NATS answers, the probe passes, and at its first pass GET
-// /v1/interests/ answers 200 and the scrape carries the sample, since main publishes what /healthz
-// reads only after openV1Routes. cybermonklabs/legion#4534 held this gate in the startup probe, a
-// scrape of /metrics with 60 failures allowed; here the readiness probe holds it, because a
-// listener whose NATS refuses or does not answer at its start stays up and not ready for as long as
-// that lasts, which such a startup probe would end with a restart every ten minutes
+// run against the listener's own port in place of the pod's 9020.
+//
+// A listener started before its NATS answers: while NATS is away the start waits for it, /v1 stays
+// closed, so GET /v1/interests/ answers the refilling 503 and /metrics carries
+// envoy_active_interests' HELP and TYPE lines and no sample, and the probe exits 22, curl -f's
+// status for the 503 "starting" /healthz answers: the pod is not Ready, so its Service sends it
+// nothing and the rolling update keeps the old pod serving. Once NATS answers, the probe passes,
+// and at its first pass GET /v1/interests/ answers 200 and the scrape carries the sample, since
+// main publishes what /healthz reads only after openV1Routes.
+//
+// A listener whose /v1 is open before its interest copy has completed a first read, as the start
+// leaves it when its 30 s wait for the interest watcher runs out or that watcher's first scan timed
+// out: with that read held (newListRig), GET /v1/interests/<session_id> answers 200 from the bucket,
+// so /v1 is open, while the list answers the refilling 503 and /metrics has no sample, and the
+// probe exits 22, /healthz answering 503 "starting"; once the read completes the list answers 200
+// and the probe passes. cybermonklabs/legion#4534 held both gates in the startup probe, a scrape of
+// /metrics with 60 failures allowed; here the readiness probe holds them, because a listener whose
+// NATS refuses or does not answer at its start stays up and not ready for as long as that lasts,
+// which such a startup probe would end with a restart every ten minutes
 // (TestHubListenerProbesNeverRestartAListenerWhoseNATSRefusesItsStart).
 func TestHubListenerIsReadyOnlyOnceItsV1Serves(t *testing.T) {
 	probes, path := hubProbes(t)
 	requireHubProbeRoutes(t, probes, path)
 	ready := probes["readinessProbe"]
 
-	server, uri := testnats.Start(t)
-	server.Stop(t)
-	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "box-hub-ready")
-	listener.WaitForOutput(t, "envoy-listener listening")
-	if status, stderr := runHubProbe(t, path, "readinessProbe", ready, listener.port); status != curlHTTPError {
-		t.Fatalf("the readiness probe of %s exits %d while NATS is away (stderr %q), want %d:\n%s", path, status, stderr, curlHTTPError, listener.Output.String())
-	}
-	if listed, sampled := hubInterestsServed(t, listener); listed || sampled {
-		t.Fatalf("while NATS is away GET /v1/interests/ answered 200 (%v) or /metrics has the envoy_active_interests sample (%v), want neither", listed, sampled)
-	}
+	t.Run("NATS away at the start", func(t *testing.T) {
+		server, uri := testnats.Start(t)
+		server.Stop(t)
+		listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "box-hub-ready")
+		listener.WaitForOutput(t, "envoy-listener listening")
+		if status, stderr := runHubProbe(t, path, "readinessProbe", ready, listener.port); status != curlHTTPError {
+			t.Fatalf("the readiness probe of %s exits %d while NATS is away (stderr %q), want %d:\n%s", path, status, stderr, curlHTTPError, listener.Output.String())
+		}
+		if listed, sampled := hubInterestsServed(t, listener); listed || sampled {
+			t.Fatalf("while NATS is away GET /v1/interests/ answered 200 (%v) or /metrics has the envoy_active_interests sample (%v), want neither", listed, sampled)
+		}
+		select {
+		case <-listener.Exited:
+			t.Fatalf("the listener exited while NATS was away:\n%s", listener.Output.String())
+		default:
+		}
+
+		server.Start(t)
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			status, stderr := runHubProbe(t, path, "readinessProbe", ready, listener.port)
+			if status == 0 {
+				break
+			}
+			if status != curlHTTPError {
+				t.Fatalf("the readiness probe of %s exits %d (stderr %q) after NATS answered, want %d until it passes:\n%s", path, status, stderr, curlHTTPError, listener.Output.String())
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the readiness probe of %s still exits %d 30 s after NATS answered:\n%s", path, status, listener.Output.String())
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if listed, sampled := hubInterestsServed(t, listener); !listed || !sampled {
+			t.Fatalf("at the readiness probe's first pass GET /v1/interests/ answered 200: %v, and /metrics has the envoy_active_interests sample: %v; want both", listed, sampled)
+		}
+	})
+
+	t.Run("the interest copy's first read held", func(t *testing.T) {
+		const gauge, sessionID = "envoy_active_interests", "ses_hub_first_read"
+		held, release := newRelease(t)
+		rig := newListRig(t, listRigOptions{release: map[string]<-chan struct{}{"interest": held}, receiving: "box-hub-first-read"})
+		rig.register(t, sessionID)
+		port := serveListRig(t, rig)
+		if response := rig.get("/v1/interests/" + sessionID); response.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(response.Body)
+			t.Fatalf("GET /v1/interests/%s answered %d %s while the interest copy's first read is held, want 200: /v1 is open", sessionID, response.StatusCode, body)
+		}
+		assertListRefilling(t, rig.get("/v1/interests/"))
+		rig.assertNoSample(t, gauge)
+		if status, stderr := runHubProbe(t, path, "readinessProbe", ready, port); status != curlHTTPError {
+			code, word := rigHealth(t, rig)
+			t.Fatalf("the readiness probe of %s exits %d while /v1 is open and the interest copy's first read is held (stderr %q, /healthz %d %q), want %d", path, status, stderr, code, word, curlHTTPError)
+		}
+		if code, word := rigHealth(t, rig); code != http.StatusServiceUnavailable || word != listenerwire.HealthStarting {
+			t.Fatalf("/healthz answered %d %q while the interest copy's first read is held, want 503 %q", code, word, listenerwire.HealthStarting)
+		}
+
+		release()
+		waitFor(t, 5*time.Second, "GET /v1/interests/ to answer 200 once the interest copy's first read completed", func() bool {
+			return rig.get("/v1/interests/").StatusCode == http.StatusOK
+		})
+		rig.assertSample(t, gauge, 1)
+		if status, stderr := runHubProbe(t, path, "readinessProbe", ready, port); status != 0 {
+			code, word := rigHealth(t, rig)
+			t.Fatalf("the readiness probe of %s exits %d once the interest copy's first read completed (stderr %q, /healthz %d %q), want 0", path, status, stderr, code, word)
+		}
+	})
+}
+
+// heldRewatch is a cache whose Rewatch reads its bucket again only once release is closed, or
+// fails with its run's context, so the read a reconnect hook makes stays due for as long as the
+// test holds it, as a long read of a large bucket would.
+type heldRewatch struct {
+	kvCache
+	release <-chan struct{}
+}
+
+func (c heldRewatch) Rewatch(ctx context.Context, conn *natsgo.Conn) error {
 	select {
-	case <-listener.Exited:
-		t.Fatalf("the listener exited while NATS was away:\n%s", listener.Output.String())
-	default:
+	case <-c.release:
+		return c.kvCache.Rewatch(ctx, conn)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// A pod that has been Ready stays Ready while its interest copy reads its bucket again: only the
+// copy's first read gates /healthz (interestCopyRead). The NATS server goes away and comes back, as
+// a blip does to every pod of the machine at once; the copy stops following its bucket at the
+// disconnect and is past its stale bound when NATS answers again, and the reconnect hook's read of
+// the interest bucket is held (heldRewatch). Through the outage /healthz answers 503, as it does
+// whenever NATS does not answer its flush. Once NATS answers, /healthz answers 200, never
+// "starting", and the readiness probe gcp:ClusteredNatsHub renders, read out of the pod's golden,
+// exits 0, while GET /v1/interests/ answers its own refilling 503 with no envoy_active_interests
+// sample. Once the read completes the list answers 200 with every session, and the probe still
+// passes. Readiness that followed the copy at all times would leave the machine's Service with no
+// endpoints after such a blip, and every route would fail, not only the list.
+func TestAReadyListenerStaysReadyWhileItsInterestCopyReadsAgainAfterAReconnect(t *testing.T) {
+	probes, path := hubProbes(t)
+	requireHubProbeRoutes(t, probes, path)
+	ready := probes["readinessProbe"]
+	const gauge = "envoy_active_interests"
+
+	held, release := newRelease(t)
+	rig := newListRig(t, listRigOptions{receiving: "box-hub-reread", hookCaches: func(caches []listenerCache) []listenerCache {
+		hooked := slices.Clone(caches)
+		for i, c := range hooked {
+			if c.name == "interest" {
+				hooked[i].cache = heldRewatch{kvCache: c.cache, release: held}
+			}
+		}
+		return hooked
+	}})
+	ids := []string{"ses_reread_a", "ses_reread_b"}
+	rig.seed(t, ids...)
+	port := serveListRig(t, rig)
+	if status, stderr := runHubProbe(t, path, "readinessProbe", ready, port); status != 0 {
+		code, word := rigHealth(t, rig)
+		t.Fatalf("the readiness probe of %s exits %d once the interest copy has been read (stderr %q, /healthz %d %q), want 0", path, status, stderr, code, word)
 	}
 
-	server.Start(t)
+	rig.server.Stop(t)
+	rig.awaitDisconnect(t)
+	rig.clock.Advance(staleBound + time.Second)
+	if code, word := rigHealth(t, rig); code != http.StatusServiceUnavailable {
+		t.Fatalf("/healthz answered %d %q while NATS is away, want 503: the flush fails", code, word)
+	}
+	rig.server.Start(t)
+
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		status, stderr := runHubProbe(t, path, "readinessProbe", ready, listener.port)
-		if status == 0 {
-			break
+		code, word := rigHealth(t, rig)
+		if word == listenerwire.HealthStarting {
+			t.Fatalf("/healthz answered %d %q after NATS answered again while the pod's interest copy reads its bucket again, want no \"starting\": only the copy's first read gates readiness", code, word)
 		}
-		if status != curlHTTPError {
-			t.Fatalf("the readiness probe of %s exits %d (stderr %q) after NATS answered, want %d until it passes:\n%s", path, status, stderr, curlHTTPError, listener.Output.String())
+		if code == http.StatusOK {
+			status, _ := runHubProbe(t, path, "readinessProbe", ready, port)
+			if status == 0 {
+				break
+			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the readiness probe of %s still exits %d 30 s after NATS answered:\n%s", path, status, listener.Output.String())
+			t.Fatalf("30 s after NATS answered again /healthz still answers %d %q, want 200 and the readiness probe of %s passing", code, word, path)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if listed, sampled := hubInterestsServed(t, listener); !listed || !sampled {
-		t.Fatalf("at the readiness probe's first pass GET /v1/interests/ answered 200: %v, and /metrics has the envoy_active_interests sample: %v; want both", listed, sampled)
+	assertListRefilling(t, rig.get("/v1/interests/"))
+	rig.assertNoSample(t, gauge)
+
+	release()
+	waitFor(t, 30*time.Second, "GET /v1/interests/ to answer 200 once the reconnect's read of the interest bucket completed", func() bool {
+		return rig.get("/v1/interests/").StatusCode == http.StatusOK
+	})
+	if got := rig.interestIDs(t); !slices.Equal(got, ids) {
+		t.Fatalf("GET /v1/interests/ lists %v once the read completed, want %v", got, ids)
+	}
+	if status, stderr := runHubProbe(t, path, "readinessProbe", ready, port); status != 0 {
+		code, word := rigHealth(t, rig)
+		t.Fatalf("the readiness probe of %s exits %d once the interest copy's read completed (stderr %q, /healthz %d %q), want 0", path, status, stderr, code, word)
 	}
 }
 

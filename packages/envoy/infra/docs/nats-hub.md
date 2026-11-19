@@ -1192,9 +1192,10 @@ The hub's own NetworkPolicy `<n>` admits this pod to NATS's 4222 beside the host
 
 How it is updated. A change of the listener's image, size or environment rolls the one pod with
 `maxUnavailable: 0` and `maxSurge: 1`, so the new pod starts before the old one stops. The new pod
-is Ready only once its `/v1` serves, since its readiness probe passes only then (below), and `/v1`
-opens without waiting for the delivery lease or the durable, which the old pod holds until it
-stops, so the new pod's `/v1` cannot wait on the old pod: the new pod is ready as a standby while
+is Ready only once its `/v1` serves and its interest copy has completed its first read of the
+bucket, since its readiness probe passes only then (below), and `/v1` opens without waiting for
+the delivery lease or the durable, which the old pod holds until it stops, so the new pod's `/v1`
+cannot wait on the old pod: the new pod is ready as a standby while
 it waits for the lease, and the rolling update never waits for the lease. The old pod is sent
 SIGTERM only once the new pod is Ready, and its stop then takes 33 seconds in all: it keeps
 answering for 5 seconds, the time its removal from the Service's endpoints takes to reach every
@@ -1225,11 +1226,14 @@ whose NATS does not answer, answers from its cluster's state or refuses a grant 
 stays up and not ready for as long as that lasts (the start rule, `cmd/listener/README.md`), and
 no probe restarts it, so no restart backoff delays it once its NATS lets it start. Only the
 readiness probe reads `/healthz`, whose HTTP status is what tells a starting pod from a serving
-one: the listener answers it 503 `starting` until its `/v1` gate is open and its receive loop has
-started, 200 to the active pod and to a standby, and 503 while its NATS is down, which takes the
-pod out of the Service without restarting it. A listener from before cybermonklabs/legion#2404
-answers `/healthz` 200 `starting` from its first answer, before its `/v1` opens, so its pod is
-Ready before it serves.
+one: the listener answers it 503 `starting` until its `/v1` gate is open, its receive loop has
+started and its interest copy has completed its first read of the bucket, which `/v1` does not
+wait for once the start's 30-second wait for it has run out; 200 to the active pod and to a
+standby; and 503 while its NATS is down, which takes the pod out of the Service without
+restarting it. Only the first read gates: a later read of the copy, after a reconnect, keeps a pod
+that has been ready in the Service while `GET /v1/interests/` answers its own 503 `refilling`. A
+listener from before cybermonklabs/legion#2404 answers `/healthz` 200 `starting` from its first
+answer, before its `/v1` opens, so its pod is Ready before it serves.
 The PodDisruptionBudget `<n>-listener` allows one unavailable pod, so a node drain or an
 Autopilot upgrade moves the pod rather than stalling on it. The pod-down alert below names this
 pod and its container.

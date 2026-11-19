@@ -419,13 +419,17 @@ Three probes read the pod's own loopback, two routes between them:
   its NATS lets it start;
 - readiness, `curl -fsS` of `http://127.0.0.1:9020/healthz` every 5 seconds, with a 6-second
   timeout and 2 failures allowed, and the pod's gate into the Service. It reads the HTTP status
-  and never the body. A pod answers 503 (`"starting"`) until its `/v1` serves, so a new pod stays
-  out of the Service until then and the rolling update keeps the old pod serving. `/v1` opens
-  without waiting for the delivery lease, which the old pod holds until it stops, and the new pod
-  then answers 200 as a standby (`"role": "standby"`) while it waits for the lease, so a standby
-  is ready and the rolling update never waits for the lease. A listener from before
-  cybermonklabs/legion#2404 answers 200 (`"starting"`) from its first answer, before its `/v1`
-  opens, so its pod is Ready before it serves.
+  and never the body. A pod answers 503 (`"starting"`) until its `/v1` serves and its interest
+  copy has completed its first read of the bucket, which `/v1` does not wait for once the start's
+  30-second wait for it has run out, so a new pod stays out of the Service until then and the
+  rolling update keeps the old pod serving. Only that first read gates: a later read of the copy,
+  after a reconnect, keeps a pod that has been ready in the Service while `GET /v1/interests/`
+  answers its own 503 `refilling`. `/v1` opens without waiting for the delivery lease, which the
+  old pod holds until it stops, and the new pod then answers 200 as a standby
+  (`"role": "standby"`) while it waits for the lease, so a standby is ready and the rolling update
+  never waits for the lease. A listener from before cybermonklabs/legion#2404 answers 200
+  (`"starting"`) from its first answer, before its `/v1` opens, so its pod is Ready before it
+  serves.
 
 The pod's preStop waits 5 seconds, the time its removal from the Service's endpoints takes to
 reach every node's proxy, so a connection a node still forwards is still answered. That wait and

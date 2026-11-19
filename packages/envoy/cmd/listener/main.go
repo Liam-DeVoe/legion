@@ -519,9 +519,10 @@ type healthAnswer struct {
 
 // healthzHandler is the listener's /healthz, the readiness answer of every pod of a machine id. It
 // answers 503 "starting" until main publishes deps, which it does once NATS is connected, the
-// webhook and /v1 gates are open over warm caches and the receive loop has started, and, on a
-// listener configured with an OIDC issuer or a Google audience, until each issuer's discovery has
-// succeeded (verifiers, listenerAPIAuth.verifiers).
+// webhook and /v1 gates are open and the receive loop has started; on a listener configured with
+// an OIDC issuer or a Google audience, until each issuer's discovery has succeeded (verifiers,
+// listenerAPIAuth.verifiers); and until the interest copy has completed its first read of its
+// bucket since the process started (interestCopyRead), which a later read of it does not undo.
 // Then it answers 200 "healthy" once every dependency answers, naming this pod's "role": "active"
 // while it receives the durable (it holds the lease and is subscribed, or it runs without a lease
 // and receives), with the durable's lag (num_pending, num_ack_pending), or "standby" otherwise,
@@ -623,11 +624,14 @@ type healthAnswer struct {
 // answers dependencyHealth gives carry only status and error, as before: they report a fault
 // below the copy, not its freshness.
 func healthzHandler(deps *atomic.Pointer[listenerDeps], verifiers ...*apiVerifier) http.HandlerFunc {
+	// The latch of the interest copy's first read (interestCopyRead): main builds this handler once,
+	// so it lasts as long as the process.
+	var interestsRead atomic.Bool
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), healthzDeadline)
 		defer cancel()
 		answered := make(chan healthAnswer, 1)
-		go func() { answered <- listenerHealth(ctx, deps.Load(), verifiers...) }()
+		go func() { answered <- listenerHealth(ctx, deps.Load(), &interestsRead, verifiers...) }()
 		var answer healthAnswer
 		select {
 		case answer = <-answered:
@@ -644,9 +648,10 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], verifiers ...*apiVerifie
 }
 
 // listenerHealth runs /healthz's checks over d, nil until main publishes it, within ctx, its bus
-// checks within healthzBudget of it.
-func listenerHealth(ctx context.Context, d *listenerDeps, verifiers ...*apiVerifier) healthAnswer {
-	if d == nil || !discovered(verifiers) {
+// checks within healthzBudget of it. interestsRead is the handler's latch of the interest copy's
+// first read (interestCopyRead).
+func listenerHealth(ctx context.Context, d *listenerDeps, interestsRead *atomic.Bool, verifiers ...*apiVerifier) healthAnswer {
+	if d == nil || !discovered(verifiers) || !interestCopyRead(d, interestsRead) {
 		return healthAnswer{http.StatusServiceUnavailable, listenerwire.Health{Status: listenerwire.HealthStarting}}
 	}
 	unhealthy := func(body listenerwire.Health) healthAnswer {
@@ -726,6 +731,33 @@ func listenerHealth(ctx context.Context, d *listenerDeps, verifiers ...*apiVerif
 		response.DurableLag = &listenerwire.DurableLag{NumAckPending: consumerInfo.NumAckPending, NumPending: consumerInfo.NumPending}
 	}
 	return okAnswer(response, d)
+}
+
+// interestCopyRead reports whether d's interest copy has completed its first read of the interest
+// bucket, which /healthz answers "starting" until. /v1 opening does not say so: the start waits at
+// most 30 s for the interest watcher and opens /v1 when that bound runs out too, and the watcher
+// counts as ready after a first scan that timed out (store.Registry.WaitForCacheReady), so /v1 can
+// be open while GET /v1/interests/ answers its refilling 503 (store.Registry.Servable). That
+// fail-open stays: the routes that do not need the copy serve from then on, and only readiness
+// waits for the read.
+//
+// Only the first read gates. The first time the registry answers Servable nil, read records it,
+// and from then on this answers true without asking again, so a later read of the copy - after a
+// reconnect, a scan that timed out, or a stale episode past its bound - does not make a pod that
+// has been Ready "starting" again, while the routes that need the copy answer their own refilling
+// 503. Readiness that followed the copy at all times would turn a NATS blip, which makes every pod
+// of a machine read its buckets again at once, into a Service with no endpoints, and every route
+// would fail, not only the list. read is the handler's own (healthzHandler). A deps built without
+// a registry, which only a test builds, has no copy to wait for.
+func interestCopyRead(d *listenerDeps, read *atomic.Bool) bool {
+	if read.Load() {
+		return true
+	}
+	if d.registry != nil && d.registry.Servable() != nil {
+		return false
+	}
+	read.Store(true)
+	return true
 }
 
 // roleClaimRepairHealthOf is report as /healthz's "role_claim_repair" field answers it
@@ -1727,7 +1759,7 @@ func main() {
 	mux.Handle("/metrics", met.Handler())
 
 	// /healthz is always reachable, before NATS setup as well as after it, and answers 503
-	// "starting" until the listener is ready.
+	// "starting" until the listener is ready and its interest copy has completed its first read.
 	mux.HandleFunc("/healthz", healthzHandler(&deps, apiAuthConfig.verifiers()...))
 
 	// /livez answers 204 and touches nothing: no flush to NATS, no cache ping and no read of the
@@ -1884,7 +1916,9 @@ func main() {
 	// watcher completes a scan after.
 	// A warm-up that does not complete still serves, fail open: the warn below names the cache and
 	// carries the cause, whichever of those it was, the registry keeps answering from whatever it
-	// holds, and /healthz reports the role claim view as degraded and the buckets themselves while
+	// holds, and /v1 opens for the routes that do not need the interest copy. /healthz answers
+	// "starting" until that copy's first read completes (interestCopyRead), so the pod is not Ready
+	// meanwhile, and then reports the role claim view as degraded and the buckets themselves while
 	// NATS recovers.
 	cacheReadyCtx, cacheReadyCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	if err := registry.WaitForCacheReady(cacheReadyCtx); err != nil {
