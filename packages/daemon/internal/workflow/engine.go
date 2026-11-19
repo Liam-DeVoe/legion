@@ -1364,7 +1364,10 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // completion of the same commit would be refused as not new. A round its reviewer completed that
 // nothing would end is stuck: the reviewer's task says why, so the restarted reviewer decides
 // it. The architect, who ordered the retry, is told nothing: a notice now would read as the
-// reviewer's answer to its request.
+// reviewer's answer to its request. Past the review a push that reached the branch while the
+// issue was held moved nothing then, since only an issue standing in its phase is held to its
+// approval (reaskRound), so the retry holds it now: an approval that no longer stands on the head
+// sends the issue back to reviewing (reaskDecided) and starts no worker of the held phase.
 //
 // freshSession is the operator's `--fresh-session`: the start it queues retries the claim in a
 // new session rather than the one it recorded. An architect's retry of a held phase asks for
@@ -1417,7 +1420,34 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			reason += ": " + r.reason
 		}
 	}
-	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, reason), freshSession)
+	moved, err := e.reaskDecided(ctx, tx, issue, pr)
+	if err != nil {
+		return "", err
+	}
+	if moved {
+		return e.phaseNow(ctx, tx, issue)
+	}
+	text, err := e.withApprovedHead(ctx, tx, issue.Key, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, reason))
+	if err != nil {
+		return "", err
+	}
+	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), text, freshSession)
+}
+
+// withApprovedHead is text, a task of role's, with the head the review approved after it when role
+// is the merger (approvedHeadSentence): the merger merges that head and no other, so the task the
+// move into merging starts it with (transition), and the task of a retry of that phase
+// (retryPhase), name the one the record holds for the round that ended in it. A task that resumes
+// the phase names none, and the merger reads the head from the task that started it.
+func (e *Engine) withApprovedHead(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, text string) (string, error) {
+	if role != claim.RoleMerger {
+		return text, nil
+	}
+	reviewer, err := e.phaseRow(ctx, tx, issue, claim.RoleReviewer)
+	if err != nil {
+		return "", err
+	}
+	return text + approvedHeadSentence(reviewer), nil
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
@@ -1633,7 +1663,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	if !mergedAlready {
-		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {
+		sent, err := e.withApprovedHead(ctx, tx, issue.Key, starting, task(issue, handoff, pr, reason))
+		if err != nil {
+			return err
+		}
+		if err := e.start(ctx, tx, issue, starting, sent, movedBack); err != nil {
 			return err
 		}
 	}
@@ -1668,7 +1702,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // kind the architect's prompt routes on, and says in its reason what happened and who asked: the
 // phase it moved the issue to, the role that moved it and the words that role gave. The handoff
 // row a move writes is empty, so without that reason the architect reads a completion with no
-// summary and no verdict and cannot tell it from a worker that finished its phase.
+// summary and no verdict and cannot tell it from a worker that finished its phase. The daemon's own
+// move of an issue past its review back to reviewing (TriggerHeadMoved) keeps that kind and that
+// shape too, its reason saying that the daemon moved it and which heads did.
 func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, reason string) record.Notice {
 	switch trigger {
 	case TriggerConflict:
@@ -1678,30 +1714,35 @@ func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRo
 	case TriggerBackward:
 		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
 			Reason: fmt.Sprintf("moved back to %s by the %s: %s", to, RoleFor(from), reason)}
+	case TriggerHeadMoved:
+		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
+			Reason: fmt.Sprintf("moved back to %s by the daemon: %s", to, reason)}
 	case TriggerSignOff, TriggerPullRequestMerged:
 		return record.Notice{}
 	}
 	return record.Notice{Kind: "phase-finished", Role: phase.RoleFor(from), Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
 }
 
-// phaseEnded tells the role a conflicting-head transition out of from leaves with no phase that
-// its phase ended, which phase the issue is in now and why (record.PhaseEnded), on that role's own
-// Envoy topic. Only that move sends one: every other move out of a phase is the working role's own
+// phaseEnded tells the role a transition the daemon raised on something it read of the head
+// leaves with no phase that its phase ended, which phase the issue is in now and why
+// (record.PhaseEnded), on that role's own Envoy topic. Two moves send one: a head that starts
+// conflicting with its base (TriggerConflict), and a head the approval does not name past the
+// review (TriggerHeadMoved). Every other move out of a phase is the working role's own
 // completion or backward move, which that role made and so already knows of, and the approval and
 // the merge the daemon raises of its own leave a role that has just finished the work they report,
 // with no reason of the kind this message carries. A CI result moves no issue
-// (dispatch://INFRA-714 R1), so the trigger is a head that starts conflicting with its base.
+// (dispatch://INFRA-714 R1), so neither trigger is a check's.
 // The recipient is phase.RoleFor(from) whenever that is a role other than the architect, read from
 // the transition alone rather than from what the role had done: the tester in testing, the reviewer
 // in reviewing whether or not it completed its round, the merger in merging, and the implementer in
-// retro, which is also the role starting, told that its task for the new phase follows. Accepting
-// sends none — its role is the architect, which the conflict notice tells (noticeFor). Without the
-// message nothing tells that role: no transition stops a worker, and the daemon's next task for a
-// role is delivered only once that role's turn ends, while this message reaches its session at its
-// next model turn and ends a wait.
+// retro, which a conflict also starts again, telling it that its task for the new phase follows.
+// Accepting sends none — its role is the architect, which the move's notice tells (noticeFor).
+// Without the message nothing tells that role: no transition stops a worker, and the daemon's next
+// task for a role is delivered only once that role's turn ends, while this message reaches its
+// session at its next model turn and ends a wait.
 func (e *Engine) phaseEnded(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, from, to phase.Phase, starting claim.Role, reason string) error {
 	ended := phase.RoleFor(from)
-	if trigger != TriggerConflict || ended == "" || ended == claim.RoleArchitect {
+	if (trigger != TriggerConflict && trigger != TriggerHeadMoved) || ended == "" || ended == claim.RoleArchitect {
 		return nil
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.PhaseEnded{Role: ended, From: from, To: to, Reason: reason, TaskFollows: ended == starting})

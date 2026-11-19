@@ -7,14 +7,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// Only the two moves Dispatch holds no record of post a reason on the issue: the daemon's own move
-// on a conflicting head and a worker's backward move. transition also carries a reason for a review
-// that requests changes (the review's whole body), which the review hand-off already records, and
-// validateOutboxPayload takes a reason on any ordinary row, so this switch is the one thing that
-// keeps that text off the issue. Every trigger is given the same reason here, so a trigger that
-// passed it through would post it. The control is the default branch removed, which makes every
-// other trigger here post a sentence.
-func TestOnlyTheConflictAndTheBackwardMovePostAReasonOnTheIssue(t *testing.T) {
+// Only the three moves Dispatch holds no record of post a reason on the issue: the daemon's own
+// moves on a conflicting head and on a head the approval does not name, and a worker's backward
+// move. transition also carries a reason for a review that requests changes (the review's whole
+// body), which the review hand-off already records, and validateOutboxPayload takes a reason on any
+// ordinary row, so this switch is the one thing that keeps that text off the issue. Every trigger
+// is given the same reason here, so a trigger that passed it through would post it. The control is
+// the default branch removed, which makes every other trigger here post a sentence.
+func TestOnlyTheDaemonsOwnMovesAndTheBackwardMovePostAReasonOnTheIssue(t *testing.T) {
 	pr := &record.PullRequest{Number: 42, HeadSHA: "0123456789abcdef0123", Base: "main"}
 	const given = "the review's whole body, which must not reach the issue a second time"
 	for _, trigger := range allWorkflowTriggers {
@@ -25,6 +25,12 @@ func TestOnlyTheConflictAndTheBackwardMovePostAReasonOnTheIssue(t *testing.T) {
 				"GitHub runs no checks on a head that conflicts with its base, so the implementer merges main forward."
 			if got != want {
 				t.Fatalf("the conflict move posts %q, want %q", got, want)
+			}
+		case TriggerHeadMoved:
+			want := "Legion moved this issue from testing back to implementing, because " + given + ". " +
+				"An approval covers only the head it names, so the reviewer reviews the head the pull request carries now."
+			if got != want {
+				t.Fatalf("the moved head's move posts %q, want %q", got, want)
 			}
 		case TriggerBackward:
 			want := "Legion moved this issue from testing back to implementing at the tester's request: " + given + "."

@@ -122,7 +122,8 @@ func pullRequestNews(before, after record.PullRequest) bool {
 // head run, which are facts about commits. A reopen at
 // another head than the recorded one - commits pushed while the pull request was closed, which no
 // synchronize reports - is judged as a synchronize to that head would be
-// (classify.AdvancePullRequestHead). A new generation
+// (classify.AdvancePullRequestHead), and past the review it is held to the approval as a
+// synchronize is (reaskDecided). A new generation
 // deletes a pull request that is not open, and all of them with it. An issue that waits to close on
 // its recorded merge (awaitsMerge) keeps that merge: GitHub never sends the merge again, so a pull
 // request opened from its branch is not recorded, while an issue set back to todo reruns and its
@@ -188,8 +189,10 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 		// A reopen lands under whatever phase the issue stands in, a reviewing round with an
 		// approval standing among them, and GitHub recomputes the merge state of a pull request
 		// it reopens; the read for it is asked for once, after this handler (Apply's
-		// askMergeState).
-		return intake.Result{}, nil
+		// askMergeState). Past the review no read is asked for, so the head the reopen carries is
+		// held to the approval here.
+		_, err := e.reaskDecided(ctx, tx, *issue, &pr)
+		return intake.Result{}, err
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
 	if err != nil || !row.Completed() {
@@ -203,7 +206,9 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 // phase, and the roles that work the issue were told what it said when it arrived (checks,
 // dispatch://INFRA-714/spec R1). In reviewing the head's arrival re-asks the round (settleRound):
 // any push may change code, so an approval of the previous head does not approve the new one
-// (classify.ApprovalStands), whether the push that left it is known yet or not. The push's own
+// (classify.ApprovalStands), whether the push that left it is known yet or not. Past the review -
+// accepting, retro and merging - the same arrival sends the issue back to reviewing when the
+// approval that decided its round does not name the new head (reaskDecided). The push's own
 // handler re-asks it again when it arrives, and a round stuck the same way at the same head is
 // told once (stuckAs). A synchronize that moves nothing - a redelivery, or one carrying no head -
 // changes nothing the round reads, and applies and re-asks nothing. A synchronize of a pull
@@ -254,7 +259,7 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 		return intake.Result{}, err
 	}
 	switch issue.Phase {
-	case phase.Reviewing:
+	case phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging:
 		// A head that moved re-asks the round, whether its push is recorded yet or not: any push
 		// may change code, so an approval of the head before it does not approve this one. GitHub
 		// recomputes the merge state of a pull request whose head moved, and the read for it is
@@ -318,8 +323,8 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 	// A push changes which settlement stands for the head, and that moves nothing: a CI result
 	// moves no issue, and the roles that work it were told what the settlement said when it
 	// arrived (checks, dispatch://INFRA-714/spec R1). In reviewing the push can be what shows the
-	// head the reviewer approved is about to be replaced, so the round is settled again; the
-	// round's re-ask is reviewing's alone.
+	// head the reviewer approved is about to be replaced, so the round is settled again; past the
+	// review it is code no review has read, which sends the issue back to reviewing (reaskRound).
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
@@ -332,9 +337,17 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 // fact's summary. pr is the pull request as the fact left it, and prior is the pull request as
 // the fact found it. The round as prior had it is the before a round stuck the same way is
 // deduped against (stuckAs), so a fact at the head the round was already told stuck at tells
-// nothing again. An issue outside reviewing has no round to re-ask, and nothing is read for it.
+// nothing again. An issue past its review has a round its approval decided, which the fact can
+// leave standing on no head the pull request holds, and that sends the issue back to reviewing
+// (reaskDecided). An issue in any other phase has no round to re-ask, and nothing is read for
+// it.
 func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, prior record.PullRequest, by string) error {
-	if issue.Phase != phase.Reviewing {
+	switch issue.Phase {
+	case phase.Reviewing:
+	case phase.Accepting, phase.Retro, phase.Merging:
+		_, err := e.reaskDecided(ctx, tx, issue, pr)
+		return err
+	default:
 		return nil
 	}
 	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
@@ -343,6 +356,76 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	_, err = e.settleRound(ctx, tx, issue, reviewer, pr, e.reviewRound(issue, reviewer, &prior), by)
 	return err
+}
+
+// reaskDecided sends issue, standing past its review in accepting, retro or merging, back to
+// reviewing when the approval that decided its round no longer stands on pr, its pull request as
+// a fact left it (classify.ApprovalStands): the pull request stands at a head the approval does
+// not name, or a push is on its way from the head it does (TriggerHeadMoved). It says whether it
+// moved the issue. An approval is of the head it names and no other, so a push that reaches the
+// branch after the review decided is code no review has read. The move starts the reviewer in
+// reviewing again, told why, and its task names the commit its own review last read
+// (namingTheReviewRound), so it reads the difference the push made. The merger holds the head
+// to the same approval on its own side (approvedHeadSentence), which a push the daemon has not
+// read yet cannot pass either.
+//
+// No head is exempt. Retro commits nothing and pushes nothing (skill://legion-retro), and the
+// daemon writes no commit to the branch, so a commit above the approved head is somebody's push
+// whoever made it, the implementer's retro among them, and it is reviewed like any other.
+//
+// It reads the approval the reviewer's row holds (approvedHead). A row that holds none past the
+// review - the decision a new generation clears (record.Store.ClearTreeGeneration) on a member it
+// leaves where it stood - names no head to hold the pull request to, so this moves nothing, and
+// the merger's task says `Approved head: none`, which its prompt reads as no head it may merge.
+func (e *Engine) reaskDecided(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) (bool, error) {
+	switch issue.Phase {
+	case phase.Accepting, phase.Retro, phase.Merging:
+	default:
+		return false, nil
+	}
+	if pr == nil {
+		return false, nil
+	}
+	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+	if err != nil {
+		return false, err
+	}
+	approved := approvedHead(reviewer)
+	if approved == "" || classify.ApprovalStands(*pr, approved) {
+		return false, nil
+	}
+	return true, e.transition(ctx, tx, issue, TriggerHeadMoved, "", record.PhaseRow{}, pr, headMovedReason(*pr, approved))
+}
+
+// approvedHead is the head the decision on row, the reviewer's, approved: the head the review App's
+// Legion footer named, or a person's review's commit_id (reviewHead). It is "" where the row holds
+// no approval.
+func approvedHead(row record.PhaseRow) string {
+	if row.Decision == nil || row.Decision.State != "approved" {
+		return ""
+	}
+	return row.Decision.Head
+}
+
+// approvedHeadSentence is the sentence the merger's task ends with when the move into merging or a
+// retry of it starts the merger (withApprovedHead): the head the approval on row, the reviewer's,
+// names, or `none` where the row holds no approval. The merger merges that head and no other
+// (prompts/roles/merger.md).
+func approvedHeadSentence(row record.PhaseRow) string {
+	approved := approvedHead(row)
+	if approved == "" {
+		approved = "none"
+	}
+	return " Approved head: " + approved + "."
+}
+
+// headMovedReason is why reaskDecided sends an issue back to reviewing: the head the approval
+// named, and what pull request pr holds in its place.
+func headMovedReason(pr record.PullRequest, approved string) string {
+	if pr.HeadSHA != approved {
+		return fmt.Sprintf("the review approved head %s, and pull request #%d stands at head %s, which no review approved", approved, pr.Number, pr.HeadSHA)
+	}
+	return fmt.Sprintf("the review approved head %s, and a push to pull request #%d moves its branch on from that head", approved, pr.Number)
 }
 
 // merged records the pull request merged, with its merge commit, whatever the issue's phase, and
@@ -365,7 +448,9 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // reviewing: no read of the merged pull request ever comes (askMergeStateFor), and once the
 // reviewer has completed no other fact settles the round. An approval of a head other than the
 // one the merge names ends no round: once its reviewer has completed, the round is stuck on other
-// code (stuckApprovedOtherCode), and the architect is told once.
+// code (stuckApprovedOtherCode), and the architect is told once. In accepting or retro a merge at
+// a head the approval does not name sends the issue back to reviewing (reaskDecided), where the
+// reviewer reads the code that merged.
 func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMerged) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil || pr.State == record.PullRequestMerged {

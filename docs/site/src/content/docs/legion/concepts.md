@@ -472,12 +472,14 @@ Legion uses GitHub's own review mechanisms rather than labels:
 ## The merge
 
 When the reviewer has approved, the architect has accepted and retro is done, the merger reads the
-pull request and merges it itself, as the implement App and at the head it read, which it names as
-the head GitHub must match (`gh pr merge <n> --squash --match-head-commit <head>`). On a base with
-a merge queue it enqueues the pull request instead, with GraphQL `enqueuePullRequest` and the same
-head as `expectedHeadOid`, and watches the pull request until GitHub merges it or takes it out of
-the queue. Merging at a named head is how bors and Prow's Tide merge only what they tested: a push
-that lands under the merger is refused instead of merged unseen.
+pull request and merges it itself, as the implement App and at the head the review approved, which
+its task names as `Approved head: <sha>` and which it names as the head GitHub must match
+(`gh pr merge <n> --squash --match-head-commit <head>`). A pull request whose head is another merges
+nothing: the merger sends the issue back to `reviewing`. On a base with a merge queue it enqueues
+the pull request instead, with GraphQL `enqueuePullRequest` and the same head as `expectedHeadOid`,
+and watches the pull request until GitHub merges it or takes it out of the queue. Merging at a
+named head is how bors and Prow's Tide merge only what they tested: a push that lands under the
+merger is refused instead of merged unseen.
 
 The merge carries a message the merger writes itself,
 `--subject '<pull request title> (#<n>)' --body ''`. GitHub's own default
@@ -490,11 +492,13 @@ the architect: only a person can change that setting, to `PR_BODY` or `BLANK`.
 The merger never turns auto-merge on, and the daemon submits no merge and changes no merge setting
 of any pull request. The repository's own required reviews and checks decide when it lands; Legion
 reads none of them at the merge, bypasses none, and waits for a review only a person can give.
-Nothing holds the head that merges to the head the reviewer approved: a repository that wants its
-newest push reviewed says so in its own rulesets.
+An approval is of the head it names and no other. A push, a new head or a reopen at another head
+that reaches the pull request while the issue is in `accepting`, `retro` or `merging`, or a merge
+at another head in `accepting` or `retro`, sends the issue back to `reviewing`, whoever pushed it,
+retro included, and the reviewer reads the difference from the head it approved.
 
 When a merge fails, the decision is the merger's, on GitHub's own answer: wait for what GitHub
-waits for, merge again at the head it re-reads, send the issue back with `request_backward_move`
+waits for, merge again at the approved head, send the issue back with `request_backward_move`
 when the head itself must change, or tell the architect what no worker can do — a repository
 setting or an App permission only a person can change. A head that starts conflicting with its
 base sends the issue back to `implementing` from `merging` as it does from any later phase.

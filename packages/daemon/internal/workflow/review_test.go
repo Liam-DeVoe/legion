@@ -757,7 +757,8 @@ var stepHeads = map[string]string{"head": headOne, "head-2": headTwo, "head-3": 
 // whichever of the approval, the new head and its push is processed first, and a push still on its
 // way from the approved head keeps the round open until its head arrives. The review event moves
 // the issue as it lands (dispatch://INFRA-714/spec R1), so an approval that stands ends the round
-// there and a push after it finds the issue already in accepting, while a second deciding review,
+// there, and a push after it finds the issue in accepting and sends it back to reviewing, where
+// the round is asked again at the new head (reaskDecided). A second deciding review,
 // however it is ordered, finds the phase the first sent the issue to and decides nothing. Deciding
 // reviews are ordered by when they were submitted, then by GitHub's review id, so the newest one
 // submitted decides; a review without a submission time is ordered by id against any other. A pull
@@ -779,10 +780,10 @@ func TestAnApprovalStandsOnlyForTheHeadItNames(t *testing.T) {
 	}{
 		{name: "a new head whose push never arrives", steps: []string{"sync", "approve head", "green", "complete"}, want: phase.Reviewing},
 		{name: "a push, then the approval of the head before it", steps: []string{"sync", "push", "green", "approve head", "complete"}, want: phase.Reviewing},
-		{name: "the approval of the head, then a push: the round had already ended", steps: []string{"approve head", "sync", "push", "green", "complete"}, want: phase.Accepting},
+		{name: "the approval of the head, then a push: the round is asked again", steps: []string{"approve head", "sync", "push", "green", "complete"}, want: phase.Reviewing, told: "no review that decides it"},
 		{name: "a comment between a push and its new head", steps: []string{"push", "approve head", "comment", "sync", "green", "complete"}, want: phase.Reviewing},
 		{name: "a push whose new head has not arrived", steps: []string{"push", "approve head", "complete"}, want: phase.Reviewing},
-		{name: "the round ends on its approval of the head before a push arrives", steps: []string{"approve head", "complete", "push", "green head"}, want: phase.Accepting, unsettled: true},
+		{name: "the round ends on its approval of the head, then a push sends it back", steps: []string{"approve head", "complete", "push", "green head"}, want: phase.Reviewing, unsettled: true, quiet: true},
 		{name: "a push that does not say which head it replaced", steps: []string{"push unplaced", "approve head", "complete"}, want: phase.Reviewing},
 		{name: "a request for changes written after the approval, delivered first", steps: []string{"cr head id=12", "approve head id=11", "complete"}, want: phase.Implementing},
 		{name: "a request for changes written after the approval, delivered after it moved the issue", steps: []string{"approve head id=11", "cr head id=12", "complete"}, want: phase.Accepting},

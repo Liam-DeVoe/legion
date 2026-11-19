@@ -1013,7 +1013,10 @@ An architect's `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`); C
 The architect's `catch-up` at each launch names, in its `reason`, every issue in `accepting` whose acceptance is that architect's, since the reviewer's notice that moved it there may never have reached it:
 while a root's architect's claim has failed, that notice ends undelivered, and while a child's own architect does not hold its role, it goes to the architect above.
 
-**Retro:** runs after the architect's acceptance and before the merger merges the head it reads; it commits nothing and records what the work taught as a `dispatch comment` on the issue.
+**Retro:** runs after the architect's acceptance and before the merger merges the head the review approved; it commits nothing and records what the work taught as a `dispatch comment` on the issue.
+
+**A head past the review:** a push, a new head or a reopen at another head that reaches the pull request in `accepting`, `retro` or `merging`, and a merge at another head in `accepting` or `retro`, send the issue back to `reviewing` whenever the approval that decided the round no longer stands on the head (`workflow`'s `reaskDecided`, trigger `head_moved`), retro's own push among them, since retro commits nothing and no head is exempt.
+The reviewer starts again, told why, and its task names the commit its last review read, so it reads what the push added.
 
 **The merge closes the issue:** the daemon reads the merged pull request and writes `done`.
 A child's close tells the architect above it `child-closed`; where the project's `production_check` names the role that works the check it retires five of its six claims and hands that role the production check's first look in its live session, and where the setting is `off` it retires all six and releases the pod;
@@ -1096,7 +1099,7 @@ A child that never started is handed over too, carrying no run, whatever held it
 the expiry reads the child's own state rather than the reason it waited, so every member the tree leaves in the workflow at `todo` and `admitted` becomes a root of its own.
 A child a person has taken out of the workflow, and one the architect has filed and not released, is in no such state and stays where it is.
 A root that does not stay `done` through its linger, one a person or a controller parked, hands over only a child standing at `merging` whose pull request is still open and whose own status is in the workflow:
-the daemon re-admits no root left parked, so the child comes back in `merging` under a tree of its own, and its merger merges the head it reads, whose merge closes it.
+the daemon re-admits no root left parked, so the child comes back in `merging` under a tree of its own, and its merger merges the head the review approved, whose merge closes it.
 Ask the person whether that child's merge must wait for its parked root.
 A child whose old root had no gate (cleared by a reopen in its linger) carries none:
 its architect registers its own spec while the child is before its merge (after that the work is already through every gate), and decomposes nothing anew, since its workers already run their phases.
@@ -1276,9 +1279,9 @@ An empty `gates.design` is the only way past the gate without a human review
 with no step gated the root architect is told `Design gate steps: none.` in its system prompt and adds no approval step, a registration records the step `spec` and approves the gate whatever it held and whatever step the call named, and no artifact event moves the gate, so an approval does not open a carried copy that was closed before the switch either;
 a changes request is still told to the architect, once, without closing the gate.
 Whether a human must approve a pull request before it merges is the repository's own branch-protection or CODEOWNERS rule: Legion neither reads nor writes it.
-Retro commits nothing, so the head that merges is the head the reviewer approved, and no Legion check compares the two in any case:
-a repository that wants a later push reviewed says so in its own rulesets.
-The merger merges the pull request itself, as the implement App and at the head it read, which it names as the head GitHub must match (`gh pr merge <n> --squash --match-head-commit <head>`;
+Retro commits nothing, so the head that merges is the head the reviewer approved, and Legion holds the two equal twice:
+the daemon sends an issue past its review back to `reviewing` when a head the approval does not name reaches the pull request, and the merger merges only the head its task names as `Approved head: <sha>` (the reviewer's decided approval; `none` where the record holds none, which it merges nothing on).
+The merger merges the pull request itself, as the implement App and at that approved head, which it names as the head GitHub must match (`gh pr merge <n> --squash --match-head-commit <head>`;
 on a base with a merge queue it enqueues the pull request with GraphQL `enqueuePullRequest` and `expectedHeadOid` instead, since `gh pr merge` there turns auto-merge on while a required check is pending, and it then watches the pull request until GitHub merges it or takes it out of the queue).
 Merging at a named head is how bors and Prow's Tide merge only what they tested.
 The merger never turns auto-merge on, and the daemon submits no merge and changes no merge setting of any pull request.

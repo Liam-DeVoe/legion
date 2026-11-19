@@ -166,9 +166,10 @@ move and you tell it which; from `accepting` you send an issue back only to `imp
 What returns the tree to review is a changed diff: a conflict-resolution merge whose
 fingerprint (the unchanged-diff check,
 `skill://legion-worker/references/conflicts-and-rewrites.md`) differs from the approved head's.
-A conflict merge whose fingerprint is unchanged does not, and no Legion check compares the head
-that merges with the approved one: a repository that wants a later push reviewed says so in its
-own rulesets.
+A conflict merge whose fingerprint is unchanged does not: the reviewer confirms it with an
+`APPROVE` naming the new head, which the merge needs, since the merger merges only the head an
+approval names and a head past the review that no approval names sends the issue back to
+`reviewing`.
 
 Make a conflict-resolution merge only when GitHub reports `CONFLICTING`
 (`gh pr view <n> --json mergeable,mergeStateStatus`). From `testing`, `reviewing`, `accepting`,

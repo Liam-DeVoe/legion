@@ -12,7 +12,7 @@ import (
 var allWorkflowTriggers = []TriggerKind{
 	TriggerGateOpened, TriggerPlannerCompleted, TriggerImplementationReady, TriggerTesterPassed,
 	TriggerTesterFailed, TriggerReviewApproved, TriggerReviewRejected, TriggerRetroCompleted,
-	TriggerPullRequestMerged, TriggerSignOff, TriggerBackward, TriggerConflict,
+	TriggerPullRequestMerged, TriggerSignOff, TriggerBackward, TriggerConflict, TriggerHeadMoved,
 }
 
 func TestEveryPhaseAndTriggerHasARowOrNamedIgnore(t *testing.T) {
@@ -135,6 +135,8 @@ func workflowTransitionRequired(from phase.Phase, trigger TriggerKind) bool {
 		return from == phase.Reviewing
 	case TriggerConflict:
 		return from == phase.Testing || from == phase.Reviewing || from == phase.Accepting || from == phase.Retro || from == phase.Merging
+	case TriggerHeadMoved:
+		return from == phase.Accepting || from == phase.Retro || from == phase.Merging
 	case TriggerRetroCompleted:
 		return from == phase.Retro
 	case TriggerPullRequestMerged:

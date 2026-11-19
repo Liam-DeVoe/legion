@@ -1153,7 +1153,8 @@ func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 // phase is over, on that role's own Envoy topic. It is the daemon's own news of the workflow to a
 // role that is not an architect, where the hook prompt beside it on this lane carries a
 // deployment's words: when the daemon moves an issue out of a phase on something it read of the
-// pull request — a head that conflicts with its base, the review GitHub delivered, the merge —
+// pull request — a head that conflicts with its base, a head past the review that its approval
+// does not name, the review GitHub delivered, the merge —
 // the next role starts at once, and without this message nothing tells the tester, the reviewer,
 // the merger or the implementer in retro that the phase it was working is no longer its own,
 // since the daemon's next task for a role waits for that role's turn to end. Role is the

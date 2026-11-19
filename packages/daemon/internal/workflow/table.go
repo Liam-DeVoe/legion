@@ -23,6 +23,12 @@ const (
 	// back to implementing from whatever later phase it stands in, for the implementer to merge
 	// the base forward.
 	TriggerConflict TriggerKind = "conflict"
+	// TriggerHeadMoved is an approval that no longer stands on the head of an issue past its
+	// review: a push or a new head reached the pull request in accepting, retro or merging, the
+	// daemon's own reading of its record, raised by no agent (reaskDecided). An approval is of the
+	// head it names and no other, so the issue goes back to reviewing, whose reviewer is asked the
+	// round again at the head the branch carries now.
+	TriggerHeadMoved TriggerKind = "head_moved"
 )
 
 // EffectKind identifies the durable outbox consequences selected by a row. EffectSuspend is the
@@ -81,6 +87,11 @@ var Table = append([]Row{
 	{From: phase.Accepting, Trigger: TriggerConflict, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
 	{From: phase.Retro, Trigger: TriggerConflict, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
 	{From: phase.Merging, Trigger: TriggerConflict, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
+	// A head the approval does not name goes back to reviewing from every phase after the review
+	// (reaskDecided), so the head the merger merges is the head the review approved.
+	{From: phase.Accepting, Trigger: TriggerHeadMoved, Guard: allow, To: phase.Reviewing, Effects: []EffectKind{EffectStart, EffectNotice}},
+	{From: phase.Retro, Trigger: TriggerHeadMoved, Guard: allow, To: phase.Reviewing, Effects: []EffectKind{EffectStart, EffectNotice}},
+	{From: phase.Merging, Trigger: TriggerHeadMoved, Guard: allow, To: phase.Reviewing, Effects: []EffectKind{EffectStart, EffectNotice}},
 	// The merger merges, and the merge is what ends merging: the daemon submits none and reads
 	// GitHub's merge of the pull request as the phase's own terminating fact.
 	{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done, Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}},

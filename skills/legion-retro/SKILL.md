@@ -20,13 +20,15 @@ The head the merger names is the head the reviewer approved.
 ## What sends the issue back here
 
 Nothing does.
-No Legion check compares the head that merges with the one the review approved, so whether a push
-made after the approval must be reviewed again is the repository's own rule, and no handoff is a
-commit, so no head carries one for a retro to remove.
+A push to the branch sends it the other way: a head the approval does not name that reaches the
+pull request in retro, or in accepting or merging, sends the issue back to `reviewing`, and no
+head is exempt, a push of yours included. No handoff is a commit, so no head carries one for a
+retro to remove.
 
 Work on the existing issue branch: never rebase it onto another base, never make another branch or
-bookmark, and push nothing, because the merger merges this branch's head and a push of yours
-would put a commit above the head the reviewer approved.
+bookmark, and push nothing, because the merger merges this branch's head only where the reviewer
+approved it, and a push of yours would put a commit above the approved head and send the issue
+back to review.
 
 ## When retro stops
 

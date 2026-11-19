@@ -5,15 +5,16 @@ approval, the tester on a look of its closed issue's production check, or the me
 the pull request. Every path it cites is in cybermonklabs/legion.
 
 The order, in full: the tester's evidence green → the reviewer's approval of the head → the
-architect's acceptance, in `accepting` → retro → the merger's merge of the head it read, which
-closes the issue → the production check after the close, which the project's `production_check`
-setting gives to a role or takes away. Every handoff is a record on the Dispatch issue, never a
-commit, so the head that merges carries none. Retro commits nothing (*Retro*, below), so the
-approved head is the head that merges, and no Legion check holds the head that merges to the head
-the review approved in any case: a repository that wants its newest push reviewed says so in its
-own rulesets. A conflict-forced merge goes back to the reviewer for a confirmation or a new round,
-as the fingerprint decides (*The reviewer*, below, and
-`skill://legion-worker/references/conflicts-and-rewrites.md`).
+architect's acceptance, in `accepting` → retro → the merger's merge of the head the review
+approved, which closes the issue → the production check after the close, which the project's
+`production_check` setting gives to a role or takes away. Every handoff is a record on the
+Dispatch issue, never a commit, so the head that merges carries none. Retro commits nothing
+(*Retro*, below), so the approved head is the head that merges, and Legion holds the two equal:
+a head the approval does not name that reaches the pull request in `accepting`, `retro` or
+`merging` sends the issue back to `reviewing`, whoever pushed it, and the merger merges only the
+head its task names as `Approved head: <sha>` (*The merger*, below). A conflict-forced merge goes
+back to the reviewer for a confirmation or a new round, as the fingerprint decides (*The
+reviewer*, below, and `skill://legion-worker/references/conflicts-and-rewrites.md`).
 
 ## The reviewer
 
@@ -260,13 +261,13 @@ it there until that answer comes clean.
 - **Retro commits nothing.** It reads the evidence, writes what the work taught as a
   `dispatch comment` on the issue for the skill librarian, brings the PR body up to date and
   completes (`skill://legion-retro` gives the steps), so the approved head is the head the merger
-  merges. Nothing in Legion compares that head with the one the approval named either: a
-  repository that wants a push made after the approval reviewed says so in its own rulesets (a
-  stale review dismissed, a review required again), and GitHub holds the merge to them. A
-  conflict merge pushed above the approved head still goes back to the reviewer for a
-  confirmation or a new round, as the fingerprint decides
-  (`skill://legion-worker/references/conflicts-and-rewrites.md`), because the branch's own
-  procedure says so and not because any Legion check refuses the head. Retro removes nothing.
+  merges. A push to the branch after the approval, retro's own included, sends the issue back to
+  `reviewing` once the daemon reads it, where the reviewer reads the difference from the head it
+  approved; a repository's own rulesets (a stale review dismissed, a review required again) can
+  hold the merge as well, and GitHub holds the merge to them. A conflict merge pushed above the
+  approved head goes back to the reviewer too, for a confirmation or a new round, as the
+  fingerprint decides (`skill://legion-worker/references/conflicts-and-rewrites.md`). Retro
+  removes nothing.
 - **Retro brings the PR body's path-derived content up to date before it completes.** Whatever the
   repository's instructions derive from the pull request's changed paths (a checklist named for
   each class of path, read by a required check), retro recomputes for the whole diff at its head
@@ -279,9 +280,12 @@ it there until that answer comes clean.
 - The merger resolves no review thread: the reviewer's approval already judged them, and the
   merge requires no thread state beyond it. It writes no file, commits nothing and pushes
   nothing.
-- **The merge is the merger's own act, at the head it read.** It reads the pull request
+- **The merge is the merger's own act, at the head the review approved.** The task that starts
+  the merger on `merging` ends with `Approved head: <sha>`, the head of the review that decided
+  the round (`none` where the record holds no approval). It reads the pull request
   (`gh pr view <n> --json number,title,url,state,baseRefName,headRefOid,mergeStateStatus`), and
-  every step below names that `headRefOid`:
+  merges nothing unless `headRefOid` is that head: on another head, or on `none`, it sends the
+  issue back with `request_backward_move` `to: reviewing`. Every step below names that head:
   - *The message, before the merge.* GitHub's default squash message,
     `squash_merge_commit_message` of `COMMIT_MESSAGES`, joins every commit message of the pull
     request, which puts the tree's `Dispatch:` keys and its `Omp-Session:` and `Legion-Role:`
