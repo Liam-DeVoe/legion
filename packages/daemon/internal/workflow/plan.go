@@ -81,6 +81,18 @@ func defaultPlan(issue record.Issue) record.PlanRecord {
 		Tasks: []record.PlanRecordTask{{ID: defaultTask, Steps: DefaultSteps()}}}
 }
 
+// WritePlan queues the plan issue's run carries out, the default plan (defaultPlan), where the
+// run's work starts: at the run's move out of admitted (transition's TriggerGateOpened), and at a
+// hand-over's carry, which re-admits an orphan at a new generation in the phase it ran in
+// elsewhere (admit's readmit), so that run never leaves admitted. A record key that is no issue
+// key writes nothing (recordsSteps).
+func (e *Engine) WritePlan(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	if !recordsSteps(issue) {
+		return nil
+	}
+	return e.enqueue(ctx, tx, issue.Key, defaultPlan(issue))
+}
+
 // rateRetro writes the rating the retro of issue's run gave the plan onto that retro's record, in
 // the transaction of the completion that ended the retro: a step record row whose id is the id of
 // the retro's latest run (StepID, from the count of its starts, which the retro's end left as it
