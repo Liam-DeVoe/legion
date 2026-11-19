@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
@@ -567,7 +568,7 @@ async function gatewayRun(servers: RedirectServers, name: string) {
     ],
     {
       ...run.io,
-      env: { HOME: scratch, DISPATCH_URL: servers.origin, DISPATCH_TOKEN: "made-up-bearer" },
+      env: { HOME: scratch, DISPATCH_URL: servers.origin, DISPATCH_TOKEN: fixtureSecret("bearer") },
     }
   );
   return { exit, stderr: run.stderr, labels: path.join(out, "labels.jsonl") };
@@ -680,7 +681,11 @@ for (const code of REDIRECT_CODES) {
         ["--since", SINCE, "--until", UNTIL, "--out", out, "--key-file", keyFile()],
         {
           ...run.io,
-          env: { HOME: scratch, DISPATCH_URL: servers.origin, DISPATCH_TOKEN: "made-up-bearer" },
+          env: {
+            HOME: scratch,
+            DISPATCH_URL: servers.origin,
+            DISPATCH_TOKEN: fixtureSecret("bearer"),
+          },
         }
       );
       expect(servers.received, `the other origin after a ${code}`).toEqual([]);
@@ -768,14 +773,18 @@ test("an upper-case HTTPS --gateway with a user part is named without it", async
       ],
       {
         ...run.io,
-        env: { HOME: scratch, DISPATCH_URL: servers.origin, DISPATCH_TOKEN: "made-up-bearer" },
+        env: {
+          HOME: scratch,
+          DISPATCH_URL: servers.origin,
+          DISPATCH_TOKEN: fixtureSecret("bearer"),
+        },
       }
     );
     expect(servers.received).toEqual([]);
     expect({ exit, stderr: run.stderr }).toEqual({
       exit: 1,
       stderr: refusedRun(
-        `the model at https://gateway.example/anthropic answered 307, redirecting to ${servers.elsewhere}, and a model call follows no redirect, since it carries the key: ${FIX}`,
+        `the model at --gateway ${URL_NOT_PRINTED} answered 307, redirecting to ${servers.elsewhere}, and a model call follows no redirect, since it carries the key: ${FIX}`,
         path.join(out, "labels.jsonl")
       ),
     });

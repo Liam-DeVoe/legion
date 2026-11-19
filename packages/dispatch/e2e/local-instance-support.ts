@@ -10,6 +10,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import type { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
+import { urlForText } from "@legion/contracts/log-text";
 import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import type { Ask, InboxRow } from "../web/src/api/types";
 
@@ -274,13 +275,12 @@ function fromShellLine(banner: InstanceBanner): string {
 
 /** The banner `bun run dispatch:local` prints once its instance is up: where to open it, the
  *  seeded rows, the database, the fake Envoy, and a command that runs a spec against it. A
- *  DATABASE_URL the person set is named with no user part and no query (`shownSettingUrl`, of the
- *  Postgres schemes), or by its length; the dev container's URL is named as the source holds it. */
+ *  DATABASE_URL the person set is named as `urlForText` names a Postgres URL, with no user part
+ *  and no query, or by its fixed phrase; the dev container's URL is named as the source holds it. */
 export function instanceBanner(banner: InstanceBanner): string {
   const { baseUrl, databaseUrl, fakeEnvoy } = banner;
   const database = banner.databaseGiven
-    ? (shownSettingUrl(databaseUrl, ["postgres:", "postgresql:"]) ??
-      `the DATABASE_URL of ${databaseUrl.length} characters`)
+    ? urlForText(databaseUrl, "the DATABASE_URL you set")
     : databaseUrl;
   return (
     "\nDispatch local instance is up.\n" +

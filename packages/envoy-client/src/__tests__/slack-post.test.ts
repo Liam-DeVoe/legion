@@ -35,7 +35,7 @@ if [ "$FAKE_BROKER" = crash-after-inject ]; then
   echo "the poster's private stderr" >&2
   exit 1
 fi
-LEGION_SLACK_BOT_TOKEN="\${FAKE_TOKEN:-xoxb-granted}" exec "$@"
+LEGION_SLACK_BOT_TOKEN=\${FAKE_TOKEN:-xoxb-granted} exec "$@"
 `;
 
 interface SlackCall {
@@ -547,8 +547,8 @@ describe("postSlackReply", () => {
   }, 30_000);
 
   // The override may carry a user and a password; the refusal of an http URL that is not on a
-  // loopback host names it with neither, whatever the case of its scheme. The password is made
-  // for this run.
+  // loopback host names no part of it, whatever the case of its scheme. The password is made for
+  // this run.
   test("a refused Slack API override is named with no user and no password", async () => {
     const password = crypto.randomUUID();
     const said: string[] = [];
@@ -561,7 +561,7 @@ describe("postSlackReply", () => {
     }
     expect(said).toEqual(
       Array(2).fill(
-        "SLACK_POST_API_URL must be an https URL, or http on a loopback host (got http://slack.example/api); nothing was posted"
+        "SLACK_POST_API_URL must be an https URL, or http on a loopback host; nothing was posted"
       )
     );
   });

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import tls from "node:tls";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { URL_NOT_PRINTED } from "../../../packages/contracts/src/log-text";
 import { unshownSettingUrl } from "../../../packages/contracts/src/setting-url";
 
 // The probe runs as an operator runs it, a process of its own, against a local TLS server that
@@ -199,11 +200,11 @@ test("anything but one https URL is a usage error, exit 2", async () => {
   }
 });
 
-// The URL may carry a user and a password: no line names them, and a value that is no http or
-// https URL with a host is named by its length and the cause the one function found. So is one with
-// a `/` in its user part, which the URL parser reads as a host taken from the user part. The
-// password is made for this run.
-test("a URL with a user part is named without it, and one that is no http or https URL by its length and cause", async () => {
+// The URL may carry a user and a password: a line names it by its fixed phrase (`urlForText`), and
+// a value that is no http or https URL with a host is named by its length and the cause the one
+// function found. So is one with a `/` in its user part, which the URL parser reads as a host taken
+// from the user part. The password is made for this run.
+test("a URL with a user part is named by its phrase, and one that is no http or https URL by its length and cause", async () => {
   const password = crypto.randomUUID();
   const unreadable = [
     `made-up-user:${password}@dispatch.example`,
@@ -218,7 +219,7 @@ test("a URL with a user part is named without it, and one that is no http or htt
   expect(said).toEqual([
     {
       code: 2,
-      stderr: `h2-settings: not an https URL: http://localhost:1\nusage: bun scripts/e2e/lib/h2-settings.ts <https-url>\n`,
+      stderr: `h2-settings: not an https URL: the URL ${URL_NOT_PRINTED}\nusage: bun scripts/e2e/lib/h2-settings.ts <https-url>\n`,
     },
     ...unreadable.map((value) => ({
       code: 2,
@@ -227,7 +228,7 @@ test("a URL with a user part is named without it, and one that is no http or htt
   ]);
 });
 
-test.skipIf(skip)("the answer names a URL with a user part without it", async () => {
+test.skipIf(skip)("the answer names a URL with a user part by its phrase alone", async () => {
   const password = crypto.randomUUID();
   const port = await listen(http2.createSecureServer({ ...tlsFiles, settings: {} }));
   const result = await run([`https://made-up-user:${password}@127.0.0.1:${port}`]);
@@ -235,7 +236,7 @@ test.skipIf(skip)("the answer names a URL with a user part without it", async ()
   expect(result.stderr).toBe("");
   expect(JSON.parse(result.stdout)).toMatchObject({
     alpn: "h2",
-    url: `https://127.0.0.1:${port}/`,
+    url: `the URL ${URL_NOT_PRINTED}`,
   });
   expect(result.stdout).not.toContain(password);
 });

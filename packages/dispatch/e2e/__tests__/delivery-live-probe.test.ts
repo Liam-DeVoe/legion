@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import {
   type FakeDispatchServer,
   startFakeDispatch,
@@ -844,8 +845,8 @@ test(
 
 // --url may carry a user and a password. One that is no http or https URL with a host is a usage
 // error naming its length and the cause the one function found, and the socket of one that
-// carries a user part is named without it when Dispatch refuses it. The password is made for this
-// run.
+// carries a user part is named by --url's fixed phrase (`urlForText`) when Dispatch refuses it.
+// The password is made for this run.
 test(
   "a --url that is no http or https URL with a host is named by its length, and one with a user part without it",
   async () => {
@@ -870,9 +871,7 @@ test(
       code: 1,
       holds: false,
     });
-    expect(refused.stderr).toContain(
-      `Dispatch refused the connection to ${dispatch.url.replace("http://", "ws://")}/ws/live`
-    );
+    expect(refused.stderr).toContain(`Dispatch refused the connection to --url ${URL_NOT_PRINTED}`);
   },
   // The usage error's probe, then the refused one's, one after the other.
   rowLimit("short", "short")

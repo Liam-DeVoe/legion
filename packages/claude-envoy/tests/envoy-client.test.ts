@@ -709,7 +709,9 @@ test("envoy-send answered with a redirect exits 1 naming it, sends nothing to th
   const file = join(scratch, "redirected-envoy.json")
   writeFileSync(
     file,
-    JSON.stringify({ envoy: { enabled: true, url: servers.origin, token: "made-up-bearer" } }),
+    JSON.stringify({
+      envoy: { enabled: true, url: servers.origin, token: fixtureSecret("bearer") },
+    }),
   )
   try {
     for (const code of REDIRECT_CODES) {
@@ -798,7 +800,7 @@ test("envoy-send prints no user and no password of its Envoy URL, whatever the l
       const url = `http://made-up-user:${password}@127.0.0.1:${port}`
       writeFileSync(
         file,
-        JSON.stringify({ envoy: { enabled: true, url, token: "made-up-bearer" } }),
+        JSON.stringify({ envoy: { enabled: true, url, token: fixtureSecret("bearer") } }),
       )
       const {
         code: exitCode,

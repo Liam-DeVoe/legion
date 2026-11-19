@@ -139,7 +139,8 @@ test("a metadata server that refuses is an error naming the variable that names 
 });
 
 // GCE_METADATA_HOST is a host, like a NATS server's setting, and a host's text cannot be told from
-// a secret pasted there, so a text names the server by the variable and the failure by its class.
+// a secret pasted there, so a text names the server by the variable and the failure by its class;
+// a value that is no host and port alone is refused by its length before anything is asked.
 test.each([
   `${randomBytes(9).toString("hex")}.invalid`,
   `operator:${randomBytes(9).toString("hex")}@127.0.0.1:1`,
@@ -153,7 +154,9 @@ test.each([
   );
   if (!(refusal instanceof Error)) throw new Error("the metadata server answered");
   expect(refusal.message).toStartWith(
-    `the metadata server ${METADATA_HOST_VAR} names could not be reached: `
+    pasted.includes("@")
+      ? `${METADATA_HOST_VAR} must name the metadata server's host, with an optional port and nothing else: its value is ${pasted.length} characters long`
+      : `the metadata server ${METADATA_HOST_VAR} names could not be reached: `
   );
   expect(Bun.inspect(refusal)).not.toContain(pasted);
   expect(Bun.inspect(refusal).toLowerCase()).not.toContain(pasted.split(/[.@]/)[0]?.toLowerCase());

@@ -15,6 +15,7 @@
 import http2 from "node:http2";
 import { isIP } from "node:net";
 import tls from "node:tls";
+import { urlForText } from "../../../packages/contracts/src/log-text";
 import { shownSettingUrl, unshownSettingUrl } from "../../../packages/contracts/src/setting-url";
 
 const USAGE = "usage: bun scripts/e2e/lib/h2-settings.ts <https-url>";
@@ -36,23 +37,23 @@ function fail(message: string, code: number): never {
 }
 
 /** The https URL the one argument names, or a usage error. The URL may carry a user and a
- *  password, which a TLS probe never sends: every line names it with neither, and a value that
- *  `shownSettingUrl` would not show by its length and what to correct (`unshownSettingUrl`). */
+ *  password, which a TLS probe never sends: every line names it as `urlForText` does, and a value
+ *  that `shownSettingUrl` does not read by its length and what to correct (`unshownSettingUrl`). */
 function target(argv: readonly string[]): URL {
   const [raw, ...extra] = argv;
   if (raw === undefined || extra.length > 0) fail(USAGE, 2);
-  const shown = shownSettingUrl(raw);
-  if (shown === undefined) {
+  if (shownSettingUrl(raw) === undefined) {
     fail(`not an https URL: ${unshownSettingUrl(raw)}\n${USAGE}`, 2);
   }
   const parsed = new URL(raw);
-  if (parsed.protocol !== "https:") fail(`not an https URL: ${shown}\n${USAGE}`, 2);
+  if (parsed.protocol !== "https:")
+    fail(`not an https URL: ${urlForText(raw, "the URL")}\n${USAGE}`, 2);
   return parsed;
 }
 
 const url = target(process.argv.slice(2));
-// The answer's URL as the URL parser writes it, with no user and no password.
-const shownUrl = shownSettingUrl(url.href) ?? `a URL ${url.href.length} characters long`;
+// The answer's URL as a line names it (`urlForText`): whole where it is plain, by its phrase otherwise.
+const shownUrl = urlForText(url.href, "the URL");
 const host = url.hostname.replace(/^\[(.*)\]$/u, "$1");
 
 const deadline = setTimeout(

@@ -51,6 +51,7 @@
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
+import { isCleanUrl, urlForText } from "@legion/contracts/log-text";
 import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 
 import { REQUEST_DEADLINE_MS } from "../web/src/api/client";
@@ -396,9 +397,9 @@ function parseView(text: string): DeliveryLiveView {
 function parseOptions(argv: readonly string[]): Options {
   const values = readArgs(argv);
   const rawUrl = required(values.url, "--url");
-  // --url may carry a user and a password: one that `shownSettingUrl` would not show is named by
-  // its length and what to correct (`unshownSettingUrl`), and every later line names it with
-  // neither.
+  // --url may carry a user and a password: one that `shownSettingUrl` does not read is named by
+  // its length and what to correct (`unshownSettingUrl`), and every later line names it as
+  // `urlForText` does.
   if (shownSettingUrl(rawUrl) === undefined) {
     throw new UsageError(
       `--url must be Dispatch's http or https address: ${unshownSettingUrl(rawUrl)}`
@@ -531,14 +532,13 @@ function frameLine(frame: DeliveryServerFrame, bytes: number): ProbeFrameLine {
 async function watch(options: Options, token: string): Promise<ProbeHeld | null> {
   const liveUrl = new URL("/ws/live", options.url);
   const socketScheme = options.url.protocol === "https:" ? "wss:" : "ws:";
-  // What a line names the socket by: its http or https URL as `shownSettingUrl` shows it, with no
-  // user and no password, under the socket's scheme.
-  const shownHttp = shownSettingUrl(liveUrl.href);
+  // What a line names the socket by: its http or https URL under the socket's scheme where that
+  // URL is plain (`urlForText`), and --url's fixed phrase otherwise.
+  const shownHttp = urlForText(liveUrl.href, "--url");
   liveUrl.protocol = socketScheme;
-  const shownLive =
-    shownHttp === undefined
-      ? `a URL ${liveUrl.href.length} characters long`
-      : `${socketScheme}${shownHttp.slice(shownHttp.indexOf(":") + 1)}`;
+  const shownLive = isCleanUrl(shownHttp)
+    ? `${socketScheme}${shownHttp.slice(shownHttp.indexOf(":") + 1)}`
+    : shownHttp;
   let held: ProbeHeld | null = null;
   let socket: WebSocket | null = null;
   let attempt = 0;

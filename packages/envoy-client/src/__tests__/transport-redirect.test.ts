@@ -9,6 +9,7 @@
 
 import { expect, test } from "bun:test";
 import { inspect } from "node:util";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import {
   REDIRECT_CODES,
   type RedirectServers,
@@ -167,10 +168,10 @@ test("a refused redirect and a listener's refusal hold no user and no password o
     expect(redirected).toBeInstanceOf(EnvoyRedirectError);
     expect(refused).toBeInstanceOf(EnvoyApiError);
     expect((redirected as Error).message).toBe(
-      `POST ${servers.origin}/v1/messages/send answered 307, redirecting to ${servers.elsewhere}, and the Envoy client follows no redirect: ${FIX}`
+      `POST the configured Envoy URL ${URL_NOT_PRINTED} answered 307, redirecting to ${servers.elsewhere}, and the Envoy client follows no redirect: ${FIX}`
     );
     expect((refused as Error).message).toBe(
-      `POST http://127.0.0.1:${refusing.port}/v1/messages/send failed with 404: no`
+      `POST the configured Envoy URL ${URL_NOT_PRINTED} failed with 404: a body that is not the listener's error JSON ("no")`
     );
     for (const error of [redirected, refused]) {
       const shown = inspect(error, { depth: Number.POSITIVE_INFINITY, showHidden: true });

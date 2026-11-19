@@ -1,24 +1,27 @@
 /**
- * What a line may show of the value of a setting that names an http or https URL: an error, a log
- * line, a notice or a link. Such a value may carry a user and a password, since the config accepts
- * such a URL, and a user alone can be a token, so a line names neither; requests still go to the
- * URL as configured. The value is shown only when the URL parser reads it as an http or https URL
- * with a host, and undefined is answered for any other value, of which a line names the length
- * alone. Any other reading cannot be trusted to have found the password: the parser reads
- * `user:password@host` and `mailto:user:password@host` with no user part at all, the password in
- * the path, and its error for a value it refuses holds the value whole.
+ * Whether a client admits the value of a setting that names an http or https URL, before any
+ * request: such a value may carry a user and a password, since the config accepts such a URL, and
+ * requests still go to the URL as configured. No line prints what this answers: a line names a
+ * configured URL through `urlForText` or `requestForText` (`@legion/contracts/log-text`), which
+ * print no part of a URL that is not plain. The value is admitted only when the URL parser reads
+ * it as an http or https URL with a host, and undefined is answered for any other value, of which
+ * a refusal names the length alone (`unshownSettingUrl`). Any other reading cannot be trusted to
+ * have found the password: the parser reads `user:password@host` and `mailto:user:password@host`
+ * with no user part at all, the password in the path, and its error for a value it refuses holds
+ * the value whole.
  *
  * Nor is the parser trusted to have found the whole user part. It ends one at the first `/`, `?`,
  * `#` or `\`, so a token that holds one (base64 does) reads as a host taken from the token and a
  * path, query or fragment that holds the rest. The user part the parser found is taken out, and a
- * value in which a raw `@` is still left is shown not at all, since even its host can be a part
+ * value in which a raw `@` is still left is admitted not at all, since even its host can be a part
  * of the token. Each caller that admits a setting's URL asks this first and refuses such a value
- * before any request, so no lookup of a host taken from a token goes out either.
+ * before any request, so no lookup of a host taken from a token goes out either. What is left can
+ * still name a host the parser took from a password (`https://user:p@ssword` reads with the host
+ * `ssword`), which is why no line prints it.
  *
  * A URL that carries neither user nor password comes back as written. One that carries them comes
  * back as the URL parser writes it: its scheme and host lower-cased and a default port dropped,
- * still naming the same server, and no `/` added after a bare origin. Each line that names such a
- * setting's value, or a URL made from it, asks this first; it is the one function that decides.
+ * and no `/` added after a bare origin.
  *
  * A value that holds a control character (a tab, a line feed, any byte below a space, or DEL) is
  * shown not at all: the parser drops a tab and a line feed where it reads them, so a line that

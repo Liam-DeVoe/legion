@@ -770,22 +770,22 @@ test("a daemon URL that is no http or https URL with a host fails each call nami
 });
 
 /** The two calls whose bodies carry a credential, each to the daemon at `origin` through
- * `fetchFn`, with made-up credentials: the registration's boot token, and the exit's claim token
- * and secret. */
+ * `fetchFn`, with random credentials (`fixtureSecret`): the registration's boot token, and the
+ * exit's claim token and secret. */
 function credentialedCalls(origin: string, fetchFn: typeof fetch = fetch) {
   const client = createLegionDaemonClient(origin, fetchFn);
   return [
     [
       "/legion/v1/claims/register",
-      () => client.register({ ...registration, bootToken: "made-up-boot-token" }),
+      () => client.register({ ...registration, bootToken: fixtureSecret("boot") }),
     ],
     [
       "/legion/v1/claims/exit",
       () =>
         client.exit({
-          claimToken: "made-up-claim-token",
+          claimToken: fixtureSecret("claimtok"),
           sessionId: "ses_architect_208",
-          secret: "made-up-claim-secret",
+          secret: fixtureSecret("claimsec"),
           generation: 1,
           reason: "a made-up exit",
         }),

@@ -11,10 +11,11 @@
 import { expect, test } from "bun:test";
 import { inspect } from "node:util";
 import { unshownSettingUrl } from "@legion/contracts/setting-url";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { createEnvoyClient, EnvoyUrlError } from "../transport";
 
 test("a client of an Envoy URL shownSettingUrl does not show refuses each call before any request, naming its length and cause", async () => {
-  const password = `not-a-secret-${crypto.randomUUID()}`;
+  const password = fixtureSecret("pw");
   let asked = 0;
   const listener = Bun.serve({
     port: 0,

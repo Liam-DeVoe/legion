@@ -118,7 +118,7 @@ export function personIdentity(
   // (`unshownSettingUrl`). One with a user part fails it too, named as `issuer` names it: an
   // issuer's identifier holds no user part, so discovery cannot pass with one, and the library's
   // error for the issuer it then reads would keep the password in its cause chain.
-  const shownIssuer = shownSettingUrl(flow.issuer);
+  const issuerUnread = shownSettingUrl(flow.issuer) === undefined;
 
   /** The issuer's metadata, as one discovery request reads it. */
   const discover = async (signal: AbortSignal | undefined): Promise<ServerMetadata> => {
@@ -138,7 +138,7 @@ export function personIdentity(
 
   return {
     async read(signal?: AbortSignal): Promise<SubjectToken> {
-      if (shownIssuer === undefined) {
+      if (issuerUnread) {
         throw new Error(
           `${SIGNIN_ISSUER_VAR} must name an http or https URL: ${unshownSettingUrl(flow.issuer)}`
         );

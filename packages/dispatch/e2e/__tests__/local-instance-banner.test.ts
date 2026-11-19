@@ -9,7 +9,7 @@ import { rowLimit, runBounded } from "./bounded-subprocess";
 const makeDirectory = temporaryDirectories("local-instance-banner");
 
 // The banner names the database the instance truncates. A DATABASE_URL the person set may carry
-// a user and a password: the banner names it with neither and with no query (`shownSettingUrl`),
+// a user and a password: the banner names it with neither and with no query (`urlForText`),
 // and its command reads DATABASE_URL from the shell that runs it, never the value, saying so in
 // one line. So does each broker switch the shell set, of which the broker's URL may carry a user
 // and a password too. The repository's dev container's URL, which the source holds with its

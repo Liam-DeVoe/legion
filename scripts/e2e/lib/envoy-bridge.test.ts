@@ -252,12 +252,30 @@ describe("the bridge's output lines", () => {
   ] as const)(
     "%s: the failure line carries none of it",
     async (_, which, server, secret) => {
-      const config = bridgeConfigFromEnvironment({
+      const environment = {
         SMOKE_REPO: "a/b",
         SMOKE_RIG_NATS: which === "rig" ? server : "nats://172.30.0.1:31000",
         SMOKE_UPSTREAM_NATS:
           which === "upstream" ? server : "nats://envoy-nats.tailnet.example:4222",
-      });
+      };
+      // A rig server the URL parser cannot read, or reads apart, is refused before anything is
+      // dialed, named by its length (`unshownSettingUrl`), so no failure line is made for it: the
+      // refusal carries none of it either.
+      const refusal = (() => {
+        try {
+          bridgeConfigFromEnvironment(environment);
+          return undefined;
+        } catch (error) {
+          return String(error);
+        }
+      })();
+      if (refusal !== undefined) {
+        expect(which).toBe("rig");
+        expect(refusal).toStartWith("Error: SMOKE_RIG_NATS must be a nats:// or tls:// URL");
+        expect(refusal.toLowerCase()).not.toContain(secret.toLowerCase());
+        return;
+      }
+      const config = bridgeConfigFromEnvironment(environment);
       const error = await realFailure(server);
       expect(carried(error)).toContain(secret.toLowerCase());
       const lines = [bridgeReadyLine(config), bridgeFailureLine(error, config)].join("\n");

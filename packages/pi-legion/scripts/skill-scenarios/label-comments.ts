@@ -38,6 +38,7 @@
 import { mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Comment } from "@legion/contracts";
+import { urlForText } from "@legion/contracts/log-text";
 import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import { messageFor } from "@legion/envoy-client/errors";
 import { redirectedTo, redirectTarget, SAME_ADDRESS_CAUSE } from "@legion/envoy-client/redirect";
@@ -194,8 +195,8 @@ function stateMessage(issue: string, comment: Comment): string {
 const USAGE =
   "usage: label-comments.ts --since <RFC 3339> --until <RFC 3339> --out <dir> (--gateway <url> --key-command <file> | --key-file <file>)";
 
-/** Where the model calls go, the same address as a line may show it (`shownSettingUrl`), how each
- * call gets its key, and whether a person named the URL with --gateway. */
+/** Where the model calls go, the same address as a line names it (`urlForText`), how each call
+ * gets its key, and whether a person named the URL with --gateway. */
 interface ModelRoute {
   readonly url: string;
   readonly shown: string;
@@ -503,15 +504,16 @@ function modelRoute(args: Arguments): ModelRoute | string {
     };
   }
   if (gateway === undefined || keyCommand === undefined) return refusal;
-  // The URL may carry a user and a password: a line names it with neither, and one that
-  // `shownSettingUrl` would not show by its length and what to correct (`unshownSettingUrl`).
-  const shown = shownSettingUrl(gateway);
-  if (shown === undefined) {
+  // The URL may carry a user and a password. One that `shownSettingUrl` does not read is refused
+  // by its length and what to correct (`unshownSettingUrl`), and a line names the URL as
+  // `urlForText` does: whole where it is plain, by its fixed phrase otherwise.
+  if (shownSettingUrl(gateway) === undefined) {
     return `--gateway must be an http or https URL: ${unshownSettingUrl(gateway)}`;
   }
+  const url = gateway.replace(/\/+$/, "");
   return {
-    url: gateway.replace(/\/+$/, ""),
-    shown: shown.replace(/\/+$/, ""),
+    url,
+    shown: urlForText(url, "--gateway"),
     key: () => runKeyCommand(keyCommand),
     gateway: true,
   };

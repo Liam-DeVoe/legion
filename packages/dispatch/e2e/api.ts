@@ -4,6 +4,7 @@ import {
   type InboxThreadKind,
   type paths,
 } from "@legion/contracts";
+import { urlForText } from "@legion/contracts/log-text";
 import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import type { Cookie } from "@playwright/test";
 import {
@@ -35,13 +36,12 @@ import { type DispatchProcess, pinnedTo } from "./harness-processes";
  *  PLAYWRIGHT_BASE_URL that `shownSettingUrl` would not show is refused before anything parses
  *  it, named by its length and what to correct (`unshownSettingUrl`): the URL parser's error for a
  *  value it refuses would print the value whole. One that carries a user or a password is refused
- *  too, named with neither: the fetch of Playwright's Node refuses such a URL with an error that
- *  prints it whole, and every call carries a credential of the client's own. */
+ *  too, named by its fixed phrase (`urlForText`): the fetch of Playwright's Node refuses such a URL
+ *  with an error that prints it whole, and every call carries a credential of the client's own. */
 export function baseUrlOf(env: NodeJS.ProcessEnv = process.env): string {
   const named = env.PLAYWRIGHT_BASE_URL;
   if (!named) return `http://127.0.0.1:${harnessPorts(env).dispatch.port}`;
-  const shown = shownSettingUrl(named);
-  if (shown === undefined) {
+  if (shownSettingUrl(named) === undefined) {
     throw new Error(
       `PLAYWRIGHT_BASE_URL must be an http or https URL: ${unshownSettingUrl(named)}`
     );
@@ -49,7 +49,7 @@ export function baseUrlOf(env: NodeJS.ProcessEnv = process.env): string {
   const { username, password } = new URL(named);
   if (username !== "" || password !== "") {
     throw new Error(
-      `PLAYWRIGHT_BASE_URL ${shown} must carry no user and no password: the fetch of Playwright's Node refuses a URL that carries them, printing it whole, and the e2e client sends a credential of its own`
+      `${urlForText(named, "PLAYWRIGHT_BASE_URL")} must carry no user and no password: the fetch of Playwright's Node refuses a URL that carries them, printing it whole, and the e2e client sends a credential of its own`
     );
   }
   return named;

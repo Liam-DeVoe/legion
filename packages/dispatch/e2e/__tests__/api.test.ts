@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import {
   REDIRECT_CODES,
@@ -256,10 +257,10 @@ function baseUrlForms(password: string) {
 // The client reads PLAYWRIGHT_BASE_URL when it loads, and it may carry a user and a password: an
 // honest one holding a `/` is enough for the URL parser to refuse the value, whose error would
 // print it whole. A value that is no http or https URL with a host stops the load naming the
-// setting and its length alone. One that carries a user part stops it too, named without that
-// part: the fetch of Playwright's Node refuses such a URL with an error that prints it whole, and
-// the client sends a credential of its own. A value with neither loads and prints nothing. The
-// password is made for this run.
+// setting and its length alone. One that carries a user part stops it too, named by its fixed
+// phrase (`urlForText`): the fetch of Playwright's Node refuses such a URL with an error that
+// prints it whole, and the client sends a credential of its own. A value with neither loads and
+// prints nothing. The password is made for this run.
 test(
   "a PLAYWRIGHT_BASE_URL that is no http or https URL with a host, or that carries a user part, stops the client's load printing no part of the password",
   async () => {
@@ -291,7 +292,7 @@ test(
       })),
       {
         exit: 1,
-        died: "PLAYWRIGHT_BASE_URL http://127.0.0.1:1 must carry no user and no password: the fetch of Playwright's Node refuses a URL that carries them, printing it whole, and the e2e client sends a credential of its own",
+        died: `PLAYWRIGHT_BASE_URL ${URL_NOT_PRINTED} must carry no user and no password: the fetch of Playwright's Node refuses a URL that carries them, printing it whole, and the e2e client sends a credential of its own`,
         holds: false,
       },
       { exit: 0, died: "", holds: false },
