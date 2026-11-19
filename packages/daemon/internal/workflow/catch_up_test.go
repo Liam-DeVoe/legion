@@ -610,3 +610,14 @@ func TestACatchUpNamesItsGateDocumentByALink(t *testing.T) {
 		t.Errorf("the catch-up names the spec step's document by no dispatch:// link: %s", payload)
 	}
 }
+
+// R2 has a daemon text name each Dispatch item by its dispatch:// link. A kept approval names the
+// step whose document a person approved, the version approved and the version reached since, and
+// names that document by its step word alone (approval_step: spec in the kept-decisions task,
+// kept.step in the catch-up), where the catch-up's gates name the same document by its link.
+func TestAKeptApprovalNamesItsDocumentByALink(t *testing.T) {
+	kept := record.KeptDecisions{KeptApproval: record.KeptApproval{Step: record.DesignStepSpec, Approved: 2, Latest: 3}}
+	if text := KeptDecisionsTask("LEGION-208", kept); !strings.Contains(text, "dispatch://LEGION-208/spec") {
+		t.Errorf("the kept-decisions task names the approved document by its step alone, and by no dispatch:// link:\n%s", text)
+	}
+}

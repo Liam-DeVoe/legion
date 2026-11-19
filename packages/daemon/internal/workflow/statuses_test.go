@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -487,5 +488,34 @@ func TestARecreatedRecordStillNamesARedStatus(t *testing.T) {
 	if want := []record.CommitStatus{keptStatus("ci", "failure", 2, "head")}; !reflect.DeepEqual(pr.Statuses, want) || pr.Generation != 4 || pr.Snapshot != "head-4" {
 		t.Fatalf("the pull request keeps %+v at generation %d, snapshot %q; want %+v at its own 4, head-4: the recreated record's settlement changes its statuses alone",
 			pr.Statuses, pr.Generation, pr.Snapshot, want)
+	}
+}
+
+// R3: a list names "the checks and commit statuses that did not pass" (dispatch://INFRA-3686/spec).
+// The pull request keeps the failed status ci for head1, and a later settlement of head1 names no
+// status at all, as a listener record that dropped its statuses at its size bound, or one of an
+// earlier release, writes it. The daemon merges statuses per context, so ci stays kept as failed
+// (classify.ApplySettlement) and the CI message names it. The settlement wakes the released
+// implementer, and the wake task is built from the settlement's own list (SettlementWake), so it
+// names no failed status; and tellChecks sends no CI message to the role the settlement woke, so
+// that role never learns that ci failed.
+func TestAWakeTaskNamesAKeptFailedStatusASettlementLeftOut(t *testing.T) {
+	rig := newWakeRig(t)
+	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
+		Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head1", Failing: []string{}, Cancelled: []string{},
+		CheckedHead: "head1", CheckRuns: []record.AttemptRun{{Name: "build", ID: 1, Head: "head1", Conclusion: record.RunSucceeded}},
+		Generation: 1, Snapshot: "head1-snapshot",
+		Statuses: []record.CommitStatus{keptStatus("ci", "failure", 1, "head1"), keptStatus("deploy", "success", 1, "head1")}})
+	leftOut := settlement("head1")
+	leftOut.Generation, leftOut.Snapshot = 2, "head1-2"
+	rig.apply("settled", leftOut)
+
+	message := CISettledMessage("LEGION-208", recordedPR(t, rig.pool, "LEGION-208"), phase.Implementing)
+	if len(message.NotPassedStatuses) != 1 {
+		t.Fatalf("the CI message names %+v, want ci failed: this test proves nothing without it", message.NotPassedStatuses)
+	}
+	starts := wakeStarts(t, rig.pool)
+	if len(starts) != 1 || !strings.Contains(starts[0].Task, "ci,failure") {
+		t.Errorf("the woken implementer's task does not name the kept failed status ci, which the CI message of the same settlement names: %+v", starts)
 	}
 }
