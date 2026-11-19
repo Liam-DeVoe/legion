@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The forms of a step's names. A task id is a plan's slug, `default` for an issue whose owner gave
@@ -50,7 +51,11 @@ var (
 //
 // Two writes of one id at one time take turns: the insert that makes the node comes before the
 // read of what it holds, and that read locks the row (for update), so the second write waits for
-// the first to commit and then reads everything the first wrote.
+// the first to commit and then reads everything the first wrote. The wait is a bounded one
+// (store.LockWithinBound): no owner lock orders the writers of a node, and an admitted write has
+// no deadline, so a second write behind a holder that stands would wait as long as it stood. One
+// still held when the bound runs out is refused store.ErrPoolBusy, which a request answers 503
+// DATABASE_BUSY with Retry-After, and nothing of the write is left.
 func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor, at time.Time) (Step, error) {
 	id, stated, err := write.attributes()
 	if err != nil {
@@ -78,6 +83,11 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 		}
 	}
 
+	if err := store.LockWithinBound(ctx, tx, `
+		select 1 from workflow_nodes where kind = '`+KindStep+`' and id = $1 for update
+	`, id); err != nil {
+		return Step{}, fmt.Errorf("lock step %s: %w", id, err)
+	}
 	var heldText []byte
 	err = tx.QueryRow(ctx, `
 		select attributes from workflow_nodes where kind = '`+KindStep+`' and id = $1 for update
