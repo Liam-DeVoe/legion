@@ -155,32 +155,32 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
         return
       }
       const directory = options.inboxDirectory(options.sessionId())
-      // The waiter is in place before the line can be seen. A waiter registered only once the
-      // write returned missed a sweep or a stop() that came between: the sweep queued the line
+      // The waiter is in place before the write of its line starts. A waiter registered only once
+      // the write returned missed a sweep or a stop() that came between: the sweep queued the line
       // with no write to settle, or stop() did not see it, and the write never settled.
       const name = inboxItemName()
       const written = Promise.withResolvers<void>()
       // A sweep can settle the write before putInbox returns; the write is awaited below.
       written.promise.catch(() => undefined)
-      const put = putInbox(directory, item, name)
+      const landed = Promise.withResolvers<boolean>()
       waiting.set(name, {
         directory,
         item,
-        landed: put.then(
-          () => true,
-          () => false,
-        ),
+        landed: landed.promise,
         resolve: written.resolve,
         reject: written.reject,
       })
       try {
-        await put
+        await putInbox(directory, item, name)
+        landed.resolve(true)
       } catch (error) {
+        landed.resolve(false)
         waiting.delete(name)
         throw error
       }
-      // The turn may have ended while the line was being written, after its sweep ran.
-      if (!running) void sweep()
+      // The turn may have ended while the line was being written, after its sweep ran. A session
+      // that ended meanwhile gets the line once it runs again, as the poll waits for that too.
+      if (!running && !ended) void sweep()
       await written.promise
     },
     turnStarted() {

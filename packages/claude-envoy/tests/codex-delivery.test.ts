@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test"
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
 import { mkdirSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
@@ -15,6 +15,10 @@ import {
   takenBy,
 } from "../src/codex/codex-inbox"
 import { settled } from "./channel-session-harness"
+
+/** The inbox module's own functions, taken before any test spies on them, so a spy calls these
+ *  and never another spy left in place. */
+const { putInbox: realPutInbox, takeInbox: realTakeInbox, takenBy: realTakenBy } = codexInbox
 
 const root = temporaryDirectory("codex-delivery")
 let count = 0
@@ -127,22 +131,26 @@ describe("createCodexDelivery", () => {
     return { delivery, queued, taken }
   }
 
+  // Every spy on the inbox module ends with its test, one that timed out included: a `finally`
+  // does not run after a timeout, and a spy left in place would wrap the next test's writes.
+  afterEach(() => mock.restore())
+
   /**
-   * Runs `between` once the next line written to an inbox is in place and before the write that
-   * put it there returns: the moment a sweep or stop() can first see the line. A write puts its
-   * line with the inbox module's `putInbox`, so the spy wraps that. `ran` answers once `between`
-   * has run, as the write is about to return.
+   * Runs `between` once inside the next inbox write a delivery makes, before that write returns:
+   * once its line is in place (`landed`), the moment a sweep or stop() can first see the line, or
+   * before the line is written at all. A write puts its line with the inbox module's `putInbox`, so
+   * the spy wraps that. Answers once the line is in place and `between` has run.
    */
-  function whileLanding(between: () => unknown): { ran: Promise<void>; restore(): void } {
-    const put = codexInbox.putInbox
+  function duringPut(landed: boolean, between: () => unknown): Promise<void> {
     const ran = Promise.withResolvers<void>()
-    const spy = spyOn(codexInbox, "putInbox").mockImplementation(async (...args) => {
-      const name = await put(...args)
-      await between()
+    spyOn(codexInbox, "putInbox").mockImplementation(async (...args) => {
+      if (!landed) await between()
+      const name = await realPutInbox(...args)
+      if (landed) await between()
       ran.resolve()
       return name
     })
-    return { ran: ran.promise, restore: () => spy.mockRestore() }
+    return ran.promise
   }
 
   /**
@@ -316,36 +324,31 @@ describe("createCodexDelivery", () => {
     delivery.turnStarted()
     // The turn ends, and its sweep queues the line, between the line landing and its write
     // returning.
-    const landing = whileLanding(() => delivery.turnEnded())
-    try {
-      const outcomes: string[] = []
-      const frames = twoFrames(delivery, outcomes)
-      await landing.ran
-      await settled()
-      // The sweep that took the line has run: a write it did not settle never settles.
-      expect(outcomes[0]).toBe("first resolved")
-      await frames
-      expect(outcomes).toEqual(["first resolved", "next resolved"])
-      expect(queued).toEqual(["first", "next"])
-    } finally {
-      landing.restore()
-      await delivery.stop()
-    }
+    const ran = duringPut(true, () => delivery.turnEnded())
+    const outcomes: string[] = []
+    const frames = twoFrames(delivery, outcomes)
+    await ran
+    await settled()
+    // The sweep that took the line has run: a write it did not settle never settles.
+    expect(outcomes[0]).toBe("first resolved")
+    await frames
+    expect(outcomes).toEqual(["first resolved", "next resolved"])
+    expect(queued).toEqual(["first", "next"])
+    await delivery.stop()
   })
 
-  test("a stop while a line lands withdraws it and refuses its write, so the next one is not held", async () => {
-    const directory = inbox()
-    const { delivery } = harness(directory)
-    delivery.turnStarted()
-    let stopping: Promise<void> | undefined
-    // stop() comes between the line landing and its write returning.
-    const landing = whileLanding(() => {
-      stopping = delivery.stop()
-    })
-    try {
+  for (const landed of [true, false]) {
+    test(`a stop ${landed ? "while a line lands" : "before a line lands"} withdraws it and refuses its write, so the next one is not held`, async () => {
+      const directory = inbox()
+      const { delivery } = harness(directory)
+      delivery.turnStarted()
+      let stopping: Promise<void> | undefined
+      const ran = duringPut(landed, () => {
+        stopping = delivery.stop()
+      })
       const outcomes: string[] = []
       const frames = twoFrames(delivery, outcomes)
-      await landing.ran
+      await ran
       await stopping
       await settled()
       // stop() is done with every line it saw: a write it did not settle never settles. Both
@@ -356,10 +359,8 @@ describe("createCodexDelivery", () => {
       ])
       expect(waitingLines(directory)).toBe(0)
       await frames
-    } finally {
-      landing.restore()
-    }
-  })
+    })
+  }
 
   test("a stop while a sweep queues a line leaves its write to the sweep, which refuses it when codex queue fails", async () => {
     const directory = inbox()
@@ -367,27 +368,76 @@ describe("createCodexDelivery", () => {
     delivery.turnStarted()
     let stopping: Promise<void> | undefined
     // stop() comes once the turn's sweep has taken the line, before the sweep calls codex queue.
-    const take = codexInbox.takeInbox
-    const spy = spyOn(codexInbox, "takeInbox").mockImplementation(async (...args) => {
-      const taken = await take(...args)
+    spyOn(codexInbox, "takeInbox").mockImplementation(async (...args) => {
+      const taken = await realTakeInbox(...args)
       if (args[1] === "server" && taken.length > 0) stopping ??= delivery.stop()
       return taken
     })
-    try {
-      const outcomes: string[] = []
-      const frames = twoFrames(delivery, outcomes)
-      await untilWaiting(directory)
-      await delivery.turnEnded()
-      await stopping
-      await settled()
-      // The line never reached the session, so its write is refused, not answered as delivered.
-      expect(outcomes).toEqual([
-        "first refused: Error: codex queue exited 1",
-        "next refused: Error: the Codex session's delivery has stopped",
-      ])
-      await frames
-    } finally {
-      spy.mockRestore()
-    }
+    const outcomes: string[] = []
+    const frames = twoFrames(delivery, outcomes)
+    await untilWaiting(directory)
+    await delivery.turnEnded()
+    await stopping
+    await settled()
+    // The line never reached the session, so its write is refused, not answered as delivered.
+    expect(outcomes).toEqual([
+      "first refused: Error: codex queue exited 1",
+      "next refused: Error: the Codex session's delivery has stopped",
+    ])
+    await frames
+  })
+
+  test("a session that ends while a line lands keeps the line until the session runs again", async () => {
+    const directory = inbox()
+    const { delivery, queued } = harness(directory)
+    delivery.turnStarted()
+    const swept: string[] = []
+    spyOn(codexInbox, "takeInbox").mockImplementation(async (...args) => {
+      if (args[1] === "server") swept.push(args[0])
+      return realTakeInbox(...args)
+    })
+    const ran = duringPut(true, () => delivery.sessionEnded())
+    const outcomes: string[] = []
+    const frames = twoFrames(delivery, outcomes)
+    await ran
+    await settled()
+    // Nothing swept the line into the ended session: it waits, and so does its write.
+    expect(swept).toEqual([])
+    expect(outcomes).toEqual([])
+    await delivery.sessionResumed()
+    await frames
+    expect(outcomes).toEqual(["first resolved", "next resolved"])
+    expect(queued).toEqual(["first", "next"])
+    await delivery.stop()
+  })
+
+  test("a write whose line cannot be written rejects with that failure, and leaves no waiter", async () => {
+    const directory = inbox()
+    const { delivery, taken } = harness(directory)
+    delivery.turnStarted()
+    // A file where the inbox's waiting directory goes: the line cannot be written.
+    const blocker = join(directory, "waiting")
+    await Bun.write(blocker, "not a directory")
+    const failure = await delivery.deliver({ content: "lost" }).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    expect((failure as NodeJS.ErrnoException).code).toBe("EEXIST")
+    await Bun.file(blocker).delete()
+    // A waiter left behind would be looked up by every check, the one that settles the next
+    // write included.
+    const looked: string[] = []
+    spyOn(codexInbox, "takenBy").mockImplementation(async (...args) => {
+      if (args[0] === directory) looked.push(args[1])
+      return realTakenBy(...args)
+    })
+    const written = delivery.deliver({ content: "kept" })
+    await untilWaiting(directory)
+    const [line] = await realTakeInbox(directory, "hook")
+    if (line === undefined) throw new Error("the hook found no line to take")
+    await written
+    expect(taken).toEqual([{ content: "kept" }])
+    expect(new Set(looked)).toEqual(new Set([line.name]))
+    await delivery.stop()
   })
 })
