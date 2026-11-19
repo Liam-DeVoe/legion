@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { postSlackReply, SLACK_BOT_TOKEN_SECRET } from "../slack-post";
+import { postSlackReply, SLACK_BOT_TOKEN_SECRET, trailingPunctuationReads } from "../slack-post";
 
 // A stand-in for the secrets broker's client: it records its arguments and, as the exec form does
 // once the broker grants the secret, runs the command after `--` with the secret in its
@@ -440,5 +440,38 @@ describe("postSlackReply", () => {
       const { env } = brokerEnvironment("granted", slack.url);
       expect(await outcome(env)).toBe(`Slack refused chat.postMessage: ${code}`);
     }
+  });
+});
+
+// Each http(s) URL of a reply is read again without the punctuation a sentence puts after it
+// (`withoutTrailingPunctuation`), and nothing bounds the reply's length before that read. A run of
+// those marks followed by any other character is the text the end-anchored
+// `/[.,;:!?)\]}]+$/` it once ran read from every start in the run: about the square of the run,
+// which no count sees inside a regular expression. The trim is a loop now, and the count is of
+// the characters it reads, at two lengths of each run.
+describe("the trailing punctuation a reply's URL is read without", () => {
+  /** The characters the trim read for one reply `text`, refused once read: no broker client is
+   *  on PATH, so nothing is asked of a broker. */
+  async function readsFor(text: string): Promise<number> {
+    const before = trailingPunctuationReads();
+    await expect(postSlackReply({ ...reply, text }, { env: { PATH: "" } })).rejects.toThrow(
+      "agent-secrets is not on PATH"
+    );
+    return trailingPunctuationReads() - before;
+  }
+
+  const n = 20_000;
+
+  test("a URL that ends in a run of marks costs the run once", async () => {
+    const short = await readsFor(`see https://example.com${".".repeat(n)}`);
+    const long = await readsFor(`see https://example.com${".".repeat(2 * n)}`);
+    // The run is read from its end, once, and the character before it stops the read.
+    expect(short).toBe(n + 1);
+    expect(long).toBe(2 * n + 1);
+  });
+
+  test("a run of marks followed by a letter costs one read", async () => {
+    expect(await readsFor(`see https://example.com${".".repeat(n)}b`)).toBe(1);
+    expect(await readsFor(`see https://example.com${".".repeat(2 * n)}b`)).toBe(1);
   });
 });

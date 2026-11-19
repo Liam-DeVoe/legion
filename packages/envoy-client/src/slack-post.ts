@@ -223,7 +223,34 @@ const WEB_SCHEME = /^https?:\/\//i;
 const BARE_HOST = /(?<![\w@./:%-])((?:[a-z0-9-]{1,63}\.)*[a-z0-9-]{1,63})\.?(:\d{1,5})?(?![\w-])/gi;
 /** An IPv6 literal written with no scheme: in brackets, optionally with a zone and a port. */
 const BARE_IPV6 = /(?<![\w@./:%-])\[([0-9a-f:.]{2,45})(?:%[\w.-]{1,32})?\](?::\d{1,5})?/gi;
-const TRAILING_PUNCTUATION = /[.,;:!?)\]}]+$/;
+/** What a sentence puts after a URL, which Slack's link reading leaves off its end. */
+const TRAILING_PUNCTUATION = ".,;:!?)]}";
+
+/**
+ * How many characters `withoutTrailingPunctuation` has read in this process, so a test holds the
+ * trim to the length of the URL it is handed rather than to the time it took. It is a loop and
+ * runs no regular expression: the end-anchored `/[.,;:!?)\]}]+$/` it once ran read, from every
+ * start in a run of those marks followed by any other character, the rest of the run (about the
+ * square of the run), and JavaScriptCore counts no step a regular expression takes.
+ */
+let trailingCharactersRead = 0;
+
+/** How many characters `withoutTrailingPunctuation` has read in this process. */
+export function trailingPunctuationReads(): number {
+  return trailingCharactersRead;
+}
+
+/** `url` without the run of `TRAILING_PUNCTUATION` it ends in, read once from its end. */
+function withoutTrailingPunctuation(url: string): string {
+  let end = url.length;
+  let read = 0;
+  for (; end > 0; end--) {
+    read++;
+    if (!TRAILING_PUNCTUATION.includes(url.charAt(end - 1))) break;
+  }
+  trailingCharactersRead += read;
+  return url.slice(0, end);
+}
 
 /** The addresses only the cluster reaches: unspecified, loopback, private, shared (carrier-grade
  * NAT) and link-local IPv4; and IPv6's unspecified, loopback and IPv4-compatible block (`::/96`),
@@ -274,7 +301,7 @@ function linkInsideCluster(
   const decoded = text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
   for (const match of decoded.matchAll(URL_CANDIDATE)) {
     if (!WEB_SCHEME.test(match[0])) continue;
-    for (const written of new Set([match[0], match[0].replace(TRAILING_PUNCTUATION, "")])) {
+    for (const written of new Set([match[0], withoutTrailingPunctuation(match[0])])) {
       const host = hostOf(written);
       if (host !== undefined && insideCluster(host, dispatchHost, true)) return written;
     }
