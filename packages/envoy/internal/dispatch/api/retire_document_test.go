@@ -68,7 +68,7 @@ func approvalStateOf(t *testing.T, handler http.Handler, artifactID string) stri
 	return artifact.Approval.State
 }
 
-// The retirement of a document (dispatch://INFRA-1150 R11, docs.RetireDocument): an issue's
+// The retirement of a document (docs.RetireDocument): an issue's
 // Verification document, which a person approved at its second version, is retired. Its role reads
 // null and the issue names no Verification document, its slug giving it none back; its node reads
 // gone; one document.retired event names it, the reason and the approval it superseded, which the

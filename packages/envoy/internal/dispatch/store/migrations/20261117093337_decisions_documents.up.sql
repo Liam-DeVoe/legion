@@ -1,6 +1,6 @@
 -- 20261117093337_decisions_documents.up.sql — each issue's decisions document that stands.
 --
--- The decisions step of dispatch://INFRA-1150 (docs.DecisionStep, its third phase) restores the
+-- The decisions step (docs.DecisionStep, its third phase) restores the
 -- answered asks an agent moved out of an issue's spec and converts every section of the issue's
 -- decisions.md into a node, then retires that document (docs.RetireDocument). It finds the
 -- documents it owes that work through this one function, and so do its count of what it owes,
@@ -24,7 +24,7 @@
 -- The release before this one names no decisions_documents, so nothing it runs changes. Rolling
 -- back past this migration is an image rollback alone; the function left behind is called by
 -- nothing that release runs. The root's own pull request drops it, one release later, with the
--- step that calls it (dispatch://INFRA-1150 R11).
+-- step that calls it.
 -- kept for one release: decisions-documents-fn
 create function decisions_documents(include_retired boolean default false)
   returns table (id uuid, issue_key text, ref_key text)

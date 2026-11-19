@@ -45,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -121,10 +122,8 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 		_, _ = process.renameIssue(key, "Renamed")
 	}()
 	// The edit's settlement queues behind the same lock two seconds in, so a count of waiters
-	// could pass with the title change still on its way: watch the title change's own statement,
-	// the issue-row lock a PATCH takes first (api's lockIssueRows). It runs in the Dispatch
-	// process, so its backend is named by that statement rather than by a pool of its own.
-	if pid := storetest.WaitForStatementBehind(t, database, holder, renameLock, 10*time.Second); pid == 0 {
+	// could pass with the title change still on its way: watch the title change's own backend.
+	if pid := waitForRenameBehind(t, database, holder, 10*time.Second); pid == 0 {
 		t.Fatalf("the title change never queued behind the issue lock:\n%s", process.Output.String())
 	}
 
@@ -139,10 +138,6 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 	t.Logf("released the issue lock with %d waiting on it; exited %v after SIGTERM", waiting, time.Since(signalled))
 	process.checkSettledAtShutdown(t, database, artifactID)
 }
-
-// renameLock is the statement with which a PATCH of an issue locks the issue's row before it
-// writes (lockIssueRows in internal/dispatch/api/issue_parent.go), as pg_stat_activity shows it.
-const renameLock = `select parent_key from issues where key = $1 for no key update`
 
 // A write in flight at SIGTERM can wait on a lock past the HTTP drain's share, the document
 // service's budget and the point a fixed shutdown bound would end it, here a title change behind
@@ -882,8 +877,8 @@ func TestAPanicAfterTheIntakesStartEndsTheProcess(t *testing.T) {
 	}
 }
 
-// lockIssue holds the issue's row in a transaction of the test's own, as another writer would,
-// and rolls it back when the test ends if the test has not.
+// lockIssue holds the issue's owner lock (store.LockOwner) in a transaction of the test's own, as
+// another writer of the issue would, and rolls it back when the test ends if the test has not.
 func lockIssue(t *testing.T, database *store.Store, key string) pgx.Tx {
 	t.Helper()
 	ctx := context.Background()
@@ -892,10 +887,55 @@ func lockIssue(t *testing.T, database *store.Store, key string) pgx.Tx {
 		t.Fatalf("begin the lock holder: %v", err)
 	}
 	t.Cleanup(func() { _ = holder.Rollback(ctx) })
-	if _, err := holder.Exec(ctx, `select 1 from issues where key = $1 for no key update`, key); err != nil {
+	if err := store.LockOwner(ctx, holder, store.IssueOwner(key)); err != nil {
 		t.Fatalf("lock the issue: %v", err)
 	}
 	return holder
+}
+
+// waitForRenameBehind waits up to within for the title change's backend to queue behind holder's
+// lock on the issue, and returns its process id, or 0 if it did not. The title change runs in the
+// Dispatch process, so its backend is found by its statement, the owner-lock statement a PATCH
+// sends first (lockIssueOwners in internal/dispatch/api/issue_parent.go). A settlement sends the
+// same statement for the same lock, but only once it holds its document's lock, an advisory lock
+// of its own; the title change holds none of those while it waits. Both hold the owner lock's
+// gate, which every write of this build takes shared in that same statement before it waits on
+// the owner (store.OwnerLockGateNamespace, migration 20261115200014), so the gate is the one
+// advisory lock that tells the two apart by nothing and is left out of the exclusion.
+func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx, within time.Duration) uint32 {
+	t.Helper()
+	ctx := context.Background()
+	deadline := time.Now().Add(within)
+	for {
+		rows, err := database.Pool.Query(ctx, `
+			select pid from pg_stat_activity
+			where datname = current_database() and query = $1
+			  and pid not in (
+			    select pid from pg_locks
+			    where locktype = 'advisory' and granted
+			      and not (objsubid = 2 and classid = $2::oid and objid = $3::oid))
+		`, store.OwnerLockStatement, int64(store.OwnerLockGateNamespace), int64(store.OwnerLockGateKey))
+		if err != nil {
+			t.Fatalf("read the sessions waiting on an owner lock: %v", err)
+		}
+		pids, err := pgx.CollectRows(rows, pgx.RowTo[uint32])
+		if err != nil {
+			t.Fatalf("read the sessions waiting on an owner lock: %v", err)
+		}
+		for _, pid := range pids {
+			queued, err := storetest.QueuedBehind(ctx, holder, pid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if queued {
+				return pid
+			}
+		}
+		if time.Now().After(deadline) {
+			return 0
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 }
 
 // renameIssue changes the issue's title as the test's login and returns the status Dispatch
@@ -1156,7 +1196,8 @@ func startDatabaseRelay(t *testing.T, databaseURL string) *databaseRelay {
 }
 
 // checkSettledAtShutdown requires the exited process to have stopped in order with the document's
-// owed settlement run and confirmed.
+// owed settlement run and confirmed. The settlement runs over the room the document is edited in,
+// which the log names (documentRoom).
 func (p *dispatchProcess) checkSettledAtShutdown(t *testing.T, database *store.Store, artifactID string) {
 	t.Helper()
 	output := p.Output.String()
@@ -1166,8 +1207,8 @@ func (p *dispatchProcess) checkSettledAtShutdown(t *testing.T, database *store.S
 	if strings.Contains(output, "settlement unconfirmed") {
 		t.Errorf("the document service could not confirm the owed settlement")
 	}
-	if !strings.Contains(output, `msg="dispatch: document settled before shutdown" room=`+artifactID) {
-		t.Errorf("the document service did not settle the owed document before exiting")
+	if room := documentRoom(t, database, artifactID); !strings.Contains(output, `msg="dispatch: document settled before shutdown" room=`+room) {
+		t.Errorf("the document service did not settle the owed document's room %s before exiting", room)
 	}
 	if settlementOwed(t, database, artifactID) {
 		t.Errorf("the document still owes its settlement after the shutdown that ran it")
@@ -1175,6 +1216,18 @@ func (p *dispatchProcess) checkSettledAtShutdown(t *testing.T, database *store.S
 	if t.Failed() {
 		t.Logf("Dispatch's output:\n%s", output)
 	}
+}
+
+// documentRoom is the room artifactID's document is edited in (docs.DocumentRoomOfStatement): its
+// issue's room for a converted document, whose settlement settles every document of it, and the
+// document itself otherwise.
+func documentRoom(t *testing.T, database *store.Store, artifactID string) string {
+	t.Helper()
+	var room string
+	if err := database.Pool.QueryRow(context.Background(), docs.DocumentRoomOfStatement, artifactID).Scan(&room); err != nil {
+		t.Fatalf("read the room of %s: %v", artifactID, err)
+	}
+	return room
 }
 
 // A process that has exited is not healthy because its port answers: it released the port when it
@@ -1773,14 +1826,42 @@ func (p *dispatchProcess) openEditor(t *testing.T, artifactID, want string) *doc
 }
 
 // openEditorAs is openEditor for login, the person the tab is signed in as (X-Dispatch-User, the
-// identity these processes trust).
+// identity these processes trust). The tab binds the fragment the artifact read answers, as the
+// page does (artifactFragment).
 func (p *dispatchProcess) openEditorAs(t *testing.T, login, artifactID, want string) *docstest.Peer {
 	t.Helper()
+	fragment := p.artifactFragment(t, artifactID)
 	editor := docstest.Dial(t, p.documentURL(artifactID), http.Header{"X-Dispatch-User": []string{login}}, artifactID, crdt.New())
+	editor.Fragment = fragment
 	if err := editor.WaitForText(markdown, want, 10*time.Second); err != nil {
 		t.Fatalf("%v:\n%s", err, p.Output.String())
 	}
 	return editor
+}
+
+// artifactFragment is the fragment of its room GET /api/v1/artifacts/{id} answers for artifactID
+// on this process (model.Artifact.Fragment), the one a page's editor binds (packages/dispatch's
+// fragmentOf): the document's own fragment of its issue's room for a converted document, the
+// room's own where the read answers none.
+func (p *dispatchProcess) artifactFragment(t *testing.T, artifactID string) string {
+	t.Helper()
+	var artifact model.Artifact
+	if answer := p.call(t, http.MethodGet, "/api/v1/artifacts/"+artifactID, "", http.StatusOK); json.Unmarshal(answer, &artifact) != nil {
+		t.Fatalf("decode the artifact %s a tab binds: %s", artifactID, answer)
+	}
+	if artifact.Fragment == "" {
+		return model.ArtifactFragmentOwn
+	}
+	return artifact.Fragment
+}
+
+// editorFragment is the fragment of its room's Yjs document editor edits: the one its dial bound
+// (docstest.Peer.Fragment), the room's own where it bound none.
+func editorFragment(editor *docstest.Peer) string {
+	if editor.Fragment == "" {
+		return model.ArtifactFragmentOwn
+	}
+	return editor.Fragment
 }
 
 // documentURL is the address of the document's socket on this process, at the schema version the
@@ -1789,19 +1870,20 @@ func (p *dispatchProcess) documentURL(artifactID string) string {
 	return "ws://127.0.0.1:" + strconv.Itoa(p.port) + "/ws/doc/" + artifactID + "?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
 }
 
-// markdown renders the editor's copy of the document, read under its lock while the room's updates
-// apply, or "" while the copy holds no document it can render.
+// markdown renders the editor's copy of the document, its own fragment (editorFragment), read
+// under its lock while the room's updates apply, or "" while the copy holds no document it can
+// render.
 func markdown(editor *docstest.Peer) string {
-	return renderDocument(editor.Doc)
+	return renderDocument(editor.Doc, editorFragment(editor))
 }
 
-// renderDocument renders doc's Proof document, read under its lock, or "" while doc holds no
-// document it can render.
-func renderDocument(doc *crdt.Doc) string {
-	fragment := doc.GetXmlFragment("prosemirror")
+// renderDocument renders the Proof document doc's fragment named fragment holds, read under its
+// lock, or "" while doc holds no document there it can render.
+func renderDocument(doc *crdt.Doc, fragment string) string {
+	held := doc.GetXmlFragment(fragment)
 	var rendered string
 	doc.Transact(func(txn *crdt.Transaction) {
-		tree, err := pmdoc.ReadInTransaction(txn, fragment)
+		tree, err := pmdoc.ReadInTransaction(txn, held)
 		if err != nil {
 			return
 		}
@@ -1814,7 +1896,7 @@ func renderDocument(doc *crdt.Doc) string {
 // transaction, and sends the room the update it made.
 func replaceText(t *testing.T, editor *docstest.Peer, old, replacement string) {
 	t.Helper()
-	fragment := editor.Doc.GetXmlFragment("prosemirror")
+	fragment := editor.Doc.GetXmlFragment(editorFragment(editor))
 	var changeErr error
 	if _, err := editor.Send(func(txn *crdt.Transaction) {
 		tree, err := pmdoc.ReadInTransaction(txn, fragment)
@@ -1833,23 +1915,27 @@ func replaceText(t *testing.T, editor *docstest.Peer, old, replacement string) {
 	}
 }
 
-// settlementOwed reports whether the document's pending-settlement row is there.
+// settlementOwed reports whether the pending-settlement row of the room the document is edited in
+// is there: the row is keyed the way the settlement that clears it is keyed, by the room
+// (refs.DocumentRoomSQL: its issue's room for a converted document).
 func settlementOwed(t *testing.T, database *store.Store, artifactID string) bool {
 	t.Helper()
 	var owed bool
 	if err := database.Pool.QueryRow(context.Background(),
-		`select exists (select 1 from doc_settlements_pending where artifact_id = $1)`, artifactID,
+		`select exists (select 1 from doc_settlements_pending where artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+`)`, artifactID,
 	).Scan(&owed); err != nil {
 		t.Fatalf("read the pending settlement: %v", err)
 	}
 	return owed
 }
 
+// settlementMarkedAt is the marked_at of the pending-settlement row of the room the document is
+// edited in, keyed as settlementOwed reads it.
 func settlementMarkedAt(t *testing.T, database *store.Store, artifactID string) time.Time {
 	t.Helper()
 	var marked time.Time
 	if err := database.Pool.QueryRow(context.Background(),
-		`select marked_at from doc_settlements_pending where artifact_id = $1`, artifactID,
+		`select marked_at from doc_settlements_pending where artifact_id = `+refs.DocumentRoomSQL("$1::uuid"), artifactID,
 	).Scan(&marked); err != nil {
 		t.Fatalf("read the pending settlement marker: %v", err)
 	}

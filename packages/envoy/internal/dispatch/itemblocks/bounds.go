@@ -47,7 +47,7 @@ func (e *CountExceeded) Error() string {
 // type, which is the ask block's own type only where it stands at the top: the Proof node
 // type of the block the parser read, or, in a body the parser refused, what the reader's own block
 // of that kind is called (pmdoc.FindDecisionCard). The refusal's wording lives in Error() and
-// nowhere else, as CapExceeded's does. Since dispatch://INFRA-1150 a `decision` block is an
+// nowhere else, as CapExceeded's does. Since decisions became nodes, a `decision` block is an
 // agent's decision, so the wording says ask block for an `ask` one.
 type DecisionBlock struct {
 	Field    string

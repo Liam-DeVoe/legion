@@ -9,9 +9,10 @@
 # three, retracts the pre-mortem's triggered_by tuple through the tuple route and reads that
 # neither end answers the other, and is refused a lens triggered by itself. Then it holds the walk
 # to its two rules apart: a cycle of two lenses is read within 30 s with each lens listed once, an
-# acyclic chain of 60 lenses is listed to 50 with the lens where the walk stopped named, and a
-# chain of exactly 50 is listed whole with no stop named. Each of those three stands on a spec of
-# its own, so no other lens joins its chain.
+# acyclic chain of 60 lenses is listed to 50 in all, across every chain of the answer, with the
+# lens where the walk stopped named and no chain holding it or a lens past it, and a chain of
+# exactly 50 is listed whole with no stop named. Each of those three stands on a spec of its own, so
+# no other lens joins its chain.
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key) and DEV_SIGNIN_LOGIN (the login the
@@ -274,6 +275,26 @@ served="$(jq -r '.chains[0].lenses | length' "$work/body")" ||
 [[ "$served" == "$bound" ]] ||
   fail T6 "the read lists $bound lenses of the chain of $past_bound" "the read served a chain of $served lenses"
 pass T6 "the read lists $bound lenses of the chain of $past_bound, and no more"
+# Every chain of the answer, each lens by its place in the chain of $past_bound (1 for the first):
+# the lenses they list in all, and the first chain that holds lens $((bound + 1)) or one past it.
+# A chain starts only at a lens no other lens on the spec triggered, so the lenses past the cut
+# start none, and the answer lists $bound in all.
+across="$(jq -r --slurpfile chain "$work/chain.json" --argjson n "$bound" --argjson length "$past_bound" '
+  $chain[0] as $all
+  | [.chains[] | {first: .lenses[0].address, stopped_at,
+      places: [.lenses[].address as $a | (($all | index($a)) // -1) + 1]}] as $chains
+  | ([$chains[].places | length] | add // 0) as $count
+  | ([$chains[] | select(any(.places[]; . > $n))] | first) as $past
+  | if $count == $n and $past == null then "ok"
+    else "the read lists \($count) lenses across \($chains | length) chains, want \($n) in all; " +
+      (if $past == null then "no chain holds a lens past the cut"
+       else "the first chain holding a lens past the cut starts at \($past.first), lens \($past.places[0]) of the chain of \($length), and lists lenses \($past.places | map(tostring) | join(",")) of it, stopped at \($past.stopped_at // "none")"
+       end)
+    end' "$work/body")" ||
+  fail T6 "read every chain of the spec" "unreadable: $(body)"
+[[ "$across" == ok ]] ||
+  fail T6 "the read lists $bound lenses in all, across every chain, and no chain holds lens $((bound + 1)) or one past it" "$across"
+pass T6 "the read lists $bound lenses in all, across every chain, and no chain holds lens $((bound + 1)) or one past it"
 expect T6 "the chain it lists is the first $bound lenses, in invoked order" \
   "$(jq -c --argjson n "$bound" '.[:$n]' "$work/chain.json")" '[.chains[0].lenses[].address]'
 expect T6 "the read names the lens where it stopped, lens $((bound + 1))" \

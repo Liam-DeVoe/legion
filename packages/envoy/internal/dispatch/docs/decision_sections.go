@@ -14,7 +14,7 @@ import (
 )
 
 // The section reader of an issue's decisions document, which the decisions step's third phase
-// converts section by section (dispatch://INFRA-1150 R9). It is the step's own: api's reader of
+// converts section by section. It is the step's own: api's reader of
 // the document goes with this release, and this package cannot import api. It cuts the document
 // as that reader cut it - a section is each `##` heading outside `## Replaced`, and each `###`
 // heading under it, with every top-level block after the heading up to the next heading of its
@@ -173,9 +173,9 @@ func opensDecisionSection(level int, inReplaced bool) bool {
 }
 
 // sectionTies are what the block index stored of a decisions document's citing blocks, by the id
-// of the block that cites: the blocks of the spec each one links (spec), read through the
-// moved_to tuples a block that left reaches, and the asks each one mentions (asks), each in order
-// and once.
+// of the block that cites: the blocks of the spec each one links (spec), read through the one
+// resolution of a far end (refs.ResolvedBlockSQL), whose moved_to tuples a block that left
+// reaches, and the asks each one mentions (asks), each in order and once.
 type sectionTies struct {
 	spec map[string][]string
 	asks map[string][]string
@@ -188,11 +188,7 @@ func readSectionTies(ctx context.Context, q graphstore.Queryer, decisionsID, spe
 	rows, err := q.Query(ctx, `
 		select distinct r.block_id, t.block_id
 		from block_refs r
-		cross join lateral (
-			select coalesce(
-				(select held.node_id from document_blocks held where held.node_id = r.to_id limit 1),
-				block_moved_to(r.to_id)) as node_id
-		) target
+		cross join lateral (select `+refs.ResolvedBlockSQL("r.to_id")+` as node_id) target
 		join document_blocks t on t.node_id = target.node_id and t.artifact_id = $2::uuid
 		where r.artifact_id = $1::uuid and r.to_kind = '`+refs.BlockNodeKind+`'
 		order by r.block_id, t.block_id

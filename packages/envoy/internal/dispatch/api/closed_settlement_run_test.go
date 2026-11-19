@@ -70,8 +70,9 @@ func changedByRunOutOf(t *testing.T, database *store.Store, kind, id string) []s
 	return to
 }
 
-// storedBlockNodes is the state of each block node the store holds of the document at refKey, by
-// its address (the document's ref_key, '#', the block's id).
+// storedBlockNodes is the state of each block node the store holds under refKey, by its address
+// (refKey, '#', the block's id): refKey is the ref_key of the artifact a document's blocks are
+// keyed under, its room's on a converted issue (decisionDocument.nodeKey).
 func storedBlockNodes(t *testing.T, database *store.Store, refKey string) map[string]string {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), `
@@ -126,7 +127,7 @@ func TestACloseMadeForARunSettlesTheIssuesDocumentsForNoRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse the browser's paragraph: %v", err)
 	}
-	peer := connectBrowserPeer(t, documentService, spec.id)
+	peer := connectBrowserPeer(t, handler, documentService, spec.id)
 	t.Cleanup(peer.close)
 	stored := storedUpdateCount(t, database, spec.id)
 	peer.edit(t, func(tree *pmdoc.Node) error {
@@ -177,8 +178,8 @@ func TestACloseMadeForARunSettlesTheIssuesDocumentsForNoRun(t *testing.T) {
 	if ids[reworded] == "" || ids[appended] == "" {
 		t.Fatalf("the spec's blocks by text are %v, want the reworded and the added paragraph", ids)
 	}
-	blocks := storedBlockNodes(t, database, spec.refKey)
-	t.Logf("the block nodes of %s after the close: %v", spec.refKey, blocks)
+	blocks := storedBlockNodes(t, database, spec.nodeKey)
+	t.Logf("the block nodes of %s after the close: %v", spec.nodeKey, blocks)
 	for _, moved := range []struct{ what, address, state string }{
 		{"deleted ask block", spec.address("deleted-decision"), graphstore.StateGone},
 		{"reworded paragraph", spec.address(ids[reworded]), graphstore.StateLive},

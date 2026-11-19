@@ -147,16 +147,17 @@ func (s *Service) forkPoint(room string, live *crdt.Doc, client crdt.ClientID, a
 // copy the read takes from the room, and its tree is then walked. A room whose load listed no
 // replica has no tree to walk, nor has a copy the replica could not start from: that copy is
 // decoded and read here, holding no lock (stateTree). The tree is the room's whole tree, every
-// fragment its layout names joined as the room renders them (layoutOf, joinFragments), with how
-// many top-level blocks each fragment holds; a room that is its own document has no counts.
+// fragment layout names joined as the room renders them (joinFragments), with how many top-level
+// blocks each fragment holds; a room that is its own document has an empty layout and no counts.
+// layout is the settlement's (settlement.layout): the instance's as its load read it (layoutOf).
 //
 // It arms no settlement for the updates it classified and reports instead whether any is one a
 // settlement follows: the settlement reading them is the one they would arm, and arming another
 // moves the room's generation under it, which ends it as superseded. It reports that whether or
 // not the tree could be read, so its caller arms what the drain classified exactly where a caller
 // of readPoint would. The caller holds no state lock and is not inside a Yjs transaction on live.
-func (s *Service) treePoint(room string, live *crdt.Doc) (*pmdoc.Node, []int, roomPoint, bool, error) {
-	fragments := s.layoutOf(live).fragments()
+func (s *Service) treePoint(room string, live *crdt.Doc, layout roomLayout) (*pmdoc.Node, []int, roomPoint, bool, error) {
+	fragments := layout.fragments()
 	var tree *pmdoc.Node
 	var counts []int
 	var treeErr error
@@ -297,16 +298,16 @@ func foldAppended(base int64, versions []persistence.Version) int64 {
 // taken before the head it is gated on was read: the room's own persistence worker holds the
 // session-level lock on its connection across the whole transaction (AppendRoomFlush,
 // appendRoomTx), and every caller of Ledger.flushThrough took the transaction-level lock in the
-// same transaction - a live write's one read of the document (readFork, lockedHead), a version
-// capture's (captureLiveTextAndAuthors) and the write's own (captureWrite, through its read), a
-// settlement's (lockSettlementCursor) and the block-id backfill's (lockDocumentRoom), which a
-// repair's flush runs under too (storeRepair). So the append this makes takes no lock of its own:
-// a second acquisition would cost a round trip and grant what the caller holds (appendUpdatesTx).
-// The caller calls this before its own append. The classes are read under that lock, and every
-// writer marks what it stored before the lock passes on, so no update is stored twice. Every
-// class is measured before the append: it renders and decodes nothing between the read of the
-// room's queue and the write, so the flush is the lock, that read, the measures, and one
-// statement.
+// same transaction - a live write's one read of the document (readFork,
+// headUnderDocumentLock), a version capture's (captureLiveTextAndAuthors) and the write's own
+// (captureWrite, through its read), a settlement's (lockSettlementCursor) and the block-id
+// backfill's (lockDocumentRoom), which a repair's flush runs under too (storeRepair). So the
+// append this makes takes no lock of its own: a second acquisition would cost a round trip and
+// grant what the caller holds (appendUpdatesTx). The caller calls this before its own append.
+// The classes are read under that lock, and every writer marks what it stored before the lock
+// passes on, so no update is stored twice. Every class is measured before the append: it renders
+// and decodes nothing between the read of the room's queue and the write, so the flush is the
+// lock, that read, the measures, and one statement.
 func (s *Service) flushThrough(ctx context.Context, tx pgx.Tx, flush *RoomFlush, through uint64) error {
 	updates, taking := s.flushRun(flush, through)
 	if len(updates) == 0 {

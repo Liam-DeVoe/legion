@@ -50,9 +50,9 @@ var decisionBlockExempt = map[string]string{
 	// because that wording is held by the ask's own check (validateAskWording, asks.go) and not
 	// by the body bound this rule sits beside; and because refusing a person's answer text would
 	// stop the one act this issue exists to protect.
-	"POST /api/v1/issues/{key}/asks":      "an ask's question and options are held by validateAskWording, and an ask block in an ask is left alone (dispatch://INFRA-1201/artifact/decisions-md)",
-	"POST /api/v1/artifacts/{id}/asks":    "an ask's question and options are held by validateAskWording, and an ask block in an ask is left alone (dispatch://INFRA-1201/artifact/decisions-md)",
-	"PATCH /api/v1/asks/{id}":             "an edit's question and options are held by validateAskWording against the ask as it will be stored, and an ask block in an ask is left alone (dispatch://INFRA-1201/artifact/decisions-md)",
+	"POST /api/v1/issues/{key}/asks":      "an ask's question and options are held by validateAskWording, and an ask block in an ask is left alone, as an ask's own wording is",
+	"POST /api/v1/artifacts/{id}/asks":    "an ask's question and options are held by validateAskWording, and an ask block in an ask is left alone, as an ask's own wording is",
+	"PATCH /api/v1/asks/{id}":             "an edit's question and options are held by validateAskWording against the ask as it will be stored, and an ask block in an ask is left alone, as an ask's own wording is",
 	"POST /api/v1/asks/{id}/answer":       "refusing a person's answer text would stop the one act this issue exists to protect; the text is held to contracts.DispatchEventBodyMax (ask_transitions.go)",
 	"POST /api/v1/asks/{id}/resolve":      "a resolution's reason is a person's or a session's own wording on an ask that already reached a person, left alone by the same decision (dispatch://INFRA-1201/artifact/decisions-md)",
 	"POST /api/v1/artifacts/{id}/reviews": reviewRouteExemption,
@@ -62,7 +62,7 @@ var decisionBlockExempt = map[string]string{
 }
 
 // reviewRouteExemption is why decisionBlockExempt leaves both review routes unrefused.
-const reviewRouteExemption = "while an approval request is open this route answers it, closing the ask with answerTransition, and the decisions document leaves an answer's text alone (dispatch://INFRA-1201/artifact/decisions-md); the same reason text reaches artifact_reviews unchecked through POST /api/v1/asks/{id}/answer (ask_transitions.go), so refusing one side would be inconsistent rather than protective. An ask block written there still draws a card nobody can answer on the approval chip, which this issue does not close"
+const reviewRouteExemption = "while an approval request is open this route answers it, closing the ask with answerTransition, and the decision that leaves an ask's own wording alone leaves an answer's text alone too; the same reason text reaches artifact_reviews unchecked through POST /api/v1/asks/{id}/answer (ask_transitions.go), so refusing one side would be inconsistent rather than protective. An ask block written there still draws a card nobody can answer on the approval chip, which this issue does not close"
 
 // decisionBlockGuardSees are the three writes the issue exists for, named so the guard cannot
 // pass by seeing nothing: a comment, a message and a broadcast. They are a control over the walk,

@@ -98,8 +98,11 @@ export const GOING_RUN_MS = 30_000;
 /** The request header a write made for a run names the run in: the run's id, the uuid its POST
  *  answered. The server holds the run to the caller's whole credential and to its window, and
  *  answers anything else `404 GOING_REQUEST_NOT_FOUND` with nothing stored; the nodes a write it
- *  accepts creates or changes each carry a `changed_by_run` tuple to the run's interaction.
- *  Generated into Go as `contracts.GoingRunHeader`. */
+ *  accepts creates or changes each carry a `changed_by_run` tuple to the run's interaction. A
+ *  write sent again under the `Idempotency-Key` of a write already committed is answered that
+ *  committed answer, even after the run has ended, and nothing runs again. The key's comparison
+ *  of the two requests includes this header, so the key reused with another run, or with none,
+ *  is `422 KEY_REUSED`. Generated into Go as `contracts.GoingRunHeader`. */
 export const GOING_RUN_HEADER = "Dispatch-Going-Run";
 
 /** The age past which a process of the release before still deletes a run during a roll. This

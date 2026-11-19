@@ -39,7 +39,7 @@ func TestAWithdrawnAskWhoseBlockLeftWhileClosedIsRestoredAtTheReopen(t *testing.
 	awaitIndexedAskBlock(t, handler, spec, "leaving-decision", "Will it stay?")
 	ask := requireBlockAsk(t, handler, issue.Key, spec, "leaving-decision")
 	awaitSettled(t, database, spec)
-	peer := connectBrowserPeer(t, documentService, spec)
+	peer := connectBrowserPeer(t, handler, documentService, spec)
 	closeIssueThroughPatch(t, handler, database, issue.Key)
 	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	requireWithdrawn(t, handler, issue.Key, ask, alice)
@@ -136,7 +136,7 @@ const rewordedDecisionSpec = "Context\n\n" +
 // document owed (docs.MarkReopenOwedAskDocuments), and the resumption after the reopen settles it
 // on the open issue, which takes the block's question into the open ask, as settlement takes the
 // rewording of any open ask's block. The newest version holds the person's question and, as every
-// version written on a fleet of one build, none of the ask's state (dispatch://INFRA-1150 R3),
+// version written on a fleet of one build, none of the ask's state,
 // which the text an agent reads shows open.
 func TestAWithdrawnAsksBlockRewordedInsideTheCloseMarginRewordsItsAskAtTheReopen(t *testing.T) {
 	f := rewordWithdrawnDecisionWhileClosed(t)
@@ -156,7 +156,7 @@ func TestAWithdrawnAsksBlockRewordedInsideTheCloseMarginRewordsItsAskAtTheReopen
 		t.Fatalf("the reopened issue's newest version reads:\n%s\nwant the block asking %q, not %q", version, rewordedQuestion, askedQuestion)
 	}
 	requireNoAnswerAttributes(t, "the reopened issue's newest version", version)
-	requireLiveText(t, f.handler, f.spec, `#rewording-decision urgency="med" multiple="false" state="open"`, rewordedQuestion)
+	requireLiveText(t, f.handler, f.spec, `#rewording-decision state="open"`, rewordedQuestion)
 }
 
 // The rewording a person gives a withdrawn ask's block inside the close margin reaches the ask
@@ -223,7 +223,7 @@ func rewordWithdrawnDecisionWhileClosed(t *testing.T) rewordedWhileClosed {
 	awaitIndexedAskBlock(t, handler, spec, "rewording-decision", askedQuestion)
 	ask := requireBlockAsk(t, handler, issue.Key, spec, "rewording-decision")
 	awaitSettled(t, database, spec)
-	peer := connectBrowserPeer(t, documentService, spec)
+	peer := connectBrowserPeer(t, handler, documentService, spec)
 	closeIssueThroughPatch(t, handler, database, issue.Key)
 	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	requireWithdrawn(t, handler, issue.Key, ask, alice)

@@ -95,6 +95,14 @@ export const issueQuery = (key: string | undefined) =>
       olderIssue(next, cached) ? cached : replaceEqualDeep(cached, next),
   });
 
+/** The issue page's tree read's key (`GET /api/v1/issues/{key}/tree`), each view of the tree
+ *  under it (`["issue-tree", key, view]`). It is not under `["issue", key]`, so a write that
+ *  refreshes the issue's key by prefix does not reach it; every event of the issue names it
+ *  (`event-refresh.ts`). */
+export function issueTreeKey(key: string): readonly ["issue-tree", string] {
+  return ["issue-tree", key];
+}
+
 /** What each requirement of the issue's spec lacks (`GET /api/v1/issues/{key}/coverage`), which
  *  the Spec tab draws beside the requirement. It hangs under the issue's own key for the
  *  reader's sake, not for its invalidation: every issue target in `event-refresh` is `exact`,
@@ -130,6 +138,18 @@ export const issueCollaboratorsQuery = (key: string | undefined) =>
       if (key === undefined) throw new Error("A collaborators read needs the issue's key.");
       return api.getIssueCollaborators(key);
     },
+  });
+
+/** The step records Legion wrote of one issue (`GET /api/v1/issues/{key}/steps`), which the Steps
+ *  tab draws. A step write appends no event of its own, so the event feed refreshes this key on
+ *  the issue's events that come with a phase moving (`changesSteps` in `event-refresh.ts`), each
+ *  naming it exactly as it names every issue target. The tab reads it through its catch-up,
+ *  which every refresh that reaches the key starts, and through Retry
+ *  (`features/steps/StepsTab.tsx`). */
+export const issueStepsQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["issue", key, "steps"],
+    queryFn: () => api.listSteps(key),
   });
 
 /** The live blocks of one document (`GET /api/v1/artifacts/{id}/blocks`): the document's own

@@ -17,6 +17,11 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * assignee moves its questions to that person's count. Nothing waits on a reader whose login has
  * not resolved.
  *
+ * A decision is on the review list by its tie to a statement, and `isCoverageStatement` answers
+ * which addresses name one: a caller passes `coverageStatements(issue, coverage)`
+ * (`tree-drafts.ts`), the rule the tree's review list reads, so the count counts the decisions
+ * the tree marks as waiting and no other.
+ *
  * A decision the reader asked to change waits on its agent and is not counted, by the outline's
  * one rule (`decisionChangeComments`): a decision node's Change is a comment the tree read
  * (`tree`) hangs under it, whether or not the comments read holds that comment yet, and the
@@ -40,7 +45,7 @@ export function waitingOnReader(
   issue: Pick<IssueDetails, "artifacts" | "open_asks" | "primary_artifact_id">,
   viewer: string | undefined,
   decisions: IssueDecisions | undefined,
-  isStatement: (reference: string) => boolean,
+  isCoverageStatement: (reference: string) => boolean,
   comments: readonly ChangeComment[] | undefined,
   tree: TreeAnswer | undefined
 ): WaitingOnReader {
@@ -68,7 +73,7 @@ export function waitingOnReader(
     viewer === undefined
       ? 0
       : (decisions?.decisions ?? []).filter((decision) =>
-          inReviewList(decision, isStatement, changed.has(decision.ref))
+          inReviewList(decision, isCoverageStatement, changed.has(decision.ref))
         ).length;
   return { approvals, asks, decisions: reviewing, total: asks + reviewing + approvals.length };
 }

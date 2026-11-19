@@ -43,3 +43,22 @@ func IssueNeeds(key, target string, asserted bool, who model.Actor, at time.Time
 		At: at, Who: who, SourceEvent: NoEvent, Asserted: asserted,
 	}
 }
+
+// TupleMentions is the kind a citation is stated under: a document's mention of a node, which a
+// refs row of the document projects (ArtifactMentions), and a block's mention of one, which a
+// block_refs row projects (refs' IndexBlocks).
+const TupleMentions = "mentions"
+
+// ArtifactMentions is the fact that a document cites a node, or, with asserted false, that it
+// cites it no more: the mentions tuple out of the document's node, addressed by its ref_key
+// (ArtifactNode), to the far end a refs row of the document names, its to_kind and to_id as the
+// row holds them. A refs row whose source is a document projects it; a comment's, a message's or
+// an ask's projects none. Its cause is the writer's to fill, or the sentinel where no event
+// recorded the write.
+func ArtifactMentions(refKey, toKind, toID string, asserted bool, who model.Actor, at time.Time) Tuple {
+	return Tuple{
+		FromKind: KindArtifact, FromID: refKey, Kind: TupleMentions,
+		ToKind: toKind, ToID: toID,
+		At: at, Who: who, SourceEvent: NoEvent, Asserted: asserted,
+	}
+}

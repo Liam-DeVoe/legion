@@ -263,11 +263,18 @@ func encodeDocumentTree(tree *pmdoc.Node) ([]byte, error) {
 // that version holds, an element this build may not create yet among it. held nil is
 // encodeDocumentTree.
 func encodeDocumentTreeHolding(tree, held *pmdoc.Node) ([]byte, error) {
+	return encodeFragmentTree(tree, held, fragmentName)
+}
+
+// encodeFragmentTree is encodeDocumentTreeHolding into the fragment named fragment of the fresh
+// document: a room's own (fragmentName), or a document's first text in its fragment of its issue
+// room (SeedText), which the room's state takes beside its other fragments.
+func encodeFragmentTree(tree, held *pmdoc.Node, fragment string) ([]byte, error) {
 	doc := crdt.New()
-	fragment := doc.GetXmlFragment(fragmentName)
+	written := doc.GetXmlFragment(fragment)
 	doc.GetMap(marksMapName)
 	if err := doc.TransactE(func(transaction *crdt.Transaction) error {
-		return pmdoc.UpdateHolding(transaction, fragment, tree, held)
+		return pmdoc.UpdateHolding(transaction, written, tree, held)
 	}); err != nil {
 		return nil, err
 	}
@@ -281,10 +288,16 @@ var errDocUnloaded = errors.New("document is not loaded")
 // treeOf reads the tree doc holds. A tree outside the Proof schema is an OutsideSchemaError: an
 // operation that reads a tree it has just written takes that back with producedSchemaError.
 func treeOf(doc *crdt.Doc) (*pmdoc.Node, error) {
+	return treeOfFragment(doc, fragmentName)
+}
+
+// treeOfFragment is treeOf of doc's fragment named fragment: a room's own (fragmentName), or a
+// document's fragment of its issue room (fragmentOf).
+func treeOfFragment(doc *crdt.Doc, fragment string) (*pmdoc.Node, error) {
 	if doc == nil {
 		return nil, errDocUnloaded
 	}
-	tree, err := pmdoc.Read(doc.GetXmlFragment(fragmentName))
+	tree, err := pmdoc.Read(doc.GetXmlFragment(fragment))
 	if err != nil {
 		return nil, documentSchemaError(err)
 	}
@@ -298,10 +311,15 @@ func treeOf(doc *crdt.Doc) (*pmdoc.Node, error) {
 // back validated once (pmdoc.ValidDocument), so the renders and reads that follow do not validate
 // it again.
 func treeOfUnshared(doc *crdt.Doc) (pmdoc.ValidDocument, error) {
+	return treeOfFragmentUnshared(doc, fragmentName)
+}
+
+// treeOfFragmentUnshared is treeOfUnshared of doc's fragment named fragment (treeOfFragment).
+func treeOfFragmentUnshared(doc *crdt.Doc, fragment string) (pmdoc.ValidDocument, error) {
 	if doc == nil {
 		return pmdoc.ValidDocument{}, errDocUnloaded
 	}
-	valid, err := pmdoc.ReadUnshared(doc.GetXmlFragment(fragmentName))
+	valid, err := pmdoc.ReadUnshared(doc.GetXmlFragment(fragment))
 	if err != nil {
 		return pmdoc.ValidDocument{}, documentSchemaError(err)
 	}
@@ -326,7 +344,12 @@ func treeOfTransaction(txn *crdt.Transaction, fragment *crdt.YXmlFragment) (*pmd
 // (LEGION-479). It returns the tree as the transaction left it; whether the transaction changed the
 // document is the update ygo emits for it, or its absence.
 func rewriteLive(doc *crdt.Doc, origin any, edit func(live *pmdoc.Node) bool) (*pmdoc.Node, error) {
-	fragment := doc.GetXmlFragment(fragmentName)
+	return rewriteFragment(doc, fragmentName, origin, edit)
+}
+
+// rewriteFragment is rewriteLive of doc's fragment named fragment (treeOfFragment).
+func rewriteFragment(doc *crdt.Doc, name string, origin any, edit func(live *pmdoc.Node) bool) (*pmdoc.Node, error) {
+	fragment := doc.GetXmlFragment(name)
 	var live *pmdoc.Node
 	err := doc.TransactE(func(transaction *crdt.Transaction) error {
 		var readErr error
@@ -443,6 +466,43 @@ func renderFragment(part *pmdoc.Node) (string, []pmdoc.BlockOffset, error) {
 		return "", nil, nil
 	}
 	return renderTreeWithOffsets(part)
+}
+
+// withoutSilentFragments is offsets, the block ranges of a rendering of an issue room's tree over
+// its fragments, without the blocks of each of parts, those fragments, that silent says renders as
+// no text (renderFragment): a document created empty, whose version holds no text, or the tree
+// artifact's own fragment before anything is written into the issue. Such a fragment holds the
+// empty paragraph an editor bound to it needs, which its own rendering gives no range, and which
+// the room's joined rendering, where other blocks stand beside it, would: a document that renders
+// as no text holds no block, in an issue room as in a room of its own. Every pass that indexes an
+// issue room takes its blocks through here (indexDocumentInRoom, indexOwedRoom,
+// settlement.commitRoomVersions), so no pass indexes a block another drops.
+func withoutSilentFragments(offsets []pmdoc.BlockOffset, parts []*pmdoc.Node, silent func(index int) bool) []pmdoc.BlockOffset {
+	var dropped map[string]struct{}
+	for index, part := range parts {
+		if part == nil || len(part.Children) == 0 || !silent(index) {
+			continue
+		}
+		if dropped == nil {
+			dropped = make(map[string]struct{})
+		}
+		pmdoc.Walk(part, func(node *pmdoc.Node) bool {
+			if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); id != "" {
+				dropped[id] = struct{}{}
+			}
+			return true
+		})
+	}
+	if len(dropped) == 0 {
+		return offsets
+	}
+	kept := make([]pmdoc.BlockOffset, 0, len(offsets))
+	for _, offset := range offsets {
+		if _, drop := dropped[offset.ID]; !drop {
+			kept = append(kept, offset)
+		}
+	}
+	return kept
 }
 
 // joinFragments is the one document the trees of a room's fragments render as, in order: a

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,15 +13,17 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// The Decisions read reads the store alone (dispatch://INFRA-1150 R4, R11). Its entries are held
+// The Decisions read reads the store alone. Its entries are held
 // by decision_entries_test.go: the order, the shaped links and their staleness, and the review state
 // a Keep moves are TestTheDecisionsReadAnswersEveryDecisionInOrder's, and a decision whose words
 // change after a Keep waiting again is TestAReadingIsAChildNodeOfTheDecisionItReads'. The Keep on a
 // decision node is TestAKeepIsTwoAppendsOnTheDecisionNodeThatDecisionKeepsProjects'. This file holds
 // the members the release before reads, the Keep on a heading of a decisions document an earlier
-// release stored, and each person's last read version of a document.
+// release stored, each person's last read version of a document, and the ties a first indexing
+// leaves current.
 
 // holdIt is the spec's second callout, written with its id, hold-it.
 func holdIt(body string) string {
@@ -56,7 +59,7 @@ const oldMembersSpec = ":::requirement{#r1}\nThe service answers over one transp
 	":::ask{#a2 urgency=\"low\" multiple=\"false\"}\nWhich region first?\n\n- East: Near the team\n- West: Near the users\n:::\n"
 
 // The Decisions read's old members answer from the store for one release, for a page of the
-// release before (dispatch://INFRA-1150 R11, ruling F4). `decisions` answers each decision node
+// release before. `decisions` answers each decision node
 // and each answered ask in model.Decision's shape: kind `agent` for a `decision` block and
 // `person` for an answered ask, links from their `shaped` tuples, waiting_review from the node, and
 // no entry for an open ask. `document` answers null while the issue holds no decisions document.
@@ -102,9 +105,9 @@ func TestTheOldDecisionsMembersAnswerFromTheStore(t *testing.T) {
 			t.Fatalf("%s the old decisions member lists the open ask %s", when, open)
 		}
 		for _, decision := range []model.Decision{agent, person} {
-			if len(decision.Links) != 1 || decision.Links[0].To.ID != spec.address("r1") {
+			if len(decision.Links) != 1 || decision.Links[0].To.ID != spec.pointed("r1") {
 				t.Errorf("%s %s answers the links %s, want one, to %s, from its shaped tuple",
-					when, decision.Ref, entryJSON(t, decision.Links), spec.address("r1"))
+					when, decision.Ref, entryJSON(t, decision.Links), spec.pointed("r1"))
 			}
 		}
 		if !agent.WaitingReview || person.WaitingReview || agent.TextSHA256 != decisionread.TextSum(agent.Text) {
@@ -154,7 +157,7 @@ func TestTheOldDecisionsMembersAnswerFromTheStore(t *testing.T) {
 }
 
 // Until the decisions step retires it, a heading of a decisions document an earlier release stored
-// is kept as the release before kept it (dispatch://INFRA-1150 R11, ruling F3): the Keep reads the
+// is kept as the release before kept it: the Keep reads the
 // section through the step's section reader, whose text runs from the heading to its last block, so
 // its sum is the one that release served. A Keep of another sum is 409 DECISION_CHANGED and writes
 // nothing; the Keep of the sum answers 200 and writes the decision_keeps row the conversion carries
@@ -266,6 +269,80 @@ func TestDocumentReadRecordsEachPersonsLastReadVersion(t *testing.T) {
 	}
 }
 
+// firstIndexingSpec is the spec of TestAFirstIndexingMarksNothingOutOfDate: two requirements, a
+// decision that shapes both and one that shapes the second. The issue the test creates is CORE-1,
+// the first of its project.
+const firstIndexingSpec = ":::requirement{#r1}\nOne.\n:::\n\n:::requirement{#r2}\nTwo.\n:::\n\n" +
+	":::decision{#d1 shaped=\"dispatch://CORE-1/spec#b-r1 dispatch://CORE-1/spec#b-r2\"}\nOne transport for both.\n:::\n\n" +
+	":::decision{#d2 shaped=\"dispatch://CORE-1/spec#b-r2\"}\nThe second ships first.\n:::\n"
+
+// A first indexing of a document holding decisions marks no tie out of date, in both cases of a
+// first indexing: the document's first version, written while it has no block rows, and the
+// backfill over a document no block-aware build indexed. The spec's decisions shape its
+// requirements in the version that writes them all, so no requirement's text changed after a
+// tie, and a later version that leaves every requirement and decision alone is one more version
+// the backfill walks. Each link is judged on the change the index recorded for its requirement,
+// so it holds text_changed_at, and reads stale false.
+func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	ctx := context.Background()
+	createReferenceAPIProject(t, handler, "CORE")
+	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "A first indexing", "actor": sessionActor(), "spec": firstIndexingSpec,
+	})
+	requireAgentWrite(t, "the agent's issue", created, http.StatusCreated)
+	issue := decodeBody[model.Issue](t, created)
+	if issue.Key != "CORE-1" {
+		t.Fatalf("the seeded issue is %s, want CORE-1, which the decisions' shaped links name", issue.Key)
+	}
+	spec := readDecisionDocument(t, database, issue.Key, "spec")
+	ties := map[string][]string{
+		"d1": {spec.address("r1"), spec.address("r2")},
+		"d2": {spec.address("r2")},
+	}
+	judge := func(when string) {
+		t.Helper()
+		entries := readEntries(t, handler, issue.Key)
+		for _, block := range []string{"d1", "d2"} {
+			entry := requireEntry(t, entries, "the decision "+block, refs.BlockNodeKind+":"+spec.address(block))
+			if targets := shapedTargets(entry); !slices.Equal(targets, ties[block]) {
+				t.Fatalf("%s the decision %s answers the links %v, want %v", when, block, targets, ties[block])
+			}
+			for _, link := range entry.Shaped {
+				if link.TextChangedAt == nil || link.Stale {
+					t.Errorf("%s the link %s of %s reads %s, want its requirement's change recorded and stale false",
+						when, link.To.ID, block, entryJSON(t, link))
+				}
+			}
+		}
+	}
+
+	// The document's first version, written while it had no block rows: the create's own write
+	// indexes it.
+	requireIndexedAt(t, database, spec.id, 1)
+	judge("at the first version,")
+	editSpec(t, handler, issue.Key, []map[string]any{{"op": "insert", "after": "end", "markdown": "A paragraph no decision shapes."}})
+
+	// The backfill: the state migration 0121 left a document no block-aware build indexed, then
+	// one reconciliation tick, as the block index's own tests run it.
+	for _, statement := range []string{
+		`delete from block_refs where artifact_id = $1`,
+		`delete from document_blocks where artifact_id = $1`,
+		`delete from document_block_texts where artifact_id = $1`,
+		`delete from document_indexed_versions where artifact_id = $1`,
+		`update document_block_versions set version = null where artifact_id = $1`,
+	} {
+		if _, err := database.Pool.Exec(ctx, statement, spec.id); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	if _, err := deps.Docs.(*docs.Service).ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil); err != nil {
+		t.Fatalf("reconcile the block index: %v", err)
+	}
+	requireIndexedAt(t, database, spec.id, 2)
+	judge("after the backfill,")
+}
+
 // The open questions are the issue's open asks whose block is in its spec, oldest first, and an
 // issue with no decisions document and no decision answers them with a null document and no
 // decisions. The two asks are written in two versions, so one is older than the other: two that one
@@ -313,4 +390,93 @@ func waitForOpenQuestions(t *testing.T, handler http.Handler, key string, want i
 	}
 	t.Fatalf("open_questions = %v, want %d of them", questions, want)
 	return view, questions
+}
+
+// An issue born converted answers its spec's decision as an issue of one-document rooms answers
+// it (the T12b fixes of this branch's plan). The agent's decision, written into the spec's
+// fragment of the issue room, is one entry: its text and its tree are its words, its document is
+// the spec - the spec's id, its dispatch:// address and the decision's block id - and its ref is
+// the spec's address of its block. Its two shaped links, to the two paragraphs the spec's blocks
+// read lists, each name the spec's own address of that block, `<KEY>/spec#<id>`, with the block's
+// id, its text, the version that wrote it, the spec and the block's ref; so the spec's margin,
+// which draws a decision's card beside each block of the spec on screen that a link reaches,
+// draws one beside each paragraph. The release before's decisions member answers the same.
+func TestAConvertedIssuesDecisionAnswersAsAnUnconvertedIssuesDecisionDoes(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	ctx := context.Background()
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "Notices arrive late.\n\nReaders poll for them.\n")
+	spec := readDecisionDocument(t, database, issue.Key, "spec")
+	var room string
+	if err := database.Pool.QueryRow(ctx, `
+		select tree.ref_key from document_rooms moved join artifacts tree on tree.id = moved.room
+		where moved.artifact_id = $1
+	`, spec.id).Scan(&room); err != nil {
+		t.Fatalf("read the room of %s's spec: %v; want the issue born converted", issue.Key, err)
+	}
+	paragraphs := blockIDsByText(t, handler, spec.id)
+	late, poll := paragraphs["Notices arrive late."], paragraphs["Readers poll for them."]
+	if late == "" || poll == "" {
+		t.Fatalf("the spec's blocks read = %v, want its two paragraphs", paragraphs)
+	}
+	pointer := func(block string) string { return "dispatch://" + issue.Key + "/spec#b-" + block }
+	agentEdit(t, handler, spec.id, latestVersion(t, database, spec.id).Number+1, map[string]string{
+		"op": "insert", "after": "end",
+		"markdown": "## Decisions\n\n:::decision{#d1 shaped=\"" + pointer(late) + " " + pointer(poll) + "\"}\n" +
+			"### Store notices in a table\n\nChosen for the simplest storage.\n:::\n",
+	})
+
+	target := "/api/v1/issues/" + issue.Key + "/decisions"
+	view := decodeBody[issueDecisions](t, treesRequest(t, handler, target, true))
+	if len(view.Entries) != 1 {
+		t.Fatalf("the Decisions read answers the entries %s, want one, the agent's decision", entryJSON(t, view.Entries))
+	}
+	entry := requireEntry(t, view.Entries, "the agent's decision", refs.BlockNodeKind+":"+room+"#d1")
+	if entry.Kind != "agent" || !strings.Contains(entry.Text, "Store notices in a table") ||
+		!strings.Contains(entry.Text, "Chosen for the simplest storage.") || entry.TextSHA256 != decisionread.TextSum(entry.Text) {
+		t.Errorf("the decision's entry is kind %q with the text %q and the sum %s, want an agent's, its words and their sum",
+			entry.Kind, entry.Text, entry.TextSHA256)
+	}
+	requireDisplayTree(t, handler, target, "entries.0.text", "entries.0.text_tree")
+	wantDocument := decisionEntryDocument{ArtifactID: spec.id, Ref: "dispatch://" + issue.Key + "/spec", BlockID: "d1", Block: room + "#d1"}
+	if entry.Document == nil || *entry.Document != wantDocument {
+		t.Errorf("the decision's entry names the document %s, want %s: the spec, whose fragment holds its block", entryJSON(t, entry.Document), entryJSON(t, wantDocument))
+	}
+	if want := pointer("d1"); entry.Ref != want {
+		t.Errorf("the decision's entry answers the ref %q, want %q, the spec's address of its block", entry.Ref, want)
+	}
+	requireSpecLinks := func(what string, links []model.DecisionLink) {
+		t.Helper()
+		words := map[string]string{late: "Notices arrive late.", poll: "Readers poll for them."}
+		if len(links) != len(words) {
+			t.Fatalf("%s answers the shaped links %s, want one to each paragraph", what, entryJSON(t, links))
+		}
+		for _, link := range links {
+			text, shaped := words[link.To.BlockID]
+			if !shaped || link.To.Kind != refs.BlockNodeKind || link.To.ID != spec.pointed(link.To.BlockID) ||
+				link.To.Ref != pointer(link.To.BlockID) || link.To.Document != "dispatch://"+issue.Key+"/spec" ||
+				!strings.Contains(link.To.Text, text) || link.To.ChangedVersion != 1 || link.FromBlock != "d1" || link.Stale {
+				t.Errorf("%s answers the shaped link %s, want one to a paragraph of the spec, at its node %s, at the spec's address %s, with its words, version 1 and the spec",
+					what, entryJSON(t, link), spec.pointed("<id>"), pointer("<id>"))
+			}
+		}
+	}
+	requireSpecLinks("the decision's entry", entry.Shaped)
+	// The margin's shape of the links (useMarginItems, linkReachesDocument): each one whose block the
+	// spec holds, as the link's document says - its node is the issue room's, whichever document of
+	// the room holds the block - placed beside the spec's block of its block id.
+	placed := []string{}
+	for _, link := range entry.Shaped {
+		if link.To.BlockID != "" && link.To.Document == "dispatch://"+issue.Key+"/spec" {
+			placed = append(placed, link.To.BlockID)
+		}
+	}
+	slices.Sort(placed)
+	if want := []string{late, poll}; !slices.Equal(placed, slices.Sorted(slices.Values(want))) {
+		t.Errorf("the spec's margin places the decision beside the blocks %v, want the two paragraphs %v", placed, want)
+	}
+	if len(view.Decisions) != 1 || view.Decisions[0].Ref != entry.Ref || view.Decisions[0].Text != entry.Text {
+		t.Fatalf("the old decisions member = %s, want the decision the entry answers", entryJSON(t, view.Decisions))
+	}
+	requireSpecLinks("the old decisions member", view.Decisions[0].Links)
 }

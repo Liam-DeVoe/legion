@@ -22,11 +22,12 @@ import (
 //     this binary's image.
 //   - `--store`, the node and tuple store held against the tables that project it
 //     (graphcensus.StoreCensus), in both directions and for every kind, refusing a kind it
-//     checked no row of but a kind of dispatch://INFRA-1150 that holds no row and no node; with
-//     the store-only lines of copied_from and moved_to, which no table projects, refusing a far
-//     end of either that does not resolve; with the dangling-citation counter's line and the
-//     collision census over the restore's work (graphcensus.DanglingCitations, CollisionsOf);
-//     and with what the decisions step's third phase still owes (graphcensus.DecisionsCensus:
+//     checked no row of but a tie kind of decisions, readings and asks that holds no row and no
+//     node; with the store-only lines of copied_from and moved_to, which no table projects,
+//     refusing a far end of either that does not resolve; with the dangling-citation counter's
+//     line and the collision census over the restore's work (graphcensus.DanglingCitations,
+//     CollisionsOf); and with what the decisions step's third phase still owes
+//     (graphcensus.DecisionsCensus:
 //     the decisions documents, their unconverted sections and the specs whose answered asks left
 //     them), none of which refuses. `--verbose` adds one line for each citation the counter
 //     counted.
@@ -110,6 +111,30 @@ func storeCensus(ctx context.Context, databaseURL string, sizing, verbose bool, 
 		report.Write(out)
 	}
 	if report.Refused() {
+		return 1
+	}
+	return 0
+}
+
+// versions is `envoy-dispatch versions`: what schema_migrations, on the database DATABASE_URL
+// names, records of each version against the migrations this binary embeds, and what this
+// binary's next boot would do with each row (store.CheckVersions), written to out. It reads in a
+// read-only transaction and migrates nothing, so a deployment runs it, as a one-off task of the
+// image it means to roll out, before it rolls the service. Exit 0 when every recorded version has
+// a file of this image and the next boot refuses none, 1 when one has no file, a row would be
+// refused or the table records nothing, 2 when the check could not be taken (errOut says why).
+func versions(ctx context.Context, databaseURL string, out, errOut io.Writer) int {
+	if strings.TrimSpace(databaseURL) == "" {
+		fmt.Fprintln(errOut, "versions: DATABASE_URL is required")
+		return 2
+	}
+	check, err := store.CheckVersions(ctx, databaseURL)
+	if err != nil {
+		fmt.Fprintf(errOut, "versions: %v\n", err)
+		return 2
+	}
+	check.Write(out)
+	if !check.OK() {
 		return 1
 	}
 	return 0

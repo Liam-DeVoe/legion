@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -561,8 +562,14 @@ func TestAChangeMovesOnlyTheChangedNode(t *testing.T) {
 // rewrote the first paragraph and version 3 the second, so one pass indexing version 3 dates the
 // first to version 2, by alice, and the second to version 3, by bob. A block a later version adds
 // names that version's author as its maker.
+//
+// Its subject is the unconverted path itself: a document written before blocks shipped is no
+// fragment of an issue room, since every room is this branch's and each block of one records its
+// authors from its first write (refs.RecordsAuthorsSQL), so no room block is ever first seen
+// without its maker. The issue is held unconverted (holdIssuesUnconverted).
 func TestABlockSeenFirstAtItsDocumentsFirstIndexingHasNoMaker(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	holdIssuesUnconverted(t, database)
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", "First paragraph.\n\nSecond paragraph.\n")
@@ -664,8 +671,8 @@ func TestAPinnedBlockCarriesItsFacts(t *testing.T) {
 
 // R12: a block ask belongs to its document at the version that added its block, the version
 // current when it was written. A later edit of the document leaves it there, and so does the
-// ask's answer, which is held on the ask's node and changes no byte of the document
-// (dispatch://INFRA-1150 R3), so it leaves the block's changed version where it was too.
+// ask's answer, which is held on the ask's node and changes no byte of the document, so it
+// leaves the block's changed version where it was too.
 func TestABlockAskBelongsToTheVersionThatAddedIt(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
@@ -679,11 +686,16 @@ func TestABlockAskBelongsToTheVersionThatAddedIt(t *testing.T) {
 	}})
 	awaitIndexedAskBlock(t, handler, spec, "decide", "Ship the decision?")
 	var askID string
-	if err := database.Pool.QueryRow(ctx, `select id::text from asks where block_artifact_id = $1 and block_id = 'decide'`, spec).Scan(&askID); err != nil {
+	// The ask is keyed by the room the spec is edited in, under the block of the spec's fragment
+	// (refs.AsksOfDocumentSQL).
+	if err := database.Pool.QueryRow(ctx, `select id::text from asks k where `+refs.AsksOfDocumentSQL("k", "$1::uuid")+` and k.block_id = 'decide'`, spec).Scan(&askID); err != nil {
 		t.Fatalf("read the block ask: %v", err)
 	}
 	askRef := "dispatch://" + issue.Key + "/ask/" + askID
-	blockRef := specRef + "#b-decide"
+	// The block is a node of the issue's room, keyed under its tree artifact, which the spec's own
+	// reference reaches (T17 of this branch's plan: an address resolves through its document's
+	// room).
+	blockRef := "dispatch://" + issue.Key + "/spec#b-decide"
 	want := func(what string) {
 		t.Helper()
 		node := readNode(t, handler, askRef)

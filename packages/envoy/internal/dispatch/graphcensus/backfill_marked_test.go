@@ -79,7 +79,8 @@ func takeMarkedSnapshot(t *testing.T, database *store.Store) markedSnapshot {
 
 // D3's contract for the backfill: each pass walks only the rows its marker does not mark, names
 // their nodes in the transaction that writes their tuples, and reads no marked row. So the run can
-// be taken again at any time, as dispatch://INFRA-1253 takes it before it proves the old arms may
+// be taken again at any time, as the child that moves issues, their documents, a block's text
+// and rank, results and components takes it before it proves the old arms may
 // go, and it does only the rows still owed.
 //
 // The corpus is what a build before the store left: a document of three blocks, a mention and a
@@ -340,12 +341,12 @@ func TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed(t *testing.T)
 		t.Fatalf("begin the holder: %v", err)
 	}
 	defer holder.Rollback(ctx)
-	if _, err := holder.Exec(ctx, `select 1 from issues where key = 'CORE-2' for update`); err != nil {
-		t.Fatalf("hold issue CORE-2's row: %v", err)
+	if err := store.LockOwner(ctx, holder, store.IssueOwner("CORE-2")); err != nil {
+		t.Fatalf("hold issue CORE-2's owner lock: %v", err)
 	}
 	pid, answered := startBackfill(t, database)
 	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered, 30*time.Second); done {
-		t.Fatalf("the backfill answered (report %#v, err %v) without waiting on its second batch's owner row", early.report, early.err)
+		t.Fatalf("the backfill answered (report %#v, err %v) without waiting on its second batch's owner lock", early.report, early.err)
 	}
 	var terminated bool
 	if err := database.Pool.QueryRow(ctx, `select pg_terminate_backend($1)`, int64(pid)).Scan(&terminated); err != nil || !terminated {

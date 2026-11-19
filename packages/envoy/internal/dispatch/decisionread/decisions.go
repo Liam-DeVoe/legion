@@ -1,5 +1,5 @@
-// Package decisionread answers a decision node of the store in model.Decision's shape
-// (dispatch://INFRA-1150 R1, R2, R4 and R5, ruling H1). A decision is one node: an agent's is a
+// Package decisionread answers a decision node of the store in model.Decision's shape. A
+// decision is one node: an agent's is a
 // `decision` block node, and a person's is the answered ask's own `ask` node. This package is the
 // one reader of what every read of a decision answers about it - its words, their text sum, the
 // spec nodes it shaped with each link's `stale`, its review state, and the version it last changed
@@ -10,7 +10,7 @@
 //   - the Keep (api's keepDecision), which compares the posted `text_sha256` with TextSum of the
 //     words this package reads, so a Keep holds the sum the read served;
 //   - the Decisions read's old `decisions` member once it answers from the store;
-//   - dispatch://INFRA-1253's tree read, which calls Decisions for each decision node it draws.
+//   - the tree read a later change adds, which calls Decisions for each decision node it draws.
 //
 // It is a package of its own because api's readers are unexported and neither docs nor refs may
 // import api. It imports graphstore, refs and model, and neither api nor docs.
@@ -37,13 +37,16 @@ import (
 
 // Node names one node Decisions reads: Kind and ID as graph_nodes keys it. A `decision` block
 // node is {refs.BlockNodeKind, "<ref_key>#<block id>"}, and an ask's node is
-// {graphstore.KindAsk, "<ask id>"}.
-type Node struct{ Kind, ID string }
+// {graphstore.KindAsk, "<ask id>"}. Document, where the caller found a block's node in a document
+// of an issue room that owes its block index (api's decisionEntriesRead), is that document, read
+// as the one holding the block while no issue_room_blocks row names it (refs.BlockDocumentOrSQL);
+// "" leaves the block to its row, else to the artifact keying it.
+type Node struct{ Kind, ID, Document string }
 
 // TextSum is a decision's text sum: the sha256, in hex, of its words. A Keep records it as the
 // node's kept_text_sum and posts it back as `text_sha256`, and an agent's decision waits for review
 // until a Keep's sum is its sum as it stands. It is the one sum of a decision's text: this
-// package's reads, the Keep and dispatch://INFRA-1253's tree read all call it.
+// package's reads, the Keep and the tree read a later change adds all call it.
 func TextSum(text string) string {
 	sum := sha256.Sum256([]byte(text))
 	return hex.EncodeToString(sum[:])
@@ -73,12 +76,12 @@ func TextSum(text string) string {
 //     decision's first paragraph; Ref, the node's own address; Asks, the ask an agent's decision
 //     settles (from_ask) or the ask itself; Unsure, true where its uncertainty is `high`.
 //   - Replaced, Kept and WaitingReview from the node: the newest kept_by tuple and the
-//     kept_text_sum value (dispatch://INFRA-1150 R2), beside decision_keeps' changed_version,
+//     kept_text_sum value, beside decision_keeps' changed_version,
 //     and waiting_review true for an agent's decision unless it is replaced or the kept sum is its
 //     sum as it stands.
 //   - ChangedVersion, the version that last changed the decision's own words (refs.DecisionWords),
-//     which a reading added, changed or removed under it does not move (dispatch://INFRA-1150
-//     R11, at spec version 40): the block's document_blocks.changed_version, walked back over its
+//     which a reading added, changed or removed under it does not move: the block's
+//     document_blocks.changed_version, walked back over its
 //     stored texts while the words' sum is unchanged (an ask's, its block's row); ChangedAt is that
 //     version's created_at. A decision whose document owes its block index is walked over the
 //     markdown of the versions the index has not recorded, newest first (walker.changed), and an
@@ -99,11 +102,11 @@ func Decisions(ctx context.Context, q graphstore.Queryer, who model.Actor, nodes
 	if len(nodes) == 0 {
 		return decisions, nil
 	}
-	kinds, ids := make([]string, len(nodes)), make([]string, len(nodes))
+	kinds, ids, documents := make([]string, len(nodes)), make([]string, len(nodes)), make([]string, len(nodes))
 	for index, node := range nodes {
-		kinds[index], ids[index] = node.Kind, node.ID
+		kinds[index], ids[index], documents[index] = node.Kind, node.ID, node.Document
 	}
-	held, err := readNodes(ctx, q, who, kinds, ids)
+	held, err := readNodes(ctx, q, who, kinds, ids, documents)
 	if err != nil {
 		return nil, err
 	}
@@ -159,11 +162,17 @@ type heldNode struct {
 
 // nodesRead reads each named node, with the document holding its block and that block's rows,
 // in one statement, for the person or session bound at $3, each table read by its own key. A
-// block node's document is the one whose ref_key opens its address (a ref_key holds no '#'), and
-// an ask's the document holding its block (asks.block_artifact_id). The block's texts are every
-// text the block index recorded of it (document_block_texts), newest first, each beside its
-// version's created_at; the document's indexed versions are document_indexed_versions', newest
-// first; and the document owes its block index where document_block_versions holds no version.
+// block's rows are keyed by the artifact whose ref_key opens a block node's address (a ref_key
+// holds no '#'), and an ask's by its block_artifact_id: the document itself, or for a block of an
+// issue room the room's tree artifact. The document holding the block is the one
+// refs.BlockDocumentSQL names for that key and block - the document whose fragment of the room
+// holds it, else the key itself - so a decision or an ask of a converted document answers that
+// document, as one of a document that is its own room does; a block no issue_room_blocks row
+// names yet is in the document its caller found its node in ($4, Node.Document), where it names
+// one (refs.BlockDocumentOrSQL). The block's texts are every text the block index recorded of it
+// under its key (document_block_texts), newest first, each beside the created_at of that version
+// of its document; the document's indexed versions are document_indexed_versions', newest first;
+// and the document owes its block index where document_block_versions holds no version of it.
 func nodesRead() string {
 	return `
 	select w.n, g.kind, g.id, g.supertag, g.state,
@@ -173,34 +182,36 @@ func nodesRead() string {
 	       row.changed_version,
 	       (select json_agg(json_build_object('version', x.version, 'text', x.text, 'at', v.created_at) order by x.version desc)
 	        from document_block_texts x
-	        left join artifact_versions v on v.artifact_id = x.artifact_id and v.number = x.version
-	        where x.artifact_id = doc.id and x.block_id = place.block_id),
+	        left join artifact_versions v on v.artifact_id = doc.id and v.number = x.version
+	        where x.artifact_id = place.artifact_id and x.block_id = place.block_id),
 	       (select array_agg(i.version order by i.version desc) from document_indexed_versions i where i.artifact_id = doc.id),
 	       coalesce((select max(v.number) from artifact_versions v where v.artifact_id = doc.id), 0),
 	       doc.id is not null and not exists (
 	         select 1 from document_block_versions b where b.artifact_id = doc.id and b.version is not null),
 	       (select k.changed_version from decision_keeps k
 	        where g.kind = '` + refs.BlockNodeKind + `' and k.artifact_id = doc.id and k.block_id = place.block_id)
-	from unnest($1::text[], $2::text[]) with ordinality as w (kind, id, n)
+	from unnest($1::text[], $2::text[], $4::text[]) with ordinality as w (kind, id, document, n)
 	join graph_nodes g on g.kind = w.kind and g.id = w.id and ` + refs.VisibleRow("g", "$3") + `
 	left join asks q on g.kind = '` + graphstore.KindAsk + `'
 		and q.id = case when g.id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then g.id::uuid end
 	left join lateral (
-		select a.* from artifacts a where g.kind = '` + graphstore.KindAsk + `' and a.id = q.block_artifact_id
+		select a.id, a.ref_key from artifacts a where g.kind = '` + graphstore.KindAsk + `' and a.id = q.block_artifact_id
 		union all
-		select a.* from artifacts a where g.kind = '` + refs.BlockNodeKind + `' and a.ref_key = split_part(g.id, '#', 1)
-	) doc on true
+		select a.id, a.ref_key from artifacts a where g.kind = '` + refs.BlockNodeKind + `' and a.ref_key = split_part(g.id, '#', 1)
+	) keyed on true
 	left join lateral (
 		select b.artifact_id, b.block_id, b.changed_version from document_blocks b
 		where g.kind = '` + refs.BlockNodeKind + `' and b.node_kind = '` + refs.BlockNodeKind + `' and b.node_address = g.id
 		union all
 		select b.artifact_id, b.block_id, b.changed_version from document_blocks b
-		where g.kind = '` + graphstore.KindAsk + `' and b.artifact_id = q.block_artifact_id and b.block_id = q.block_id
+		where g.kind = '` + graphstore.KindAsk + `' and b.artifact_id = q.block_artifact_id and b.block_id = q.block_id and b.type = 'ask'
 	) row on true
 	left join lateral (
-		select coalesce(row.block_id, case when g.kind = '` + graphstore.KindAsk + `' then q.block_id
-		                                   else substr(g.id, length(doc.ref_key) + 2) end) as block_id
-	) place on doc.id is not null
+		select keyed.id as artifact_id,
+		       coalesce(row.block_id, case when g.kind = '` + graphstore.KindAsk + `' then q.block_id
+		                                   else substr(g.id, length(keyed.ref_key) + 2) end) as block_id
+	) place on keyed.id is not null
+	left join artifacts doc on doc.id = ` + refs.BlockDocumentOrSQL("place", "coalesce(nullif(w.document, '')::uuid, place.artifact_id)") + `
 	order by w.n`
 }
 
@@ -212,9 +223,10 @@ type storedText struct {
 	At      *time.Time `json:"at"`
 }
 
-// readNodes reads each node of the two arrays (nodesRead), keyed by its index among them, for who.
-func readNodes(ctx context.Context, q graphstore.Queryer, who model.Actor, kinds, ids []string) (map[int]heldNode, error) {
-	rows, err := q.Query(ctx, nodesRead(), kinds, ids, refs.VisibilityArg(who))
+// readNodes reads each node of the arrays (nodesRead), keyed by its index among them, for who:
+// kinds and ids name the nodes, and documents the document each was found in, "" for none.
+func readNodes(ctx context.Context, q graphstore.Queryer, who model.Actor, kinds, ids, documents []string) (map[int]heldNode, error) {
+	rows, err := q.Query(ctx, nodesRead(), kinds, ids, refs.VisibilityArg(who), documents)
 	if err != nil {
 		return nil, fmt.Errorf("read the decision nodes: %w", err)
 	}
@@ -289,6 +301,15 @@ func readFacts(ctx context.Context, q graphstore.Queryer, kinds, ids []string) (
 // in. The event of a version is docs' versionEventID's: its artifact.version, or for version 1 the
 // document's artifact.created or the issue.created that seeded the issue's spec. A target whose
 // document holds no row for it - one that still owes its block index - has no such version.
+//
+// A tuple's far end is the address its pointer spells, `<ref_key>#<block>` of the document it
+// names. The target's row is the one at that address, or, for a document converted into its
+// issue's room, whose blocks the room's tree artifact keys, the row of the room
+// (refs.DocumentRoomSQL) under that block id whose document is the one named
+// (refs.BlockDocumentSQL). Its document is the one whose fragment holds the row's block, else the
+// one named, and the link answers that document, its ref and the far end's own address, so a
+// decision of a converted issue links its spec's blocks as one of an issue of one-document rooms
+// does.
 func readLinks(ctx context.Context, q graphstore.Queryer, who model.Actor, kinds, ids []string) (map[int][]model.DecisionLink, error) {
 	rows, err := q.Query(ctx, `
 		select w.n, s.to_id, s.at, s.source_event,
@@ -311,9 +332,17 @@ func readLinks(ctx context.Context, q graphstore.Queryer, who model.Actor, kinds
 		`t.to_kind, t.to_id, t.at, t.source_event, t.asserted`,
 		`t.from_kind = w.kind and t.from_id = w.id and t.kind = '`+refs.TupleShaped+`' and t.to_kind <> '`+graphstore.KindValue+`'`)+`
 		) s
-		left join artifacts doc on doc.ref_key = split_part(s.to_id, '#', 1)
-		left join document_blocks target on target.node_kind = '`+refs.BlockNodeKind+`' and target.node_address = s.to_id
-		left join artifact_versions target_version on target_version.artifact_id = target.artifact_id
+		left join artifacts pointed on pointed.ref_key = split_part(s.to_id, '#', 1)
+		left join lateral (
+			select b.artifact_id, b.block_id, b.excerpt, b.changed_version from document_blocks b
+			where b.node_kind = '`+refs.BlockNodeKind+`' and b.node_address = s.to_id
+			union all
+			select b.artifact_id, b.block_id, b.excerpt, b.changed_version from document_blocks b
+			where b.artifact_id = `+refs.DocumentRoomSQL("pointed.id")+` and b.artifact_id <> pointed.id
+			  and b.block_id = substr(s.to_id, length(pointed.ref_key) + 2) and `+refs.BlockDocumentSQL("b")+` = pointed.id
+		) target on true
+		left join artifacts doc on doc.id = coalesce(`+refs.BlockDocumentSQL("target")+`, pointed.id)
+		left join artifact_versions target_version on target_version.artifact_id = doc.id
 			and target_version.number = target.changed_version
 		where s.asserted and s.to_kind = '`+refs.BlockNodeKind+`' and `+refs.VisibleKind(refs.BlockNodeKind, "s.to_id", "$3")+`
 		order by w.n, s.to_id
@@ -561,8 +590,7 @@ type changedWords struct {
 // changed is the walk that answers node's block - a decision, or the ask block of an ask (typ) -
 // as it stands: its own words (ownWords) and the version of its document that last changed them,
 // which a reading written, edited or removed under it, and for an ask a write of its block's
-// attributes alone - the server's, or the `shaped` pointers - never moves (dispatch://INFRA-1150
-// R2 and R11).
+// attributes alone - the server's, or the `shaped` pointers - never moves.
 //
 // It reads the document as the block index left it and as it stands past that index. A document
 // that owes its block index (document_block_versions holds no version) stands at its newest

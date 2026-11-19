@@ -66,13 +66,14 @@ function keysOf<T extends object>(value: T): readonly (keyof T)[] {
 
 /**
  * A plain name for every kind of node the page draws, which is every kind the model holds: the
- * issue, the documents and images it carries, the seven typed blocks of those documents, the
+ * issue, the documents and images it carries, the eight typed blocks of those documents, the
  * decisions and asks, the conversation, the results recorded against a check, and the child
  * issues.
  *
  * A key is the model's own token for the kind, so the page needs no second table to read a
- * node: `callout`, `ask`, `requirement`, `plan_task`, `check`, `decision` and `reading` are the
- * block type names in `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`, and `ask`,
+ * node: `callout`, `ask`, `requirement`, `plan_task`, `check`, `decision`, `reading` and
+ * `criterion` are the block type names in
+ * `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`, and `ask`,
  * `comment` and `message` are the item kinds of a `dispatch://` reference. A name is lowercase
  * because the page draws it inside its own sentences and rows, where a capital would read as a
  * proper noun; `sentenceCase` supplies the capital where a name opens a sentence or a heading.
@@ -89,9 +90,8 @@ export const NODE_TYPE_NAMES = freeze({
   /** A constraint of the issue or of the lens catalogue: a standard the work keeps, or a
    *  measurement taken of it. */
   constraint: "constraint",
-  /** A `criterion` block, and a `reading` below: block types the model's block schema
-   *  (version 6) declares, named here so every type the schema declares has a name. A later part
-   *  of the page draws them. */
+  /** A `criterion` block: what a person wants to be able to do, in their own words, which a
+   *  statement answers. The schema's own word is a plain one, so the page draws it. */
   criterion: "criterion",
   decision: "decision",
   document: "document",
@@ -1124,6 +1124,13 @@ export const CONTROL_LABELS = freeze({
   save_blocked_by: "Save what it waits on",
   save_parent: "Save parent",
   save_route: "Save route",
+  /** The names a focused row's scrollers carry while each keeps its tab stop, so a reader on the
+   *  keyboard can reach it and scroll it sideways (decision 317): a code block, a drawn diagram,
+   *  a table, and content of any other kind. */
+  scrolls_code: "Code, scrolls sideways",
+  scrolls_content: "Content, scrolls sideways",
+  scrolls_diagram: "Diagram, scrolls sideways",
+  scrolls_table: "Table, scrolls sideways",
   /** Sends the change a reader wrote against a decision, named apart from the conversation's
    *  own Send so a page drawing both offers two controls a reader can tell apart (R7). */
   send_change: "Send change",
@@ -1241,36 +1248,41 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   ci_check: "CI check",
   copied_from: "copied from",
   copied_from_document: "copied from document",
+  /** The author of a decision, which the server writes from who wrote the block. */
   decided_by: "decided by",
-  /** The question the decision came from, by the page's word for an ask (R34). */
+  /** The question an agent's decision settles. An ask is drawn as a question (R34). */
   from_ask: "from question",
   /** Why the block cannot be answered as written; "invalid" names a verdict, not the reason. */
   invalid: "problem",
+  /** The person who kept the decision as it reads; the server writes it. */
   kept_by: "kept by",
-  /** The sum of the decision's words as the person who kept it read them: a decision whose
-   *  words no longer match it waits for review again. */
-  kept_text_sum: "sum of the words kept",
+  /** The sum of the words that person kept, which the server compares with the words now. */
+  kept_text_sum: "sum of the kept words",
   kind: "kind",
   /** Whether the reader may choose more than one option. */
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  /** The question, comment or message a statement, a criterion, a check or a plan task hangs
+   *  under, by the plain word the page's own parent controls use. */
   parent: "parent",
+  /** Whether a newer decision stands in this one's place. */
   replaced: "replaced",
   run: "run",
   selected: "selected",
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
   serves: "serves",
-  /** The blocks a decision or a question shaped, by the spec's own verb for the edge, as
-   *  `serves` is. */
+  /** The spec blocks a decision, or the answer of an ask, shaped. */
   shaped: "shaped",
+  /** How long a plan task takes, in days, which the plan's chart draws as its bar's length;
+   *  the chart's own word for a task that holds none is `PLAN_WORDS.no_size`. */
   size: "size",
   state: "state",
   surface: "surface",
   title: "title",
+  /** How unsure the agent was of a decision, and in the next one why. */
   uncertainty: "uncertainty",
-  /** Why the agent who made the decision is unsure of it. */
-  uncertainty_reason: "reason for the uncertainty",
+  uncertainty_reason: "why unsure",
   urgency: "urgency",
   when: "when",
 } as const);

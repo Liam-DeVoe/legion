@@ -71,8 +71,15 @@ type dispatchPair struct {
 // start.
 func newPair(t *testing.T) *dispatchPair {
 	t.Helper()
+	return newPairOn(t, storetest.Open(t))
+}
+
+// newPairOn is newPair on database, which the caller made: the two-build suite's, which its builds
+// migrated in production's order (laneDatabase).
+func newPairOn(t *testing.T, database *store.Store) *dispatchPair {
+	t.Helper()
 	server, url := multiprocessNATS(t)
-	return &dispatchPair{database: storetest.Open(t), natsServer: server, nats: url, proxies: map[*dispatchProcess]*testnats.Proxy{}}
+	return &dispatchPair{database: database, natsServer: server, nats: url, proxies: map[*dispatchProcess]*testnats.Proxy{}}
 }
 
 // databaseURL is the connection string a process is started with: the database storetest cloned
@@ -123,7 +130,7 @@ func (p *dispatchPair) name(one *dispatchProcess) string {
 // (earlierBuildSchemaVersion, earlierBuildSchemaCreatable), as a process of it registers them. So
 // this tree's fleet guard (docs' anotherBuildServes) reads two builds: the roll window, in which
 // this tree keeps the server-owned attributes of each ask block in step with its asks row for the
-// earlier build's pages (docs' rollWindowAskAttributes, dispatch://INFRA-1150 R10). A page that
+// earlier build's pages (docs' rollWindowAskAttributes). A page that
 // presents no schema_creatable, as a test's editor does (documentURL), stays writable beside it:
 // its creatable is 1, at most the row's version. beside is the commit this tree's processes
 // register: headBuildStamp for the basebuild suite's stamped head, "" for a build that runs
@@ -187,7 +194,7 @@ func registerOtherBuild(t *testing.T, ctx context.Context, databaseURL, commit, 
 const earlierBuildStamp = "1149114911491149114911491149114911491149"
 
 // earlierBuildSchemaVersion and earlierBuildSchemaCreatable are the schema numbers a process of
-// the base release registers (legion/INFRA-1149's pmdoc/schema/blocks.json is version 4, and
+// the base release registers (its pmdoc/schema/blocks.json is version 4, and
 // creates nothing past it), which registerOtherBuild's row carries.
 const (
 	earlierBuildSchemaVersion   = 4
