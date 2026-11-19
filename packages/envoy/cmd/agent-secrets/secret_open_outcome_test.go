@@ -20,23 +20,28 @@ import (
 // TestAStoreWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown: `secret set`, `secret delete` and
 // `secret restore` each make one store write, and a write whose error is no definite refusal (an
 // AWS service fault, a GCP UNAVAILABLE) may follow a write the store carried out. Each says the
-// store's answer leaves open whether the write landed, names the `secret show` that reads what the
-// store now holds, asks the broker to reread, and prints no success line. Every row's store applies
-// the write and then answers the error, so the store holds the write's result.
+// store's answer leaves open whether the write landed, says what to do next — after a delete or a
+// restore, the `secret show` that reads whether the secret is deleted; after a set, to run it
+// again, since `secret show` reads no value — asks the broker to reread, and prints no success
+// line. Every row's store applies the write and then answers the error, so the store holds the
+// write's result.
 func TestAStoreWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 	type stored struct {
 		value   string
 		deleted bool
 	}
 	for _, c := range []struct {
-		form, lose, success string
-		deleted             bool
-		stdin               string
-		want                stored
+		form, lose, success, next string
+		deleted                   bool
+		stdin                     string
+		want                      stored
 	}{
-		{form: "set", lose: "put", success: "set a new value of API_KEY", stdin: "v2", want: stored{value: "v2"}},
-		{form: "delete", lose: "delete", success: "deleted API_KEY in", want: stored{value: "v1", deleted: true}},
-		{form: "restore", lose: "restore", success: "restored API_KEY in", deleted: true, want: stored{value: "v1"}},
+		{form: "set", lose: "put", success: "set a new value of API_KEY", stdin: "v2", want: stored{value: "v2"},
+			next: "Run this set again to be sure the value is stored: `agent-secrets secret show API_KEY` does not read values"},
+		{form: "delete", lose: "delete", success: "deleted API_KEY in", want: stored{value: "v1", deleted: true},
+			next: "Read whether it is deleted now with `agent-secrets secret show API_KEY`"},
+		{form: "restore", lose: "restore", success: "restored API_KEY in", deleted: true, want: stored{value: "v1"},
+			next: "Read whether it is deleted now with `agent-secrets secret show API_KEY`"},
 	} {
 		t.Run("aws: "+c.form, func(t *testing.T) {
 			local := secrets.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
@@ -51,7 +56,7 @@ func TestAStoreWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 				useStdin(t, c.stdin)
 			}
 			stdout, stderr, code := runSecret(c.form, "API_KEY")
-			assertOpenOutcome(t, c.form, stdout, stderr, code, c.success)
+			assertOpenOutcome(t, c.form, stdout, stderr, code, c.success, c.next)
 			out, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("API_KEY"))})
 			if err != nil {
 				t.Fatal(err)
@@ -91,7 +96,7 @@ func TestAStoreWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 				useStdin(t, c.stdin)
 			}
 			stdout, stderr, code := runSecret(c.form, "API_KEY")
-			assertOpenOutcome(t, c.form, stdout, stderr, code, c.success)
+			assertOpenOutcome(t, c.form, stdout, stderr, code, c.success, c.next)
 			fake.mu.Lock()
 			entry := fake.secrets[id]
 			got := stored{value: string(entry.payloads[len(entry.payloads)-1]), deleted: entry.secret.GetExpireTime() != nil}
@@ -107,14 +112,14 @@ func TestAStoreWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 }
 
 // assertOpenOutcome holds a form's answer to a write whose outcome is open: exit 1, the store's
-// answer said to leave the outcome open, the `secret show` that reads the store, the broker's
-// answer printed, and no success line.
-func assertOpenOutcome(t *testing.T, form, stdout, stderr string, code int, success string) {
+// answer said to leave the outcome open, the form's next step, the broker's answer printed, and
+// no success line.
+func assertOpenOutcome(t *testing.T, form, stdout, stderr string, code int, success, next string) {
 	t.Helper()
 	if code != 1 {
 		t.Fatalf("%s whose answer was lost: exit %d stderr %q; want 1", form, code, stderr)
 	}
-	for _, said := range []string{"leaves open whether this write landed", "Read what it holds now with `agent-secrets secret show API_KEY`"} {
+	for _, said := range []string{"leaves open whether this write landed", next} {
 		if !strings.Contains(stderr, said) {
 			t.Fatalf("%s whose answer was lost: stderr %q does not say %q", form, stderr, said)
 		}

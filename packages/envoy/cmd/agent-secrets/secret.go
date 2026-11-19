@@ -862,12 +862,19 @@ func writeUnknown(err error) bool {
 }
 
 // failOpen is how set, delete and restore end on a write whose answer leaves open whether it
-// landed (writeUnknown): the store's error, which says so, the command that reads what the store
-// now holds, and the broker's answer to a reread, since the secret may have changed (rereadOpen).
-// It exits 1, and claims nothing about what the store holds.
-func failOpen(s *secretSession, stdout, stderr io.Writer, form, name string, err error) int {
-	fmt.Fprintf(stderr, "agent-secrets %s: %v; looked in %s. Read what it holds now with `%s`\n",
-		form, s.refusedAs(err), s.storeName(), pipeCommand(s.backend.signInPrefix(), "secret", "show", name))
+// landed (writeUnknown): the store's error, which says so, what to do next, and the broker's answer
+// to a reread, since the secret may have changed (rereadOpen). After a delete or a restore, next is
+// the `secret show` that reads whether the secret is deleted now. After a set (valueWrite), `secret
+// show` cannot tell: it reads the secret's versions and when it last changed, never a value, so
+// next is to run the set again, which stores the value either way. It exits 1, and claims nothing
+// about what the store holds.
+func failOpen(s *secretSession, stdout, stderr io.Writer, form, name string, err error, valueWrite bool) int {
+	show := pipeCommand(s.backend.signInPrefix(), "secret", "show", name)
+	next := fmt.Sprintf("Read whether it is deleted now with `%s`", show)
+	if valueWrite {
+		next = fmt.Sprintf("Run this set again to be sure the value is stored: `%s` does not read values", show)
+	}
+	fmt.Fprintf(stderr, "agent-secrets %s: %v; looked in %s. %s\n", form, s.refusedAs(err), s.storeName(), next)
 	rereadOpen(s, stdout, stderr, form, name)
 	return 1
 }
@@ -1427,7 +1434,7 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 	}
 	if err := s.backend.set(s.ctx, slug, value); err != nil {
 		if writeUnknown(err) {
-			return failOpen(s, stdout, stderr, form, name, err)
+			return failOpen(s, stdout, stderr, form, name, err, true)
 		}
 		return secretFailIn(stderr, form, s, err)
 	}
@@ -1462,7 +1469,7 @@ func cmdSecretDelete(args []string, stdout, stderr io.Writer) int {
 	deletion, err := s.backend.delete(s.ctx, slug)
 	if err != nil {
 		if writeUnknown(err) {
-			return failOpen(s, stdout, stderr, form, name, err)
+			return failOpen(s, stdout, stderr, form, name, err, false)
 		}
 		return secretFailIn(stderr, form, s, err)
 	}
@@ -1488,7 +1495,7 @@ func cmdSecretRestore(args []string, stdout, stderr io.Writer) int {
 	defer s.Close()
 	if err := s.backend.restore(s.ctx, slug); err != nil {
 		if writeUnknown(err) {
-			return failOpen(s, stdout, stderr, form, name, err)
+			return failOpen(s, stdout, stderr, form, name, err, false)
 		}
 		return secretFailIn(stderr, form, s, err)
 	}
