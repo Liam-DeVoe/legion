@@ -417,9 +417,12 @@ jobs:
       # with no database and no Bun, and a change to only what they read must not start this
       # one. So are internal/dispatch/architecture/notes, internal/runnerlog,
       # internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, which
-      # envoy-go-checks tests on every push (NOTE_AND_SPEC_PACKAGES). The pattern is built
-      # in .github/scripts/ci_job_reads.py from the same lists those jobs' own steps are built
-      # from, so what the list leaves out and what the other jobs run cannot drift apart. The
+      # envoy-go-checks tests on every push (NOTE_AND_SPEC_PACKAGES), and listenerwire and
+      # internal/wirecheck, which envoy-go-checks tests in their place (LISTENERWIRE_PACKAGES):
+      # listenerwire's clients test type-checks daemon packages, so a change to only those daemon
+      # packages starts no job with a database. The pattern is built in
+      # .github/scripts/ci_job_reads.py from the same lists those jobs' own steps are built from,
+      # so what the list leaves out and what the other jobs run cannot drift apart. The
       # broker's packages, internal/broker and everything under it, are left out too: the
       # database-skips step below runs them with -json and fails on a failed test as on a skipped
       # one, so this step ran each of them a second time (DATABASE_SKIPS_TREE in
@@ -480,7 +483,7 @@ jobs:
           github.com/sjawhar/envoy/internal/dispatch/outbox
           github.com/sjawhar/envoy/cmd/dispatch
           github.com/sjawhar/envoy/cmd/agent-secrets"
-          rest=$(go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/internal/broker($|/)|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/pgmigrate$|/internal/dispatch/events$' | grep -vxF "$lead")
+          rest=$(go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/broker($|/)|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/pgmigrate$|/internal/dispatch/events$' | grep -vxF "$lead")
           printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' -timeout 26m > "$RUNNER_TEMP/go-test-json/unit.json" &
           unit=$!
           # The tests the race detector makes impossible, which the race job of each of these
