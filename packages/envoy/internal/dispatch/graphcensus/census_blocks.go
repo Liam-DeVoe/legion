@@ -164,7 +164,9 @@ var blockProjections = []projection{{
 		" in_document of the block its tree artifact and id name, to the node of the document it names, against every" +
 		" in_document a present block node of a tree artifact states now, so a row whose block states another document," +
 		" or none, and a block of a room no row names, are each a difference; a row of a block whose id is past the" +
-		" block id bound, which the room records and which is no node, is past the bound; a store that holds no tree" +
+		" block id bound, which the room records and which is no node, is past the bound; a room that owes its block" +
+		" index is on neither side, since the typed-node pass above the deferral bound records the document of each" +
+		" decision and reading it places before the reconciliation states its in_document; a store that holds no tree" +
 		" reads none",
 	// The rows are issue_room_blocks' alone, each with the node of the document_blocks row it
 	// projects beside, so a row whose block no document_blocks row holds names no node, and a
@@ -181,7 +183,8 @@ var blockProjections = []projection{{
 		join artifacts tree on tree.id = r.tree_artifact_id
 		join artifacts document on document.id = r.document_id
 		left join document_blocks d on d.artifact_id = r.tree_artifact_id and d.block_id = r.block_id
-		where octet_length(r.block_id) <= ` + blockIDBound + ` and octet_length(tree.ref_key || '#' || r.block_id) <= ` + addressBound,
+		where octet_length(r.block_id) <= ` + blockIDBound + ` and octet_length(tree.ref_key || '#' || r.block_id) <= ` + addressBound + `
+		  and not ` + roomOwed("r.tree_artifact_id"),
 	tuples: `
 		select n.kind, n.id, held.kind, held.to_kind, held.to_id
 		from artifacts tree
@@ -196,6 +199,7 @@ var blockProjections = []projection{{
 		select count(*) from issue_room_blocks r
 		join artifacts tree on tree.id = r.tree_artifact_id
 		where octet_length(r.block_id) > ` + blockIDBound + ` or octet_length(tree.ref_key || '#' || r.block_id) > ` + addressBound,
+	owed:        roomNodeOwed,
 	emptyAgrees: true,
 }, blockAuthorProjection}
 

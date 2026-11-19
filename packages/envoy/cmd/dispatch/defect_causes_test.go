@@ -367,15 +367,7 @@ func TestTheThreeDefectsOfTheFirstFilingAreGoneFromTheModel(t *testing.T) {
 			"content": ":::decision{#d1 shaped=\"dispatch://" + run.issue + "/spec#b-r2\"}\nREST for every service this quarter.\n:::\n",
 			"actor":   map[string]any{"kind": "session", "id": defectsAgentSession},
 		}), agentBearer(), http.StatusCreated)
-		// The decision's node is keyed by the room choices.md is a fragment of: the issue is born
-		// converted, so its tree's ref_key (refs.DocumentRoomSQL).
-		var room string
-		if err := database.QueryRow(ctx, `
-			select room.ref_key from artifacts document join artifacts room on room.id = `+refs.DocumentRoomSQL("document.id")+`
-			where document.issue_key = $1 and document.slug = 'choices-md'`, run.issue).Scan(&room); err != nil {
-			t.Fatalf("seeding the issue failed: read the room of choices.md: %v", err)
-		}
-		held[refs.BlockNodeKind+":"+room+"#d1"] = "the agent's decision d1 of its choices.md"
+		held[refs.BlockNodeKind+":"+run.issue+"/choices-md#d1"] = "the agent's decision d1 of its choices.md"
 	}
 	run.awaitSpecSettled("before the first Decisions read")
 

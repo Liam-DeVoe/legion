@@ -1854,10 +1854,12 @@ func blockBands(document indexedDocument, nodes []model.ArtifactBlock, fragments
 // reconcileRoomBlocks keeps issue_room_blocks, the projection of each in_document of an issue
 // room's blocks (D16 of this branch's plan) and the one record of the document whose fragment
 // holds each block of the room, level with the version the pass indexes under the issue's tree
-// artifact, artifactID, in the pass's transaction: the row of each block the version dropped goes
-// with its document_blocks row, each block the version holds names its fragment's document
-// (fragmentDocuments), or the tree artifact for a block of the tree's own fragment, and a block
-// whose document moved - a block cut from one fragment and pasted into another - takes one
+// artifact, artifactID, in the pass's transaction. The pass reads the room whole, so the row of
+// every block it does not hold goes: one the version dropped, whose document_blocks row went with
+// it, and one the typed-node pass above the deferral bound recorded for a block that went before
+// any pass indexed it (recordRoomTypedBlocks). Each block the version holds names its fragment's
+// document (fragmentDocuments), or the tree artifact for a block of the tree's own fragment, and a
+// block whose document moved - a block cut from one fragment and pasted into another - takes one
 // retraction of the in_document it held and one assertion of the new one, dated at the pass's own
 // time, which it answers for the caller to append with the pass's other facts. A block whose row
 // it inserts states its in_document where its document_blocks row is inserted (IndexBlocks). The
@@ -1876,18 +1878,9 @@ func reconcileRoomBlocks(
 	fits []bool,
 	pastBound []model.ArtifactBlock,
 	fragments map[string]fragmentDocument,
-	deleted []string,
 ) ([]graphstore.UncausedTuple, error) {
 	if document.band != RankBandTree {
 		return nil, nil
-	}
-	if len(deleted) > 0 {
-		if _, err := tx.Exec(ctx, `
-			delete from issue_room_blocks r using unnest($2::text[]) as d (block_id)
-			where r.tree_artifact_id = $1::uuid and block_id_key(r.block_id) = block_id_key(d.block_id) and r.block_id = d.block_id
-		`, artifactID, deleted); err != nil {
-			return nil, fmt.Errorf("delete the room blocks version of %s no longer holds: %w", artifactID, err)
-		}
 	}
 	ids := make([]string, 0, len(nodes)+len(pastBound))
 	documents := make([]string, 0, len(nodes)+len(pastBound))
@@ -1903,18 +1896,15 @@ func reconcileRoomBlocks(
 		}
 		ids, documents = append(ids, block.ID), append(documents, ownerOf(block))
 	}
-	// The rows of the blocks past the bound the version no longer holds: no document_blocks row
-	// says which they are (deleted), so they are read off the tree's own rows by their length.
-	held := make([]string, len(pastBound))
-	for index, block := range pastBound {
-		held[index] = block.ID
+	for _, block := range pastBound {
 		ids, documents = append(ids, block.ID), append(documents, ownerOf(block))
 	}
+	// The rows of the blocks the pass does not hold, past the bound or not: ids is every block the
+	// room holds now.
 	if _, err := tx.Exec(ctx, `
-		delete from issue_room_blocks r
-		where r.tree_artifact_id = $1::uuid and octet_length(r.block_id) > $2 and not (r.block_id = any($3::text[]))
-	`, artifactID, text.MaxBlockIDBytes, held); err != nil {
-		return nil, fmt.Errorf("delete the room blocks past the bound version of %s no longer holds: %w", artifactID, err)
+		delete from issue_room_blocks r where r.tree_artifact_id = $1::uuid and not (r.block_id = any($2::text[]))
+	`, artifactID, ids); err != nil {
+		return nil, fmt.Errorf("delete the room blocks version of %s no longer holds: %w", artifactID, err)
 	}
 	if len(ids) == 0 {
 		return nil, nil

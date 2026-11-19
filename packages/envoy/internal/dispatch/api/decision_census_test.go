@@ -73,46 +73,29 @@ func requireReadingParent(t *testing.T, database *store.Store, document decision
 // document, for a reading in the ask's own document and for one in a copy of the ask on another
 // document of the issue, whose block keeps its source's id. A census that read the part_of as it
 // stands reads every such reading as a row and a node that disagree, and refuses.
-//
-// The ask's own document is a fragment of an issue born converted. The copy takes an issue of its
-// own, held unconverted: a block id is unique in an issue room, so a copy keeping its source's id
-// stands only between documents that are each their own room
-// (TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks).
 func TestTheCensusReadsAReadingInAnAnsweredAskAsTheAskBlocksChild(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", ":::requirement{#r1}\nOne.\n:::\n")
 	const question = "Which transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n"
-	// answeredAsk makes an issue titled title whose asks.md holds the ask a1, shaped on its spec's
-	// r1, and answers it, and answers the issue's key and the ask's id.
-	answeredAsk := func(title string) (string, string) {
-		t.Helper()
-		response := createIssueRequest(t, handler, map[string]any{"project": "CORE", "title": title, "spec": ":::requirement{#r1}\nOne.\n:::\n"})
-		if response.Code != http.StatusCreated {
-			t.Fatalf("create the issue %q: status=%d body=%s", title, response.Code, response.Body.String())
-		}
-		issue := decodeBody[model.Issue](t, response)
-		uploadAs(t, handler, issue.Key, "asks.md", ":::ask{#a1 urgency=\"med\" multiple=\"false\" shaped=\"dispatch://"+issue.Key+"/spec#b-r1\"}\n"+question+":::\n", "alice")
-		settleIssue(t, documents, issue.Key)
-		askID := blockAskID(t, handler, issue.Key, "a1")
-		answerDecisionBlock(t, handler, askID, "bob", []string{"REST"}, "Plain HTTP for now.", nil)
-		return issue.Key, askID
-	}
+	uploadAs(t, handler, issue.Key, "asks.md", ":::ask{#a1 urgency=\"med\" multiple=\"false\" shaped=\"dispatch://"+issue.Key+"/spec#b-r1\"}\n"+question+":::\n", "alice")
+	settleIssue(t, documents, issue.Key)
+	askID := blockAskID(t, handler, issue.Key, "a1")
+	answerDecisionBlock(t, handler, askID, "bob", []string{"REST"}, "Plain HTTP for now.", nil)
 
-	key, askID := answeredAsk("An answered ask's reading")
-	uploadAs(t, handler, key, "asks.md", "::::ask{#a1 urgency=\"med\" multiple=\"false\" shaped=\"dispatch://"+key+"/spec#b-r1\"}\n"+question+
+	uploadAs(t, handler, issue.Key, "asks.md", "::::ask{#a1 urgency=\"med\" multiple=\"false\" shaped=\"dispatch://"+issue.Key+"/spec#b-r1\"}\n"+question+
 		"\n:::reading{#g1}\nThe agent reads it as REST for every service.\n:::\n::::\n", "alice")
-	own := readDecisionDocument(t, database, key, "asks-md")
+	own := readDecisionDocument(t, database, issue.Key, "asks-md")
 	requireTypedNode(t, database, "a reading in the answered ask", own.address("g1"), refs.ReadingSupertag, graphstore.KindAsk, askID)
 	requireReadingParent(t, database, own, "g1", "a1")
 
-	holdIssuesUnconverted(t, database)
-	key, askID = answeredAsk("A copy of an answered ask")
-	uploadAs(t, handler, key, "copy.md", "::::ask{#a1 urgency=\"med\" multiple=\"false\"}\n"+question+
+	uploadAs(t, handler, issue.Key, "copy.md", "::::ask{#a1 urgency=\"med\" multiple=\"false\"}\n"+question+
 		"\n:::reading{#g2}\nThe agent reads the copied answer as REST.\n:::\n::::\n", "alice")
-	copied := readDecisionDocument(t, database, key, "copy-md")
+	copied := readDecisionDocument(t, database, issue.Key, "copy-md")
 	requireTypedNode(t, database, "a reading in a copy of the answered ask", copied.address("g2"), refs.ReadingSupertag, graphstore.KindAsk, askID)
 	requireReadingParent(t, database, copied, "g2", "a1")
+
 	report := requireTheCensusAgreesOver(t, database, "over readings in an answered ask and in its copy",
 		"block", "reading_parent", "shaped", "ask_parent", "ask_anchor", "ask_answer")
 	for _, kind := range report.Kinds {

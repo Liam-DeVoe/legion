@@ -438,10 +438,11 @@ func TestALongNamedDocumentIsReadByItsOwnReference(t *testing.T) {
 }
 
 // A converted issue's document whose reference key is past the store's address bound - 2600 bytes,
-// which the head's uploads still create - stays its own room, as every document is on main, while a
-// short-named document of the same issue joins the issue's room (documentJoinsIssueRoom): a block
-// of the room names its document's node, and the store cannot hold an address that long.
-func TestALongNamedDocumentStaysItsOwnRoomWhileAShortNamedOneJoinsTheIssues(t *testing.T) {
+// which the head's uploads still create - stays its own room, as every document is on main, and so
+// does a short-named document no role names, while a role document of the same issue, its plan,
+// joins the issue's room (documentJoinsIssueRoom, R5 of this branch's spec): what keeps a document
+// out of the room is the part it plays, never the length of its name.
+func TestALongNamedDocumentStaysItsOwnRoomWhileARoleDocumentJoinsTheIssues(t *testing.T) {
 	_, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Long and short names", "Context paragraph.\n")
 	var tree string
@@ -453,7 +454,7 @@ func TestALongNamedDocumentStaysItsOwnRoomWhileAShortNamedOneJoinsTheIssues(t *t
 	for _, test := range []struct {
 		what, name string
 		joins      bool
-	}{{"a short-named document", "notes.md", true}, {"a long-named document", long, false}} {
+	}{{"the issue's plan", "plan.md", true}, {"a short-named document", "notes.md", false}, {"a long-named document", long, false}} {
 		uploaded := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 			"name": test.name, "content": "A paragraph of the document.\n",
 		}, "alice")
@@ -468,11 +469,13 @@ func TestALongNamedDocumentStaysItsOwnRoomWhileAShortNamedOneJoinsTheIssues(t *t
 			`select (select room::text from document_rooms where artifact_id = $1)`, artifact.ID).Scan(&room); err != nil {
 			t.Fatalf("read the document_rooms row of %s: %v", test.what, err)
 		}
-		if test.joins && (room == nil || *room != tree || artifact.Room != tree) {
-			t.Fatalf("%s's document_rooms row = %v and its answer's room = %q, want both the issue's tree %s", test.what, room, artifact.Room, tree)
+		if test.joins && (room == nil || *room != tree || artifact.Room != tree || artifact.Fragment != artifact.ID) {
+			t.Fatalf("%s's document_rooms row = %v and its answer's room = %q fragment %q, want both the issue's tree %s and its own fragment %s",
+				test.what, room, artifact.Room, artifact.Fragment, tree, artifact.ID)
 		}
-		if !test.joins && (room != nil || artifact.Room != artifact.ID) {
-			t.Fatalf("%s's document_rooms row = %v and its answer's room = %q, want no row and the document's own room %s", test.what, room, artifact.Room, artifact.ID)
+		if !test.joins && (room != nil || artifact.Room != artifact.ID || artifact.Fragment != model.ArtifactFragmentOwn) {
+			t.Fatalf("%s's document_rooms row = %v and its answer's room = %q fragment %q, want no row, the document's own room %s and that room's own fragment %s",
+				test.what, room, artifact.Room, artifact.Fragment, artifact.ID, model.ArtifactFragmentOwn)
 		}
 	}
 }

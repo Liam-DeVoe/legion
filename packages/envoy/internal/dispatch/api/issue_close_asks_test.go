@@ -59,21 +59,8 @@ func newCloseAsksFixture(t *testing.T) closeAsksFixture {
 
 // newCloseAsksFixtureSettlingAfter is closeAsksFixture over a document service whose settle delay
 // is settle. Wherever the fixture needs a settlement it runs it itself (SettleIssueDocuments), so
-// it is built the same whatever the delay, and it leaves no document owing one. Its issues are
-// held unconverted: the copy is uploaded into the issue itself, and a copy inside one issue
-// stands only between documents that are each their own room
-// (TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks).
+// it is built the same whatever the delay, and it leaves no document owing one.
 func newCloseAsksFixtureSettlingAfter(t *testing.T, settle time.Duration) closeAsksFixture {
-	t.Helper()
-	return newCloseAsksFixtureOf(t, settle, true)
-}
-
-// newCloseAsksFixtureOf is newCloseAsksFixtureSettlingAfter with the copy uploaded into the
-// fixture's issue, held unconverted, when copyInIssue, else into an issue of its own in the same
-// project, on converted issues. A copy stands only among an owner's documents
-// (docs.ownerDocuments), so the copy in an issue of its own is no copy: its block opens its own
-// ask, open and waiting on a person, in that issue, which the fixture's issue never closes.
-func newCloseAsksFixtureOf(t *testing.T, settle time.Duration, copyInIssue bool) closeAsksFixture {
 	t.Helper()
 	var documents *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -81,9 +68,6 @@ func newCloseAsksFixtureOf(t *testing.T, settle time.Duration, copyInIssue bool)
 		t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 		return documents
 	})
-	if copyInIssue {
-		holdIssuesUnconverted(t, database)
-	}
 	issue := createInteractionIssue(t, handler, "TEST", "Closing with asks", closeDecision)
 	f := closeAsksFixture{handler: handler, database: database, documents: documents, issue: issue.Key, spec: issue.PrimaryArtifactID}
 	settleDocuments := func(what string) {
@@ -95,21 +79,7 @@ func newCloseAsksFixtureOf(t *testing.T, settle time.Duration, copyInIssue bool)
 	settleDocuments("the spec")
 	awaitIndexedAskBlock(t, handler, f.spec, "close-decision", "Ship it?")
 	f.blockAsk = requireBlockAsk(t, handler, f.issue, f.spec, "close-decision")
-	copyIssue, copyText := f.issue, contains(
-		`#close-decision urgency="med" multiple="false" state="open" copied_from="`+f.blockAsk+`"`,
-	)
-	if !copyInIssue {
-		created := createIssueRequest(t, handler, map[string]any{"project": "TEST", "title": "The copy's own issue", "spec": "Context\n"})
-		if created.Code != http.StatusCreated {
-			t.Fatalf("create the copy's issue: status=%d body=%s", created.Code, created.Body.String())
-		}
-		copyIssue = decodeBody[model.Issue](t, created).Key
-		ownAsk := `#close-decision urgency="med" multiple="false" state="open"`
-		copyText = func(text string) bool {
-			return strings.Contains(text, ownAsk) && !strings.Contains(text, "copied_from=")
-		}
-	}
-	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+copyIssue+"/artifacts", map[string]any{
+	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+f.issue+"/artifacts", map[string]any{
 		"actor": sessionActor(), "name": "spec-record.md", "content": closeDecision,
 	})
 	if uploaded.Code != http.StatusCreated {
@@ -118,10 +88,10 @@ func newCloseAsksFixtureOf(t *testing.T, settle time.Duration, copyInIssue bool)
 	f.copy = decodeBody[struct {
 		Artifact model.Artifact `json:"artifact"`
 	}](t, uploaded).Artifact.ID
-	if err := documents.SettleIssueDocuments(context.Background(), copyIssue); err != nil {
-		t.Fatalf("settle the copy: %v", err)
-	}
-	awaitTextShows(t, handler, f.copy, "the copy of the open decision", copyText, nil)
+	settleDocuments("the copy")
+	awaitTextShows(t, handler, f.copy, "the copy of the open decision", contains(
+		`#close-decision urgency="med" multiple="false" state="open" copied_from="`+f.blockAsk+`"`,
+	), nil)
 	awaitSettled(t, database, f.spec, f.copy)
 	f.approvalAsk = requestApproval(t, handler, f.spec).ID
 

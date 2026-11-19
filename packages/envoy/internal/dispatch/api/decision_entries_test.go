@@ -202,12 +202,6 @@ func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
 	documents := deps.Docs.(*docs.Service)
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
-	// Held unconverted: the fixture holds a copy of the answered ask in notes.md and two decisions
-	// under one block id (d9) in two documents of the issue, and block ids are unique within an
-	// issue room, so on an issue born converted notes.md's blocks take fresh ids
-	// (TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks). A converted issue's decision is
-	// TestAConvertedIssuesDecisionAnswersAsAnUnconvertedIssuesDecisionDoes'.
-	holdIssuesUnconverted(t, database)
 	issue := createSpecIssue(t, handler, "CORE", viewSpec)
 	if issue.Key != "CORE-1" {
 		t.Fatalf("the seeded issue is %s, want CORE-1, which the answered ask's shaped link names", issue.Key)
@@ -495,9 +489,10 @@ func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
 	if blocks := decodeBody[artifactText](t, text).Blocks; blocks == nil || len(*blocks) != blocksOverTheBound {
 		t.Fatalf("the heavy spec holds %v blocks, want %d, one over the bound", blocks, blocksOverTheBound)
 	}
+	// The issue is born converted, so the spec's blocks would be rows of its room, keyed by the tree.
 	var rows int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from document_blocks where artifact_id = $1::uuid`, heavySpec.id).Scan(&rows); err != nil || rows != 0 {
-		t.Fatalf("document_blocks holds %d rows of the heavy spec (%v), want none: its block index is owed", rows, err)
+	if err := database.Pool.QueryRow(ctx, `select count(*) from document_blocks where artifact_id = $1::uuid`, heavySpec.room).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("document_blocks holds %d rows of the heavy spec's room (%v), want none: its block index is owed", rows, err)
 	}
 	if indexed := blockIndexVersion(t, database, heavySpec.id); indexed != nil {
 		t.Fatalf("the heavy spec's blocks are indexed at version %d, want them owed", *indexed)
@@ -887,24 +882,21 @@ func TestADecisionsWordsAndVersionAreReadPastWhereTheBlockIndexStands(t *testing
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
 	const before, after = "The lag decides one way.", "The lag decides another way."
-	// Each document's decision takes an id of its own: the issue's room holds one block of an id
-	// across all its documents, so a second document writing lag.md's d1 would hold a block of a
-	// fresh id, and d1 would still name lag.md's.
-	document := func(items int, id, words, reading string) string {
+	document := func(items int, words, reading string) string {
 		var body strings.Builder
 		for range items {
 			body.WriteString("- x\n")
 		}
 		if reading == "" {
-			body.WriteString("\n:::decision{#" + id + "}\n" + words + "\n:::\n")
+			body.WriteString("\n:::decision{#d1}\n" + words + "\n:::\n")
 		} else {
-			body.WriteString("\n::::decision{#" + id + "}\n" + words + "\n\n:::reading{#g1}\n" + reading + "\n:::\n::::\n")
+			body.WriteString("\n::::decision{#d1}\n" + words + "\n\n:::reading{#g1}\n" + reading + "\n:::\n::::\n")
 		}
 		return body.String()
 	}
-	read := func(what string, doc decisionDocument, id, words string, version int) {
+	read := func(what string, doc decisionDocument, words string, version int) {
 		t.Helper()
-		entry := requireEntry(t, readEntries(t, handler, issue.Key), what, refs.BlockNodeKind+":"+doc.address(id))
+		entry := requireEntry(t, readEntries(t, handler, issue.Key), what, refs.BlockNodeKind+":"+doc.address("d1"))
 		if want := versionCreatedAt(t, database, doc.id, version); !strings.Contains(entry.Text, words) ||
 			entry.ChangedVersion != version || entry.ChangedAt == nil || !entry.ChangedAt.Equal(want) {
 			t.Errorf("%s: the decision reads %q at changed_version %d at %v, want its words %q, changed in version %d at %v",
@@ -913,18 +905,18 @@ func TestADecisionsWordsAndVersionAreReadPastWhereTheBlockIndexStands(t *testing
 	}
 
 	// Indexed at its first version by its own write, then owed.
-	agentUploadAs(t, handler, issue.Key, "lag.md", document(itemsUnderTheBlockBound-8, "d1", before, ""), nil)
+	agentUploadAs(t, handler, issue.Key, "lag.md", document(itemsUnderTheBlockBound-8, before, ""), nil)
 	lag := readDecisionDocument(t, database, issue.Key, "lag-md")
 	if indexed := blockIndexVersion(t, database, lag.id); indexed == nil || *indexed != 1 {
 		t.Fatalf("the first version of lag.md is indexed at %v, want 1, by its own write", indexed)
 	}
-	agentUploadAs(t, handler, issue.Key, "lag.md", document(itemsOverTheBlockBound, "d1", after, ""), nil)
+	agentUploadAs(t, handler, issue.Key, "lag.md", document(itemsOverTheBlockBound, after, ""), nil)
 	if indexed := blockIndexVersion(t, database, lag.id); indexed != nil {
 		t.Fatalf("the second version of lag.md left its blocks indexed at %d, want them owed", *indexed)
 	}
-	read("a document owed its index since its first version", lag, "d1", after, 2)
-	agentUploadAs(t, handler, issue.Key, "lag.md", document(itemsOverTheBlockBound, "d1", after, "The agent reads it the other way."), nil)
-	read("a reading written in an owed version", lag, "d1", after, 2)
+	read("a document owed its index since its first version", lag, after, 2)
+	agentUploadAs(t, handler, issue.Key, "lag.md", document(itemsOverTheBlockBound, after, "The agent reads it the other way."), nil)
+	read("a reading written in an owed version", lag, after, 2)
 	if _, err := deps.Docs.(*docs.Service).ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil); err != nil {
 		t.Fatalf("one pass of the block-index reconciliation: %v", err)
 	}
@@ -932,16 +924,16 @@ func TestADecisionsWordsAndVersionAreReadPastWhereTheBlockIndexStands(t *testing
 	if row := rowChangedVersion(t, database, lag, "d1"); row != 3 {
 		t.Fatalf("the pass recorded d1's text as changed in version %d, want 3, where the reading made it differ from version 2", row)
 	}
-	read("a pass that indexed versions 2 and 3 at once", lag, "d1", after, 2)
+	read("a pass that indexed versions 2 and 3 at once", lag, after, 2)
 
 	// Never indexed: the node's first version and the newest differ.
-	agentUploadAs(t, handler, issue.Key, "heavy.md", document(itemsOverTheBlockBound, "d2", before, ""), nil)
-	agentUploadAs(t, handler, issue.Key, "heavy.md", document(itemsOverTheBlockBound, "d2", after, ""), nil)
+	agentUploadAs(t, handler, issue.Key, "heavy.md", document(itemsOverTheBlockBound, before, ""), nil)
+	agentUploadAs(t, handler, issue.Key, "heavy.md", document(itemsOverTheBlockBound, after, ""), nil)
 	heavy := readDecisionDocument(t, database, issue.Key, "heavy-md")
 	if indexed := blockIndexVersion(t, database, heavy.id); indexed != nil {
 		t.Fatalf("heavy.md is indexed at %d, want it owed since its first version", *indexed)
 	}
-	read("a document no pass ever indexed", heavy, "d2", after, 2)
+	read("a document no pass ever indexed", heavy, after, 2)
 }
 
 // An answered ask whose block left its document keeps its row, which still names the room that

@@ -598,7 +598,7 @@ func IndexBlocks(
 	}
 	// An issue room's blocks name their documents in issue_room_blocks, beside their
 	// document_blocks rows under the tree artifact, in this transaction (D16).
-	moves, err := reconcileRoomBlocks(ctx, tx, artifactID, document, nodes, fits, pastBound, fragments, deleted)
+	moves, err := reconcileRoomBlocks(ctx, tx, artifactID, document, nodes, fits, pastBound, fragments)
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, false, err
 	}

@@ -91,9 +91,11 @@ func TestASavedBlockPointerIsALinkNamedByItsAttribute(t *testing.T) {
 	specRef := "dispatch://" + issue.Key + "/spec"
 	r1 := specRef + "#b-r1"
 	checksRef := "dispatch://" + issue.Key + "/artifact/checks-md"
-	// The issue's documents are fragments of its room, whose tree keys every block's node.
+	// The spec is a fragment of its issue's room, whose tree keys its blocks' nodes; checks.md plays
+	// no role, so it is a room of its own, whose ref_key keys its blocks' nodes (R5 of this branch's
+	// spec).
 	nodes := readDecisionDocument(t, database, issue.Key, "spec").nodeKey
-	c1 := nodes + "#c1"
+	c1 := issue.Key + "/checks-md#c1"
 	if response := uploadChecks(t, handler, issue.Key, claimMarkdown("c1", r1)); response.Code != http.StatusCreated {
 		t.Fatalf("upload the claim: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -148,9 +150,9 @@ func TestAPointerAndAProseCitationOfOneTargetAreTwoEdges(t *testing.T) {
 	handler, database := blockIndexHandler(t)
 	issue, _ := pointerSpec(t, handler)
 	r1 := "dispatch://" + issue.Key + "/spec#b-r1"
-	// The issue's documents are fragments of its room, whose tree keys every block's node.
-	nodes := readDecisionDocument(t, database, issue.Key, "spec").nodeKey
-	c1 := nodes + "#c1"
+	// The spec is a fragment of its issue's room; checks.md plays no role, so it is a room of its
+	// own, whose ref_key keys its blocks' nodes (R5 of this branch's spec).
+	c1 := issue.Key + "/checks-md#c1"
 	claim := func(body string) string {
 		return ":::claim{#c1 supports=\"" + r1 + "\" serves=\"" + r1 + "\"}\n" + body + "\n:::\n"
 	}
@@ -164,7 +166,7 @@ func TestAPointerAndAProseCitationOfOneTargetAreTwoEdges(t *testing.T) {
 		t.Fatalf("GET …/blocks of checks.md lists no block for %q", prose)
 	}
 	requireEdgeSources(t, "links to r1", graphEdges(t, handler, url.Values{"to": {r1}}).Edges,
-		"serves block "+c1, "supports block "+c1, "mentions block "+nodes+"#"+paragraph)
+		"serves block "+c1, "supports block "+c1, "mentions block "+issue.Key+"/checks-md#"+paragraph)
 	servesVersion := func() int {
 		t.Helper()
 		for _, row := range readBlockRefs(t, database, checks) {
@@ -203,11 +205,13 @@ func TestABlockPointerAttributeLinksEachDistinctTargetOnce(t *testing.T) {
 	issue := createSpecIssue(t, handler, "ACME", ":::requirement{#r1}\nA requirement.\n:::\n\n:::requirement{#r2}\nAnother requirement.\n:::\n")
 	specRef := "dispatch://" + issue.Key + "/spec"
 	r1, r2 := specRef+"#b-r1", specRef+"#b-r2"
-	// The issue's documents are fragments of its room, whose tree keys every block's node, and a
-	// pointer is stored at the node its address resolves to (refs.ResolvedBlockSQL).
+	// The spec is a fragment of its issue's room, whose tree keys its blocks' nodes, and a pointer
+	// is stored at the node its address resolves to (refs.ResolvedBlockSQL); checks.md plays no
+	// role, so it is a room of its own, whose ref_key keys its blocks' nodes (R5 of this branch's
+	// spec).
 	nodes := readDecisionDocument(t, database, issue.Key, "spec").nodeKey
 	r1Node, r2Node := nodes+"#r1", nodes+"#r2"
-	c1 := nodes + "#c1"
+	c1 := issue.Key + "/checks-md#c1"
 
 	requireRows := func(stage string, want ...string) {
 		t.Helper()
@@ -249,12 +253,14 @@ func TestABlockPointerIsListedOnlyWhileItsTargetHasAnAllowedType(t *testing.T) {
 	issue, _ := pointerSpec(t, handler)
 	specRef := "dispatch://" + issue.Key + "/spec"
 	r1 := specRef + "#b-r1"
-	// The issue's documents are fragments of its room, whose tree keys every block's node; a
-	// reference keeps the address written, which resolves to that node (refs.ResolvedBlockSQL).
+	// The spec is a fragment of its issue's room, whose tree keys its blocks' nodes; a reference
+	// keeps the address written, which resolves to that node (refs.ResolvedBlockSQL). checks.md
+	// plays no role, so it is a room of its own, whose ref_key keys its blocks' nodes (R5 of this
+	// branch's spec).
 	nodes := readDecisionDocument(t, database, issue.Key, "spec").nodeKey
 	r1Node, r1Written := nodes+"#r1", issue.Key+"/spec#r1"
 	checksRef := "dispatch://" + issue.Key + "/artifact/checks-md"
-	c1 := nodes + "#c1"
+	c1 := issue.Key + "/checks-md#c1"
 	if response := uploadChecks(t, handler, issue.Key, claimMarkdown("c1", r1)); response.Code != http.StatusCreated {
 		t.Fatalf("upload the claim: status=%d body=%s", response.Code, response.Body.String())
 	}

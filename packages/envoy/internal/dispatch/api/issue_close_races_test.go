@@ -133,10 +133,6 @@ func TestADecisionResolvedJustBeforeTheCloseTakesTheIssueLeavesItsCopyResolved(t
 		wrapper.API = documents
 		return wrapper
 	})
-	// Held unconverted: the copy keeps its source's block id, and a copy inside one issue stands
-	// only between documents that are each their own room
-	// (TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks).
-	holdIssuesUnconverted(t, database)
 	issue, decision, copied := decisionWithCopy(t, handler, documents)
 
 	wrapper.after = func() {
@@ -261,10 +257,6 @@ func TestClosingAnIssueLeavesTheSettledAnswerInADecisionsCopy(t *testing.T) {
 		t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 		return documents
 	})
-	// Held unconverted: the copy keeps its source's block id, and a copy inside one issue stands
-	// only between documents that are each their own room
-	// (TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks).
-	holdIssuesUnconverted(t, database)
 	issue, decision, copied := decisionWithCopy(t, handler, documents)
 	answerDecision(t, handler, database, issue.PrimaryArtifactID, decision)
 	if err := documents.SettleIssueDocuments(context.Background(), issue.Key); err != nil {

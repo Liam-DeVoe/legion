@@ -77,21 +77,23 @@ func compareBlockLinks(t *testing.T, stage string, got []model.BlockLink, want [
 // A4: rollout.md has two blocks citing blocks of the spec, written in two versions, and the
 // spec has one block citing rollout.md's first block. The links from rollout.md to the spec
 // are exactly its two, newest first, each dated by the version that wrote it; the links back are
-// exactly the spec's one. Both documents are fragments of their issue's room, whose tree keys
-// every block's node.
+// exactly the spec's one. The spec is a fragment of its issue's room, whose tree keys its blocks'
+// nodes; rollout.md plays no role, so it is a room of its own, whose ref_key keys its blocks' nodes
+// (R5 of this branch's spec).
 func TestBlockLinksListLinksFromBlocksOfOneDocumentToBlocksOfAnother(t *testing.T) {
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	holdIt := ":::callout{#hold-it kind=\"note\" title=\"\"}\nHold it.\n:::"
 	issue := createSpecIssue(t, handler, "CORE", shipIt("Ship it.")+"\n\n"+holdIt+"\n\nOther paragraph.\n")
 	specRef := "dispatch://" + issue.Key + "/spec"
-	// The room's node of a block of either document (refs.DocumentRoomSQL).
+	// The room's node of a block of the spec (refs.DocumentRoomSQL).
 	node := readDecisionDocument(t, database, issue.Key, "spec").address
 
 	shipParagraph := "Ship per " + specRef + "#b-ship%5Fit."
 	rollout := uploadIssueDocument(t, handler, issue.Key, "rollout.md",
 		":::callout{#first_call kind=\"note\" title=\"\"}\nDecided.\n:::\n\n"+shipParagraph+"\n")
 	rolloutRef := "dispatch://" + issue.Key + "/artifact/" + rollout.Slug
+	rolloutKey := rollout.RefKey
 	rolloutV1 := latestVersion(t, database, rollout.ID)
 	holdParagraph := "Hold per " + specRef + "#b-hold-it."
 	editIssueDocument(t, handler, issue.Key, rollout.Slug, []map[string]any{{"op": "insert", "after": "end", "markdown": holdParagraph}})
@@ -119,13 +121,13 @@ func TestBlockLinksListLinksFromBlocksOfOneDocumentToBlocksOfAnother(t *testing.
 	compareBlockLinks(t, "rollout.md to the spec", forward.Links, []blockLink{
 		{
 			Kind:         "mentions",
-			FromDocument: rolloutRef, FromID: node(holdFrom), FromKind: "block", FromBlockID: holdFrom,
+			FromDocument: rolloutRef, FromID: rolloutKey + "#" + holdFrom, FromKind: "block", FromBlockID: holdFrom,
 			ToDocument: specRef, ToID: node("hold-it"), ToKind: "block", ToBlockID: "hold-it",
 			CreatedVersion: 2, CreatedAt: rolloutV2.CreatedAt,
 		},
 		{
 			Kind:         "mentions",
-			FromDocument: rolloutRef, FromID: node(shipFrom), FromKind: "block", FromBlockID: shipFrom,
+			FromDocument: rolloutRef, FromID: rolloutKey + "#" + shipFrom, FromKind: "block", FromBlockID: shipFrom,
 			ToDocument: specRef, ToID: node("ship_it"), ToKind: "block", ToBlockID: "ship_it",
 			CreatedVersion: 1, CreatedAt: rolloutV1.CreatedAt,
 		},
@@ -138,7 +140,7 @@ func TestBlockLinksListLinksFromBlocksOfOneDocumentToBlocksOfAnother(t *testing.
 	compareBlockLinks(t, "the spec to rollout.md", backward.Links, []blockLink{{
 		Kind:         "mentions",
 		FromDocument: specRef, FromID: node(citeFrom), FromKind: "block", FromBlockID: citeFrom,
-		ToDocument: rolloutRef, ToID: node("first_call"), ToKind: "block", ToBlockID: "first_call",
+		ToDocument: rolloutRef, ToID: rolloutKey + "#first_call", ToKind: "block", ToBlockID: "first_call",
 		CreatedVersion: 2, CreatedAt: specV2.CreatedAt,
 	}})
 }

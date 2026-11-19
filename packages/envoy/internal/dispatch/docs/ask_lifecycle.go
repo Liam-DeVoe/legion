@@ -41,14 +41,14 @@ func logUnindexedAskBlocks(issueKey string, blocks []BlockRef) {
 var errSettleJoined = errors.New("docs: an issue's documents settle outside every transaction")
 
 // holdsFragmentSQL is true of the artifact aliased alias, an issue's, while it holds a fragment of
-// a room: each document of an issue with no issue room (no issue_trees row) is its own room, and
-// an issue room holds its tree's own fragment and one of each document its document_rooms rows
-// name. The decisions query node of an issue born converted, a doc row with no fragment and no
-// document_rooms row (D6 of dispatch://INFRA-1253's plan), holds none.
+// a room: an issue room holds its tree's own fragment and one of each role document its
+// document_rooms rows name, and every other document of an issue, of an issue with no issue room
+// (no issue_trees row) and of a converted one alike, is its own room and holds that room's own
+// fragment (R5 of this branch's spec, version 112). The decisions query node of an issue born
+// converted, a doc row with no fragment and no document_rooms row (DecisionsQuerySQL, D6 of this
+// branch's plan), holds none.
 func holdsFragmentSQL(alias string) string {
-	return `(` + alias + `.kind = 'tree' or ` + alias + `.kind = 'doc' and (
-		exists (select 1 from document_rooms held where held.artifact_id = ` + alias + `.id)
-		or not exists (select 1 from issue_trees tree where tree.issue_key = ` + alias + `.issue_key)))`
+	return `(` + alias + `.kind = 'tree' or ` + alias + `.kind = 'doc' and not ` + DecisionsQuerySQL(alias) + `)`
 }
 
 // issueDocumentIDs lists the documents of the issue $1 that hold a fragment (holdsFragmentSQL), the

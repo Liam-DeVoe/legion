@@ -26,9 +26,7 @@ import (
 // The browser suite drives the same path (e2e/close-withdraws-asks.e2e.ts, whose "Waiting on you
 // (3)" counts this request).
 func TestAReopenedIssuesApprovalRequestStillWaitsOnThePersonOnceItsDocumentsSettle(t *testing.T) {
-	// The copy in an issue of its own: the request is the spec's, and a copy inside a converted
-	// issue is no copy (TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks).
-	f := newCloseAsksFixtureOf(t, time.Hour, false)
+	f := newCloseAsksFixtureSettlingAfter(t, time.Hour)
 	ctx := context.Background()
 	before := readBlockAsk(t, f.handler, f.approvalAsk)
 	if before.State != "open" || before.WaitingOn != "human" {

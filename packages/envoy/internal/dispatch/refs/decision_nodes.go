@@ -701,7 +701,9 @@ func (f TypedFacts) typedScope() *pairScope {
 // where it holds the block under another type. So a decision a deferred version removes leaves the
 // Decisions read in that version's transaction (dispatch://INFRA-1150 R4). The block-index
 // reconciliation indexes the document later with the same facts, and its pairs hold these same
-// ties, so it moves none of them (TestTheReconcilerMovesNoRowTheTypedPassWrote).
+// ties, so it moves none of them (TestTheReconcilerMovesNoRowTheTypedPassWrote). Over an issue
+// room it also records the document whose fragment holds each decision and reading it places
+// (recordRoomTypedBlocks), as an own-room deferral places them in its document by its own key.
 func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, facts TypedFacts, indexed bool) ([]Target, graphstore.Uncaused, error) {
 	if !facts.read {
 		if indexed || !facts.bare {
@@ -815,12 +817,56 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, facts
 		return nil, graphstore.Uncaused{}, err
 	}
 	write.Tuples = append(write.Tuples, parents...)
+	if err := recordRoomTypedBlocks(ctx, tx, artifactID, document, facts, fragments); err != nil {
+		return nil, graphstore.Uncaused{}, err
+	}
 	moved, links, err := replaceBlockRefs(ctx, tx, artifactID, refKey, facts.versionOf, writer, false, false, facts.typedPairs(), facts.typedScope())
 	if err != nil {
 		return nil, graphstore.Uncaused{}, err
 	}
 	write.Tuples = append(write.Tuples, links...)
 	return moved, write, nil
+}
+
+// recordRoomTypedBlocks records in issue_room_blocks, the issue room's one record of the document
+// whose fragment holds each of its blocks (reconcileRoomBlocks), the document of each decision and
+// reading the typed-node pass above the deferral bound places in the room artifactID, whose tree
+// artifact keys their nodes and their ties' block_refs rows: a document that is its own room
+// places them under its own key, so every reader of a block's document (BlockDocumentSQL), the
+// Decisions read of a document that owes its block index among them, reads that document, and a
+// room's would read the tree but for this row. A block of the tree's own fragment names the tree.
+// The pass states no in_document - the block-index reconciliation states it, and the row it
+// projects, when it indexes the room whole - so a block the room has a row of already keeps it: a
+// row moved here would project an in_document no tuple states. A row whose block went before the
+// reconciliation indexed the room goes with that pass (reconcileRoomBlocks). A document that is
+// its own room records nothing.
+func recordRoomTypedBlocks(ctx context.Context, tx pgx.Tx, artifactID string, document indexedDocument, facts TypedFacts, fragments map[string]fragmentDocument) error {
+	if document.band != RankBandTree || len(facts.typed) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(facts.typed))
+	documents := make([]string, 0, len(facts.typed))
+	for _, id := range facts.typed {
+		if !blockIDFits(document.refKey, id) {
+			continue
+		}
+		owner := artifactID
+		if _, read := fragments[facts.documents[id]]; read {
+			owner = facts.documents[id]
+		}
+		ids, documents = append(ids, id), append(documents, owner)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into issue_room_blocks (tree_artifact_id, block_id, document_id)
+		select $1::uuid, w.block_id, w.document_id::uuid from unnest($2::text[], $3::text[]) as w (block_id, document_id)
+		on conflict (tree_artifact_id, block_id_key(block_id)) do nothing
+	`, artifactID, ids, documents); err != nil {
+		return fmt.Errorf("record the documents of the decisions and readings of room %s: %w", artifactID, err)
+	}
+	return nil
 }
 
 // unheldTypedNodes is the node of each decision and reading the store holds present in document

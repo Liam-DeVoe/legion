@@ -404,17 +404,11 @@ func TestAskBlocksInUploadedSpecVersionAreIndexed(t *testing.T) {
 // answer of the ask it was copied from (LEGION-651).
 func TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks(t *testing.T) {
 	var documentService *docs.Service
-	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
 	})
-	// Held unconverted: block ids are unique within an issue room, so a copy uploaded into its own
-	// converted issue takes fresh ids and opens asks of its own
-	// (TestACopyOfASpecUploadedIntoItsConvertedIssueOpensItsOwnAsks); the copy rule this test holds,
-	// a copy of an ask on another document of the same owner, is that of documents that are each
-	// their own room (the T12b fixes of dispatch://INFRA-1253's plan).
-	holdIssuesUnconverted(t, database)
 	spec := "Context\n\n" +
 		":::ask{#rec-answered urgency=\"med\" multiple=\"false\"}\nShip on Monday?\n\n- Yes: Monday.\n- No: Later.\n:::\n\n" +
 		":::ask{#rec-resolved urgency=\"med\" multiple=\"false\"}\nWrite the changelog?\n:::\n\n" +
@@ -568,9 +562,6 @@ func TestAnsweringOrResolvingACopysSourceSettlesTheCopy(t *testing.T) {
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
 	})
-	// Held unconverted: a same-issue copy on a converted issue takes fresh ids (see
-	// TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks).
-	holdIssuesUnconverted(t, database)
 	spec := "Context\n\n" +
 		":::ask{#later-answered urgency=\"med\" multiple=\"false\"}\nShip on Monday?\n\n- Yes: Monday.\n- No: Later.\n:::\n\n" +
 		":::ask{#later-resolved urgency=\"med\" multiple=\"false\"}\nWrite the changelog?\n:::\n"
@@ -638,9 +629,6 @@ func TestAnAnswerToACopysSourceAfterItsRewordingOpensTheCopysOwnAsk(t *testing.T
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
 	})
-	// Held unconverted: a same-issue copy on a converted issue takes fresh ids (see
-	// TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks).
-	holdIssuesUnconverted(t, database)
 	spec := "Context\n\n:::ask{#ship urgency=\"med\" multiple=\"false\"}\nShip on Monday?\n\n- Yes: Monday.\n- No: Later.\n:::\n"
 	issue := createInteractionIssue(t, handler, "TEST", "Source reworded after its copy", spec)
 	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "ship", "Ship on Monday?")
@@ -701,14 +689,11 @@ func TestAnAnswerToACopysSourceAfterItsRewordingOpensTheCopysOwnAsk(t *testing.T
 // a question no decision answered and opens its own ask.
 func TestAnUploadRewordingAnAnsweredAskLeavesItDecidedAndItsCopyOpensItsOwnAsk(t *testing.T) {
 	var documentService *docs.Service
-	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
 	})
-	// Held unconverted: a same-issue copy on a converted issue takes fresh ids (see
-	// TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks).
-	holdIssuesUnconverted(t, database)
 	monday := "Context\n\n:::ask{#ship urgency=\"med\" multiple=\"false\"}\nShip on Monday?\n\n- Yes: Monday.\n- No: Later.\n:::\n"
 	tuesday := "Context\n\n:::ask{#ship urgency=\"med\" multiple=\"false\"}\nShip on Tuesday?\n\n- Tuesday: Ship it.\n- No: Later.\n:::\n"
 	issue := createInteractionIssue(t, handler, "TEST", "Answered ask reworded by upload", monday)

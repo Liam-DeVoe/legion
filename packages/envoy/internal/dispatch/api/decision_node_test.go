@@ -697,31 +697,46 @@ func TestADecisionInASettlementOfSeveralWritersNamesTheOneWhoWroteIt(t *testing.
 }
 
 // A reading inside an ask stands under the ask the block shows (R2: the parent of a reading inside
-// an ask is the ask node). A browser's new ask block holding a reading shows no ask at all - no
-// row, no source - and settlement flags it invalid, so the reading in it is a block like any
-// other: supertag block, placed in the ask block. A copy of an answered ask, on another document
-// of the issue, opens no row of its own and shows its source's answer, so a reading in it is a
-// reading node whose part_of is the source ask's node, its document_blocks row still naming the
-// copy's block.
+// an ask is the ask node). A copy of an answered ask, on another document of the issue, opens no
+// row of its own and shows its source's answer, so a reading in it is a reading node whose part_of
+// is the source ask's node, its document_blocks row still naming the copy's block. A browser's new
+// ask block holding a reading shows no ask at all - no row, no source - and settlement flags it
+// invalid, so the reading in it is a block like any other: supertag block, placed in the ask block.
 func TestAReadingInAnAskBlockStandsUnderTheAskTheBlockShows(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
-	// asksOf is the number of asks of the block id of the document artifactID, read under the
-	// room the document is edited in (refs.AsksOfFragmentBlocksSQL).
-	asksOf := func(t *testing.T, artifactID, id string) int {
-		t.Helper()
+	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
+	const ask = ":::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n"
+	uploadAs(t, handler, issue.Key, "asks.md", ask, "alice")
+	settleIssue(t, documents, issue.Key)
+	askID := blockAskID(t, handler, issue.Key, "a1")
+	answerDecisionBlock(t, handler, askID, "alice", []string{"REST"}, "", nil)
+
+	t.Run("a copy of an answered ask", func(t *testing.T) {
+		uploadAs(t, handler, issue.Key, "copy.md", "::::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n\n"+
+			":::reading{#g1}\nThe agent reads the copied answer as REST.\n:::\n::::\n", "alice")
+		copied := readDecisionDocument(t, database, issue.Key, "copy-md")
 		var rows int
-		if err := database.Pool.QueryRow(context.Background(),
-			`select count(*) from asks k where `+refs.AsksOfFragmentBlocksSQL("k", "$1::uuid", "$2::text[]"),
-			artifactID, []string{id}).Scan(&rows); err != nil {
-			t.Fatalf("count the asks of %s in %s: %v", id, artifactID, err)
+		if err := database.Pool.QueryRow(context.Background(), `select count(*) from asks where block_artifact_id = $1`, copied.id).Scan(&rows); err != nil {
+			t.Fatalf("count the copy's asks: %v", err)
 		}
-		return rows
-	}
+		if rows != 0 {
+			t.Fatalf("the copy opened %d asks of its own, want none: it shows its source's", rows)
+		}
+		requireTypedNode(t, database, "a reading in a copy of an answered ask", copied.address("g1"), "reading", graphstore.KindAsk, askID)
+		var parent *string
+		if err := database.Pool.QueryRow(context.Background(), `
+			select parent_block_id from document_blocks where artifact_id = $1 and block_id = 'g1'
+		`, copied.id).Scan(&parent); err != nil {
+			t.Fatalf("read the reading's row: %v", err)
+		}
+		if parent == nil || *parent != "a1" {
+			t.Errorf("the reading's row names the parent %v, want the copy's ask block a1, the projection of its part_of", parent)
+		}
+	})
 
 	t.Run("a browser's new ask block", func(t *testing.T) {
-		issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
 		uploadAs(t, handler, issue.Key, "browser.md", "Before.\n", "alice")
 		browser := readDecisionDocument(t, database, issue.Key, "browser-md")
 		writeBrowserDocument(t, handler, documents, browser.id, "Before.\n\n::::ask{#a9 urgency=\"med\" multiple=\"false\"}\nShould we ship?\n\n- Ship: Release it\n- Hold: Wait\n\n"+
@@ -731,43 +746,13 @@ func TestAReadingInAnAskBlockStandsUnderTheAskTheBlockShows(t *testing.T) {
 		if latestVersion(t, database, browser.id).Number < 2 {
 			t.Fatalf("settlement wrote no version of the browser's ask block")
 		}
-		if rows := asksOf(t, browser.id, "a9"); rows != 0 {
+		var rows int
+		if err := database.Pool.QueryRow(context.Background(), `select count(*) from asks where block_artifact_id = $1`, browser.id).Scan(&rows); err != nil {
+			t.Fatalf("count the browser document's asks: %v", err)
+		}
+		if rows != 0 {
 			t.Fatalf("the browser's ask block holding a reading opened %d asks, want none: settlement flags it", rows)
 		}
 		requireTypedNode(t, database, "a reading in a new ask block that shows no ask", browser.address("g9"), refs.BlockSupertag, refs.BlockNodeKind, browser.address("a9"))
-	})
-
-	t.Run("a copy of an answered ask", func(t *testing.T) {
-		// Held unconverted: block ids are unique within an issue room, so a copy uploaded into its
-		// own converted issue takes fresh ids and shows no source's answer; the copy this case
-		// reads, of an ask on another document of the same owner under the same block id, is one
-		// of documents that are each their own room (TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks).
-		holdIssuesUnconverted(t, database)
-		created := createIssueRequest(t, handler, map[string]any{"project": "CORE", "title": "Copies of an answered ask", "spec": "A spec.\n"})
-		if created.Code != http.StatusCreated {
-			t.Fatalf("create the copy case's issue: status=%d body=%s", created.Code, created.Body.String())
-		}
-		issue := decodeBody[model.Issue](t, created)
-		const ask = ":::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n"
-		uploadAs(t, handler, issue.Key, "asks.md", ask, "alice")
-		settleIssue(t, documents, issue.Key)
-		askID := blockAskID(t, handler, issue.Key, "a1")
-		answerDecisionBlock(t, handler, askID, "alice", []string{"REST"}, "", nil)
-		uploadAs(t, handler, issue.Key, "copy.md", "::::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n\n"+
-			":::reading{#g1}\nThe agent reads the copied answer as REST.\n:::\n::::\n", "alice")
-		copied := readDecisionDocument(t, database, issue.Key, "copy-md")
-		if rows := asksOf(t, copied.id, "a1"); rows != 0 {
-			t.Fatalf("the copy opened %d asks of its own, want none: it shows its source's", rows)
-		}
-		requireTypedNode(t, database, "a reading in a copy of an answered ask", copied.address("g1"), "reading", graphstore.KindAsk, askID)
-		var parent *string
-		if err := database.Pool.QueryRow(context.Background(), `
-			select parent_block_id from document_blocks where artifact_id = $1 and block_id = 'g1'
-		`, copied.room).Scan(&parent); err != nil {
-			t.Fatalf("read the reading's row: %v", err)
-		}
-		if parent == nil || *parent != "a1" {
-			t.Errorf("the reading's row names the parent %v, want the copy's ask block a1, the projection of its part_of", parent)
-		}
 	})
 }
