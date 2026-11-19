@@ -46,7 +46,12 @@ interface TableRecipe {
   readonly wrapper: string;
 }
 
-const RECIPE: Record<ControlSize, TableRecipe> = {
+/** How much room a row takes: a control's two sizes, and `dense`, the comfortable table's look at
+ *  the type and padding of a table read in a narrow tab beside other content (an issue's Steps),
+ *  whose box sits inside a card of the caller's rather than drawing one. */
+export type TableDensity = ControlSize | "dense";
+
+const RECIPE: Record<TableDensity, TableRecipe> = {
   comfortable: {
     body: "",
     cell: "px-4 py-3",
@@ -67,6 +72,17 @@ const RECIPE: Record<ControlSize, TableRecipe> = {
     row: `border-t ${borderDefault}`,
     stickyHead: `sticky top-0 ${surfaceBg}`,
     table: "w-full text-xs tabular-nums",
+    wrapper: "relative overflow-x-auto",
+  },
+  dense: {
+    body: "",
+    cell: "px-1.5 py-1.5",
+    empty: `px-1.5 py-1.5 ${textMutedOnSurface}`,
+    head: `border-b ${surfaceMutedBg} ${borderDefault} ${textSecondaryOnSurface}`,
+    headCell: "px-1.5 py-1.5 font-semibold whitespace-nowrap",
+    row: `border-b last:border-0 ${borderDefault}`,
+    stickyHead: "sticky top-0",
+    table: "w-full text-left text-xs",
     wrapper: "relative overflow-x-auto",
   },
 };
@@ -115,7 +131,7 @@ function joined(...parts: readonly string[]): string {
 }
 
 interface TableStyle {
-  readonly size: ControlSize;
+  readonly size: TableDensity;
   readonly stickyHead: boolean;
 }
 
@@ -131,7 +147,7 @@ export interface TableShellProps {
   /** The table's accessible name. */
   readonly label: string;
   /** How much room a row takes. */
-  readonly size?: ControlSize;
+  readonly size?: TableDensity;
   /** Whether the head stays at the top of the box while the rows scroll under it. */
   readonly stickyHead?: boolean;
   /** Whether the box wears the trailing fade (`scrollFadeTrailing`) while columns lie past its
@@ -251,6 +267,8 @@ export interface TableCellProps extends Omit<TdHTMLAttributes<HTMLTableCellEleme
   /** Whether the cell's text sits at the top of a row taller than it, as in a row where another
    *  cell takes two lines; by default it sits in the middle. */
   readonly top?: boolean;
+  /** Whether the cell's digits take one width each, so a column of counts lines up. */
+  readonly tabular?: boolean;
   /** Figures that line up column-wise, such as a key or a commit. */
   readonly mono?: boolean;
   readonly tone?: TableTone;
@@ -262,6 +280,7 @@ export function TableCell({
   align = "left",
   children,
   mono = false,
+  tabular = false,
   tone = "default",
   top = false,
   weight = "normal",
@@ -278,7 +297,8 @@ export function TableCell({
         WEIGHT[weight],
         TONE[tone],
         WRAP[wrap],
-        top ? "align-top" : ""
+        top ? "align-top" : "",
+        tabular ? "tabular-nums" : ""
       )}
       {...rest}
     >
