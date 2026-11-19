@@ -32,6 +32,15 @@ func Generation(w *Watcher) uint64 {
 	return w.generation
 }
 
+// Waiting reports whether a read is waiting past its barrier (settleSince is set): a wait ends
+// when its read ends, one way or another, and with its generation, so a test that drives a wait to
+// its end reads its end here before it reads what that end left.
+func Waiting(w *Watcher) bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return !w.settleSince.IsZero()
+}
+
 // RereadOn installs a re-read of generation on kv as reread does once its wait has passed: it is
 // discarded unless generation is still current.
 func RereadOn(w *Watcher, kv bus.KeyValue, generation uint64) error {

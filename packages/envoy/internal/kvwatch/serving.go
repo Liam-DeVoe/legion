@@ -84,16 +84,25 @@ var ErrUnverified = errors.New("kvwatch: no read could read its bucket past a ba
 //     (TestReadErrEndsAWaitWhoseReadCompletes), and with its generation: a new watch, the
 //     watcher's own end or Stop (clearSettleLocked; TestAWaitItsGenerationEndedIsNoWaitToReadErr).
 //
-// Neither starts nor adds to a run:
+// Neither starts nor adds to a run, and the first three leave a run there is as it was
+// (TestAnUncountedReadLeavesARunAsItWas: a row for each of the first two, and one for a bucket
+// deleted and one for a bucket deleted and created again, found by the check after a timed-out
+// wait):
 //
 //   - a read whose scan timed out (readAgainLater; TestReadErrCountsNoReadWhoseScanTimedOut);
 //   - a read whose stream check at completion failed after its barrier and leader reads
 //     succeeded (readAgainLater; TestReadErrCountsNoReadWhoseStreamCheckAtCompletionFails);
-//   - a wait whose stream check found its bucket replaced (settleReplaced;
-//     TestReadErrCountsNoWaitThatFoundItsBucketReplaced);
+//   - a wait whose stream check found its bucket deleted, or deleted and created again, which
+//     counts only while it is under way (settleReplaced): the check after a timed-out wait
+//     (TestReadErrCountsNoWaitThatFoundItsBucketReplaced, a row each) and the check at the
+//     barrier's acknowledgement
+//     (TestReadErrCountsNoWaitThatFoundItsBucketReplacedAtItsAcknowledgement);
 //   - the failure of a read that may no longer complete (completes), such as one the connection
 //     dropped under, whose wait counts only while it is under way
-//     (TestReadErrCountsNoFailureOfAReadTheConnectionDroppedUnder).
+//     (TestReadErrCountsNoFailureOfAReadTheConnectionDroppedUnder). No test pins that this
+//     failure leaves a run as it was: it arms nothing, its wait has already ended and readiness
+//     was released before, so it leaves no state a test can wait on without sleeping. The branch
+//     that skips it (settleFailed's completes) is the one that test pins from no run.
 //
 // From the bound on the copy is refused (Servable), because those reads do not complete, and only
 // a read that completes repairs it. It names the watcher and its bucket, how long the reads have

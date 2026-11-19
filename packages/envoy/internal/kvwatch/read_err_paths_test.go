@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -27,22 +28,17 @@ import (
 const pastTheBound = 2*time.Minute + time.Second
 
 // unreadStreams is a bucket's jetstream context whose reads of a stream (STREAM.INFO, the stream
-// check's) fail while unread is set, counting those it failed. With ackAt set, its publishes are
-// acknowledged at ackAt without being sent, so a read's consumer never reaches its barrier. With
-// unreadOnPublish set, a publish it sent sets unread before it returns, so every stream check
-// after a read's barrier fails and every one before it answers.
+// check's) fail while unread is set, counting those it failed. With unreadOnPublish set, a publish
+// it sent sets unread before it returns, so every stream check after a read's barrier fails and
+// every one before it answers.
 type unreadStreams struct {
 	jetstream.JetStream
-	ackAt           uint64
 	unreadOnPublish bool
 	unread          *atomic.Bool
 	failed          *atomic.Int64
 }
 
 func (s unreadStreams) PublishMsg(ctx context.Context, msg *natsgo.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
-	if s.ackAt != 0 {
-		return &jetstream.PubAck{Sequence: s.ackAt}, nil
-	}
 	ack, err := s.JetStream.PublishMsg(ctx, msg, opts...)
 	if s.unreadOnPublish {
 		s.unread.Store(true)
@@ -102,7 +98,7 @@ func TestReadErrCountsATimedOutWaitWhoseStreamCheckFails(t *testing.T) {
 	clock := newClock()
 	unread, failed := &atomic.Bool{}, &atomic.Int64{}
 	w, into, timers := readErrWatcher(t, bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(),
-		unreadStreams{JetStream: kv.Streams(), ackAt: 1 << 40, unread: unread, failed: failed}), clock)
+		unreadStreams{JetStream: ackedAt{JetStream: kv.Streams(), sequence: 1 << 40}, unread: unread, failed: failed}), clock)
 	w.Start()
 	eventually(t, "the wait past the barrier to be bounded", func() bool { return len(timers.armed(7*time.Hour)) == 2 })
 
@@ -203,31 +199,45 @@ func TestReadErrCountsNoReadWhoseStreamCheckAtCompletionFails(t *testing.T) {
 	}
 }
 
-// A read whose wait past its barrier times out on a stream check that finds the bucket deleted
-// and created again waits for nothing more: the new bucket is read, and the wait counts for
-// nothing.
+// A read whose wait past its barrier times out on a stream check that finds the bucket deleted,
+// or deleted and created again, waits for nothing more, and the wait counts for nothing. A bucket
+// created again is read, and one only deleted is read once it is created (the stream probe's).
 func TestReadErrCountsNoWaitThatFoundItsBucketReplaced(t *testing.T) {
-	conn, kv := bucket(t, testnats.URL(t))
-	clock := newClock()
-	w, _, timers := readErrWatcher(t, bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), ackedAt{JetStream: kv.Streams(), sequence: 1 << 40}), clock)
-	w.Start()
-	eventually(t, "the wait past the barrier to be bounded", func() bool { return len(timers.armed(7*time.Hour)) == 2 })
+	for _, row := range []struct {
+		name     string
+		recreate bool
+		// rereads is how many reads of a new bucket the stream check arms.
+		rereads int
+	}{
+		{name: "the bucket deleted", recreate: false, rereads: 0},
+		{name: "the bucket deleted and created again", recreate: true, rereads: 1},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			conn, kv := bucket(t, testnats.URL(t))
+			clock := newClock()
+			w, _, timers := readErrWatcher(t, bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), ackedAt{JetStream: kv.Streams(), sequence: 1 << 40}), clock)
+			w.Start()
+			eventually(t, "the wait past the barrier to be bounded", func() bool { return len(timers.armed(7*time.Hour)) == 2 })
 
-	js := jetStream(t, conn)
-	deleteTestBucket(t, js)
-	testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: testBucketName})
-	clock.advance(7 * time.Hour)
-	if err := w.ReadErr(); !errors.Is(err, kvwatch.ErrUnverified) || !strings.Contains(err.Error(), "still waiting") {
-		t.Fatalf("ReadErr while the wait is past the stale bound = %v, want the wait reported", err)
-	}
-	timers.last(t, 7*time.Hour).fire()
-	eventually(t, "the replaced wait to end uncounted", func() bool { return w.ReadErr() == nil })
-	if n := len(timers.armed(0)); n != 1 {
-		t.Fatalf("%d reads of the new bucket armed, want the one the stream check arms", n)
-	}
-	clock.advance(pastTheBound)
-	if err := w.ReadErr(); err != nil {
-		t.Fatalf("ReadErr past the stale bound after the replaced wait ended = %v, want nil", err)
+			js := jetStream(t, conn)
+			deleteTestBucket(t, js)
+			if row.recreate {
+				testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: testBucketName})
+			}
+			clock.advance(7 * time.Hour)
+			if err := w.ReadErr(); !errors.Is(err, kvwatch.ErrUnverified) || !strings.Contains(err.Error(), "still waiting") {
+				t.Fatalf("ReadErr while the wait is past the stale bound = %v, want the wait reported", err)
+			}
+			timers.last(t, 7*time.Hour).fire()
+			eventually(t, "the replaced wait to end uncounted", func() bool { return w.ReadErr() == nil })
+			if n := len(timers.armed(0)); n != row.rereads {
+				t.Fatalf("%d reads of a new bucket armed, want %d", n, row.rereads)
+			}
+			clock.advance(pastTheBound)
+			if err := w.ReadErr(); err != nil {
+				t.Fatalf("ReadErr past the stale bound after the replaced wait ended = %v, want nil", err)
+			}
+		})
 	}
 }
 
@@ -265,5 +275,158 @@ func TestReadErrEndsAWaitWhoseReadCompletes(t *testing.T) {
 	clock.advance(pastTheBound)
 	if err := w.ReadErr(); err != nil {
 		t.Fatalf("ReadErr past the stale bound after the read completed = %v, want nil", err)
+	}
+}
+
+// replacedBeforeAck is a bucket's jetstream context whose first publish, a read's barrier, tells
+// the test on published and waits on replaced before the context it embeds answers it, so the test
+// can delete and create the bucket again between the barrier's write and its acknowledgement.
+type replacedBeforeAck struct {
+	jetstream.JetStream
+	published chan<- struct{}
+	replaced  <-chan struct{}
+	once      *sync.Once
+}
+
+func (s replacedBeforeAck) PublishMsg(ctx context.Context, msg *natsgo.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+	s.once.Do(func() {
+		s.published <- struct{}{}
+		<-s.replaced
+	})
+	return s.JetStream.PublishMsg(ctx, msg, opts...)
+}
+
+// A read whose barrier's acknowledgement arrives before its consumer has reached the barrier
+// checks the bucket's stream then (consume's acknowledgement branch). A check that finds the
+// bucket deleted and created again ends the wait before its bound is armed, and the wait counts
+// for nothing: the new bucket is read. TestReadErrCountsNoWaitThatFoundItsBucketReplaced is the
+// same finding by the check after a timed-out wait.
+func TestReadErrCountsNoWaitThatFoundItsBucketReplacedAtItsAcknowledgement(t *testing.T) {
+	conn, kv := bucket(t, testnats.URL(t))
+	clock := newClock()
+	published, replaced := make(chan struct{}), make(chan struct{})
+	var release sync.Once
+	t.Cleanup(func() { release.Do(func() { close(replaced) }) })
+	w, _, timers := readErrWatcher(t, bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), replacedBeforeAck{
+		JetStream: ackedAt{JetStream: kv.Streams(), sequence: 1 << 40}, published: published, replaced: replaced, once: &sync.Once{},
+	}), clock)
+	w.Start()
+	wait(t, published, "the read's barrier write")
+
+	js := jetStream(t, conn)
+	deleteTestBucket(t, js)
+	testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: testBucketName})
+	release.Do(func() { close(replaced) })
+	eventually(t, "the replaced wait to end", func() bool { return !kvwatch.Waiting(w) })
+	clock.advance(pastTheBound)
+	if err := w.ReadErr(); err != nil {
+		t.Fatalf("ReadErr past the stale bound after the stream check at the acknowledgement found the bucket replaced = %v, want nil", err)
+	}
+	if n := len(timers.armed(7 * time.Hour)); n != 1 {
+		t.Fatalf("%d waits of the idle timeout armed, want only the scan's: the check at the acknowledgement did not end the wait", n)
+	}
+	if n := len(timers.armed(0)); n != 1 {
+		t.Fatalf("%d reads of the new bucket armed, want the one the stream check arms", n)
+	}
+}
+
+// replacedWaitAfterARun is the uncounted step of TestAnUncountedReadLeavesARunAsItWas whose second
+// read waits past its barrier while the test deletes the bucket, and creates it again when
+// recreate is set, and then times the wait out: the stream check after the timeout finds the
+// bucket replaced. rereads is how many reads of a new bucket that check arms.
+func replacedWaitAfterARun(recreate bool, rereads int) func(*testing.T, *kvwatch.Watcher, *natsgo.Conn, *clock, *pending, *atomic.Int64) {
+	return func(t *testing.T, w *kvwatch.Watcher, conn *natsgo.Conn, clock *clock, timers *pending, _ *atomic.Int64) {
+		eventually(t, "the second read's wait past its barrier to be bounded", func() bool { return len(timers.armed(7*time.Hour)) == 3 })
+		js := jetStream(t, conn)
+		deleteTestBucket(t, js)
+		if recreate {
+			testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: testBucketName})
+		}
+		clock.advance(7 * time.Hour)
+		timers.last(t, 7*time.Hour).fire()
+		eventually(t, "the replaced wait to end", func() bool { return !kvwatch.Waiting(w) })
+		if n := len(timers.armed(0)); n != rereads {
+			t.Fatalf("%d reads of a new bucket armed, want %d", n, rereads)
+		}
+	}
+}
+
+// A read that counts for nothing leaves a run of failed reads as it was: its count, the start it
+// is measured from and its last error. The run here is one read whose barrier write fails; the
+// read after it takes an uncounted path, and past the bound ReadErr still reports the one failed
+// read and its error. The failure of a read the connection dropped under is no row: it leaves no
+// state a test can wait on, since it arms nothing, its wait has already ended and its readiness
+// was released by the first read, so a test could tell it was handled only by sleeping.
+// TestReadErrCountsNoFailureOfAReadTheConnectionDroppedUnder pins it from no run.
+func TestAnUncountedReadLeavesARunAsItWas(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		// inner is the bucket's jetstream context under the failing barrier write.
+		inner func(kv bus.KeyValue, unread *atomic.Bool, failed *atomic.Int64) jetstream.JetStream
+		// stalls is whether the second read's scan stalls.
+		stalls bool
+		// uncounted drives the second read down its uncounted path and returns once it has ended.
+		uncounted func(t *testing.T, w *kvwatch.Watcher, conn *natsgo.Conn, clock *clock, timers *pending, failed *atomic.Int64)
+	}{
+		{
+			name:   "a read whose scan timed out",
+			inner:  func(kv bus.KeyValue, _ *atomic.Bool, _ *atomic.Int64) jetstream.JetStream { return kv.Streams() },
+			stalls: true,
+			uncounted: func(t *testing.T, _ *kvwatch.Watcher, _ *natsgo.Conn, clock *clock, timers *pending, _ *atomic.Int64) {
+				eventually(t, "the second read's scan idle wait", func() bool { return len(timers.armed(7*time.Hour)) == 2 })
+				clock.advance(7 * time.Hour)
+				timers.last(t, 7*time.Hour).fire()
+				eventually(t, "the timed-out read's re-read to be armed", func() bool { return len(timers.armed(5*time.Second)) == 2 })
+			},
+		},
+		{
+			name: "a read whose stream check at completion failed",
+			inner: func(kv bus.KeyValue, unread *atomic.Bool, failed *atomic.Int64) jetstream.JetStream {
+				return unreadStreams{JetStream: kv.Streams(), unreadOnPublish: true, unread: unread, failed: failed}
+			},
+			uncounted: func(t *testing.T, _ *kvwatch.Watcher, _ *natsgo.Conn, _ *clock, timers *pending, failed *atomic.Int64) {
+				eventually(t, "the unconfirmed read's re-read to be armed", func() bool { return len(timers.armed(5*time.Second)) == 2 })
+				if failed.Load() == 0 {
+					t.Fatal("UNKNOWN: no stream check failed, so this row says nothing")
+				}
+			},
+		},
+		{
+			name: "a wait that found its bucket deleted",
+			inner: func(kv bus.KeyValue, _ *atomic.Bool, _ *atomic.Int64) jetstream.JetStream {
+				return ackedAt{JetStream: kv.Streams(), sequence: 1 << 40}
+			},
+			uncounted: replacedWaitAfterARun(false, 0),
+		},
+		{
+			name: "a wait that found its bucket deleted and created again",
+			inner: func(kv bus.KeyValue, _ *atomic.Bool, _ *atomic.Int64) jetstream.JetStream {
+				return ackedAt{JetStream: kv.Streams(), sequence: 1 << 40}
+			},
+			uncounted: replacedWaitAfterARun(true, 1),
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			conn, kv := bucket(t, testnats.URL(t))
+			clock := newClock()
+			unread, failed, failing := &atomic.Bool{}, &atomic.Int64{}, &atomic.Bool{}
+			failing.Store(true)
+			handle := bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), failingBarriers{JetStream: row.inner(kv, unread, failed), failing: failing})
+			if row.stalls {
+				handle = scripted(handle, nil, stallsAfter(0)).handle()
+			}
+			w, into, timers := readErrWatcher(t, handle, clock)
+			w.Start()
+			eventually(t, "the failed read's re-read to be armed", func() bool { return len(timers.armed(5*time.Second)) == 1 })
+
+			failing.Store(false)
+			timers.last(t, 5*time.Second).fire()
+			row.uncounted(t, w, conn, clock, timers, failed)
+			clock.advance(pastTheBound)
+			countedOnce(t, w.ReadErr(), natsgo.ErrConnectionClosed, "write the read barrier")
+			if done := len(into.completions()); done != 0 {
+				t.Fatalf("%d reads completed, want none", done)
+			}
+		})
 	}
 }
