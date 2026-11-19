@@ -1012,7 +1012,7 @@ restarted_pid_in() { sed -n "s/^dev-stack: $2 restarted (pid [0-9]* -> \([0-9]*\
 old_natsd="$(sed -n 's/^fake natsd: pid=\([0-9]*\)$/\1/p' "${work_dir}/logs/natsd.log" | head -n1 || true)"
 [[ -n "$old_natsd" ]] || fail "the --callout run's natsd stub logged no pid"
 nats_port="${process_port[natsd]}"
-kill -USR1 "${instance_pid[1]}"
+kill -USR1 "${instance_pid[1]}" # no-wait: a restart; its line below comes once the old one is reaped
 wait_for_line "$log1" 'dev-stack: natsd restarted' || {
   cat "$log1" >&2
   fail "the --callout run did not restart natsd on SIGUSR1"
@@ -1029,7 +1029,7 @@ grep -q -- "fake natsd: args=-p -1 " "${work_dir}/logs/natsd.log.1" ||
   fail "the natsd restart did not keep the first natsd's log as natsd.log.1"
 listener_url="$(exported "$log1" ENVOY_URL)"
 old_listener="${server_pid[listener]}"
-kill -USR2 "${instance_pid[1]}"
+kill -USR2 "${instance_pid[1]}" # no-wait: a restart; its line below comes once the old one is reaped
 wait_for_line "$log1" 'dev-stack: listener restarted' || {
   cat "$log1" >&2
   fail "the --callout run did not restart the listener on SIGUSR2"
@@ -1063,7 +1063,7 @@ printf 'PASS: SIGUSR1 restarted natsd (pid %s -> %s) on port %s with its store a
 DEV_STACK_TEST_NATSD_MOVES=1 run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
 assert_instance_ready 'the run whose natsd moves' "$log1" "$psql_calls1" "$curl_calls1"
 nats_port="${process_port[natsd]}"
-kill -USR1 "${instance_pid[1]}"
+kill -USR1 "${instance_pid[1]}" # no-wait: wait_for_exit, next, waits for the run it stops
 wait_for_exit 1
 [[ "$exited_status" -ne 0 ]] || fail "a run whose natsd came back on another port reported success"
 grep -Eq "^dev-stack: natsd came back on port [0-9]+ \(monitor none\), not port ${nats_port} \(monitor none\) it served before the restart; stopping$" "$log1" || {
@@ -1083,7 +1083,7 @@ printf 'PASS: a natsd that came back on another port than %s stopped the stack, 
 DEV_STACK_TEST_NATSD_MONITOR_MOVES=1 run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --callout
 assert_instance_ready 'the run whose natsd monitor moves' "$log1" "$psql_calls1" "$curl_calls1"
 nats_port="${process_port[natsd]}"
-kill -USR1 "${instance_pid[1]}"
+kill -USR1 "${instance_pid[1]}" # no-wait: wait_for_exit, next, waits for the run it stops
 wait_for_exit 1
 [[ "$exited_status" -ne 0 ]] || fail "a run whose natsd monitor came back on another port reported success"
 grep -Eq "^dev-stack: natsd came back on port ${nats_port} \(monitor [0-9]+\), not port ${nats_port} \(monitor ${nats_port}\) it served before the restart; stopping$" "$log1" || {
@@ -1101,7 +1101,7 @@ printf 'PASS: a natsd whose monitor came back on another port than %s stopped th
 DEV_STACK_TEST_LISTENER_MOVES=1 run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
 assert_instance_ready 'the run whose listener moves' "$log1" "$psql_calls1" "$curl_calls1"
 listener_url="$(exported "$log1" ENVOY_URL)"
-kill -USR2 "${instance_pid[1]}"
+kill -USR2 "${instance_pid[1]}" # no-wait: wait_for_exit, next, waits for the run it stops
 wait_for_exit 1
 [[ "$exited_status" -ne 0 ]] || fail "a run whose listener came back on another port reported success"
 grep -Eq "^dev-stack: the listener came back at http://127\.0\.0\.1:[0-9]+, not ${listener_url} it served before the restart; stopping$" "$log1" || {
