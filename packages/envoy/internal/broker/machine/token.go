@@ -69,12 +69,13 @@ type TokenCredential struct {
 // pod enrollment uses), which checks it against the issuer it names, and its subject must be in
 // BROKER_SERVICE_LOGINS with an entry that names that issuer. It is held to
 // MaxTokenLoginLifetime from its issue, and AuthenticateLauncher reads the same setting for
-// every credential a login issues. It is both the check a token login makes and the check a
-// route whose callers are a deployment's daemons makes (api's serviceAuth class,
-// POST /v1/oauth/exchange/pod-sessions), so the two refuse the same accounts for the same
-// reasons. With no Kubernetes issuer it is ErrTokenLoginsOff, and a token whose issuer the
-// broker cannot read yet is ErrIssuerUnavailable. The other refusals are ErrTokenExpired,
-// ErrTokenInvalid, ErrTokenTooLongLived and ErrAccountNotListed; none repeats the token.
+// every credential a login issues. It is both the check a token login makes and the check the
+// routes whose callers are a deployment's daemons make (api's serviceAuth class,
+// POST /v1/oauth/exchange/pod-sessions and POST /v1/oauth/exchange/pod-sessions/release), so
+// they refuse the same accounts for the same reasons. With no Kubernetes issuer it is
+// ErrTokenLoginsOff, and a token whose issuer the broker cannot read yet is ErrIssuerUnavailable.
+// The other refusals are ErrTokenExpired, ErrTokenInvalid, ErrTokenTooLongLived and
+// ErrAccountNotListed; none repeats the token.
 func (s *Service) VerifyServiceToken(ctx context.Context, token string) (ServiceAccount, error) {
 	if s.Enroll.Pod == nil {
 		return ServiceAccount{}, ErrTokenLoginsOff

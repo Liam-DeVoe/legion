@@ -91,6 +91,10 @@ type testServer struct {
 // podAudience is the audience the test server's pod verifier checks and podToken mints for.
 const podAudience = "legion-broker-pod"
 
+// registrationAudience is the test server's BROKER_POD_REGISTRATION_AUDIENCE: the second audience
+// POST /v1/oauth/exchange/pod-sessions accepts a pod token at, of the same issuer as podAudience.
+const registrationAudience = "legion-broker-pod-registration"
+
 // daemonAccount and otherDaemonAccount are the ServiceAccounts the test server's
 // BROKER_SERVICE_LOGINS lets log in as legion-daemon with their tokens, as two Legion daemons' own
 // accounts do.
@@ -103,8 +107,9 @@ const (
 // approves for every requester; WORKER_TOKEN, shared and agent-tier, which every session and pod
 // gets at once; and SHARED_KEY, shared and human-tier, which anyone signed in approves. It wires a
 // real pod verifier against a local OIDC issuer, as cmd/broker/main.go does when
-// BROKER_K8S_OIDC_ISSUER is set, and mounts api.Register on an httptest.Server so every proof's
-// htu and every request object's aud have one real, consistent PublicURL to check against.
+// BROKER_K8S_OIDC_ISSUER is set, and a second at registrationAudience, as it does when
+// BROKER_POD_REGISTRATION_AUDIENCE is set, and mounts api.Register on an httptest.Server so every
+// proof's htu and every request object's aud have one real, consistent PublicURL to check against.
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
 	return newTestServerWith(t, func(*api.Deps) {})
@@ -138,6 +143,7 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	// an entry that names none.
 	podIssuers := []oidc.NamedIssuer{{URL: issuer.URL()}}
 	podVerifier := enroll.K8sPodVerifier{Issuers: oidc.NewIssuerSet(podIssuers, podAudience, 0)}
+	registrationVerifier := enroll.K8sPodVerifier{Issuers: oidc.NewIssuerSet(podIssuers, registrationAudience, 0)}
 	serviceLogins := map[string]enroll.ServiceLogin{
 		daemonAccount:      {Service: "legion-daemon", Issuers: []string{""}},
 		otherDaemonAccount: {Service: "legion-daemon", Issuers: []string{""}},
@@ -161,6 +167,18 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	sessions := oauthstore.New(st.Pool)
 	enr.Sessions = sessions
 
+	// BROKER_POD_REGISTRARS: both daemon accounts listed for every pod account this package's
+	// tests register — the worker's and the other pods', the rig exchange's two accounts, an
+	// account no exchange entry lists, and the first daemon's own account, whose sibling pod a
+	// rollout registers — so every test of the route reaches the refusal it asserts. A test of the
+	// list itself narrows it with adjust.
+	podRegistrars := api.PodRegistrars{}
+	for _, registrar := range []string{daemonAccount, otherDaemonAccount} {
+		for _, pod := range []string{workerAccount, otherAccount, brokertest.ExchangeAccount, brokertest.ExchangeRolesAccount, unlistedAccount, daemonAccount} {
+			podRegistrars[api.PodRegistrar{Registrar: registrar, Pod: pod}] = struct{}{}
+		}
+	}
+
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local),
 		PendingTTL: 12 * time.Hour,
@@ -179,6 +197,7 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 		APIAccounts:   map[string]api.Account{dispatchAccount: brokertest.Caller(t, dispatchCaller)},
 		AccountTokens: podVerifier,
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
+		PodRegistrars: podRegistrars, PodRegistrationTokens: registrationVerifier,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,

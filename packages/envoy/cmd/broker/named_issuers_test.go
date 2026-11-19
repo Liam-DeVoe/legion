@@ -79,7 +79,13 @@ func bothIssuers(a, b *oidctest.Issuer) string {
 // not cluster's makes a token naming one issuer and carrying another's signature.
 func clusterToken(t *testing.T, cluster *oidctest.Issuer, key *oidctest.Key, account, podUID string) string {
 	t.Helper()
-	claims := cluster.Claims(account, enrolmentAudience)
+	return clusterTokenFor(t, cluster, key, account, podUID, enrolmentAudience)
+}
+
+// clusterTokenFor is clusterToken for audience in place of enrolmentAudience.
+func clusterTokenFor(t *testing.T, cluster *oidctest.Issuer, key *oidctest.Key, account, podUID, audience string) string {
+	t.Helper()
+	claims := cluster.Claims(account, audience)
 	claims["iat"] = time.Now().Add(-5 * time.Second).Unix()
 	if podUID != "" {
 		claims["kubernetes.io"] = map[string]any{"pod": map[string]any{"uid": podUID}}
@@ -194,9 +200,16 @@ func (c namedClient) renew(p pod, token string) (int, string) {
 // login token, bearer, does.
 func (c namedClient) register(bearer, podToken string) (int, string) {
 	c.t.Helper()
-	status, answer := c.send(http.MethodPost, "/v1/oauth/exchange/pod-sessions", map[string]string{"Authorization": "Bearer " + bearer},
-		map[string]any{"pod_token": podToken, "session": namedSession})
+	status, answer := c.registerFor(bearer, podToken, namedSession)
 	return status, codeOf(answer)
+}
+
+// registerFor registers the pod podToken names for session, as a registrar presenting its own
+// login token, bearer, does, and answers the status and the body.
+func (c namedClient) registerFor(bearer, podToken, session string) (int, []byte) {
+	c.t.Helper()
+	return c.send(http.MethodPost, "/v1/oauth/exchange/pod-sessions", map[string]string{"Authorization": "Bearer " + bearer},
+		map[string]any{"pod_token": podToken, "session": session})
 }
 
 // pending is GET /v1/pending, a route of the listed caller, presenting bearer.
@@ -243,9 +256,11 @@ func expect(t *testing.T, prefix string, routes []namedRoute) {
 
 // TestTheBrokerTrustsEachNamedIssuer: with two named issuers, A and B, both up, a token of A and a
 // token of B each pass enrollment, renewal, the token login, the pod-session registration and a
-// route of the listed caller. On each of those routes a token of a third issuer, C, gets the
-// status and code a token of another issuer gets on a broker of one issuer, and so does a token
-// that names A and carries a signature of B's key, under a key id A publishes.
+// route of the listed caller. Each cluster's daemon, which BROKER_POD_REGISTRARS lists for the
+// worker's pods, registers its own pod under a session name of its own, since a name belongs to
+// the daemon that first registered it. On each of those routes a token of a third issuer, C, gets
+// the status and code a token of another issuer gets on a broker of one issuer, and so does a
+// token that names A and carries a signature of B's key, under a key id A publishes.
 func TestTheBrokerTrustsEachNamedIssuer(t *testing.T) {
 	databaseURL := storetest.URL(t)
 	a, b, c := oidctest.New(t), oidctest.New(t), oidctest.New(t)
@@ -255,10 +270,12 @@ func TestTheBrokerTrustsEachNamedIssuer(t *testing.T) {
 	broker := startBroker(t, brokerOptions{Env: namedIssuersEnv(t, databaseURL, bothIssuers(a, b),
 		"BROKER_SERVICE_LOGINS="+namedService+"="+namedDaemonA+"=a,b "+namedService+"="+namedDaemonB+"=a,b",
 		"BROKER_API_ACCOUNTS=dispatch="+namedCaller+"=a,b",
-		// The registration route writes for an account the exchange lists with no fixed session.
+		// The registration route writes for an account the exchange lists with no fixed session,
+		// from a registrar BROKER_POD_REGISTRARS pairs with that account.
 		"BROKER_EXCHANGE_K8S_AUDIENCE="+exchangeAudience,
 		"BROKER_EXCHANGE_K8S_ISSUER=a",
 		"BROKER_EXCHANGE_ACCOUNTS="+namedWorker+"=ACME=ada@example.com",
+		"BROKER_POD_REGISTRARS="+namedDaemonA+"="+namedWorker+" "+namedDaemonB+"="+namedWorker,
 	)})
 	client := namedClient{t: t, base: "http://" + broker.Addr}
 
@@ -304,8 +321,9 @@ func TestTheBrokerTrustsEachNamedIssuer(t *testing.T) {
 				}
 			})
 			t.Run("passes pod-session registration", func(t *testing.T) {
-				if status, code := client.register(clusterToken(t, cluster.issuer, cluster.key, cluster.daemon, ""), clusterToken(t, cluster.issuer, cluster.key, namedWorker, podUID)); status != http.StatusOK {
-					t.Fatalf("answered %d %q, want 200", status, code)
+				status, answer := client.registerFor(clusterToken(t, cluster.issuer, cluster.key, cluster.daemon, ""), clusterToken(t, cluster.issuer, cluster.key, namedWorker, podUID), namedSession+"-"+strings.ToLower(cluster.name))
+				if status != http.StatusOK {
+					t.Fatalf("answered %d %q, want 200", status, codeOf(answer))
 				}
 			})
 			t.Run("passes an API account route", func(t *testing.T) {
@@ -556,6 +574,83 @@ func TestAKeySetTheBrokerCannotReadIsAnswered503(t *testing.T) {
 			}
 		}
 	})
+}
+
+// namedRegistrationAudience is BROKER_POD_REGISTRATION_AUDIENCE where a test sets it: a second
+// audience of the clusters' tokens, which POST /v1/oauth/exchange/pod-sessions alone accepts, apart
+// from enrolmentAudience and exchangeAudience, since the broker refuses to start on one equal to
+// either.
+const namedRegistrationAudience = "https://broker.example/pod-registration"
+
+// TestARegistrationTokenIsCheckedByTheIssuerItNames: with BROKER_POD_REGISTRATION_AUDIENCE set and
+// four named issuers, A and B up, C's discovery document failing at boot, and D's discovery
+// document read at boot and its key set failing, namedDaemonA, which logs in with a token of A and
+// which BROKER_POD_REGISTRARS lists for namedWorker's pods, registers at POST
+// /v1/oauth/exchange/pod-sessions, each under a session name of its own, a pod whose token of the
+// registration audience A issued and one whose token of that audience B issued, each answered 200
+// naming that pod and that name: a daemon starts pods in each cluster, so a token of the
+// registration audience is checked by the issuer it names, as a token of the broker's own audience
+// is. A pod whose token of the registration audience C or D issued is answered 503
+// OIDC_ISSUER_UNAVAILABLE, as on every route that checks a ServiceAccount token. D's is a token
+// only the registration audience's verifier decides, since the verifier of the broker's own
+// audience refuses its audience before it needs D's key. A token of the registration audience
+// from E, an issuer BROKER_K8S_OIDC_ISSUER does not name, is 401 POD_TOKEN_INVALID.
+func TestARegistrationTokenIsCheckedByTheIssuerItNames(t *testing.T) {
+	a, b, c, d, e := oidctest.New(t), oidctest.New(t), oidctest.New(t), oidctest.New(t), oidctest.New(t)
+	aKey, bKey, cKey, dKey, eKey := a.PublishKey(t, "a-key"), b.PublishKey(t, "b-key"), c.PublishKey(t, "c-key"), d.PublishKey(t, "d-key"), e.PublishKey(t, "e-key")
+	c.FailDiscovery(http.StatusServiceUnavailable)
+	d.FailKeys(http.StatusServiceUnavailable)
+	broker := startBroker(t, brokerOptions{Env: namedIssuersEnv(t, storetest.URL(t), bothIssuers(a, b)+",c="+c.URL()+",d="+d.URL(),
+		"BROKER_SERVICE_LOGINS="+namedService+"="+namedDaemonA+"=a",
+		"BROKER_POD_REGISTRARS="+namedDaemonA+"="+namedWorker,
+		"BROKER_POD_REGISTRATION_AUDIENCE="+namedRegistrationAudience,
+		// The registration route writes for an account the exchange lists with no fixed session.
+		"BROKER_EXCHANGE_K8S_AUDIENCE="+exchangeAudience,
+		"BROKER_EXCHANGE_K8S_ISSUER=a,b",
+		"BROKER_EXCHANGE_ACCOUNTS="+namedWorker+"=ACME=ada@example.com==a,b",
+	)})
+	client := namedClient{t: t, base: "http://" + broker.Addr}
+	for _, want := range []map[string]any{
+		{"name": "c", "url": c.URL(), "read": false},
+		{"name": "d", "url": d.URL(), "read": true},
+	} {
+		if len(recordsWith(broker.Boot, issuerBootMessage, want)) == 0 {
+			t.Fatalf("the boot log holds no line %q carrying %v: C's discovery document must fail at boot and D's be read, so that only D's key set fails:\n%s", issuerBootMessage, want, broker.Boot)
+		}
+	}
+	registrar := clusterToken(t, a, aKey, namedDaemonA, "")
+	for _, row := range []struct {
+		name, about string
+		issuer      *oidctest.Issuer
+		key         *oidctest.Key
+		status      int
+		code        string
+	}{
+		{"A", "is registered", a, aKey, http.StatusOK, ""},
+		{"B", "is registered", b, bKey, http.StatusOK, ""},
+		{"C", "gets 503 OIDC_ISSUER_UNAVAILABLE while C's discovery document cannot be read", c, cKey, http.StatusServiceUnavailable, issuerUnavailable},
+		{"D", "gets 503 OIDC_ISSUER_UNAVAILABLE while D's key set cannot be read", d, dKey, http.StatusServiceUnavailable, issuerUnavailable},
+		{"E", "gets 401 POD_TOKEN_INVALID, as BROKER_K8S_OIDC_ISSUER does not name E", e, eKey, http.StatusUnauthorized, "POD_TOKEN_INVALID"},
+	} {
+		t.Run("a pod whose token of the registration audience "+row.name+" issued "+row.about, func(t *testing.T) {
+			podUID := "pod-of-" + strings.ToLower(row.name)
+			session := namedSession + "-" + strings.ToLower(row.name)
+			status, answer := client.registerFor(registrar, clusterTokenFor(t, row.issuer, row.key, namedWorker, podUID, namedRegistrationAudience), session)
+			if status != row.status || codeOf(answer) != row.code {
+				t.Fatalf("answered %d %q, want %d %q", status, codeOf(answer), row.status, row.code)
+			}
+			if status != http.StatusOK {
+				return
+			}
+			var registered struct {
+				PodUID  string `json:"pod_uid"`
+				Session string `json:"session"`
+			}
+			if err := json.Unmarshal(answer, &registered); err != nil || registered.PodUID != podUID || registered.Session != session {
+				t.Fatalf("the registration answered %s (%v), want the pod %s and the session %s", answer, err, podUID, session)
+			}
+		})
+	}
 }
 
 // TestTheExchangeTakesTheIssuersItNames: with BROKER_EXCHANGE_K8S_AUDIENCE set and three issuers
@@ -826,12 +921,12 @@ func TestAnAccountIsAcceptedFromTheIssuersItsEntryNames(t *testing.T) {
 //
 // oldAccount's exchange entry names A and B, and movedAccount's names none, so it takes A alone:
 // an entry written for one cluster. The two accounts are paired and bound to the daemon's service,
-// and the daemon registers each pod for the name before it trades. While oldAccount holds the
-// name, movedAccount's pod trading a token of B is refused invalid_request for its issuer, and its
-// pod enrolling with a token of C is refused 403 POD_IDENTITY_MISMATCH: the name stays
-// oldAccount's and no take is logged. The pair is then shown live from each named issuer:
-// movedAccount's pod trading a token of A takes the name, and oldAccount's pod enrolling with a
-// token of B takes it back, each take logged once.
+// and the daemon, which BROKER_POD_REGISTRARS lists for both accounts' pods, registers each pod for
+// the name before it trades. While oldAccount holds the name, movedAccount's pod trading a token
+// of B is refused invalid_request for its issuer, and its pod enrolling with a token of C is
+// refused 403 POD_IDENTITY_MISMATCH: the name stays oldAccount's and no take is logged. The pair
+// is then shown live from each named issuer: movedAccount's pod trading a token of A takes the
+// name, and oldAccount's pod enrolling with a token of B takes it back, each take logged once.
 func TestAPairedAccountsPodTakesNoNameWithATokenOfAnIssuerItsEntryDoesNotName(t *testing.T) {
 	const (
 		oldAccount   = namedWorker
@@ -847,6 +942,7 @@ func TestAPairedAccountsPodTakesNoNameWithATokenOfAnIssuerItsEntryDoesNotName(t 
 		"BROKER_EXCHANGE_K8S_ISSUER=a,b",
 		"BROKER_EXCHANGE_ACCOUNTS="+oldAccount+"=ACME=ada@example.com==a,b "+movedAccount+"=ACME=ada@example.com",
 		"BROKER_SESSION_ACCOUNT_PAIRS="+oldAccount+"="+movedAccount,
+		"BROKER_POD_REGISTRARS="+namedDaemonA+"="+oldAccount+" "+namedDaemonA+"="+movedAccount,
 	)})
 	broker.AwaitRecord(t, "session account pairs", map[string]any{"state": "on"})
 	db := connectToBroker(t, databaseURL)
