@@ -1600,6 +1600,113 @@ test("a sibling moved into a pressed control's place is nothing new there, so th
   }
 });
 
+/** The sidebar's pinned agents (`PinnedAgentRow`), in a list at the end of `parent`: one `<li>`
+ *  per name, a row by its element alone, holding a link named for the agent and then its
+ *  `Unpin <name> from the sidebar` button, save for the names in `withoutUnpin`, whose rows hold
+ *  the link alone. */
+function pinnedAgentsIn(
+  parent: Element,
+  names: readonly string[],
+  withoutUnpin: readonly string[]
+): { row: HTMLLIElement; unpin: HTMLButtonElement | null }[] {
+  const list = document.createElement("ul");
+  parent.append(list);
+  return names.map((name) => {
+    const row = document.createElement("li");
+    const link = document.createElement("a");
+    link.href = `/agents/${name}`;
+    link.textContent = name;
+    row.append(link);
+    list.append(row);
+    const unpin = withoutUnpin.includes(name)
+      ? null
+      : buttonIn(row, `Unpin ${name} from the sidebar`);
+    return { row, unpin };
+  });
+}
+
+// (bn) A press of the reader's that takes its own row away lands on the same control in the row
+// that moves up into its place, so the reader can go on, unpinning as Dismiss goes on to the next
+// item. Unpin on the second of the sidebar's three pinned agents takes that `<li>` away at once,
+// and the third moves up, the same element, so nothing new stands there (al). The walk by count
+// lands Chromium, which counts the place while the row is still in the page, on the third row's
+// Unpin, and Firefox and WebKit, which count it once the row has gone, on its link; the row rule
+// lands every engine on its Unpin. Where the row that moves up has no Unpin, its first control,
+// its link, takes the focus. Where the row taken away was the last, no row moves up, and the
+// focus walks back as before, to the Unpin of the row before it. An Unpin its press disabled
+// before the row went, the disable's `focusout` first, keeps its place in its row all the same.
+// By a pointer press and by Enter, with Chromium's `focusout` and without.
+test("a row the reader's press takes away hands the focus to the same control in the row that moves up", async () => {
+  const presses: Record<string, (control: HTMLElement) => void> = {
+    Enter: (control) => {
+      control.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    },
+    pointer: pointerPress,
+  };
+  const cases: {
+    disable: boolean;
+    landing: string;
+    name: string;
+    pressed: number;
+    withoutUnpin: string[];
+  }[] = [
+    {
+      disable: false,
+      landing: "Unpin Gamma from the sidebar",
+      name: "Unpin Beta",
+      pressed: 1,
+      withoutUnpin: [],
+    },
+    {
+      disable: false,
+      landing: "Gamma",
+      name: "Unpin Beta, Gamma with no Unpin",
+      pressed: 1,
+      withoutUnpin: ["Gamma"],
+    },
+    {
+      disable: false,
+      landing: "Unpin Beta from the sidebar",
+      name: "Unpin Gamma, the last row",
+      pressed: 2,
+      withoutUnpin: [],
+    },
+    {
+      disable: true,
+      landing: "Unpin Gamma from the sidebar",
+      name: "Unpin Beta, disabled by its press",
+      pressed: 1,
+      withoutUnpin: [],
+    },
+  ];
+  // Where each press landed, and where it belongs.
+  const landed: Record<string, string | null> = {};
+  const belongs: Record<string, string> = {};
+  for (const { disable, landing, name, pressed, withoutUnpin } of cases) {
+    for (const [by, press] of Object.entries(presses)) {
+      // A disable fires its `focusout` in every engine, so that case is read with it alone.
+      for (const withFocusout of disable ? [true] : [true, false]) {
+        const named = `${name}, by ${by}, ${withFocusout ? "with" : "without"} a focusout`;
+        await withRescue(async () => {
+          const rows = pinnedAgentsIn(mainOf().main, ["Alpha", "Beta", "Gamma"], withoutUnpin);
+          const { row, unpin } = rows[pressed] as { row: HTMLLIElement; unpin: HTMLButtonElement };
+          unpin.focus();
+          press(unpin);
+          // The press's commit takes its row away at once, and the row after it moves up.
+          const leave = () => row.remove();
+          if (disable) unpin.disabled = true;
+          if (withFocusout) lose(unpin, leave);
+          else leave();
+          await settled();
+          landed[named] = focusedName();
+        });
+        belongs[named] = landing;
+      }
+    }
+  }
+  expect(landed).toEqual(belongs);
+});
+
 // (am) One batch of the page's records can hold a commit that moves the pressed control - a live
 // update reordering what it stands among - and the press's own commit that takes it away and
 // draws a form where it stood. With no `focusout` (Firefox and WebKit), the place is read off the
