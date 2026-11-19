@@ -489,7 +489,7 @@ function resultOf(entries: SessionEntry[], id: string): { text: string; isError:
  * so the cases' batches of one label, each numbered from 1, never share a name. A case name may
  * hold a hyphen, so the longest case that fits is tried first (`nochange-block` before
  * `nochange`); a label that starts like a case's tail would be read wrong. */
-export const ASKGATE_RUN = new RegExp(
+const ASKGATE_RUN = new RegExp(
   `^askgate-(${ASKGATE_CASES.toSorted((a, b) => b.length - a.length).join("|")})-(.+)-\\d+$`
 );
 /** AskGate's content failure 12, "a fact the reader does not need", as a reason names it by gate
@@ -808,11 +808,17 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
 const OWN_HEAD_CASES = ["sibling-fails", "ci-only", "no-implementer", "no-tester"];
 /** A reviewer-own-head run's directory, reviewer-own-head-<case>-<label>-<n>, as an askgate run's
  * names its case (ASKGATE_RUN). */
-export const OWN_HEAD_RUN = new RegExp(
-  `^reviewer-own-head-(${OWN_HEAD_CASES.join("|")})-(.+)-\\d+$`
-);
+const OWN_HEAD_RUN = new RegExp(`^reviewer-own-head-(${OWN_HEAD_CASES.join("|")})-(.+)-\\d+$`);
 /** A ci-pass-and-fail run's directory, ci-pass-and-fail-<role>-<label>-<n>: the role it drives. */
-export const CI_PASS_AND_FAIL_RUN = /^ci-pass-and-fail-(reviewer|tester|architect)-(.+)-\d+$/;
+const CI_PASS_AND_FAIL_RUN = /^ci-pass-and-fail-(reviewer|tester|architect)-(.+)-\d+$/;
+/** The scenarios whose run directory names a case before its label, each with the pattern of its
+ * directory's name, whose first group is the case: the one list of them that scoreRuns and
+ * visible-world.ts both read. */
+export const CASED_RUNS: Readonly<Record<string, RegExp>> = {
+  askgate: ASKGATE_RUN,
+  "reviewer-own-head": OWN_HEAD_RUN,
+  "ci-pass-and-fail": CI_PASS_AND_FAIL_RUN,
+};
 /** The scenarios whose world rig.sh's heads_world builds, each with its results-before.txt. */
 const HEADS_SCENARIOS = [
   "reviewer-own-head",
@@ -3623,8 +3629,8 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   }
   // Every checkout a spec run's agent can reach, so that a check naming one is no spec-only check.
   const reach = checkouts(path.dirname(runsDir));
-  // Each scenario's scorer, keyed by the name its runs' directories start with. An askgate or a
-  // reviewer-own-head run's case comes from its directory (cased, below).
+  // Each scenario's scorer, keyed by the name its runs' directories start with. An askgate, a
+  // reviewer-own-head or a ci-pass-and-fail run's case comes from its directory (CASED_RUNS).
   const scorers: Record<string, (dir: string, run: string, label: string, dirCase: string) => Row> =
     {
       "ask-on-message": askOnMessage,
@@ -3647,12 +3653,6 @@ function scoreRuns(runsDir: string, only: string | undefined) {
             ? headsTester(dir, run, label)
             : headsArchitect(dir, run, label, "ci-pass-and-fail:architect"),
     };
-  // The scenarios whose run directory names a case before its label.
-  const cased: Record<string, RegExp> = {
-    askgate: ASKGATE_RUN,
-    "reviewer-own-head": OWN_HEAD_RUN,
-    "ci-pass-and-fail": CI_PASS_AND_FAIL_RUN,
-  };
   const name = new RegExp(`^(${Object.keys(scorers).join("|")})-(.+)-(\\d+)$`);
   // Runs SKILL_SCENARIOS_FIXTURE_ONLY stopped before their agent: built, and not scored.
   const fixtureOnly: string[] = [];
@@ -3668,7 +3668,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       continue;
     }
     // undefined for a scenario with no case, null for a directory of one that names no case.
-    const casedRun = cased[scenario]?.exec(run);
+    const casedRun = CASED_RUNS[scenario]?.exec(run);
     const [, dirCase = "", label = named] = casedRun ?? [];
     const key = `${casedRun ? `${scenario}:${dirCase}` : scenario}\t${label}`;
     let reason: string | undefined;

@@ -18,6 +18,7 @@ const works = {
   stray: temporaryDirectory("visible-world-stray", { real: true }),
   view: temporaryDirectory("visible-world-view", { real: true }),
   links: temporaryDirectory("visible-world-links", { real: true }),
+  role: temporaryDirectory("visible-world-role", { real: true }),
 };
 
 // The view rows walk a real bubblewrap view, which needs bwrap and a user namespace it may make
@@ -32,8 +33,13 @@ if (withoutBwrap && !bwrapMissing)
   );
 
 // A work directory laid out as rig.sh lays it out: runs and profiles of random names, and the map's
-// links that name them (rig.sh's header, "the map"), with `files` in the run's directory.
-function runIn(work: string, files: Record<string, string>) {
+// links that name them (rig.sh's header, "the map"), with `files` in the run's directory. `runs`
+// names the map's runs, each with its directory's id; the run itself is 0123456789abcdef.
+const RUNS: readonly (readonly [string, string])[] = [
+  ["reviewer-own-head-sibling-fails-ablate-head-1", "0123456789abcdef"],
+  ["reviewer-own-head-ci-only-head-2", "fedcba9876543210"],
+];
+function runIn(work: string, files: Record<string, string>, runs = RUNS) {
   const run = path.join(work, "runs", "0123456789abcdef");
   mkdirSync(path.join(run, "cwd"), { recursive: true });
   mkdirSync(path.join(work, "maps", "profiles"), { recursive: true });
@@ -46,10 +52,7 @@ function runIn(work: string, files: Record<string, string>) {
     writeFileSync(path.join(work, "profiles", id, "checkout"), `/checkouts/${id}\n`);
     symlinkSync(`../../profiles/${id}`, path.join(work, "maps", "profiles", label));
   }
-  for (const [name, id] of [
-    ["reviewer-own-head-sibling-fails-ablate-head-1", "0123456789abcdef"],
-    ["reviewer-own-head-ci-only-head-2", "fedcba9876543210"],
-  ] as const)
+  for (const [name, id] of runs)
     symlinkSync(`../../runs/${id}`, path.join(work, "maps", "runs", name));
   writeFileSync(path.join(run, "pane.env"), `HOME=${run}/home\nOMP_PROFILE=skills\n`);
   writeFileSync(
@@ -104,6 +107,23 @@ test("a world that names nothing has no hit in its own files, and the word head 
   expect(
     out.split("\n").filter((line) => /^(env|command|tree|transcript|plugins|git)\t/.test(line))
   ).toEqual([]);
+});
+
+// Catches: a walk that names a run's case from some scenarios' patterns and not from every one the
+// scorer names, so a ci-pass-and-fail run is walked as the scenario ci-pass-and-fail-<role> with no
+// case, and neither its bare scenario nor its role is searched for. A plain-word case is searched in
+// a rig name's shapes, as `-tester-`.
+test("a ci-pass-and-fail run's scenario and its role are hits, as scenario (own) and case (own)", () => {
+  const run = runIn(
+    works.role,
+    { "cwd/notes.txt": "this run is ci-pass-and-fail\n", "cwd/role.txt": "run-tester-1\n" },
+    [["ci-pass-and-fail-tester-head-1", "0123456789abcdef"]]
+  );
+  const { code, out } = search(run);
+  expect(out).toContain(`tree\t${run}/cwd/notes.txt\tscenario (own)\tci-pass-and-fail\t`);
+  expect(out).toContain(`tree\t${run}/cwd/role.txt\tcase (own)\t-tester-\t`);
+  expect(out).not.toContain("ci-pass-and-fail-tester\t");
+  expect(code).toBe(1);
 });
 
 // Catches: a clean answer from a search that read nothing.

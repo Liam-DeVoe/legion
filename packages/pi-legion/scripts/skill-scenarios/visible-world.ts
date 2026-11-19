@@ -61,7 +61,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ASKGATE_RUN, OWN_HEAD_RUN } from "./score";
+import { CASED_RUNS } from "./score";
 
 interface Term {
   readonly kind: string;
@@ -112,7 +112,10 @@ function mapOf(work: string, runDir: string): RunMap {
     } catch {
       // A link whose run was removed points at nothing.
     }
-    const cased = OWN_HEAD_RUN.exec(name) ?? ASKGATE_RUN.exec(name);
+    // The case of a run of each scenario the scorer reads a case of, by the same patterns.
+    const cased = Object.values(CASED_RUNS)
+      .map((pattern) => pattern.exec(name))
+      .find((hit) => hit !== null);
     const label =
       labels
         .filter((one) => new RegExp(`-${escaped(one)}-\\d+$`).test(name))
