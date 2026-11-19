@@ -74,6 +74,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/brokerclient"
 	"github.com/sjawhar/envoy/brokertest"
@@ -1508,8 +1509,9 @@ type daemonRefs struct {
 }
 
 // daemonScript is K4's script through the daemon's client: one call of each method of
-// internal/dispatch's HTTPClient, its nine writes and every read, Whoami among them, on the
-// daemon's issue of P.
+// internal/dispatch's HTTPClient, its ten writes and every read, Whoami among them, on the
+// daemon's issue of P. The step record PutStep writes is a fresh one at each run of the script,
+// the first write of its run, so it names the run's whole identity.
 func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daemonRefs, since time.Time) []rigWrite {
 	r.t.Helper()
 	ctx := context.Background()
@@ -1551,6 +1553,13 @@ func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daem
 	call("PutGatedSteps", false, func() error { return client.PutGatedSteps(ctx, rigP, []string{}) })
 	call("PutDesignGates", false, func() error { return client.PutDesignGates(ctx, issueKey, []dispatch.DesignGateDocument{}) })
 	call("PutRoleHolders", false, func() error { return client.PutRoleHolders(ctx, issueKey, []dispatch.RoleHolder{}) })
+	call("PutStep", false, func() error {
+		started := time.Now().UTC()
+		return client.PutStep(ctx, issueKey, uuid.NewString(), dispatch.StepWrite{
+			Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
+			Agent: "legion-example-" + strings.ToLower(issueKey) + "-implementer", Generation: 1, StartedAt: &started,
+		})
+	})
 	call("ReleaseClaim", false, func() error { return client.ReleaseClaim(ctx, issueKey) })
 	call("ArtifactSlugs", true, func() error { _, err := client.ArtifactSlugs(ctx, issueKey); return err })
 	call("EventsAfter", true, func() error { _, err := client.EventsAfter(ctx, issueKey, 0); return err })
