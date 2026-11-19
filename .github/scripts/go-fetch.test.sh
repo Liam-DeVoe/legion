@@ -23,8 +23,8 @@ source "$script_dir/test-lib.sh"
 # whose arguments contain FAIL_MATCH fails while the count of such calls is at most FAIL_TIMES.
 # `go env NAME...` answers one line per name: GOPATH from GO_FETCH_TEST_GOPATH, GOMODCACHE from
 # GO_FETCH_TEST_GOMODCACHE and GOPROXY from GO_FETCH_TEST_GOPROXY. Each `go install` records the
-# GOBIN and the GOPROXY it ran under, and each `go list` the GOPROXY, GOOS, GOARCH and
-# CGO_ENABLED it ran under. A stand-in pulumi writes the sdks/ directory package add
+# GOBIN and the GOPROXY it ran under, and each `go list` the GOPROXY, GOOS, GOARCH,
+# CGO_ENABLED and GOWORK it ran under. A stand-in pulumi writes the sdks/ directory package add
 # writes, so a second attempt in the same directory would find it there. pulumi and `go build`
 # each record the sha256 of the go.mod and main.go they find in their directory, so a case can
 # hold what they ran on to the consumer's own files, not only to the step's exit.
@@ -51,6 +51,7 @@ if [ "$(basename "$0")" = go ] && [ "$1" = install ]; then
 fi
 if [ "$(basename "$0")" = go ] && [ "$1" = list ]; then
   echo "GOPROXY=${GOPROXY:-} GOOS=${GOOS:-} GOARCH=${GOARCH:-} CGO_ENABLED=${CGO_ENABLED:-}" >> "$GO_FETCH_TEST_CALLS.list-env"
+  echo "GOWORK=${GOWORK:-}" >> "$GO_FETCH_TEST_CALLS.list-gowork"
 fi
 if [ "$(basename "$0")" = pulumi ]; then
   echo "PULUMI_BACKEND_URL=${PULUMI_BACKEND_URL:-} PULUMI_HOME=${PULUMI_HOME:-} PULUMI_SKIP_UPDATE_CHECK=${PULUMI_SKIP_UPDATE_CHECK:-} PULUMI_API=${PULUMI_API:-}" >> "$GO_FETCH_TEST_CALLS.pulumi-env"
@@ -108,7 +109,7 @@ done
 # fetch <args...>: runs the script under test with the stand-ins and no waits. Leaves its stderr
 # in `err`, its exit code in `rc`, the stand-ins' calls in `calls`, the environment each pulumi
 # call saw in `pulumi_env`, each install's GOBIN in `gobin` and its GOPROXY in `goproxy`, each
-# listing's GOPROXY and platform in `list_env`, what
+# listing's GOPROXY and platform in `list_env` and its GOWORK in `list_gowork`, what
 # package add and the build found in their directory in `seen`, and the failing cp's, mktemp's and
 # mkdir's calls in `cp_calls`, `mktemp_calls` and `mkdir_calls`. PATH_FIRST, when set, goes on
 # PATH before the stand-ins. `go env` answers $work/modcache for GOMODCACHE and
@@ -117,12 +118,12 @@ done
 # GO_FETCH_PROXY, when the case sets it, reaches the script; the caller's own is cleared.
 fetch() {
   rm -f "$work/calls" "$work/calls.pulumi-env" "$work/calls.gobin" "$work/calls.goproxy" "$work/calls.seen" \
-    "$work/calls.cp" "$work/calls.mktemp" "$work/calls.mkdir" "$work/calls.list-env" "$work/count"
+    "$work/calls.cp" "$work/calls.mktemp" "$work/calls.mkdir" "$work/calls.list-env" "$work/calls.list-gowork" "$work/count"
   set +e
   PATH="${PATH_FIRST:+$PATH_FIRST:}$work/bin:$PATH" GO_FETCH_TEST_CALLS="$work/calls" GO_FETCH_TEST_COUNT="$work/count" \
     GO_FETCH_TEST_GOPATH="$work/gopath:$work/other-gopath" GO_FETCH_TEST_GOMODCACHE="${TEST_GOMODCACHE-$work/modcache}" \
     GO_FETCH_TEST_GOPROXY="${TEST_GOPROXY-https://proxy.example|direct}" GO_FETCH_WAIT=0 \
-    GO_FETCH_PROXY="${TEST_GO_FETCH_PROXY:-}" GOPROXY="${TEST_ENV_GOPROXY:-}" \
+    GO_FETCH_PROXY="${TEST_GO_FETCH_PROXY:-}" GOPROXY="${TEST_ENV_GOPROXY:-}" GOWORK= \
     "${SCRIPT:-$go_fetch}" "$@" > "$work/stdout" 2> "$work/stderr"
   rc=$?
   set -e
@@ -132,6 +133,7 @@ fetch() {
   gobin=$(cat "$work/calls.gobin" 2>/dev/null || true)
   goproxy=$(cat "$work/calls.goproxy" 2>/dev/null || true)
   list_env=$(cat "$work/calls.list-env" 2>/dev/null || true)
+  list_gowork=$(cat "$work/calls.list-gowork" 2>/dev/null || true)
   seen=$(cat "$work/calls.seen" 2>/dev/null || true)
   cp_calls=$(cat "$work/calls.cp" 2>/dev/null || true)
   mktemp_calls=$(cat "$work/calls.mktemp" 2>/dev/null || true)
@@ -274,6 +276,7 @@ check "installs nothing after it" "$(is "$(grep -c ' install ' <<< "$calls")" 0)
 
 echo "case: every line of a fetch file is checked before the first runs"
 for bad in 'deps mod' 'deps absent ./a' 'GOFLAGS=-mod=mod deps mod ./a' 'GOOS=Darwin deps mod ./a' 'CGO_ENABLED=2 deps mod ./a' \
+    'GOWORK=auto deps mod ./a' 'GOWORK=off tools fetch/tools.txt' \
     'tools fetch/absent.txt' 'GOOS=linux tools fetch/tools.txt' 'tools fetch/tools.txt extra' 'list mod ./a' 'go list -deps ./a'; do
   printf 'deps mod ./a\n%s\n' "$bad" > "$repo/fetch/bad.txt"
   SCRIPT="$repo/.github/scripts/go-fetch.sh" fetch file "$repo/fetch/bad.txt"
@@ -281,6 +284,18 @@ for bad in 'deps mod' 'deps absent ./a' 'GOFLAGS=-mod=mod deps mod ./a' 'GOOS=Da
   check "'$bad' is named by its file and line" "$(contains "$err" "$repo/fetch/bad.txt:2: ")"
   check "'$bad' runs nothing, not even the good line before it" "$(is "$calls" '')"
 done
+
+echo "case: GOWORK=off on a deps line lists that module outside the go.work above it, and no other line"
+cat > "$repo/fetch/gowork.txt" <<'FETCH'
+GOWORK=off deps mod ./a
+deps mod ./b
+FETCH
+SCRIPT="$repo/.github/scripts/go-fetch.sh" fetch file "$repo/fetch/gowork.txt"
+gowork=$list_gowork
+check "exits 0" "$(is "$rc" 0)"
+check "the first listing runs with GOWORK=off" "$(is "$(sed -n 1p <<< "$gowork")" 'GOWORK=off')"
+check "the second with no GOWORK the line before gave" "$(is "$(sed -n 2p <<< "$gowork")" 'GOWORK=')"
+check "names the line with its setting" "$(contains "$err" "^go-fetch: $repo/fetch/gowork.txt:1: GOWORK=off deps mod ./a$")"
 printf 'example.com/c/cmd/gamma@latest\n' > "$repo/fetch/badpins.txt"
 printf 'deps mod ./a\ntools fetch/badpins.txt\n' > "$repo/fetch/bad.txt"
 SCRIPT="$repo/.github/scripts/go-fetch.sh" fetch file "$repo/fetch/bad.txt"
