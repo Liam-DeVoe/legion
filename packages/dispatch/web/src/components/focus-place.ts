@@ -381,16 +381,18 @@ function pressedBy(event: Event): number | string | null {
 /** Whether `event` is a press of the reader's (`Press`), the act that can make a loss in its row,
  *  dialog or panel theirs (`causedByReader`). A pointer press is one, and so is any key on a
  *  control that takes no typed text - Enter, Space, Escape, the arrows, a page key. In a field
- *  that takes typed text (`takesText`) only a key that acts on the page rather than on the text
- *  is one: Escape, Tab, Enter in a single-line `<input>`, which commits it, as the issue title's
- *  editor does, and a key held with Ctrl, Meta or Alt, a shortcut such as Ctrl+Enter that sends.
- *  A character or editing key there - a printable key, Space, Backspace, Delete, the arrows, Home
- *  and End, Enter in a `<textarea>` or a content-editable element, which inserts a line - only
- *  edits the field. A `change` is one on a control that takes no typed text - a `<select>`'s
- *  pick, a checkbox or a radio, which Playwright and assistive tech make without a key or a
- *  pointer - and none on a field that takes typed text, where it is the field's commit on blur,
- *  which Chromium fires as an update takes the focused field away. */
-function isPress(event: Event): boolean {
+ *  that takes typed text (`takesText`) a character typed is none, whatever it is typed with, and
+ *  only a key that acts on the page rather than on the text is one: Escape, Tab, Enter in a
+ *  single-line `<input>`, which commits it, as the issue title's editor does, and a key held
+ *  with Ctrl, Meta or Alt that types no character (`typesCharacter`), a shortcut such as
+ *  Ctrl+Enter or Meta+Enter that sends. A character or editing key there - a printable key, one
+ *  held with AltGr or Option, Space, Backspace, Delete, the arrows, Home and End, Enter in a
+ *  `<textarea>` or a content-editable element, which inserts a line - only edits the field. A
+ *  `change` is one on a control that takes no typed text - a `<select>`'s pick, a checkbox or a
+ *  radio, which Playwright and assistive tech make without a key or a pointer - and none on a
+ *  field that takes typed text, where it is the field's commit on blur, which Chromium fires as
+ *  an update takes the focused field away. */
+function isPress(event: Event): event is Event & { readonly target: Element } {
   const { target } = event;
   if (!(target instanceof Element)) return false;
   if (event.type === "change") return !takesText(target);
@@ -400,9 +402,18 @@ function isPress(event: Event): boolean {
     key === "Escape" ||
     key === "Tab" ||
     (key === "Enter" && target instanceof HTMLInputElement) ||
-    event.ctrlKey ||
-    event.metaKey ||
-    event.altKey
+    ((event.ctrlKey || event.metaKey || event.altKey) && !typesCharacter(event))
+  );
+}
+
+/** Whether `event`, a key held with Ctrl, Meta or Alt, types a character all the same. It does
+ *  while AltGr is held (`AltGraph`), which Windows reports as Ctrl and Alt together and Linux on
+ *  its own, as a German layout types `@` with AltGr and Q; and while Alt is held without Ctrl or
+ *  Meta on a key that is one character, as macOS's Option types `@`, `[`, `{` or `|`. */
+function typesCharacter(event: KeyboardEvent): boolean {
+  return (
+    event.getModifierState("AltGraph") ||
+    (event.altKey && !event.ctrlKey && !event.metaKey && event.key.length === 1)
   );
 }
 
@@ -949,14 +960,10 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
  * `focusout` for it; Chromium fires one as well, and whichever comes first is the loss recorded.
  * Each loss holds its element, its region, its place among the controls the region draws, the
  * path, whether the page took the element (`taken`), whether the reader caused the loss
- * (`causedByReader`), and its dialog's opener. The reader caused it when a press of theirs is
- * still live in its row, dialog or panel (`isPress`): a pointer press; a key on a control that
- * takes no typed text; in a field that does, only Escape, Tab, Enter in a single-line `<input>`
- * and a key held with Ctrl, Meta or Alt, since a character or editing key, Enter in a `<textarea>`
- * among them, only edits the field; and a `change` on a control that takes no typed text, since
- * on a field that does it is the field's commit on blur, which Chromium fires as an update takes
- * the focused field away. A key or a `change` that is no press neither starts a press nor ends the
- * live one (`notePress`). It holds where the element stood in the page too:
+ * (`causedByReader`), and its dialog's opener. The reader caused it when a press of theirs
+ * (`isPress`) is still live in its row, dialog or panel; a key or a `change` that is no press
+ * neither starts a press nor ends the live one (`notePress`). It holds where the element stood
+ * in the page too:
  * the parent it stood in and the siblings either side of it, and the same for each parent of it
  * up to the region (`spotsOf`). For a `focusout` they are read there and then, while the element
  * is still in the page; for a control taken away with no `focusout`, the last record that took
@@ -1311,7 +1318,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
      *  judged on its own. Other keys that move the focus away, such as the Inbox's j and k, are
      *  passed over like any other key on the held control. */
     const notePress = (event: Event) => {
-      if (!(event.target instanceof Element) || !isPress(event)) return;
+      if (!isPress(event)) return;
       const movesOff = event instanceof KeyboardEvent && event.key === "Tab";
       if (!movesOff && lastPress?.live === true && onHeldControl(lastPress, event.target)) return;
       lastPress?.stop();

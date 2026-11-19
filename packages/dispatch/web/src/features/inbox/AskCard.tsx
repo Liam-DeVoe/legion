@@ -255,8 +255,7 @@ const PAGE_URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
  *  `pane-selection.ts`'s `landHandOff`), whose focus effect runs after every commit, so its
  *  target wins over this hand-off and over the rescue. */
 function handOffFocus(form: HTMLElement): void {
-  const focused = document.activeElement;
-  if (focused === null || !form.contains(focused)) return;
+  if (!form.contains(document.activeElement)) return;
   form.parentElement?.closest<HTMLElement>("[tabindex]")?.focus({ preventScroll: true });
 }
 
