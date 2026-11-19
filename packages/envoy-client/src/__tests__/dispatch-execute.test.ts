@@ -16442,6 +16442,41 @@ test("deletes an issue message by bare id and says no read of it gives its body 
   ]);
 });
 
+// DELETE_CONTENDED means a send of the post moved while the delete was being written, and the
+// delete wrote nothing, so the same call again is the whole remedy. Unwrapped it reached the
+// caller as the server's prose with its code hidden, which reads as a failure to work out rather
+// than a write to repeat: the refusal `dispatch result` gives CHECK_CONTENDED the same way.
+for (const [tool, args, kind, id] of [
+  ["dispatch_delete_comment", { comment: correctedComment }, "comment", correctedComment],
+  ["dispatch_delete_message", { message: correctedMessage }, "message", correctedMessage],
+] as const) {
+  test(`a contended ${tool} says nothing was written and to run the command again`, async () => {
+    const refusal =
+      "a send of this post moved while the delete was being written; nothing was written, and the same delete can be sent again";
+    const fetchImpl = async (_url: RequestInfo | URL): Promise<Response> =>
+      new Response(JSON.stringify({ code: "DELETE_CONTENDED", error: refusal }), {
+        status: 409,
+        headers: { "Content-Type": "application/json", "Retry-After": "1" },
+      });
+
+    await expect(
+      executeDispatchTool({
+        tool,
+        args,
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-42",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      })
+    ).rejects.toThrow(
+      `DELETE_CONTENDED: ${refusal}; nothing was written, so ${kind} ${id} stands: run the same dispatch delete-${kind} command again`
+    );
+  });
+}
+
 test("a message correction named by a value that is no message id is refused before any request", async () => {
   let requests = 0;
   const fetchImpl = (() => {

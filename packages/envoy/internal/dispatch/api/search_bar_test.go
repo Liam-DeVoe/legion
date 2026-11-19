@@ -737,7 +737,7 @@ func writeBackPostWindows(t *testing.T, database *store.Store, state, column, id
 }
 
 // A delete drops the post's embedding windows in its own transaction (clearDeletedPostBody,
-// refs.WriteItemWindows), so the moment the delete answers, with no block-index tick run since,
+// refs.TombstoneItem), so the moment the delete answers, with no block-index tick run since,
 // a deleted comment and a deleted message hold no window and the meaning arm of search returns
 // neither. The windows are written and embedded as the package's meaning rows seed them, and
 // the same query finds all four posts before the delete, so the arm reached the two it then

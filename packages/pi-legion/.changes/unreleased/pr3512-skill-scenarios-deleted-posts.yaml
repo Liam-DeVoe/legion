@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  fetch-spec-sources.ts writes the deleted line in place of a deleted post's empty body, and the
+  edited mark after an edited post's words, in messages.md and agent-texts.json alike, as every
+  read of the dispatch command prints them. label-comments.ts leaves a comment its author deleted
+  out of what the judge labels, and its summary counts the comments it left out and says why.
+time: 2026-11-19T07:52:19.000000000Z
+custom:
+    Issue: pr3512

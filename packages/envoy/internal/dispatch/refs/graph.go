@@ -426,13 +426,14 @@ type TargetName struct {
 // One entry per target that resolves: a target with no entry is one nothing addresses now — its
 // node was deleted, or its kind is one this build cannot address (resolveNodes) — which is what
 // a caller draws as a reference whose target is gone. A block of a deleted comment or message
-// resolves to nothing too, since the delete removed every block of its post (TombstoneItem), but
-// it has an entry: Gone, with no name and its post's marks, the delete's and, where its author
-// edited the post before deleting it, the last edit's time, as a block read of it is refused
-// naming the deletion (api's itemBlockNotFound). Each kind is read in one statement whatever the
-// number of targets, so a batch costs a statement per kind, not per target; a block of a comment
-// or a message that resolves to nothing, whose post targets does not name too, costs one
-// statement more per kind of post, which reads whether its post was deleted.
+// resolves to nothing too, since the delete indexes the empty body, which takes every block out
+// of its post (api's planEditedItem, in clearDeletedPostBody), but it has an entry: Gone, with no
+// name and its post's marks, the delete's and, where its author edited the post before deleting
+// it, the last edit's time, as a block read of it is refused naming the deletion (api's
+// itemBlockNotFound). Each kind is read in one statement whatever the number of targets, so a
+// batch costs a statement per kind, not per target; a block of a comment or a message that
+// resolves to nothing, whose post targets does not name too, costs one statement more per kind of
+// post, which reads whether its post was deleted.
 func TargetNames(ctx context.Context, q Queryer, targets []Target) (map[Target]TargetName, error) {
 	rows := make([]edgeRow, len(targets))
 	for index, target := range targets {

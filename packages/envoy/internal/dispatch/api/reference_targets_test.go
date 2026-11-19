@@ -303,6 +303,9 @@ func TestReferenceTargetsMarkAnEditedPostAndGiveNoWordOfADeletedOne(t *testing.T
 		return decodeBody[model.ReferenceTargets](t, response).Targets, response.Header().Get("ETag")
 	}
 
+	// standingTrees is each block member's tree before any correction, which the edit leaves as
+	// it was.
+	standingTrees := make([]string, len(set))
 	for _, trees := range []bool{false, true} {
 		members, _ := read(trees)
 		for index, member := range members {
@@ -314,6 +317,9 @@ func TestReferenceTargetsMarkAnEditedPostAndGiveNoWordOfADeletedOne(t *testing.T
 			}
 			if block := member.Kind == "block"; trees && block != strings.Contains(string(member.TextTree), words[index]) {
 				t.Errorf("before any correction (trees %t) %s answered the tree %s, want its block's words in a block's tree alone", trees, set[index], member.TextTree)
+			}
+			if trees {
+				standingTrees[index] = string(member.TextTree)
 			}
 		}
 	}
@@ -333,6 +339,9 @@ func TestReferenceTargetsMarkAnEditedPostAndGiveNoWordOfADeletedOne(t *testing.T
 			}
 			if member.EditedAt == nil || !member.EditedAt.Equal(editedAt[index]) {
 				t.Errorf("after the edit (trees %t) %s carries edited_at %v, want the edit's time %s", trees, set[index], member.EditedAt, editedAt[index])
+			}
+			if trees && member.Kind == "block" && string(member.TextTree) != standingTrees[index] {
+				t.Errorf("after the edit (trees %t) %s answered the tree %s, want the tree the edit left as it was, %s", trees, set[index], member.TextTree, standingTrees[index])
 			}
 		}
 	}

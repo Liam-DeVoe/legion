@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  A reply or a BTW answer that was not posted is said on stderr as not posted, with the reason,
+  where it was said not to have reached Dispatch even when Dispatch itself refused it. A Codex
+  session says its replies the same way.
+time: 2026-11-19T06:40:00.000000000Z
+custom:
+    Issue: pr3512

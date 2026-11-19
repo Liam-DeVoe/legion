@@ -18,7 +18,13 @@ import { renderAdvice } from "./advice";
 import { movedApprovalLine, resolveReplyToAsk } from "./asks";
 import { type CommandContext, type DispatchToolResult, optionalString, stringArg } from "./context";
 import { anchor, readRefOwner, resolveArtifact } from "./document-targets";
-import { refuseMissingOfRef, refuseMissingPost, throughPostCorrections } from "./failures";
+import {
+  dispatchAnswered,
+  refusalWithCode,
+  refuseMissingOfRef,
+  refuseMissingPost,
+  throughPostCorrections,
+} from "./failures";
 import {
   itemReplyTo,
   messageArgumentId,
@@ -187,17 +193,43 @@ const DELETED_COMMENT_READS =
   "froze, and the document's events written before the delete keep the name an accepted " +
   "suggestion gave its version.";
 
+/**
+ * The delete `call` makes of `post`, through `throughPostCorrections`, with Dispatch's
+ * `409 DELETE_CONTENDED` reported under its code and with what to do. It is the one refusal of
+ * either delete that asks for nothing but the same call again: a send of the post moved while the
+ * delete was being written, so nothing was written and the next call reads the post's sends as
+ * they stand then. Every other refusal (403 NOT_AUTHOR, 409 POST_DELETED, 409
+ * NOT_AN_ISSUE_MESSAGE) asks the caller to change something first and reaches them as Dispatch
+ * wrote it. Untouched, this one reaches them as prose with its code hidden, which reads as a
+ * failure to work out rather than a write to repeat, as `dispatch result`'s CHECK_CONTENDED would.
+ */
+async function throughDelete<T>(
+  context: CommandContext,
+  call: Promise<T>,
+  post: { readonly kind: "comment" | "message"; readonly id: string }
+): Promise<T> {
+  try {
+    return await throughPostCorrections(context.input.tool, context.configUrl, call, post);
+  } catch (error) {
+    if (dispatchAnswered(error, 409) && error.code === "DELETE_CONTENDED") {
+      throw refusalWithCode(
+        error,
+        `nothing was written, so ${post.kind} ${post.id} stands: run the same dispatch delete-${post.kind} command again`
+      );
+    }
+    throw error;
+  }
+}
+
 /** `dispatch delete-comment`: the author withdraws their own comment. */
 export async function deleteCommentCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, actor, input, configUrl } = context;
+  const { args, client, actor, input } = context;
   const reference = stringArg(args, "comment");
   const { id, document } = await resolveCommentArgument(input.tool, reference, client);
-  const comment = await throughPostCorrections(
-    input.tool,
-    configUrl,
-    client.deleteComment(id, actor),
-    { kind: "comment", id }
-  );
+  const comment = await throughDelete(context, client.deleteComment(id, actor), {
+    kind: "comment",
+    id,
+  });
   const { label, details } = await commentOwnerResult(client, comment, document);
   return {
     text: `Deleted comment ${comment.id} on ${label}. ${DELETED_COMMENT_READS}`,
@@ -232,7 +264,7 @@ export async function editMessageCommand(context: CommandContext): Promise<Dispa
 
 /** `dispatch delete-message`: the author withdraws their own issue message. */
 export async function deleteMessageCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, actor, input, configUrl, hostSession } = context;
+  const { args, client, actor, input, hostSession } = context;
   const id = await resolveMessageArgument(
     input.tool,
     "message",
@@ -240,12 +272,10 @@ export async function deleteMessageCommand(context: CommandContext): Promise<Dis
     client,
     hostSession
   );
-  const message = await throughPostCorrections(
-    input.tool,
-    configUrl,
-    client.deleteMessage(id, actor),
-    { kind: "message", id }
-  );
+  const message = await throughDelete(context, client.deleteMessage(id, actor), {
+    kind: "message",
+    id,
+  });
   const issue = messageIssueKey(message);
   return {
     text: `Deleted message ${message.id} on ${issue}. ${DELETED_MESSAGE_READS}`,

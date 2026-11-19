@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  dispatch delete-comment and dispatch delete-message report Dispatch's `409 DELETE_CONTENDED`
+  under its code and say what to do: nothing was written, so the post stands, and the same command
+  run again is the remedy. Each command's help names that refusal.
+time: 2026-11-19T06:30:00.000000000Z
+custom:
+    Issue: pr3512

@@ -396,10 +396,12 @@ func (s *server) blockReferenceNode(ctx context.Context, query refs.Query, ref t
 // edit of its body, so there is no revision to pin a message's block to and no reference pins one
 // (parseReferencesQuery refuses one).
 //
-// A block of a post its author deleted is gone with the body (refs.TombstoneItem), so each 404
-// a read of it can reach - no current block, no recorded text at the pin, and a pin past the
-// current revision - names the deletion as well (itemBlockNotFound): every read of a deleted
-// post says that it is deleted and gives no part of what it said.
+// A block of a post its author deleted is gone with the body: the delete indexes the empty body,
+// which takes every block out of the post (planEditedItem, in clearDeletedPostBody), and clears
+// the text each revision recorded (refs.TombstoneItem). So each 404 a read of it can reach - no
+// current block, no recorded text at the pin, and a pin past the current revision - names the
+// deletion as well (itemBlockNotFound): every read of a deleted post says that it is deleted and
+// gives no part of what it said.
 func (s *server) itemBlockReferenceNode(ctx context.Context, query refs.Query, ref text.Ref) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	kind := refs.ItemKind(ref.Item)
@@ -471,7 +473,8 @@ func itemBlockNoun(kind string) string {
 
 // itemBlockNotFound is the 404 a block reference answers when the item holds no such block:
 // `missing`, the words the read's own case wrote, and after them the deletion when the item is
-// a post its author withdrew. The delete clears the body, the block index and the text each
+// a post its author withdrew. The delete clears the body, takes every block out of the post by
+// indexing the empty body (planEditedItem, in clearDeletedPostBody) and clears the text each
 // revision recorded (refs.TombstoneItem), so a read of a deleted post's block would otherwise
 // say that the block is missing and leave the deletion unsaid, where every read of the post
 // says that it is deleted. The status stays 404: the reference names a node no read can give,

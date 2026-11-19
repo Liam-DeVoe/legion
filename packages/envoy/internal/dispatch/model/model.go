@@ -813,7 +813,7 @@ type SearchResult struct {
 	// DeletedAt and DeletedBy are the mark of a comment or a message its author deleted, as the
 	// reads of the post itself carry them (Comment, Message), absent on a hit of another kind and
 	// on a post that stands. The delete clears the body and drops the post's windows in the same
-	// transaction (api's clearDeletedPostBody, refs.WriteItemWindows), so neither arm finds the
+	// transaction (api's clearDeletedPostBody, refs.TombstoneItem), so neither arm finds the
 	// post once it commits. The mark is the backstop for a hit that reaches a deleted post all
 	// the same, which no path of this build produces: such a hit's Snippet is empty, and the mark
 	// is what tells its reader the post is deleted rather than blank.

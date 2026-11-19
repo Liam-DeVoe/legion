@@ -152,12 +152,12 @@ const ROUTES: Record<string, unknown> = {
   },
 };
 
-function world() {
+function world(routes: Record<string, unknown> = ROUTES) {
   const sent: { url: URL; init: RequestInit }[] = [];
   const fetch = async (input: string, init: RequestInit): Promise<Response> => {
     const url = new URL(input);
     sent.push({ url, init });
-    const body = url.host === "dispatch.test" ? ROUTES[url.pathname] : undefined;
+    const body = url.host === "dispatch.test" ? routes[url.pathname] : undefined;
     return body === undefined
       ? new Response(JSON.stringify({ error: "not found", code: "NOT_FOUND" }), {
           status: 404,
@@ -360,6 +360,104 @@ test("--agent-texts writes every message, comment and ask by a session in the wi
       body: "Which cache?\nRedis\nA cache server.\nNone",
       origin_session_title: "widget work",
       created_at: "2026-10-16T16:00:00Z",
+    },
+  ]);
+});
+
+// Dispatch answers a deleted post with an empty body and an edited one with the words the last
+// edit put there. Each file gives the deleted line every read of the dispatch command prints in
+// place of the one, and the mark those reads print after the other's words, so neither reaches a
+// judge as an empty entry or as words with nothing to say they were replaced.
+test("a deleted post gives the deleted line and an edited one the edited mark, in messages.md and agent-texts.json", async () => {
+  const routes: Record<string, unknown> = {
+    ...ROUTES,
+    "/api/v1/issues": [{ key: "ACME-7", title: "Make the widget faster", status: "done" }],
+    "/api/v1/issues/ACME-7/messages": [
+      {
+        message: {
+          ...message("m1", alice, "", "2026-10-16T10:00:00Z"),
+          deleted_at: "2026-10-16T10:30:00Z",
+          deleted_by: alice,
+        },
+        replies: [
+          {
+            ...message("m2", agent(), "", "2026-10-16T12:00:00Z"),
+            deleted_at: "2026-10-16T12:30:00Z",
+            deleted_by: agent(),
+          },
+          {
+            ...message("m3", alice, "Thanks, twice.\n", "2026-10-16T14:00:00Z"),
+            edited_at: "2026-10-16T14:30:00Z",
+          },
+        ],
+      },
+    ],
+    "/api/v1/issues/ACME-7/comments": [
+      {
+        ...comment("c1", bob, "", "2026-10-16T11:00:00Z", "The widget waits 5 s."),
+        deleted_at: "2026-10-16T11:30:00Z",
+        deleted_by: bob,
+      },
+      {
+        ...comment("c2", agent(), "Fixed in 2 s.", "2026-10-16T13:00:00Z"),
+        edited_at: "2026-10-16T13:30:00Z",
+      },
+    ],
+    "/api/v1/issues/ACME-7/asks": [],
+  };
+  const out = path.join(dir("marks-run"), "sources");
+  const sources = io(world(routes).fetch);
+  expect(await main(["--out", out, "ACME-7"], sources.io)).toBe(0);
+  expect(sources.stderr).toEqual([]);
+  // The deleted comment keeps its quote, which is the spec's text and not the comment's.
+  expect(read(path.join(out, "acme-7", "messages.md"))).toBe(
+    [
+      "<!-- message 2026-10-16T10:00:00Z -->",
+      "Deleted by user alice@example.com at 2026-10-16T10:30:00Z",
+      "",
+      "<!-- comment 2026-10-16T11:00:00Z anchored -->",
+      "> The widget waits 5 s.",
+      "",
+      "Deleted by user bob@example.com at 2026-10-16T11:30:00Z",
+      "",
+      "<!-- message 2026-10-16T14:00:00Z -->",
+      "Thanks, twice. · edited 2026-10-16T14:30:00Z",
+      "",
+    ].join("\n")
+  );
+
+  const texts = io(world(routes).fetch);
+  expect(
+    await main(
+      [
+        "--agent-texts",
+        "--since",
+        "2026-10-16T00:00:00Z",
+        "--until",
+        "2026-10-17T00:00:00Z",
+        "--out",
+        out,
+      ],
+      texts.io
+    )
+  ).toBe(0);
+  expect(texts.stderr).toEqual([]);
+  expect(JSON.parse(read(path.join(out, "agent-texts.json")))).toEqual([
+    {
+      issue: "ACME-7",
+      id: "m2",
+      kind: "message",
+      body: "Deleted by session session-1 at 2026-10-16T12:30:00Z",
+      origin_session_title: null,
+      created_at: "2026-10-16T12:00:00Z",
+    },
+    {
+      issue: "ACME-7",
+      id: "c2",
+      kind: "comment",
+      body: "Fixed in 2 s. · edited 2026-10-16T13:30:00Z",
+      origin_session_title: null,
+      created_at: "2026-10-16T13:00:00Z",
     },
   ]);
 });

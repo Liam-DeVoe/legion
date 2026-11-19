@@ -101,29 +101,33 @@ export function acceptLanded(messageId: string, error: DispatchWriteLandedError)
 
 /** What stderr says of a reply to message `messageId` whose post ended in `error`. One Dispatch
  *  made and gave no copy of its answer for (`DispatchWriteLandedError`) is posted, and the
- *  error's message says what was made; any other did not reach Dispatch. Every host of this
- *  package says it in these words (`./codex/codex-user-turns`). */
+ *  error's message says what was made; any other was not posted, whether Dispatch refused it (a
+ *  `DispatchServiceError`, such as a 409) or it never reached Dispatch, and the error's message
+ *  says which. Every host of this package says it in these words (`./codex/codex-user-turns`). */
 export function replyWarning(messageId: string, error: unknown): string {
   return error instanceof DispatchWriteLandedError
     ? `a reply to message ${messageId} landed on Dispatch, which gave no copy of its answer — ${error.message}`
-    : `a reply to message ${messageId} did not reach Dispatch — ${messageFor(error)}`
+    : `a reply to message ${messageId} was not posted — ${messageFor(error)}`
 }
 
 /** What stderr says of a BTW answer to message `messageId` whose post ended in `error`. One
  *  Dispatch made and gave no copy of its answer for (`DispatchWriteLandedError`) answered the
- *  attempt, so no error reply follows it; any other did not reach Dispatch. */
+ *  attempt, so no error reply follows it; any other was not posted, whether Dispatch refused it
+ *  or it never reached Dispatch, and the error's message says which. */
 export function btwAnswerWarning(messageId: string, error: unknown): string {
   return error instanceof DispatchWriteLandedError
     ? `a BTW answer to message ${messageId} landed on Dispatch, which gave no copy of its answer — ${error.message}`
-    : `a BTW answer did not reach Dispatch — ${messageFor(error)}`
+    : `a BTW answer was not posted — ${messageFor(error)}`
 }
 
 /** Answers a BTW on Dispatch with what `ask` makes of its body, and returns without waiting for
  *  it, so the frame is answered at once. A question `ask` could not answer, and an answer whose
- *  post Dispatch refused, is answered with the error that stopped it. A reply Dispatch made and
- *  gave no copy of its answer for (`DispatchWriteLandedError`) answered the attempt, so no error
- *  reply follows it; stderr names every post that ended in an error (`btwAnswerWarning`). Every
- *  host of this package answers a BTW through it (`./codex/codex-user-turns`). */
+ *  post Dispatch refused or that never reached it, is answered with the error that stopped it,
+ *  and that error reply is all that is said of it. A reply Dispatch made and gave no copy of its
+ *  answer for (`DispatchWriteLandedError`) answered the attempt, so no error reply follows it.
+ *  Stderr gets a line (`btwAnswerWarning`) only where the last post made for the BTW ended in an
+ *  error: that landed reply, or an error reply that failed too. Every host of this package
+ *  answers a BTW through it (`./codex/codex-user-turns`). */
 export function answerBtw(
   delivery: DispatchDelivery,
   ask: (question: string) => Promise<string>,
@@ -385,9 +389,10 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
     await reply(delivery, { ...result, followUp })
   }
 
-  /** Posts one reply to a delivery, naming on stderr a reply that did not reach Dispatch, and one
-   *  Dispatch made and gave no copy of its answer for (`DispatchWriteLandedError`), which is
-   *  posted: the error's message says what was made (`replyWarning`). */
+  /** Posts one reply to a delivery, naming on stderr a reply that was not posted, which Dispatch
+   *  refused or never received, and one Dispatch made and gave no copy of its answer for
+   *  (`DispatchWriteLandedError`), which is posted: the error's message says what was made
+   *  (`replyWarning`). */
   const answer = async (delivery: DispatchDelivery, body: string | undefined): Promise<void> => {
     if (body === undefined) return
     await post(delivery, { body }).catch((error: unknown) => {

@@ -552,7 +552,9 @@ report it is judged by was in the answer Dispatch no longer has.
 The last two lines are `result pass|fail|unavailable exit=<code>` and the count of the
 assertions, `all 3 assertions passed` or `assertions passed <n> of 3`, so a reader can tell a
 whole run from a cut one. Exit 0: every assertion passed. Exit 1: an assertion failed and no step
-was unavailable. Exit 2: a step was unavailable, or a usage error.
+was unavailable. Exit 2: a step was unavailable, or the scratch issue stood in another status
+(`status issue=<KEY> status=other fail`, no assertion, which stops the run as an unavailable
+step does), or a usage error.
 
 Output is allowlisted on stdout and stderr alike: the issue key the run made (checked against
 the key pattern and the project the flag named), the names of the documents it uploaded, version

@@ -139,7 +139,7 @@ func TestDeleteCommentClearsEveryCopyOfItsBody(t *testing.T) {
 		t.Fatalf("the event log is missing comment.deleted")
 	}
 	// A deleted post is reachable by no meaning search: the delete drops every window of the
-	// comment in its own transaction (clearDeletedPostBody, refs.WriteItemWindows), and the
+	// comment in its own transaction (clearDeletedPostBody, refs.TombstoneItem), and the
 	// arm's pass after it writes none back, since the empty body splits into no block.
 	windowOwedItems(t, database)
 	if windows := postEmbeddingWindows(t, database, "comment/"+comment.ID); windows != 0 {

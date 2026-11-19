@@ -55,9 +55,10 @@ const referenceTargetsMax = contracts.ReferenceTargetsMax
 // A member naming a comment or a message, or a block of one, carries its post's marks as every
 // read of the post does (refs.TargetName): edited_at where its author edited it, and deleted_at
 // and deleted_by where its author deleted it. A deleted post keeps its place, so its member is
-// not gone and is named "", the body the delete cleared; a block of it is gone, since the delete
-// removed every block of the post (refs.TombstoneItem), with no name and no tree, as a block read
-// of it is refused naming the deletion (itemBlockNotFound).
+// not gone and is named "", the body the delete cleared; a block of it is gone, with no name and
+// no tree, as a block read of it is refused naming the deletion (itemBlockNotFound): the delete
+// indexes the empty body, which takes every block out of the post (planEditedItem, in
+// clearDeletedPostBody).
 //
 // A reference whose item id or block id is written short is read as GET /api/v1/references reads
 // its ?to= (wholeReferences): as the one item that carries the prefix among the items of the

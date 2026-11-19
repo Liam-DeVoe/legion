@@ -376,8 +376,10 @@ function madeRequest(listed: unknown, spec: string): unknown {
  * an issue of the named project is refused without closing anything: the check closes the issues
  * it made and no other. A write that landed with no answer to give made what it was sent to make,
  * and each step goes on from what a read of the issue finds it made (`written`). The status write
- * must leave the issue `in_progress`, by its answer or by that read: any other status fails it as
- * the close's check fails, and stops the steps after it.
+ * must leave the issue `in_progress`, by its answer or by that read. Any other status prints
+ * `status ... fail`, which is no assertion, and answers the issue with no documents, so it ends
+ * the run as a step that was unavailable does: the steps after it do not run, the close does, and
+ * the result is unavailable, exit 2 (`runCheck`).
  */
 async function makeScratch(
   project: string,

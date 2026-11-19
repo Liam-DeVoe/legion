@@ -1329,7 +1329,9 @@ export const dispatchToolSpecs = [
       "dispatch read --ref dispatch://KEY/comment/<id> --history then marks the comment deleted " +
       "and lists no body. Correct a wording with dispatch edit-comment instead, and close an " +
       "addressed thread with dispatch resolve-comment. A comment of a closed issue is deleted " +
-      "too, and a second delete is refused 409 POST_DELETED.",
+      "too, and a second delete is refused 409 POST_DELETED. A mention delivery its sender moves " +
+      "while the delete is being written is 409 DELETE_CONTENDED, with nothing written: run the " +
+      "same command again.",
     arguments: (z) => ({
       comment: z.string().describe(COMMENT_ARGUMENT),
     }),
@@ -1418,7 +1420,8 @@ export const dispatchToolSpecs = [
       "dispatch://KEY/message/<id> " +
       "--history then marks the message deleted and lists no body. Correct a wording with " +
       "dispatch edit-message instead. A message of a closed issue is deleted too, and a second " +
-      "delete is refused 409 POST_DELETED.",
+      "delete is refused 409 POST_DELETED. A send its sender moves while the delete is being " +
+      "written is 409 DELETE_CONTENDED, with nothing written: run the same command again.",
     arguments: (z) => ({
       message: z.string().describe(MESSAGE_ARGUMENT),
     }),

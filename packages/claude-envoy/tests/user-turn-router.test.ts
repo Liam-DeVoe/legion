@@ -9,7 +9,11 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts"
 import { type DispatchDelivery, renderInbound } from "@legion/envoy-client/delivery"
-import { type DispatchClient, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http"
+import {
+  type DispatchClient,
+  DispatchServiceError,
+  DispatchWriteLandedError,
+} from "@legion/envoy-client/dispatch-http"
 import type { ModCallArguments, ModCallName, ModCallResults, ModEvent } from "../hooks/mod-protocol"
 import { type ModSession, modSession } from "../src/mod-session"
 import {
@@ -162,6 +166,8 @@ async function harness(input: {
   /** Every reply is one Dispatch made and gave no copy of its answer for: it is recorded, then
    *  thrown as `409 KEY_COMMITTED` (`REPLY_LANDED`). */
   readonly repliesLand?: boolean
+  /** Every reply is one Dispatch itself refused: it is recorded, then this is thrown. */
+  readonly repliesRefused?: DispatchServiceError
 }): Promise<Harness> {
   const directory = input.directory ?? (await mkdtemp(join(tmpdir(), "claude-envoy-turns-")))
   const stateFile = userTurnStateFile(directory, SESSION)
@@ -199,6 +205,9 @@ async function harness(input: {
       })
       if (input.repliesLand === true) {
         throw REPLY_LANDED
+      }
+      if (input.repliesRefused !== undefined) {
+        throw input.repliesRefused
       }
     },
     session,
@@ -813,6 +822,42 @@ test("a reply that landed with no answer back is not said to have missed Dispatc
     expect(session.warnings).toEqual([
       `a reply to message ${MESSAGE} landed on Dispatch, which gave no copy of its answer — ${REPLY_LANDED.message}`,
     ])
+  } finally {
+    await rm(session.directory, { recursive: true, force: true })
+  }
+})
+
+// A reply Dispatch itself refused reached Dispatch, so the line names it as not posted, with
+// Dispatch's code, and never as a write that did not reach Dispatch. A BTW answer refused so is
+// answered with the error, and when that error reply is refused too the line says the answer was
+// not posted, with the error reply's refusal.
+test("a reply or a BTW answer Dispatch refused is said not posted, with Dispatch's code", async () => {
+  const refusal = new DispatchServiceError("ATTEMPT_SETTLED", 409, "attempt 1 is settled")
+  const mod = fakeMod({
+    "config.set": (args) => ({ value: args.value }),
+    "model.fork": () => ({ isAnswered: true as const, text: "It is the migration guard." }),
+  })
+  const session = await harness({
+    link: mod.link,
+    accept: () => accepted("/model anthropic/claude-opus-4-1"),
+    repliesRefused: refusal,
+  })
+  try {
+    await session.router.route(frame(personSends("/model anthropic/claude-opus-4-1")))
+    await waitFor(async () => session.warnings.length === 1, "the reply's line")
+    expect(session.warnings).toEqual([
+      `a reply to message ${MESSAGE} was not posted — ATTEMPT_SETTLED: attempt 1 is settled`,
+    ])
+
+    await session.router.route(frame(personSends("what blocks it?", { mode: "btw" })))
+    await waitFor(async () => session.warnings.length === 2, "the BTW answer's line")
+    expect(session.order.slice(-2)).toEqual([
+      "reply:It is the migration guard.",
+      "reply:ATTEMPT_SETTLED: attempt 1 is settled",
+    ])
+    expect(session.warnings[1]).toBe(
+      "a BTW answer was not posted — ATTEMPT_SETTLED: attempt 1 is settled",
+    )
   } finally {
     await rm(session.directory, { recursive: true, force: true })
   }

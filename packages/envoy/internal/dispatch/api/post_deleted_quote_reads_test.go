@@ -64,15 +64,16 @@ func TestEveryReadThatGivesADeletedPostsWordsAsPartOfAnotherGivesNoneOfThem(t *t
 			post.absent = true
 			return post, related(match), withdraw
 		}},
-		// The delete indexes the cleared body again (refs.TombstoneItem), which takes the post's
-		// mention of the document out of the graph, so no row names the post. A row
-		// (model.ReferencedBy) carries no mark of its own.
+		// The delete indexes the cleared body again (planEditedItem, in clearDeletedPostBody),
+		// which takes the post's mention of the document out of the graph, so no row names the
+		// post. A row (model.ReferencedBy) carries no mark of its own.
 		{"1.24 GET /api/v1/artifacts/{id}/references, a comment that cites it", func(t *testing.T, _, phrase string) (postCopies, string, func()) {
 			post, withdraw := comment(t, phrase+" is in dispatch://TEST/artifact/"+cited.Slug)
 			post.absent = true
 			return post, "/api/v1/artifacts/" + cited.ID + "/references", withdraw
 		}},
-		// The delete's index of the cleared body (refs.TombstoneItem), as for a comment.
+		// The delete's index of the cleared body (planEditedItem, in clearDeletedPostBody), as
+		// for a comment.
 		{"1.24 GET /api/v1/artifacts/{id}/references, a message that cites it", func(t *testing.T, _, phrase string) (postCopies, string, func()) {
 			post, withdraw := message(t, phrase+" is in dispatch://TEST/artifact/"+cited.Slug)
 			post.absent = true

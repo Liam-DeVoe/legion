@@ -2,9 +2,10 @@ package api
 
 // going_withdrawn_test.go holds R3 of dispatch://INFRA-1523 on the stored frames of an answer run
 // (going_events): once a comment or an issue message whose text a run gave its model is deleted,
-// every read of that run's stream gives none of its frames, no text and no item among them, and
-// ends on the withdrawal in the place of the run's ending (goingWithdrawal). A run given only
-// posts that stand streams as it did before.
+// every read of that run's stream from before the run's ending gives none of its frames, no text
+// and no item among them, and ends on the withdrawal in the place of the run's ending, and a read
+// resumed at or past that ending is written nothing (goingWithdrawal). A run given only posts that
+// stand streams as it did before.
 
 import (
 	"context"

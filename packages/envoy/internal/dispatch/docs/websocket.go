@@ -66,16 +66,16 @@ func isOwnerVerified(ctx context.Context) bool {
 type commentMarksContextKey struct{}
 
 // WithCommentMarks marks ctx as a comment's writes to the document its anchor is in, made by a
-// caller holding the document owner's lock in its joined transaction that decided there the
-// comment is written, or that the body its author wrote there is that author's to replace or to
-// withdraw. A closed issue still takes a comment, and takes its author's correction of it, so
-// its document still takes that comment's anchor writes: the comment mark MarkQuote places and
-// VerifyMark reads, the version SnapshotVersion pins the anchor to, the margin record
-// ProjectMark writes, and the SuggestionKind read a projection makes - of the thread root a
-// reply projects, and of the comment's own mark where an edit projects it. Each of those, and
-// only those, runs owner-verified under this context (commentMarkOperation). Its callers are the
-// comment create (api/comment_create.go), the edit (api/comment_actions.go, editComment) and the
-// delete (api/comment_delete.go).
+// caller whose joined transaction holds the document owner's lock (store.LockOwner) and decided
+// under it that the comment is written, or that the body its author wrote there is that author's
+// to replace or to withdraw. A closed issue still takes a comment, and takes its author's
+// correction of it, so its document still takes that comment's anchor writes: the comment mark
+// MarkQuote places and VerifyMark reads, the version SnapshotVersion pins the anchor to, the
+// margin record ProjectMark writes, and the SuggestionKind read a projection makes - of the thread
+// root a reply projects, and of the comment's own mark where an edit projects it. Each of those,
+// and only those, runs owner-verified under this context (commentMarkOperation). Its callers are
+// the comment create (api/comment_create.go), the edit (api/comment_actions.go, editComment) and
+// the delete (api/comment_delete.go).
 //
 // One operation more runs the same way, under the same context its caller marked: the reject of
 // the pending suggestion of a comment its author is deleting (RejectDeletedCommentSuggestion),

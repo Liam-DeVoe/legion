@@ -1540,8 +1540,10 @@ const corrections: Record<Correction, DispatchEvent> = {
 const commentCorrections: readonly Correction[] = ["comment.edited", "comment.deleted"];
 const messageCorrections: readonly Correction[] = ["message.edited", "message.deleted"];
 
-/** Each read a post's create refreshes that prints the post - its body, a part of it, or its edit
- *  and delete marks - with the corrections of the posts it prints. */
+/** Each read that prints a post - its body, a part of it, or its edit and delete marks - with the
+ *  corrections of the posts it prints. The last row, the search palette's answers and the
+ *  reference-target names, is a read no create refreshes: only a correction does
+ *  (`POST_CORRECTIONS`, `api/event-refresh.ts`). */
 const correctedReads: readonly (readonly [string, readonly Correction[], readonly ReadName[]])[] = [
   [
     "the Inbox's thread rows and their count",
@@ -1591,7 +1593,7 @@ const correctedReads: readonly (readonly [string, readonly Correction[], readonl
 
 // R2 and R3 of dispatch://INFRA-1523: a page open across a post's edit or delete marks the post
 // edited, or says it is deleted and prints no part of it, without a reload, so every read that
-// prints a post reads again on its corrections as it does on its create.
+// prints a post reads again on its corrections, whether or not its create refreshes it.
 test.each(
   correctedReads.flatMap(([page, types, names]) =>
     types.map((type) => [type, page, names] as const)

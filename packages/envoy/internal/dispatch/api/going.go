@@ -293,12 +293,13 @@ func (s *server) readGoingStream(ctx context.Context, requestID string, after in
 // is written from then on. A run is withdrawn once a comment or an issue message whose text it
 // gave its model (recordGoingPosts) no longer stands - its author deleted it, or its row is gone
 // - since the run's answer may quote that post. Every read of the stream after the delete, from
-// the start or from a Last-Event-ID, therefore gives none of the run's stored frames, no text and
-// no item among them, and ends on an error frame carrying contracts.GoingErrorAnswerWithdrawn.
-// The stored frames are left as they are, as an event Dispatch already wrote keeps its stored
-// text while every read of the log masks it (attachPostMarks), and a frame a reader was written
-// before the delete was a delivery already sent. A run given no post that was deleted streams as
-// it always has.
+// the start or from a Last-Event-ID before the run's ending, therefore gives none of the run's
+// stored frames, no text and no item among them, and ends on an error frame carrying
+// contracts.GoingErrorAnswerWithdrawn; a read resumed at or past the ending's sequence is written
+// nothing (the last paragraph). The stored frames are left as they are, as an event Dispatch
+// already wrote keeps its stored text while every read of the log masks it (attachPostMarks), and
+// a frame a reader was written before the delete was a delivery already sent. A run given no post
+// that was deleted streams as it always has.
 //
 // The verdict is read at stream time, on every poll (goingRunStateOf), and not written by the
 // delete: the delete then knows nothing of answer runs, and the one read covers every frame

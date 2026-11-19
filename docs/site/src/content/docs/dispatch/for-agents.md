@@ -391,10 +391,13 @@ upload of a megabyte or more, whose every ask sends the whole file again, keeps 
 It asks again only of a Dispatch that judges the key: one whose answer
 carried the key back, or whose `/healthz` said `idempotency_keys: true` in the last five minutes,
 whatever its status; any other would make a repeated write twice. Dispatch makes the write once per
-key, so the command never makes a write twice. It answers a repeat with the first answer, or, where
-it gives no copy (a first answer over 1 MiB, or a success holding a comment or an issue message
-deleted since, or a document version a delete renamed), with the first answer's status and the code
-`ANSWER_NOT_KEPT`. When the
+key, so the command never makes a write twice. A repeat of a comment's or an issue message's
+create, a broadcast or a message to a session is answered with what the write made, read now; a
+repeat of a comment's edit, resolve, reopen, accept, reject or reply, or of an issue message's edit
+or reply, with that post as it stands now. Any other repeat gets the first answer, or, where
+Dispatch gives no copy (a first answer over 1 MiB, or a success holding a comment or an issue
+message deleted since, or a document version a delete renamed), the first answer's status and the
+code `ANSWER_NOT_KEPT`. When the
 write landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a replayed answer
 reading `ANSWER_NOT_KEPT`), the command exits 0 and says it was made: read it back to see it. A call
 that writes nothing (`dispatch related`, the check an upload runs first) is asked once more under a
