@@ -14,6 +14,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
@@ -59,13 +60,10 @@ const (
 	consumerPluginMinimumVersion = "14.1.0"
 )
 
-// sessionConsumerCallTimeout bounds the consumer calls of one relay restart, timed from when it
-// holds its turn and the session's lock (sessionRelays.restart), and the delete a reaped session's
-// record, a deregistration or the sweep asks for, with the bucket read before it and the repair
-// after it (deleteConsumer). No client waits for the calls of a restart or a delete: a relay
-// restart and a sweep run on goroutines of their own, and a deregistration's delete runs after its
-// answer (deleteAfterAnswer). A route whose client waits for its consumer calls makes them within
-// its request's own budget (sendRequestBudget, which names those routes and those calls).
+// sessionConsumerCallTimeout bounds the consumer calls a registration makes before it answers,
+// those of one relay restart, timed from when it holds its turn and the session's lock
+// (sessionRelays.restart), and the delete a reaped session's record, a deregistration or the
+// sweep asks for, with the bucket read before it and the repair after it (deleteConsumer).
 const sessionConsumerCallTimeout = 5 * time.Second
 
 // noGrantBackoff is how long, after a consumer call the server refused for want of a grant, every
@@ -172,6 +170,11 @@ type sessionDelivery struct {
 	marks atomic.Uint64
 	// now is the clock of the no-grant backoff; time.Now unless a test sets it.
 	now func() time.Time
+	// clock is what a registration's consumer calls are bounded on (sessionConsumerCallTimeout in
+	// consumerFor). It is nil in production and clk reads it as clock.Real then; a test that holds
+	// the registration route's own bounds on a clocktest.Fake (listenerDeps.clock) hands the same
+	// fake here, so how long a loaded machine takes over those calls is not what answers it.
+	clock clock.Clock
 	// beforeRegister runs at the top of each register call, before the session's lock is taken and
 	// the consumer's filter set; nil unless a test sets it. The window between a registration's
 	// plan and its filter is where another writer's row lands and makes the plan's
@@ -296,6 +299,15 @@ func (m *sessionDelivery) close() {
 	if m != nil && m.consumers != nil {
 		m.consumers.Close()
 	}
+}
+
+// clk is the clock a registration's consumer calls are bounded on: the one a test gave m, and
+// clock.Real otherwise, which every production listener is.
+func (m *sessionDelivery) clk() clock.Clock {
+	if m.clock == nil {
+		return clock.Real()
+	}
+	return m.clock
 }
 
 // confirmRegistered makes sessionID's consumer what the bucket's newest record and interest row
@@ -760,6 +772,8 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body listenerwire.Sub
 	if m.grantRefused() {
 		return sessionDeliveryOutcome{}, noGrantRefusal(body.SessionID), noUnlock
 	}
+	ctx, cancel := m.clk().WithTimeout(ctx, sessionConsumerCallTimeout)
+	defer cancel()
 	streamID, err := m.consumers.StreamID(ctx)
 	if err != nil {
 		return sessionDeliveryOutcome{}, m.refused(body.SessionID, err), noUnlock

@@ -19,6 +19,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
@@ -42,6 +43,14 @@ type listenerDeps struct {
 	client   *bus.Client
 	registry *store.Registry
 	sessions *session.SessionRegistry
+	// clock is what the bounds this listener holds in its own process are measured on: the
+	// budget each /v1 route gives its bus work (sendRequestBudget and the read timeouts beside
+	// it). It is nil in production and in every test that does not drive time, and clk reads it
+	// as clock.Real then; a test that asserts one of those bounds hands a clocktest.Fake here,
+	// waits for the bound to be armed on it (clocktest.Fake.AwaitArmed) and moves the fake past
+	// it, rather than waiting the bound out on the machine's own clock. What nats.go and the
+	// server time for themselves is not here, nor is /healthz's budget (healthzHandler says why).
+	clock clock.Clock
 	// known is the store of every session that registered in the last 30 days
 	// (session.KnownSessions). It keeps a cache of its own outside caches below, so the
 	// self-health monitor never restarts a listener over it. A listener whose NATS user may not
@@ -95,6 +104,16 @@ type listenerDeps struct {
 	// listener (sender_limit.go). nil is no limit, which is what every test that builds
 	// listenerDeps itself runs with.
 	senderLimit *senderLimit
+}
+
+// clk is the clock d's own bounds are measured on: the one a test gave it, and clock.Real for a
+// deps built without one, which every production build and every test that does not drive time
+// is.
+func (d *listenerDeps) clk() clock.Clock {
+	if d.clock == nil {
+		return clock.Real()
+	}
+	return d.clock
 }
 
 // kvCache is what the listener asks of each KV-backed cache it keeps.

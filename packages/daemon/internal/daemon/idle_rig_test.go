@@ -244,9 +244,10 @@ func (r *idleWakeRig) listenerReports() map[string]string {
 // consumer existed is started again rather than waited out.
 func (r *idleWakeRig) awaitListenerReady() {
 	r.t.Helper()
+	// The listener's own log is printed by its cleanup when the test fails
+	// (startIdleRigListenerOn), so this prints only what the daemon read of it.
 	defer func() {
 		if r.t.Failed() {
-			r.t.Logf("the Envoy listener's log:\n%s", r.listener.log())
 			r.t.Logf("listener_reports holds %v; this daemon's project token is %q and its project key is %q",
 				r.listenerReports(), r.project, r.cfg.Project)
 		}

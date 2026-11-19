@@ -743,9 +743,13 @@ func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) e
 // skip of an unchanged record younger than the refresh age; TouchWithin passes false, since a
 // clean stop is one write per session lifetime and the whole point of it is to move last_seen.
 //
-// No caller fails its request over what this answers: a registration and a subscription change
-// (RecordWithin) and a clean stop (TouchWithin) each answer whatever the write did, and the error
-// is for the call site's WARN.
+// A registration fails its request over what this answers: it is answered 200 only once its
+// record is written, and an error here refuses it as the store error it is, the bus-unavailable
+// 503 its client retries for a write that did not land (cmd/listener's answerRegistration),
+// since a session registered with no record is one a send cannot be stored for once its entry is
+// gone. A subscription change (RecordWithin) and a clean stop (TouchWithin) each answer whatever
+// the write did, and their error is for the call site's WARN. A nil answer is no promise that a
+// record is stored: a store whose bucket is not open answers nil and writes nothing.
 func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, throttled bool) error {
 	watcher := s.watch()
 	if watcher == nil || record.SessionID == "" {

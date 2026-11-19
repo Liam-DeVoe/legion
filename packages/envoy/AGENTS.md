@@ -3865,14 +3865,15 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   role resolution (`liveSessionEntry` in `cmd/listener/role_holder.go`) and the reapers each ask the stores whose records end when the session is gone.
   Its readers are `/v1/messages/send` for a target with no entry within the gone horizon, `/v1/messages/publish` for its recipient counts, and `/v1/registry/<session_id>` with `stopped` in its `include=` list.
   Each reads memory alone (`session.KnownSessions.Get` and `MatchEach`, over a `kvwatch` copy with a subject index of the records' topics), so no read of the store makes a JetStream call.
-  A record is written at a registration once its consumer call landed, at every change of a session's interests (`recordFollowedTopics`, which the unsubscribe route and the admin interests route each call), and at a `DELETE /v1/sessions/<session_id>` that removed an entry this listener's cache held, which is a clean stop.
+  A record is written at the end of each registration, before its 200 (`answerRegistration`, "`/v1/interests/subscribe` (POST)"), at every change of a session's interests (`recordFollowedTopics`, which the unsubscribe route and the admin interests route each call), and at a `DELETE /v1/sessions/<session_id>` that removed an entry this listener's cache held, which is a clean stop.
   The interest change writes the record whatever the session's delivery mode: the record says which topics a session follows, and the consumer's filter says which of those its consumer carries.
   A write of content equal to the stored record is skipped while that record is younger than `session.KnownSessionRefreshAge` (10 minutes), so a session's 90-second heartbeat costs one write per refresh age however many listeners serve the session;
   the comparison reads this listener's own copy of the record (`cached`, the `kvwatch` copy its watcher fills and its own writes write through), never the bucket, which is where `store.Registry.UpsertWithin` reads an interest row from;
   so a record another listener wrote is compared as this listener's watcher last delivered it, the throttle holds across every listener once each one's watcher has delivered the others' writes, and a write made before that compares an older copy and costs at most one write of a record the bucket already holds.
   A clean stop is written whatever the throttle would say (`session.KnownSessions.TouchWithin`):
   a running session rewrites its record at least once per refresh age, so an unchanged-content write at its stop would be skipped and leave `last_seen` up to a refresh age before the stop, which a send to the stopped session answers and both tools print.
-  A failed write is a WARN and nothing else: the route answers whatever the write did.
+  A registration whose write failed is refused with the bus-unavailable 503 and `Retry-After: 1`, which its client retries.
+  At an interest change or a clean stop, a failed write is a WARN and nothing else: the route answers whatever the write did.
   The bucket is in `bus.ListenerBuckets()`, so envoy-infra grants it to the listener, to the host user a host's sessions share and to Dispatch (`packages/envoy/infra/core/permissions.go`, and `packages/envoy/infra/README.md` for what that widens).
 
 - A listener whose NATS user may not open that bucket, a listener on any hub whose grant does not carry it, logs one WARN naming the bucket and runs without it:
@@ -5081,7 +5082,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   The topics only say which claims to read, and the claims say what is renewed:
   a release that hands one role back and may not free its claim marks the claim instead (`store.RoleClaim.HandedBack`, `POST /v1/interests/unsubscribe` below), no registration renews a marked claim, and the role claim reaper frees the role at its first pass past the live window — one live window plus up to one reap interval, about ten minutes with the shipped defaults.
   A registration carrying no topic list at all is no case of its own, a lane topic a hand-back left on the row renews nothing, and a claim its holder gave up is renewed by nobody, its own process included.
-  The renewal runs last, after the records this route owns are written, and can never fail the registration: a claim read or write that did not answer or failed, a claim record this build cannot read and a renewal that lost its compare-and-swap are each logged and passed over, since a heartbeat refused for any of them would take down the very sessions whose claims it keeps alive.
+  The renewal runs once the interest row and the session entry are written, and can never fail the registration: a claim read or write that did not answer or failed, a claim record this build cannot read and a renewal that lost its compare-and-swap are each logged and passed over, since a heartbeat refused for any of them would take down the very sessions whose claims it keeps alive.
   Passed over is not forgotten: a claim read or write that did not answer or failed is recorded against its role and session (`store.Registry.RenewalFailedWithin`), and so is every role the session may hold when the registration fails before its renewal runs, at its store work or at a consumer call that met a NATS reconnect (`store.Registry.RecordRenewalFailures`, over the copy's roles and the cached row's role topics, with no bucket call).
   That record is what `/v1/roles/set` refuses on (above), for one live window at most, after which the role claim reaper prunes it, and a renewal of that claim that writes clears it, which no renewal can do while the claim names a process of the session that has stopped.
   A lost compare-and-swap, a claim another session or process holds, a handed-back claim and a role with no claim record are no failure: the claim record said what stands.
@@ -5123,6 +5124,14 @@ Each item below names an endpoint and its method, then its contract, and an item
   A registration this listener can give no consumer is refused by name before anything is written, so it leaves no interest row and no session entry:
   `503 {"error":…,"reason":"no_grant"}`, `"consumer_limit"` or `"consumer_error"`, and `409 {"error":…,"reason":"not_requested"}` or `"invalid_session_id"` ("Session consumers", "No consumer").
   A consumer call that failed because NATS is reconnecting writes nothing either, and is answered as store work the bus did not answer: `503 {"error":"envoy: the message bus did not answer: give <session id> its session consumer: bus: NATS is reconnecting…"}` with `Retry-After: 1`.
+
+- A registration is answered 200 only once the session's known-session record is written (`answerRegistration`).
+  The record is what a send to the session is stored on once its entry is gone.
+  That write is the registration's last, and it has a bound of its own, one second, armed as the write starts (`knownRecordWriteTimeout`), so the store work before it cannot spend that bound.
+  A write that does not land in that bound is answered as the bus-unavailable `503` with `Retry-After: 1`, which every client retries, and nothing the registration stored is undone.
+  The registration of a client that asked for no consumer and is given one is answered the same way.
+  A refused registration writes no record.
+  A listener whose known-session store is not open writes no record and answers the registration 200, since a 503 there would refuse every registration for as long as the bucket stays shut.
 
 - `/v1/interests/unsubscribe` (POST)
 
@@ -5260,6 +5269,7 @@ Each item below names an endpoint and its method, then its contract, and an item
 
 The write routes - `POST /v1/interests/subscribe`, `POST /v1/interests/unsubscribe`, `POST /v1/roles/set`, `DELETE /v1/interests/<session_id>` and `DELETE /v1/sessions/<session_id>` - do every store read and write within one 3.5 s budget (`sendRequestBudget`) taken from the request's own context (`store.Registry.UpsertWithin`, `Remove`, `SetRoleWithPrevious`, `session.SessionRegistry.PutWithin` and `Delete`, each bucket call bounded by `bus.Bounded`), where a silent bus held them for the 10 s JetStream wait.
 The consumer calls a client waits for run within the same budget, on the same context ("A JetStream request during a NATS reconnect").
+A registration's known-session record write is the one store write outside that budget: it comes last, on a bound of its own of one second, so a registration answers within 4.5 s (`knownRecordWriteTimeout`).
 Store work that did not answer, whatever it names, is `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1` (`writeStoreError`).
 While NATS reconnects, each bucket call waits for the connection within the budget, and the reason of a call whose budget ends first says `bus: NATS is reconnecting` (`bus.ErrReconnecting`).
 The store's own answers keep the answers they had:

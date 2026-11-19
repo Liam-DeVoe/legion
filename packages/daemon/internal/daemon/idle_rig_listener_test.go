@@ -31,7 +31,6 @@ import (
 type idleRigListener struct {
 	t      *testing.T
 	url    string
-	logs   string
 	cmd    *exec.Cmd
 	client *http.Client
 	port   int
@@ -67,6 +66,27 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A test that fails prints the end of this listener's log, as it prints the daemon's
+	// (idleWakeRig.logFile), so a failure the listener caused shows its cause. The cleanup is
+	// registered before the two that close the file and stop the process, so it runs after them
+	// and the log holds the listener's shutdown too. It runs before the removal of the directory
+	// that holds the log, which testtmp.Dir registered first.
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		tail, omitted, err := idleRigLogTail(logs)
+		switch {
+		case err != nil:
+			t.Logf("the Envoy listener's log %s could not be read back: %v", logs, err)
+		case tail == "":
+			t.Logf("the Envoy listener's log %s is empty: the listener wrote nothing to it", logs)
+		case omitted > 0:
+			t.Logf("the Envoy listener's log %s, its last %d bytes, %d earlier bytes left out:\n%s", logs, len(tail), omitted, tail)
+		default:
+			t.Logf("the Envoy listener's log %s, whole, %d bytes:\n%s", logs, len(tail), tail)
+		}
+	})
 	t.Cleanup(func() { _ = file.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, binary)
@@ -85,7 +105,7 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 		defer close(done)
 		_ = cmd.Wait()
 	}()
-	l := &idleRigListener{t: t, url: "http://127.0.0.1:" + fmt.Sprint(port), logs: logs, cmd: cmd, port: port,
+	l := &idleRigListener{t: t, url: "http://127.0.0.1:" + fmt.Sprint(port), cmd: cmd, port: port,
 		client: &http.Client{Timeout: 10 * time.Second}}
 	var once sync.Once
 	l.stop = func() {
@@ -99,11 +119,6 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 		})
 	}
 	t.Cleanup(l.stop)
-	defer func() {
-		if t.Failed() {
-			t.Logf("the Envoy listener's own log:\n%s", l.log())
-		}
-	}()
 	idleRigEventually(t, idleRigListenerStartWait, "the Envoy listener answering /healthz healthy", func() bool {
 		response, err := l.client.Get(l.url + "/healthz")
 		if err != nil {
@@ -119,15 +134,6 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 		return body.Status == "healthy"
 	})
 	return l
-}
-
-// log is the listener's own output so far, which a failure names.
-func (l *idleRigListener) log() string {
-	read, err := os.ReadFile(l.logs)
-	if err != nil {
-		return "(the listener's log could not be read: " + err.Error() + ")"
-	}
-	return string(read)
 }
 
 // publish publishes one message to a topic, as a sender's envoy_publish does. It answers the

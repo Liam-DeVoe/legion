@@ -18,10 +18,12 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -154,9 +156,9 @@ type sendAnswer struct {
 	Error          string `json:"error"`
 }
 
-// sendThroughRoutes sends one message to target through a listener's own /v1 routes. fields
+// sendRequest is one send of a message to target, as a listener's /v1 routes take it. fields
 // overrides or adds to the request's defaults, "connected_only" and "payload" among them.
-func sendThroughRoutes(t *testing.T, mux *http.ServeMux, target string, fields map[string]any) sendAnswer {
+func sendRequest(t *testing.T, target string, fields map[string]any) *http.Request {
 	t.Helper()
 	body := map[string]any{
 		"target_session": target,
@@ -169,19 +171,71 @@ func sendThroughRoutes(t *testing.T, mux *http.ServeMux, target string, fields m
 	if err != nil {
 		t.Fatal(err)
 	}
-	recorder := httptest.NewRecorder()
-	started := time.Now()
-	mux.ServeHTTP(recorder, postJSON("/v1/messages/send", string(encoded)))
-	answer := sendAnswer{status: recorder.Code, raw: recorder.Body.String(), elapsed: time.Since(started)}
+	return postJSON("/v1/messages/send", string(encoded))
+}
+
+// readSendAnswer decodes the answer a send's route wrote.
+func readSendAnswer(t *testing.T, recorder *httptest.ResponseRecorder) sendAnswer {
+	t.Helper()
+	answer := sendAnswer{status: recorder.Code, raw: recorder.Body.String()}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the send answer %s: %v", answer.raw, err)
 	}
 	return answer
 }
 
+// sendThroughRoutes sends one message to target through a listener's own /v1 routes
+// (sendRequest), and times the route (sendAnswer.elapsed).
+func sendThroughRoutes(t *testing.T, mux *http.ServeMux, target string, fields map[string]any) sendAnswer {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	request := sendRequest(t, target, fields)
+	started := time.Now()
+	mux.ServeHTTP(recorder, request)
+	elapsed := time.Since(started)
+	answer := readSendAnswer(t, recorder)
+	answer.elapsed = elapsed
+	return answer
+}
+
 func (rig *knownSessionRig) send(t *testing.T, target string, fields map[string]any) sendAnswer {
 	t.Helper()
 	return sendThroughRoutes(t, rig.mux, target, fields)
+}
+
+// sendInBackground sends one message to target through the rig's routes on a goroutine of its
+// own, and answers the channel its recorder arrives on once the route has answered.
+func (rig *knownSessionRig) sendInBackground(t *testing.T, target string, fields map[string]any) <-chan *httptest.ResponseRecorder {
+	t.Helper()
+	request := sendRequest(t, target, fields)
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		rig.mux.ServeHTTP(recorder, request)
+		answered <- recorder
+	}()
+	return answered
+}
+
+// stillClock puts the rig's routes on a fake clock the row never moves (listenerDeps.clock), and
+// a registration's consumer calls with them (sessionDelivery.clock), so no bound the routes arm
+// on it - the probe's second, the sender stamp's, the send's budget, a registration's consumer
+// calls' - can end: a send answered on it (sendOnStillClock) is answered by no wait of the route's
+// own. It is called before the row's first request.
+func (rig *knownSessionRig) stillClock() *clocktest.Fake {
+	fake := clocktest.New(time.Now())
+	rig.deps.clock = fake
+	rig.deps.consumers.clock = fake
+	return fake
+}
+
+// sendOnStillClock sends one message to target with the rig on its still clock (stillClock) and
+// waits for the answer through the shared wait, so a route that waited on a bound of its own is
+// named by that wait rather than read as slow.
+func (rig *knownSessionRig) sendOnStillClock(t *testing.T, target string, fields map[string]any) sendAnswer {
+	t.Helper()
+	return readSendAnswer(t, testwait.Receive(t, "the send to "+target+" to answer with the routes' clock unmoved",
+		rig.sendInBackground(t, target, fields)))
 }
 
 // requireAnswer fails the test unless answer is a 200 carrying state and recipientState.
