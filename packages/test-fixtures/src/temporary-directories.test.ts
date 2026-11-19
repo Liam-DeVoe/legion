@@ -484,10 +484,13 @@ describe("a describe whose directory the afterAll removes", () => {
 });
 `
       );
+      // Under GITHUB_ACTIONS, bun prints each failure a second time as a GitHub annotation, so
+      // the child runs without it and names each failed hook once, as it does on a machine.
+      const { GITHUB_ACTIONS: _annotations, ...environment } = process.env;
       const child = spawnWithin(
         { part: "the child bun test", boundMs: HUNG_CHILD_BOUND_MS },
         [process.execPath, "test", "./hung.test.ts"],
-        { cwd: work, env: { ...process.env, TMPDIR: childTmp } }
+        { cwd: work, env: { ...environment, TMPDIR: childTmp } }
       );
       const stdout = child.stdout.toString();
       const output = `${stdout}${child.stderr.toString()}`;
