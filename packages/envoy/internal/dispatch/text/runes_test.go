@@ -308,18 +308,19 @@ func tableRunes(table *unicode.RangeTable) []rune {
 // first or last at one more place for each length, which moves along the value as the lengths
 // run. They cut each pair once (answersSlices), which catches a copy keyed on what the value
 // holds; a third cuts the values of each kind they hold 22 times, at each edge of the ranges of
-// lengths the rows hold and one byte each side of it, which catches a copy keyed on how many times
-// a pair was cut. A copy keyed on a value with two runs of wider characters or more, such as one
-// at each end, or with characters of two widths besides letters, can pass, and so can a copy keyed
-// on a run between two stretches of letters (say, ten letters, a run of three, then 5,000
-// letters), or on a count of letters beside one run or the character once at lengths where the
-// rows do not put it (say, the character once after exactly 100 letters, in values of 5,000 bytes
-// only), and a copy keyed on how many times a pair was cut or an allocation HeadRunes does not
-// return, each keyed too on lengths inside a range, away from its edges (from 69 to 1,999 bytes,
-// say). The last rows hold values longer than five bytes, each cut to a slice with no copy, up to
-// 32,000 characters, the most an embedding input keeps. Among them, a cut after characters outside
-// the BMP fails a count of UTF-16 units, and a cut before a combining mark fails a count that keeps
-// a mark with its letter.
+// lengths the rows hold and one byte each side of it, and at 500 and 1,000 bytes and one byte each
+// side, which catches a copy keyed on how many times a pair was cut. A copy keyed on a value with
+// two runs of wider characters or more, such as one at each end, or with characters of two widths
+// besides letters, can pass, and so can a copy keyed on a run between two stretches of letters
+// (say, ten letters, a run of three, then 5,000 letters), or on a count of letters beside one run
+// or the character once at lengths where the rows do not put it (say, the character once after
+// exactly 100 letters, in values of 5,000 bytes only), and a copy keyed on how many times a pair
+// was cut or an allocation HeadRunes does not return, each keyed too on lengths inside a range,
+// away from its edges and from the third row's lengths (from 1,100 to 1,900 bytes, say). The last
+// rows hold values longer than five bytes, each cut to a slice with no copy, up to 32,000
+// characters, the most an embedding input keeps. Among them, a cut after characters outside the
+// BMP fails a count of UTF-16 units, and a cut before a combining mark fails a count that keeps a
+// mark with its letter.
 func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 	const longest, limits = 5, 6
 	var values []string
@@ -791,11 +792,13 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 	// where the seeded row ends (63 to 66, with 67 and 68 for each remainder by two, three and four);
 	// 2,001 and 2,004, the place row's (2,000 to 2,005); 8,001, where the seventh row ends (8,000 to
 	// 8,002); 8,033, where the eighth starts (8,032 to 8,034); 32,001, where its step changes (32,000
-	// to 32,002); and 127,919, its last (127,918 to 127,920). So a copy keyed on how many times a pair
-	// was cut fails it, with or without a key on what the value holds, when its key reaches one of
-	// these lengths, and so does an allocation HeadRunes does not return.
-	t.Run("each kind of value of the two rows above, at each edge of the lengths the rows hold and one byte each side of it (4 to 7, 63 to 68, 2,000 to 2,005, 8,000 to 8,002, 8,032 to 8,034, 32,000 to 32,002 and 127,918 to 127,920 bytes), unchanged or cut one short, copies nothing on each of 22 calls", func(t *testing.T) {
-		copiesNothing(t, lengthPairs([]int{4, 5, 6, 7, 63, 64, 65, 66, 67, 68, 2000, 2001, 2002, 2003, 2004, 2005, 8000, 8001, 8002, 8032, 8033, 8034, 32000, 32001, 32002, 127918, 127919, 127920}))
+	// to 32,002); and 127,919, its last (127,918 to 127,920). Inside the seventh row's range it cuts
+	// 500 and 1,000 bytes too, and one byte each side (499 to 501, 999 to 1,001), where a key on a
+	// range of round lengths starts or ends. So a copy keyed on how many times a pair was cut fails
+	// it, with or without a key on what the value holds, when its key reaches one of these lengths,
+	// and so does an allocation HeadRunes does not return.
+	t.Run("each kind of value of the two rows above, at each edge of the lengths the rows hold and one byte each side of it (4 to 7, 63 to 68, 2,000 to 2,005, 8,000 to 8,002, 8,032 to 8,034, 32,000 to 32,002 and 127,918 to 127,920 bytes) and at 499 to 501 and 999 to 1,001 bytes, unchanged or cut one short, copies nothing on each of 22 calls", func(t *testing.T) {
+		copiesNothing(t, lengthPairs([]int{4, 5, 6, 7, 63, 64, 65, 66, 67, 68, 499, 500, 501, 999, 1000, 1001, 2000, 2001, 2002, 2003, 2004, 2005, 8000, 8001, 8002, 8032, 8033, 8034, 32000, 32001, 32002, 127918, 127919, 127920}))
 	})
 
 	shapes := map[string][]pair{}
