@@ -277,7 +277,9 @@ func writeRefTargets(ctx context.Context, a *api, p refPlan) (int, error) {
 					"actor":   refWriter(t.order[v]),
 				}
 				res := a.callRetryKeyed(gctx, "POST", "/api/v1/issues/"+t.issue+"/artifacts", who{}, body, refTargetKey(t.n, v+1))
-				if res.err != nil || res.status != http.StatusCreated {
+				// A write that landed with no answer to give made the version: the seed needs
+				// nothing of its answer, so it goes on to the next version as after a 201.
+				if !res.landed() && (res.err != nil || res.status != http.StatusCreated) {
 					return fmt.Errorf("write %s version %d on %s: %d %s %v, want 201", name, v+1, t.issue, res.status, trunc(res.body), res.err)
 				}
 				if n := written.Add(1); n%refProgressEvery == 0 {
@@ -317,7 +319,7 @@ func writeRefSources(ctx context.Context, a *api, p refPlan) (issues, cites int,
 			}
 			body := map[string]any{"name": refSourceName, "content": b.String(), "actor": refWriter(0)}
 			res := a.callRetryKeyed(gctx, "POST", "/api/v1/issues/"+key+"/artifacts", who{}, body, refSourceKey(key))
-			if res.err != nil || res.status != http.StatusCreated {
+			if !res.landed() && (res.err != nil || res.status != http.StatusCreated) {
 				return fmt.Errorf("write %s on %s: %d %s %v, want 201", refSourceName, key, res.status, trunc(res.body), res.err)
 			}
 			return nil

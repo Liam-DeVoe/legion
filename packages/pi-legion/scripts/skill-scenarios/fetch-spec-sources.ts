@@ -13,8 +13,10 @@
  *   messages.md  each message and comment by a person, oldest first. Each entry starts with the
  *                line `<!-- message <created_at> -->` or `<!-- comment <created_at> -->`, or, for a
  *                comment anchored to the spec, `<!-- comment <created_at> anchored -->`, whose text
- *                starts with its quote, each line after `> `, then a blank line. A project
- *                document is one message: its text, at the time of its latest version.
+ *                starts with its quote, each line after `> `, then a blank line. A post its author
+ *                deleted gives the deleted line in place of its body, and an edited one its body
+ *                followed by ` · edited <time>`, as every read of the dispatch command prints them.
+ *                A project document is one message: its text, at the time of its latest version.
  *   asks.json    each ask on the issue, every state, oldest first: id, kind, question, options,
  *                multiple, state, created_at, and answer (selected, text, user, at) or null. A
  *                project document gets [].
@@ -25,8 +27,10 @@
  * writes <dir>/agent-texts.json: every message, comment and ask by a session (author kind
  * `session`) whose created_at is in the window (--since inclusive, --until exclusive), over the
  * issues that label-comments.ts reads (one unpaged `GET /api/v1/issues`). Each row is
- * {issue, id, kind, body, origin_session_title, created_at}. An ask's body is its question, then
- * for each option its label on one line and its description on the next line when it has one.
+ * {issue, id, kind, body, origin_session_title, created_at}. A deleted message's or comment's
+ * body is the deleted line, and an edited one's is followed by ` · edited <time>`, as in
+ * messages.md. An ask's body is its question, then for each option its label on one line and its
+ * description on the next line when it has one.
  *
  * Stdout gives file names and counts only. Exit 1 is a failed read. Exit 2 is a refusal before any
  * read: a bad argument, an --out inside a git or jj checkout, or no Dispatch.
@@ -34,6 +38,7 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Actor, Ask, Comment, Message } from "@legion/contracts";
+import { deletedMark, editedMark, withEditedMark } from "@legion/envoy-client/actor-text";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
   byCreatedAt,
@@ -111,8 +116,23 @@ function parseReference(text: string): Reference | undefined {
   return undefined;
 }
 
+/** A message's or a comment's words as every file of this script holds them: for a post its
+ * author deleted, whose body the delete emptied, the deleted line every read of the dispatch
+ * command prints in its place (`deletedMark`); for an edited post, its body followed by the mark
+ * those reads print after an edited post's words (`withEditedMark`), or that mark alone where the
+ * body is empty; else the body as it is. */
+function postWords(
+  post: Pick<Comment | Message, "body" | "edited_at" | "deleted_at" | "deleted_by">
+): string {
+  if (post.deleted_at != null) return deletedMark(post.deleted_at, post.deleted_by);
+  if (post.edited_at == null) return post.body;
+  const body = post.body.trimEnd();
+  return body === "" ? editedMark(post.edited_at) : withEditedMark(body, post.edited_at);
+}
+
 /** A comment's text as messages.md holds it: its quote as `>` lines when it is anchored (see
- * `anchored`), then its body, then the replacement text when the comment is a suggestion. */
+ * `anchored`), then its words (`postWords`), then the replacement text when the comment is a
+ * suggestion. */
 function commentText(comment: Comment): string {
   const parts: string[] = [];
   if (anchored(comment)) {
@@ -124,8 +144,8 @@ function commentText(comment: Comment): string {
         .join("\n")
     );
   }
-  const body = comment.body.trimEnd();
-  if (body !== "") parts.push(body);
+  const words = postWords(comment).trimEnd();
+  if (words !== "") parts.push(words);
   if (comment.suggestion != null) {
     parts.push(`Suggested replacement:\n${comment.suggestion.replace_with.trimEnd()}`);
   }
@@ -209,7 +229,7 @@ async function fetchIssue(dispatch: ProductionDispatch, out: string, key: string
       .map((message) => ({
         kind: "message" as const,
         created_at: message.created_at,
-        text: message.body.trimEnd(),
+        text: postWords(message).trimEnd(),
       })),
     ...comments
       .filter(({ author }) => author.kind === "user")
@@ -285,13 +305,13 @@ async function agentTexts(
         kind: "message" as const,
         author: message.author,
         row: message,
-        body: message.body,
+        body: postWords(message),
       })),
       ...comments.map((comment) => ({
         kind: "comment" as const,
         author: comment.author,
         row: comment,
-        body: comment.body,
+        body: postWords(comment),
       })),
       ...asks.map((ask) => ({
         kind: "ask" as const,

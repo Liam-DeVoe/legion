@@ -24,11 +24,13 @@ import { createContext, type ReactNode, useContext, useEffect, useId, useReducer
  */
 
 /** What a page publishes from its one batched read: the name of each target it read, by
- *  reference, and the references it read as ambiguous (`useKnownAmbiguousReferences`). The store
- *  holds the two as one value per publisher, so a publisher's two always come from one read and
- *  change together. */
+ *  reference, the references it read as ambiguous (`useKnownAmbiguousReferences`), and the
+ *  references among the names whose post its author edited (`useKnownEditedReferences`). The
+ *  store holds the three as one value per publisher, so a publisher's three always come from one
+ *  read and change together. */
 interface PublishedReferences {
   readonly ambiguous: ReadonlySet<string>;
+  readonly edited: ReadonlySet<string>;
   readonly names: ReadonlyMap<string, string>;
 }
 
@@ -38,9 +40,16 @@ const NO_NAMES: ReadonlyMap<string, string> = new Map();
 /** No ambiguous reference: what a page that published none has read. */
 const NO_AMBIGUOUS: ReadonlySet<string> = new Set();
 
-/** What a reader sees while no page publishes, and outside the provider: no name and no
- *  ambiguous reference. */
-const NOTHING_PUBLISHED: PublishedReferences = { ambiguous: NO_AMBIGUOUS, names: NO_NAMES };
+/** No edited reference: what a page that published none has read. */
+const NO_EDITED: ReadonlySet<string> = new Set();
+
+/** What a reader sees while no page publishes, and outside the provider: no name, no ambiguous
+ *  reference and no edited one. */
+const NOTHING_PUBLISHED: PublishedReferences = {
+  ambiguous: NO_AMBIGUOUS,
+  edited: NO_EDITED,
+  names: NO_NAMES,
+};
 
 /** One publisher's change, handed to the store: what it publishes now, under its own key
  *  (`useId`), or `undefined` as it leaves. */
@@ -72,22 +81,42 @@ const ReferenceNamesRegistry = createContext<(publication: Publication) => void>
  * Every value still published as the one value readers see. The names are merged, and where two
  * publishers name one reference, the name of the one that published last stands: a publisher
  * publishes again each time its read answers anew, so the last to publish holds the newest
- * answer. The ambiguous references are the union of every publisher's. A publisher whose map or
- * set is empty adds nothing to it, so where one publisher alone has names, or ambiguous
- * references, readers get its own map or set as it published it, and no copy is made.
+ * answer. Whether a named reference is edited is the answer of that same publisher, so a name
+ * and its mark always come from one read: a newer answer that names a post by its deleted line
+ * is never marked by an older one that read it edited. The ambiguous references are the union
+ * of every publisher's. A publisher whose map or set is empty adds nothing to it, so where one
+ * publisher alone has names, or ambiguous references, readers get its own map or set as it
+ * published it, and no copy is made.
  */
 function merged(publications: ReadonlyMap<string, PublishedReferences>): PublishedReferences {
   if (publications.size === 0) return NOTHING_PUBLISHED;
   const published = [...publications.values()];
-  const names = published.map((value) => value.names).filter((map) => map.size > 0);
+  const naming = published.filter((value) => value.names.size > 0);
   const ambiguous = published.map((value) => value.ambiguous).filter((set) => set.size > 0);
   return {
     ambiguous:
       ambiguous.length > 1
         ? new Set(ambiguous.flatMap((set) => [...set]))
         : (ambiguous[0] ?? NO_AMBIGUOUS),
-    names: names.length > 1 ? new Map(names.flatMap((map) => [...map])) : (names[0] ?? NO_NAMES),
+    edited: naming.length > 1 ? editedOfLast(naming) : (naming[0]?.edited ?? NO_EDITED),
+    names:
+      naming.length > 1
+        ? new Map(naming.flatMap((value) => [...value.names]))
+        : (naming[0]?.names ?? NO_NAMES),
   };
+}
+
+/** The edited references of several publishers' names, each as the last publisher to name it
+ *  answers it (`merged`). */
+function editedOfLast(naming: readonly PublishedReferences[]): ReadonlySet<string> {
+  const edited = new Set<string>();
+  for (const { edited: marked, names } of naming) {
+    for (const reference of names.keys()) {
+      if (marked.has(reference)) edited.add(reference);
+      else edited.delete(reference);
+    }
+  }
+  return edited;
 }
 
 /** The store after one publisher's change. A publisher's value is removed before it is set
@@ -111,27 +140,29 @@ export function ReferenceNamesProvider({ children }: { children: ReactNode }): R
 }
 
 /**
- * Publishes `names`, and `ambiguous` beside them, for as long as the calling page is mounted,
- * and withdraws them again when the reader leaves, leaving every other publisher's value as it
- * was. Both must be stable across renders (`useMemo`): the store holds them in state, so a fresh
- * map or set every render would register on every commit.
+ * Publishes `names`, with `ambiguous` and `edited` beside them, for as long as the calling page
+ * is mounted, and withdraws them again when the reader leaves, leaving every other publisher's
+ * value as it was. All three must be stable across renders (`useMemo`): the store holds them in
+ * state, so a fresh map or set every render would register on every commit.
  */
 export function usePublishReferenceNames(
   names: ReadonlyMap<string, string> | undefined,
-  ambiguous: ReadonlySet<string> = NO_AMBIGUOUS
+  ambiguous: ReadonlySet<string> = NO_AMBIGUOUS,
+  edited: ReadonlySet<string> = NO_EDITED
 ): void {
   const register = useContext(ReferenceNamesRegistry);
   // The key this publisher's value is held under, the same for as long as it is mounted, so its
   // cleanup withdraws its own value and no other.
   const publisher = useId();
   useEffect(() => {
-    register({ published: { ambiguous, names: names ?? NO_NAMES }, publisher });
+    register({ published: { ambiguous, edited, names: names ?? NO_NAMES }, publisher });
     return () => register({ published: undefined, publisher });
-  }, [ambiguous, names, publisher, register]);
+  }, [ambiguous, edited, names, publisher, register]);
 }
 
-/** The name the page read for `reference`, or `undefined` where it read none and the caller
- *  must read its own. */
+/** The name the page read for `reference`, the words alone, or `undefined` where it read none
+ *  and the caller must read its own. A reference in `useKnownEditedReferences` is drawn with
+ *  ` · edited` after what the caller's cut leaves of it (`editedName`). */
 export function useKnownReferenceName(reference: string | undefined): string | undefined {
   const { names } = useContext(ReferenceNamesContext);
   return reference === undefined ? undefined : names.get(reference);
@@ -151,4 +182,12 @@ export function useKnownReferenceNames(): ReadonlyMap<string, string> {
  *  not read. */
 export function useKnownAmbiguousReferences(): ReadonlySet<string> {
   return useContext(ReferenceNamesContext).ambiguous;
+}
+
+/** Every reference among the page's names whose post its author edited, a comment, a message or
+ *  a block of either, empty where the page published none. A surface that draws such a
+ *  reference's name cuts the name to its own length and then marks it ` · edited`
+ *  (`editedName`), so no cut takes the mark. */
+export function useKnownEditedReferences(): ReadonlySet<string> {
+  return useContext(ReferenceNamesContext).edited;
 }

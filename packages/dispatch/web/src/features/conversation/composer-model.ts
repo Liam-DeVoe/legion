@@ -1,5 +1,6 @@
 import type { Actor, DeliveryCapability } from "../../api/types";
 import type { RecordMarkPlacement } from "../doc/editor";
+import type { DeletablePost } from "../refs/post-marks";
 
 /** The composer's data model: where a draft goes, what kind it is, and what it carries. The
  *  composer (`MentionComposer.tsx`), the request it freezes (`send-request.ts`) and every host read
@@ -63,6 +64,36 @@ export interface ReplyTarget {
     readonly target: string;
   };
   readonly to?: string;
+}
+
+/** The post a reply quotes as the host's read of it stands now: the marks its author's
+ *  corrections leave on it, its deletion and the time of its last edit. `ReplyTarget` is taken
+ *  when Reply is pressed and kept with the send (`held-sends.ts`), so a draft open when the
+ *  author deletes or edits the post learns it from here: its quote then says the post is deleted
+ *  and gives no part of the excerpt it took, or marks the post edited (`ReplyQuote`). */
+export type ReplyParent = DeletablePost & { readonly edited_at?: string | null };
+
+/** A post a host's read holds, by its id. */
+type ReadPost = ReplyParent & { readonly id: string };
+
+/** The post `target` quotes among a host's reads, as they hold it now: a comment among
+ *  `comments`, a message among the roots and replies of `messages`. Undefined with no target, and
+ *  where the reads do not hold the post. */
+export function replyParentOf(
+  target: ReplyTarget | null,
+  comments: readonly ReadPost[],
+  messages: readonly { readonly message: ReadPost; readonly replies: readonly ReadPost[] | null }[]
+): ReplyParent | undefined {
+  if (target === null) return undefined;
+  if (target.parentKind === "comment") {
+    return comments.find((comment) => comment.id === target.id);
+  }
+  for (const read of messages) {
+    if (read.message.id === target.id) return read.message;
+    const reply = read.replies?.find((message) => message.id === target.id);
+    if (reply !== undefined) return reply;
+  }
+  return undefined;
 }
 
 /** One accepted mention: the target, and the span of the body that names it. */

@@ -9,6 +9,7 @@ import {
 } from "@legion/contracts";
 
 import type { AgentPart } from "../refs/AgentName";
+import type { PostDeletion } from "../refs/post-marks";
 
 /**
  * Each delivery mode as a person reads it, the one mapping every surface names a mode with: the
@@ -220,6 +221,20 @@ export function isSafeRetry(attempt: DeliveryOutcome, now: number = Date.now()):
     attempt.answeredWithError !== true &&
     insideDuplicateWindow(attempt.createdAt, now)
   );
+}
+
+/**
+ * Whether a surface may offer to send a post again - the same-mode Retry of one of its attempts,
+ * or a send in another mode - given the post's deletion (`postDeletion`): never once its author
+ * deleted it. Dispatch refuses every new delivery of a deleted post, `409 POST_DELETED`, and the
+ * delete ended each of its sends still pending with `DELETED_POST_DELIVERY_ERROR`. So an attempt
+ * of a deleted post offers no Retry and no mode change, and earns none of the guidance that
+ * names them: the one a delete ended reads the delete's words and nothing else. Every surface
+ * that offers either asks this first, and asks `isSafeRetry` and `failureGuidance` only of an
+ * attempt whose post it holds for.
+ */
+export function resendable(deleted: PostDeletion | null | undefined): boolean {
+  return deleted === null || deleted === undefined;
 }
 
 /** What a duplicate attempt reads as: an earlier attempt landed, so this one added nothing. */

@@ -131,6 +131,8 @@ test("a pinned card's agent byline links to its live conversation", () => {
               at: "2026-09-10T00:00:00Z",
               author: agent,
               body: "Pinned question",
+              deleted: null,
+              edited: null,
               id: "ask:ask-1",
               kind: "ask",
             },
@@ -153,5 +155,162 @@ test("a pinned card's agent byline links to its live conversation", () => {
   } finally {
     view.unmount();
     listAgents.mockRestore();
+  }
+});
+
+test("a pinned conversation whose post was deleted says so in place of its body", () => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <PinnedTab
+          conversations={[
+            {
+              at: "2026-09-10T00:00:00Z",
+              author: { id: "alice", kind: "user" },
+              body: "",
+              deleted: { at: "2026-09-10T00:05:00Z", by: { id: "alice", kind: "user" } },
+              edited: null,
+              id: "comment:comment-1",
+              kind: "comment",
+            },
+          ]}
+          events={[]}
+          onUnpin={() => {}}
+          onUnpinConversation={() => {}}
+          pinnedIds={["comment:comment-1"]}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    expect(screen.getByText(/Deleted by/)).not.toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A pinned event prints its post's body as the event recorded it, and the read of the event gives
+// it the post's own edit time (`attachPostMarks` in `api/events.go`): the card of a message its
+// author edited since says so in its byline, as a pinned conversation's card does, and the card
+// of a message nobody edited does not.
+test("a pinned message event its author edited marks its byline edited, and one nobody edited does not", () => {
+  const edited: DispatchEvent = {
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-09-10T00:00:00Z",
+    id: 2,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      author: { id: "alice", kind: "user" },
+      body: "The message as first written",
+      broadcast_id: null,
+      reply_block: null,
+      created_at: "2026-09-10T00:00:00Z",
+      deliveries: [],
+      edited_at: "2026-09-10T00:05:00Z",
+      id: "message-2",
+      in_reply_to: null,
+      issue_key: "CORE-1",
+      target: null,
+    },
+    seq: 2,
+    type: "message.created",
+  };
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <PinnedTab
+          conversations={[]}
+          events={[messageEvent, edited]}
+          onUnpin={() => {}}
+          onUnpinConversation={() => {}}
+          pinnedIds={["1", "2"]}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const [standing, corrected] = view.container.querySelectorAll("article");
+    expect(corrected?.textContent).toContain("alice · edited");
+    expect(standing?.textContent).toContain("alice");
+    expect(standing?.textContent).not.toContain("edited");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The read of an event of a post its author edited and then deleted gives it both marks and no
+// body (`attachPostMarks` in `api/events.go`). The card must not depend on that: this event still
+// holds the body it was written with, and the deleted line takes its place (`PostBody`), so no
+// part of that body prints. The byline carries no ` · edited`: the deleted line already says
+// what became of the text.
+test("a pinned message event of a post edited and then deleted reads as deleted, and its byline is not marked edited", async () => {
+  const editedThenDeleted: DispatchEvent = {
+    ...messageEvent,
+    payload: {
+      author: { id: "alice", kind: "user" },
+      body: "Pinned message\n\n- item",
+      broadcast_id: null,
+      reply_block: null,
+      created_at: "2026-09-10T00:00:00Z",
+      deleted_at: "2026-09-10T00:06:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+      deliveries: [],
+      edited_at: "2026-09-10T00:05:00Z",
+      id: "message-1",
+      in_reply_to: null,
+      issue_key: "CORE-1",
+      target: null,
+    },
+  };
+  // A standing post beside it, whose own body is what the assertions below wait for: the
+  // markdown of this render is asynchronous, so without that wait they run while no body has
+  // drawn at all, and the one that says the deleted card holds no body is green whatever the
+  // card does (dispatch://INFRA-1523).
+  const standing: DispatchEvent = {
+    ...messageEvent,
+    id: 2,
+    payload: {
+      ...editedThenDeleted.payload,
+      body: "Standing message\n\n- item",
+      deleted_at: null,
+      deleted_by: null,
+      edited_at: null,
+      id: "message-2",
+    },
+  };
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <PinnedTab
+          conversations={[]}
+          events={[editedThenDeleted, standing]}
+          onUnpin={() => {}}
+          onUnpinConversation={() => {}}
+          pinnedIds={["1"]}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    expect(await screen.findByText("Standing message")).not.toBeNull();
+    const [card] = view.container.querySelectorAll("article");
+    expect(card?.textContent).not.toContain("Pinned message");
+    expect(card?.textContent).toContain("Deleted by alice");
+    expect(card?.textContent).not.toContain("edited");
+  } finally {
+    view.unmount();
   }
 });

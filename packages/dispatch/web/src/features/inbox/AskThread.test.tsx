@@ -143,6 +143,77 @@ test("an Inbox reply's `#q2` names the question of the document its comment is a
   }
 });
 
+test("a deleted reply in an ask thread reads as deleted and gives no part of its body", async () => {
+  // The reply keeps its body beside the marks, so only the thread's own reading of the marks
+  // keeps "Holding on #q2 for now." off the page.
+  const deleted: Comment = {
+    ...reply,
+    deleted_at: "2026-09-09T03:00:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+  };
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const thread = { data: { ...read, replies: [deleted] } } as unknown as AskThreadQuery;
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <AskThread ask={answeredAsk} order="oldest" showComposer={false} thread={thread} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const row = view.container.querySelector("[data-reply]");
+    if (row === null) throw new Error("the thread drew no reply");
+    await waitFor(() => expect(row.textContent).toContain("Deleted by alice"));
+    expect(row.textContent).not.toContain("Holding on");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A reply its author edited carries ` · edited` after its byline's time, as the post's own
+// card writes it (`EditedMark`), and a reply nobody edited carries nothing there.
+test("an edited reply in an ask thread marks its byline edited, and one nobody edited does not", async () => {
+  const edited: Comment = {
+    ...reply,
+    body: "Holding until Friday.",
+    edited_at: "2026-09-09T03:00:00Z",
+  };
+  const standing: Comment = {
+    ...reply,
+    body: "Agreed.",
+    created_at: "2026-09-09T04:00:00Z",
+    id: "comment-2",
+  };
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const thread = { data: { ...read, replies: [edited, standing] } } as unknown as AskThreadQuery;
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <AskThread ask={answeredAsk} order="oldest" showComposer={false} thread={thread} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const rows = [...view.container.querySelectorAll("[data-reply]")];
+    expect(rows).toHaveLength(2);
+    const [corrected, kept] = rows as [Element, Element];
+    // The byline is the reply's last line, under its body.
+    await waitFor(() => expect(corrected.textContent).toContain("Holding until Friday."));
+    expect(corrected.lastElementChild?.textContent).toMatch(/^alice · .+ · edited$/);
+    await waitFor(() => expect(kept.textContent).toContain("Agreed."));
+    expect(kept.lastElementChild?.textContent).toMatch(/^alice · /);
+    expect(kept.textContent).not.toContain("edited");
+  } finally {
+    view.unmount();
+  }
+});
+
 // A settled question's conversation goes on: however an ask was resolved, its thread keeps the
 // reply composer an answered ask's has, and what it sends is a reply on that ask.
 test("a resolved ask's thread takes a reply on that ask, whichever way it was resolved", async () => {

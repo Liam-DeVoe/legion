@@ -73,6 +73,7 @@ import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/A
 import { ASK_URGENCIES_ASCENDING, URGENCY_LABELS } from "../inbox/ask-urgency";
 import { useComposerRegistry } from "../margin/margin-context";
 import { AgentName, type AgentText, useAgentText } from "../refs/AgentName";
+import { postDeletion } from "../refs/post-marks";
 import { ReferencePicker } from "../refs/ReferencePicker";
 import { composerReferences } from "../refs/routes";
 import { SendStoppedError } from "../writes/keyed-write";
@@ -90,6 +91,7 @@ import type {
   ComposerAnchor,
   ComposerKind,
   ComposerOwner,
+  ReplyParent,
   ReplyTarget,
 } from "./composer-model";
 import { deliveryModesOf, MODE_LABELS, noDeliveryReasons, plainDelivery } from "./delivery";
@@ -521,6 +523,9 @@ interface MentionComposerProps {
   readonly onSent: () => void;
   readonly owner: ComposerOwner;
   readonly replyTo?: ReplyTarget | null;
+  /** The post `replyTo` quotes, as the host's read of it stands now (`ReplyParent`), whose
+   *  deletion and edit the quote marks; absent where the host reads no such post. */
+  readonly replyParent?: ReplyParent;
   readonly saveEdit?: SaveCommentEdit;
   /** The reply target is this box's own standing address rather than a Reply the reader
    *  pressed: the Inbox reading column's thread box, which is the thread's permanent reply and
@@ -554,6 +559,7 @@ export function MentionComposer({
   onKindChange,
   onSent,
   owner,
+  replyParent,
   replyTo = null,
   saveEdit,
   standing = false,
@@ -1266,6 +1272,8 @@ export function MentionComposer({
           <ReplyQuote
             author={replyTo.actor}
             className="min-w-0 flex-1"
+            deleted={postDeletion(replyParent)}
+            edited={replyParent?.edited_at}
             excerpt={replyTo.excerpt}
             to={replyTo.to}
           />

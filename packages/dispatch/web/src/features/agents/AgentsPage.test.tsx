@@ -1,4 +1,4 @@
-import { expect, jest, type Mock, spyOn, test } from "bun:test";
+import { beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts";
 import {
   focusManager,
@@ -12,6 +12,7 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -87,45 +88,58 @@ async function refuseBroadcast(): Promise<never> {
 // fixture frozen at an absolute date would age out of every retry assertion.
 const recentAttemptAt = new Date(Date.now() - 60_000).toISOString();
 
-/** When the file loaded, which most fixture times below are dated from. A time whose reading a
- *  row asserts to the minute - a `seen` label, or the two minutes that keep a session Active - is
- *  dated with `ago` as the row builds it instead: the page reads the clock as it draws, and random
- *  order can run a row a minute or more after the file loaded. */
-const now = Date.now();
+/**
+ * When the row running now began, which the sessions and asks below count back from. The page
+ * groups a session by its own clock as it draws (`agentGroup`: Active is Dispatch activity inside
+ * two minutes), so a fixture dated once, as this file loads, ages while the file runs: a loaded
+ * run reaches some rows more than a minute in, where the Planner's activity "a minute ago" is
+ * past two minutes and the Planner reads as Idle. So each row dates them again: `agents` here,
+ * and `inbox` in a hook of its own beside it, which runs after this one. A time whose reading a
+ * row asserts to the minute - a `seen` label, or the two minutes that keep a session Active - is
+ * dated with `ago` as the row builds it instead, as `staleAgent` and `deployerAgent` are.
+ */
+let now: number;
+let agents: ReturnType<typeof datedAgents>;
+beforeEach(() => {
+  now = Date.now();
+  agents = datedAgents();
+});
 
 /** `ms` before this moment. */
 function ago(ms: number): number {
   return Date.now() - ms;
 }
 
-const agents = [
-  {
-    capabilities: ["aside", "btw"],
-    dir: "/workspaces/planner",
-    host: "build-host",
-    last_activity: new Date(now - 60_000).toISOString(),
-    last_seen: now - 30_000,
-    machine_id: "build-host",
-    open_asks: 2,
-    roles: ["planner"],
-    session_id: "planner-session",
-    state: "running",
-    title: "Planner",
-  },
-  {
-    capabilities: ["aside"],
-    dir: "/workspaces/reviewer",
-    host: "review-host",
-    last_activity: new Date(now - 10 * 60_000).toISOString(),
-    last_seen: now - 5 * 60_000,
-    machine_id: "review-host",
-    open_asks: 0,
-    roles: [],
-    session_id: "reviewer-session",
-    state: "running",
-    title: "Reviewer",
-  },
-] satisfies Agent[];
+function datedAgents() {
+  return [
+    {
+      capabilities: ["aside", "btw"],
+      dir: "/workspaces/planner",
+      host: "build-host",
+      last_activity: new Date(now - 60_000).toISOString(),
+      last_seen: now - 30_000,
+      machine_id: "build-host",
+      open_asks: 2,
+      roles: ["planner"],
+      session_id: "planner-session",
+      state: "running",
+      title: "Planner",
+    },
+    {
+      capabilities: ["aside"],
+      dir: "/workspaces/reviewer",
+      host: "review-host",
+      last_activity: new Date(now - 10 * 60_000).toISOString(),
+      last_seen: now - 5 * 60_000,
+      machine_id: "review-host",
+      open_asks: 0,
+      roles: [],
+      session_id: "reviewer-session",
+      state: "running",
+      title: "Reviewer",
+    },
+  ] satisfies Agent[];
+}
 
 /** The agent list as a plan reads it after a read that succeeded: it says who is absent. */
 function currentList(listed: readonly Agent[]): BroadcastRoster {
@@ -135,44 +149,47 @@ function currentList(listed: readonly Agent[]): BroadcastRoster {
 // The signed-in reader is `alice`, and a card's first number is their own work: these rows wait
 // on them, which is what the server answers in `waiting_on_person` for an ask nobody has handed
 // on whose issue is theirs.
-const inbox: InboxRow[] = [1, 2].map((number) => ({
-  anchor: null,
-  answer: null,
-  artifact_id: null,
-  asked_of: null,
-  asked_of_at: null,
-  asked_of_by: null,
-  author: { id: "planner-session", kind: "session" },
-  block_id: null,
-  created_at: new Date(now - 60_000).toISOString(),
-  edited_at: null,
-  id: `ask-${number}`,
-  issue: { assignee: "alice", key: "CORE-1", title: "Core work" },
-  issue_key: "CORE-1",
-  waiting_on_person: "alice",
-  kind: "question",
-  last_reply: null,
-  multiple: false,
-  opened_event_id: number,
-  options: [],
-  thread: {
-    answers: [],
-    claimant: null,
-    edits: [],
-    followers: [],
-    replies: [],
-    route: null,
-    route_status: null,
-    route_holder: null,
-    route_status_reason: null,
-  },
-  priority: null,
-  snoozed_until: null,
-  question: "What should happen next?",
-  state: "open",
-  waiting_on: "human",
-  urgency: "med",
-}));
+let inbox: InboxRow[];
+beforeEach(() => {
+  inbox = [1, 2].map((number) => ({
+    anchor: null,
+    answer: null,
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
+    author: { id: "planner-session", kind: "session" },
+    block_id: null,
+    created_at: new Date(now - 60_000).toISOString(),
+    edited_at: null,
+    id: `ask-${number}`,
+    issue: { assignee: "alice", key: "CORE-1", title: "Core work" },
+    issue_key: "CORE-1",
+    waiting_on_person: "alice",
+    kind: "question",
+    last_reply: null,
+    multiple: false,
+    opened_event_id: number,
+    options: [],
+    thread: {
+      answers: [],
+      claimant: null,
+      edits: [],
+      followers: [],
+      replies: [],
+      route: null,
+      route_status: null,
+      route_holder: null,
+      route_status_reason: null,
+    },
+    priority: null,
+    snoozed_until: null,
+    question: "What should happen next?",
+    state: "open",
+    waiting_on: "human",
+    urgency: "med",
+  }));
+});
 
 function message(body: string, overrides: Partial<Message> = {}): Message {
   return {
@@ -181,6 +198,7 @@ function message(body: string, overrides: Partial<Message> = {}): Message {
     broadcast_id: null,
     created_at: "2026-09-14T00:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id: "message-1",
     in_reply_to: null,
     issue_key: null,
@@ -4660,6 +4678,72 @@ test("a send pressed offline goes late with Stop trying, and lands when the netw
   } finally {
     realClock();
     onlineManager.setOnline(online);
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+test("the Agents page marks an edited message and reads a deleted one as deleted", async () => {
+  const user = userEvent.setup();
+  const edited = message("Can this ship?", {
+    edited_at: "2026-09-14T00:30:00Z",
+    issue_key: "CORE-1",
+  });
+  const deletedReply = message("", {
+    author: { id: "planner-session", kind: "session" },
+    created_at: "2026-09-14T01:00:00Z",
+    deleted_at: "2026-09-14T01:05:00Z",
+    deleted_by: { id: "planner-session", kind: "session" },
+    id: "reply-1",
+    in_reply_to: "message-1",
+  });
+  const page = renderAgents({ messages: [{ message: edited, replies: [deletedReply] }] });
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    await within(planner).findByText("Can this ship?");
+    await waitFor(() => expect(planner.textContent).toContain("edited"));
+    await waitFor(() => expect(planner.textContent).toContain("Deleted by"));
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A reply's quote prints its parent, so a parent its author edited carries ` · edited` in the
+// quote as on its own byline, and a parent nobody edited carries none.
+test("the Agents page marks a reply's quote of an edited parent, and not of a standing one", async () => {
+  const user = userEvent.setup();
+  const root = message("Can this ship?", {
+    edited_at: "2026-09-14T00:30:00Z",
+    issue_key: "CORE-1",
+  });
+  const answer = message("Yes, it can.", {
+    author: { id: "planner-session", kind: "session" },
+    created_at: "2026-09-14T01:00:00Z",
+    id: "reply-1",
+    in_reply_to: "message-1",
+    issue_key: "CORE-1",
+  });
+  const thanks = message("Thanks.", {
+    created_at: "2026-09-14T01:10:00Z",
+    id: "reply-2",
+    in_reply_to: "reply-1",
+    issue_key: "CORE-1",
+  });
+  const page = renderAgents({ messages: [{ message: root, replies: [answer, thanks] }] });
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const turn = (id: string) => planner.querySelector(`[data-turn="message:${id}"]`);
+    await waitFor(() =>
+      expect(turn("reply-1")?.textContent).toContain("· edited — Can this ship?")
+    );
+    await waitFor(() => expect(turn("reply-2")?.textContent).toContain("— Yes, it can."));
+    expect(turn("reply-2")?.textContent).not.toContain("edited");
+  } finally {
     page.view.unmount();
     page.restore();
   }

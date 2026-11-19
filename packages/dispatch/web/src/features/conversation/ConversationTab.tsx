@@ -1,3 +1,4 @@
+import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
 import { type MutationKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
@@ -50,7 +51,8 @@ import {
   useAgentText,
 } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { MarkdownBody } from "../refs/MarkdownBody";
+import { EditedMark, PostBody } from "../refs/PostBody";
+import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { buildIssuePath, documentItemPath, sessionOfAddress } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
@@ -64,7 +66,7 @@ import { useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 import { Avatar } from "./Avatar";
-import type { ReplyTarget } from "./composer-model";
+import { type ReplyTarget, replyParentOf } from "./composer-model";
 import {
   buildConversations,
   type CommentDeliveryAttempt,
@@ -83,6 +85,7 @@ import {
   isSafeRetry,
   MODE_LABELS,
   queuedParts,
+  resendable,
   withGuidance,
 } from "./delivery";
 import {
@@ -230,7 +233,8 @@ function ConversationReply({
       author={reply.author}
       body={
         <>
-          <MarkdownBody
+          <PostBody
+            deleted={postDeletion(reply)}
             markdown={reply.body}
             source={textSourceOf("message", reply.id)}
             tree={reply.body_tree}
@@ -239,6 +243,8 @@ function ConversationReply({
         </>
       }
       current={reply.id === currentReplyId}
+      deleted={postDeletion(reply)}
+      edited={reply.edited_at}
       markRef={markRef}
       delivery={
         lastAttempt === undefined
@@ -260,6 +266,8 @@ function ConversationReply({
       quote={{
         author: parent?.author,
         block: reply.reply_block,
+        deleted: postDeletion(parent),
+        edited: parent?.edited_at,
         excerpt: parent?.body ?? "",
         excerptTree: parent?.body_tree,
         to:
@@ -363,10 +371,14 @@ function MessageTurn({
         <div className="min-w-0 flex-1">
           <p className={`flex items-baseline gap-2 text-sm ${textSecondaryOnSurface}`}>
             <AgentName actor={author} className="font-semibold" inline />
-            <Timestamp at={item.root.created_at} />
+            <span>
+              <Timestamp at={item.root.created_at} />
+              <EditedMark at={item.root.edited_at} deleted={postDeletion(item.root)} />
+            </span>
             {item.unread ? <UnreadMark /> : null}
           </p>
-          <MarkdownBody
+          <PostBody
+            deleted={postDeletion(item.root)}
             markdown={item.root.body}
             source={textSourceOf("message", item.root.id)}
             tree={item.root.body_tree}
@@ -539,16 +551,23 @@ function commentReplyTarget(
 
 function CommentDeliveryList({
   agents,
+  deleted,
   deliveries,
   onRetry,
   retrying,
 }: {
   agents: readonly Agent[] | undefined;
+  /** The comment's deletion, where its author deleted it (`postDeletion`): a deleted comment's
+   *  mention is sent again in no mode (`resendable`). */
+  deleted: PostDeletion | null;
   deliveries: readonly CommentDeliveryAttempt[];
   onRetry: (delivery: CommentDeliveryAttempt) => void;
   retrying: boolean;
 }): ReactNode {
   if (deliveries.length === 0) return null;
+  // Asked once for the comment: every attempt of a deleted comment offers no Retry and earns none
+  // of the guidance that names one, so the attempt its delete ended reads the delete's words alone.
+  const offered = resendable(deleted);
   return (
     <ul
       aria-label="Mention deliveries"
@@ -567,10 +586,14 @@ function CommentDeliveryList({
         // mode under its own key, so it is offered only while `isSafeRetry` holds, and the
         // guidance beside it names that Retry or a new comment, both of which a closed issue
         // takes too.
-        const safeRetry = isSafeRetry(outcome);
+        const safeRetry = offered && isSafeRetry(outcome);
         const canRetry = capabilities === undefined || capabilities.includes(delivery.delivery);
-        const guidance = failureGuidance(outcome, "mention");
+        const guidance = offered ? failureGuidance(outcome, "mention") : undefined;
         const recipient = targetPart(delivery.target);
+        // A send the post's delete ended did not fail: the delete ended it. Its line says so in
+        // the delete's own words where the state stands, as the Pinned and Activity tabs say it,
+        // and says nothing after them.
+        const ended = delivery.state === "failed" && delivery.error === DELETED_POST_DELIVERY_ERROR;
         return (
           <li
             className="flex flex-wrap items-center gap-x-2"
@@ -582,10 +605,12 @@ function CommentDeliveryList({
                 <AgentParts parts={queuedParts(recipient)} />
               ) : delivery.duplicate === true ? (
                 duplicateText
+              ) : ended ? (
+                DELETED_POST_DELIVERY_ERROR
               ) : (
                 delivery.state
               )}
-              {delivery.error === null
+              {delivery.error === null || ended
                 ? ""
                 : ` · ${guidance === undefined ? delivery.error : withGuidance(delivery.error, guidance)}`}
               {delivery.error === null && guidance !== undefined ? ` · ${guidance}` : ""}
@@ -785,6 +810,7 @@ function CommentTurn({
         renderDeliveries={(comment) => (
           <CommentDeliveryList
             agents={agents}
+            deleted={postDeletion(comment)}
             deliveries={deliveriesFor(comment.id)}
             onRetry={(delivery) => retryGuard.guard(() => retry.mutate(delivery))}
             retrying={retry.isPending}
@@ -866,11 +892,15 @@ function TargetedMessageTurn({
         <>
           <p className={`flex flex-wrap items-center gap-x-2 text-sm ${textSecondaryOnSurface}`}>
             <AgentName actor={asker} className="font-semibold" inline />
-            <Timestamp at={item.root.created_at} />
+            <span>
+              <Timestamp at={item.root.created_at} />
+              <EditedMark at={item.root.edited_at} deleted={postDeletion(item.root)} />
+            </span>
             <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
             {item.unread ? <UnreadMark /> : null}
           </p>
-          <MarkdownBody
+          <PostBody
+            deleted={postDeletion(item.root)}
             markdown={item.root.body}
             source={textSourceOf("message", item.root.id)}
             tree={item.root.body_tree}
@@ -882,6 +912,7 @@ function TargetedMessageTurn({
       canBtw={capabilities?.includes("btw") !== false}
       canSteer={capabilities?.includes("steer") !== false}
       current={current}
+      deleted={postDeletion(item.root)}
       deliveries={deliveryAttempts(item.root.deliveries ?? [], targetName)}
       header={<Avatar actor={asker} />}
       onReply={() => onReply(replyTargetFor(item.root, item, issueKey))}
@@ -1242,6 +1273,7 @@ export function ConversationTab({
             setOwnSendCount((count) => count + 1);
           }}
           owner={{ issueKey, kind: "issue" }}
+          replyParent={replyParentOf(replyTo, comments.data ?? [], messages.data ?? [])}
           replyTo={replyTo}
         />
       </div>
@@ -1497,6 +1529,7 @@ export function ConversationTab({
                   setOwnSendCount((count) => count + 1);
                 }}
                 owner={{ issueKey, kind: "issue" }}
+                replyParent={replyParentOf(phone.replyTo, comments.data ?? [], messages.data ?? [])}
                 replyTo={phone.replyTo}
               />
             </div>

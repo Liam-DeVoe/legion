@@ -222,7 +222,7 @@ func (s *server) replayComment(w http.ResponseWriter, r *http.Request, point com
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeRefreshed(w, stored, hydrated[0])
+	s.writeRefreshed(w, http.StatusCreated, stored, hydrated[0])
 }
 
 // owedCommentMentions is each mention of the comment whose one attempt is pending with no live
@@ -283,6 +283,15 @@ func (s *server) normalizeCommentThreadTarget(
 		parent, err := s.loadOwnedComment(ctx, tx, owner, *input.ReplyTo)
 		if err != nil {
 			return commentThreadTarget{}, err
+		}
+		// A reply adds text under the post it answers, and a deleted post takes none: the
+		// thread reply is refused as the delivery callback's reply is (comment_delivery.go's
+		// replyComment), on the parent this walk has already locked, so the refusal costs no
+		// read of its own. Only the comment the request named is judged: a reply under a live
+		// comment stands whatever became of the root above it, and a reply written before the
+		// delete keeps its text and its place.
+		if parent.DeletedAt != nil {
+			return commentThreadTarget{}, deletedPostError(refs.ItemComment)
 		}
 		target, err := s.threadHeadOf(ctx, tx, owner, parent)
 		if err != nil || input.ReplyToBlock == nil {
