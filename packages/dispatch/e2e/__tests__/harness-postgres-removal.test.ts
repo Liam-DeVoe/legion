@@ -34,7 +34,7 @@
  *  TMPDIR, which a start finds by that walk alone, plant a `postgres` that every start finds, and
  *  so decide on what any start did with the plant (`removedByAStart`). */
 
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -49,21 +49,30 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
+import ts from "typescript";
 
+import { removalBounds, removeContainer } from "../harness-postgres-container-removal";
 import * as marks from "../harness-postgres-marks";
-import { servingPostmasters, stopPostmaster } from "../harness-postgres-removal";
+import { claimWaitMs, servingPostmasters, stopPostmaster } from "../harness-postgres-removal";
 import {
   claimAndDie,
   claimEventMs,
   claimInChild,
   endChild,
+  fixtureDockerInChild,
   holding,
   leaveContainerMark,
   leaveData,
   leaveElsewhere,
   owners,
   removeInChild,
+  rowMachine,
+  rowMs,
+  rowOf,
+  rowRoomMs,
+  type StandInDocker,
   scratch,
   signalCountingPostmaster,
   standInDocker,
@@ -71,7 +80,10 @@ import {
   startSweep,
   sweep,
   sweepInChild,
+  type Tick,
   until,
+  type Waits,
+  waitsMs,
   writeMark,
 } from "./harness-postgres-removal-fixtures";
 import {
@@ -86,13 +98,18 @@ const { runDirectoryPrefix } = marks;
 
 const onLinux = process.platform === "linux";
 
+/** What a row waits for that runs one start's sweep, which claims nothing, so it reads no holder,
+ *  and waits for nothing else (`Waits`). */
+const oneSweep: Waits = { children: 1, reads: 0, bounds: [] };
+
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a mark whose postmaster.bin is the planter's and whose stack directory is a link out of the run is left: its program never runs, the live process stays, the directory outside stays",
   async () => {
+    const row = rowOf(oneSweep);
     const { tmp, run } = scratch();
     const hostile = plantHostileMark(run, tmp, owners().gone);
     try {
-      const lines = await sweep(tmp);
+      const lines = await sweep(row, tmp);
 
       expect(hostile.kept()).toEqual(hostileMarkKept);
       expect(holding(lines, `${hostile.file} (${hostile.link} is a symbolic link)`)).toHaveLength(
@@ -102,12 +119,15 @@ test.skipIf(!onLinux)(
       hostile.live.stop();
       rmSync(tmp, { recursive: true, force: true });
     }
-  }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep.
+  rowMs(oneSweep)
 );
 
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: the start runs no program a mark names: a postmaster.pid that names a process which is no postgres of the mark's binaries leaves the mark, and that process runs on",
   async () => {
+    const row = rowOf(oneSweep);
     const { tmp, run } = scratch();
     const marker = join(tmp, "the-planted-program-ran");
     const data = join(run, "worker-0", "pgdata");
@@ -117,7 +137,7 @@ test.skipIf(!onLinux)(
       leaveData(data, live.pid);
       const file = writeMark(run, owners().gone, data, plantedBin(tmp, marker));
 
-      const lines = await sweep(tmp);
+      const lines = await sweep(row, tmp);
 
       expect(existsSync(marker)).toBe(false);
       expect(live.alive()).toBe(true);
@@ -131,12 +151,15 @@ test.skipIf(!onLinux)(
       live.stop();
       rmSync(tmp, { recursive: true, force: true });
     }
-  }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep.
+  rowMs(oneSweep)
 );
 
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a link in any component of what a mark names is never followed: a stack directory that links out of the run leaves the directory it leads to",
   async () => {
+    const row = rowOf(oneSweep);
     const { tmp, run } = scratch();
     const outside = join(tmp, "outside");
     try {
@@ -145,7 +168,7 @@ test.skipIf(!onLinux)(
       const noBin = mkdtempSync(join(tmp, "no-bin-"));
       const file = writeMark(run, owners().gone, join(run, "worker-0", "pgdata"), noBin);
 
-      const lines = await sweep(tmp);
+      const lines = await sweep(row, tmp);
 
       expect(existsSync(join(outside, "pgdata", "PG_VERSION"))).toBe(true);
       expect(existsSync(file)).toBe(true);
@@ -155,12 +178,15 @@ test.skipIf(!onLinux)(
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
-  }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep.
+  rowMs(oneSweep)
 );
 
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a run directory that is a link is never read: the marks of the directory it leads to stay, with what they name",
   async () => {
+    const row = rowOf(oneSweep);
     const { tmp } = scratch();
     const elsewhere = mkdtempSync(join(tmp, "elsewhere-"));
     const link = join(tmp, `${runDirectoryPrefix}link`);
@@ -170,7 +196,7 @@ test.skipIf(!onLinux)(
       const file = writeMark(elsewhere, owners().gone, data, mkdtempSync(join(tmp, "no-bin-")));
       symlinkSync(elsewhere, link);
 
-      const lines = await sweep(tmp);
+      const lines = await sweep(row, tmp);
 
       expect(existsSync(join(data, "PG_VERSION"))).toBe(true);
       expect(existsSync(file)).toBe(true);
@@ -178,12 +204,15 @@ test.skipIf(!onLinux)(
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
-  }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep.
+  rowMs(oneSweep)
 );
 
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a run directory that another user may write is never read, in a TMPDIR shared and sticky as /tmp is: its gone stack's directories stay",
   async () => {
+    const row = rowOf(oneSweep);
     // Built in /tmp itself: a TMPDIR anywhere under a directory of this user's that no other user
     // may enter (a session's own, mode 0700) is one where no other user reaches a run directory.
     const { tmp, run } = scratch("/tmp");
@@ -196,7 +225,7 @@ test.skipIf(!onLinux)(
       chmodSync(tmp, 0o1777);
       chmodSync(run, 0o777);
 
-      const lines = await sweep(tmp);
+      const lines = await sweep(row, tmp);
 
       expect(existsSync(join(data, "PG_VERSION"))).toBe(true);
       expect(existsSync(file)).toBe(true);
@@ -206,12 +235,15 @@ test.skipIf(!onLinux)(
       chmodSync(tmp, 0o700);
       rmSync(tmp, { recursive: true, force: true });
     }
-  }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep.
+  rowMs(oneSweep)
 );
 
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a mark of another boot, of another PID namespace, of another time namespace and of a stack where there is no /proc is each left with its directories, and each is named with its case on the one line of what the start cannot judge",
   async () => {
+    const row = rowOf(oneSweep);
     const who = owners();
     const { tmp, run } = scratch();
     try {
@@ -227,7 +259,7 @@ test.skipIf(!onLinux)(
         return { data, why, file: writeMark(run, owner, data, bin, index) };
       });
 
-      const lines = await sweep(tmp);
+      const lines = await sweep(row, tmp);
 
       const unjudged = holding(lines, "left the Postgres of stacks whose process it cannot see:");
       expect(unjudged).toHaveLength(1);
@@ -238,12 +270,19 @@ test.skipIf(!onLinux)(
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
-  }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep.
+  rowMs(oneSweep)
 );
+
+/** What a row waits for that runs one start's sweep, which removes a dead stack's data and socket
+ *  directories that no postmaster serves: two holder reads, one before each claim (`Waits`). */
+const sweepRemoving: Waits = { children: 1, reads: 2, bounds: [] };
 
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a TMPDIR spelt through a link of its user's is read under its one spelling: the gone stack's directories go, each named under that spelling, and no line says a link was refused",
   async () => {
+    const row = rowOf(sweepRemoving);
     const { tmp } = scratch();
     const link = `${tmp}-link`;
     try {
@@ -256,7 +295,7 @@ test.skipIf(!onLinux)(
       const real = marks.identityOf(run);
       expect(real.startsWith(`${tmp}/`)).toBe(true);
 
-      const lines = await sweep(link);
+      const lines = await sweep(row, link);
 
       expect([existsSync(data), existsSync(file)]).toEqual([false, false]);
       expect(
@@ -267,12 +306,16 @@ test.skipIf(!onLinux)(
       rmSync(link, { force: true });
       rmSync(tmp, { recursive: true, force: true });
     }
-  }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep and its two
+  // holder reads.
+  rowMs(sweepRemoving)
 );
 
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a mark whose one spelling of its run directory is another directory's is no mark of the run directory it is in: it is left with what it names, and named",
   async () => {
+    const row = rowOf(oneSweep);
     const { tmp, run } = scratch();
     try {
       const data = join(run, "worker-0", "pgdata");
@@ -283,14 +326,16 @@ test.skipIf(!onLinux)(
       const written = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
       writeFileSync(file, JSON.stringify({ ...written, identity: elsewhere }));
 
-      const lines = await sweep(tmp);
+      const lines = await sweep(row, tmp);
 
       expect([existsSync(join(data, "PG_VERSION")), existsSync(file)]).toEqual([true, true]);
       expect(holding(lines, `${file} (no mark of this run directory)`)).toHaveLength(1);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
-  }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep.
+  rowMs(oneSweep)
 );
 
 /** How long another start's removal of a plant may still take once the row's own start ended: a
@@ -332,33 +377,41 @@ async function removedByAStart(
   expect(holding(naming, removed).length).toBeLessThanOrEqual(1);
 }
 
+/** What a row waits for that runs one start's sweep of a stack elsewhere whose postmaster serves,
+ *  and then for what another start may still be removing of it (`settleMs`): the sweep claims the
+ *  data directory, stops the postmaster and claims the socket directory, a holder read before each
+ *  claim, and one stop, with its reads after it (`Waits`). */
+const sweepStopping: Waits = { children: 1, reads: 2, stops: 1, bounds: [settleMs] };
+
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a stack under another TMPDIR that the kernel shows serving and whose stack is gone is removed by the same steps: its postmaster ends, its data and socket directories and its mark go",
   async () => {
+    const row = rowOf(sweepStopping);
     const { tmp } = scratch();
     const left = leaveElsewhere(owners().gone);
     try {
-      await removedByAStart(await sweep(tmp), left);
+      await removedByAStart(await sweep(row, tmp), left);
     } finally {
       left.postmaster?.stop();
       rmSync(left.other, { recursive: true, force: true });
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // The row waits for one start's sweep, a `bun` child, and then at most `settleMs` for what
-  // another start of the machine may still be removing of its plant.
-  300_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep, its holder reads
+  // and its stop of a postmaster, and then `settleMs`.
+  rowMs(sweepStopping)
 );
 
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start whose TMPDIR no longer exists still removes a stack under another TMPDIR that the kernel shows serving and whose stack is gone, and names the TMPDIR it cannot read on one line",
   async () => {
+    const row = rowOf(sweepStopping);
     const { tmp } = scratch();
     const programs = mkdtempSync(join(tmp, "no-programs-"));
     const gone = join(tmp, "tmpdir-gone");
     const left = leaveElsewhere(owners().gone);
     try {
-      const lines = await sweep(gone, programs);
+      const lines = await sweep(row, gone, programs);
 
       await removedByAStart(lines, left);
       expect(holding(lines, `left what it cannot read: ${gone} (ENOENT`)).toHaveLength(1);
@@ -368,19 +421,20 @@ test.skipIf(!onLinux)(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // The row waits for one start's sweep, a `bun` child, and then at most `settleMs` for what
-  // another start of the machine may still be removing of its plant.
-  300_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep, its holder reads
+  // and its stop of a postmaster, and then `settleMs`.
+  rowMs(sweepStopping)
 );
 
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start with no docker on its PATH leaves the mark of a dead stack's container, with its socket directory, and names it: it cannot tell whether that container still runs",
   async () => {
+    const row = rowOf(oneSweep);
     const { tmp, run } = scratch();
     try {
       const { sockets, container, file } = leaveContainerMark(run, owners().gone);
 
-      const lines = await sweep(tmp);
+      const lines = await sweep(row, tmp);
 
       expect([existsSync(sockets), existsSync(file)]).toEqual([true, true]);
       expect(
@@ -393,24 +447,29 @@ test.skipIf(!onLinux)(
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
-  }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep.
+  rowMs(oneSweep)
 );
 
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start with no docker on its PATH leaves the mark of a live stack's container without a word: it judges the owner before it reads Docker",
   async () => {
+    const row = rowOf(oneSweep);
     const { tmp, run } = scratch();
     try {
       const { sockets, file } = leaveContainerMark(run, owners().runs);
 
-      const lines = await sweep(tmp);
+      const lines = await sweep(row, tmp);
 
       expect([existsSync(sockets), existsSync(file)]).toEqual([true, true]);
       expect(holding(lines, run)).toEqual([]);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
-  }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep.
+  rowMs(oneSweep)
 );
 
 /** The id of the container the next rows remove, which their stand-in `docker` alone answers
@@ -421,21 +480,60 @@ const standInId = "0".repeat(64);
  *  second, so only a load that held one such script for 10 s could fail a row by it. The start
  *  waits 90 s in all: longer than the 60 s a start once bounded its `docker rm` by, so a start
  *  that bounds it so again gives the removal up before the bound, and the row that waits for the
- *  bound fails. */
+ *  bound fails. A fixed bound of any length past 90 s never fires within these rows: one short of
+ *  the start's own 600 s fails the row that runs the start's own bounds on a clock the row moves
+ *  (`rowMachine`), and one on the real clock fails the row that reads the removal's source. */
 const rowBounds = { answerMs: 10_000, boundMs: 90_000 };
-/** How long a row waits for its child: the child's start under load, which `claimEventMs` holds,
- *  and then the whole bound of its removal. */
-const childMs = claimEventMs + rowBounds.boundMs;
+/** What a row waits for that runs one start's removal of a container in a child: the child, the
+ *  removal's bound, and the end of each `docker` the start ran (`Waits`). */
+const oneRemoval: Waits = { children: 1, reads: 0, bounds: [rowBounds.boundMs, claimEventMs] };
 /** How long the next row's stand-in `docker rm` takes: three times as long as one ask may go
  *  unanswered, so a start that bounds its removal by that time gives it up long before. */
 const removalSeconds = (3 * rowBounds.answerMs) / 1000;
 /** A stand-in `docker ps` of one container that lists it, as Docker lists a container while it
  *  removes it: `docker ps --all --quiet --no-trunc --filter id=<id>` prints the id. */
 const listsIt = `  ps) echo "\${6#id=}" ;;`;
+/** A stand-in `docker rm` that Docker refuses, as it refuses a removal while another removal of
+ *  the container is in progress. */
+const inProgress =
+  '  rm) echo "Error response from daemon: removal of container $4 is already in progress" >&2; exit 1 ;;';
 
 /** The lines of `lines` that say the start waits for its removal of the container `id`. */
 function waitLines(lines: readonly string[], id: string): string[] {
   return holding(lines, `: waits for Docker's removal of container ${id.slice(0, 12)}`);
+}
+
+/** The room a row gives the stand-in's clock (`Tick`) on each side of a bound, in seconds: the
+ *  start of one `bash` stand-in, which is when a call reaches that clock, and one timer of the
+ *  start's that fires late, each under load. It is less than the 90 s of `rowBounds`, so a bound
+ *  of three times the row's (300 s for 90 s) or a fixed bound past the row's falls outside it. */
+const clockRoomS = 60;
+
+/** The seconds from the stand-in's first `docker rm` to the start of its last `docker ps` ask of
+ *  one container, on the stand-in's own clock: how long the start waited on its removal, as the
+ *  stand-in saw it, which no load on the start or the row stretches. */
+function askedFor(ticks: readonly Tick[]): number {
+  const rm = ticks.find((tick) => tick.event === "start" && tick.call.startsWith("rm "));
+  const asks = ticks.filter(
+    (tick) => tick.event === "start" && tick.call.startsWith("ps --all --quiet")
+  );
+  return (asks.at(-1)?.at ?? Number.NaN) - (rm?.at ?? Number.NaN);
+}
+
+/** Requires that the start waited on its removal until `boundMs`, on the stand-in's clock
+ *  (`askedFor`): its last ask came within `clockRoomS` past the bound, and no sooner than one
+ *  pause between two asks, 5 s, and `clockRoomS` before it. */
+function expectEndedAtBound(ticks: readonly Tick[], boundMs: number): void {
+  const waited = askedFor(ticks);
+  expect(waited).toBeGreaterThan(boundMs / 1000 - 5 - clockRoomS);
+  expect(waited).toBeLessThan(boundMs / 1000 + clockRoomS);
+}
+
+/** Kills each `docker` stand-in a row's start ran that still runs, by its pid and start. */
+function endStandIns(docker: StandInDocker): void {
+  for (const { pid, start } of [...docker.processes(), ...docker.running()]) {
+    if (marks.stillRuns(pid, start)) process.kill(pid, "SIGKILL");
+  }
 }
 
 // A daemon that many sessions share took 74 s and 91 s over one `docker rm` while it answered
@@ -445,6 +543,7 @@ function waitLines(lines: readonly string[], id: string): string[] {
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start waits for its removal of a dead stack's container as long as Docker takes over it while Docker answers, says so once it has waited as long as one ask may take, and then says it removed it",
   async () => {
+    const row = rowOf(oneRemoval);
     const { tmp } = scratch();
     try {
       const docker = standInDocker(tmp, [
@@ -455,10 +554,10 @@ test.skipIf(!onLinux)(
       ]);
 
       const { removal, lines, seconds } = await removeInChild(
+        row,
         docker.bin,
         standInId,
-        rowBounds,
-        childMs
+        rowBounds
       );
 
       expect(removal).toEqual({ kind: "removed" });
@@ -471,8 +570,8 @@ test.skipIf(!onLinux)(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // One `bun` child, which `childMs` holds; its removal takes `removalSeconds`.
-  600_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one child and its removal.
+  rowMs(oneRemoval)
 );
 
 // A daemon that hangs answers neither the removal nor the asks beside it: the start gives the
@@ -480,10 +579,11 @@ test.skipIf(!onLinux)(
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start gives up its removal of a dead stack's container where Docker answers no ask while it runs, says so, and leaves no docker it started running",
   async () => {
+    const row = rowOf(oneRemoval);
     const { tmp } = scratch();
     const docker = standInDocker(tmp, ['exec -a "$0" sleep 600']);
     try {
-      const { removal } = await removeInChild(docker.bin, standInId, rowBounds, childMs);
+      const { removal } = await removeInChild(row, docker.bin, standInId, rowBounds);
 
       expect(removal).toEqual({
         kind: "failed",
@@ -497,14 +597,13 @@ test.skipIf(!onLinux)(
         claimEventMs
       );
     } finally {
-      for (const { pid, start } of [...docker.processes(), ...docker.running()]) {
-        if (marks.stillRuns(pid, start)) process.kill(pid, "SIGKILL");
-      }
+      endStandIns(docker);
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // One `bun` child, which `childMs` holds, and then the end of each `docker` it ran.
-  600_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one child and its removal,
+  // and then the end of each `docker` it ran.
+  rowMs(oneRemoval)
 );
 
 // A `docker ps` that exits other than 0, as one gives where the daemon cannot be reached, is no
@@ -512,6 +611,7 @@ test.skipIf(!onLinux)(
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start reads a docker ps that fails as no answer: it gives up its removal of a dead stack's container at that ask, says why, and leaves no docker it started running",
   async () => {
+    const row = rowOf(oneRemoval);
     const { tmp } = scratch();
     const refused =
       "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?";
@@ -522,7 +622,7 @@ test.skipIf(!onLinux)(
       "esac",
     ]);
     try {
-      const { removal } = await removeInChild(docker.bin, standInId, rowBounds, childMs);
+      const { removal } = await removeInChild(row, docker.bin, standInId, rowBounds);
 
       expect(removal).toEqual({
         kind: "failed",
@@ -534,34 +634,93 @@ test.skipIf(!onLinux)(
         claimEventMs
       );
     } finally {
-      for (const { pid, start } of [...docker.processes(), ...docker.running()]) {
-        if (marks.stillRuns(pid, start)) process.kill(pid, "SIGKILL");
-      }
+      endStandIns(docker);
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // One `bun` child, which `childMs` holds, and then the end of each `docker` it ran.
-  600_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one child and its removal,
+  // and then the end of each `docker` it ran.
+  rowMs(oneRemoval)
 );
 
+/** The bounds of the next rows (`RemovalBounds`): an ask may go unanswered three minutes, and the
+ *  removal waits 10 s in all, so a stand-in `docker ps` that answers after 150 s answers within
+ *  the ask's own limit and long after the bound. */
+const slowAskBounds = { answerMs: 180_000, boundMs: 10_000 };
+/** What one of the next rows waits for (`Waits`): one child, whose removal may run to the ask's
+ *  limit where the bound does not cut it short, and then the end of each `docker` it ran. */
+const slowAsk: Waits = { children: 1, reads: 0, bounds: [slowAskBounds.answerMs, claimEventMs] };
+
+// The bound is a deadline: an ask that is still out when the bound comes ends there, and does not
+// carry the removal on to its own limit. The stand-in's `docker ps` answers after 150 s, within the
+// ask's 180 s, and the bound is 10 s. Its clock times the start's end, the last end of a call it
+// ran: a start that gave the ask its own limit ends at the answer, 150 s after the bound.
+for (const docker of [
+  { removal: "never ends", rm: '  rm) exec -a "$0" sleep 600 ;;' },
+  { removal: "is refused as already in progress", rm: inProgress },
+] as const) {
+  test.skipIf(!onLinux)(
+    `v-no-leftover-postgres: a start whose removal of a dead stack's container ${docker.removal} ends it at its bound while its ask of Docker is still out: no ask carries the removal past its bound`,
+    async () => {
+      const row = rowOf(slowAsk);
+      const { tmp } = scratch();
+      const standIn = standInDocker(tmp, [
+        'case "$1" in',
+        docker.rm,
+        `  ps) sleep 150 & wait $!; echo "\${6#id=}" ;;`,
+        "esac",
+      ]);
+      try {
+        const { removal } = await removeInChild(row, standIn.bin, standInId, slowAskBounds);
+
+        expect(removal).toEqual({
+          kind: "failed",
+          reason:
+            docker.rm === inProgress
+              ? `Error response from daemon: removal of container ${standInId} is already in progress, and Docker had not answered whether it still lists it when the 10 s bound of this start's removal came`
+              : "Docker did not end the removal within 10 s, and it had not answered the last ask when that bound came",
+        });
+        await until(
+          () => standIn.running().length === 0,
+          "the end of each docker the start ran",
+          claimEventMs
+        );
+        const ticks = standIn.clock();
+        const began = ticks.find((tick) => tick.call.startsWith("rm "))?.at ?? Number.NaN;
+        const ended = Math.max(
+          ...ticks.filter((tick) => tick.event === "end").map((tick) => tick.at)
+        );
+        expect(ended - began).toBeLessThan(slowAskBounds.boundMs / 1000 + clockRoomS);
+      } finally {
+        endStandIns(standIn);
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    },
+    // What the row waits for, summed by the fixtures' program (`rowMs`): one child and its
+    // removal, up to the ask's own limit, and then the end of each `docker` it ran.
+    rowMs(slowAsk)
+  );
+}
+
 // Another start's removal of the container, which Docker still runs: Docker refuses this start's
-// removal, and the start sends none again while Docker removes the container. It asks whether
-// Docker still lists it and still removes it, and says another start removed it once Docker lists
-// it no more. The stand-in lists it for three asks, which take 15 s and more.
+// removal, and the start sends none again. It asks whether Docker still lists the container, and
+// says another start removed it once Docker lists it no more. The stand-in lists it for three
+// asks, which take 15 s and more.
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start whose removal of a dead stack's container Docker refuses while another removal of it is in progress sends no docker rm again, waits for that removal while Docker answers, says so, and then says another start removed it",
   async () => {
+    const row = rowOf(oneRemoval);
     const { tmp } = scratch();
     try {
       const docker = standInDocker(tmp, [
         'case "$1" in',
-        '  rm) echo "Error response from daemon: removal of container $4 is already in progress" >&2; exit 1 ;;',
+        inProgress,
         `  ps) if [ "$(grep -c "^ps " "$(dirname "$0")/calls")" -le 3 ]; then echo "\${6#id=}"; fi ;;`,
         "  inspect) echo removing ;;",
         "esac",
       ]);
 
-      const { removal, lines } = await removeInChild(docker.bin, standInId, rowBounds, childMs);
+      const { removal, lines } = await removeInChild(row, docker.bin, standInId, rowBounds);
 
       expect(removal).toEqual({
         kind: "elsewhere",
@@ -575,9 +734,335 @@ test.skipIf(!onLinux)(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // One `bun` child, which `childMs` holds; its four asks take 20 s and more.
-  600_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one child and its removal.
+  rowMs(oneRemoval)
 );
+
+// Docker refuses a second removal from the moment the first marks the container's removal in
+// progress, and goes on refusing while that removal kills the container: moby v28.5.2 marks it at
+// `daemon/delete.go:40-44`, before `:91-101` kills a container that runs, through a kill that
+// containerd is given with no deadline (`daemon/kill.go:111`), and `docker inspect` reads the
+// container as `running` until its process has ended (`container/state.go:121-136`). So a start
+// that another start's stuck removal holds gets "already in progress" and `running` for as long as
+// the daemon takes. It sends no `docker rm` again, says that it waits once the removal has run as
+// long as one ask may take, and gives it up at its bound, on one line that names the container.
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: a start whose removal of a dead stack's container Docker refuses as already in progress while docker inspect reads the container running sends no docker rm again, says that it waits, and gives the removal up at its bound",
+  async () => {
+    const row = rowOf(oneRemoval);
+    const { tmp } = scratch();
+    const docker = standInDocker(tmp, [
+      'case "$1" in',
+      inProgress,
+      listsIt,
+      "  inspect) echo running ;;",
+      "esac",
+    ]);
+    try {
+      const { removal, lines } = await removeInChild(row, docker.bin, standInId, rowBounds);
+
+      expect(removal).toEqual({
+        kind: "failed",
+        reason: `Error response from daemon: removal of container ${standInId} is already in progress, and Docker still lists it 90 s after this start's removal began`,
+      });
+      expect(docker.calls().filter((call) => call.startsWith("rm "))).toHaveLength(1);
+      expect(waitLines(lines, standInId)).toHaveLength(1);
+      expectEndedAtBound(docker.clock(), rowBounds.boundMs);
+    } finally {
+      endStandIns(docker);
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one child and its removal.
+  rowMs(oneRemoval)
+);
+
+// The start's own bounds: a removal that Docker never ends, while it answers each ask at once, runs
+// the 600 s of the start's bound and no less, and says that it waits at 60 s. The row runs it on a
+// clock it moves (`rowMachine`), which moves only while the removal waits on it, so the 600 s take
+// a moment of real time, and each time the row reads is the removal's own, which no load
+// stretches. A fixed limit of the removal short of 600 s, on that clock or as the `timeout` of its
+// `docker rm`, ends the removal sooner, with another reason; a limit on the real clock is the next
+// row's.
+test("v-no-leftover-postgres: a start whose removal of a dead stack's container Docker never ends, within the start's own bounds, says that it waits at 60 s and gives the removal up at 600 s and no sooner, on a clock the row moves", async () => {
+  const docker = rowMachine((args) =>
+    args[0] === "ps" ? { after: 0, stdout: `${standInId}\n` } : "never"
+  );
+  const said: [number, string][] = [];
+  const lines = spyOn(console, "error").mockImplementation((...words: unknown[]) => {
+    said.push([docker.machine.now(), words.join(" ")]);
+  });
+  try {
+    const removal = await docker.drive(
+      removeContainer(standInId, undefined, removalBounds, docker.machine)
+    );
+
+    expect(removal).toEqual({
+      kind: "failed",
+      reason: "Docker did not end the removal within 600 s, while it answered each ask",
+    });
+    expect(said).toEqual([
+      [
+        60_000,
+        expect.stringContaining(
+          `: waits for Docker's removal of container ${standInId.slice(0, 12)}: the removal has run 60 s and Docker answers each ask, so the start waits for it, at most 600 s in all`
+        ),
+      ],
+    ]);
+    const calls = docker.calls();
+    expect(calls.filter((call) => call.args.startsWith("rm "))).toEqual([
+      { args: `rm --force --volumes ${standInId}`, at: 0, ended: 600_000, how: "aborted" },
+    ]);
+    // One ask every 5 s from the first pause to the bound, each answered at once.
+    expect(calls.filter((call) => call.args.startsWith("ps ")).map((call) => call.at)).toEqual(
+      Array.from({ length: 119 }, (_, index) => (index + 1) * 5_000)
+    );
+  } finally {
+    lines.mockRestore();
+  }
+});
+
+// Another start's removal that Docker never ends, within the start's own bounds: Docker refuses
+// this start's `docker rm` as already in progress, and lists the container at each ask, as moby
+// does while the other removal's kill of a container that runs waits on containerd (the row of
+// `docker inspect` reading `running` above names the source lines). On a clock the row moves
+// (`rowMachine`), the start sends no `docker rm` again, asks every 5 s, says that it waits at 60 s
+// and gives the container up at 600 s and no sooner. A wait of the other removal with no bound, a
+// second `docker rm`, no line, or a bound of any other length fails it.
+test("v-no-leftover-postgres: a start whose docker rm of a dead stack's container Docker refuses as already in progress, while Docker lists it at every ask, within the start's own bounds, sends no docker rm again, says that it waits at 60 s and gives the container up at 600 s and no sooner, on a clock the row moves", async () => {
+  const refusal = `Error response from daemon: removal of container ${standInId} is already in progress`;
+  const docker = rowMachine((args) =>
+    args[0] === "rm" ? { after: 0, stderr: `${refusal}\n` } : { after: 0, stdout: `${standInId}\n` }
+  );
+  const said: [number, string][] = [];
+  const lines = spyOn(console, "error").mockImplementation((...words: unknown[]) => {
+    said.push([docker.machine.now(), words.join(" ")]);
+  });
+  try {
+    const removal = await docker.drive(
+      removeContainer(standInId, undefined, removalBounds, docker.machine)
+    );
+
+    expect(removal).toEqual({
+      kind: "failed",
+      reason: `${refusal}, and Docker still lists it 600 s after this start's removal began`,
+    });
+    expect(said).toEqual([
+      [
+        60_000,
+        expect.stringContaining(
+          `: waits for Docker's removal of container ${standInId.slice(0, 12)}: the removal has run 60 s and Docker answers each ask, so the start waits for it, at most 600 s in all`
+        ),
+      ],
+    ]);
+    const calls = docker.calls();
+    expect(calls.filter((call) => call.args.startsWith("rm "))).toEqual([
+      { args: `rm --force --volumes ${standInId}`, at: 0, ended: 0, how: "answered" },
+    ]);
+    // One ask every 5 s from the first pause to the bound, each answered at once.
+    expect(calls.filter((call) => call.args.startsWith("ps ")).map((call) => call.at)).toEqual(
+      Array.from({ length: 119 }, (_, index) => (index + 1) * 5_000)
+    );
+  } finally {
+    lines.mockRestore();
+  }
+});
+
+/** Each place in `text`, the source of the container removal module, that reads a clock or runs a
+ *  program other than through the machine's own (`machine`), and each number in that machine, as
+ *  "<line>:<column> <text>": a limit the removal set on the real clock, which the row on the row's
+ *  clock cannot see, is one of them. The names it reads are the globals that read the time or wait
+ *  (`Date`, `performance`, `setTimeout`, `setInterval`, `setImmediate`, `Bun`, `process`),
+ *  `AbortSignal.timeout`, and every name an import of `node:timers`, `node:timers/promises` or
+ *  `node:child_process` binds. */
+function offTheMachine(text: string): string[] {
+  const source = ts.createSourceFile("removal.ts", text, ts.ScriptTarget.Latest, true);
+  const real = new Set([
+    "Date",
+    "performance",
+    "setTimeout",
+    "setInterval",
+    "setImmediate",
+    "Bun",
+    "process",
+  ]);
+  let machine: ts.Node | undefined;
+  for (const statement of source.statements) {
+    if (
+      ts.isImportDeclaration(statement) &&
+      ts.isStringLiteral(statement.moduleSpecifier) &&
+      /^(node:)?(timers|timers\/promises|child_process)$/.test(statement.moduleSpecifier.text)
+    ) {
+      const clause = statement.importClause;
+      if (clause?.name !== undefined) real.add(clause.name.text);
+      const bindings = clause?.namedBindings;
+      if (bindings !== undefined && ts.isNamespaceImport(bindings)) real.add(bindings.name.text);
+      if (bindings !== undefined && ts.isNamedImports(bindings)) {
+        for (const element of bindings.elements) real.add(element.name.text);
+      }
+    }
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name) && declaration.name.text === "machine") {
+          machine = declaration;
+        }
+      }
+    }
+  }
+  const found: string[] = machine === undefined ? ["no declaration of machine"] : [];
+  const inMachine = (node: ts.Node) =>
+    machine !== undefined && node.pos >= machine.pos && node.end <= machine.end;
+  const place = (node: ts.Node) => {
+    const { line, character } = source.getLineAndCharacterOfPosition(node.getStart(source));
+    return `${line + 1}:${character + 1} ${node.getText(source)}`;
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node)) return;
+    if (ts.isIdentifier(node) && real.has(node.text) && !inMachine(node)) {
+      const { parent } = node;
+      // A name after a dot, or the name of a property or a method, is no global and no import.
+      const property =
+        (ts.isPropertyAccessExpression(parent) && parent.name === node) ||
+        ((ts.isPropertyAssignment(parent) ||
+          ts.isPropertySignature(parent) ||
+          ts.isMethodSignature(parent)) &&
+          parent.name === node);
+      if (!property) found.push(place(node));
+    }
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      node.name.text === "timeout" &&
+      node.expression.getText(source) === "AbortSignal"
+    ) {
+      found.push(place(node));
+    }
+    if (ts.isNumericLiteral(node) && inMachine(node)) found.push(place(node));
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(source, visit);
+  return found;
+}
+
+// The previous row sees a limit of the removal on the row's clock; one on the real clock never
+// fires in its moment of real time. So this row reads the removal module's source: it reads the
+// time, waits and runs `docker` only through its machine, and the machine's own sets no number.
+// Its controls are such limits, planted in copies of the source, which it must name.
+test("v-no-leftover-postgres: a start's removal of a dead stack's container reads the time, waits and runs docker only through its machine, which sets no limit of its own", () => {
+  const text = readFileSync(
+    fileURLToPath(new URL("../harness-postgres-container-removal.ts", import.meta.url)),
+    "utf8"
+  );
+
+  expect(offTheMachine(text)).toEqual([]);
+  expect(offTheMachine(`${text}\nsetTimeout(() => undefined, 120_000);\n`)).toEqual([
+    expect.stringMatching(/^\d+:1 setTimeout$/),
+  ]);
+  expect(
+    offTheMachine(`${text}\nconst limit = AbortSignal.any([AbortSignal.timeout(120_000)]);\n`)
+  ).toEqual([expect.stringMatching(/^\d+:\d+ AbortSignal\.timeout$/)]);
+  const capped = text.replace("sleep(ms, undefined,", "sleep(Math.min(ms, 120_000), undefined,");
+  expect(capped).not.toBe(text);
+  expect(offTheMachine(capped)).toEqual([expect.stringMatching(/^\d+:\d+ 120_000$/)]);
+});
+
+/** How long the next row's fixture call may run before the row's deadline: the row's own, short
+ *  so the row takes seconds. A fixture call waits for the time its row has left, which the program
+ *  of a row's limit counts (`makeMs`), and no fixed time of its own. */
+const ranOutMs = 5_000;
+/** What the next row waits for (`Waits`): one child, the fixture call's wait to its deadline, and
+ *  the room above that deadline in which it removes what the call made (`rowRoomMs`). */
+const ranOut: Waits = { children: 1, reads: 0, bounds: [ranOutMs, rowRoomMs] };
+
+// A daemon that many sessions share took 133 s over one `docker create` of the leftover rows on
+// 2026-11-19, while it answered every other call; the fixture then gave the create up at a fixed
+// 120 s, and the container Docker made stayed, Created. A fixture call of Docker now waits for
+// the time its row has left (`docker` of harness-postgres-leftover-fixtures.ts), and one that
+// runs out that time names the call on one line, removes what it made, by the name and the label
+// it gave, and fails the row with that line. The stand-in `docker` makes the container and never
+// answers the create; it lists the container by that name and label while it has it, and its
+// `docker rm` removes it.
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: a fixture's docker create that Docker never answers ends at the row's deadline, names the call on one line, removes the container it made by its name and label, and fails the row with that line",
+  async () => {
+    const row = rowOf(ranOut);
+    const { tmp } = scratch();
+    const name = `dispatch-e2e-pg-ran-out-${process.pid}`;
+    const label = "dev.legion.dispatch-e2e.ran-out";
+    try {
+      const docker = standInDocker(tmp, [
+        'made="$(dirname "$0")/made"',
+        'case "$1" in',
+        `  create) : >"$made"; exec -a "$0" sleep 600 ;;`,
+        `  ps) if [ -e "$made" ] && [[ " $* " == *" name=^/?${name}$ "* ]] && [[ " $* " == *" label=${label} "* ]]; then echo ${standInId}; fi ;;`,
+        `  rm) rm -f "$made"; echo "$4" ;;`,
+        "esac",
+      ]);
+      const args = ["create", "--name", name, "--label", `${label}=1`, "postgres"];
+
+      const { ended, lines } = await fixtureDockerInChild(row, docker.bin, args, ranOutMs);
+
+      const line = `e2e/__tests__/harness-postgres-leftover-fixtures.ts: docker ${args.join(" ")} did not end within the ${ranOutMs / 1000} s the row waits in all, so the row stopped it, and removed container ${standInId.slice(0, 12)} (${name}) it made`;
+      expect(ended).toEqual({ error: line });
+      expect(holding(lines, ": docker create ")).toEqual([line]);
+      expect(existsSync(join(docker.bin, "made"))).toBe(false);
+      // The calls but the removal's own asks of whether Docker still lists the container, which a
+      // `docker rm` that load holds past one pause makes (`removeContainer`).
+      expect(
+        docker
+          .calls()
+          .filter((call) => !call.startsWith("ps --all --quiet --no-trunc --filter id="))
+      ).toEqual([
+        args.join(" "),
+        `ps --all --quiet --no-trunc --filter name=^/?${name}$ --filter label=${label}`,
+        `rm --force --volumes ${standInId}`,
+      ]);
+      // On the stand-in's clock: the row stopped the create at its deadline, and no sooner.
+      const ticks = docker.clock();
+      const created = ticks.find((tick) => tick.call.startsWith("create "))?.at ?? Number.NaN;
+      const listed = ticks.find((tick) => tick.call.startsWith("ps "))?.at ?? Number.NaN;
+      expect(listed - created).toBeGreaterThan(ranOutMs / 1000 - 1);
+      expect(listed - created).toBeLessThan(ranOutMs / 1000 + clockRoomS);
+      await until(
+        () => docker.running().length === 0,
+        "the end of the docker create the row stopped",
+        claimEventMs
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one child, the fixture
+  // call's wait to its deadline and the removal of what the call made.
+  rowMs(ranOut)
+);
+
+/** What the next rows wait for (`Waits`): one sweep in a child, the bound of its removal of the
+ *  first container, three holder reads (the next container's socket directory, and the run
+ *  directory's data and socket directories), and then the end of each `docker` it ran. */
+const sweepOfTwo: Waits = { children: 1, reads: 3, bounds: [rowBounds.boundMs, claimEventMs] };
+
+/** Two containers a sweep lists, each with the mark of a stack that is gone, in the listing file
+ *  `listing` of `tmp`, and a data directory with its mark in `run`: the first container's removal
+ *  is the row's case, and the second, which the start removes, shows that the sweep goes on. */
+function twoContainers(tmp: string, run: string) {
+  const gone = owners().gone;
+  const stuck = { id: "1".repeat(64), name: "dispatch-e2e-pg-stuck-0" };
+  const next = { id: "2".repeat(64), name: "dispatch-e2e-pg-next-1" };
+  const listing = join(tmp, "listing");
+  writeFileSync(
+    listing,
+    [stuck, next]
+      .map(
+        ({ id, name }) => `${id} ${name} ${JSON.stringify(marks.containerMark(gone, run, name))}\n`
+      )
+      .join("")
+  );
+  const data = join(run, "worker-0", "pgdata");
+  leaveData(data);
+  const file = writeMark(run, gone, data, mkdtempSync(join(tmp, "no-bin-")));
+  const lists = `  ps) if [[ " $* " == *" --format "* ]]; then cat ${JSON.stringify(listing)}; else echo "\${6#id=}"; fi ;;`;
+  return { by: `which stack ${gone.pid} left`, stuck, next, data, file, lists };
+}
 
 // A removal that Docker never ends while it answers each ask, as of a container whose removal is
 // stuck in the daemon: the start says that it waits, gives the removal up at its bound on one line
@@ -585,33 +1070,18 @@ test.skipIf(!onLinux)(
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start whose removal of a dead stack's container Docker never ends, while Docker answers, says that it waits, gives the removal up at its bound on one line that names the container, and goes on to the next container and the run directories",
   async () => {
+    const row = rowOf(sweepOfTwo);
     const { tmp, run } = scratch();
-    const gone = owners().gone;
-    const stuck = { id: "1".repeat(64), name: "dispatch-e2e-pg-stuck-0" };
-    const next = { id: "2".repeat(64), name: "dispatch-e2e-pg-next-1" };
-    const listing = join(tmp, "listing");
-    writeFileSync(
-      listing,
-      [stuck, next]
-        .map(
-          ({ id, name }) =>
-            `${id} ${name} ${JSON.stringify(marks.containerMark(gone, run, name))}\n`
-        )
-        .join("")
-    );
-    const data = join(run, "worker-0", "pgdata");
-    leaveData(data);
-    const file = writeMark(run, gone, data, mkdtempSync(join(tmp, "no-bin-")));
+    const { by, stuck, next, data, file, lists } = twoContainers(tmp, run);
     const docker = standInDocker(tmp, [
       'case "$1" in',
-      `  ps) if [[ " $* " == *" --format "* ]]; then cat ${JSON.stringify(listing)}; else echo "\${6#id=}"; fi ;;`,
+      lists,
       `  rm) if [ "$4" = ${stuck.id} ]; then exec -a "$0" sleep 600; fi; echo "$4" ;;`,
       "esac",
     ]);
     try {
-      const { lines } = await sweepInChild(tmp, docker.bin, rowBounds, childMs);
+      const { lines } = await sweepInChild(row, tmp, docker.bin, rowBounds);
 
-      const by = `which stack ${gone.pid} left`;
       expect(waitLines(lines, stuck.id)).toEqual([
         expect.stringContaining(`container ${stuck.id.slice(0, 12)} (${stuck.name}), ${by}:`),
       ]);
@@ -631,30 +1101,74 @@ test.skipIf(!onLinux)(
       expect(
         docker.calls().filter((call) => call === `rm --force --volumes ${stuck.id}`)
       ).toHaveLength(1);
+      expectEndedAtBound(docker.clock(), rowBounds.boundMs);
       await until(
         () => docker.running().length === 0,
         "the end of each docker the start ran",
         claimEventMs
       );
     } finally {
-      for (const { pid, start } of [...docker.processes(), ...docker.running()]) {
-        if (marks.stillRuns(pid, start)) process.kill(pid, "SIGKILL");
-      }
+      endStandIns(docker);
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // One `bun` child, which `childMs` holds: its removal of the stuck container takes the 90 s of
-  // the bound, and then the end of each `docker` it ran.
-  600_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep, its removal of
+  // the stuck container and its three holder reads, and then the end of each `docker` it ran.
+  rowMs(sweepOfTwo)
+);
+
+// Every answer of Docker about the first container is that another removal of it is in progress,
+// and `docker inspect` reads it as `removing`: the start sends no `docker rm` of it again, says that
+// it waits, gives it up at its bound on one line that names the container, and goes on to the next
+// container and the run directories.
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: a start whose every removal of a dead stack's container Docker refuses as already in progress says that it waits, gives the container up at its bound on one line that names it, and goes on to the next container and the run directories",
+  async () => {
+    const row = rowOf(sweepOfTwo);
+    const { tmp, run } = scratch();
+    const { by, stuck, next, data, file, lists } = twoContainers(tmp, run);
+    const docker = standInDocker(tmp, [
+      'case "$1" in',
+      lists,
+      `  rm) if [ "$4" = ${stuck.id} ]; then echo "Error response from daemon: removal of container $4 is already in progress" >&2; exit 1; fi; echo "$4" ;;`,
+      "  inspect) echo removing ;;",
+      "esac",
+    ]);
+    try {
+      const { lines } = await sweepInChild(row, tmp, docker.bin, rowBounds);
+
+      expect(waitLines(lines, stuck.id)).toHaveLength(1);
+      expect(holding(lines, `container ${stuck.id.slice(0, 12)} (`)).toContainEqual(
+        expect.stringContaining(
+          `: container ${stuck.id.slice(0, 12)} (${stuck.name}), ${by}, is not removed: Error response from daemon: removal of container ${stuck.id} is already in progress, and Docker still lists it 90 s after this start's removal began`
+        )
+      );
+      expect(
+        docker.calls().filter((call) => call === `rm --force --volumes ${stuck.id}`)
+      ).toHaveLength(1);
+      expect(
+        holding(lines, `removed container ${next.id.slice(0, 12)} (${next.name})`)
+      ).toHaveLength(1);
+      expect([existsSync(data), existsSync(file)]).toEqual([false, false]);
+      expectEndedAtBound(docker.clock(), rowBounds.boundMs);
+    } finally {
+      endStandIns(docker);
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep, its wait for the
+  // first container's bound and its three holder reads, and then the end of each `docker` it ran.
+  rowMs(sweepOfTwo)
 );
 
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a stack under another TMPDIR whose stack runs is not touched, and the start prints nothing of it",
   async () => {
+    const row = rowOf(oneSweep);
     const { tmp } = scratch();
     const left = leaveElsewhere(owners().runs);
     try {
-      const lines = await sweep(tmp);
+      const lines = await sweep(row, tmp);
 
       expect(left.postmaster?.alive()).toBe(true);
       expect([
@@ -667,16 +1181,19 @@ test.skipIf(!onLinux)(
       rmSync(left.other, { recursive: true, force: true });
       rmSync(tmp, { recursive: true, force: true });
     }
-  }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep.
+  rowMs(oneSweep)
 );
 
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a postmaster of this user under a run directory of another TMPDIR that no mark names is left and named",
   async () => {
+    const row = rowOf(oneSweep);
     const { tmp } = scratch();
     const left = leaveElsewhere();
     try {
-      const lines = await sweep(tmp);
+      const lines = await sweep(row, tmp);
 
       expect(left.postmaster?.alive()).toBe(true);
       expect(existsSync(join(left.data, "PG_VERSION"))).toBe(true);
@@ -691,7 +1208,9 @@ test.skipIf(!onLinux)(
       rmSync(left.other, { recursive: true, force: true });
       rmSync(tmp, { recursive: true, force: true });
     }
-  }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep.
+  rowMs(oneSweep)
 );
 
 test.skipIf(!onLinux)(
@@ -728,6 +1247,12 @@ test.skipIf(!onLinux)(
   }
 );
 
+/** What the next row waits for (`Waits`): two sweeps, each a child; the first's holder reads of
+ *  the data directory before its claim, and of the socket directory, and the second's of the
+ *  socket directory, where it gets there first; the first's stop of the postmaster, with its reads
+ *  after it; and the second's wait for the first's claim. */
+const twoOnOne: Waits = { children: 2, reads: 3, stops: 1, bounds: [claimWaitMs] };
+
 // Two starts at once on one dead mark whose postmaster still serves. The first claims the data
 // directory (`claimForRemoval`) and signals the postmaster, which then runs on until the row says
 // go; the second starts only after that signal, so it finds the claim held, and says that it waits
@@ -735,6 +1260,7 @@ test.skipIf(!onLinux)(
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: of two starts on one dead mark whose postmaster serves, the one that claims it sends the one signal and says it removed it, and the other waits for that claim and says another start removed it",
   async () => {
+    const row = rowOf(twoOnOne);
     const { tmp, run } = scratch();
     const bin = join(tmp, "bin");
     const signals = join(tmp, "signals");
@@ -745,15 +1271,20 @@ test.skipIf(!onLinux)(
     const signalled = () =>
       existsSync(signals) ? readFileSync(signals, "utf8").split("\n").filter(Boolean) : [];
     try {
-      const first = startSweep(tmp);
-      await until(() => signalled().length > 0, "the first start's signal", claimEventMs);
-      const second = startSweep(tmp);
+      const first = startSweep(row, tmp);
+      // The signal comes after the first sweep's start and its holder read before the claim.
+      await until(
+        () => signalled().length > 0,
+        "the first start's signal",
+        waitsMs({ children: 1, reads: 1, bounds: [] })
+      );
+      const second = startSweep(row, tmp);
       await until(
         () =>
           second.stderr().includes(`waits for another start's claim of ${data}`) ||
           signalled().length > 1,
         "the second start's wait for the first start's claim, or its own signal",
-        claimEventMs
+        waitsMs({ children: 1, reads: 1, bounds: [] })
       );
       writeFileSync(go, "");
       const [firstLines, secondLines] = await Promise.all([first.lines, second.lines]);
@@ -772,9 +1303,9 @@ test.skipIf(!onLinux)(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // The row waits for two starts' sweeps, each a `bun` child, and for the two events between them,
-  // each for at most `claimEventMs`; the two sweeps then end in well under a second.
-  600_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): two sweeps, their four
+  // holder reads, the first's stop and the second's wait for its claim.
+  rowMs(twoOnOne)
 );
 
 // The postmaster `postmasterOf` verified may end by itself before the start's first signal. No
@@ -810,23 +1341,29 @@ test.skipIf(!onLinux)(
   60_000
 );
 
+/** What the next row waits for (`Waits`): a claimer, a child that prints its claim, and then one
+ *  sweep, a child that claims the data directory again, stops its postmaster and removes the
+ *  socket directory, with a holder read before each claim, and its stop, with its reads after it. */
+const claimThenSweep: Waits = { children: 2, reads: 2, stops: 1, bounds: [] };
+
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: what a start killed between its claim and its removal left, the next start claims again: the postmaster that serves from the claimed directory ends, and the directory goes",
   async () => {
+    const row = rowOf(claimThenSweep);
     const { tmp, run } = scratch();
     const bin = join(tmp, "bin");
     const data = join(run, "worker-0", "pgdata");
     const postmaster = standInPostmaster(bin, data, "its TMPDIR");
     const mark = writeMark(run, owners().gone, data, bin);
     try {
-      const claimed = await claimAndDie(data);
+      const claimed = await claimAndDie(row, data);
       expect([existsSync(data), existsSync(claimed), postmaster.alive()]).toEqual([
         false,
         true,
         true,
       ]);
 
-      const lines = await sweep(tmp);
+      const lines = await sweep(row, tmp);
 
       expect(postmaster.alive()).toBe(false);
       expect([existsSync(claimed), existsSync(mark)]).toEqual([false, false]);
@@ -836,26 +1373,31 @@ test.skipIf(!onLinux)(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // The row waits for a claimer, a `bun` child, to print its claim, and for one start's sweep,
-  // another `bun` child; a stuck child waits out its own 600 s at most.
-  600_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): a claimer, and one sweep
+  // with its holder reads and its stop of a postmaster.
+  rowMs(claimThenSweep)
 );
+
+/** What the next row waits for (`Waits`): `claimThenSweep`, and then what another start of the
+ *  machine may still be removing of the plant (`settleMs`). */
+const claimThenSweepElsewhere: Waits = { children: 2, reads: 2, stops: 1, bounds: [settleMs] };
 
 // The claim comes before the postmaster here: until a postmaster serves from it, no start but
 // this row's own reads the run directory, so the claimed directory is there for the row to see.
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: what a start killed between its claim and its removal left in a run directory of another TMPDIR, a start of this TMPDIR finds by the claimed name the kernel shows: the postmaster ends, the directory and the mark go, and one line says so",
   async () => {
+    const row = rowOf(claimThenSweepElsewhere);
     const { tmp } = scratch();
     const left = leaveElsewhere(owners().gone, false);
     let postmaster: StandIn | undefined;
     try {
-      const claimed = await claimAndDie(left.data);
+      const claimed = await claimAndDie(row, left.data);
       expect([existsSync(left.data), existsSync(claimed)]).toEqual([false, true]);
       // The kernel names the postmaster's working directory by the claim's name.
       postmaster = standInPostmaster(left.bin, claimed, "every start");
 
-      const lines = await sweep(tmp);
+      const lines = await sweep(row, tmp);
 
       // A line that names that stack says a start removed it: none says it was left. The start
       // prints the run directory's one spelling, the one its data directory is written in.
@@ -870,10 +1412,22 @@ test.skipIf(!onLinux)(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // The row waits for a claimer, a `bun` child, to print its claim, and for one start's sweep,
-  // another `bun` child, and then at most `settleMs`; a stuck child waits out its own 600 s.
-  600_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): a claimer, one sweep with
+  // its holder reads and its stop of a postmaster, and then `settleMs`.
+  rowMs(claimThenSweepElsewhere)
 );
+
+/** What the next row waits for (`Waits`): a claimer and two sweeps, each a child; each sweep's
+ *  holder reads of the stacks it removes, a read before each claim, two claims a stack, and one
+ *  more, where the first start meets the second's socket directory before the second claimed it;
+ *  each sweep's wait for the claim the claimer holds; and the stops of both postmasters, each with
+ *  its reads after it. */
+const claimAndTwo: Waits = {
+  children: 3,
+  reads: 5,
+  stops: 2,
+  bounds: [claimWaitMs, claimWaitMs, settleMs],
+};
 
 // Two starts at once. The first, Z, lists two postmasters of run directories it does not list,
 // and finds the data directory of the first claimed by a claimer that still runs, so it waits for
@@ -884,6 +1438,7 @@ test.skipIf(!onLinux)(
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start names as left only a postmaster that still runs once it has read its run directory: one it listed that another start removed meanwhile it does not name",
   async () => {
+    const row = rowOf(claimAndTwo);
     const parent = mkdtempSync(join(tmpdir(), "marks-two-starts-"));
     // `servedElsewhere` lists by data directory, so the held stack, in `a-held`, comes first.
     const [heldTmp, otherTmp, startTmp] = ["a-held", "b-other", "c-start"].map((name) => {
@@ -903,19 +1458,25 @@ test.skipIf(!onLinux)(
     let heldPostmaster: StandIn | undefined;
     let otherPostmaster: StandIn | undefined;
     try {
-      const claim = await claimInChild(held.data);
+      const claim = await claimInChild(row, held.data);
       claimer = claim.claimer;
       heldPostmaster = standInPostmaster(held.bin, claim.claimed, "every start");
       otherPostmaster = standInPostmaster(other.bin, other.data, "every start");
-      const first = startSweep(startTmp);
+      const first = startSweep(row, startTmp);
+      // The first start's wait comes after its start, and the first stack it reads is the held one.
       await until(
         () => first.stderr().includes(`waits for another start's claim of ${held.data}`),
         "the first start's wait for the claim the claimer holds",
-        claimEventMs
+        waitsMs({ children: 1, reads: 0, bounds: [] })
       );
-      const second = startSweep(otherTmp);
+      const second = startSweep(row, otherTmp);
       const otherServes = otherPostmaster;
-      await until(() => !otherServes.alive(), "the second start's stop", claimEventMs);
+      // The second start's stop comes after its start and its holder read before the claim.
+      await until(
+        () => !otherServes.alive(),
+        "the second start's stop",
+        waitsMs({ children: 1, reads: 1, bounds: [] })
+      );
       await endChild(claimer);
       const [firstLines, secondLines] = await Promise.all([first.lines, second.lines]);
 
@@ -937,7 +1498,7 @@ test.skipIf(!onLinux)(
       rmSync(parent, { recursive: true, force: true });
     }
   },
-  // The row waits for a claimer and two starts' sweeps, each a `bun` child, and for two events
-  // between them, each for at most `claimEventMs`; the sweeps then end in well under a second.
-  600_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): a claimer and two sweeps,
+  // with their holder reads, their waits for the claim and their stops of the two postmasters.
+  rowMs(claimAndTwo)
 );

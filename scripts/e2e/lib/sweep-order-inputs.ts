@@ -29,8 +29,8 @@ export type Guard =
 // variable or a parameter, or work on the text of a path (`dirname`, `basename`), or print the
 // start's own working directory (`pwd`) or the names of its own shell (`compgen`). `[`, `[[` and
 // `test` only with no test of a file. `cat` with no operand reads only its standard input, as a
-// usage text written as a here-document does; `cd`, `.` and `source` only of a path the start's
-// inputs name (`Flow.rooted`), such as its own checkout.
+// usage text written as a here-document does; `cd`, `pushd`, `.` and `source` only of a place of
+// the start's own checkout (`placeReaders`).
 const inputCommands: Record<string, true> = {
   "[": true,
   "[[": true,
@@ -59,8 +59,29 @@ const inputCommands: Record<string, true> = {
   pwd: true,
   compgen: true,
 };
-// The commands that read only a path of the start's inputs where each operand is one (`Flow.rooted`).
-const rootedCommands: Record<string, true> = { cd: true, ".": true, source: true };
+// The commands that read the place each operand names, after the options their pattern matches:
+// `cd` and `pushd` fail where it is gone or is no directory, and `.` and `source` where it is no
+// file they can read. Under `set -e` such a failure ends the start, so each reads the machine,
+// unless every operand names a place of the start's own checkout (`Flow.own`), which bash runs
+// the script from. A path an input names (`cd "$LOCK.free"`, `cd -- "$TMPDIR/x"`) is not one: a
+// dead run can leave it, remove it, or leave a file where a directory was.
+const placeReaders: Record<string, RegExp> = {
+  cd: /^-[LPe@]+$/,
+  pushd: /^-n$/,
+  ".": /(?!)/,
+  source: /(?!)/,
+};
+// The commands of a command substitution whose output is a place of the start's own checkout,
+// where each operand is one (`Flow.own`): `dirname` prints its operand's directory, and `pwd`,
+// after a `cd` to such a place, prints that place.
+const placePrinters: Record<string, RegExp> = {
+  dirname: /^-z$/,
+  cd: placeReaders.cd,
+  pwd: /^-[LP]+$/,
+};
+// The script's own path, the place bash read it from: `$0` of a driver and `BASH_SOURCE` of the
+// file it is in.
+const ownPlace: Record<string, true> = { "0": true, BASH_SOURCE: true };
 const fileTests = /^-([abcdefgGhkLNOprsStuwx]|nt|ot|ef)$/;
 // The variables the shell sets from what a command did, whatever the scripts assign.
 const shellSet = ["BASH_REMATCH", "REPLY", "MAPFILE", "OPTARG", "PIPESTATUS", "COPROC"];
@@ -68,7 +89,7 @@ const identifier = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** The variables of a driver and its libraries that can hold a command's output, and the
  *  functions whose positional parameters can: a data flow over every assignment, to a fixed
- *  point. */
+ *  point. And the variables that hold only a place of the start's own checkout (`own`). */
 export class Flow {
   private readonly tainted = new Set<string>(shellSet);
   // The functions whose positional parameters can hold a command's output; "" is the script's.
@@ -78,6 +99,8 @@ export class Flow {
   private readonly positional: { value: Word; ctx: string | null }[] = [];
   // A function that sets the variable its Nth argument names (`printf -v "$1"`, `read "$2"`).
   private readonly dynamic: { fn: string; index: number }[] = [];
+  // The variables that hold only a place of the start's own checkout (`own`).
+  private readonly owned = new Set<string>();
 
   constructor(
     scripts: readonly Script[],
@@ -85,6 +108,31 @@ export class Flow {
   ) {
     for (const script of scripts)
       eachCommand(script.top, null, (c, ctx) => this.collect(c, ctx, functions));
+    // What a function sets by the name its caller passes, which no assignment shows.
+    for (const d of this.dynamic) {
+      for (const c of this.calls) {
+        const w = c.fn === d.fn ? c.args[d.index - 1] : undefined;
+        if (w !== undefined && identifier.test(w.text)) this.tainted.add(w.text);
+      }
+    }
+    // A variable holds only a place of the checkout where nothing but an assignment gives it a
+    // value and each of its assignments is such a place: the largest such set, from every
+    // assigned variable down. It comes before the flow below, whose `cd` reads it. A value's word
+    // is `NAME=VALUE`, and an append (`NAME+=VALUE`) is no place of its own.
+    const value = (a: { name: string; value: Word }): Word =>
+      a.value.text.startsWith(`${a.name}=`)
+        ? { ...a.value, text: a.value.text.slice(a.name.length + 1) }
+        : a.value;
+    for (const a of this.assigns) if (!this.tainted.has(a.name)) this.owned.add(a.name);
+    for (let changed = true; changed; ) {
+      changed = false;
+      for (const a of this.assigns) {
+        if (this.owned.has(a.name) && !this.own(value(a))) {
+          this.owned.delete(a.name);
+          changed = true;
+        }
+      }
+    }
     const called = new Set(this.calls.map((c) => c.fn));
     // A function that no command of these files calls gets what nobody can read here.
     for (const name of functions.keys()) if (!called.has(name)) this.impureArgs.add(name);
@@ -100,12 +148,6 @@ export class Flow {
         if (c.args.some((w) => this.impure(w, c.ctx))) add(this.impureArgs, c.fn);
       for (const p of this.positional)
         if (this.impure(p.value, p.ctx)) add(this.impureArgs, p.ctx ?? "");
-      for (const d of this.dynamic) {
-        for (const c of this.calls) {
-          const w = c.fn === d.fn ? c.args[d.index - 1] : undefined;
-          if (w !== undefined && identifier.test(w.text)) add(this.tainted, w.text);
-        }
-      }
     }
   }
 
@@ -207,12 +249,49 @@ export class Flow {
     );
   }
 
-  /** Whether the word `w` names a path that the start's inputs name: it starts with an expansion,
-   *  and it holds nothing but inputs (`impure`). `"$(dirname "$0")/.."`, `"$root/scripts"` and
-   *  `"$here/../.."` are such words, where `root` and `here` hold only the checkout's place; an
-   *  absolute path written in the script is not, since a dead run can leave a file there. */
-  rooted(w: Word, ctx: string | null): boolean {
-    return /^"?\$/.test(w.text) && !this.impure(w, ctx);
+  /** Whether the word `w` names a place of the start's own checkout, which bash runs the script
+   *  from, so that no run of a stack leaves it, removes it or makes it no directory: it starts
+   *  with an expansion; each parameter it expands is the script's own path (`ownPlace`) or a
+   *  variable that holds only such a place (`owned`); each command substitution in it prints only
+   *  such a place (`printsOwn`); and it holds no pattern that a glob expands against the machine.
+   *  `"$(dirname "$0")/../.."`, `"$root/scripts"` and `"${BASH_SOURCE%/*}/lib.sh"` are such
+   *  words, where `root` is `$(cd "$(dirname "$0")/../.." && pwd)`. A path an input names
+   *  (`"$LOCK.free"`, `"$TMPDIR/x"`) is not, nor is one written in the script, since a dead run
+   *  can leave it, remove it or leave a file where it was. */
+  own(w: Word): boolean {
+    return (
+      /^"?\$[^'"]/.test(w.text) &&
+      !globs(w.text) &&
+      w.vars.every((v) => ownPlace[v] === true || this.owned.has(v)) &&
+      w.subs.every((sub) => this.printsOwn(sub))
+    );
+  }
+
+  /** Whether a command substitution prints only a place of the start's own checkout: each of its
+   *  commands is `dirname`, `cd` or `pwd` (`placePrinters`) alone in its pipeline, with no
+   *  assignment and no redirection but to a descriptor or /dev/null (`silent`); each operand of
+   *  each is such a place (`own`); and a `pwd` comes only after a `cd`, so that it prints the
+   *  place the `cd` went to. */
+  private printsOwn(sub: List): boolean {
+    let moved = false;
+    for (const ao of sub) {
+      if (ao.background === true) return false;
+      for (const p of ao.pipelines) {
+        const c = p.commands[0];
+        if (p.negated || p.commands.length !== 1 || c?.k !== "simple" || c.assigns.length > 0)
+          return false;
+        if (!c.redirects.every(silent)) return false;
+        const name = nameOf(c.words);
+        const options = name === undefined ? undefined : placePrinters[name];
+        if (options === undefined) return false;
+        const operands = operandsOf(c.words, options);
+        if (name === "pwd") {
+          if (!moved || operands.length > 0) return false;
+        } else if (operands.length === 0 || !operands.every((w) => this.own(w))) return false;
+        if (name === "cd") moved = true;
+      }
+    }
+    return sub.length > 0;
   }
 
   /** Why a parameter can hold a command's output, or undefined where it holds only inputs. */
@@ -320,9 +399,9 @@ export class Reader {
 
 /** What one command alone reads that is not an input, added to `out`: its words' parameters
  *  (`flow.variable`), its redirections, and its program, unless that is one of `inputCommands` (a
- *  file test aside), `cat` with no operand, or one of `rootedCommands` whose every operand is a
- *  path of the start's inputs (`flow.rooted`); for a function, what `body` answers of its body,
- *  or undefined where the name is no function. */
+ *  file test aside), `cat` with no operand, or one of `placeReaders` whose every operand is a
+ *  place of the start's own checkout (`flow.own`); for a function, what `body` answers of its
+ *  body, or undefined where the name is no function. */
 function commandReads(
   c: Command,
   ctx: string | null,
@@ -345,10 +424,8 @@ function commandReads(
     return;
   }
   for (const r of c.redirects) {
-    const dup = /[<>]&$/.test(r.op) && /^(\d+-?|-)$/.test(r.target.text);
-    const quiet = /^["']?\/dev\/(null|stdout|stderr|fd\/\d+)["']?$/.test(r.target.text);
     if (/<<<$/.test(r.op)) vars(r.target);
-    else if (!heredocOp.test(r.op) && !dup && !quiet) out.add(`${r.op} ${r.target.text}`);
+    else if (!heredocOp.test(r.op) && !silent(r)) out.add(`${r.op} ${r.target.text}`);
   }
   if (c.k === "for") for (const w of c.words) vars(w);
   if (c.k === "case") for (const w of [c.subject, ...c.arms.flatMap((a) => a.patterns)]) vars(w);
@@ -370,11 +447,67 @@ function commandReads(
     // `exec` with redirections alone: the redirections above are what it reads.
   } else if (name === "cat" && words.length === 1) {
     // `cat` with no operand reads its standard input, whose redirection is read above.
-  } else if (rootedCommands[name] === true) {
-    const operands = words.slice(1).filter((w) => w.text !== "--");
-    if (operands.length === 0 || !operands.every((w) => flow.rooted(w, ctx))) out.add(name);
+  } else if (placeReaders[name] !== undefined) {
+    const operands = operandsOf(words, placeReaders[name]);
+    if (operands.length === 0 || !operands.every((w) => flow.own(w))) out.add(name);
   } else if (inputCommands[name] !== true) out.add(name);
   else if (name === "[" || name === "[[" || name === "test") {
     for (const w of words) if (fileTests.test(w.text)) out.add(`${name} ${w.text}`);
   }
+}
+
+/** Whether a redirection only joins a descriptor to another (`2>&1`, `<&-`) or to /dev/null or a
+ *  descriptor's own file, and so reads and writes nothing of the machine. */
+function silent(r: { readonly op: string; readonly target: Word }): boolean {
+  return (
+    (/[<>]&$/.test(r.op) && /^(\d+-?|-)$/.test(r.target.text)) ||
+    /^["']?\/dev\/(null|stdout|stderr|fd\/\d+)["']?$/.test(r.target.text)
+  );
+}
+
+/** The operands of the command whose words are `words`: the words after its name, past each
+ *  option that `options` matches and a `--` that ends them. */
+function operandsOf(words: readonly Word[], options: RegExp): readonly Word[] {
+  let at = 1;
+  for (; at < words.length; at++) {
+    if (words[at].text === "--") return words.slice(at + 1);
+    if (!options.test(words[at].text)) break;
+  }
+  return words.slice(at);
+}
+
+/** Whether a word's text holds a pattern that a glob expands against the machine: a `*`, `?` or
+ *  `[` outside quotes and outside each `${…}` and `$(…)`, which the word's parameters and
+ *  substitutions answer for. */
+function globs(text: string): boolean {
+  let quote: string | undefined;
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "\\" && quote !== "'") {
+      i++;
+      continue;
+    }
+    if (quote === "'") {
+      if (c === "'") quote = undefined;
+      continue;
+    }
+    if (c === "$" && (text[i + 1] === "(" || text[i + 1] === "{")) {
+      depth++;
+      i++;
+      continue;
+    }
+    if (depth > 0) {
+      if (c === "(" || c === "{") depth++;
+      else if (c === ")" || c === "}") depth--;
+      continue;
+    }
+    if (quote === '"') {
+      if (c === '"') quote = undefined;
+      continue;
+    }
+    if (c === "'" || c === '"') quote = c;
+    else if (c === "*" || c === "?" || c === "[") return true;
+  }
+  return false;
 }

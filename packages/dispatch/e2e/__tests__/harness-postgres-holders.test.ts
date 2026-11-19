@@ -27,9 +27,10 @@ import { basename, dirname, join } from "node:path";
 import type { Subprocess } from "bun";
 
 import * as marks from "../harness-postgres-marks";
-import { statMs, statStartMs } from "../harness-postgres-processes";
+import { statMs } from "../harness-postgres-processes";
 import {
   claimEventMs,
+  clockOf,
   endChild,
   firstLineOf,
   harnessScript,
@@ -37,12 +38,16 @@ import {
   leaveData,
   neverAnswering,
   owners,
+  rowMs,
+  rowOf,
   scratch,
   slowReleasingPostmaster,
   startingPgCtl,
   startSweep,
   sweep,
   until,
+  type Waits,
+  waitsMs,
   writeMark,
 } from "./harness-postgres-removal-fixtures";
 import { type StandIn, standIn } from "./planted-marks";
@@ -108,6 +113,13 @@ const pgCtlSpellings: readonly {
   },
 ];
 
+/** What each of the next rows waits for (`Waits`): the stack's harness, a child, and its pg_ctl's
+ *  start and end, each at most `claimEventMs`; and two sweeps, each a child: the first reads the
+ *  holders of the data directory, which the pg_ctl holds, and claims nothing, and the second
+ *  reads them before its claim of the data directory and before its claim of the socket
+ *  directory, and stops that postmaster, with its reads after the stop. */
+const pgCtlRow: Waits = { children: 3, reads: 3, stops: 1, bounds: [claimEventMs, claimEventMs] };
+
 // A stack killed hard while its `pg_ctl start` runs leaves that pg_ctl running, and the
 // postmaster it then starts. A start in between finds no postmaster.pid yet: it must leave the
 // directories that pg_ctl names, with the mark, and name them, and the next start after that
@@ -116,6 +128,7 @@ for (const { title, link, spell } of pgCtlSpellings) {
   test.skipIf(!onLinux)(
     title,
     async () => {
+      const row = rowOf(pgCtlRow);
       const { tmp, run: own } = scratch();
       // The TMPDIR the stack and the starts are given, and the run directory as the stack spells
       // it there; the lines name the run directory's one spelling.
@@ -133,6 +146,7 @@ for (const { title, link, spell } of pgCtlSpellings) {
       const mark = join(own, marksDirectory, "worker-0.json");
       const spelt = spell(run, alias);
       startingPgCtl(bin, go);
+      row.child("the stack's harness");
       const harness = Bun.spawn([process.execPath, "--eval", harnessScript], {
         env: {
           ...process.env,
@@ -164,7 +178,7 @@ for (const { title, link, spell } of pgCtlSpellings) {
         // A link that is gone leads nowhere: the first start lists the TMPDIR it led to.
         if (link === "gone") rmSync(given);
 
-        const first = await sweep(link === "gone" ? tmp : given);
+        const first = await sweep(row, link === "gone" ? tmp : given);
 
         expect([existsSync(named), existsSync(namedSockets), existsSync(mark)]).toEqual([
           true,
@@ -188,7 +202,7 @@ for (const { title, link, spell } of pgCtlSpellings) {
         );
         const served = Number.parseInt(readFileSync(join(data, "postmaster.pid"), "utf8"), 10);
         postmaster = { pid: served, start: startOfPid(served) };
-        const second = await sweep(given);
+        const second = await sweep(row, given);
 
         expect(marks.stillRuns(postmaster.pid, postmaster.start)).toBe(false);
         expect([existsSync(data), existsSync(sockets), existsSync(mark)]).toEqual([
@@ -211,9 +225,9 @@ for (const { title, link, spell } of pgCtlSpellings) {
         rmSync(tmp, { recursive: true, force: true });
       }
     },
-    // The row waits for a harness and two starts' sweeps, each a `bun` child, and for two events
-    // of a pg_ctl between them, each for at most `claimEventMs`; the sweeps end in under a second.
-    600_000
+    // What the row waits for, summed by the fixtures' program (`rowMs`): a harness, its pg_ctl's
+    // start and end, and two sweeps with their holder reads and one stop of a postmaster.
+    rowMs(pgCtlRow)
   );
 }
 
@@ -230,6 +244,11 @@ function entriesChangedAt(path: string): bigint {
   return statSync(path, { bigint: true }).mtimeNs;
 }
 
+/** What each of the next two rows waits for (`Waits`): two sweeps, each a child: the first reads
+ *  the holders of the data directory, which a process holds, and claims nothing, and the second,
+ *  after that process's end, at most `claimEventMs`, reads them before each of its two claims. */
+const heldThenGone: Waits = { children: 2, reads: 3, bounds: [claimEventMs] };
+
 // A process of this user whose working directory is a dead stack's data directory holds it, though
 // no argument and no open file of it names that directory: a `postgres` that `pg_ctl` started and
 // that has not yet written its postmaster.pid is so. The start reads it before it would rename the
@@ -237,6 +256,7 @@ function entriesChangedAt(path: string): bigint {
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start leaves a dead stack's data directory that a process of this user holds by its working directory alone, and its mark, never renames it, and names it in one line; the next start after that process ended removes both",
   async () => {
+    const row = rowOf(heldThenGone);
     const { tmp, run } = scratch();
     const data = join(run, "worker-0", "pgdata");
     leaveData(data);
@@ -249,7 +269,7 @@ test.skipIf(!onLinux)(
     const holder = standIn(data, [tail, "-f", "/dev/null"]);
     try {
       const before = entriesChangedAt(dirname(data));
-      const first = await sweep(tmp);
+      const first = await sweep(row, tmp);
 
       expect([existsSync(data), existsSync(mark)]).toEqual([true, true]);
       expect(entriesChangedAt(dirname(data))).toBe(before);
@@ -260,7 +280,7 @@ test.skipIf(!onLinux)(
 
       holder.stop();
       await until(() => !holder.alive(), "the end of the holder", claimEventMs);
-      const second = await sweep(tmp);
+      const second = await sweep(row, tmp);
 
       expect([existsSync(data), existsSync(mark)]).toEqual([false, false]);
       expect(holding(second, `removed ${data} and ${sockets}`)).toHaveLength(1);
@@ -269,9 +289,9 @@ test.skipIf(!onLinux)(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // The row waits for two starts' sweeps, each a `bun` child, and for the holder's end between
-  // them, for at most `claimEventMs`.
-  600_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): two sweeps, their three
+  // holder reads, and the holder's end between them.
+  rowMs(heldThenGone)
 );
 
 // A process of this user that holds a file of a dead stack's data directory open holds that
@@ -279,6 +299,7 @@ test.skipIf(!onLinux)(
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start leaves a dead stack's data directory in which a process of this user holds a file open, and its mark, and names it in one line; the next start after that process ended removes both",
   async () => {
+    const row = rowOf(heldThenGone);
     const { tmp, run } = scratch();
     const data = join(run, "worker-0", "pgdata");
     leaveData(data);
@@ -290,7 +311,7 @@ test.skipIf(!onLinux)(
       holder = standIn(tmp, ["sleep", "600"], opened);
       closeSync(opened);
 
-      const first = await sweep(tmp);
+      const first = await sweep(row, tmp);
 
       expect([existsSync(data), existsSync(mark)]).toEqual([true, true]);
       expect(holding(first, "removed")).toEqual([]);
@@ -301,7 +322,7 @@ test.skipIf(!onLinux)(
       const ended = holder;
       ended.stop();
       await until(() => !ended.alive(), "the end of the holder", claimEventMs);
-      const second = await sweep(tmp);
+      const second = await sweep(row, tmp);
 
       expect([existsSync(data), existsSync(mark)]).toEqual([false, false]);
       expect(holding(second, `removed ${data} and ${sockets}`)).toHaveLength(1);
@@ -310,10 +331,16 @@ test.skipIf(!onLinux)(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // The row waits for two starts' sweeps, each a `bun` child, and for the holder's end between
-  // them, for at most `claimEventMs`.
-  600_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): two sweeps, their three
+  // holder reads, and the holder's end between them.
+  rowMs(heldThenGone)
 );
+
+/** What the next row waits for (`Waits`): the holder, a child, with its arguments and its end,
+ *  each at most `claimEventMs`; and two sweeps, each a child: the first reads the holders before
+ *  its claims of the data directory and of the socket directory, which the holder holds, and the
+ *  second, after the holder's end, before its claim of the socket directory. */
+const mountThenGone: Waits = { children: 3, reads: 3, bounds: [claimEventMs, claimEventMs] };
 
 // The check before the removal of each socket directory, which the container sweep's removal
 // shares: a process whose argument mounts the socket directory, as `docker create` writes it,
@@ -321,12 +348,14 @@ test.skipIf(!onLinux)(
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start leaves a dead stack's socket directory that an argument of a process of this user mounts, as docker create writes it, and its mark, never renames it, and names it in one line; the next start after that process ended removes both",
   async () => {
+    const row = rowOf(mountThenGone);
     const { tmp, run } = scratch();
     const data = join(run, "worker-0", "pgdata");
     leaveData(data);
     const mark = writeMark(run, owners().gone, data, mkdtempSync(join(tmp, "no-bin-")));
     const sockets = socketsOf(mark);
     const mount = `type=bind,source=${sockets},target=/var/run/postgresql`;
+    row.child("the holder");
     const holder = standIn(tmp, [
       process.execPath,
       "--eval",
@@ -342,7 +371,7 @@ test.skipIf(!onLinux)(
       );
 
       const before = entriesChangedAt(run);
-      const first = await sweep(tmp);
+      const first = await sweep(row, tmp);
 
       expect([existsSync(sockets), existsSync(mark)]).toEqual([true, true]);
       expect(entriesChangedAt(run)).toBe(before);
@@ -352,7 +381,7 @@ test.skipIf(!onLinux)(
 
       holder.stop();
       await until(() => !holder.alive(), "the end of the holder", claimEventMs);
-      const second = await sweep(tmp);
+      const second = await sweep(row, tmp);
 
       expect([existsSync(sockets), existsSync(mark)]).toEqual([false, false]);
       expect(holding(second, `removed ${sockets}`)).toHaveLength(1);
@@ -361,16 +390,23 @@ test.skipIf(!onLinux)(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // The row waits for two starts' sweeps and a holder, each a `bun` child, and for the holder's
-  // arguments and its end between them, each for at most `claimEventMs`.
-  600_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): a holder, its arguments
+  // and its end, and two sweeps with their three holder reads.
+  rowMs(mountThenGone)
 );
+
+/** What the next row waits for (`Waits`): one sweep, a child, which reads the holders before its
+ *  claim of the data directory and before its claim of the socket directory, and stops the
+ *  postmaster, with its two reads after the stop, the second once the postmaster's last process
+ *  ended; and then the last process's look, at most `claimEventMs`. */
+const stopThenRelease: Waits = { children: 1, reads: 2, stops: 1, bounds: [claimEventMs] };
 
 // The wait after a stop: a postmaster's processes outlive it a moment, and the directory stays
 // until the last of them has ended.
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start that stops a dead stack's postmaster removes its data directory only once the postmaster's last process, which outlives it a moment, has ended",
   async () => {
+    const row = rowOf(stopThenRelease);
     const { tmp, run } = scratch();
     const bin = join(tmp, "bin");
     const saw = join(tmp, "saw");
@@ -379,7 +415,7 @@ test.skipIf(!onLinux)(
     const mark = writeMark(run, owners().gone, data, bin);
     const sockets = socketsOf(mark);
     try {
-      const lines = await sweep(tmp);
+      const lines = await sweep(row, tmp);
       await until(
         () => existsSync(saw) && readFileSync(saw, "utf8") !== "",
         "the last process's look at the data directory",
@@ -401,62 +437,250 @@ test.skipIf(!onLinux)(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // The row waits for one start's sweep, a `bun` child, and for the last process's look, for at
-  // most `claimEventMs`.
-  600_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep, its holder reads
+  // and its stop of a postmaster, and then the last process's look.
+  rowMs(stopThenRelease)
 );
 
-// A path on a network or FUSE mount whose server hangs never answers a stat, and a start whose
-// holder read waits on it waits for ever with no line. The row's start reads where each path
-// leads through a stand-in reader (`neverAnswering`) that answers every path at once but the one
-// the holder names, on which it never answers, as such a mount does; a real mount of that kind
-// needs `/dev/fuse` and `fusermount3`, which a CI runner may not have.
-test.skipIf(!onLinux)(
-  "v-no-leftover-postgres: a start leaves a dead stack's data directory, and its mark, that a process may hold since a path it names answers no stat, names that process and that path in one line, and waits on that path no longer than its bound",
-  async () => {
-    const { tmp, run } = scratch();
-    const data = join(run, "worker-0", "pgdata");
-    leaveData(data);
-    const mark = writeMark(run, owners().gone, data, mkdtempSync(join(tmp, "no-bin-")));
-    const named = join(tmp, "never-answers", "pgdata");
-    const holds = standIn(tmp, [
-      process.execPath,
-      "--eval",
-      "setTimeout(() => {}, 600_000)",
-      named,
-    ]);
-    let sweeping: Subprocess | undefined;
-    try {
-      await until(
-        () => readFileSync(`/proc/${holds.pid}/cmdline`, "utf8").includes(named),
-        "the holder's arguments",
-        claimEventMs
-      );
+/** What each of the next rows waits for (`Waits`): the holder, a child, with its arguments, at
+ *  most `claimEventMs`; and one sweep, a child, whose holder read before its claim of the data
+ *  directory starts a reader that never answers a path the holder names, and a second reader for
+ *  the paths after it that are not under it. */
+const neverAnswers: Waits = { children: 2, reads: 2, bounds: [claimEventMs] };
 
-      const started = startSweep(tmp, undefined, neverAnswering(named));
-      sweeping = started.child;
-      // A bound on another process, which no fake clock of this one reaches: the row's own end
-      // for a start that waits on the path for ever. The sweep's child, and each of the two
-      // children its holder read may run (the one the path holds, and one for the paths after
-      // it), may take `claimEventMs` and `statStartMs` to start under load, and the read waits
-      // `statMs` on the path.
-      const limit = claimEventMs + 2 * statStartMs + statMs;
-      const lines = await Promise.race([started.lines, Bun.sleep(limit).then(() => undefined)]);
-      if (lines === undefined) throw new Error(`the sweep did not end within ${limit / 1000} s`);
+/** The room the next rows give the stand-in reader's clock above the bound of the start's wait,
+ *  in seconds: the timer of the start that ends that wait, which fires late under load, and the
+ *  last tick of the stand-in's own clock before its kill, 500 ms apart. It is far less than the
+ *  240 s a reader has to start (`statStartMs`), so a wait bounded by that time falls outside it,
+ *  and so does a bound for each path in turn, which nine paths under one directory make 100 s,
+ *  and not one bound for the directory they are under.
+ */
+const clockRoomS = 60;
 
-      expect([existsSync(data), existsSync(mark)]).toEqual([true, true]);
-      expect(holding(lines, `${mark} (${data}, which `)).toEqual([
-        expect.stringContaining(
-          ` ${holds.pid} may hold, as it names ${named}, which answered no stat within ${statMs / 1000} s)`
-        ),
-      ]);
-    } finally {
-      if (sweeping !== undefined) await endChild(sweeping);
-      holds.stop();
-      rmSync(tmp, { recursive: true, force: true });
-    }
+// A path on a network or FUSE mount whose server hangs never answers a stat, nor does any path
+// under it, and a start whose holder read waits on one waits for ever with no line. The row's start
+// reads where each path leads through a stand-in reader (`neverAnswering`) that answers every path
+// at once but `never` and the paths under it, which it never answers, as such a mount does; a real
+// mount of that kind needs `/dev/fuse` and `fusermount3`, which a CI runner may not have. The
+// holder names one such path, or nine under one directory that never answers: either way the read
+// waits one bound, says so on one line when it does, and names the path it stopped at. The
+// stand-in's own clock times that wait, which no load on the start or on the row stretches.
+for (const holder of [
+  { names: "a path", paths: ["pgdata"], never: "pgdata" },
+  {
+    names: "nine paths under one directory",
+    paths: ["a", "b", "c", "d", "e", "f", "g", "h", "i"],
+    never: "",
   },
-  // The row waits for the holder's start for at most `claimEventMs`, and for the sweep for at
-  // most its own limit above.
-  2 * claimEventMs + 2 * statStartMs + statMs + 60_000
-);
+] as const) {
+  test.skipIf(!onLinux)(
+    `v-no-leftover-postgres: a start leaves a dead stack's data directory, and its mark, that a process may hold since ${holder.names} it names answers no stat, names that process and that path in one line, and waits on them for one bound in all`,
+    async () => {
+      const row = rowOf(neverAnswers);
+      const { tmp, run } = scratch();
+      const data = join(run, "worker-0", "pgdata");
+      leaveData(data);
+      const mark = writeMark(run, owners().gone, data, mkdtempSync(join(tmp, "no-bin-")));
+      const hung = join(tmp, "never-answers");
+      const named = holder.paths.map((path) => join(hung, path));
+      const never = holder.never === "" ? hung : join(hung, holder.never);
+      const clock = join(tmp, "never-answers-clock");
+      row.child("the holder");
+      const holds = standIn(tmp, [
+        process.execPath,
+        "--eval",
+        "setTimeout(() => {}, 600_000)",
+        ...named,
+      ]);
+      let sweeping: Subprocess | undefined;
+      try {
+        await until(
+          () => readFileSync(`/proc/${holds.pid}/cmdline`, "utf8").includes(named.at(-1) ?? ""),
+          "the holder's arguments",
+          claimEventMs
+        );
+
+        // The hung directory is on the machine's own filesystem here, which the mount table says
+        // (this process's own table): the read of those filesystems stops at it, and its line
+        // names the paths it then leaves unread, the limit of a local filesystem that hangs.
+        const reader = neverAnswering([never], clock, join(tmp, "mountinfo"));
+        const started = startSweep(row, tmp, { reader });
+        sweeping = started.child;
+        // A bound on another process, which no fake clock of this one reaches: the row's own end
+        // for a start that waits on the path for ever, the sweep and its holder read as the
+        // fixtures' program sums them.
+        const limit = waitsMs({ children: 1, reads: neverAnswers.reads, bounds: [] });
+        const lines = await Promise.race([started.lines, Bun.sleep(limit).then(() => undefined)]);
+        if (lines === undefined) throw new Error(`the sweep did not end within ${limit / 1000} s`);
+
+        expect([existsSync(data), existsSync(mark)]).toEqual([true, true]);
+        // The holder is named by the first path it names that has no answer: the hung one, or one
+        // of the machine's own filesystems that the read stopped before, such as its program.
+        const held = holding(lines, `${mark} (${data}, which `);
+        expect(held).toHaveLength(1);
+        const [path = "", ...rest] = (
+          held[0]?.split(`bun ${holds.pid} may hold, as it names `)[1] ?? ""
+        ).split(", ");
+        const reason = rest.join(", ");
+        const hungReason = `${never === named[0] ? "which" : `under ${never}, which`} answered no stat within ${statMs / 1000} s`;
+        const stoppedReason = `which the read did not reach, as ${never}, before it, answered no stat within ${statMs / 1000} s`;
+        expect(
+          (path === named[0] && reason.startsWith(hungReason)) || reason.startsWith(stoppedReason)
+        ).toBe(true);
+        expect(holding(lines, `: the read of what holds ${data} waits no longer on `)).toEqual([
+          expect.stringContaining(
+            `waits no longer on ${never}, which answered no stat within ${statMs / 1000} s, nor asks a path under it, and reads none of the `
+          ),
+        ]);
+        const waited = clockOf(clock);
+        expect(waited.length).toBeGreaterThan(0);
+        for (const { ticks } of waited) {
+          expect((ticks.at(-1) ?? Number.NaN) - (ticks[0] ?? Number.NaN)).toBeLessThan(
+            statMs / 1000 + clockRoomS
+          );
+        }
+      } finally {
+        if (sweeping !== undefined) await endChild(sweeping);
+        holds.stop();
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    },
+    // What the row waits for, summed by the fixtures' program (`rowMs`): a holder and its
+    // arguments, and one sweep with its holder read.
+    rowMs(neverAnswers)
+  );
+}
+
+/** What each of the next rows waits for (`Waits`): two holders, each a child, with their
+ *  arguments, each at most `claimEventMs`; and one sweep, a child, whose holder read before its
+ *  claim of the data directory reads its groups of paths at the same time, so each of the two
+ *  mounts that never answer starts one reader, and the two wait out one bound together. */
+const twoHungMounts: Waits = { children: 3, reads: 1, bounds: [claimEventMs, claimEventMs] };
+
+// Two mounts whose servers hang, as two network or FUSE mounts of one machine can at once: a start
+// reads the paths of each such mount, and of each mount of a type it does not know or that the
+// mount table does not give, in a group of its own, and the groups at the same time, so the two
+// cost one bound, about 10 s, and not one after the other, 20 s; and a path of the machine's own
+// filesystems, which answer, is read all the same. The row runs the start's read on a mount table
+// of its own (`neverAnswering`): this process's, with the two hung directories planted as two
+// mounts (`/never-answers-a-<pid>`, `/never-answers-b-<pid>`), which the stand-in reader never
+// answers. Its own clock, which no load stretches, times each wait: each hung reader was forked
+// before the other's wait ended. The healthy holder holds the data directory only through a link,
+// which only a read of where it leads, and no spelling of the mark, shows.
+for (const mounts of [
+  { title: "two network mounts that never answer", types: ["nfs4", "nfs4"] },
+  {
+    title: "a network mount and a mount of a type it does not know, which never answer",
+    types: ["nfs4", "weirdfs"],
+  },
+  {
+    title:
+      "a network mount and a mount whose type the mount table does not give, which never answer",
+    types: ["nfs4", ""],
+  },
+] as const) {
+  test.skipIf(!onLinux)(
+    `v-no-leftover-postgres: a start whose holder read meets ${mounts.title} waits on both for one bound, names each on a line, and still reads the paths of the machine's own filesystems, so it names the process that holds the data directory through it`,
+    async () => {
+      const row = rowOf(twoHungMounts);
+      const { tmp, run } = scratch();
+      const data = join(run, "worker-0", "pgdata");
+      leaveData(data);
+      const mark = writeMark(run, owners().gone, data, mkdtempSync(join(tmp, "no-bin-")));
+      const hung = [`/never-answers-a-${process.pid}`, `/never-answers-b-${process.pid}`];
+      const named = [join(hung[0] ?? "", "x"), join(hung[1] ?? "", "y")];
+      const link = join(tmp, "data-link");
+      symlinkSync(data, link);
+      const clock = join(tmp, "never-answers-clock");
+      row.child("the holder of the two hung paths");
+      const holds = standIn(tmp, [
+        process.execPath,
+        "--eval",
+        "setTimeout(() => {}, 600_000)",
+        ...named,
+      ]);
+      row.child("the holder of the data directory through a link");
+      const healthy = standIn(tmp, [
+        process.execPath,
+        "--eval",
+        "setTimeout(() => {}, 600_000)",
+        join(link, "PG_VERSION"),
+      ]);
+      let sweeping: Subprocess | undefined;
+      try {
+        for (const [holder, last] of [
+          [holds, named.at(-1) ?? ""],
+          [healthy, link],
+        ] as const) {
+          await until(
+            () => readFileSync(`/proc/${holder.pid}/cmdline`, "utf8").includes(last),
+            "a holder's arguments",
+            claimEventMs
+          );
+        }
+
+        const reader = neverAnswering(
+          hung,
+          clock,
+          join(tmp, "mountinfo"),
+          hung.map((point, index) => ({ point, type: mounts.types[index] ?? "" }))
+        );
+        const started = startSweep(row, tmp, { reader });
+        sweeping = started.child;
+        // A bound on another process, which no fake clock of this one reaches: the row's own end
+        // for a start that waits on the paths for ever, the sweep and its holder read as the
+        // fixtures' program sums them.
+        const limit = waitsMs({ children: 1, reads: twoHungMounts.reads, bounds: [] });
+        const lines = await Promise.race([started.lines, Bun.sleep(limit).then(() => undefined)]);
+        if (lines === undefined) throw new Error(`the sweep did not end within ${limit / 1000} s`);
+
+        const waited = clockOf(clock);
+        // What the waits cost together, from the first hung reader's fork to the last tick, on
+        // the stand-in's own clock, printed before any check of it, for the body and for a run
+        // that fails.
+        const forks = Math.min(...waited.map(({ forked }) => forked));
+        const last = Math.max(...waited.map(({ ticks }) => ticks.at(-1) ?? Number.NaN));
+        console.error(
+          `two hung mounts (${mounts.types.map((type) => type || "no type").join(", ")}): ${waited.length} hung readers, ${(last - forks).toFixed(1)} s from the first hung reader's fork to the last tick`
+        );
+        expect([existsSync(data), existsSync(mark)]).toEqual([true, true]);
+        const why = `under ${hung[0]}, which answered no stat within ${statMs / 1000} s`;
+        expect(holding(lines, `${mark} (${data}, which `)).toEqual([
+          expect.stringContaining(
+            `${data}, which bun ${healthy.pid} still holds and bun ${holds.pid} may hold, as it names ${named[0]}, ${why})`
+          ),
+        ]);
+        expect(
+          holding(lines, `: the read of what holds ${data} waits no longer on `).sort()
+        ).toEqual(
+          hung.map((path) =>
+            expect.stringContaining(
+              `waits no longer on ${path}, which answered no stat within ${statMs / 1000} s, nor asks a path under it: `
+            )
+          )
+        );
+        expect(waited).toHaveLength(2);
+        const [first, second] = waited;
+        if (first === undefined || second === undefined) throw new Error("no two hung readers");
+        // One bound for both: each hung reader was forked before the other's wait ended, on the
+        // stand-in's own clock, so neither waited for the other. One after the other, the second
+        // is forked only once the first's bound has run out, after its last tick.
+        expect(second.forked).toBeLessThan(first.ticks.at(-1) ?? Number.NaN);
+        expect(first.forked).toBeLessThan(second.ticks.at(-1) ?? Number.NaN);
+        for (const { ticks } of waited) {
+          expect((ticks.at(-1) ?? Number.NaN) - (ticks[0] ?? Number.NaN)).toBeLessThan(
+            statMs / 1000 + clockRoomS
+          );
+        }
+      } finally {
+        if (sweeping !== undefined) await endChild(sweeping);
+        holds.stop();
+        healthy.stop();
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    },
+    // What the row waits for, summed by the fixtures' program (`rowMs`): two holders and their
+    // arguments, and one sweep with its holder read.
+    rowMs(twoHungMounts)
+  );
+}

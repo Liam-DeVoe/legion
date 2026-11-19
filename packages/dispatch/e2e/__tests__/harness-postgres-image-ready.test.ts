@@ -17,13 +17,14 @@
  *  failed without it in CI (`./postgres-provider`). */
 
 import { expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { pgConnectionsVariable, pgImageVariable, stackPostgres } from "../harness-postgres";
+import { docker, psql, removeIds, removeImage } from "./harness-postgres-leftover-fixtures";
+import { rowMs, rowOf, type Waits } from "./harness-postgres-removal-fixtures";
 import { requirePostgres, skipsWithoutPostgres } from "./postgres-provider";
 
 const skipped = skipsWithoutPostgres("e2e/__tests__/harness-postgres-image-ready.test.ts", [
@@ -37,19 +38,21 @@ const initSleep = 5;
  *  and past the moment the temporary server stops and the final one starts. */
 const watchMs = 8_000;
 
-/** `docker` with `args`, which throws where it fails. */
-function docker(...args: string[]): string {
-  const run = spawnSync("docker", args, { encoding: "utf8", timeout: 120_000 });
-  if (run.status !== 0) throw new Error(`docker ${args.join(" ")}: ${run.stderr}`);
-  return run.stdout;
-}
+/** What the row waits for (`Waits`): a `docker create` and a `docker commit` of the row's own
+ *  (`makes`), with the `docker cp` between them; one start of the provider, whose waits give up
+ *  at 120 s; 8 s of reads; and the stop and the removals. Besides the create and the commit it
+ *  read 12.3 to 22.8 s on a shared Linux machine under a load of about 270 to 300, on 2026-11-17;
+ *  240 s leaves the 120 s wait and a slow Docker daemon room. */
+const slowInit: Waits = { children: 0, reads: 0, makes: 2, bounds: [240_000] };
 
 test.skipIf(skipped)(
   "image provider: a stack's Postgres answers from the moment its start returns, though the image's own init runs a script after it made the database",
   async () => {
+    const row = rowOf(slowInit);
     const { value: image } = requirePostgres([pgImageVariable]);
     // Random bytes, never the pid, which a run in another PID namespace can share: the image's
-    // tag is the row's alone, and the builder has no name and is removed by its id.
+    // tag and the builder's name are the row's alone, and the builder is removed by its id, or,
+    // where the row's deadline stopped its create, by that name (`docker`).
     const own = randomBytes(8).toString("hex");
     const slow = `dispatch-e2e-pg-slow-init-${own}`;
     const dir = mkdtempSync(join(tmpdir(), "pg-image-ready-"));
@@ -57,15 +60,15 @@ test.skipIf(skipped)(
     try {
       const script = join(dir, "slow.sh");
       writeFileSync(script, `sleep ${initSleep}\n`);
-      const builder = docker("create", image).trim();
+      const builder = (await docker(row, "create", "--name", `${slow}-builder`, image)).trim();
       try {
-        docker("cp", script, `${builder}:/docker-entrypoint-initdb.d/slow.sh`);
-        docker("commit", builder, slow);
+        await docker(row, "cp", script, `${builder}:/docker-entrypoint-initdb.d/slow.sh`);
+        await docker(row, "commit", builder, slow);
         made = true;
       } finally {
         // The image declares a volume, so the builder's create made an anonymous one, which goes
         // with it: a removal without `--volumes` left one on the daemon at each run.
-        docker("rm", "--force", "--volumes", builder);
+        await removeIds([builder]);
       }
 
       const provider = stackPostgres({
@@ -87,26 +90,20 @@ test.skipIf(skipped)(
         const servers = new Set<string>();
         const until = Date.now() + watchMs;
         while (Date.now() < until) {
-          const psql = spawnSync(
-            "psql",
-            [database.url, "-XAtc", "select pg_postmaster_start_time()"],
-            { encoding: "utf8", timeout: 30_000 }
-          );
-          if (psql.status === 0) servers.add(psql.stdout.trim());
-          else refused.push(`${new Date().toISOString()} ${psql.stderr.trim()}`);
+          const read = await psql(row, database.url, "select pg_postmaster_start_time()");
+          if (read.status === 0) servers.add(read.stdout.trim());
+          else refused.push(`${new Date().toISOString()} ${read.stderr.trim()}`);
         }
         expect({ refused, servers: servers.size }).toEqual({ refused: [], servers: 1 });
       } finally {
         await database.stop();
       }
     } finally {
-      if (made) docker("rmi", slow);
+      if (made) await removeImage(slow);
       rmSync(dir, { recursive: true, force: true });
     }
   },
-  // The row drives a `docker create`, `cp` and `commit` of the image, one start of the provider,
-  // whose waits give up at 120 s, 8 s of reads and the stop. It read 12.3 to 22.8 s on a shared
-  // Linux machine under a load of about 270 to 300, on 2026-11-17; 300 s leaves the 120 s wait
-  // and a slow Docker daemon room.
-  300_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): its create and its commit,
+  // the provider's start, the reads and the stop.
+  rowMs(slowInit)
 );

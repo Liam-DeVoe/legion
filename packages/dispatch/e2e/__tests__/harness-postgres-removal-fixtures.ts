@@ -1,19 +1,24 @@
 /** The fixtures of the rows of `harness-postgres-removal.test.ts` and
  *  `harness-postgres-holders.test.ts`: the marks, data directories and stand-in postmasters a row
  *  plants, the start's sweep, a start's claim and a start's removal of one container, each run in
- *  a child of the row, the stand-in `docker` of that removal, the end of such a child, and the
- *  stack's harness and the stand-in `pg_ctl` a row kills hard. The rows and what they require stay
- *  in those files. */
+ *  a child of the row, the stand-in `docker` of that removal, with its own clock, the end of such a
+ *  child, and the stack's harness and the stand-in `pg_ctl` a row kills hard. It holds the program
+ *  of each row's own limit too (`Waits`, `rowMs`, `Row`): a row states what it waits for, its
+ *  limit is the sum of those waits, and each fixture that starts a child or a holder read charges
+ *  the row, which fails where it started more than its limit counts. The rows and what they
+ *  require stay in those files. */
 
 import { expect } from "bun:test";
 import {
   chmodSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -22,9 +27,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
 
+import { type Machine, machine, type RemovalBounds } from "../harness-postgres-container-removal";
 import * as marks from "../harness-postgres-marks";
-import type { StatReader } from "../harness-postgres-processes";
-import type { RemovalBounds } from "../harness-postgres-removal";
+import { type StatReader, statMs, statReader, statStartMs } from "../harness-postgres-processes";
+import { stopMs } from "../harness-postgres-removal";
 import { type StandIn, standIn } from "./planted-marks";
 
 const { marksDirectory, runDirectoryPrefix, stackOwner } = marks;
@@ -185,6 +191,9 @@ while [ "$SECONDS" -lt "$end" ]; do read -r -t 0.05 -u 3 _; done`;
 }
 
 const removalModule = fileURLToPath(new URL("../harness-postgres-removal.ts", import.meta.url));
+const containerRemovalModule = fileURLToPath(
+  new URL("../harness-postgres-container-removal.ts", import.meta.url)
+);
 
 /** The start's sweep, as a child of this file runs it: within the start's own bounds of a
  *  container's removal, or the row's (`RemovalBounds`), where `ANSWER_MS` and `BOUND_MS` give them,
@@ -205,18 +214,56 @@ function boundsEnv({ answerMs, boundMs }: RemovalBounds): Record<string, string>
   return { ANSWER_MS: String(answerMs), BOUND_MS: String(boundMs) };
 }
 
-/** A stand-in for the program a start's holder read runs (`StatReader`): it reads the paths from
- *  its standard input, separated by NUL, says it is ready, and writes where each path leads, in
- *  turn, as the start's own reader does; but at `never` it writes nothing more and waits, as a stat
- *  of a path on a mount whose server hangs waits, until it is killed or the start that ran it
- *  ends (its parent pid changes). It sets itself no bound of its own: one shorter than the row's
- *  limit would end the wait in the start's place, and a start with no bound would pass the row. */
-export function neverAnswering(never: string): StatReader {
-  return [
-    process.execPath,
-    "--eval",
-    `
-const { readFileSync, statSync, writeSync } = require("node:fs");
+/** A stand-in for the reader a start's holder read runs (`StatReader`): its program reads the
+ *  paths from its standard input, separated by NUL, says it is ready, and writes where each path
+ *  leads, in turn, as the start's own reader does; but at a path of `never`, or a path under one,
+ *  it writes nothing more and waits, as a stat of a path on a mount whose server hangs waits, until
+ *  it is killed or the start that ran it ends (its parent pid changes). It sets itself no bound of
+ *  its own: one shorter than the row's limit would end the wait in the start's place, and a start
+ *  with no bound would pass the row. Its own clock times the start's wait there, which no load on
+ *  the start or the row stretches: it writes to `clock`, under its pid, when the kernel forked it,
+ *  and then the time it reached that path and the time again every 500 ms until it is killed
+ *  (`clockOf`), each in seconds since the machine booted, the one clock the kernel gives both a
+ *  process's start and `/proc/uptime` on. Its mount table is this process's, with each mount of
+ *  `mounts` added after it, a
+ *  mount point and its type, as the row plants a path of `never` on a network mount, and with no
+ *  type where `type` is empty, as a line whose type the start cannot read: the file `table`, which
+ *  the stand-in writes. */
+export function neverAnswering(
+  never: readonly string[],
+  clock: string,
+  table: string,
+  mounts: readonly { readonly point: string; readonly type: string }[] = []
+): StatReader {
+  const own = readFileSync("/proc/self/mountinfo", "utf8").trimEnd();
+  writeFileSync(
+    table,
+    [
+      own,
+      // The fields a line of /proc/self/mountinfo holds, with the planted point and type.
+      ...mounts.map(
+        ({ point, type }, index) =>
+          `${9000 + index} 1 0:${900 + index} / ${point} rw,relatime shared:${900 + index}${type === "" ? "" : ` - ${type} planted:${point} rw`}`
+      ),
+      "",
+    ].join("\n")
+  );
+  return {
+    mounts: table,
+    run: [
+      process.execPath,
+      "--eval",
+      `
+const { appendFileSync, readFileSync, statSync, writeSync } = require("node:fs");
+const never = ${JSON.stringify(never)};
+const write = (what, at) => appendFileSync(${JSON.stringify(clock)}, process.pid + " " + what + " " + at + "\\n");
+// When the kernel forked this process, which no load after the fork moves: its start in clock
+// ticks since boot, 100 a second. Each tick is on that clock too (/proc/uptime): the epoch's clock
+// less the boot time /proc/stat gives, a whole second rounded down and moved by each correction
+// of the clock since, would put a fork seconds before a tick that came first.
+const uptime = () => Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]);
+const ticks = Number(readFileSync("/proc/self/stat", "utf8").slice(readFileSync("/proc/self/stat", "utf8").lastIndexOf(")") + 2).split(" ")[19]);
+write("forked", ticks / 100);
 const start = process.ppid;
 setInterval(() => {
   if (process.ppid !== start) process.exit(1);
@@ -224,7 +271,12 @@ setInterval(() => {
 const paths = readFileSync(0, "utf8").split("\\0");
 writeSync(1, "ready\\n");
 for (const path of paths) {
-  if (path === ${JSON.stringify(never)}) break;
+  if (never.some((hung) => path === hung || path.startsWith(hung + "/"))) {
+    const tick = () => write("tick", uptime());
+    tick();
+    setInterval(tick, 500);
+    break;
+  }
   let line = "-";
   try {
     const stats = statSync(path, { bigint: true });
@@ -233,24 +285,194 @@ for (const path of paths) {
   writeSync(1, line + "\\n");
 }
 `,
-  ];
+    ],
+  };
+}
+
+/** What a stand-in reader's clock holds (`neverAnswering`), for each reader that waited on a path
+ *  of `never`: its pid, when the kernel forked it, and the times it wrote while it waited, in
+ *  seconds since the machine booted. */
+export function clockOf(clock: string): { pid: number; forked: number; ticks: number[] }[] {
+  const lines = existsSync(clock) ? readFileSync(clock, "utf8").split("\n").filter(Boolean) : [];
+  const readers = new Map<number, { pid: number; forked: number; ticks: number[] }>();
+  for (const line of lines) {
+    const [pid = "", what = "", at = ""] = line.split(" ");
+    const reader = readers.get(Number(pid)) ?? { pid: Number(pid), forked: Number.NaN, ticks: [] };
+    if (what === "forked") reader.forked = Number(at);
+    else reader.ticks.push(Number(at));
+    readers.set(reader.pid, reader);
+  }
+  return [...readers.values()].filter((reader) => reader.ticks.length > 0);
+}
+
+/** How long a row waits for one event of another process: a `bun` child's start of its sweep
+ *  under load, which took more than 180 s once on a shared Linux machine under a load of 1,217, on
+ *  2026-11-17, is the longest of them. */
+export const claimEventMs = 240_000;
+/** How long a row gives one call of its own fixtures that makes a container or an image with
+ *  Docker (`docker` of `harness-postgres-leftover-fixtures.ts`): three times the 133 s that one
+ *  `docker create` of a row took on a daemon a shared Linux machine shared, on 2026-11-19, while
+ *  that daemon answered every other call, as the fixtures' other bounds are three times their
+ *  largest reading. */
+export const makeMs = 400_000;
+
+/** The holder reads a start makes after it stopped a postmaster (`removePostmaster` of
+ *  `e2e/harness-postgres-removal.ts`): one, and a second where a process still held the directory
+ *  then, which a moment of the kernel's decides, so a row counts both. */
+const readsAfterStop = 2;
+
+/** What a row waits for, one wait after another, which its own limit is the sum of (`rowMs`):
+ *  each `bun` child it starts (`children`), each of which may take `claimEventMs` to start under
+ *  load; each holder read that the sweeps of those children make before a claim (`reads`), each of
+ *  which starts a reader that may take `statStartMs` to start and then reads within `statMs`
+ *  (`e2e/harness-postgres-processes.ts`); each stop of a postmaster those sweeps make (`stops`),
+ *  each of which may take `stopMs` and is followed by `readsAfterStop` holder reads; each call of
+ *  its fixtures that makes a container or an image (`makes`), each of which may take `makeMs`; and
+ *  every other bound the row waits out (`bounds`, in ms): the bound of a removal, of an `until`, of
+ *  a stack's start. */
+export interface Waits {
+  readonly children: number;
+  readonly reads: number;
+  readonly stops?: number;
+  readonly makes?: number;
+  readonly bounds: readonly number[];
+}
+
+/** The holder reads a row's sweeps may make in all (`Waits`): those before a claim, and those after
+ *  each stop. */
+function readsOf({ reads, stops = 0 }: Waits): number {
+  return reads + stops * readsAfterStop;
+}
+
+/** Everything a row waits for, one wait after another (`Waits`), in ms: the limit of a child the
+ *  row ends itself, and of an `until` of an event that comes after those waits. */
+export function waitsMs(waits: Waits): number {
+  const { children, stops = 0, makes = 0, bounds } = waits;
+  return (
+    children * claimEventMs +
+    readsOf(waits) * (statStartMs + statMs) +
+    stops * stopMs +
+    makes * makeMs +
+    bounds.reduce((sum, ms) => sum + ms, 0)
+  );
+}
+
+/** The room a row's limit leaves above what it waits for (`waitsMs`): the row's own reads of files
+ *  and of `/proc` between its waits, its asks of Docker and Postgres, each of which a daemon that
+ *  took minutes over a removal answered within a second on 2026-11-18, and the moment between a
+ *  bound firing in a child and the row reading what it ended, so that the error of the child or of
+ *  the `until`, which names what did not come, ends the row, and not the row's own clock; and the
+ *  removal of what a fixture call made that ran out the row's deadline (`Row.deadline`). */
+export const rowRoomMs = 60_000;
+
+/** A row's own limit: everything it waits for (`waitsMs`), with `rowRoomMs` above it. Every row of
+ *  the files these fixtures serve that starts a child states its limit so, and no other way. */
+export function rowMs(waits: Waits): number {
+  return waitsMs(waits) + rowRoomMs;
+}
+
+/** What a row started so far, held to what its limit counts (`Waits`): each fixture that starts a
+ *  `bun` child charges the row for it (`child`), each sweep charges the holder reads it made, as
+ *  the reader it ran counted them (`reads`), and each fixture call that makes a container or an
+ *  image charges it for that call (`made`). A row that starts more than its limit counts fails
+ *  there, naming what the limit left out, whatever the load: its limit is below what it waits for.
+ *  `ms` is `waitsMs` of the row's waits, the limit of a child it ends itself, and `deadline` is
+ *  when those waits end, from the row's start, on the machine's clock (`machine` of
+ *  `e2e/harness-postgres-container-removal.ts`): a fixture call of Docker or Postgres waits until
+ *  then and no longer, so it ends within the row's own limit with a reason that names it. */
+export interface Row {
+  readonly ms: number;
+  readonly deadline: number;
+  child(what: string): void;
+  reads(made: number, what: string): void;
+  made(what: string): void;
+}
+
+/** The `Row` of a row whose limit is `rowMs(waits)`, which starts now. */
+export function rowOf(waits: Waits): Row {
+  let children = 0;
+  let reads = 0;
+  let makes = 0;
+  const ms = waitsMs(waits);
+  return {
+    ms,
+    deadline: machine.now() + ms,
+    child: (what) => {
+      children += 1;
+      if (children > waits.children) {
+        throw new Error(
+          `the row's limit counts ${waits.children} bun children, and it started ${children}, the last ${what}: its limit is below what it waits for`
+        );
+      }
+    },
+    reads: (made, what) => {
+      reads += made;
+      if (reads > readsOf(waits)) {
+        throw new Error(
+          `the row's limit counts ${readsOf(waits)} holder reads, and its sweeps made ${reads}, ${made} of them in ${what}: its limit is below what it waits for`
+        );
+      }
+    },
+    made: (what) => {
+      makes += 1;
+      if (makes > (waits.makes ?? 0)) {
+        throw new Error(
+          `the row's limit counts ${waits.makes ?? 0} calls that make a container or an image, and it made ${makes}, the last ${what}: its limit is below what it waits for`
+        );
+      }
+    },
+  };
+}
+
+/** The reader a row's sweep runs, the row's own or the start's (`statReader`), with its program
+ *  behind a `bash` that writes to `starts`, each time the sweep starts it, the read and the top path
+ *  it serves (`HOLDER_READ` of `e2e/harness-postgres-processes.ts`), and then runs it, so that the
+ *  row counts the holder reads its sweep made (`Row.reads`); its mount table is the reader's own. */
+function countedReader(starts: string, reader: StatReader = statReader): StatReader {
+  const bash = Bun.which("bash");
+  if (bash === null) throw new Error("no bash on PATH to count the holder reads of a sweep");
+  return {
+    ...reader,
+    run: [bash, "-c", 'printf "%s\\n" "$HOLDER_READ" >>"$0"; exec "$@"', starts, ...reader.run],
+  };
+}
+
+/** How many readers the sweep that ran `countedReader(starts)` started one after another: for
+ *  each of its reads, the most readers one of its top paths started, since the top paths of a
+ *  read start theirs at the same time, and a top path starts another only after one it waited on
+ *  ran out its bound. A row's `reads` counts these, each of which may take `statStartMs` to start
+ *  and `statMs` to read. */
+function readsMade(starts: string): number {
+  const lines = existsSync(starts) ? readFileSync(starts, "utf8").split("\n").filter(Boolean) : [];
+  const perTop = new Map<string, number>();
+  for (const line of lines) perTop.set(line, (perTop.get(line) ?? 0) + 1);
+  const perRead = new Map<string, number>();
+  for (const [line, count] of perTop) {
+    const read = line.split(" ")[0] ?? "";
+    perRead.set(read, Math.max(perRead.get(read) ?? 0, count));
+  }
+  return [...perRead.values()].reduce((sum, count) => sum + count, 0);
 }
 
 /** A start's sweep running in a child with `tmp` for its `TMPDIR` and `empty`, a directory with no
  *  program in it, for its `PATH`, so no row changes the environment of this process, and with the
- *  row's `reader` where it gives one: what it printed so far, the lines it printed once it ended,
- *  and the child, for a row to end. */
+ *  row's `reader` where it gives one, counted (`countedReader`): what it printed so far, the lines
+ *  it printed once it ended, and the child, for a row to end. It charges `row` for the child and,
+ *  once the child ended, for the holder reads its sweep made (`Row`). */
 export function startSweep(
+  row: Row,
   tmp: string,
-  empty = mkdtempSync(join(tmp, "no-programs-")),
-  reader?: StatReader
+  {
+    empty = mkdtempSync(join(tmp, "no-programs-")),
+    reader,
+  }: { empty?: string; reader?: StatReader } = {}
 ): { stderr(): string; readonly lines: Promise<string[]>; readonly child: Subprocess } {
+  const what = `the sweep of ${tmp}`;
+  row.child(what);
+  const counts = mkdtempSync(join(tmpdir(), "sweep-reads-"));
+  const starts = join(counts, "starts");
   const child = Bun.spawn([process.execPath, "--eval", sweepScript], {
-    env: {
-      TMPDIR: tmp,
-      PATH: empty,
-      ...(reader === undefined ? {} : { STAT_READER: JSON.stringify(reader) }),
-    },
+    env: { TMPDIR: tmp, PATH: empty, STAT_READER: JSON.stringify(countedReader(starts, reader)) },
     stdout: "ignore",
     stderr: "pipe",
   });
@@ -264,6 +486,9 @@ export function startSweep(
   })();
   const lines = (async () => {
     const [code] = await Promise.all([child.exited, read]);
+    const made = readsMade(starts);
+    rmSync(counts, { recursive: true, force: true });
+    row.reads(made, what);
     if (code !== 0) throw new Error(`the sweep exited ${code}: ${stderr}`);
     return stderr.split("\n");
   })();
@@ -271,8 +496,8 @@ export function startSweep(
 }
 
 /** Runs the start's sweep in a child (`startSweep`), and answers the lines it printed. */
-export function sweep(tmp: string, empty?: string): Promise<string[]> {
-  return startSweep(tmp, empty).lines;
+export function sweep(row: Row, tmp: string, empty?: string): Promise<string[]> {
+  return startSweep(row, tmp, { empty }).lines;
 }
 
 /** Waits until `met` holds, and throws naming `what` where it has not after `ms`. What it waits for
@@ -346,10 +571,13 @@ export async function firstLineOf(child: Subprocess<"ignore", "pipe", "ignore">)
 
 /** Claims `path` in a child with the real `claimForRemoval`, and answers once the child printed
  *  its claim: the claimed name, which holds its claimer's pid and start, as the judge reads an
- *  owner, and the claimer, which holds the claim until it is killed (`endChild`). */
+ *  owner, and the claimer, which holds the claim until it is killed (`endChild`). It charges `row`
+ *  for the child (`Row`). */
 export async function claimInChild(
+  row: Row,
   path: string
 ): Promise<{ claimed: string; claimer: Subprocess }> {
+  row.child(`the claim of ${path}`);
   const claimer = Bun.spawn([process.execPath, "--eval", claimScript], {
     env: { ...process.env, CLAIM_PATH: path },
     stdout: "pipe",
@@ -368,8 +596,8 @@ export async function claimInChild(
 
 /** What a start killed between its claim of `path` and its removal leaves: `claimInChild`, and
  *  the claimer SIGKILLed. Answers the claimed name. */
-export async function claimAndDie(path: string): Promise<string> {
-  const { claimed, claimer } = await claimInChild(path);
+export async function claimAndDie(row: Row, path: string): Promise<string> {
+  const { claimed, claimer } = await claimInChild(row, path);
   await endChild(claimer);
   return claimed;
 }
@@ -429,29 +657,47 @@ export function holding(lines: readonly string[], text: string): string[] {
   return lines.filter((line) => line.includes(text));
 }
 
-/** How long a row waits for one event of another process: a `bun` child's start of its sweep
- *  under load, which took more than 180 s once on a shared Linux machine under a load of 1,217, on
- *  2026-11-17, is the longest of them. */
-export const claimEventMs = 240_000;
-
 /** A start's removal of the container `CONTAINER_ID` (`removeContainer`) in a child of this file,
  *  within the row's bounds (`boundsEnv`): it prints how the removal ended, and its own lines on
  *  stderr. */
 const removeScript = `
-import { removeContainer } from ${JSON.stringify(removalModule)};
+import { removeContainer } from ${JSON.stringify(containerRemovalModule)};
 const { CONTAINER_ID: id = "", ANSWER_MS, BOUND_MS } = process.env;
 console.log(JSON.stringify(await removeContainer(id, undefined, { answerMs: Number(ANSWER_MS), boundMs: Number(BOUND_MS) })));
 `;
 
+/** One entry of a stand-in's own clock: when a call reached it, or when it ended, in seconds since
+ *  the epoch (`EPOCHREALTIME`), with the call's arguments. */
+export interface Tick {
+  readonly at: number;
+  readonly event: "start" | "end";
+  readonly call: string;
+}
+
+/** A stand-in `docker` (`standInDocker`): its directory, the calls it got, its clock, each process
+ *  it wrote, by its pid and start, and each process that runs now under its path. */
+export interface StandInDocker {
+  readonly bin: string;
+  calls(): string[];
+  clock(): Tick[];
+  processes(): { pid: number; start: string }[];
+  running(): { pid: number; start: string }[];
+}
+
 /** A directory in `tmp` with a stand-in `docker`, which runs no real one, so a row of it acts on
  *  no container of the machine: it writes the arguments of each call it gets as a line of
- *  `calls`, and the stat of its own process as a file of `processes`, and then runs the lines of
- *  bash `body`. A body that execs another program keeps the stand-in's path as its name
- *  (`exec -a "$0"`), so `running` finds it. Answers the directory, the calls so far, each process
+ *  `calls`, the stat of its own process as a file of `processes`, and, on its own clock, when the
+ *  call reached it and when it ended (`Tick`), and then runs the lines of bash `body`. That clock
+ *  is the stand-in's, which no load on the start or on the row stretches: a row times the start's
+ *  waits on it. A body that execs another program keeps the stand-in's path as its name (`exec -a
+ *  "$0"`), so `running` finds it, and writes no end; one that waits in the background (`sleep N &
+ *  wait $!`) ends on SIGTERM, which a start's stop of a call sends, writes its end then, and ends
+ *  what it waited for. Answers the directory, the calls so far, the clock so far, each process
  *  the stand-in wrote, by its pid and start, and each process that runs now under its path. */
-export function standInDocker(tmp: string, body: readonly string[]) {
+export function standInDocker(tmp: string, body: readonly string[]): StandInDocker {
   const bin = mkdtempSync(join(tmp, "docker-"));
   const calls = join(bin, "calls");
+  const clock = join(bin, "clock");
   const processes = join(bin, "processes");
   mkdirSync(processes);
   writeFileSync(
@@ -460,6 +706,9 @@ export function standInDocker(tmp: string, body: readonly string[]) {
       "#!/usr/bin/env bash",
       `echo "$*" >>${JSON.stringify(calls)}`,
       `cat /proc/$$/stat >${JSON.stringify(processes)}/$$`,
+      `printf '%s start %s\\n' "$EPOCHREALTIME" "$*" >>${JSON.stringify(clock)}`,
+      `trap 'kill $(jobs -p) 2>/dev/null; printf "%s end %s\\n" "$EPOCHREALTIME" "$*" >>${JSON.stringify(clock)}' EXIT`,
+      "trap 'exit 143' TERM",
       ...body,
       "",
     ].join("\n"),
@@ -469,6 +718,14 @@ export function standInDocker(tmp: string, body: readonly string[]) {
   return {
     bin,
     calls: (): string[] => readFileSync(calls, "utf8").trim().split("\n"),
+    clock: (): Tick[] =>
+      readFileSync(clock, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const [at = "", event = "", ...call] = line.split(" ");
+          return { at: Number(at), event: event === "end" ? "end" : "start", call: call.join(" ") };
+        }),
     processes: (): { pid: number; start: string }[] =>
       readdirSync(processes).map((pid) => ({
         pid: Number(pid),
@@ -520,28 +777,232 @@ async function inChild(script: string, bin: string, env: Record<string, string>,
 }
 
 /** Removes the container `id` in a child (`removeScript`) whose `docker` is the one in `bin`,
- *  within `bounds`. Answers how the removal ended, the lines the start printed, and how many
- *  seconds the child took; kills the child and throws where it has not ended within `ms`. */
-export async function removeInChild(bin: string, id: string, bounds: RemovalBounds, ms: number) {
+ *  within `bounds`, and charges `row` for the child. Answers how the removal ended, the lines the
+ *  start printed, and how many seconds the child took; kills the child and throws where it has
+ *  not ended within everything the row waits for (`Row.ms`). */
+export async function removeInChild(row: Row, bin: string, id: string, bounds: RemovalBounds) {
+  row.child(`the removal of container ${id.slice(0, 12)}`);
   const { stdout, stderr, seconds } = await inChild(
     removeScript,
     bin,
     { CONTAINER_ID: id, ...boundsEnv(bounds) },
-    ms
+    row.ms
   );
   return { removal: JSON.parse(stdout) as unknown, lines: stderr.split("\n"), seconds };
 }
 
-/** Runs the start's whole sweep (`sweepScript`) in a child with `tmp` for its `TMPDIR` and `bin`,
- *  a directory holding a stand-in `docker`, first on its `PATH`, within `bounds`. Answers the lines
- *  it printed and how many seconds it took; kills the child and throws where it has not ended
- *  within `ms`. */
-export async function sweepInChild(tmp: string, bin: string, bounds: RemovalBounds, ms: number) {
-  const { stderr, seconds } = await inChild(
-    sweepScript,
+const leftoverFixtures = fileURLToPath(
+  new URL("./harness-postgres-leftover-fixtures.ts", import.meta.url)
+);
+
+/** One call of the leftover rows' fixture `docker` (`harness-postgres-leftover-fixtures.ts`) in a
+ *  child of this file, with the arguments `ARGS` gives, for a row whose deadline is `DEADLINE_MS`
+ *  from the child's start: it prints what the call answered, or the message of what it threw. */
+const fixtureCallScript = `
+import { docker } from ${JSON.stringify(leftoverFixtures)};
+const ms = Number(process.env.DEADLINE_MS);
+const row = { ms, deadline: Date.now() + ms, child() {}, reads() {}, made() {} };
+try {
+  console.log(JSON.stringify({ stdout: await docker(row, ...JSON.parse(process.env.ARGS ?? "[]")) }));
+} catch (error) {
+  console.log(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+}
+`;
+
+/** Runs the leftover rows' fixture `docker` with `args` in a child whose `docker` is the one in
+ *  `bin` (`fixtureCallScript`), for a row whose deadline comes `deadlineMs` after the child starts,
+ *  and charges `row` for the child. Answers what the call answered or threw, and the lines it
+ *  printed; kills the child and throws where it has not ended within everything the row waits for
+ *  (`Row.ms`). */
+export async function fixtureDockerInChild(
+  row: Row,
+  bin: string,
+  args: readonly string[],
+  deadlineMs: number
+) {
+  row.child(`the fixture's docker ${args.join(" ")}`);
+  const { stdout, stderr } = await inChild(
+    fixtureCallScript,
     bin,
-    { TMPDIR: tmp, ...boundsEnv(bounds) },
-    ms
+    { DEADLINE_MS: String(deadlineMs), ARGS: JSON.stringify(args) },
+    row.ms
   );
-  return { lines: stderr.split("\n"), seconds };
+  return {
+    ended: JSON.parse(stdout) as { stdout?: string; error?: string },
+    lines: stderr.split("\n"),
+  };
+}
+
+/** Runs the start's whole sweep (`sweepScript`) in a child with `tmp` for its `TMPDIR` and `bin`,
+ *  a directory holding a stand-in `docker`, first on its `PATH`, within `bounds`, with the start's
+ *  own reader, counted (`countedReader`), and charges `row` for the child and for the holder reads
+ *  its sweep made. Answers the lines it printed and how many seconds it took; kills the child and
+ *  throws where it has not ended within everything the row waits for (`Row.ms`). */
+export async function sweepInChild(row: Row, tmp: string, bin: string, bounds: RemovalBounds) {
+  const what = `the sweep of ${tmp}`;
+  row.child(what);
+  const counts = mkdtempSync(join(tmpdir(), "sweep-reads-"));
+  const starts = join(counts, "starts");
+  try {
+    const { stderr, seconds } = await inChild(
+      sweepScript,
+      bin,
+      { TMPDIR: tmp, ...boundsEnv(bounds), STAT_READER: JSON.stringify(countedReader(starts)) },
+      row.ms
+    );
+    row.reads(readsMade(starts), what);
+    return { lines: stderr.split("\n"), seconds };
+  } finally {
+    rmSync(counts, { recursive: true, force: true });
+  }
+}
+
+/** One call of a row's `docker` (`rowMachine`): its arguments, when it reached the row's clock,
+ *  and when and how it ended, in ms of that clock: answered, ended by its `signal`, or ended by
+ *  its `timeout`, as `execFile` ends a call. */
+export interface RowCall {
+  readonly args: string;
+  readonly at: number;
+  ended?: number;
+  how?: "answered" | "aborted" | "timed out";
+}
+
+/** How a row's `docker` answers one call (`rowMachine`): `after` ms of the row's clock after the
+ *  call reached it, with `stdout` where it exits 0, or with `stderr` where it exits 1; or never, as
+ *  Docker never ends a removal that is stuck in the daemon. */
+export type RowAnswer =
+  | { readonly after: number; readonly stdout?: string; readonly stderr?: string }
+  | "never";
+
+/** A machine for a start's removal of a container whose clock the row moves (`Machine`). The clock
+ *  starts at 0 and moves only while the removal waits on it, to the next time at which a sleep
+ *  ends, an answer comes or a call's `timeout` ends that call, so a row runs the start's own
+ *  10-minute bound in a moment of real time, and every time it reads is the removal's own, which
+ *  no load stretches. Its `docker` answers each call as `answer` says, and ends it where its
+ *  `signal` aborts or its `timeout` passes first, as `execFile` ends one. Answers the machine,
+ *  each call so far (`RowCall`), and `drive`, which moves the clock until `done`, the removal,
+ *  settles, and throws where the removal waits on nothing that clock moves. */
+export function rowMachine(answer: (args: readonly string[]) => RowAnswer) {
+  let now = 0;
+  // Each time the clock may move to, in the order it was set: the end of a sleep, an answer, or a
+  // call's timeout. Two at one time come in that order.
+  const due: { readonly at: number; readonly fire: () => void }[] = [];
+  const after = (ms: number, fire: () => void): (() => void) => {
+    const entry = { at: now + ms, fire };
+    due.push(entry);
+    return () => {
+      const index = due.indexOf(entry);
+      if (index !== -1) due.splice(index, 1);
+    };
+  };
+  const calls: RowCall[] = [];
+  const machine: Machine = {
+    now: () => now,
+    sleep: (ms, signal) => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      if (signal?.aborted) {
+        resolve();
+        return promise;
+      }
+      const cancel = after(ms, resolve);
+      signal?.addEventListener(
+        "abort",
+        () => {
+          cancel();
+          resolve();
+        },
+        { once: true }
+      );
+      return promise;
+    },
+    docker: (args, { signal, timeout }) => {
+      const { promise, resolve, reject } = Promise.withResolvers<{ stdout: string }>();
+      const call: RowCall = { args: args.join(" "), at: now };
+      calls.push(call);
+      const cancels: (() => void)[] = [];
+      const end = (how: NonNullable<RowCall["how"]>, settle: () => void): void => {
+        if (call.how !== undefined) return;
+        call.ended = now;
+        call.how = how;
+        for (const cancel of cancels) cancel();
+        settle();
+      };
+      // The errors `execFile` throws: an abort's, and a failed command's, with its fields.
+      const failed = (stderr: string, fields: object) =>
+        Object.assign(new Error(`Command failed: docker ${call.args}\n${stderr}`), {
+          stdout: "",
+          stderr,
+          ...fields,
+        });
+      const abort = (): void =>
+        end("aborted", () =>
+          reject(
+            Object.assign(new Error("The operation was aborted"), {
+              name: "AbortError",
+              code: "ABORT_ERR",
+            })
+          )
+        );
+      if (signal.aborted) {
+        abort();
+        return promise;
+      }
+      signal.addEventListener("abort", abort, { once: true });
+      cancels.push(() => signal.removeEventListener("abort", abort));
+      if (timeout !== undefined && timeout > 0) {
+        cancels.push(
+          after(timeout, () =>
+            end("timed out", () =>
+              reject(failed("", { killed: true, signal: "SIGTERM", code: null }))
+            )
+          )
+        );
+      }
+      const answered = answer(args);
+      if (answered !== "never") {
+        cancels.push(
+          after(answered.after, () =>
+            end("answered", () =>
+              answered.stderr === undefined
+                ? resolve({ stdout: answered.stdout ?? "" })
+                : reject(failed(answered.stderr, { killed: false, code: 1 }))
+            )
+          )
+        );
+      }
+      return promise;
+    },
+  };
+  async function drive<T>(done: Promise<T>): Promise<T> {
+    let settled = false;
+    void done.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      }
+    );
+    for (;;) {
+      // What the last move made due runs first: each step of a removal after it is a chain of
+      // promise callbacks, which all run before the event loop's next turn.
+      const turn = Promise.withResolvers<void>();
+      setImmediate(turn.resolve);
+      await turn.promise;
+      if (settled) return done;
+      const next = due.reduce<(typeof due)[number] | undefined>(
+        (first, entry) => (first === undefined || entry.at < first.at ? entry : first),
+        undefined
+      );
+      if (next === undefined) {
+        throw new Error(
+          `the removal waits, at ${now} ms of the row's clock, on nothing that clock moves`
+        );
+      }
+      due.splice(due.indexOf(next), 1);
+      now = next.at;
+      next.fire();
+    }
+  }
+  return { machine, calls: (): readonly RowCall[] => calls, drive };
 }

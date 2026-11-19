@@ -9,7 +9,7 @@
  *  Each name a row gives is of this run (`runTag`), and each container a row made is removed by
  *  the id Docker made it under. */
 
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   chmodSync,
@@ -23,8 +23,8 @@ import {
 import { basename, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import type { Subprocess } from "bun";
-
 import {
   pgBinVariable,
   pgConnectionsVariable,
@@ -32,6 +32,7 @@ import {
   socketDirectory,
   socketFile,
 } from "../harness-postgres";
+import { machine, removeContainer } from "../harness-postgres-container-removal";
 import {
   identityOf,
   markLabel,
@@ -41,7 +42,13 @@ import {
   stackOwner,
   startOf,
 } from "../harness-postgres-marks";
+import { type Row, rowRoomMs } from "./harness-postgres-removal-fixtures";
 import type { ProviderVariable } from "./postgres-provider";
+
+const execFileAsync = promisify(execFile);
+
+/** What this file's own lines are prefixed with, as every starter in `e2e/` names itself. */
+const named = "e2e/__tests__/harness-postgres-leftover-fixtures.ts";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const harnessPostgres = fileURLToPath(new URL("../harness-postgres.ts", import.meta.url));
@@ -338,10 +345,83 @@ export async function startNamespacedStack(
   };
 }
 
-/** Whether the Postgres at `url` answers `select 1`. */
-export function answers(url: string): boolean {
-  const psql = spawnSync("psql", [url, "-XAtc", "select 1"], { encoding: "utf8", timeout: 30_000 });
-  return psql.status === 0 && psql.stdout.trim() === "1";
+/** How one call of a row's fixtures of Docker or Postgres ended (`untilDeadline`): its exit status
+ *  and what it printed. */
+interface Called {
+  readonly status: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+/** When a fixture call that removes what the row made ends where the row's deadline has come:
+ *  half the room the row's limit leaves above that deadline (`rowRoomMs`), so its line, and not
+ *  the row's own clock, ends the row. */
+function cleanupBy(row: Row): number {
+  return row.deadline + rowRoomMs / 2;
+}
+
+/** Runs `program` with `args`, a call of Docker or Postgres that sets up the row `row`, or reads
+ *  it, for as long as the row still has time for: until `by`, the row's deadline but for a removal
+ *  of what it made (`cleanupBy`), on the machine's clock, as a start's removal runs its `docker rm`
+ *  (`machine` of `e2e/harness-postgres-container-removal.ts`). It sets no time of its own: a shared
+ *  daemon took 133 s over one `docker create` on 2026-11-19 while it answered every other call, and
+ *  a fixed bound of 120 s gave that call up, and left the container it made. Answers how the call
+ *  ended (`Called`), or "late" where `by` came first, which stopped it. */
+async function untilDeadline(
+  row: Row,
+  program: string,
+  args: readonly string[],
+  by = row.deadline
+): Promise<Called | "late"> {
+  const stop = new AbortController();
+  const ended = new AbortController();
+  void machine.sleep(Math.max(0, by - machine.now()), ended.signal).then(() => {
+    if (!ended.signal.aborted) stop.abort();
+  });
+  try {
+    const { stdout, stderr } = await execFileAsync(program, args, {
+      signal: stop.signal,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return { status: 0, stdout, stderr };
+  } catch (error) {
+    if (stop.signal.aborted) return "late";
+    const failed = error as { code?: unknown; stdout?: unknown; stderr?: unknown };
+    const stderr = typeof failed.stderr === "string" ? failed.stderr : "";
+    return {
+      status: typeof failed.code === "number" ? failed.code : 1,
+      stdout: typeof failed.stdout === "string" ? failed.stdout : "",
+      stderr: stderr === "" && error instanceof Error ? error.message : stderr,
+    };
+  } finally {
+    ended.abort();
+  }
+}
+
+/** The one line, and the error, of a fixture call `call` of `row` that ran out the row's
+ *  deadline: it names the call, the row's time, and what the removal of what it made did
+ *  (`removed`). */
+function ranOut(row: Row, call: string, removed = ""): Error {
+  const line = `${named}: ${call} did not end within the ${row.ms / 1000} s the row waits in all, so the row stopped it${removed}`;
+  console.error(line);
+  return new Error(line);
+}
+
+/** `psql` of `url` with the one statement `sql`, read within the time `row` has left
+ *  (`untilDeadline`): answers how it ended, and throws naming the read where the row's deadline
+ *  comes first. */
+export async function psql(row: Row, url: string, sql: string): Promise<Called> {
+  const read = await untilDeadline(row, "psql", [url, "-XAtc", sql]);
+  if (read === "late") throw ranOut(row, `psql ${url} -XAtc '${sql}'`);
+  return read;
+}
+
+/** Whether the Postgres at `url` answers `select 1`, read within the time `row` has left
+ *  (`psql`). */
+export async function answers(row: Row, url: string): Promise<boolean> {
+  const read = await psql(row, url, "select 1");
+  return read.status === 0 && read.stdout.trim() === "1";
 }
 
 /** Each postmaster that serves a data directory of the binaries provider's run directory `dir`,
@@ -360,51 +440,116 @@ export function postmastersOf(dir: string): { pid: number; start: string }[] {
   });
 }
 
-/** `docker` with `args`, which throws where it fails. */
-export function docker(...args: string[]): string {
-  const run = spawnSync("docker", args, { encoding: "utf8", timeout: 120_000 });
-  if (run.status !== 0) throw new Error(`docker ${args.join(" ")}: ${run.stderr}`);
-  return run.stdout;
+/** Removes what the `docker` call of `args` made, which its row stopped at the row's deadline
+ *  (`docker`), within the room above that deadline (`cleanupBy`): the container a `create` or a
+ *  `run` names (`--name`), as Docker lists it by that name and by its `--label`'s key, each by its
+ *  id (`removeContainer`), or the image a `commit` names, its last argument. Answers what it did,
+ *  for the call's line. */
+async function removeMade(row: Row, args: readonly string[]): Promise<string> {
+  const by = cleanupBy(row);
+  const left = () => Math.max(0, by - machine.now());
+  if (args[0] === "commit") {
+    const image = args.at(-1) ?? "";
+    const removal = await untilDeadline(row, "docker", ["image", "rm", "--force", image], by);
+    if (removal === "late") return `, and the removal of the image ${image} it made did not end`;
+    return removal.status === 0
+      ? `, and removed the image ${image} it made`
+      : `, and left the image ${image} it made: ${removal.stderr.trim()}`;
+  }
+  const name = args[args.indexOf("--name") + 1];
+  if ((args[0] !== "create" && args[0] !== "run") || !args.includes("--name") || !name) return "";
+  const filters = ["--filter", `name=^/?${name}$`];
+  const label = args.includes("--label") ? args[args.indexOf("--label") + 1]?.split("=")[0] : "";
+  if (label) filters.push("--filter", `label=${label}`);
+  const listed = await untilDeadline(
+    row,
+    "docker",
+    ["ps", "--all", "--quiet", "--no-trunc", ...filters],
+    by
+  );
+  if (listed === "late" || listed.status !== 0) {
+    return `, and could not list the container ${name} it may have made`;
+  }
+  const ids = listed.stdout.split("\n").filter(Boolean);
+  if (ids.length === 0) return `, and it had made no container ${name}`;
+  const said: string[] = [];
+  for (const id of ids) {
+    const removal = await removeContainer(id, `container ${id.slice(0, 12)} (${name})`, {
+      answerMs: left(),
+      boundMs: left(),
+    });
+    said.push(
+      removal.kind === "failed"
+        ? `left container ${id.slice(0, 12)} (${name}) it made: ${removal.reason}`
+        : `removed container ${id.slice(0, 12)} (${name}) it made`
+    );
+  }
+  return `, and ${said.join(", and ")}`;
 }
 
-/** Whether Docker has the object `name` of `kind`, read with `docker <kind> inspect`: false only
- *  where Docker says it has no such object, and a throw where the read fails otherwise, so a row
- *  never reads a failed read as a removal. */
-export function exists(kind: "container" | "volume", name: string): boolean {
-  const run = spawnSync("docker", [kind, "inspect", name], { encoding: "utf8", timeout: 120_000 });
-  if (run.status === 0) return true;
-  if (/no such (container|volume|object)/i.test(run.stderr)) return false;
-  throw new Error(`docker ${kind} inspect ${name}: ${run.stderr || run.error?.message}`);
+/** `docker` with `args`, as a call that sets up or reads the row `row` runs it (`untilDeadline`):
+ *  answers what it printed, and throws where it fails, with Docker's reason. A call that makes a
+ *  container or an image (`create`, `run`, `commit`) charges the row for it (`Row.made`), whose
+ *  limit counts it. Where the row's deadline comes first, the row stops the call, removes what it
+ *  made (`removeMade`), and then throws, naming the call and that removal on one line. */
+export async function docker(row: Row, ...args: string[]): Promise<string> {
+  const call = `docker ${args.join(" ")}`;
+  if (args[0] === "create" || args[0] === "run" || args[0] === "commit") row.made(call);
+  const ended = await untilDeadline(row, "docker", args);
+  if (ended === "late") throw ranOut(row, call, await removeMade(row, args));
+  if (ended.status !== 0) throw new Error(`${call}: ${ended.stderr}`);
+  return ended.stdout;
 }
 
-/** Whether a container of this name exists, running or not. */
-export function containerExists(name: string): boolean {
-  return exists("container", name);
+/** Whether Docker has the object `name` of `kind`, read with `docker <kind> inspect` within the
+ *  time `row` has left (`untilDeadline`): false only where Docker says it has no such object, and
+ *  a throw where the read fails otherwise or the row's deadline comes first, so a row never reads
+ *  a failed read as a removal. */
+export async function exists(
+  row: Row,
+  kind: "container" | "volume",
+  name: string
+): Promise<boolean> {
+  const call = `docker ${kind} inspect ${name}`;
+  const read = await untilDeadline(row, "docker", [kind, "inspect", name]);
+  if (read === "late") throw ranOut(row, call);
+  if (read.status === 0) return true;
+  if (/no such (container|volume|object)/i.test(read.stderr)) return false;
+  throw new Error(`${call}: ${read.stderr}`);
+}
+
+/** Whether a container of this name exists, running or not (`exists`). */
+export function containerExists(row: Row, name: string): Promise<boolean> {
+  return exists(row, "container", name);
 }
 
 /** The volumes of the container `name`: the image's data volume, which holds its stack's data. */
-export function volumesOf(name: string): string[] {
+export async function volumesOf(row: Row, name: string): Promise<string[]> {
   const format = '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}';
-  return docker("container", "inspect", "--format", format, name)
+  return (await docker(row, "container", "inspect", "--format", format, name))
     .trim()
     .split(/\s+/)
     .filter(Boolean);
 }
 
 /** The ids of the containers whose mark names `run`, the run directory of a stack this row
- *  started, as Docker lists them. A listing that fails throws (`docker`), so no row reads it as
- *  one that lists none. */
-export function containersOf(run: string): string[] {
-  const listed = docker(
+ *  started, as Docker lists them within the time `row` has left, until `by` (`untilDeadline`). A
+ *  listing that fails, or that the row's deadline stops, throws, so no row reads it as one that
+ *  lists none. */
+export async function containersOf(row: Row, run: string, by = row.deadline): Promise<string[]> {
+  const args = [
     "ps",
     "--all",
     "--no-trunc",
     "--filter",
     `label=${markLabel}`,
     "--format",
-    `{{.ID}} {{.Label "${markLabel}"}}`
-  );
-  return listed.split("\n").flatMap((line) => {
+    `{{.ID}} {{.Label "${markLabel}"}}`,
+  ];
+  const listed = await untilDeadline(row, "docker", args, by);
+  if (listed === "late") throw ranOut(row, `docker ${args.join(" ")}`);
+  if (listed.status !== 0) throw new Error(`docker ${args.join(" ")}: ${listed.stderr}`);
+  return listed.stdout.split("\n").flatMap((line) => {
     const space = line.indexOf(" ");
     if (space === -1) return [];
     let mark: unknown;
@@ -421,7 +566,7 @@ export function containersOf(run: string): string[] {
 /** Runs a `docker` removal, of a container or an image, for as long as Docker takes over it, and
  *  answers its exit status and what it wrote on standard error. A daemon that many sessions share
  *  can take minutes over one removal while it answers every other call at once (`dockerMs` of
- *  e2e/harness-postgres-removal.ts), so a removal has no bound of its own: the bound of the row
+ *  e2e/harness-postgres-container-removal.ts), so a removal has no bound of its own: the bound of the row
  *  that runs it is what ends one that hangs. */
 async function dockerRemoval(args: readonly string[]): Promise<{ status: number; said: string }> {
   const run = Bun.spawn(["docker", ...args], { stdout: "ignore", stderr: "pipe" });
@@ -457,32 +602,40 @@ export async function removeImage(name: string): Promise<void> {
   if (status !== 0) throw new Error(`docker image rm --force ${name}: ${said}`);
 }
 
-/** Removes each container whose mark names `run`, the run directory of a stack this row started,
- *  by the id Docker lists it under: a container's name is no one stack's alone. */
-export async function removeContainersOf(run: string): Promise<void> {
-  await removeIds(containersOf(run));
+/** Removes each container whose mark names `run`, the run directory of a stack the row `row`
+ *  started, by the id Docker lists it under, listed within the room above the row's deadline
+ *  (`cleanupBy`): a container's name is no one stack's alone. */
+export async function removeContainersOf(row: Row, run: string): Promise<void> {
+  await removeIds(await containersOf(row, run, cleanupBy(row)));
 }
 
-/** Removes what a stack this row started left, by the paths it recorded for it: its container,
- *  by the id its mark is listed under, or its postmasters, then its directories. */
+/** Stops the postmaster of the cluster in `data` with `pg_ctl` of `bin`, as a stack's stop does
+ *  (`-m immediate -w`), within the room above the row's deadline (`cleanupBy`): `pg_ctl`'s own
+ *  wait for the stop, `PGCTLTIMEOUT`, bounds it, and no fixed time of this file's. Throws naming
+ *  the stop where that room runs out first. A stop that fails is a postmaster that is gone. */
+export async function stopCluster(row: Row, bin: string, data: string): Promise<void> {
+  const args = ["-D", data, "-m", "immediate", "-w", "stop"];
+  const stopped = await untilDeadline(row, join(bin, "pg_ctl"), args, cleanupBy(row));
+  if (stopped === "late") throw ranOut(row, `${join(bin, "pg_ctl")} ${args.join(" ")}`);
+}
+
+/** Removes what a stack the row `row` started left, by the paths it recorded for it: its
+ *  container, by the id its mark is listed under, or its postmasters, then its directories. */
 export async function removeLeft(
+  row: Row,
   stack: Stack | undefined,
   provider: { variable: ProviderVariable; value: string }
 ): Promise<void> {
   if (stack === undefined) return;
   if (provider.variable === pgImageVariable) {
-    await removeContainersOf(stack.dir);
+    await removeContainersOf(row, stack.dir);
     rmSync(dirname(stack.address), { recursive: true, force: true });
   } else {
     for (const data of [
       join(stack.dir, "worker-0", "pgdata"),
       join(stack.dir, "template", "pgdata"),
     ]) {
-      if (existsSync(join(data, "postmaster.pid"))) {
-        spawnSync(join(provider.value, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"], {
-          timeout: 120_000,
-        });
-      }
+      if (existsSync(join(data, "postmaster.pid"))) await stopCluster(row, provider.value, data);
     }
     rmSync(stack.address, { recursive: true, force: true });
   }
@@ -527,12 +680,14 @@ export interface Unjudged {
   stop(): Promise<void> | void;
 }
 
-/** Starts a Postgres that serves under a mark of another boot. The binaries provider's is a stack
- *  started as `startStack` starts one, whose mark is then written again with another boot's
- *  owner; the start names its mark file. The image provider's is a container of the row's own,
- *  made as the provider makes one, whose label is such a mark from its create on, in a socket
- *  directory of the run directory `run`; the start names it by its id. */
+/** Starts a Postgres that serves under a mark of another boot, for the row `row`. The binaries
+ *  provider's is a stack started as `startStack` starts one, whose mark is then written again with
+ *  another boot's owner; the start names its mark file. The image provider's is a container of the
+ *  row's own, made as the provider makes one, whose label is such a mark from its create on, in a
+ *  socket directory of the run directory `run`; the start names it by its id. Its calls of Docker
+ *  and Postgres take the time the row has left (`docker`). */
 export async function startUnjudged(
+  row: Row,
   env: Record<string, string | undefined>,
   provider: { variable: ProviderVariable; value: string },
   run: string,
@@ -548,7 +703,7 @@ export async function startUnjudged(
       named: markFile,
       stop: async () => {
         await stopStack(stack);
-        await removeLeft(stack, provider);
+        await removeLeft(row, stack, provider);
       },
     };
   }
@@ -564,27 +719,39 @@ export async function startUnjudged(
     identity: identityOf(beside),
     sockets: own,
   };
-  const id = docker(
-    "run",
-    "--detach",
-    "--name",
-    name,
-    "--label",
-    `${markLabel}=${JSON.stringify({ ...mark, container: name })}`,
-    "--user",
-    `${process.getuid?.()}:${process.getgid?.()}`,
-    "--mount",
-    `type=bind,source=${sockets},target=/var/run/postgresql`,
-    "--env",
-    "POSTGRES_HOST_AUTH_METHOD=trust",
-    provider.value,
-    "-c",
-    "listen_addresses="
-  ).trim();
+  let id: string;
+  try {
+    id = (
+      await docker(
+        row,
+        "run",
+        "--detach",
+        "--name",
+        name,
+        "--label",
+        `${markLabel}=${JSON.stringify({ ...mark, container: name })}`,
+        "--user",
+        `${process.getuid?.()}:${process.getgid?.()}`,
+        "--mount",
+        `type=bind,source=${sockets},target=/var/run/postgresql`,
+        "--env",
+        "POSTGRES_HOST_AUTH_METHOD=trust",
+        provider.value,
+        "-c",
+        "listen_addresses="
+      )
+    ).trim();
+  } catch (error) {
+    // The socket directory is in /tmp where the row's TMPDIR is long, so the row's own removal of
+    // its TMPDIR does not reach it.
+    rmSync(own, { recursive: true, force: true });
+    throw error;
+  }
   const url = `postgres://postgres@/postgres?host=${encodeURIComponent(sockets)}&sslmode=disable`;
   // The image's first server is its initialisation's, which it stops before its last one starts.
-  const initialised = () => {
-    const logs = spawnSync("docker", ["logs", id], { encoding: "utf8", timeout: 120_000 });
+  const initialised = async () => {
+    const logs = await untilDeadline(row, "docker", ["logs", id]);
+    if (logs === "late") throw ranOut(row, `docker logs ${id}`);
     return `${logs.stdout}${logs.stderr}`.includes("init process complete");
   };
   // The container by the id Docker made it under, and then its socket directory, which is in /tmp
@@ -596,12 +763,17 @@ export async function startUnjudged(
     );
   };
   const deadline = Date.now() + stackMs;
-  while (!(initialised() && answers(url))) {
-    if (Date.now() > deadline) {
-      await stop();
-      throw new Error(`the container ${name} did not serve within ${stackMs / 1000} s`);
+  try {
+    while (!((await initialised()) && (await answers(row, url)))) {
+      if (Date.now() > deadline) {
+        throw new Error(`the container ${name} did not serve within ${stackMs / 1000} s`);
+      }
+      await sleep(500);
     }
-    await sleep(500);
+  } catch (error) {
+    // A read the row's deadline stopped leaves the container this row made too.
+    await stop();
+    throw error;
   }
   return { url, named: `container ${id.slice(0, 12)}`, stop };
 }
@@ -640,8 +812,10 @@ export function plantedName(run: string, index: number): string {
 
 /** A container an image provider's stack left, made and never started, under a name of this
  *  row's own (`plantedName`): a start judges it by its label alone, which is its mark unless
- *  `label` names another. `made` collects the id Docker made it under, for the row's removal. */
-export function leaveContainer(
+ *  `label` names another. `made` collects the id Docker made it under, for the row's removal. Its
+ *  `docker create` takes the time the row `row` has left, which counts it (`docker`). */
+export async function leaveContainer(
+  row: Row,
   image: string,
   made: string[],
   run: string,
@@ -653,7 +827,9 @@ export function leaveContainer(
   const name = plantedName(run, index);
   const mark =
     label ?? JSON.stringify({ owner, run, identity: identityOf(run), sockets, container: name });
-  const id = docker("create", "--name", name, "--label", `${markLabel}=${mark}`, image).trim();
+  const id = (
+    await docker(row, "create", "--name", name, "--label", `${markLabel}=${mark}`, image)
+  ).trim();
   made.push(id);
   return { name, id: id.slice(0, 12), sockets };
 }
@@ -679,8 +855,10 @@ export function leaveContainerMark(
 /** A container an image provider's stack left, as `leaveContainer` makes one, but with no label
  *  that Docker lists: its mark is a line of `docker ps`'s listing (`listing`) that the stand-in
  *  `docker` of `soleListing` gives the starts under test alone, so no other start of the machine
- *  removes it first. `made` collects the id Docker made it under, for the row's removal. */
-export function leaveUnlistedContainer(
+ *  removes it first. `made` collects the id Docker made it under, for the row's removal. Its
+ *  `docker create` takes the time the row `row` has left, which counts it (`docker`). */
+export async function leaveUnlistedContainer(
+  row: Row,
   image: string,
   made: string[],
   run: string,
@@ -689,7 +867,7 @@ export function leaveUnlistedContainer(
 ) {
   const name = plantedName(run, index);
   const sockets = mkdtempSync(join(run, `pg-${index}-`));
-  const id = docker("create", "--name", name, image).trim();
+  const id = (await docker(row, "create", "--name", name, image)).trim();
   made.push(id);
   const mark = { owner, run, identity: identityOf(run), sockets, container: name };
   return {

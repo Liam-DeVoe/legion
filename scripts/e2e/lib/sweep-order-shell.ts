@@ -827,6 +827,58 @@ export function nameOf(words: readonly Word[]): string | undefined {
   return /^[A-Za-z0-9_./:+[\]-]+$/.test(w.text) ? w.text : undefined;
 }
 
+/** The one word bash makes of `w` where it expands nothing: its text with the quotes and
+ *  backslashes bash removes taken out, as `'set'`, `\set`, `"-e"` and `-e` all give a word that bash
+ *  reads alike. Undefined where bash may make it anything else: a parameter, a command or
+ *  arithmetic substitution, an ANSI-C or locale quote (`$'…'`, `$"…"`), a glob, a brace, a tilde,
+ *  or an escape inside double quotes the search does not read. A caller reads such a word as one
+ *  it cannot know (`sweep-order-policy.ts`). */
+export function literalOf(w: Word): string | undefined {
+  if (w.subs.length > 0 || w.vars.length > 0) return undefined;
+  let value = "";
+  const text = w.text;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i] ?? "";
+    if (ch === "'") {
+      const end = text.indexOf("'", i + 1);
+      if (end === -1) return undefined;
+      value += text.slice(i + 1, end);
+      i = end;
+    } else if (ch === '"') {
+      let j = i + 1;
+      for (; j < text.length && text[j] !== '"'; j++) {
+        const inner = text[j] ?? "";
+        if (inner === "$" || inner === "`") return undefined;
+        if (inner === "\\") {
+          const next = text[j + 1] ?? "";
+          // Inside double quotes a backslash quotes only these; before any other it stays.
+          if ('$`"\\'.includes(next)) {
+            value += next;
+            j++;
+            continue;
+          }
+          if (next === "\n") {
+            j++;
+            continue;
+          }
+        }
+        value += inner;
+      }
+      if (j >= text.length) return undefined;
+      i = j;
+    } else if (ch === "\\") {
+      if (i + 1 >= text.length) return undefined;
+      if (text[i + 1] !== "\n") value += text[i + 1];
+      i++;
+    } else if ("$`*?[{}".includes(ch) || (ch === "~" && i === 0)) {
+      return undefined;
+    } else {
+      value += ch;
+    }
+  }
+  return value;
+}
+
 /** `text`, the script at `shown` under the root, parsed: its top-level list, every function it
  *  defines, each library of scripts/e2e/lib it sources and the options of its first line. Throws
  *  `Unparsed`, naming the line, where it cannot parse it. */

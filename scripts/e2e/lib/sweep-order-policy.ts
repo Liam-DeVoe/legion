@@ -12,8 +12,11 @@ import {
   type Command,
   type Definition,
   declarers,
+  eachCommand,
   type List,
+  literalOf,
   nameOf,
+  readScript,
   type Script,
   sourcedLibrary,
   type Word,
@@ -24,11 +27,13 @@ export const sweep = "remove_leftover_postgres";
 /** The mark of a start's own Postgres, which the line after it creates the container with. */
 export const mark = "postgres_mark";
 
-/** A removal, a mark or a refusal that a driver's start reaches. */
+/** A removal, a mark or a refusal that a driver's start reaches, or a command on its way that the
+ *  search cannot read ("unread"): one that may turn errexit on or off, or end the start, in a way
+ *  the search does not know, such as `eval "$x"`, which it names instead of reading it as clean. */
 export interface Call {
-  readonly kind: "removal" | "mark" | "refusal";
-  /** The removal's or the mark's name, or the command that ends the start: `exit`, `return` or
-   *  a function that always ends it, such as `fail`. */
+  readonly kind: "removal" | "mark" | "refusal" | "unread";
+  /** The removal's or the mark's name, the command that ends the start: `exit`, `return` or
+   *  a function that always ends it, such as `fail`, or what the search cannot read of a command. */
   readonly name: string;
   /** The file and line of that command. */
   readonly at: string;
@@ -66,7 +71,10 @@ type Step =
  *  of each `return` it already passed there, whether a status that is not 0 ends the start,
  *  whether the walk is inside a command or process substitution, whose commands `set -e` does
  *  not end the start on, the driver's own command through which a library's top-level commands
- *  run, and, in a function, the options at each `return` the walk passed in it. */
+ *  run, and, in a function, the options at each `return` the walk passed in it, the shell the
+ *  function runs in (`depth`, `Walk.depth`), and the options a `local -` of that shell saved,
+ *  which bash gives back when the function returns (`dash`), with whether it runs on every path
+ *  (`sure`). */
 interface Frame {
   readonly fn: string | null;
   readonly local: readonly Guard[];
@@ -75,6 +83,8 @@ interface Frame {
   readonly substitution: boolean;
   readonly through: string | undefined;
   readonly returns?: Options[];
+  readonly depth: number;
+  readonly dash?: { saved: Options | undefined; sure: boolean };
 }
 
 /** Whether a failed command may end the start where nothing tests its status, on some path the
@@ -94,6 +104,32 @@ function join(first: Options, second: Options): Options {
   return { errexit: first.errexit || second.errexit, errTrap: first.errTrap || second.errTrap };
 }
 
+/** The words of the command that `words` runs, past each `builtin` and `command` before it, which
+ *  run the command they name and no function of that name (`builtin`): `builtin set -e`, `command
+ *  set -e`, `command -p set -e` and `command builtin set -e` each run `set -e`. `command -v` and
+ *  `command -V` only describe a command, and run nothing, so they are answered as they are. */
+function commandRun(words: readonly Word[]): { run: readonly Word[]; builtin: boolean } {
+  let run = words;
+  let builtin = false;
+  for (;;) {
+    const name = run[0] === undefined ? undefined : literalOf(run[0]);
+    if (name !== "builtin" && name !== "command") return { run, builtin };
+    let at = 1;
+    for (; at < run.length; at++) {
+      const word = run[at];
+      const option = word === undefined ? undefined : literalOf(word);
+      if (option === "--") {
+        at += 1;
+        break;
+      }
+      if (name === "builtin" || option === undefined || !/^-[pvV]+$/.test(option)) break;
+      if (/[vV]/.test(option)) return { run: words, builtin: false };
+    }
+    run = run.slice(at);
+    builtin = true;
+  }
+}
+
 /** The walk of one driver's start, from its top-level commands. */
 class Walk {
   /** Each function's steps, and the options after it, by its name, the frame's flags and the
@@ -105,6 +141,9 @@ class Walk {
   private readonly sourced = new Set<string>();
   /** The options as far as the walk has come (`Options`). */
   private state: Options = { errexit: false, errTrap: false };
+  /** How many shells of their own (`scoped`) the walk is in, so a `local -` is read only in the
+   *  shell of the function it is in. */
+  private depth = 0;
 
   constructor(
     private readonly reader: Reader,
@@ -122,8 +161,10 @@ class Walk {
       plain: true,
       substitution: false,
       through: undefined,
+      depth: 0,
     };
-    this.options("set", options);
+    // The first line's options are literal words, which `set` reads in full.
+    this.set(options);
     this.list(top, frame, out, undefined);
     return out;
   }
@@ -131,7 +172,9 @@ class Walk {
   /** Walks what runs in a shell of its own: the options it changes are not the walk's after it. */
   private scoped(walk: () => void): void {
     const before = this.state;
+    this.depth += 1;
     walk();
+    this.depth -= 1;
     this.state = before;
   }
 
@@ -148,13 +191,10 @@ class Walk {
    *  options after it are those of every turn joined with those before. */
   private turns<T>(frame: Frame, once: () => T): T {
     const before = this.state;
-    const sourced = new Set(this.sourced);
     const early = frame.early.length;
     let steps = once();
     const again = join(before, this.state);
     if (again.errexit !== before.errexit || again.errTrap !== before.errTrap) {
-      this.sourced.clear();
-      for (const lib of sourced) this.sourced.add(lib);
       frame.early.length = early;
       this.state = again;
       steps = once();
@@ -367,39 +407,163 @@ class Walk {
     });
   }
 
-  /** What a `set` or a `trap` command does to whether a failure ends the start. */
-  private options(name: string, args: readonly string[]): void {
-    if (name === "set") {
-      for (let i = 0; i < args.length; i++) {
-        const arg = args[i] ?? "";
-        if (arg === "--" || arg === "-") return;
-        if ((arg === "-o" || arg === "+o") && args[i + 1] === "errexit")
-          this.state = { ...this.state, errexit: arg === "-o" };
-        else if (/^-[A-Za-z]+$/.test(arg) && arg.includes("e"))
-          this.state = { ...this.state, errexit: true };
-        else if (/^\+[A-Za-z]+$/.test(arg) && arg.includes("e"))
-          this.state = { ...this.state, errexit: false };
+  /** A command on the start's path that the search cannot read (`Call`'s "unread"): one that may
+   *  turn errexit on or off, set a trap on ERR, or end the start, in a way the search does not
+   *  know. It counts wherever it runs before the removal, whatever decides that it runs. In a
+   *  command substitution it changes nothing of the start's, whose options there are its own. */
+  private unread(why: string, c: Command, frame: Frame, out: Step[], begins: string): void {
+    if (frame.substitution) return;
+    out.push(this.event("unread", why, c.at, frame, begins));
+  }
+
+  /** What `set` with the words `args` does to errexit, as bash reads them (`set -e`, `set +e`,
+   *  `set -o errexit`, `set -eo pipefail`): each word up to `--`, `-` or the first that is no
+   *  option, which begins the positional parameters, and the word after each `o` of an option, which
+   *  names an option. A word is its value (`literalOf`), or undefined where the search cannot read
+   *  it. Answers false, and changes nothing, where a word it must read is undefined. */
+  private set(args: readonly (string | undefined)[]): boolean {
+    let errexit = this.state.errexit;
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+      if (arg === undefined) return false;
+      if (arg === "--" || arg === "-" || !/^[-+][A-Za-z]+$/.test(arg)) break;
+      const on = arg.startsWith("-");
+      if (arg.includes("e")) errexit = on;
+      if (arg.includes("o") && i + 1 < args.length) {
+        i += 1;
+        const option = args[i];
+        if (option === undefined) return false;
+        if (option === "errexit") errexit = on;
       }
-      return;
     }
-    // `trap ACTION ... ERR`: an action that exits, or calls a function that always does, ends
-    // the start on each failure as `set -e` does; `trap - ERR` and `trap '' ERR` do not.
-    if (!args.slice(1).includes("ERR")) return;
-    const action = (args[0] ?? "").replace(/^(['"])(.*)\1$/s, "$2");
+    this.state = { ...this.state, errexit };
+    return true;
+  }
+
+  /** What `shopt` with the words `args` does, as bash reads them: `-s` or `-u` with `-o` sets or
+   *  unsets the options of `set -o` it names, `errexit` among them (`shopt -s -o errexit`, `shopt
+   *  -so errexit`, `shopt -os errexit`); without `-s` or `-u` it only prints or tests. Answers false
+   *  where a word it must read is undefined (`literalOf`), and where it turns on `expand_aliases`,
+   *  after which an alias may run any command the search reads by its name. */
+  private shopt(args: readonly (string | undefined)[]): boolean {
+    let on: boolean | undefined;
+    let setOptions = false;
+    let i = 0;
+    for (; i < args.length; i++) {
+      const arg = args[i];
+      if (arg === undefined) return false;
+      if (arg === "--") {
+        i += 1;
+        break;
+      }
+      if (!/^-[opqsu]+$/.test(arg)) break;
+      if (arg.includes("s")) on = true;
+      if (arg.includes("u")) on = false;
+      if (arg.includes("o")) setOptions = true;
+    }
+    const names = args.slice(i);
+    if (names.includes(undefined)) return false;
+    if (on === undefined) return true;
+    if (!setOptions) return !(on && names.includes("expand_aliases"));
+    if (names.includes("errexit")) this.state = { ...this.state, errexit: on };
+    return true;
+  }
+
+  /** What `trap` with the words `args` does to whether a failure ends the start: `trap ACTION ...
+   *  ERR` (bash reads `err` in any case) with an action that exits, or calls a function that always
+   *  does, ends the start on each failure as `set -e` does; `trap - ERR`, `trap '' ERR` and `trap
+   *  ERR` do not. Answers false where the action, or a signal it sets, is undefined (`literalOf`):
+   *  a signal the search cannot read may be ERR. */
+  private trap(args: readonly (string | undefined)[]): boolean {
+    const rest = args[0] === "--" ? args.slice(1) : args;
+    if (rest.length === 0 || /^-[lpP]$/.test(rest[0] ?? "")) return true;
+    const [action, signals] = rest.length === 1 ? ["-", rest] : [rest[0], rest.slice(1)];
+    if (signals.includes(undefined)) return false;
+    if (!signals.some((signal) => /^err$/i.test(signal ?? ""))) return true;
+    if (action === undefined) return false;
     const errTrap =
       /(^|[\s;&|])exit([\s;&|]|$)/.test(action) ||
       action
         .split(/[\s;&|]+/)
         .some((word) => this.reader.functions.has(word) && this.reader.reporter(word));
     this.state = { ...this.state, errTrap };
+    return true;
+  }
+
+  /** `eval WORDS`: bash joins the words with spaces and runs them as commands of this shell, so
+   *  where each word is literal (`literalOf`) the search reads those commands in place, as bash
+   *  parses them. It reads in place only commands that give no variable a value and define no
+   *  function, since what a check reads is judged from the scripts' own text
+   *  (`lib/sweep-order-inputs.ts`); every other eval is unread (`unread`). */
+  private evaluate(
+    c: Command,
+    words: readonly Word[],
+    frame: Frame,
+    out: Step[],
+    begins: string
+  ): void {
+    const shown = `eval ${words.map((w) => w.text).join(" ")}`;
+    const args = words.map(literalOf);
+    if (args.includes(undefined)) {
+      this.unread(`${shown}, whose words the search cannot read`, c, frame, out, begins);
+      return;
+    }
+    let script: Script;
+    try {
+      script = readScript(args.join(" "), c.at);
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      this.unread(`${shown}, which the search cannot parse (${why})`, c, frame, out, begins);
+      return;
+    }
+    let gives = script.definitions.length > 0 || script.libraries.length > 0;
+    eachCommand(script.top, null, (inner) => {
+      if (inner.k === "for" || inner.k === "arith" || inner.k === "function") gives = true;
+      if (inner.k !== "simple") return;
+      const name = nameOf(inner.words);
+      const assigning = ["read", "mapfile", "readarray", "printf", "getopts", "let", "export"];
+      if (
+        inner.assigns.length > 0 ||
+        (name !== undefined && (declarers[name] === true || assigning.includes(name)))
+      )
+        gives = true;
+      if (inner.words.some((w) => w.subs.length > 0)) gives = true;
+    });
+    if (gives) {
+      this.unread(
+        `${shown}, which gives a variable a value or defines a function, which the search does not follow`,
+        c,
+        frame,
+        out,
+        begins
+      );
+      return;
+    }
+    this.list(script.top, frame, out, begins);
   }
 
   private simple(c: Command & { k: "simple" }, frame: Frame, out: Step[], begins: string): void {
     const words = [...c.assigns.flatMap((a) => a.values), ...c.words];
     this.subs(words, frame, out, begins);
-    const name = nameOf(c.words);
+    // `builtin NAME` and `command NAME` run the command NAME and no function of that name, so the
+    // search reads the command they run; `command -v` and `command -V` only describe it.
+    const { run, builtin } = commandRun(c.words);
+    const first = run[0];
+    const name = nameOf(run) ?? (first === undefined ? undefined : literalOf(first));
     const self = [{ list: alone(c), ctx: frame.fn }];
     if (name === undefined) {
+      if (first !== undefined && !first.text.includes("/")) {
+        // A name bash knows only once it expands it may be `set`, `shopt`, `eval` or `source`; a
+        // path, which holds a `/`, runs a program, which changes no option of this shell.
+        this.unread(
+          `${c.words.map((w) => w.text).join(" ")}, a command named by an expansion, which may be a builtin that turns errexit on or off`,
+          c,
+          frame,
+          out,
+          begins
+        );
+        return;
+      }
       if (c.words.length > 0) {
         this.failure(c, c.words[0]?.text ?? "", self, frame, out, begins);
         return;
@@ -416,16 +580,24 @@ class Walk {
       out.push(this.event(name === sweep ? "removal" : "mark", name, c.at, frame, begins));
       return;
     }
-    const lib = sourcedLibrary(c);
-    if (lib !== undefined) {
-      const script = this.scripts.get(lib);
-      if (script === undefined || this.sourced.has(lib)) return;
+    const shown = run.map((w) => w.text).join(" ");
+    if (name === "." || name === "source") {
+      const lib = sourcedLibrary({ ...c, words: [...run] });
+      const script = lib === undefined ? undefined : this.scripts.get(lib);
+      if (script === undefined) {
+        // A file the search does not read may turn errexit on or off, or end the start.
+        this.unread(`${shown}, a file the search does not read`, c, frame, out, begins);
+        return;
+      }
+      if (lib === undefined || this.sourced.has(lib)) return;
+      // A library is read each time it is sourced, but not inside its own reading.
       this.sourced.add(lib);
       const through = frame.fn === null ? (frame.through ?? c.at) : frame.through;
       this.list(script.top, { ...frame, through }, out, undefined);
+      this.sourced.delete(lib);
       return;
     }
-    const status = c.words[1]?.text;
+    const status = run[1]?.text;
     if (name === "exit") {
       if (status !== "0") out.push(this.event("refusal", name, c.at, frame, begins));
       else frame.early.push(...frame.local);
@@ -437,14 +609,53 @@ class Walk {
       frame.returns?.push(this.state);
       return;
     }
-    const definitions = this.reader.functions.get(name);
+    const definitions = builtin ? undefined : this.reader.functions.get(name);
     if (definitions === undefined) {
-      if (name === "set" || name === "trap") {
-        this.options(
-          name,
-          c.words.slice(1).map((w) => w.text)
+      const args = run.slice(1).map(literalOf);
+      const read =
+        name === "set"
+          ? this.set
+          : name === "shopt"
+            ? this.shopt
+            : name === "trap"
+              ? this.trap
+              : undefined;
+      if (read !== undefined) {
+        if (!read.call(this, args)) {
+          const why = args.includes(undefined)
+            ? "whose words the search cannot read"
+            : "which turns on aliases, which the search does not read";
+          this.unread(`${shown}, ${why}`, c, frame, out, begins);
+        }
+        return;
+      }
+      if (name === "eval") {
+        this.evaluate(c, run.slice(1), frame, out, begins);
+        return;
+      }
+      if (name === "enable") {
+        // `enable -n set` turns the builtin off, and a script's `set` then runs another program.
+        this.unread(
+          `${shown}, which may turn off a builtin the search reads`,
+          c,
+          frame,
+          out,
+          begins
         );
         return;
+      }
+      // `local -` makes the options of the function it runs in its own: bash gives them back when
+      // the function returns. The first in the function's own shell counts, on every path where
+      // no check and no `return` comes before it.
+      if (
+        name === "local" &&
+        args.includes("-") &&
+        frame.dash !== undefined &&
+        frame.dash.saved === undefined &&
+        frame.depth === this.depth
+      ) {
+        frame.dash.saved = this.state;
+        frame.dash.sure = frame.local.length === 0 && frame.early.length === 0;
       }
       // `local`, `export` and the like give their own status, not that of what they assign.
       if (declarers[name] !== true) this.failure(c, name, self, frame, out, begins);
@@ -465,7 +676,7 @@ class Walk {
         this.state = entry;
         const steps: Step[] = [];
         const returns: Options[] = [];
-        const own = {
+        const own: Frame = {
           fn: name,
           local: [],
           early: [],
@@ -473,6 +684,8 @@ class Walk {
           substitution: frame.substitution,
           through: undefined,
           returns,
+          depth: this.depth,
+          dash: { saved: undefined, sure: false },
         };
         // A body in braces runs in the caller's shell, and one in parentheses in a subshell of
         // its own, whose options are not the caller's after it.
@@ -480,7 +693,17 @@ class Walk {
         if (body.k !== "group") this.list(alone(body), own, steps, undefined);
         else if (body.subshell) this.scoped(() => this.list(body.body, own, steps, undefined));
         else this.list(body.body, own, steps, undefined);
-        exits.push(returns.reduce(join, this.state));
+        const end = returns.reduce(join, this.state);
+        const saved = own.dash?.saved;
+        // Where a `local -` ran, errexit is what it was then; where it may have run, either.
+        exits.push(
+          saved === undefined
+            ? end
+            : {
+                ...end,
+                errexit: own.dash?.sure === true ? saved.errexit : end.errexit || saved.errexit,
+              }
+        );
         return steps;
       });
       inner = {

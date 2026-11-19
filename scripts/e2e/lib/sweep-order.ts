@@ -34,9 +34,12 @@
  * The rule. A check reads only the start's inputs where each of its commands is `[`, `[[` or
  * `test` with no test of a file, `command -v`, `echo`, `printf`, `:`, `true`, `false`, `dirname`,
  * `basename`, `pwd`, `compgen`, `cat` with no operand, a builtin that sets a variable or a
- * parameter, or `cd`, `.` or `source` of a path the start's inputs name (one that starts with an
- * expansion of such words, as `"$(dirname "$0")/../.."` and `"$root/scripts"` do), with no
- * redirection but to /dev/null or to a descriptor, and where each variable it reads is an input:
+ * parameter, or `cd`, `pushd`, `.` or `source` of a place of the start's own checkout, which bash
+ * runs it from: a path made only of the script's own path (`$0`, `BASH_SOURCE`) through `dirname`,
+ * `cd … && pwd` and variables that hold only such a place, as `"$(dirname "$0")/../.."` and
+ * `"$root/scripts"` are. A `cd` to a path that another input names (`cd "$LOCK.free"`) fails where
+ * a dead run took that directory away, and so reads what a dead run left. Each command has no
+ * redirection but to /dev/null or to a descriptor, and each variable it reads is an input:
  * one that no assignment in the driver or its libraries gives the output of a command that reads
  * more (a command substitution, `read`, `mapfile`, `printf -v`, a `for` over such words, `$?`, `$!`
  * or an indirect `${!name}`), or a positional parameter that every call gives such words. So a
@@ -161,8 +164,9 @@ export function sweepOrder(root: string): Census {
   const findings: Finding[] = [];
   const unread = new Map<string, Unread>();
   const unreadable = (script: string, reason: string, matters: boolean) => {
-    const known = unread.get(script);
-    unread.set(script, { script, reason, matters: matters || (known?.matters ?? false) });
+    const key = `${script}\n${reason}`;
+    const known = unread.get(key);
+    unread.set(key, { script, reason, matters: matters || (known?.matters ?? false) });
   };
   for (const shown of shellScripts(root)) {
     const own = read(shown);
@@ -196,8 +200,12 @@ export function sweepOrder(root: string): Census {
     const order = orderOf(own, scripts, functions);
     if (order === undefined) continue;
     drivers.push({ driver: shown, sweep: order.sweep, calls: order.calls });
-    if (order.before.length > 0)
-      findings.push({ driver: shown, before: order.before, sweep: order.sweep });
+    // A command before the removal that the search cannot read leaves the driver unread: what it
+    // does to errexit, or whether it ends the start, is not known.
+    for (const c of order.before.filter((each) => each.kind === "unread"))
+      unreadable(shown, `${c.at}: ${c.name}, before the removal at ${order.sweep}`, true);
+    const before = order.before.filter((each) => each.kind !== "unread");
+    if (before.length > 0) findings.push({ driver: shown, before, sweep: order.sweep });
   }
   return { drivers, findings, unread: [...unread.values()] };
 }
@@ -218,12 +226,12 @@ if (import.meta.main) {
     }
   }
   for (const u of unread) console.log(`UNREAD ${u.script}: ${u.reason}`);
-  const blind = unread.filter((u) => u.matters);
+  const blind = [...new Set(unread.filter((u) => u.matters).map((u) => u.script))];
   if (drivers.length === 0 || blind.length > 0) {
     console.log(
       drivers.length === 0
         ? `UNKNOWN: no script under ${root} reaches ${sweep}, so the search read no driver`
-        : `UNKNOWN: the search could not parse ${blind.map((u) => u.script).join(", ")}, which a driver is or calls`
+        : `UNKNOWN: the search could not read ${blind.join(", ")}, which a driver is or calls`
     );
     process.exit(2);
   }

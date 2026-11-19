@@ -96,9 +96,12 @@ function pathsIn(argument: string): string[] {
 
 /** How long one path that a process names may go unanswered while a start reads whether it leads
  *  into a directory (`holdersOf`): a stat of a path on a local file system answers within
- *  microseconds, and one on a network or FUSE mount whose server hangs never answers, and would
- *  hold the start in the kernel. Past this the start cannot judge that process, and leaves the
- *  directory. */
+ *  microseconds, a read of 13,244 paths took under 0.5 s at a load of 270 on a shared Linux machine
+ *  on 2026-11-19, and a stat of a path on a network or FUSE mount whose server hangs never answers,
+ *  and would hold the start in the kernel. Past this the start cannot judge a process that names
+ *  that path, or a path under it, and leaves the directory: since each directory is read before
+ *  the paths under it, and none under one that did not answer is asked, a mount that hangs costs
+ *  this bound once, however many of its paths the processes name (`identities`). */
 export const statMs = 10_000;
 /** How long the child that reads those paths (`StatReader`) may take to start: a `bun` child took
  *  more than 180 s once to start its sweep on a shared Linux machine under a load of 1,217, on
@@ -123,18 +126,37 @@ for (const path of paths) {
 }
 `;
 
-/** The program that reads where each path a process names leads, with its arguments, run as a
- *  child of the start: it reads and writes as `statScript` does. A start runs `statReader`; a row
- *  runs a stand-in that never answers one path, as a stat on a mount whose server hangs never
- *  does, to see the start's bound on it (`identities`). */
-export type StatReader = readonly [program: string, ...args: string[]];
+/** How a start reads where each path a process names leads: the program that reads, with its
+ *  arguments, run as a child of the start, which reads and writes as `statScript` does (`run`);
+ *  and the mount table, a file in the format of `/proc/self/mountinfo`, by which the start puts
+ *  the paths into the groups it reads at the same time (`mounts`, `topOf`). A start runs
+ *  `statReader`; a row runs a stand-in program that never answers one path, as a stat on a mount
+ *  whose server hangs never does, beside a mount table that says that path is on such a mount, to
+ *  see the start's bound on it (`identities`). */
+export interface StatReader {
+  readonly run: readonly [program: string, ...args: string[]];
+  readonly mounts: string;
+}
 
-/** The start's own `StatReader`: the runtime of this process, Bun or Node, with `statScript`. */
-export const statReader: StatReader = [process.execPath, "-e", statScript];
+/** The start's own `StatReader`: the runtime of this process, Bun or Node, with `statScript`, and
+ *  the kernel's mount table of this process. */
+export const statReader: StatReader = {
+  run: [process.execPath, "-e", statScript],
+  mounts: "/proc/self/mountinfo",
+};
 
-/** Each path that answered no stat within `statMs` in this process: it is not asked again, since
- *  a mount that hangs holds each later stat of it too. */
+/** What this module's own lines are prefixed with, as every starter in `e2e/` names itself. */
+const named = "e2e/harness-postgres-processes.ts";
+
+/** Each path that answered no stat within `statMs` in this process: it is not asked again, and no
+ *  path under it is, since a mount that hangs holds each later stat of it, and of what is on it. */
 const unanswered = new Set<string>();
+
+/** Whether `path` is one that answered no stat in this process, or is under one (`unanswered`). */
+function underUnanswered(path: string): boolean {
+  for (const hung of unanswered) if (path === hung || path.startsWith(`${hung}/`)) return true;
+  return false;
+}
 
 /** What one child (`StatReader`) read of the paths it was given, in their order: whether it
  *  started, and where each path it read leads, "<dev>:<ino>", or null where it names nothing. */
@@ -145,11 +167,17 @@ interface ChildRead {
 
 /** What one child that runs `reader` read of `paths` before it ended or was ended (`ChildRead`).
  *  It is ended where it has not started within `statStartMs`, or has read no next path within
- *  `statMs`, and nothing waits for a child that the kernel still holds after SIGKILL. */
-function statInChild(paths: readonly string[], reader: StatReader): Promise<ChildRead> {
+ *  `statMs`, and nothing waits for a child that the kernel still holds after SIGKILL. The child is
+ *  told which read of this process, and which of its top paths, it serves (`HOLDER_READ`, `read`
+ *  and `top` of `identities`), which the start's own reader ignores and a row's count of reads
+ *  reads. */
+function statInChild(paths: readonly string[], reader: StatReader, of: string): Promise<ChildRead> {
   const { promise, resolve } = Promise.withResolvers<ChildRead>();
-  const [program, ...args] = reader;
-  const child = spawn(program, args, { stdio: ["pipe", "pipe", "ignore"] });
+  const [program, ...args] = reader.run;
+  const child = spawn(program, args, {
+    stdio: ["pipe", "pipe", "ignore"],
+    env: { ...process.env, HOLDER_READ: of },
+  });
   const read: (string | null)[] = [];
   let started = false;
   let pending = "";
@@ -187,34 +215,204 @@ function statInChild(paths: readonly string[], reader: StatReader): Promise<Chil
   return promise;
 }
 
+/** One mount of a mount table (`StatReader.mounts`): its mount point, with the octal escapes of its
+ *  spaces and tabs read, and its filesystem type, or undefined where the line holds none. */
+interface Mount {
+  readonly point: string;
+  readonly type: string | undefined;
+}
+
+/** The mounts of the table at `file`, a file in the format of `/proc/self/mountinfo` ("ID PARENT
+ *  MAJOR:MINOR ROOT POINT OPTIONS [FIELDS...] - TYPE SOURCE OPTIONS"); none where it cannot be
+ *  read. */
+function mountsOf(file: string): Mount[] {
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return [];
+  }
+  return text.split("\n").flatMap((line) => {
+    const words = line.split(" ");
+    const point = words[4];
+    if (point === undefined || point === "") return [];
+    const dash = words.indexOf("-", 6);
+    return [
+      {
+        point: point.replace(/\\([0-7]{3})/g, (_, code: string) =>
+          String.fromCharCode(Number.parseInt(code, 8))
+        ),
+        type: dash === -1 ? undefined : words[dash + 1],
+      },
+    ];
+  });
+}
+
+/** The filesystems whose `stat` the kernel answers itself, from a disk the machine holds or from its
+ *  own memory, with no server or daemon that can hang: a closed list. A mount of any other type, a
+ *  network or FUSE mount (`nfs`, `cifs`, `fuse.*`, `9p`, `ceph`, `virtiofs`), an automount
+ *  (`autofs`, which asks a daemon), or one whose type the table does not give, is read by a reader
+ *  of its own (`topOf`): a type missing here costs one reader more, never a path left unread. */
+const kernelAnswered: Record<string, true> = {
+  ext2: true,
+  ext3: true,
+  ext4: true,
+  xfs: true,
+  btrfs: true,
+  vfat: true,
+  squashfs: true,
+  tmpfs: true,
+  ramfs: true,
+  overlay: true,
+  proc: true,
+  sysfs: true,
+  devtmpfs: true,
+  devpts: true,
+  cgroup: true,
+  cgroup2: true,
+  mqueue: true,
+  hugetlbfs: true,
+  securityfs: true,
+  debugfs: true,
+  tracefs: true,
+  pstore: true,
+  bpf: true,
+  configfs: true,
+  fusectl: true,
+  efivarfs: true,
+  nsfs: true,
+};
+
+/** The top path of the paths a start reads on the filesystems the kernel answers itself
+ *  (`kernelAnswered`): one reader reads them all. */
+const local = "the machine's own filesystems";
+
+/** The top path `path` is read under (`identities`): `local` where the deepest mount it is on is of
+ *  a type the kernel answers itself; that mount's point where it is of another type or of no type
+ *  the table gives; and, where the table names no mount of it, as where it cannot be read, its first
+ *  component, `/` alone for `/`. Two mounts that may hang are two top paths, and one that hangs
+ *  holds the stat of no other. `mounts` holds each mount by its point, the last the table gives for
+ *  a point, which is mounted over those before it; the path and each directory above it are looked
+ *  up there in turn, the deepest first. */
+function topOf(path: string, mounts: ReadonlyMap<string, Mount>): string {
+  for (let at = path; ; at = dirname(at)) {
+    const on = mounts.get(at);
+    if (on !== undefined) {
+      return on.type !== undefined && kernelAnswered[on.type] === true ? local : on.point;
+    }
+    if (dirname(at) === at) return /^\/[^/]+/.exec(path)?.[0] ?? path;
+  }
+}
+
+/** How many reads of where paths lead this process has made, which numbers each (`identities`). */
+let reads = 0;
+
+/** Each path a holder read of this process did not reach, since the read of the machine's own
+ *  filesystems stopped at a path before it that answered no stat (`identities`), with that path. */
+const notReached = new Map<string, string>();
+
+/** At most how many of the paths that read left unread a line names, before it counts the rest. */
+const namedLeft = 5;
+
 /** Where each of `paths` leads, as children of this process that run `reader` read them
- *  (`statInChild`): its device and inode, "<dev>:<ino>", or null where it names nothing. A path
- *  that answered no stat within `statMs`, here or earlier in this process (`unanswered`), has no
- *  entry; each read after one is read by a child of its own. A child that did not start leaves the
- *  paths it was given without an entry too, and they are asked again at the next read. */
+ *  (`statInChild`): its device and inode, "<dev>:<ino>", or null where it names nothing. The paths
+ *  are grouped by the mount they are on (`topOf`, by the mount table `reader.mounts`): the paths of
+ *  the filesystems the kernel answers itself in one group, and those of each other mount in one of
+ *  its own. Each group is read by children of its own, and the children of the groups are started
+ *  at the same time, so mounts that hang run out their bounds together: two that hang cost one
+ *  bound, not two, and a path of a mount that answers is read at once. Within a group each
+ *  directory is read before the paths under it. A path that answered no stat within `statMs`, or is
+ *  under one, here or earlier in this process (`unanswered`), has no entry and is not asked: where a
+ *  child waits on a path past that bound, the path joins `unanswered`, and a line names it at once,
+ *  with `directory`, whose holders the read is for. On another mount a child of its own then reads
+ *  the paths of that mount after it that are not under it; on the machine's own filesystems, which
+ *  hang only where the kernel does, the read stops there, and leaves the paths after it unread
+ *  (`notReached`), and the line names them. A child that did not start leaves the paths it was
+ *  given without an entry, and they are asked again at the next read. */
 async function identities(
   paths: readonly string[],
-  reader: StatReader
+  reader: StatReader,
+  directory: string
 ): Promise<Map<string, string | null>> {
   const found = new Map<string, string | null>();
-  let rest = paths.filter((path) => !unanswered.has(path));
-  while (rest.length > 0) {
-    const { started, read } = await statInChild(rest, reader);
-    for (const [at, identity] of read.entries()) found.set(rest[at] ?? "", identity);
-    const hung = rest[read.length];
-    if (!started || hung === undefined) break;
-    unanswered.add(hung);
-    rest = rest.slice(read.length + 1).filter((path) => !unanswered.has(path));
+  // How deep a path is, its count of `/`, read once for each path: a read sorts about 13,000.
+  const depths = new Map<string, number>();
+  const depth = (path: string): number => {
+    let count = depths.get(path);
+    if (count === undefined) {
+      count = 0;
+      for (let at = path.indexOf("/"); at !== -1; at = path.indexOf("/", at + 1)) count += 1;
+      depths.set(path, count);
+    }
+    return count;
+  };
+  const mounts = new Map(mountsOf(reader.mounts).map((mount) => [mount.point, mount]));
+  const tops = new Map<string, string[]>();
+  for (const path of paths) {
+    if (underUnanswered(path)) continue;
+    const top = topOf(path, mounts);
+    const those = tops.get(top);
+    if (those === undefined) tops.set(top, [path]);
+    else those.push(path);
   }
+  reads += 1;
+  const read = reads;
+  notReached.clear();
+  await Promise.all(
+    [...tops].map(async ([top, those]) => {
+      let rest = those.sort(
+        (first, second) =>
+          depth(first) - depth(second) || (first < second ? -1 : first > second ? 1 : 0)
+      );
+      while (rest.length > 0) {
+        const { started, read: answers } = await statInChild(rest, reader, `${read} ${top}`);
+        for (const [at, identity] of answers.entries()) found.set(rest[at] ?? "", identity);
+        const hung = rest[answers.length];
+        if (!started || hung === undefined) break;
+        unanswered.add(hung);
+        const after = rest.slice(answers.length + 1).filter((path) => !underUnanswered(path));
+        const stops = top === local && after.length > 0;
+        if (stops) for (const path of after) notReached.set(path, hung);
+        const left = stops
+          ? `, and reads none of the ${after.length} paths of the machine's own filesystems after it: ${after.slice(0, namedLeft).join(", ")}${after.length > namedLeft ? ` and ${after.length - namedLeft} more` : ""}`
+          : "";
+        console.error(
+          `${named}: the read of what holds ${directory} waits no longer on ${hung}, which answered no stat within ${statMs / 1000} s, nor asks a path under it${left}: a process that names one may hold ${directory}`
+        );
+        rest = stops ? [] : after;
+      }
+    })
+  );
   return found;
 }
 
 /** What `holdersOf` read of a directory: each process that holds it, "<program> <pid>", and each
- *  process it cannot judge, since a path that process names (`path`) answered no stat within
- *  `statMs`. */
+ *  process it cannot judge, since a path that process names (`path`) has no answer of the read,
+ *  with why (`whyUnread`). */
 export interface Holding {
   readonly holders: readonly string[];
-  readonly unread: readonly { readonly process: string; readonly path: string }[];
+  readonly unread: readonly {
+    readonly process: string;
+    readonly path: string;
+    readonly why: string;
+  }[];
+}
+
+/** Why `path` has no answer of a holder read, as a line says it: it answered no stat within
+ *  `statMs`, or a directory above it did (`unanswered`); the read of the machine's own filesystems
+ *  stopped at a path before it (`notReached`); or the reader that was to read it did not start
+ *  within `statStartMs`. */
+function whyUnread(path: string): string {
+  const hung = `answered no stat within ${statMs / 1000} s`;
+  for (let at = path; ; at = dirname(at)) {
+    if (unanswered.has(at)) return at === path ? `which ${hung}` : `under ${at}, which ${hung}`;
+    const before = notReached.get(at);
+    if (before !== undefined)
+      return `which the read did not reach, as ${before}, before it, ${hung}`;
+    if (dirname(at) === at) {
+      return `which no reader read, as the reader did not start within ${statStartMs / 1000} s`;
+    }
+  }
 }
 
 /** Each process of the user `uid` that still holds `directory`, a directory of a dead stack's
@@ -232,8 +430,8 @@ export interface Holding {
  *  itself, and neither it nor a process it started (its parent pid) is counted. A process that
  *  ends while it is read, or whose links this user may not read, holds nothing here, and nothing
  *  holds a directory that is gone. `/proc` is read here; where each path leads is read in a child
- *  that runs `reader` (`StatReader`), each path within `statMs` (`identities`), and a process none
- *  of whose paths leads into the directory, but one of whose paths did not answer, is one the
+ *  that runs `reader` (`StatReader`), all of them within `statMs` (`identities`), and a process
+ *  none of whose paths leads into the directory, but one of whose paths has no answer, is one the
  *  start cannot judge (`unread`). Answers each holder and each process it cannot judge, in pid
  *  order (`Holding`). */
 export async function holdersOf(
@@ -297,7 +495,7 @@ export async function holdersOf(
       }
     }
   }
-  const leads = await identities([...every], reader);
+  const leads = await identities([...every], reader, directory);
   // Whether `path` is `directory` or in it, or undefined where a stat of it or of a directory
   // above it did not answer and none above it is the directory.
   const known = new Map<string, boolean | undefined>();
@@ -316,7 +514,7 @@ export async function holdersOf(
     return answer;
   };
   const holders: string[] = [];
-  const unread: { process: string; path: string }[] = [];
+  const unread: { process: string; path: string; why: string }[] = [];
   for (const { process, spelt, paths } of named) {
     const judged = paths.map(inside);
     if (spelt || judged.includes(true)) {
@@ -324,7 +522,7 @@ export async function holdersOf(
       continue;
     }
     const path = paths[judged.indexOf(undefined)];
-    if (path !== undefined) unread.push({ process, path });
+    if (path !== undefined) unread.push({ process, path, why: whyUnread(path) });
   }
   return { holders, unread };
 }

@@ -117,11 +117,13 @@ import {
   startStack,
   startTimeOf,
   startUnjudged,
+  stopCluster,
   stopPool,
   stopStack,
   type Unjudged,
   volumesOf,
 } from "./harness-postgres-leftover-fixtures";
+import { rowMs, rowOf, type Waits } from "./harness-postgres-removal-fixtures";
 import { type HostileMark, hostileMarkKept, plantHostileMark } from "./planted-marks";
 import { requirePostgres, skipsWithoutPostgres } from "./postgres-provider";
 
@@ -164,9 +166,20 @@ for (const provider of [
   { title: "image provider", variable: pgImageVariable, skip: skipImage },
   { title: "binaries provider", variable: pgBinVariable, skip: skipBinaries },
 ] as const) {
+  /** What the row waits for (`Waits`): the start of three stacks at once, each at most `stackMs`,
+   *  the image provider's third of them a container the row makes (`makes`); the third start, a
+   *  whole start of the pool waited for at most `childMs`; and the two stops, each of at most
+   *  `childMs`. */
+  const waits: Waits = {
+    children: 0,
+    reads: 0,
+    makes: provider.variable === pgImageVariable ? 1 : 0,
+    bounds: [stackMs, childMs, childMs, childMs],
+  };
   test.skipIf(provider.skip)(
     `${provider.title}: v-no-leftover-postgres: the next start removes the Postgres of a stack killed hard, with its data and socket directories, leaves the Postgres of a stack that runs, leaves and names one whose stack it cannot judge, and runs no program a mark names`,
     async () => {
+      const row = rowOf(waits);
       const named = requirePostgres([provider.variable]);
       const tmp = mkdtempSync(join(tmpdir(), "leftover-"));
       const env = childEnv(tmp, named);
@@ -195,7 +208,7 @@ for (const provider of [
         const [a, b, c] = await Promise.allSettled([
           startStack(env, runs.killed),
           startStack(env, runs.kept),
-          startUnjudged(env, named, runs.unjudged, beside),
+          startUnjudged(row, env, named, runs.unjudged, beside),
         ]);
         killed = a.status === "fulfilled" ? a.value : undefined;
         kept = b.status === "fulfilled" ? b.value : undefined;
@@ -205,15 +218,17 @@ for (const provider of [
             result.status === "rejected" ? [result.reason] : []
           )[0];
         }
-        expect([answers(killed.url), answers(kept.url), answers(unjudged.url)]).toEqual([
-          true,
-          true,
-          true,
-        ]);
+        expect(
+          await Promise.all([
+            answers(row, killed.url),
+            answers(row, kept.url),
+            answers(row, unjudged.url),
+          ])
+        ).toEqual([true, true, true]);
         // The image's data volume, where the killed stack's data is; the binaries provider's is
         // its data directory.
         const killedVolumes =
-          provider.variable === pgImageVariable ? volumesOf(containers.killed) : [];
+          provider.variable === pgImageVariable ? await volumesOf(row, containers.killed) : [];
         if (provider.variable === pgImageVariable) expect(killedVolumes.length).toBeGreaterThan(0);
         // The binaries provider's postmasters of the killed stack, by pid and start: a failed
         // connection reads the same whether the postmaster ended or only its socket directory went.
@@ -225,16 +240,20 @@ for (const provider of [
         kill(killed.child);
         expect(await exited(killed.child, childMs, "the killed stack")).toBe(137);
         // The kill ran no stop: the killed stack's Postgres still serves.
-        expect(answers(killed.url)).toBe(true);
+        expect(await answers(row, killed.url)).toBe(true);
 
         third = await startServingPool(env);
         const lines = third.child.output.stderr;
 
         // The killed stack's Postgres is gone, with its data and its socket directory.
-        expect(answers(killed.url)).toBe(false);
+        expect(await answers(row, killed.url)).toBe(false);
         if (provider.variable === pgImageVariable) {
-          expect(containerExists(containers.killed)).toBe(false);
-          expect(killedVolumes.filter((volume) => exists("volume", volume))).toEqual([]);
+          expect(await containerExists(row, containers.killed)).toBe(false);
+          const volumesLeft: string[] = [];
+          for (const volume of killedVolumes) {
+            if (await exists(row, "volume", volume)) volumesLeft.push(volume);
+          }
+          expect(volumesLeft).toEqual([]);
           expect(existsSync(dirname(killed.address))).toBe(false);
           // Each line that names it says what this start did of it (`removalLines`): another
           // start of the machine may have removed the container first.
@@ -249,13 +268,15 @@ for (const provider of [
         }
         // The three stacks serve: the one that runs, with its data and its socket directory, the
         // one whose stack the start cannot judge, and the third start's own.
-        expect([answers(kept.url), answers(unjudged.url), answers(third.url)]).toEqual([
-          true,
-          true,
-          true,
-        ]);
+        expect(
+          await Promise.all([
+            answers(row, kept.url),
+            answers(row, unjudged.url),
+            answers(row, third.url),
+          ])
+        ).toEqual([true, true, true]);
         if (provider.variable === pgImageVariable) {
-          expect(containerExists(containers.kept)).toBe(true);
+          expect(await containerExists(row, containers.kept)).toBe(true);
         } else {
           expect(existsSync(join(kept.dir, "worker-0", "pgdata"))).toBe(true);
         }
@@ -271,20 +292,16 @@ for (const provider of [
         await stopStack(kept);
         await removeAll(
           () => unjudged?.stop(),
-          () => removeLeft(killed, named),
-          () => removeLeft(kept, named),
+          () => removeLeft(row, killed, named),
+          () => removeLeft(row, kept, named),
           () => rmSync(tmp, { recursive: true, force: true })
         );
       }
     },
-    // The row drives four starts of a Postgres it starts and stops itself, three at once, each an
-    // initdb or a container's start and a readiness wait of at most `stackMs`, then the third
-    // start, a whole start of the pool waited for at most `childMs`, which stops a postmaster or
-    // removes a container before it starts its own, and the stops, each of at most `childMs`. On
-    // a shared Linux machine under a load of about 300, on 2026-11-17, the image row read 4.4 to
-    // 10.6 s and the binaries row 2.1 to 3.0 s with two starts at once; 2,400 s holds the three
-    // waits and the stops at their bounds.
-    2_400_000
+    // What the row waits for, summed by the fixtures' program (`rowMs`): three stacks' starts at
+    // once, the third start and the two stops, each at its bound, and the image provider's one
+    // container the row makes itself.
+    rowMs(waits)
   );
 }
 
@@ -351,9 +368,15 @@ test.skipIf(skipBinaries)(
   300_000
 );
 
+/** What the next row waits for (`Waits`): two starts of the image provider in this process, the
+ *  first a container's create and start and a readiness wait that gives up at 120 s, the second a
+ *  `docker create` refused at once, and the first's stop. It makes no container itself. */
+const twoStarts: Waits = { children: 0, reads: 0, bounds: [240_000] };
+
 test.skipIf(skipImage)(
   "image provider: a stack whose start fails removes no container of another stack, though both stacks have one run name, as two stacks of one pid in two PID namespaces once had",
   async () => {
+    const row = rowOf(twoStarts);
     const { value: image } = requirePostgres([pgImageVariable]);
     const tmp = mkdtempSync(join(tmpdir(), "leftover-"));
     const env = childEnv(tmp, { variable: pgImageVariable, value: image });
@@ -371,7 +394,7 @@ test.skipIf(skipImage)(
         return provider.start(0);
       };
       first = await start("a-");
-      expect(answers(first.url)).toBe(true);
+      expect(await answers(row, first.url)).toBe(true);
 
       let failed = "";
       await start("b-").then(
@@ -383,22 +406,28 @@ test.skipIf(skipImage)(
       expect(failed).toContain("did not start");
 
       // The failed start removed nothing of the first stack's: its container still serves.
-      expect(answers(first.url)).toBe(true);
+      expect(await answers(row, first.url)).toBe(true);
     } finally {
       await first?.stop().catch(() => {});
-      for (const dir of dirs) await removeContainersOf(dir);
+      for (const dir of dirs) await removeContainersOf(row, dir);
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // The row drives two starts of the image provider in this process, the first a container's
-  // create and start and a readiness wait that gives up at 120 s, the second a `docker create`
-  // refused at once, and the first's stop; 300 s leaves the wait and a slow Docker daemon room.
-  300_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): the two starts, the wait
+  // and the stop in 240 s, which leaves the wait and a slow Docker daemon room.
+  rowMs(twoStarts)
 );
+
+/** What the next row waits for (`Waits`): seven `docker create`s of the row's own (`makes`), one
+ *  start of the pool, which lists the containers and removes one, and the removal of the rest.
+ *  Besides the creates it read 3.1 to 5.4 s on a shared Linux machine under a load of about 300,
+ *  on 2026-11-17; 240 s leaves a slow Docker daemon room for the rest. */
+const sevenPlanted: Waits = { children: 0, reads: 0, makes: 7, bounds: [240_000] };
 
 test.skipIf(skipImage)(
   "image provider: a start leaves the container of a stack that runs, of another boot, PID namespace or time namespace or of no /proc, and one whose label it cannot read, and names each one it left; the run directory sweep removes the socket directory of a container that is gone, and of no container Docker lists",
   async () => {
+    const row = rowOf(sevenPlanted);
     const { value: image } = requirePostgres([pgImageVariable]);
     const who = owners();
     const tmp = mkdtempSync(join(tmpdir(), "leftover-"));
@@ -410,6 +439,7 @@ test.skipIf(skipImage)(
     try {
       const leave = (index: number, owner: Owner | null, label?: string) =>
         leaveContainer(
+          row,
           image,
           made,
           run,
@@ -418,13 +448,13 @@ test.skipIf(skipImage)(
           mkdtempSync(join(run, `pg-${index}-`)),
           label
         );
-      const runs = leave(0, who.runs);
-      const otherBoot = leave(1, who.otherBoot);
-      const otherNamespace = leave(2, who.otherNamespace);
-      const gone = leaveContainer(image, made, run, 3, who.gone, goneSockets);
-      const noProc = leave(4, who.noProc);
-      const notAMark = leave(5, who.gone, "{");
-      const otherTime = leave(6, who.otherTime);
+      const runs = await leave(0, who.runs);
+      const otherBoot = await leave(1, who.otherBoot);
+      const otherNamespace = await leave(2, who.otherNamespace);
+      const gone = await leaveContainer(row, image, made, run, 3, who.gone, goneSockets);
+      const noProc = await leave(4, who.noProc);
+      const notAMark = await leave(5, who.gone, "{");
+      const otherTime = await leave(6, who.otherTime);
       // The run directory's marks of two containers: the one whose label is no mark, which Docker
       // still lists, and one Docker no longer lists, both of a gone stack.
       const notAMarkFile = leaveContainerMark(run, 5, who.gone, notAMark.sockets, notAMark.name);
@@ -437,13 +467,16 @@ test.skipIf(skipImage)(
 
       // The one container whose stack is gone goes, with its socket directory, removed by this
       // start or by another start on the machine, whose line this start's line names.
-      expect([containerExists(gone.name), existsSync(gone.sockets)]).toEqual([false, false]);
+      expect([await containerExists(row, gone.name), existsSync(gone.sockets)]).toEqual([
+        false,
+        false,
+      ]);
       removalLines(start.stderr, gone.id);
       // Every other one stays, with its socket directory.
       for (const kept of [runs, otherBoot, otherNamespace, noProc, notAMark, otherTime]) {
         expect({
           name: kept.name,
-          left: [containerExists(kept.name), existsSync(kept.sockets)],
+          left: [await containerExists(row, kept.name), existsSync(kept.sockets)],
         }).toEqual({ name: kept.name, left: [true, true] });
       }
       expect(existsSync(notAMarkFile)).toBe(true);
@@ -469,10 +502,9 @@ test.skipIf(skipImage)(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // The row drives six `docker create`s, one start of the pool, which lists the containers and
-  // removes one, and the removal of the rest. It read 3.1 to 5.4 s on a shared Linux machine
-  // under a load of about 300, on 2026-11-17; 300 s leaves a slow Docker daemon room.
-  300_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): its seven creates, the
+  // start of the pool and the removals.
+  rowMs(sevenPlanted)
 );
 
 test.skipIf(skipBinaries)(
@@ -540,6 +572,11 @@ test.skipIf(skipBinaries)(
   300_000
 );
 
+/** What each of the next rows waits for (`Waits`): one stack's Postgres start, an initdb and a
+ *  readiness wait of at most `stackMs`, its kill, one start of the pool, waited for at most
+ *  `childMs`, and the stop of the postmaster it left, which 240 s holds. */
+const renamedRun: Waits = { children: 0, reads: 0, bounds: [stackMs, childMs, 240_000] };
+
 // A developer may rename the run directory of a stack killed hard, to keep its logs. Its postmaster
 // runs on from the new name, and the marks there name the old one, so no start can trust them: the
 // next start leaves that Postgres and names it on a line, whether the new name is one the pool
@@ -549,6 +586,7 @@ for (const renamed of ["kept-run", `${runDirectoryPrefix}kept`] as const) {
   test.skipIf(skipBinaries)(
     `binaries provider: the next start leaves and names the Postgres of a stack killed hard whose run directory was renamed to ${renamed}`,
     async () => {
+      const row = rowOf(renamedRun);
       const named = requirePostgres([pgBinVariable]);
       const tmp = mkdtempSync(join(tmpdir(), "leftover-"));
       const env = childEnv(tmp, named);
@@ -575,25 +613,24 @@ for (const renamed of ["kept-run", `${runDirectoryPrefix}kept`] as const) {
       } finally {
         if (stack !== undefined) kill(stack.child);
         if (postmaster !== undefined && startTimeOf(postmaster.pid) === postmaster.start) {
-          spawnSync(
-            join(named.value, "pg_ctl"),
-            ["-D", join(moved, "worker-0", "pgdata"), "-m", "immediate", "-w", "stop"],
-            { timeout: 120_000 }
-          );
+          await stopCluster(row, named.value, join(moved, "worker-0", "pgdata"));
         }
         rmSync(tmp, { recursive: true, force: true });
       }
     },
-    // The row drives one stack's Postgres start, an initdb and a readiness wait of at most
-    // `stackMs`, its kill, one start of the pool, waited for at most `childMs`, and the stop of
-    // the postmaster it left; 1,500 s holds both waits at their bounds.
-    1_500_000
+    // What the row waits for, summed by the fixtures' program (`rowMs`): the stack's start, the
+    // start of the pool and the stop, each at its bound.
+    rowMs(renamedRun)
   );
 }
 
 /** Why this machine refuses a stack a PID namespace of its own, or undefined where it gives one
  *  (`pidNamespaceRefusal`). Read only where the binaries rows run. */
 const pidNamespaceRefused = skipBinaries ? undefined : pidNamespaceRefusal(file);
+/** What each of the next rows waits for (`Waits`): one stack's start and readiness wait of at most
+ *  `stackMs`, one start of the pool waited for at most `childMs`, and the stack's stop, at most
+ *  `childMs`. */
+const namespacedStack: Waits = { children: 0, reads: 0, bounds: [stackMs, childMs, childMs] };
 
 // A stack in a PID namespace of its own (a sandbox, `unshare --pid`) writes a mark whose owner a
 // start cannot judge, and its postmaster's `postmaster.pid` holds the pid that namespace gives it,
@@ -606,6 +643,7 @@ for (const where of ["the start's TMPDIR", "a TMPDIR of its own"] as const) {
   test.skipIf(skipBinaries || pidNamespaceRefused !== undefined)(
     `binaries provider: a start leaves the Postgres of a stack that runs in another PID namespace under ${where}, and names it in one line`,
     async () => {
+      const row = rowOf(namespacedStack);
       const named = requirePostgres([pgBinVariable]);
       const startTmp = mkdtempSync(join(shortBase, "pn-start-"));
       const stackTmp =
@@ -616,14 +654,14 @@ for (const where of ["the start's TMPDIR", "a TMPDIR of its own"] as const) {
         const started = await startNamespacedStack(childEnv(stackTmp, named), `pidns-${runTag}`);
         stack = started;
         expect(started.pidNamespace).not.toBe(readlinkSync("/proc/self/ns/pid"));
-        expect(answers(started.url)).toBe(true);
+        expect(await answers(row, started.url)).toBe(true);
 
         const start = await startPool(childEnv(startTmp, named));
         expect(start.stdout).toContain(refused);
 
         // The stack still runs, so its Postgres stays and answers, and exactly one line names it:
         // the line of what the start cannot judge, by its PID namespace.
-        expect(answers(started.url)).toBe(true);
+        expect(await answers(row, started.url)).toBe(true);
         const naming = linesWith(start.stderr, identityOf(started.dir));
         expect({ naming, stderr: start.stderr }).toEqual({
           naming: [
@@ -645,15 +683,22 @@ for (const where of ["the start's TMPDIR", "a TMPDIR of its own"] as const) {
         if (stackTmp !== startTmp) rmSync(stackTmp, { recursive: true, force: true });
       }
     },
-    // One stack's start and readiness wait of at most `stackMs`, one start of the pool waited for
-    // at most `childMs`, and the stack's stop, at most `childMs`.
-    stackMs + 2 * childMs
+    // What the row waits for, summed by the fixtures' program (`rowMs`): the stack's start, the
+    // start of the pool and the stack's stop, each at its bound.
+    rowMs(namespacedStack)
   );
 }
+
+/** What the next row waits for (`Waits`): three `docker create`s of the row's own (`makes`), two
+ *  starts of the pool at once, each of which lists the containers and removes what it finds dead,
+ *  and the removal of the rest. Besides the creates it read 1.3 to 2.0 s on a shared Linux
+ *  machine under a load of about 300, on 2026-11-17; 240 s leaves a slow Docker daemon room. */
+const threePlanted: Waits = { children: 0, reads: 0, makes: 3, bounds: [240_000] };
 
 test.skipIf(skipImage)(
   "image provider: a removal that fails is one line and fails no start, and two starts at once that find one dead container both go on",
   async () => {
+    const row = rowOf(threePlanted);
     const { value: image } = requirePostgres([pgImageVariable]);
     const who = owners();
     const tmp = mkdtempSync(join(tmpdir(), "leftover-"));
@@ -661,9 +706,25 @@ test.skipIf(skipImage)(
     const held = heldSockets(run, 1);
     const made: string[] = [];
     try {
-      const runs = leaveContainer(image, made, run, 0, who.runs, mkdtempSync(join(run, "pg-0-")));
-      const failing = leaveContainer(image, made, run, 1, who.gone, held);
-      const gone = leaveContainer(image, made, run, 2, who.gone, mkdtempSync(join(run, "pg-2-")));
+      const runs = await leaveContainer(
+        row,
+        image,
+        made,
+        run,
+        0,
+        who.runs,
+        mkdtempSync(join(run, "pg-0-"))
+      );
+      const failing = await leaveContainer(row, image, made, run, 1, who.gone, held);
+      const gone = await leaveContainer(
+        row,
+        image,
+        made,
+        run,
+        2,
+        who.gone,
+        mkdtempSync(join(run, "pg-2-"))
+      );
 
       const env = childEnv(tmp, { variable: pgImageVariable, value: image });
       const starts = await Promise.all([startPool(env), startPool(env)]);
@@ -686,25 +747,38 @@ test.skipIf(skipImage)(
         linesWith(start.stderr, `removed container ${failing.id}`)
       );
       for (const line of failed) expect(line).toContain(`is not removed: ${held}`);
-      expect([containerExists(failing.name), existsSync(failing.sockets)]).toEqual([false, true]);
-      expect([containerExists(gone.name), existsSync(gone.sockets)]).toEqual([false, false]);
-      expect([containerExists(runs.name), existsSync(runs.sockets)]).toEqual([true, true]);
+      expect([await containerExists(row, failing.name), existsSync(failing.sockets)]).toEqual([
+        false,
+        true,
+      ]);
+      expect([await containerExists(row, gone.name), existsSync(gone.sockets)]).toEqual([
+        false,
+        false,
+      ]);
+      expect([await containerExists(row, runs.name), existsSync(runs.sockets)]).toEqual([
+        true,
+        true,
+      ]);
     } finally {
       await removeIds(made);
       chmodSync(join(held, "held"), 0o700);
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // The row drives three `docker create`s, two starts of the pool at once, each of which lists
-  // the containers and removes what it finds dead, and the removal of the rest. It read 1.3 to
-  // 2.0 s on a shared Linux machine under a load of about 300, on 2026-11-17; 300 s leaves a slow
-  // Docker daemon room.
-  300_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): its three creates, the two
+  // starts of the pool and the removals.
+  rowMs(threePlanted)
 );
+
+/** What the next row waits for (`Waits`): two `docker create`s and one `docker commit` of the
+ *  row's own (`makes`), one start of the pool, waited for at most `childMs`, which lists the
+ *  containers and leaves the copy, and the removals, which 240 s holds with a slow Docker daemon. */
+const committedCopy: Waits = { children: 0, reads: 0, makes: 3, bounds: [childMs, 240_000] };
 
 test.skipIf(skipImage)(
   "image provider: a container made from an image committed from a dead stack's container carries that stack's label, and a start leaves it and names it",
   async () => {
+    const row = rowOf(committedCopy);
     const { value: image } = requirePostgres([pgImageVariable]);
     const tmp = mkdtempSync(join(tmpdir(), "leftover-"));
     const run = mkdtempSync(join(tmp, runDirectoryPrefix));
@@ -715,7 +789,8 @@ test.skipIf(skipImage)(
       // `docker commit` copies the dead stack's label into the image, and each container made from
       // that image carries it. The dead stack's own container goes first, so the copy is the only
       // container that carries its mark.
-      const dead = leaveContainer(
+      const dead = await leaveContainer(
+        row,
         image,
         made,
         run,
@@ -723,17 +798,17 @@ test.skipIf(skipImage)(
         owners().gone,
         mkdtempSync(join(run, "pg-0-"))
       );
-      docker("commit", dead.id, copy);
+      await docker(row, "commit", dead.id, copy);
       committed = true;
       await removeIds(made.splice(0));
       const name = plantedName(run, 1);
-      const id = docker("create", "--name", name, copy).trim();
+      const id = (await docker(row, "create", "--name", name, copy)).trim();
       made.push(id);
 
       const start = await startPool(childEnv(tmp, { variable: pgImageVariable, value: image }));
       expect(start.stdout).toContain(refused);
 
-      expect(containerExists(name)).toBe(true);
+      expect(await containerExists(row, name)).toBe(true);
       const unread = linesWith(start.stderr, "left what it cannot read:");
       expect(unread).toHaveLength(1);
       expect(unread[0]).toContain(
@@ -748,15 +823,20 @@ test.skipIf(skipImage)(
       );
     }
   },
-  // The row drives two `docker create`s, one `docker commit`, one start of the pool, waited for at
-  // most `childMs`, which lists the containers and leaves the copy, and the removals; 900 s holds
-  // the start at its bound and a slow Docker daemon.
-  900_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): its two creates and its
+  // commit, the start of the pool at its bound, and the removals.
+  rowMs(committedCopy)
 );
+
+/** What the next row waits for (`Waits`): two `docker create`s of the row's own (`makes`), one
+ *  start of the pool, waited for at most `childMs`, whose wait for the first container's removal
+ *  takes a second, and the removals, which 240 s holds with a slow Docker daemon. */
+const twoUnlisted: Waits = { children: 0, reads: 0, makes: 2, bounds: [childMs, 240_000] };
 
 test.skipIf(skipImage)(
   "image provider: a start whose removal another start won says so, with what Docker said, and says it removed neither container",
   async () => {
+    const row = rowOf(twoUnlisted);
     const { value: image } = requirePostgres([pgImageVariable]);
     const who = owners();
     const tmp = mkdtempSync(join(tmpdir(), "leftover-"));
@@ -766,8 +846,8 @@ test.skipIf(skipImage)(
       // The row's two dead containers carry no label that Docker lists: the stand-in `docker`
       // adds their marks to the listing of the start under test alone, so no other start of the
       // machine removes them before that start meets the removals the row stages.
-      const inProgress = leaveUnlistedContainer(image, made, run, 0, who.gone);
-      const goneFirst = leaveUnlistedContainer(image, made, run, 1, who.gone);
+      const inProgress = await leaveUnlistedContainer(row, image, made, run, 0, who.gone);
+      const goneFirst = await leaveUnlistedContainer(row, image, made, run, 1, who.gone);
       // Another start's removal, as the start under test meets it: its `docker` refuses each
       // removal of the first container as Docker refuses one while another is in progress, for as
       // long as the real `docker` still lists it, and removes it a second after the first
@@ -795,10 +875,10 @@ test.skipIf(skipImage)(
 
       // The start returned once Docker listed neither container, and said of each that another
       // start removed it first, with what Docker said, and of neither that it removed it.
-      expect([containerExists(inProgress.name), containerExists(goneFirst.name)]).toEqual([
-        false,
-        false,
-      ]);
+      expect([
+        await containerExists(row, inProgress.name),
+        await containerExists(row, goneFirst.name),
+      ]).toEqual([false, false]);
       const inProgressLines = removalLines(start.stderr, inProgress.id);
       expect(inProgressLines).toHaveLength(1);
       expect(inProgressLines[0]).toContain(
@@ -816,19 +896,24 @@ test.skipIf(skipImage)(
       );
     }
   },
-  // The row drives two `docker create`s, one start of the pool, waited for at most `childMs`,
-  // whose wait for the first container's removal takes a second, and the removals; 900 s holds the
-  // start at its bound and a slow Docker daemon.
-  900_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): its two creates, the start
+  // of the pool at its bound, and the removals.
+  rowMs(twoUnlisted)
 );
+
+/** What the next row waits for (`Waits`): one `docker create` of the row's own (`makes`), two
+ *  starts of the pool at once, each waited for at most `childMs`, and the removal, which 240 s
+ *  holds with a slow Docker daemon. */
+const oneUnlisted: Waits = { children: 0, reads: 0, makes: 1, bounds: [childMs, 240_000] };
 
 // Docker's own removal is the claim of a container: of two `docker rm`s of one container, Docker
 // answers one with the removal and the other with a refusal while it is in progress or with no id
 // once it is gone, and the start reads that answer (`removeContainer` of
-// e2e/harness-postgres-removal.ts).
+// e2e/harness-postgres-container-removal.ts).
 test.skipIf(skipImage)(
   "image provider: of two starts at once on one dead container, one says it removed it and the other that another start removed it first",
   async () => {
+    const row = rowOf(oneUnlisted);
     const { value: image } = requirePostgres([pgImageVariable]);
     const tmp = mkdtempSync(join(tmpdir(), "leftover-"));
     const run = mkdtempSync(join(tmp, runDirectoryPrefix));
@@ -836,13 +921,16 @@ test.skipIf(skipImage)(
     try {
       // The dead container carries no label Docker lists: the stand-in `docker` lists its mark to
       // the two starts under test alone, so no other start of the machine removes it first.
-      const gone = leaveUnlistedContainer(image, made, run, 0, owners().gone);
+      const gone = await leaveUnlistedContainer(row, image, made, run, 0, owners().gone);
       const env = childEnv(tmp, { variable: pgImageVariable, value: image });
       env.PATH = `${soleListing(tmp, [gone.listing]).bin}:${env.PATH ?? ""}`;
 
       const starts = await Promise.all([startPool(env), startPool(env)]);
 
-      expect([containerExists(gone.name), existsSync(gone.sockets)]).toEqual([false, false]);
+      expect([await containerExists(row, gone.name), existsSync(gone.sockets)]).toEqual([
+        false,
+        false,
+      ]);
       const lines = starts.flatMap((start) => removalLines(start.stderr, gone.id));
       expect(lines.filter((line) => line.includes(`: removed container ${gone.id}`))).toHaveLength(
         1
@@ -855,14 +943,26 @@ test.skipIf(skipImage)(
       );
     }
   },
-  // The row drives one `docker create` and two starts of the pool at once, each waited for at most
-  // `childMs`, and the removal; 900 s holds the two starts at their bound and a slow Docker daemon.
-  900_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): its create, the two starts
+  // of the pool at their bound, and the removal.
+  rowMs(oneUnlisted)
 );
+
+/** What the next row waits for (`Waits`): three shell stacks at once, each a `bun` mark and a
+ *  container's start, waited for at most `stackMs`; one `docker run` of the row's own (`makes`);
+ *  two kills, one shell start and one start of the pool, each waited for at most `childMs`; and
+ *  the removals. */
+const shellStacks: Waits = {
+  children: 0,
+  reads: 0,
+  makes: 1,
+  bounds: [stackMs, childMs, childMs, childMs],
+};
 
 test.skipIf(skipImage)(
   "image provider: a shell stack's Postgres carries the one mark: a dead one goes at the next start of a shell stack and at the next start of the pool, one whose shell runs stays, and one the start cannot judge stays and is named",
   async () => {
+    const row = rowOf(shellStacks);
     const named = requirePostgres([pgImageVariable]);
     const tmp = mkdtempSync(join(tmpdir(), "leftover-"));
     const env = childEnv(tmp, named);
@@ -894,9 +994,13 @@ test.skipIf(skipImage)(
       }
       // The precondition: each shell stack's container exists under the id its `docker run`
       // printed, so its absence after a start is that start's removal.
-      expect(
-        shells.map((each) => /^[0-9a-f]{64}$/.test(each.id) && exists("container", each.id))
-      ).toEqual([true, true, true]);
+      const precondition: boolean[] = [];
+      for (const each of shells) {
+        precondition.push(
+          /^[0-9a-f]{64}$/.test(each.id) && (await exists(row, "container", each.id))
+        );
+      }
+      expect(precondition).toEqual([true, true, true]);
       // A shell stack's mark of another boot, which no start can judge.
       const work = mkdtempSync(join(tmp, "shell-work-"));
       const mark = {
@@ -905,16 +1009,19 @@ test.skipIf(skipImage)(
         identity: identityOf(work),
         container: names.unjudged,
       };
-      const unjudged = docker(
-        "run",
-        "--detach",
-        "--name",
-        names.unjudged,
-        "--label",
-        `${markLabel}=${JSON.stringify(mark)}`,
-        "--env",
-        "POSTGRES_HOST_AUTH_METHOD=trust",
-        named.value
+      const unjudged = (
+        await docker(
+          row,
+          "run",
+          "--detach",
+          "--name",
+          names.unjudged,
+          "--label",
+          `${markLabel}=${JSON.stringify(mark)}`,
+          "--env",
+          "POSTGRES_HOST_AUTH_METHOD=trust",
+          named.value
+        )
       ).trim();
       made.push(unjudged);
       const short = (id: string) => id.slice(0, 12);
@@ -932,9 +1039,12 @@ test.skipIf(skipImage)(
         }
       );
       expect(shellStart.status, shellStart.stderr).toBe(0);
-      expect(containerExists(names.shellGone)).toBe(false);
+      expect(await containerExists(row, names.shellGone)).toBe(false);
       removalLines(shellStart.stderr, short(shellGone.id));
-      expect([containerExists(names.runs), containerExists(names.unjudged)]).toEqual([true, true]);
+      expect([
+        await containerExists(row, names.runs),
+        await containerExists(row, names.unjudged),
+      ]).toEqual([true, true]);
       expect(linesWith(shellStart.stderr, `container ${short(unjudged)} (boot `)).toHaveLength(1);
       expect(shellStart.stderr).not.toContain(short(runs.id));
 
@@ -943,9 +1053,12 @@ test.skipIf(skipImage)(
       expect(await exited(poolGone.child, childMs, "the killed shell stack")).toBe(137);
       const poolStart = await startPool(env);
       expect(poolStart.stdout).toContain(refused);
-      expect(containerExists(names.poolGone)).toBe(false);
+      expect(await containerExists(row, names.poolGone)).toBe(false);
       removalLines(poolStart.stderr, short(poolGone.id));
-      expect([containerExists(names.runs), containerExists(names.unjudged)]).toEqual([true, true]);
+      expect([
+        await containerExists(row, names.runs),
+        await containerExists(row, names.unjudged),
+      ]).toEqual([true, true]);
       expect(linesWith(poolStart.stderr, `container ${short(unjudged)} (boot `)).toHaveLength(1);
       expect(poolStart.stderr).not.toContain(short(runs.id));
     } finally {
@@ -956,12 +1069,16 @@ test.skipIf(skipImage)(
       );
     }
   },
-  // The row drives three shell stacks at once, each a `bun` mark and a container's start, waited
-  // for at most `stackMs`, one `docker run`, two kills, one shell start and one start of the pool,
-  // each waited for at most `childMs`, and the removals; 2,400 s holds those waits at their
-  // bounds.
-  2_400_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`): the shell stacks' starts,
+  // the row's own `docker run`, the kills and the two starts, each at its bound.
+  rowMs(shellStacks)
 );
+
+/** What each of the next rows waits for (`Waits`): one stack's Postgres start, a container's
+ *  create and start and a readiness wait of at most `stackMs`, its kill, and one start of the
+ *  pool, waited for at most `childMs`, which removes the container; 240 s holds the rest. It read
+ *  about 20 s under a load of about 300 on a shared Linux machine, on 2026-11-17. */
+const stackThenPool: Waits = { children: 0, reads: 0, bounds: [stackMs, childMs, 240_000] };
 
 // A developer's TMPDIR may be spelt through a link of their own, as a scratch disk linked in. The
 // image provider's label then names a socket directory whose path holds that link, and both sweeps
@@ -972,6 +1089,7 @@ for (const spelt of ["through a link", "plain"] as const) {
   test.skipIf(skipImage)(
     `image provider: the next start removes the container of a stack killed hard whose TMPDIR is spelt ${spelt}`,
     async () => {
+      const row = rowOf(stackThenPool);
       const named = requirePostgres([pgImageVariable]);
       // A short base, as a developer's ~/tmp or CI's RUNNER_TEMP is, so the socket directory stays
       // in the run directory (`socketDirectory` of e2e/harness-postgres.ts moves it to /tmp when
@@ -983,7 +1101,7 @@ for (const spelt of ["through a link", "plain"] as const) {
       let stack: Stack | undefined;
       try {
         stack = await startStack(env, `link-${runTag}-${spelt === "plain" ? "plain" : "link"}`);
-        expect(containersOf(stack.dir)).toHaveLength(1);
+        expect(await containersOf(row, stack.dir)).toHaveLength(1);
         // The precondition of the row: the label's socket directory is in the run directory.
         expect(dirname(dirname(stack.address))).toBe(stack.dir);
 
@@ -995,23 +1113,21 @@ for (const spelt of ["through a link", "plain"] as const) {
         // R3: the stack's owner is dead, and the kernel shows it so; its container must go, and
         // no line of the start says it was left for a link.
         expect({
-          containers: containersOf(stack.dir),
+          containers: await containersOf(row, stack.dir),
           linkLines: linesWith(third.stderr, "is a symbolic link"),
         }).toEqual({ containers: [], linkLines: [] });
       } finally {
         if (stack !== undefined) kill(stack.child);
         await removeAll(
-          () => removeLeft(stack, named),
+          () => removeLeft(row, stack, named),
           () => rmSync(real, { recursive: true, force: true }),
           () => tmp !== real && rmSync(tmp, { force: true })
         );
       }
     },
-    // The row drives one stack's Postgres start, a container's create and start and a readiness
-    // wait of at most `stackMs`, its kill, and one start of the pool, waited for at most
-    // `childMs`, which removes the container. It read about 20 s under a load of about 300 on a
-    // shared Linux machine, on 2026-11-17; 1,500 s holds both waits at their bounds.
-    1_500_000
+    // What the row waits for, summed by the fixtures' program (`rowMs`): the stack's start and the
+    // start of the pool, each at its bound.
+    rowMs(stackThenPool)
   );
 }
 
@@ -1022,6 +1138,7 @@ for (const spelt of ["through a link", "plain"] as const) {
 test.skipIf(skipImage)(
   "image provider: a start that removes a dead stack's container and cannot remove its socket directory keeps the mark that names that directory, and says so in one line",
   async () => {
+    const row = rowOf(stackThenPool);
     const named = requirePostgres([pgImageVariable]);
     const tmp = mkdtempSync(join(shortBase, "lk-"));
     const env = childEnv(tmp, named);
@@ -1031,7 +1148,7 @@ test.skipIf(skipImage)(
       stack = await startStack(env, `keep-${runTag}`);
       const sockets = dirname(stack.address);
       const mark = join(stack.dir, marksDirectory, "worker-0.json");
-      expect([existsSync(mark), containersOf(stack.dir).length]).toEqual([true, 1]);
+      expect([existsSync(mark), (await containersOf(row, stack.dir)).length]).toEqual([true, 1]);
       stuck = join(sockets, "stuck");
       mkdirSync(stuck);
       writeFileSync(join(stuck, "file"), "");
@@ -1043,7 +1160,7 @@ test.skipIf(skipImage)(
       const third = await startPool(env);
       expect(third.stdout).toContain(refused);
       expect({
-        containers: containersOf(stack.dir),
+        containers: await containersOf(row, stack.dir),
         sockets: existsSync(sockets),
         mark: existsSync(mark),
         named: linesWith(third.stderr, sockets).length,
@@ -1052,12 +1169,12 @@ test.skipIf(skipImage)(
       if (stack !== undefined) kill(stack.child);
       if (stuck !== undefined && existsSync(stuck)) chmodSync(stuck, 0o700);
       await removeAll(
-        () => removeLeft(stack, named),
+        () => removeLeft(row, stack, named),
         () => rmSync(tmp, { recursive: true, force: true })
       );
     }
   },
-  // As the rows above: one stack's start and readiness wait of at most `stackMs`, its kill, and
-  // one start of the pool, waited for at most `childMs`.
-  1_500_000
+  // What the row waits for, summed by the fixtures' program (`rowMs`), as the rows above: one
+  // stack's start and one start of the pool, each at its bound.
+  rowMs(stackThenPool)
 );

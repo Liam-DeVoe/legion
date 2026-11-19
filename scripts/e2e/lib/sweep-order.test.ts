@@ -302,11 +302,13 @@ describe("the search for a start that refuses or creates its Postgres before it 
     );
   });
 
-  // The red test runs four planted drivers, each beside a lock holder it starts and ends after
-  // half a second, and the search over each: about 10 s on a shared Linux machine under load. Each
-  // red test below runs its planted drivers twice each and the search once each: under 20 s at a
-  // load of 500 on a shared Linux machine on 2026-11-18, so 120 s holds each.
-  const redTestMs = 120_000;
+  // Each script below runs its cases through one runner (order-search-cases.sh), which bounds each
+  // case: two runs of its planted driver, the start of the lock's holder and one search, at most
+  // `order_search_case_s` in all. A script's row limit is that bound for each of its cases, read
+  // from the runner and the script, with a minute above it for the row's own spawn of bash, so no
+  // load the runner's own bounds hold can fail the row before the runner says why.
+  const runner = readFileSync(join(import.meta.dir, "order-search-cases.sh"), "utf8");
+  const caseS = Number(/^order_search_case_s=(\d+)$/m.exec(runner)?.[1] ?? Number.NaN);
   for (const [script, title] of [
     [
       "order-search-set-e-refusal.test.sh",
@@ -320,7 +322,14 @@ describe("the search for a start that refuses or creates its Postgres before it 
       "order-search-errexit-scope.test.sh",
       "a set +e that bash does not apply to the start's own shell leaves set -e on for the search: in a branch, a list, a loop or a case arm that does not run, a subshell, a command substitution, a function in parentheses, a pipeline and a list in the background, each form ends a planted start before its removal, and the search names the check that ends it",
     ],
+    [
+      "order-search-errexit-builtins.test.sh",
+      "the search reads each way bash turns errexit on or off as bash does, through set, shopt -o, builtin, command, eval, a quoted name, local - and a trap on ERR in any case, and names as unread each command whose words it cannot know, so none ends a planted start before its removal unseen",
+    ],
   ] as const) {
+    const cases = readFileSync(join(import.meta.dir, script), "utf8").match(
+      /^(order_search_case|on) /gm
+    );
     test(
       title,
       () => {
@@ -330,7 +339,8 @@ describe("the search for a start that refuses or creates its Postgres before it 
           out: expect.stringContaining("PASS: every form is found"),
         });
       },
-      redTestMs
+      // The runner's bound for each case of the script, and a minute for the row's own work.
+      (cases?.length ?? Number.NaN) * caseS * 1000 + 60_000
     );
   }
 
