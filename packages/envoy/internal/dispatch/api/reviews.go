@@ -909,14 +909,12 @@ func (s *server) openApprovalAsk(
 	// The request's node learns the ask.opened that records it, and the requester follows the
 	// request it opened, both right after that event. The session's node is the request's
 	// author's, which the node write above wrote (graphstore.AuthorFacts), so the follow makes
-	// none and states its followed_by under that event in its own statement. Nothing before the
-	// event reads the follower row: its payload's logins are the thread's (events.ThreadLogins),
-	// and the outbox reads the followers after the commit. The follow is planned here, in the read
-	// phase: the request is new, so its follower row is too (asks.PlanFollowAuthor).
-	follow, err := asks.PlanFollowAuthor(ctx, tx, ask.ID, actor, ask.CreatedAt)
-	if err != nil {
-		return nil, nil, err
-	}
+	// none and states its followed_by under that event in the statement after its own. Nothing
+	// before the event reads the follower row: its payload's logins are the thread's
+	// (events.ThreadLogins), and the outbox reads the followers after the commit. The request is
+	// new, so its follower row is too, and the follow is planned with no read
+	// (asks.PlanFollowNewAsk), dated by the request's created_at.
+	follow := asks.PlanFollowNewAsk(ask.ID, actor, ask.CreatedAt)
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		if err := graphstore.QueueCaused(b, askNode, graphstore.LatestEvent); err != nil {
 			return err

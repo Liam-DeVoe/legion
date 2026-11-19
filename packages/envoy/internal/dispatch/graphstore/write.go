@@ -38,6 +38,29 @@ import (
 // refusal ends the caller's transaction, which rolls them back: a caller abandons the transaction
 // of a write that failed, whatever the failure.
 
+// writeFunctions are the functions a write of graph_nodes and graph_tuples from outside this
+// package goes through: Write, WriteUncaused and Caused in a caller's transaction, and QueueWrite,
+// QueueNodes and QueueCaused, the same writes queued on a write phase's batch; WriteArms and
+// WriteArmsUncaused spliced into a caller's statement; Authored, Reached and SessionRecorded,
+// which run those arms for the writers that record an author, a reached session and a session an
+// ask names, and QueueAuthored, QueueReached and QueueSessionRecorded, which queue them;
+// EraseNode, the erase's delete of a node and its tuples; FillScopes, the backfill's fill of the
+// project of a node stored with none; Retarget, the move of one pointer tuple of a node from one
+// far end to another; QueueFrameTuple, Write's append of one frame value of a run queued on a
+// caller's batch; and WriteRun, the write of a run's node from its row. Each is a function of the
+// package, never a method, so a call of one is named by the package wherever it is made.
+var writeFunctions = [...]string{"Write", "WriteUncaused", "WriteArms", "WriteArmsUncaused", "Caused",
+	"QueueWrite", "QueueNodes", "QueueCaused",
+	"Authored", "Reached", "SessionRecorded", "QueueAuthored", "QueueReached", "QueueSessionRecorded",
+	"EraseNode", "FillScopes", "Retarget", "QueueFrameTuple", "WriteRun"}
+
+// WriteFunctions is the name of every function of this package a write of the store from outside
+// it goes through (writeFunctions), a fresh slice for each caller. It is the one list the source
+// scans that hold the store's writers read: this package's register of their call sites
+// (TestEveryStoreWriteCallSiteIsListed) and api's scan of the writers of the projected tables
+// (TestNoProjectionRowIsWrittenWithoutTheStore).
+func WriteFunctions() []string { return slices.Clone(writeFunctions[:]) }
+
 // LatestEvent is the cause of a write whose event its write phase appends right before the
 // write's own statements: no Go code reads that event's id before the batch is sent, so the
 // statements name it as the events id sequence left it (store.LatestEventID), and nothing between
@@ -667,7 +690,10 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated []Tuple) e
 	// A node already there whose base attribute the caller states itself - a document made where
 	// an orphaned node stands states that node gone and then live in tuples of its own - is marked
 	// even where its row moves nothing, so the append moves it onto the cause the caller's
-	// statements carry, and neither statement states an attribute the caller states.
+	// statements carry, and neither statement states an attribute the caller states. A node the
+	// insert above just made carries the insert's mark (markMade) already, which names every base
+	// attribute it carries, so it takes no second mark: an empty one over it would leave its
+	// visibility, its project and its parties stated by nothing.
 	//
 	// A write that keeps a node's cause binds two arrays more: whether it keeps each node's cause,
 	// and the base attributes of each node the writer states itself, which its move states nothing
@@ -729,7 +755,7 @@ var nodeMove, keptCauseNodeMove = func() (string, string) {
 		       or graph_nodes.attributes is distinct from incoming.attributes
 		       or ` + fillsProject + `
 		       or ` + movesParties + `
-		       or incoming.states)`
+		       or (incoming.states and not ` + markedBy("graph_nodes", "$8") + `))`
 	return `
 		with incoming as (
 			select kind, id, supertag, visibility, state, attributes, restates, project_key,

@@ -240,7 +240,8 @@ func (r *storeWriterRig) sessionReply() storeWriter {
 // its route: it takes the issue's owner lock (beginArtifactWrite) and the document's room, clears
 // what the document's own delete would leave behind, states the document's node gone (graphstore
 // WriteUncaused, an update of the node its create wrote), deletes the document's row, which names
-// that node, appends artifact.removed and appends the gone statement under it (graphstore.Caused).
+// that node, and appends artifact.removed and the gone statement under it in one batch
+// (appendCausingEvent).
 // Each run removes a document of its own, made just before it by typing a title (emptyDocument).
 // The gone statement is the removal's first write of graph_nodes and the delete its first write of
 // artifacts, so each is held as its table, and so are the event and the tuples it causes.

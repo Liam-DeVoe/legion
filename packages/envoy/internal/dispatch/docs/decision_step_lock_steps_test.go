@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -23,7 +24,7 @@ import (
 // (requireEachDocsStepIsWaitedAtInTurn). The paths are:
 //
 //   - the third phase's conversion of an issue whose decisions document holds one section, which a
-//     person kept (restoreIssueDecisions): under the issue's owner row, the decisions document's
+//     person kept (restoreIssueDecisions): under the issue's owner lock, the decisions document's
 //     version without the section (writeVersion: its fence row, its block index, its
 //     artifact.version and what the index stated under it), the spec's version holding the
 //     section as a decision (writeVersion again, under the spec's own fence row), then the
@@ -32,9 +33,13 @@ import (
 //     the decisions document's retirement (RetireDocument, writeRetiredNode): its artifact node
 //     stated gone, its artifacts row, the document.retired and the node's facts under it;
 //   - the catch-up of a follow a process of the release before recorded (asks.CatchUpFollower,
-//     run by catchUpAsk): the issue's owner row, the ask's row, the follower row marked, and the
+//     run by catchUpAsk): the issue's owner lock, the ask's row, the follower row marked, and the
 //     session's node and the ask node's followed_by under that build's ask.follower_added, an event
 //     the log held before the pass began, so no event of this path orders them.
+//
+// Each path takes its issue's owner lock first, the transaction advisory lock every writer of the
+// issue takes (lockArtifactOwner, store.LockOwner), which locks no table and no row; the issue's
+// row is the event append's, in its write phase.
 //
 // Each document the conversion versions is under its own revision fence, which orders that
 // document's block statement alone, as a version write's does (api's documentEdit): the version's
@@ -49,6 +54,21 @@ func TestTheDecisionsStepsWritersTakeTheStoreLockOrder(t *testing.T) {
 			requireTheDocsOrderAdmits(t, writer)
 			requireEachDocsStepIsWaitedAtInTurn(t, ctx, rig, writer)
 		})
+	}
+}
+
+// issueOwnerStep is the owner lock of *issue, the run's issue, which the step's passes take first
+// (lockArtifactOwner): a transaction advisory lock, held as every writer of the issue takes it.
+func issueOwnerStep(issue *string) docsStep {
+	return docsStep{
+		name: "the owner lock", order: docsOwnerStep,
+		hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ docsRun) {
+			t.Helper()
+			if err := store.LockOwner(ctx, holder, store.IssueOwner(*issue)); err != nil {
+				t.Fatalf("hold issue %s's owner lock: %v", *issue, err)
+			}
+		},
+		at: docsOwnerStatement,
 	}
 }
 
@@ -76,8 +96,12 @@ func decisionStepRig(t *testing.T) *docsWriterRig {
 // address is the spec's ref_key and the section's heading id, which the decision keeps, and the
 // keeper is new to each run: each is held as a row another transaction inserted and has not
 // committed. The decision_keeps row is the pass's first write of that table. Every other step
-// comes after a write of its table and is held by its gate. Each of its events writes the issue's
-// row (docsWriter.projectKeyShare).
+// comes after a write of its table and is held by its gate.
+//
+// A version's insert takes the document's fence row and, through the insert's triggers, the
+// document's search row and its re-index mark (document_search, refs_grammar_owed); the decisions
+// document's version event takes the issue's row, which its append locks and moves the last_seq
+// of. Those are the rows the spec's fence finds taken since the decisions document's fence.
 func conversionPath(t *testing.T) (*docsWriterRig, docsWriter) {
 	r := decisionStepRig(t)
 	// What the run under way wrote, which its steps' holds and gates name.
@@ -92,7 +116,10 @@ func conversionPath(t *testing.T) (*docsWriterRig, docsWriter) {
 	versionFence := func(name string, document *string) docsStep {
 		return docsStep{
 			name: name, order: docsFenceStep, hold: fenceRow(document), at: "with head as (select ",
-			takes: []docsTableLock{{"document_block_versions", docsRowExclusiveMode}},
+			takes: []docsTableLock{
+				{"document_block_versions", docsRowExclusiveMode},
+				{"document_search", docsRowExclusiveMode}, {"refs_grammar_owed", docsRowExclusiveMode},
+			},
 		}
 	}
 	fenced := func(step docsStep, fence string) docsStep {
@@ -104,16 +131,9 @@ func conversionPath(t *testing.T) (*docsWriterRig, docsWriter) {
 		return step
 	}
 	return r, docsWriter{
-		name: "restoreIssueDecisions converting and retiring", projectKeyShare: true,
+		name: "restoreIssueDecisions converting and retiring",
 		steps: []docsStep{
-			{
-				name: "the owner row", order: docsOwnerStep,
-				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ docsRun) {
-					holdDocsRow(t, ctx, holder, `select 1 from issues where key = $1 for no key update`, issue)
-				},
-				at:    docsOwnerStatement,
-				takes: []docsTableLock{{"issues", docsRowShareMode}},
-			},
+			issueOwnerStep(&issue),
 			versionFence(decisionsFence, &decisions),
 			fenced(docsStep{
 				name: "the decisions document's block nodes", order: docsNodeStep,
@@ -133,7 +153,7 @@ func conversionPath(t *testing.T) (*docsWriterRig, docsWriter) {
 			{
 				name: "the decisions document's version event", order: docsEventStep,
 				hold: holdDocsTableWrites("events"), at: docsEventStatement,
-				takes: []docsTableLock{{"events", docsRowExclusiveMode}},
+				takes: []docsTableLock{{"events", docsRowExclusiveMode}, {"issues", docsRowExclusiveMode}},
 			},
 			fenced(caused(docsStep{
 				name: "the decisions document's block tuples", order: docsTupleStep,
@@ -311,7 +331,7 @@ func (r *docsWriterRig) issueDocument(t *testing.T, ctx context.Context, issue, 
 		if err != nil {
 			return err
 		}
-		return graphstore.Caused(ctx, tx, write, graphstore.NoEvent)
+		return causeInWritePhase(ctx, tx, write, graphstore.NoEvent)
 	}); err != nil {
 		t.Fatalf("write document %s of %s: %v", slug, issue, err)
 	}
@@ -335,14 +355,7 @@ func followCatchUpPath(t *testing.T) (*docsWriterRig, docsWriter) {
 	return r, docsWriter{
 		name: "CatchUpFollower",
 		steps: []docsStep{
-			{
-				name: "the owner row", order: docsOwnerStep,
-				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ docsRun) {
-					holdDocsRow(t, ctx, holder, `select 1 from issues where key = $1 for no key update`, issue)
-				},
-				at:    docsOwnerStatement,
-				takes: []docsTableLock{{"issues", docsRowShareMode}},
-			},
+			issueOwnerStep(&issue),
 			{
 				name: "the ask's row", order: docsProjectionStep,
 				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ docsRun) {

@@ -323,12 +323,13 @@ func (r *issueRestore) presentIn(document string) *presentEdits {
 	return edits
 }
 
-// restoreIssueDecisions runs the third phase on issue in tx, which ctx joined (Service.Join):
-// the restore of work, the answered asks and the decisions document's ask blocks the finder read
-// for it, and, where convert, the conversion of its decisions document and that document's
-// retirement once it holds no section and no ask block. It writes nothing that it does not report,
-// and its caller commits or rolls back: a pass that would take a section out of the decisions
-// document without writing the reading it became fails (refuseUnwrittenReadings).
+// restoreIssueDecisions runs the third phase on issue in tx, which ctx joined with its writes run
+// at once (joinAtOnce), so each read below sees every write made before it: the restore of work,
+// the answered asks and the decisions document's ask blocks the finder read for it, and, where
+// convert, the conversion of its decisions document and that document's retirement once it holds
+// no section and no ask block. It writes nothing that it does not report, and its caller commits
+// or rolls back: a pass that would take a section out of the decisions document without writing
+// the reading it became fails (refuseUnwrittenReadings).
 func (s *Service) restoreIssueDecisions(ctx context.Context, tx pgx.Tx, issue string, work []graphcensus.RestoreWork, convert bool) (DecisionIssue, error) {
 	result := DecisionIssue{Issue: issue}
 	// The step's own write, which alone the restore's and the conversion's carry cases reach
@@ -363,8 +364,8 @@ func (s *Service) restoreIssueDecisions(ctx context.Context, tx pgx.Tx, issue st
 	if found {
 		r.decisions = &decisions
 	}
-	// The issue's row first, as every writer of its documents takes it (lockArtifactOwner), then
-	// the rows of its asks, then each document's live write.
+	// The issue's owner lock first, as every writer of its documents takes it (lockArtifactOwner),
+	// then the rows of its asks, then each document's live write.
 	if _, _, err := lockArtifactOwner(ctx, tx, spec.id); err != nil {
 		return result, err
 	}

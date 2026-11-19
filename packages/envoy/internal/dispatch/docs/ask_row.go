@@ -85,7 +85,29 @@ func ScanAsk(row pgx.Row, extra ...any) (model.Ask, error) {
 // transaction's write phase in the order the caller made it. What it states on the node waits in
 // held for the ask.resolved event the caller appends after it, which the caller hands to
 // graphstore.QueueCaused once it has queued that event (graphstore.Caused where nothing queues).
+// A caller that plans in its read phase and queues later plans the same close with
+// PlanAskResolution instead.
 func WriteAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, reason string, actor model.Actor, held *graphstore.Uncaused) (model.Ask, error) {
+	settled, ask, err := PlanAskResolution(ctx, tx, ask, kind, reason, actor, held)
+	if err != nil {
+		return model.Ask{}, err
+	}
+	if err := write(ctx, tx, settled.Queue); err != nil {
+		return model.Ask{}, fmt.Errorf("write ask resolution: %w", err)
+	}
+	return ask, nil
+}
+
+// PlanAskResolution decides the close of ask as WriteAskResolution writes it - the kind, the
+// reason, who closed it, and the Dispatch words a decline alone carries - and plans it through the
+// one writer of an ask's answer state (planSettle: from the ledger joined to ctx where one queues
+// tx's writes, which records the plan as the ask's latest), writing nothing. It answers the
+// planned write, which the caller queues where it makes the write (asks.Settled.Queue), and the
+// ask as that write leaves it. What the write states on the ask's node waits in held, as
+// WriteAskResolution's does. It is for a transaction that reads before its first write: the
+// close of an issue plans the withdrawal of each open ask before its own update, and queues each
+// after it.
+func PlanAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, reason string, actor model.Actor, held *graphstore.Uncaused) (asks.Settled, model.Ask, error) {
 	resolution := model.AskResolution{Kind: kind, Reason: reason, Actor: actor, At: time.Now().UTC()}
 	if kind == model.AskResolutionDeclined {
 		resolution.DispatchWords = model.DeclineDispatchWords
@@ -94,13 +116,10 @@ func WriteAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, rea
 	change.Who, change.At, change.Held = actor, resolution.At, held
 	settled, err := planSettle(ctx, tx, ask.ID, change)
 	if err != nil {
-		return model.Ask{}, fmt.Errorf("write ask resolution: %w", err)
-	}
-	if err := write(ctx, tx, settled.Queue); err != nil {
-		return model.Ask{}, fmt.Errorf("write ask resolution: %w", err)
+		return asks.Settled{}, model.Ask{}, fmt.Errorf("write ask resolution: %w", err)
 	}
 	ask.State, ask.Answer, ask.Resolution = settled.Ask.State, settled.Ask.Answer, settled.Ask.Resolution
-	return ask, nil
+	return settled, ask, nil
 }
 
 // WriteRestoredAsks writes back open each of restored, asks an issue's close withdrew whose rows

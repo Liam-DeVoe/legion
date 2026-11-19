@@ -1927,13 +1927,23 @@ var askBatchRead = `
 	order by k.id
 	limit $2`
 
-// askRowsRead reads again, under the owner rows writeAskBatch took, the rows of the batch $1 the
-// pass still owes (askRowsOwed), locked in id order as an update of each row locks it: an answer
-// this release writes on such a row (asks.Settle) takes the same lock and writes the row alone, so
-// the batch reads the answer it marks, and an answer written after it finds the row marked and
-// states itself on the node. Each row answers its author, created_at, answer state, answer and
-// resolution, the addresses of its three documents (graphstore.AskPlaces), the ask.opened that
-// recorded it and the newest event that wrote its answer state, each $2 where none is found.
+// askRowsLock locks the rows of the batch $1 that still name no node, in id order as an update of
+// each row locks it: an answer this release writes on such a row (asks.Settle) takes its row the
+// same way, so the batch reads the answer it marks, and an answer written after it finds the row
+// marked and states itself on the node. It names asks alone: a statement that also names an owner
+// table takes no row lock (api's TestNoForUpdateOnOwnerTables), so the read of what the batch
+// states, which joins the asks' documents, runs plainly after it (askRowsRead).
+var askRowsLock = `
+	select k.id from asks k
+	where k.id = any($1::uuid[]) and k.node_kind is null
+	order by k.id
+	for no key update of k`
+
+// askRowsRead reads again, under the owner locks writeAskBatch took and the row locks of
+// askRowsLock, the rows of the batch $1 the pass still owes (askRowsOwed). Each row answers its
+// author, created_at, answer state, answer and resolution, the addresses of its three documents
+// (graphstore.AskPlaces), the ask.opened that recorded it and the newest event that wrote its
+// answer state, each $2 where none is found.
 var askRowsRead = `
 	select k.id::text, k.author, k.created_at, k.state, k.answer, k.resolution,
 	       coalesce(anchor.ref_key, ''), coalesce(owner.ref_key, ''), coalesce(document.ref_key, ''),
@@ -1944,8 +1954,7 @@ var askRowsRead = `
 	                 where e.payload->>'id' = k.id::text and e.type in ('ask.opened', 'ask.answered', 'ask.resolved')
 	                 order by e.id desc limit 1), $2)` + askRowsOwed + `
 	  and k.id = any($1::uuid[])
-	order by k.id
-	for no key update of k`
+	order by k.id`
 
 // askBatchRow is one row of a batch the asks or the follower pass read without a lock
 // (askBatchRead, askFollowerBatchRead): the ask, the session that follows it for a follower row,
@@ -2019,13 +2028,13 @@ func backfillAsks(ctx context.Context, database *store.Store) (KindBackfill, err
 	return done, nil
 }
 
-// writeAskBatch takes the owner rows of batch's asks (lockAskOwners), then reads again and locks the
-// rows of batch still owed (askRowsRead) and states them, in one transaction, and answers how many
-// rows it marked and the nodes and the tuples it stated as the upper bound the report states. Every
-// node of the batch - the authors' and the answerers' - goes in its one store write before the
-// first tuple, and the rows are marked after both, as writeCommentBatch orders its write. The ask
-// nodes themselves are not written again: the object pass wrote each, and this states only the
-// facts the row projects.
+// writeAskBatch takes the owner locks of batch's asks (lockAskOwners), then locks the rows of
+// batch still owed (askRowsLock), reads them again (askRowsRead) and states them, in one
+// transaction, and answers how many rows it marked and the nodes and the tuples it stated as the
+// upper bound the report states. Every node of the batch - the authors' and the answerers' - goes
+// in its one store write before the first tuple, and the rows are marked after both, as
+// writeCommentBatch orders its write. The ask nodes themselves are not written again: the object
+// pass wrote each, and this states only the facts the row projects.
 func writeAskBatch(ctx context.Context, database *store.Store, batch []askBatchRow) (int64, int64, int64, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -2038,6 +2047,9 @@ func writeAskBatch(ctx context.Context, database *store.Store, batch []askBatchR
 	read := make([]string, len(batch))
 	for index, row := range batch {
 		read[index] = row.askID
+	}
+	if _, err := tx.Exec(ctx, askRowsLock, read); err != nil {
+		return 0, 0, 0, fmt.Errorf("lock the asks naming no node: %w", err)
 	}
 	rows, err := tx.Query(ctx, askRowsRead, read, graphstore.NoEvent)
 	if err != nil {
@@ -2151,7 +2163,7 @@ var askFollowerBatchRead = `
 
 // askFollowerRowsRead reads again, under the owner rows writeAskFollowerBatch took, the follower
 // rows of the batch of pairs ($1, $2) the pass still owes (askFollowerRowsOwed), locked in key
-// order as an update locks each, as askRowsRead locks the asks.
+// order as an update locks each, as askRowsLock locks the asks.
 var askFollowerRowsRead = `
 	select f.ask_id::text, f.session_id, f.since` + askFollowerRowsOwed + `
 	  and (f.ask_id, f.session_id) in (select * from unnest($1::uuid[], $2::text[]))

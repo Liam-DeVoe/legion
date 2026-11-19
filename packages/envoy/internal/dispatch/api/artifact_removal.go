@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -53,7 +54,8 @@ import (
 // lands between the read of those the node states and their retraction.
 //
 // The document's node is stated gone before its row goes, in the store's order (node, row, event,
-// facts), and the state tuple waits for the artifact.removed event (graphstore.Caused). The node
+// facts), and the state tuple is appended in the batch that appends the artifact.removed event
+// (appendCausingEvent). The node
 // is addressed by the document's ref_key, which a later document of the same issue and slug takes
 // again: that document's create finds the node gone and states it live under its own event,
 // rather than finding a live node that states nothing and keeps this document's cause. A node
@@ -62,8 +64,9 @@ import (
 // node its create would have written - live, made by its creator at its created_at, at the
 // sentinel, as the backfill writes it (graphcensus's backfillObjectNodes) - and only then is it
 // stated gone, by the person who removed it, at the time this transaction reads from the
-// database's clock under the owner lock it holds (graphstore.StatementTime): later than every
-// statement about the address, so a document made there next is dated later still. Where the
+// database's clock under the owner lock it holds, before its first write (graphstore.StatementTime),
+// and past that first node's: later than every statement about the address, so a document made
+// there next is dated later still. Where the
 // store holds a node already, live or gone, no first node is written: a live one is stated gone,
 // and a gone one (an earlier document's, whose address a build before this one took again) is
 // left as it is, rather than moved live at a created_at that may predate its gone statement.
@@ -109,18 +112,30 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, refusal)
 		return
 	}
-	// The document's node as the store holds it, and each changed_by_run it states now, read
-	// before the removal's first write, so no transaction id is held across them: the owner's lock
-	// and the room's are held already, and every writer of the node takes the owner's lock first,
-	// so neither moves before the node is stated gone below.
+	// What the document's node write reads - whether the store holds the node, each
+	// changed_by_run it states now, and the time its gone statement takes - is read here, under
+	// the locks and before the first write, so no read of it runs while the transaction holds an
+	// id (#2468's write phase): the owner's lock and the room's are held already, and every writer
+	// of the node takes the owner's lock first, so neither the node nor its marks move before the
+	// node is stated gone below. The time is past every statement the store holds about the
+	// address, and past the first node a missing one is given below, which is dated at the
+	// document's creation.
 	fits := graphstore.AddressFits(artifact.RefKey)
 	var held bool
+	var removedAt time.Time
 	var marks []graphstore.Tuple
 	if fits {
 		var err error
 		if _, held, err = graphstore.ReadNode(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey); err != nil {
 			s.writeHandlerError(w, err)
 			return
+		}
+		if removedAt, err = graphstore.StatementTime(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if !held && !removedAt.After(artifact.CreatedAt) {
+			removedAt = artifact.CreatedAt.Add(time.Microsecond)
 		}
 		if held {
 			if marks, err = graphstore.CurrentOut(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey, []string{graphstore.TupleChangedByRun}); err != nil {
@@ -151,11 +166,6 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		removedAt, err := graphstore.StatementTime(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
 		gone := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), actor, removedAt)
 		gone.State = graphstore.StateGone
 		// Each changed_by_run the node states now is retracted with it, by the person who removed
@@ -168,6 +178,7 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 				At: removedAt, Who: actor, Asserted: false,
 			}
 		}
+		var err error
 		if goneNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{gone}, retractions); err != nil {
 			s.writeHandlerError(w, fmt.Errorf("state the node of the removed document %s gone: %w", artifact.ID, err))
 			return
@@ -184,15 +195,12 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	event, err := s.appendEvent(r.Context(), tx, ownerForArtifact(artifact).event(
+	// The event and the gone statement it causes, in one batch (appendCausingEvent).
+	event, err := s.appendCausingEvent(r.Context(), tx, ownerForArtifact(artifact).event(
 		"artifact.removed", actor, map[string]any{"artifact": artifact},
-	))
+	), goneNode)
 	if err != nil {
 		s.writeHandlerError(w, err)
-		return
-	}
-	if err := graphstore.Caused(r.Context(), tx, goneNode, event.ID); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("state the removed document's node gone: %w", err))
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
