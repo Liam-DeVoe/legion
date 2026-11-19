@@ -15,7 +15,7 @@ import (
 // TestAPreventedByAppendedWhileItsChecksDocumentIsRetiredIsNotLeftStanding retires the document of
 // a check of another issue in a transaction held open, appends a prevented_by from a risk to that
 // check through the pointer route meanwhile, and then commits the retirement. A retired document's
-// checks are run by nobody, so no prevented_by may point at one (dispatch://INFRA-1950/spec#b-r-constraint-risk):
+// checks are run by nobody, so no prevented_by may point at one (spec requirement r-constraint-risk):
 // whichever write commits second must see the other, and the risk must hold no prevented_by to the
 // check once both are done. The pointer route locks only the risk's issue and reads the document's
 // retired_at with no lock, and the retirement reads the check's prevented_by tuples before the

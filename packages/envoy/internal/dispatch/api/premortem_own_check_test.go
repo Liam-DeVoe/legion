@@ -11,7 +11,7 @@ import (
 // TestAConversionMapNamingACheckOfTheDocumentItRetiresWritesNothing converts a pre-mortem document
 // that holds a check block of its own, with a map that names that check for risk 0. The conversion
 // retires the document, and a retired document's checks are run by nobody, so a prevented_by to
-// one is refused (dispatch://INFRA-1950/spec#b-r-constraint-risk) and a retirement retracts each
+// one is refused (spec requirement r-constraint-risk) and a retirement retracts each
 // prevented_by into its blocks. The conversion must therefore refuse that entry, in a dry run as in
 // a real one, with 400 INVALID_POINTER naming the check, and write nothing: a conversion that
 // answers risk 0 prevented by the check while its own retirement retracts that tuple tells its
