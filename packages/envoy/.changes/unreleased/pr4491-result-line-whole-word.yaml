@@ -1,6 +1,6 @@
 kind: Fixed
 body: |-
-  The pull-request body line of a result, recorded or derived from a CI run, keeps a first word longer than 80 characters whole, with `…` only where more words follow it, where it used to cut that word at the 80th character.
+  The pull-request body line of a result, recorded or derived from a CI run, keeps a first word longer than 80 characters whole, with `…` only where more words follow it, where it used to cut that word at the 80th character, and it keeps a word that ends at the 80th character, which it used to leave out. Text in a script written without spaces between its words, such as Chinese, Japanese or Thai, is still cut inside the 80 characters with `…`, now at a word boundary as Unicode's word rules (UAX #29) place it, beside a character and never between a letter and its marks.
 time: 2026-11-19T08:09:40Z
 custom:
   Issue: pr4491

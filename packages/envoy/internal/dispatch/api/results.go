@@ -995,9 +995,10 @@ func checkResultLine(check resolvedCheck, result model.CheckResult) string {
 }
 
 // cutWords is s cut at a word boundary to checkResultReadingRunes, with an ellipsis where it was
-// cut, so a reader can tell a cut line from a short one (text.HeadWords). A first word longer
-// than the budget is kept whole, since no boundary falls inside the budget, and is marked only
-// where more words follow it.
+// cut, so a reader can tell a cut line from a short one (text.HeadWords). In a script written
+// without spaces between its words, such as Chinese, a boundary falls beside each character, so
+// such text is cut inside the budget. A first word longer than the budget is kept whole, since no
+// boundary falls inside the budget, and is marked only where more words follow it.
 func cutWords(s string) string {
 	head, cut := text.HeadWords(s, checkResultReadingRunes)
 	if cut {

@@ -200,27 +200,64 @@ func writeBranchAnswer(t *testing.T, database *store.Store, repo, branch, sha st
 	}
 }
 
+// wordOfLength is one word of length characters, cut from repeats of "results_branch_newest_".
+func wordOfLength(length int) string {
+	return strings.Repeat("results_branch_newest_", length/22+1)[:length]
+}
+
 // longFirstWord is one word of 110 characters, past the 80 a pull-request body line carries of a
 // reading or of a check's words (checkResultReadingRunes), so no word ends inside that budget.
-var longFirstWord = strings.Repeat("results_branch_newest_", 5)
+var longFirstWord = wordOfLength(110)
+
+// scriptReadings are readings in scripts written without spaces between their words, where
+// Unicode's default word rules (UAX #29) put a word boundary beside each ideograph, each Hiragana
+// character and each Thai letter, and none between a letter and its marks. So each is cut inside
+// the budget, and want is what the line carries of it.
+var scriptReadings = []struct{ script, reading, want string }{
+	{
+		// 208 characters, 16 to a sentence: the 80th ends the fifth sentence.
+		script:  "Chinese",
+		reading: strings.Repeat("运行了二十次，每次都打印了列表。", 13),
+		want:    strings.Repeat("运行了二十次，每次都打印了列表。", 5) + "…",
+	},
+	{
+		// 204 characters, 17 to a sentence: the 80th is the ideograph 功, and a Hiragana
+		// character follows it.
+		script:  "Japanese",
+		reading: strings.Repeat("テストは二十回すべて成功しました。", 12),
+		want:    strings.Repeat("テストは二十回すべて成功しました。", 4) + "テストは二十回すべて成功…",
+	},
+	{
+		// 228 characters: the 81st is the vowel mark U+0E35 of the letter ย, the 80th, so the
+		// cut falls before that letter and the line keeps 79.
+		script:  "Thai",
+		reading: "ผล: " + strings.Repeat("การทดสอบผ่านครบทั้งยี่สิบรอบ", 8),
+		want:    "ผล: " + strings.Repeat("การทดสอบผ่านครบทั้งยี่สิบรอบ", 2) + "การทดสอบผ่านครบทั้ง…",
+	},
+}
 
 // The pull-request body line carries the reading the role recorded, because that is the record
 // a reader of the pull request cannot see anywhere else: the check's own words are on the
 // issue, and a pass and a fail would carry them alike. A reading over the budget is cut at a
 // word boundary and marked, a short one prints whole, and a result with no reading says so. A
-// first word longer than the budget is never cut in two: the line keeps it whole, marked as cut
-// only where more words follow it.
+// word that ends at the budget's last character is kept. A first word longer than the budget is
+// never cut in two, at any length: the line keeps it whole, marked as cut only where more words
+// follow it. A reading in a script written without spaces between its words is cut inside the
+// budget, beside a character.
 func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESL", "Line", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 
 	long := "The rig drove the command against a local Dispatch and the refusal named the flag it wanted, which is the whole of the case."
-	for _, row := range []struct {
+	// fifteen is fifteen words of four characters, 74 characters before the word after them.
+	fifteen := strings.TrimSuffix(strings.Repeat("word ", 15), " ")
+	type lineRow struct {
 		name     string
 		observed string
 		want     string
-	}{
+	}
+	rows := []lineRow{
 		{
 			name:     "a reading over the budget is cut at a word boundary",
 			observed: long,
@@ -232,21 +269,48 @@ func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 			want:     "Every one of the twenty runs printed its listing.",
 		},
 		{
-			name:     "a first word over the budget is kept whole and marked when more words follow it",
-			observed: longFirstWord + " passed 20 of 20 runs.",
-			want:     longFirstWord + "…",
+			name:     "a word that ends at the 79th character is kept",
+			observed: fifteen + " four more words follow.",
+			want:     fifteen + " four…",
 		},
 		{
-			name:     "a first word over the budget that is the whole reading prints whole",
-			observed: longFirstWord,
-			want:     longFirstWord,
+			name:     "a word that ends at the 80th character is kept",
+			observed: fifteen + " fives more words follow.",
+			want:     fifteen + " fives…",
+		},
+		{
+			name:     "a word that ends at the 81st character is left out",
+			observed: fifteen + " sixsix more words follow.",
+			want:     fifteen + "…",
 		},
 		{
 			name:     "a result with no reading says so",
 			observed: "",
 			want:     "The role recorded no reading.",
 		},
-	} {
+	}
+	for _, length := range []int{81, 110, 161, 1000} {
+		word := wordOfLength(length)
+		rows = append(rows,
+			lineRow{
+				name:     fmt.Sprintf("a first word of %d characters is kept whole and marked when more words follow it", length),
+				observed: word + " passed 20 of 20 runs.",
+				want:     word + "…",
+			},
+			lineRow{
+				name:     fmt.Sprintf("a first word of %d characters that is the whole reading prints whole", length),
+				observed: word,
+				want:     word,
+			})
+	}
+	for _, script := range scriptReadings {
+		rows = append(rows, lineRow{
+			name:     "a reading in " + script.script + " is cut inside the budget beside a character",
+			observed: script.reading,
+			want:     script.want,
+		})
+	}
+	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			body := map[string]any{"surface": "cli"}
 			if row.observed != "" {
@@ -3165,26 +3229,41 @@ func TestCIResultIsTheRunOfTheHighestID(t *testing.T) {
 }
 
 // The pull-request body line of a check CI proves cuts the check's words as a recorded line cuts
-// a reading (TestThePullRequestLineCarriesTheReading): a first word longer than the budget is
-// kept whole, marked as cut where more words follow it, and printed whole where it is all the
-// check says.
-func TestTheCILineKeepsALongFirstWordWhole(t *testing.T) {
+// a reading (TestThePullRequestLineCarriesTheReading): at the last word boundary inside the
+// budget, beside a character in a script written without spaces between its words; a first word
+// longer than the budget is kept whole, marked as cut where more words follow it, and printed
+// whole where it is all the check says.
+func TestTheCILineCutsTheCheckWordsAtAWord(t *testing.T) {
 	handler, database, fake := resultsGitHubCheckRuns(t)
-	issue := issueInRepository(t, handler, "RESCW", "acme/widgets", "Long first word")
-	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
-		":::check{#c1 "+ciCheckKept+"}\n"+longFirstWord+" builds at the head.\n:::\n\n"+
-			":::check{#c2 "+ciCheckKept+"}\n"+longFirstWord+"\n:::\n")
+	issue := issueInRepository(t, handler, "RESCW", "acme/widgets", "Check words cut at a word")
+	rows := []struct{ name, words, want string }{
+		{
+			name:  "a sentence over the budget is cut at a word boundary",
+			words: "The rig drove the command against a local Dispatch and the refusal named the flag it wanted, which is the whole of the case.",
+			want:  "The rig drove the command against a local Dispatch and the refusal named the…",
+		},
+		{name: "a first word over the budget is kept whole and marked when more words follow it", words: longFirstWord + " builds at the head.", want: longFirstWord + "…"},
+		{name: "a first word over the budget that is all the check says prints whole", words: longFirstWord, want: longFirstWord},
+	}
+	for _, script := range scriptReadings {
+		rows = append(rows, struct{ name, words, want string }{
+			name: "words in " + script.script + " are cut inside the budget beside a character", words: script.reading, want: script.want,
+		})
+	}
+	var document strings.Builder
+	for index, row := range rows {
+		fmt.Fprintf(&document, ":::check{#c%d %s}\n%s\n:::\n\n", index+1, ciCheckKept, row.words)
+	}
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", document.String())
 	writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
 	fake.set(headCommit, completedRun(41, ciCheckRun, "success"))
 
 	read := readResults(t, handler, issue.Key)
-	for _, row := range []struct{ name, blockID, words string }{
-		{"more words follow the word", "c1", longFirstWord + "…"},
-		{"the word is all the check says", "c2", longFirstWord},
-	} {
+	for index, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
-			line := fmt.Sprintf("- Check %s (before_merge): pass at %s, from CI run %s. %s", row.blockID, headCommit, ciCheckRun, row.words)
-			assertCI(t, checkOf(t, read, row.blockID), ciCheckRun, model.CIStatePass, "success", line)
+			blockID := fmt.Sprintf("c%d", index+1)
+			line := fmt.Sprintf("- Check %s (before_merge): pass at %s, from CI run %s. %s", blockID, headCommit, ciCheckRun, row.want)
+			assertCI(t, checkOf(t, read, blockID), ciCheckRun, model.CIStatePass, "success", line)
 		})
 	}
 }
