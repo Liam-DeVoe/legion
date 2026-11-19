@@ -137,7 +137,7 @@ const RoleTopicPrefix = "notifications.role."
 // releaseUnslotted), a person's decision on a tree Legion is not running (`parked-decision`, the
 // outbox's parkDecision and workflow's relayParkedDecision), an issue whose pod an update round
 // cannot replace (`update-stalled`, the daemon's reconcilePodUpdates), a claim whose turns keep
-// ending in a provider error (`provider-errors`, supervise's tellControllerOfProviderErrors), a
+// ending in a provider error (`provider-errors`, admit's TellOfProviderErrors, once for each run), a
 // tree of the project that has stopped (`tree-stalled`, admit's tellStalledTrees, once for each
 // stall), a root whose own architect is not taking the work the daemon states it is owed
 // (`architect-stalled`, admit's wakeStalledArchitects, once for each arm and run of its tree), and

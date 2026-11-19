@@ -2011,7 +2011,9 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // that lock for minutes, so waiting for it would hold every role message of this issue behind one
 // decision. The row keeps its place, nothing was published, and its next attempt is the first
 // publish. A claim an earlier ask of the round already reached is published nothing, so a second
-// row of one round asks no role twice.
+// row of one round asks no role twice. Nor is a claim that holds a task: the round's question
+// waits behind it (supervise's Claim.OwesUpdateAsk), the row ends with nothing marked, and the
+// sweep enqueues the ask again once the claim holds no task.
 //
 // A topic with no live holder (notify.ErrNoHolder) is logged on one line and ends the row with
 // nothing marked: the ask is lost, not given, and the sweep's next reading of the round asks the
@@ -2062,6 +2064,8 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 		r.log.Info("outbox update ask finished without a publish: an earlier ask of its round reached the role", fields...)
 	case supervise.UpdateAskOutOfRound:
 		r.updateAskLeftRound(row, payload, token, machine.View().UpdateRound)
+	case supervise.UpdateAskBehindTask:
+		r.log.Info("outbox update ask finished without a publish: the claim holds a task, and the round's question waits behind it", fields...)
 	}
 	return nil
 }

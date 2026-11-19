@@ -88,9 +88,9 @@ import (
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
-// The mark that the project's controller was told of a claim's run of provider-error turns
-// (20261119114140, claims.provider_errors_told_run) is applied after all of these: it adds one
-// column at its default, 0, and touches no outbox_kind_check.
+// The notice a claim's run of provider-error turns owes the project's controller, and the mark
+// that it was told (20261119114140), is applied after all of these: it adds four columns of claims
+// at their defaults, an index and a trigger on claims, and touches no outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,

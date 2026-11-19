@@ -50,7 +50,8 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.last_death_cause, c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session, c.ended_work,
 	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
 	c.update_head, c.update_told_at,
-	c.update_left_round, c.provider_error_run, c.death_charged,
+	c.update_left_round, c.provider_error_run, c.provider_error_run_id, c.provider_errors_owed_run,
+	c.provider_errors_owed_reason, c.death_charged,
 	c.step_at, c.turn_started_at, c.step_tool, c.step_call_id, c.step_args_bytes,
 	c.step_args_hash, c.step_started_at, c.step_ended_at,
 	c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
@@ -408,10 +409,11 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
 		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
+		provider_error_run_id, provider_errors_owed_run, provider_errors_owed_reason,
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58,
+		$55, $56, $57, $58, $59, $60, $61,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -447,12 +449,13 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_told_at = excluded.update_told_at,
 		update_left_round = excluded.update_left_round,
 		provider_error_run = excluded.provider_error_run,
-		-- provider_errors_told_run is admission's mark that the project's controller was told of
-		-- the run of provider-error turns the claim stands in (admit's TellOfProviderErrors), and
-		-- no part of a claim's write but this: a run climbs by one or goes back to 0, so a write
-		-- whose run is below the mark is a new run, which the mark leaves untold.
-		provider_errors_told_run = case when excluded.provider_error_run < claims.provider_errors_told_run
-			then 0 else claims.provider_errors_told_run end,
+		-- The run's number and the notice it owes are the machine's (supervise's
+		-- Claim.ProviderErrorsOwed). The mark that the notice was told is admission's alone
+		-- (admit's tellProviderErrors), and no claim write names it, so no turn, reset or restart
+		-- of the claim can tell a run, or untell one (20261119114140_provider_errors_told).
+		provider_error_run_id = excluded.provider_error_run_id,
+		provider_errors_owed_run = excluded.provider_errors_owed_run,
+		provider_errors_owed_reason = excluded.provider_errors_owed_reason,
 		serving_check_look = excluded.serving_check_look,
 		serving_check_opened_at = excluded.serving_check_opened_at,
 		death_charged = excluded.death_charged,
@@ -500,6 +503,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
 		c.PodEnd, string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
+		int64(c.ProviderErrorRunID), int64(c.ProviderErrorsOwed.Run), c.ProviderErrorsOwed.Reason,
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
@@ -832,6 +836,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		stepStarted, stepEnded      *time.Time
 		reportedAt, reminderAt      *time.Time
 		kinds                       string
+		runID, owedRun              int64
 	)
 	err := row.Scan(&token, &c.Project, &c.Tree, &c.Issue, &role, &generation, &treeEpoch, &c.Session,
 		&c.SessionFile, &locator, &state, &c.Failure, &c.PodEnd, &cause, &failedAt, &pendingCause, &c.LeakCheckCause,
@@ -846,7 +851,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.LastDeathCause, &c.LastStartFailure, &lastReady, &outcomes, &abandoned, &endedWork,
 		&c.UpdateRound, &c.UpdateReasons, &updateOpened, &updateTasked, &updateSignalled,
 		&c.UpdateHead, &updateTold,
-		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
+		&c.UpdateLeftRound, &c.ProviderErrorRun, &runID, &owedRun, &c.ProviderErrorsOwed.Reason, &c.DeathCharged,
 		&stepAt, &turnStarted, &c.Step.Tool, &c.Step.CallID, &c.Step.ArgsBytes,
 		&c.Step.ArgsHash, &stepStarted, &stepEnded,
 		&reportedAt, &c.ActivityBackground, &kinds, &reminderAt,
@@ -868,6 +873,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	c.FailureCause, c.PendingCause = supervise.FailureCause(cause), supervise.FailureCause(pendingCause)
 	c.FailedAt = orZero(failedAt)
 	c.Generation, c.TreeEpoch, c.ServingGeneration = uint64(generation), uint64(treeEpoch), uint64(servingGeneration)
+	c.ProviderErrorRunID, c.ProviderErrorsOwed.Run = uint64(runID), uint64(owedRun)
 	c.ServingCheckLook = supervise.CheckLook{Look: servingCheckLook, OpenedAt: orZero(servingCheckOpened)}
 	// The handshake's two moments are nullable (20261114020537_claim_entry_handshake): a claim queued
 	// no task carrying an entry has neither, and one whose task of its entry no turn has confirmed

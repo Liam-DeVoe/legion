@@ -774,10 +774,12 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // provider-errors notice names an issue whose role has ended six turns or more in a row in a
 // provider error: its Role is that role, and its Reason the run, the model and the HTTP status the
 // provider answered, where it answered one, in words built from structured fields alone
-// (supervise's tellControllerOfProviderErrors). It is told once a run, at the first turn from the
-// sixth on at which a controller is registered, and not again until a turn with no error puts
-// that run back to zero (admit.Admission.TellOfProviderErrors marks the claim's run told);
-// nothing is held and nothing is bounded, because a chain's bottom refusing deterministically
+// (supervise's oweProviderErrorsNotice). It is told once for each run that reached six turns,
+// whatever came after that run: the claim's row keeps the notice the run owes, and admission
+// writes it while a controller is registered and marks the run told in the same transaction
+// (admit.Admission.TellOfProviderErrors, TellOwedProviderErrors). Each run is told on its own, so a
+// later run's notice is written while an earlier run's still waits unsent. Nothing is held and
+// nothing is bounded, because a chain's bottom refusing deterministically
 // costs one request every ten minutes. A tree-stalled notice names a
 // root of the daemon's own whose tree has stopped: nothing of the tree has moved for longer than
 // `stalled_tree_notice_hours`, no claim of it is at work, and it does not wait by design (admit's
@@ -881,30 +883,24 @@ type ArchitectStall struct {
 	At         time.Time
 }
 
-// NoticePerClaim is whether one unpublished controller notice of kind stands per claim — the
-// issue and the role that names it — rather than one per project
-// (admit.Admission.wakeController reads it before it queues a wake).
+// NoticePerIssue is whether one unpublished controller notice of kind stands per issue rather
+// than one per project (admit.Admission.wakeController reads it before it queues a wake).
 //
-// Two kinds answer true. A provider-errors notice names the claim whose turns keep ending in a
-// provider error, and in an outage every claim of the project has a notice of its own to send.
-// It is told once a run, and a second claim's notice held behind the first claim's would reach
-// the controller only once the first was published. Two claims of one issue are two such claims
-// — an issue's architect and its worker fail their turns in the same outage — so the issue alone
-// is not the key; the role is the rest of it.
+// One kind answers true. A tree-stalled notice names one root whose tree has stopped: the stall
+// is the whole tree's and not one agent's, so its key is the issue, the tree's root. It is keyed
+// that way because a project can have two trees stopped at once, which is the very shape its
+// controller most needs to read: keyed per project, the second tree's notice would be dropped for
+// as long as the first tree's waited in the outbox, and no pass could tell the controller of it
+// until that first notice was published.
 //
-// A tree-stalled notice names one root whose tree has stopped, and carries no role: the stall
-// is the whole tree's and not one agent's. So its key is the issue alone, which is what an
-// empty role gives it — the role is a term the pending read leaves out when the caller names
-// none (Store.ControllerNoticePending) — and the issue is the tree's root. It is keyed that way
-// because a project can have two trees stopped at once, which is the very shape its controller
-// most needs to read: keyed per project, the second tree's notice would be dropped for as long
-// as the first tree's waited in the outbox, and no pass could tell the controller of it until
-// that first notice was published.
-//
-// Every other kind says something about the project — a free slot, a todo issue, the day's tick
-// — which one wake carries however many facts find it pending.
-func NoticePerClaim(kind NoticeKind) bool {
-	return kind == ProviderErrorsNotice || kind == TreeStalledNotice
+// A provider-errors notice passes no wake's pending check at all: it is told once for each run of
+// a claim's provider-error turns by the mark its write leaves on the claim's row, so an earlier
+// run's notice still unsent, of the same claim or of another, holds back no later run's notice
+// (admit.Admission.TellOfProviderErrors). Every other kind says something about the project — a
+// free slot, a todo issue, the day's tick — which one wake carries however many facts find it
+// pending.
+func NoticePerIssue(kind NoticeKind) bool {
+	return kind == TreeStalledNotice
 }
 
 // SuperviseOp identifies a worker-session operation: "start" starts, resumes, or retries the role's

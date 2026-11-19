@@ -2222,39 +2222,34 @@ func (s *Postgres) ControllerRegistered(ctx context.Context, tx pgx.Tx, project 
 }
 
 // ControllerNoticePending reads the project's unpublished notices of this kind, narrowed to one
-// issue when the caller named one and to one role of that issue when it named a role as well:
-// the same read every way, with the issue and the role as two more terms that an empty string
-// leaves out, so a project-wide wake's answer is what it always was.
-func (s *Postgres) ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issue string, role claim.Role) (bool, error) {
+// issue when the caller named one: the same read either way, with the issue as one more term that
+// an empty string leaves out, so a project-wide wake's answer is what it always was.
+func (s *Postgres) ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issue string) (bool, error) {
 	var pending bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox
 		where kind = $1 and split_part(issue, '-', 1) = $2 and payload->>'kind' = $3
-		and ($4 = '' or issue = $4) and ($5 = '' or payload->>'role' = $5))`,
-		string(OutboxKindControllerNotice), project, string(kind), issue, string(role)).Scan(&pending); err != nil {
+		and ($4 = '' or issue = $4))`,
+		string(OutboxKindControllerNotice), project, string(kind), issue).Scan(&pending); err != nil {
 		return false, fmt.Errorf("read whether %s has a %s controller notice pending: %w", project, kind, err)
 	}
 	return pending, nil
 }
 
 // ControllerNoticesPending reads that same row for many issues in one query: the statement above
-// with the issue term taken as a list rather than one key, and with the project and the role
-// terms exactly as they stand there, so each issue's answer is the answer the single read gives
-// it and a caller asking of a hundred roots makes one round trip instead of a hundred. It names
-// the issues a row was found for, which is the set a caller filtering its own roots asks for; an
-// issue with no unpublished notice is simply absent, and no issues at all reads nothing — the
-// query is not made.
-//
-// Distinct, because a kind that stands per claim can have a row per role of one issue
-// (NoticePerClaim) and the caller asks about issues; a project-wide ask names no issue and is
-// ControllerNoticePending's, which this does not serve.
-func (s *Postgres) ControllerNoticesPending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issues []string, role claim.Role) (map[string]struct{}, error) {
+// with the issue term taken as a list rather than one key, and with the project term exactly as
+// it stands there, so each issue's answer is the answer the single read gives it and a caller
+// asking of a hundred roots makes one round trip instead of a hundred. It names the issues a row
+// was found for, which is the set a caller filtering its own roots asks for; an issue with no
+// unpublished notice is simply absent, and no issues at all reads nothing — the query is not
+// made. Each issue is named once, however many rows of it the outbox holds.
+func (s *Postgres) ControllerNoticesPending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issues []string) (map[string]struct{}, error) {
 	if len(issues) == 0 {
 		return nil, nil
 	}
 	rows, err := tx.Query(ctx, `select distinct issue from outbox
 		where kind = $1 and split_part(issue, '-', 1) = $2 and payload->>'kind' = $3
-		and issue = any($4) and ($5 = '' or payload->>'role' = $5)`,
-		string(OutboxKindControllerNotice), project, string(kind), issues, string(role))
+		and issue = any($4)`,
+		string(OutboxKindControllerNotice), project, string(kind), issues)
 	if err != nil {
 		return nil, fmt.Errorf("read which of %v have a %s controller notice pending: %w", issues, kind, err)
 	}
@@ -2273,21 +2268,77 @@ func (s *Postgres) ControllerNoticesPending(ctx context.Context, tx pgx.Tx, proj
 	return pending, nil
 }
 
-func (s *Postgres) ProviderErrorsTold(ctx context.Context, tx pgx.Tx, token claim.Token) (bool, error) {
-	var told bool
-	err := tx.QueryRow(ctx, "select provider_errors_told_run > 0 from claims where token = $1 for update", string(token)).Scan(&told)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("read whether the controller was told of the provider errors of claim %s: %w", token, err)
-	}
-	return told, nil
+// ErrNoClaim is a read or a mark of a claim's notice of a run of provider-error turns for a token
+// no claim row holds (Store.ProviderErrorsOwed, Store.MarkProviderErrorsTold).
+var ErrNoClaim = errors.New("no claim row holds the token")
+
+// OwedProviderErrors is a notice of a run of provider-error turns that one claim owes the
+// project's controller and that has not been told (Store.ProviderErrorsOwed): the claim, its issue
+// and its role, the run's number, and what the notice says (supervise.Claim.ProviderErrorsOwed).
+type OwedProviderErrors struct {
+	Token  claim.Token
+	Issue  string
+	Role   claim.Role
+	Run    uint64
+	Reason string
 }
 
-func (s *Postgres) MarkProviderErrorsTold(ctx context.Context, tx pgx.Tx, token claim.Token, run int) error {
-	if _, err := tx.Exec(ctx, "update claims set provider_errors_told_run = $2 where token = $1", string(token), run); err != nil {
-		return fmt.Errorf("mark claim %s told of its provider errors: %w", token, err)
+func (s *Postgres) ProviderErrorsOwed(ctx context.Context, tx pgx.Tx, token claim.Token) (*OwedProviderErrors, error) {
+	owed := OwedProviderErrors{Token: token}
+	var role string
+	var run, told int64
+	err := tx.QueryRow(ctx, `select issue, role, provider_errors_owed_run, provider_errors_owed_reason, provider_errors_told_run
+		from claims where token = $1 for update`, string(token)).Scan(&owed.Issue, &role, &run, &owed.Reason, &told)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("read the notice claim %s owes of its provider errors: %w", token, ErrNoClaim)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the notice claim %s owes of its provider errors: %w", token, err)
+	}
+	if owed.Issue == "" || run <= told {
+		return nil, nil
+	}
+	owed.Role, owed.Run = claim.Role(role), uint64(run)
+	return &owed, nil
+}
+
+func (s *Postgres) ProjectProviderErrorsOwed(ctx context.Context, tx pgx.Tx, project string) ([]OwedProviderErrors, error) {
+	// The claims rows are keyed by the claim project token, not by the Dispatch project key.
+	token, err := claim.ProjectToken(project)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `select token, issue, role, provider_errors_owed_run, provider_errors_owed_reason from claims
+		where project = $1 and issue <> '' and provider_errors_owed_run > provider_errors_told_run
+		order by token for update`, token)
+	if err != nil {
+		return nil, fmt.Errorf("read the notices the claims of %s owe of their provider errors: %w", project, err)
+	}
+	defer rows.Close()
+	var owed []OwedProviderErrors
+	for rows.Next() {
+		var notice OwedProviderErrors
+		var claimToken, role string
+		var run int64
+		if err := rows.Scan(&claimToken, &notice.Issue, &role, &run, &notice.Reason); err != nil {
+			return nil, fmt.Errorf("read the notices the claims of %s owe of their provider errors: %w", project, err)
+		}
+		notice.Token, notice.Role, notice.Run = claim.Token(claimToken), claim.Role(role), uint64(run)
+		owed = append(owed, notice)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the notices the claims of %s owe of their provider errors: %w", project, err)
+	}
+	return owed, nil
+}
+
+func (s *Postgres) MarkProviderErrorsTold(ctx context.Context, tx pgx.Tx, token claim.Token, run uint64) error {
+	tag, err := tx.Exec(ctx, "update claims set provider_errors_told_run = $2 where token = $1", string(token), int64(run))
+	if err != nil {
+		return fmt.Errorf("mark claim %s told of its run %d of provider errors: %w", token, run, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("mark claim %s told of its run %d of provider errors: %w", token, run, ErrNoClaim)
 	}
 	return nil
 }

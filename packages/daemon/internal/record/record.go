@@ -1963,33 +1963,39 @@ type Store interface {
 	// ControllerNoticePending says whether the outbox of the Dispatch project key project still
 	// holds an unpublished controller notice of kind, so a wake is never queued behind an
 	// identical one. Issue "" reads every issue of the project, which is what a wake about the
-	// project alone asks; an issue, and with it a role, narrow the read to that one claim's own
-	// rows, for a kind whose notice stands per claim (NoticePerClaim). A role of "" narrows
-	// nothing further, so an issue alone reads every role of that issue.
-	ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issue string, role claim.Role) (bool, error)
+	// project alone asks; an issue narrows the read to that issue's own rows, for a kind whose
+	// notice stands per issue (NoticePerIssue).
+	ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issue string) (bool, error)
 	// ControllerNoticesPending is that same read made of many issues at once: the issues among
 	// issues whose own unpublished controller notice of kind the outbox of the Dispatch project
 	// key project still holds, as a set keyed by issue. It is the one statement above with the
 	// issue term taken as a list, in the caller's own transaction, so every issue's answer here is
-	// the answer ControllerNoticePending gives it; role narrows each issue's rows to that role
-	// exactly as it does there, and a role of "" narrows nothing. No issues at all reads nothing —
-	// the query is not made — and a wake about the project alone, which names no issue, is the
-	// single read's ask and not this one's.
+	// the answer ControllerNoticePending gives it. No issues at all reads nothing — the query is
+	// not made — and a wake about the project alone, which names no issue, is the single read's
+	// ask and not this one's.
 	//
 	// It is for the caller that must ask this of every root of one pass and may make no read per
 	// root: the stalled-tree rule asks it of the trees it is about to tell (admit's
 	// tellStalledTrees), on every fact, every tick and every boot.
-	ControllerNoticesPending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issues []string, role claim.Role) (map[string]struct{}, error)
-	// ProviderErrorsTold says whether the project's controller has been told of the run of
-	// provider-error turns the claim of token stands in (claims.provider_errors_told_run, which
-	// the claim's own write puts back to 0 when a new run starts), and locks the claim's row until
-	// the caller's transaction ends: two offers of one run's notice cannot both read it untold,
-	// since the second waits for the first to commit and then reads its mark. A token with no
-	// claim row reads untold.
-	ProviderErrorsTold(ctx context.Context, tx pgx.Tx, token claim.Token) (bool, error)
-	// MarkProviderErrorsTold marks the claim of token told of the run of provider-error turns it
-	// stands in, run turns long when its notice was written (admit's TellOfProviderErrors).
-	MarkProviderErrorsTold(ctx context.Context, tx pgx.Tx, token claim.Token, run int) error
+	ControllerNoticesPending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issues []string) (map[string]struct{}, error)
+	// ProviderErrorsOwed is the notice of a run of provider-error turns that the claim of token owes
+	// the project's controller and that has not been told (claims.provider_errors_owed_run above
+	// provider_errors_told_run), and nil when the claim owes none or has no issue. It locks the
+	// claim's row until the caller's transaction ends, so two offers of one run cannot both read
+	// it untold: the second waits for the first to commit, then reads the first's mark and finds
+	// nothing owed. A token with no claim row is ErrNoClaim: no row can hold a told mark, so an
+	// answer of "owes none" or "owes one" would both be false.
+	ProviderErrorsOwed(ctx context.Context, tx pgx.Tx, token claim.Token) (*OwedProviderErrors, error)
+	// ProjectProviderErrorsOwed is every such notice of the claims of the Dispatch project key
+	// project, in token order, and it locks each row it answers as ProviderErrorsOwed does. It is
+	// the read of admission's pass at every fact, tick and boot (admit's TellOwedProviderErrors),
+	// which a partial index serves (20261119114140_provider_errors_told).
+	ProjectProviderErrorsOwed(ctx context.Context, tx pgx.Tx, project string) ([]OwedProviderErrors, error)
+	// MarkProviderErrorsTold marks the claim of token told of its run run, by the run's number
+	// (supervise.Claim.ProviderErrorRunID), in the transaction that wrote the run's notice (admit's
+	// tellProviderErrors). A token with no claim row is ErrNoClaim, since the mark would update
+	// nothing.
+	MarkProviderErrorsTold(ctx context.Context, tx pgx.Tx, token claim.Token, run uint64) error
 
 	// PersonHandoverPending says whether outbox still holds a dispatch_status row of issue whose
 	// kind is PersonHandoverStatusRow: a finished row is deleted, so any such row

@@ -34,9 +34,9 @@ const (
 // After six turns in a row of one worker end in a provider error, the project's controller is
 // told once, with the issue, the role and the error. By default an operator launches the
 // controller (config's `controller: operator`), so no controller may be registered at the sixth
-// turn. The notice is then owed, not dropped: the controller registered later is told at the
-// worker's next turn that fails the same way, and told once — neither a later turn of the same
-// run nor the publish of the notice tells it again.
+// turn. The notice is then owed, not dropped: the controller's registration tells it at once, and
+// it is told once — neither a later turn of the same run, nor the publish of the notice, nor the
+// end of the run tells it again.
 func TestAControllerRegisteredAfterTheSixthProviderErrorTurnIsToldOnce(t *testing.T) {
 	r := newErrorRunRig(t)
 	for range 6 {
@@ -47,18 +47,35 @@ func TestAControllerRegisteredAfterTheSixthProviderErrorTurnIsToldOnce(t *testin
 	}
 
 	r.registerController()
-	r.errorTurn()
-	r.wantOneNotice("after a controller registered and the seventh turn in a row ended in a provider error,", 7)
+	r.wantOneNotice("after six turns with no controller and then a controller's registration,", 6)
 
 	r.errorTurn()
-	r.wantOneNotice("after the eighth turn,", 7)
+	r.wantOneNotice("after the seventh turn,", 6)
 	r.publish()
 	r.errorTurn()
 	r.errorTurn()
+	r.cleanTurn()
 	if notices := r.notices(); len(notices) != 0 {
-		t.Fatalf("after the notice was published and two more turns of the same run failed, the outbox holds %d provider-errors notices, want none: the controller is told of a run once: %+v",
+		t.Fatalf("after the notice was published, two more turns of the same run failed and a clean turn ended it, the outbox holds %d provider-errors notices, want none: the controller is told of a run once: %+v",
 			len(notices), notices)
 	}
+}
+
+// A run reaches six with no controller registered, a controller registers, and the worker's next
+// turn ends with no error, so the run is over before another turn fails. The run is owed its
+// notice whatever comes after it (the gates' case of the first round: a notice offered only at a
+// failed turn was never told here).
+func TestARunOfSixIsToldWhenAControllerRegistersAndTheNextTurnIsClean(t *testing.T) {
+	r := newErrorRunRig(t)
+	for range 6 {
+		r.errorTurn()
+	}
+	if notices := r.notices(); len(notices) != 0 {
+		t.Fatalf("with no controller registered the outbox holds %d provider-errors notices, want none: %+v", len(notices), notices)
+	}
+	r.registerController()
+	r.cleanTurn()
+	r.wantOneNotice("after six turns with no controller, a registration during the run and a clean seventh turn,", 6)
 }
 
 // A notice whose write failed is not lost with it. The controller is registered from the start,
@@ -70,28 +87,48 @@ func TestAProviderErrorsNoticeWhoseWriteFailedIsWrittenAtTheNextTurn(t *testing.
 	for range 5 {
 		r.errorTurn()
 	}
-	for _, statement := range []string{
-		`create function refuse_the_notice() returns trigger language plpgsql as $$
-			begin raise exception 'the notice''s write did not commit'; end $$`,
-		`create trigger refuse_the_notice before insert on outbox for each row
-			when (new.kind = 'controller_notice') execute function refuse_the_notice()`,
-	} {
-		if _, err := r.pool.Exec(r.ctx, statement); err != nil {
-			t.Fatalf("make the notice's write fail: %v", err)
-		}
-	}
+	r.refuseNotices()
 	r.errorTurn()
 	if notices := r.notices(); len(notices) != 0 {
 		t.Fatalf("the outbox holds %d provider-errors notices while their write fails, want none: %+v", len(notices), notices)
 	}
-	for _, statement := range []string{"drop trigger refuse_the_notice on outbox", "drop function refuse_the_notice()"} {
-		if _, err := r.pool.Exec(r.ctx, statement); err != nil {
-			t.Fatalf("let the outbox take writes again: %v", err)
-		}
-	}
+	r.takeNotices()
 
 	r.errorTurn()
 	r.wantOneNotice("after the sixth turn's notice failed to write and the seventh turn in a row ended in a provider error,", 7)
+}
+
+// The same failed write, and then a turn with no error instead of another provider error: the end
+// of the run offers the notice the run still owes.
+func TestARunOfSixWhoseNoticeWriteFailedIsToldWhenItsNextTurnIsClean(t *testing.T) {
+	r := newErrorRunRig(t)
+	r.registerController()
+	for range 5 {
+		r.errorTurn()
+	}
+	r.refuseNotices()
+	r.errorTurn()
+	if notices := r.notices(); len(notices) != 0 {
+		t.Fatalf("the outbox holds %d provider-errors notices while their write fails, want none: %+v", len(notices), notices)
+	}
+	r.takeNotices()
+
+	r.cleanTurn()
+	r.wantOneNotice("after the sixth turn's notice failed to write and a clean seventh turn,", 6)
+}
+
+// The control of the cases above: the controller is registered before the sixth turn, so the
+// sixth turn tells it, and the clean turn that ends the run tells it nothing more.
+func TestARunToldWhileItLastedIsNotToldAgainWhenItEnds(t *testing.T) {
+	r := newErrorRunRig(t)
+	for range 5 {
+		r.errorTurn()
+	}
+	r.registerController()
+	r.errorTurn()
+	r.wantOneNotice("after a controller registered before the sixth turn,", 6)
+	r.cleanTurn()
+	r.wantOneNotice("after the clean turn that ended the run,", 6)
 }
 
 // The count starts again after a clean turn, and the controller can be told of the next run: a
@@ -122,35 +159,92 @@ func TestARunOfProviderErrorsAfterACleanTurnIsToldAgain(t *testing.T) {
 	r.wantOneNotice("after a clean turn and six more turns in a row that ended in a provider error,", 6)
 }
 
-// A run whose notice finds the claim's earlier notice still unsent is not lost behind it. The
-// first run is told, and its notice still waits in the outbox when a clean turn ends that run and
-// six more turns fill the next. Once the first notice is published, the next turn that fails the
-// same way tells the controller of the second run.
-func TestARunWhoseNoticeFoundTheEarlierOneUnsentIsToldOnceThatOneIsPublished(t *testing.T) {
+// A controller is registered throughout. The first run is told, and its notice stays unsent; a
+// second run reaches six and ends with a clean turn before the first notice is published. Each
+// run of six owes the controller its own notice, so the second is written at once beside the
+// first rather than behind it (the gates' case of the first round: a pending notice of the claim
+// held the second one back, and the run's end then lost it).
+func TestASecondRunOfSixIsToldWhileTheFirstRunsNoticeWaitsUnsent(t *testing.T) {
 	r := newErrorRunRig(t)
 	r.registerController()
 	for range 6 {
 		r.errorTurn()
 	}
-	r.wantOneNotice("after the sixth turn in a row ended in a provider error,", 6)
-
+	r.wantOneNotice("after the first run reached six,", 6)
 	r.cleanTurn()
 	r.give()
 	for range 6 {
 		r.errorTurn()
 	}
-	r.wantOneNotice("while the first run's notice waits unsent and the second run reaches six,", 6)
-	r.publish()
-	r.errorTurn()
-	r.wantOneNotice("after the first run's notice was published and the second run's seventh turn ended in a provider error,", 7)
+	r.cleanTurn()
+	notices := r.notices()
+	if len(notices) != 2 {
+		t.Fatalf("after two runs of six with a controller registered, the second ended while the first notice was unsent, the outbox holds %d provider-errors notices, want 2 (one per run): %+v", len(notices), notices)
+	}
+	for _, notice := range notices {
+		if !strings.Contains(notice.reason, "6 turns in a row") {
+			t.Errorf("a notice's reason is %q, want each run told at its sixth turn", notice.reason)
+		}
+	}
+}
+
+// A new session puts the run back to zero, and the notice the run of six owes outlives it: the
+// controller registered after the reset is told of the run all the same.
+func TestARunOfSixEndedByANewSessionIsToldWhenAControllerRegisters(t *testing.T) {
+	r := newErrorRunRig(t)
+	for range 6 {
+		r.errorTurn()
+	}
+	r.handle(supervise.StreamTurnEnd{Claim: r.token},
+		supervise.RequestSuspend{Claim: r.token, Reason: "a fresh session was asked for", By: supervise.SuspendedByOperator},
+		supervise.RequestForgetSession{Claim: r.token, Session: "ses-implementer"})
+	if got := r.machine.Claim().ProviderErrorRun; got != 0 {
+		t.Fatalf("the run of provider errors is %d after the session was forgotten, want 0", got)
+	}
+	if notices := r.notices(); len(notices) != 0 {
+		t.Fatalf("with no controller registered the outbox holds %d provider-errors notices, want none: %+v", len(notices), notices)
+	}
+	r.registerController()
+	r.wantOneNotice("after six turns, a new session and then a controller's registration,", 6)
+}
+
+// The notice is owed in the store, not in the daemon's memory: a daemon that restarts reads the
+// claim back owing it, and the admission pass of its boot tells a controller registered while it
+// was down, which no registration of this daemon's ever saw.
+func TestARunOfSixIsToldAtTheBootAfterARestart(t *testing.T) {
+	r := newErrorRunRig(t)
+	for range 6 {
+		r.errorTurn()
+	}
+	r.settled()
+	claims, err := r.st.Claims(r.ctx)
+	if err != nil {
+		t.Fatalf("read the claims back: %v", err)
+	}
+	var restored supervise.Claim
+	for _, c := range claims {
+		if c.Token == r.token {
+			restored = c
+		}
+	}
+	if owed := restored.ProviderErrorsOwed; owed.Run != 1 || !strings.Contains(owed.Reason, "6 turns in a row") {
+		t.Fatalf("the claim read back from the store owes %+v, want run 1's notice of six turns", owed)
+	}
+
+	r.recordRegistration()
+	if _, err := intake.ApplyFact(r.ctx, r.runtime.pool, "daemon", "boot:after-restart", intake.DaemonBooted{Boot: 2}, r.runtime.handlers...); err != nil {
+		t.Fatalf("apply the boot: %v", err)
+	}
+	r.wantOneNotice("after six turns, a restart and a boot that found a controller registered,", 6)
 }
 
 // errorRunRig is one implementer whose turns end in a provider error, over the parts the daemon
 // wires between such a turn and the controller's notice of a run of them: the implementer's
-// machine on the daemon's own claim store, whose Deps.ProviderErrorRunReached is the workflow
-// runtime's own (providerErrorRunReached, as daemon.go wires it), and admission over the record
-// store, on a database of the rig's own. The machine's clock is held, so the ladder's next send
-// goes when a case fires the wait the error armed.
+// machine on the daemon's own claim store, whose Deps.ProviderErrorsOwed is the workflow
+// runtime's own (providerErrorsOwed, as daemon.go wires it), the registration's own hook
+// (controllerRegistered, which daemon.go hands the API), and admission over the record store, on
+// a database of the rig's own. The machine's clock is held, so the ladder's next send goes when a
+// case fires the wait the error armed.
 type errorRunRig struct {
 	t       *testing.T
 	ctx     context.Context
@@ -161,13 +255,14 @@ type errorRunRig struct {
 	machine *supervise.Machine
 	conn    *fake.Conn
 	token   claim.Token
+	runtime *workflowRuntime
 	// tasks counts the tasks the implementer has been given, so each has an id of its own.
 	tasks int
-	// offered counts the machine's calls of providerErrorRunReached, and ended the transactions
-	// of the workflow runtime's pool that have ended. Each call writes on a goroutine of its own,
-	// so a case reads the outbox only once every call it made has ended (settled): a read before
-	// that could miss a notice still on its way, and a check that no second notice was written
-	// would then pass for that reason alone.
+	// offered counts the calls of providerErrorsOwed and controllerRegistered, and ended the
+	// transactions of the workflow runtime's pool that have ended. Each call writes on a
+	// goroutine of its own, so a case reads the outbox only once every call it made has ended
+	// (settled): a read before that could miss a notice still on its way, and a check that no
+	// second notice was written would then pass for that reason alone.
 	offered, ended atomic.Int64
 }
 
@@ -211,15 +306,15 @@ func newErrorRunRig(t *testing.T) *errorRunRig {
 	engine := workflow.New(records, workflow.Config{Project: errorRunProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(records, engine, 1, errorRunProject, log)
-	w := &workflowRuntime{pool: store.NewPool(written), records: records, admission: admission, engine: engine,
+	r.runtime = &workflowRuntime{pool: store.NewPool(written), records: records, admission: admission, engine: engine,
 		handlers: []intake.Handler{engine, admission}, dispatchProject: errorRunProject, log: log}
 
 	sup, _ := newOutboxSupervisor(t, project, t.TempDir())
 	sup.deps.Store = st
 	sup.deps.Clock = r.clock
-	sup.deps.ProviderErrorRunReached = func(c supervise.Claim, reason string) {
+	sup.deps.ProviderErrorsOwed = func(c supervise.Claim) {
 		r.offered.Add(1)
-		w.providerErrorRunReached(c, reason)
+		r.runtime.providerErrorsOwed(c)
 	}
 	r.token, err = claim.NewToken(project, errorRunIssue, claim.RoleImplementer)
 	if err != nil {
@@ -317,9 +412,19 @@ func ladderWait(attempt int) time.Duration {
 	return min(30*time.Second<<min(max(attempt-1, 0), 5), 10*time.Minute)
 }
 
-// registerController records a session as the project's controller, as its registration does
-// (api's registerController).
+// registerController registers a session as the project's controller as the registration route
+// does (api's registerController): the registration is recorded, and then the daemon is told of
+// it (Options.ControllerRegistered, which daemon.go wires to controllerRegistered).
 func (r *errorRunRig) registerController() {
+	r.t.Helper()
+	r.recordRegistration()
+	r.offered.Add(1)
+	r.runtime.controllerRegistered()
+}
+
+// recordRegistration records a session as the project's controller and tells nothing more: a
+// registration this daemon never saw, made while it was down.
+func (r *errorRunRig) recordRegistration() {
 	r.t.Helper()
 	generation, err := r.st.MintController(r.ctx, r.project, []byte("capability"))
 	if err != nil {
@@ -330,11 +435,37 @@ func (r *errorRunRig) registerController() {
 	}
 }
 
-// settled waits until every call the machine made of providerErrorRunReached has ended its
+// refuseNotices makes every write of a controller notice fail, as a database that does not answer
+// fails it, and takeNotices lets the outbox take them again.
+func (r *errorRunRig) refuseNotices() {
+	r.t.Helper()
+	for _, statement := range []string{
+		`create function refuse_the_notice() returns trigger language plpgsql as $$
+			begin raise exception 'the notice''s write did not commit'; end $$`,
+		`create trigger refuse_the_notice before insert on outbox for each row
+			when (new.kind = 'controller_notice') execute function refuse_the_notice()`,
+	} {
+		if _, err := r.pool.Exec(r.ctx, statement); err != nil {
+			r.t.Fatalf("make the notice's write fail: %v", err)
+		}
+	}
+}
+
+func (r *errorRunRig) takeNotices() {
+	r.t.Helper()
+	r.settled()
+	for _, statement := range []string{"drop trigger refuse_the_notice on outbox", "drop function refuse_the_notice()"} {
+		if _, err := r.pool.Exec(r.ctx, statement); err != nil {
+			r.t.Fatalf("let the outbox take writes again: %v", err)
+		}
+	}
+}
+
+// settled waits until every call of providerErrorsOwed and controllerRegistered has ended its
 // transaction, so what it wrote, if anything, can be read.
 func (r *errorRunRig) settled() {
 	r.t.Helper()
-	testwait.Eventually(r.t, "every notice the machine offered to end its transaction", func() bool {
+	testwait.Eventually(r.t, "every notice offered to end its transaction", func() bool {
 		return r.ended.Load() >= r.offered.Load()
 	})
 }
@@ -347,7 +478,7 @@ type errorRunNotice struct {
 }
 
 // notices are the provider-errors notices the outbox holds for the controller, read once every
-// notice the machine offered has ended its transaction.
+// notice offered has ended its transaction.
 func (r *errorRunRig) notices() []errorRunNotice {
 	r.t.Helper()
 	r.settled()

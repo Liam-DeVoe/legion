@@ -501,9 +501,10 @@ too: a credential error is the fleet's rather than this claim's work, so it clim
 any other and the controller's notice at six is what tells a person. A newer
 task for that claim replaces the one the error took back and is sent at once, so it does not wait
 out a ladder that reaches ten minutes a step; while that claim's session is being compacted it
-waits for the compaction's end instead, as everything the claim is owed does. An update round
-waits for none of this: the daemon publishes the round's message to the role's own topic, and the
-round ends at its bound whether or not a turn of that role succeeds.
+waits for the compaction's end instead, as everything the claim is owed does. An update round's
+message waits behind the task the claim holds, whether it is in its turn or kept for its next
+send: the daemon publishes the round's message to the role's own topic once the claim holds no
+task, and the round ends at its bound whether or not a turn of that role succeeds.
 
 **One provider error does hold the issue**, for its architect: one whose HTTP status is a client
 error, 400 to 499, that is none of 401, 403, 408 and 429. A malformed request is
@@ -514,21 +515,23 @@ failure under the cause word `provider_error`, with the same sentence as its `de
 
 **After six turns of one claim in a row have ended in a provider error**, the project's controller
 is told once, as `provider-errors on <KEY>`, with the run, the model and the cause
-(`admission: told the controller of a run of provider errors`). It is told at the first turn of
-the run, from the sixth on, at which a controller is registered: by default an operator launches
-the controller, so a run can reach six with none registered, and the controller registered later
-is told at that claim's next turn that ends in a provider error (the ladder sends the task again
-at most ten minutes after each one). A notice whose write failed is written at the next such turn
-the same way. Nothing is held and nothing is stopped by that count: the task is still kept and
-still sent again. The run
-goes back to zero three ways: at a turn of that claim that ends with no provider error, at a
-compaction of its session that ran (`legion claims compact`, or the controller's `compact`; one
-Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's
-recorded session is forgotten, by `legion claims retry --fresh-session`, the controller's
-`fresh_session`, or `legion claims forget-session`. Only after one of those can another notice
-go. The notice is the claim's own — the issue and the role that names it — so
-two claims of one issue each get a notice of their own, and in a provider outage every claim that
-reaches six is told.
+(`admission: told the controller of a run of provider errors`). The claim's own record keeps the
+notice the run owes until it is written, whatever comes after the run: another failed turn, a
+clean turn, a compaction, a new session or a daemon restart. The daemon writes it while a
+controller is registered, at each failed turn of the run from the sixth on, at the end of the run,
+at the controller's registration, and at every fact, tick and boot. By default an operator
+launches the controller, so a run can reach six with none registered: the controller is then told
+when it registers. A notice whose write failed is written at the next of those moments. Each run
+is told on its own, so a later run is told while an earlier run's notice still waits to be
+published. Nothing is held and nothing is stopped by that count: the task is still kept and still
+sent again. The run goes back to zero three ways: at a turn of that claim that ends with no
+provider error, at a compaction of its session that ran (`legion claims compact`, or the
+controller's `compact`; one Oh My Pi refused or skipped resets nothing, since the session is as it
+was), and when the claim's recorded session is forgotten, by `legion claims retry
+--fresh-session`, the controller's `fresh_session`, or `legion claims forget-session`. Only after
+one of those can a new run begin and owe a notice of its own. The notice is the claim's own — the
+issue and the role that names it — so two claims of one issue each get a notice of their own,
+and in a provider outage every claim that reaches six is told.
 
 When an agent's budget runs out (launches that failed, deaths with work outstanding, prompts it
 never took a turn on) the daemon stops relaunching it and holds the issue. The daemon logs JSON

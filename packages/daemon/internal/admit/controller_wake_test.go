@@ -2,9 +2,11 @@ package admit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // registerController records the project's controller the way the daemon does when
@@ -242,11 +245,14 @@ func TestTheTickAloneCarriesWhatLegionWaitsOn(t *testing.T) {
 	})
 }
 
-// tellOfProviderErrors is the supervisor telling the controller that one claim's turns keep
-// ending in a provider error, as internal/daemon's providerErrorRunReached does: outside any
-// fact, in a transaction of the caller's own that opens its own commit scope
-// (intake.WithCommitHooks), at a run of six.
-func tellOfProviderErrors(t *testing.T, pool *pgxpool.Pool, admission *Admission, issue string, role claim.Role) {
+// providerErrorsReason is what each notice below tells the controller.
+const providerErrorsReason = "6 turns in a row ended in a provider error"
+
+// oweProviderErrors records a claim of role on issue whose run run of provider-error turns owes
+// the project's controller its notice, as the claim's machine writes it at the run's sixth turn
+// (supervise's Claim.ProviderErrorsOwed), and answers the claim's token. A second call for the
+// same claim and a later run is that claim's next run reaching six.
+func oweProviderErrors(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role, run uint64) claim.Token {
 	t.Helper()
 	project, err := claim.ProjectToken(testProject)
 	if err != nil {
@@ -256,41 +262,206 @@ func tellOfProviderErrors(t *testing.T, pool *pgxpool.Pool, admission *Admission
 	if err != nil {
 		t.Fatal(err)
 	}
-	scoped, committed := intake.WithCommitHooks(context.Background())
-	if err := pgx.BeginFunc(scoped, pool, func(tx pgx.Tx) error {
-		return admission.TellOfProviderErrors(scoped, tx, token, issue, role, 6, "6 turns in a row ended in a provider error")
-	}); err != nil {
-		t.Fatalf("tell the controller of %s's %s provider errors: %v", issue, role, err)
+	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session,
+		session_file, state, launch_failures, prompt_failures, prompt_retires, uncertain_streak,
+		provider_error_run, provider_error_run_id, provider_errors_owed_run, provider_errors_owed_reason)
+		values ($1, $2, $3, $3, $4, 1, 'ses', '', 'idle', 0, 0, 0, 0, 6, $5, $5, $6)
+		on conflict (token) do update set provider_error_run_id = excluded.provider_error_run_id,
+		provider_errors_owed_run = excluded.provider_errors_owed_run,
+		provider_errors_owed_reason = excluded.provider_errors_owed_reason`,
+		string(token), project, issue, string(role), int64(run), providerErrorsReason); err != nil {
+		t.Fatalf("record the notice %s's %s owes of its run %d: %v", issue, role, run, err)
 	}
-	committed()
+	return token
 }
 
-// A provider-errors notice is one claim's, so one stands per claim: in an outage every claim's
-// turns fail, and each claim owes a notice of its own, so a second claim's notice held behind the
-// first claim's would reach the controller only once the first was published. Two claims of one
-// issue — its architect and its worker — are two such claims, so the issue alone is not the key.
-// One claim that keeps failing still tells once: a second notice for the same issue and role finds
-// the first one waiting.
+// offerProviderErrors is the claim's machine offering the notice its run owes, as internal/daemon's
+// providerErrorsOwed does: outside any fact, in a transaction of the caller's own that opens its
+// own commit scope (intake.WithCommitHooks). It answers what the offer answered.
+func offerProviderErrors(pool *pgxpool.Pool, admission *Admission, token claim.Token) error {
+	scoped, committed := intake.WithCommitHooks(context.Background())
+	if err := pgx.BeginFunc(scoped, pool, func(tx pgx.Tx) error {
+		return admission.TellOfProviderErrors(scoped, tx, token)
+	}); err != nil {
+		return err
+	}
+	committed()
+	return nil
+}
+
+func mustOfferProviderErrors(t *testing.T, pool *pgxpool.Pool, admission *Admission, token claim.Token) {
+	t.Helper()
+	if err := offerProviderErrors(pool, admission, token); err != nil {
+		t.Fatalf("offer the notice of %s's provider errors: %v", token, err)
+	}
+}
+
+// providerErrorsNotice is the outbox row of one provider-errors notice for the role of issue.
+func providerErrorsNotice(issue string, role claim.Role) effect {
+	return effect{kind: record.OutboxKindControllerNotice, issue: issue, payload: record.ControllerNotice{
+		Kind: record.ProviderErrorsNotice, Role: role, Reason: providerErrorsReason}}
+}
+
+// assertProviderErrorsNotices compares the provider-errors notices in the outbox, oldest first,
+// with want; the tick's own notice and every other kind are not these tests'.
+func assertProviderErrorsNotices(t *testing.T, pool *pgxpool.Pool, want []effect) {
+	t.Helper()
+	var got []effect
+	for _, row := range effects(t, pool) {
+		if notice, ok := row.payload.(record.ControllerNotice); ok && notice.Kind == record.ProviderErrorsNotice {
+			got = append(got, row)
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("provider-errors notices = %#v, want %#v", got, want)
+	}
+}
+
+// A provider-errors notice is one run's, so each claim's stands beside every other's: in an
+// outage every claim's turns fail, and each claim owes a notice of its own. Two claims of one
+// issue — its architect and its worker — are two such claims. One run that is offered again
+// is told once: the second offer of the implementer of LEGION-209 reads the run told.
 func TestEachClaimsProviderErrorsNoticeStandsWhileAnothersWaits(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
 	registerController(t, pool)
-	notice := func(issue string, role claim.Role) effect {
-		return effect{kind: record.OutboxKindControllerNotice, issue: issue, payload: record.ControllerNotice{
-			Kind: record.ProviderErrorsNotice, Role: role,
-			Reason: "6 turns in a row ended in a provider error"}}
+	implementer := oweProviderErrors(t, pool, "LEGION-209", claim.RoleImplementer, 1)
+	other := oweProviderErrors(t, pool, "LEGION-210", claim.RoleImplementer, 1)
+	architect := oweProviderErrors(t, pool, "LEGION-209", claim.RoleArchitect, 1)
+
+	for _, token := range []claim.Token{implementer, other, architect, implementer} {
+		mustOfferProviderErrors(t, pool, admission, token)
 	}
 
-	tellOfProviderErrors(t, pool, admission, "LEGION-209", claim.RoleImplementer)
-	tellOfProviderErrors(t, pool, admission, "LEGION-210", claim.RoleImplementer)
-	tellOfProviderErrors(t, pool, admission, "LEGION-209", claim.RoleArchitect)
-	tellOfProviderErrors(t, pool, admission, "LEGION-209", claim.RoleImplementer)
-
-	assertControllerNotices(t, pool, []effect{
-		notice("LEGION-209", claim.RoleImplementer),
-		notice("LEGION-210", claim.RoleImplementer),
-		notice("LEGION-209", claim.RoleArchitect),
+	assertProviderErrorsNotices(t, pool, []effect{
+		providerErrorsNotice("LEGION-209", claim.RoleImplementer),
+		providerErrorsNotice("LEGION-210", claim.RoleImplementer),
+		providerErrorsNotice("LEGION-209", claim.RoleArchitect),
 	})
+}
+
+// Each run of one claim is told on its own: the second run's notice is written while the first
+// run's still waits unsent in the outbox, since the told mark, not the outbox, says which run was
+// told. A pending notice that held the second one back would lose it whenever the second run
+// ended before the first notice was published.
+func TestASecondRunIsToldWhileTheFirstRunsNoticeWaitsUnsent(t *testing.T) {
+	pool := migratedPool(t)
+	admission := quiet(t, 2)
+	registerController(t, pool)
+	token := oweProviderErrors(t, pool, "LEGION-209", claim.RoleImplementer, 1)
+	mustOfferProviderErrors(t, pool, admission, token)
+	assertProviderErrorsNotices(t, pool, []effect{providerErrorsNotice("LEGION-209", claim.RoleImplementer)})
+
+	oweProviderErrors(t, pool, "LEGION-209", claim.RoleImplementer, 2)
+	mustOfferProviderErrors(t, pool, admission, token)
+	mustOfferProviderErrors(t, pool, admission, token)
+
+	assertProviderErrorsNotices(t, pool, []effect{
+		providerErrorsNotice("LEGION-209", claim.RoleImplementer),
+		providerErrorsNotice("LEGION-209", claim.RoleImplementer),
+	})
+}
+
+// An offer names a claim, and the claim's row holds the mark that tells its run once. A token no
+// claim row holds has no mark to read or write, so an offer of one would be written at every
+// offer: it is refused, by name, and writes nothing, and so is a mark of such a token.
+func TestAnOfferOfATokenNoClaimHoldsIsRefused(t *testing.T) {
+	pool := migratedPool(t)
+	admission := quiet(t, 2)
+	registerController(t, pool)
+	project, err := claim.ProjectToken(testProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := claim.NewToken(project, "LEGION-209", claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for range 2 {
+		if err := offerProviderErrors(pool, admission, token); !errors.Is(err, record.ErrNoClaim) {
+			t.Fatalf("the offer of a token no claim holds = %v, want record.ErrNoClaim", err)
+		}
+	}
+	assertProviderErrorsNotices(t, pool, nil)
+	inTx(t, pool, func(tx pgx.Tx) {
+		if err := record.NewStore().MarkProviderErrorsTold(context.Background(), tx, token, 1); !errors.Is(err, record.ErrNoClaim) {
+			t.Fatalf("the mark of a token no claim holds = %v, want record.ErrNoClaim", err)
+		}
+	})
+}
+
+// A notice owed while no controller is registered waits on the claim's row, and the first pass
+// after a controller registers writes it: the pass of every fact, tick and boot tells every
+// owed notice of the project once (TellOwedProviderErrors), so nothing waits on another turn of
+// the claim. A pass with no controller registered writes nothing and marks nothing, and a pass
+// after the notice was written writes no second one.
+func TestAnOwedNoticeIsWrittenAtThePassAfterAControllerRegisters(t *testing.T) {
+	pool := migratedPool(t)
+	admission := quiet(t, 2)
+	token := oweProviderErrors(t, pool, "LEGION-209", claim.RoleImplementer, 1)
+	oweProviderErrors(t, pool, "LEGION-210", claim.RoleTester, 3)
+
+	mustOfferProviderErrors(t, pool, admission, token)
+	tick(t, pool, admission, "tick-before")
+	assertProviderErrorsNotices(t, pool, nil)
+
+	registerController(t, pool)
+	tick(t, pool, admission, "tick-after")
+	want := []effect{
+		providerErrorsNotice("LEGION-209", claim.RoleImplementer),
+		providerErrorsNotice("LEGION-210", claim.RoleTester),
+	}
+	assertProviderErrorsNotices(t, pool, want)
+
+	tick(t, pool, admission, "tick-again")
+	mustOfferProviderErrors(t, pool, admission, token)
+	assertProviderErrorsNotices(t, pool, want)
+}
+
+// Two offers of one run at once write one notice: the read of what the claim owes locks the
+// claim's row (record.Store.ProviderErrorsOwed), so the second offer waits for the first to commit
+// and then reads the run told. The first offer's transaction is held open until the second is
+// seen waiting on a lock, and only then committed. Without the lock the second offer reads the
+// run untold beside the first and writes a second notice of it, and its own mark then waits on the
+// first's row lock all the same, which is what this case waits for in both.
+func TestTwoOffersOfOneRunAtOnceWriteOneNotice(t *testing.T) {
+	pool := migratedPool(t)
+	admission := quiet(t, 2)
+	registerController(t, pool)
+	token := oweProviderErrors(t, pool, "LEGION-209", claim.RoleImplementer, 1)
+	ctx := context.Background()
+
+	first, firstCommitted := intake.WithCommitHooks(ctx)
+	tx, err := pool.Begin(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := admission.TellOfProviderErrors(first, tx, token); err != nil {
+		t.Fatalf("the first offer: %v", err)
+	}
+
+	second := make(chan error, 1)
+	go func() { second <- offerProviderErrors(pool, admission, token) }()
+	testwait.Eventually(t, "the second offer to wait on a lock the first offer holds", func() bool {
+		var waiting int
+		if err := pool.QueryRow(ctx, `select count(*) from pg_stat_activity
+			where datname = current_database() and wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			t.Errorf("read who waits on a lock: %v", err)
+			return true
+		}
+		return waiting == 1
+	})
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the first offer: %v", err)
+	}
+	firstCommitted()
+	if err := <-second; err != nil {
+		t.Fatalf("the second offer: %v", err)
+	}
+
+	assertProviderErrorsNotices(t, pool, []effect{providerErrorsNotice("LEGION-209", claim.RoleImplementer)})
 }
 
 // The slot wakes keep their own rule: one pending notice of the kind per project, whatever issue

@@ -514,12 +514,14 @@ content filter, a rate limit, an overload, or any other failure of the provider.
 run, the model and the HTTP status the provider answered, when it answered one, and carries no
 text the provider wrote. Nothing is held and nothing is stopped: the daemon keeps the task, prompts
 the same session with it again, and waits at most ten minutes between prompts for as long as the
-errors last. You are told once for each run, at its first failed turn from the sixth on after you
-registered, so a run that began before you started reaches you at its next failed turn. You are
-told again only once the run has gone back to zero, which it does three ways: at a
-turn of that role that ends with no provider error, at a compaction of its session that ran (one
-Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's
-recorded session is forgotten, by `fresh_session` or an operator's `legion claims forget-session`.
+errors last. You are told once for each run that reached six, whatever came after it. A run that
+reached six before you registered reaches you when you register, and `reason` then names the run
+as it stood at its last failed turn. A run told once is not told again. A later run is told on its
+own, even while an earlier run's notice still waits to reach you. A run goes back to zero three
+ways: at a turn of that role that ends with no provider error, at a compaction of its session that
+ran (one Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the
+claim's recorded session is forgotten, by `fresh_session` or an operator's `legion claims
+forget-session`.
 A second notice after you compacted that claim is how you see that it is still refused.
 
 Read the role's claim in `read_state`. Name the run and its model in the day's report. When the
