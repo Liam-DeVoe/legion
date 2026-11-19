@@ -43,20 +43,18 @@ func newSessionConsumerReapRig(t *testing.T) *sessionConsumerReapRig {
 		t.Fatalf("connect the listener: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	waitForRegistry(t, registry)
 	now := &stateClock{}
-	sessions, err := session.OpenSessionRegistry(
-		client.Conn,
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn,
 		session.WithSessionReplicas(1),
 		session.WithSessionTTL(time.Hour),
 		session.WithSessionClock(now.Now),
 		session.WithSessionLiveWindow(time.Minute),
-		session.WithSessionGoneHorizon(2*time.Minute),
-	)
+		session.WithSessionGoneHorizon(2*time.Minute))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -70,7 +68,7 @@ func newSessionConsumerReapRig(t *testing.T) *sessionConsumerReapRig {
 	}
 	t.Cleanup(delivery.close)
 	delivery.relay = &recordingRelay{}
-	consumers, err := bus.ConnectSessionConsumers([]string{url}, 0)
+	consumers, err := bus.ConnectSessionConsumers([]string{url}, 0, nil)
 	if err != nil {
 		t.Fatalf("connect the test's view of the session consumers: %v", err)
 	}

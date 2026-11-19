@@ -20,6 +20,7 @@ import (
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -324,6 +325,11 @@ func (s *server) replayBroadcast(w http.ResponseWriter, r *http.Request, point b
 // whole resolution with an error, because a read that did not answer, or was never made, says
 // nothing about whether the session is working.
 //
+// It reads the stopped sessions too (SessionIncludingStopped), so a session the listener knows
+// and that is not running is a recipient whose copy the listener stores for it, not an exclusion:
+// a broadcast to a team of suspended Legion sessions reaches each of them when it runs again. A
+// session the listener knows nothing about is still missing from the map, and still excluded.
+//
 // The reads run broadcastResolveConcurrency at a time under one budget taken from the
 // request's context (broadcastResolveAllowance), and those two together are what keep a send's
 // resolution short: one request may name contracts.MaxBroadcastRecipients sessions, so a
@@ -347,7 +353,7 @@ func (s *server) resolveBroadcastSessions(
 			break
 		}
 		group.Go(func() error {
-			session, err := s.deps.Envoy.Session(groupCtx, sessionID)
+			session, err := s.deps.Envoy.SessionIncludingStopped(groupCtx, sessionID)
 			if err != nil && !errors.Is(err, dispatchenvoy.ErrNotFound) {
 				return err
 			}
@@ -390,8 +396,10 @@ func (s *server) resolveBroadcastSessions(
 //
 // An unresponsive session is a recipient like any other: the listener stores what is sent to
 // it and hands it over when it answers again, which is exactly what a broadcast to a session
-// that missed its heartbeats should do. Only a record the registry itself calls gone is no
-// session to send to, as a missing record is.
+// that missed its heartbeats should do. So is a session the store holds as stopped, by its
+// record alone (advertisesDelivery judges its mode): the listener stores its copy for it and
+// hands it over when it runs again. Only a record the registry itself calls gone is no session
+// to send to, as a missing record is.
 func resolveBroadcastTargets(
 	requested []string, delivery string, live map[string]dispatchenvoy.Session,
 ) []broadcastTarget {
@@ -401,7 +409,7 @@ func resolveBroadcastTargets(
 		switch {
 		case !ok, session.State == dispatchenvoy.StateGone:
 			targets = append(targets, broadcastTarget{sessionID: sessionID, reason: "no live session"})
-		case !hasCapability(session.Capabilities, delivery):
+		case !advertisesDelivery(session, delivery):
 			targets = append(targets, broadcastTarget{
 				sessionID: sessionID, title: session.Title, reason: "does not advertise " + delivery,
 			})
@@ -472,8 +480,11 @@ func (s *server) writeBroadcast(
 		if err != nil {
 			return broadcastRead{}, nil, err
 		}
-		// Each copy is a direct message: its blocks are indexed, and it writes no mention.
-		if _, err := s.indexMessage(ctx, tx, message); err != nil {
+		// Each copy is a direct message: its blocks are indexed, and it writes no mention, so
+		// its blocks hold none either and the write moves nothing. The copy is inserted above,
+		// so its body is read here rather than planned before the insert, as every other
+		// message write plans it (api.planItemWrite).
+		if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, message.Body, message.CreatedAt, nil, nil); err != nil {
 			return broadcastRead{}, nil, err
 		}
 		// A broadcast message is a thread root that answers nothing, so its event says what

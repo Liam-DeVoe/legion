@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	neturl "net/url"
 	"slices"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 var censusBase = fstest.MapFS{
@@ -722,7 +724,9 @@ func TestCensusNeverPrintsARowValueAnInputFunctionQuotes(t *testing.T) {
 // (no pg_read_all_stats) refuses: the census cannot rule out the long transaction it exists to
 // catch, and it lists the holder with the long transactions, which it cannot rule it out of either.
 // Granting that role pg_read_all_stats lets it read the age, and a young holder passes and is not
-// listed.
+// listed. Only a login that holds pg_read_all_stats with ADMIN, as a superuser does, can make that
+// grant: the server is asked by making it in a transaction that is rolled back, and a login that
+// cannot skips the test, except on GitHub Actions, where it fails (testdb.SkipOutsideCI).
 func TestCensusRefusesALockHolderWhoseAgeItCannotSee(t *testing.T) {
 	ctx := context.Background()
 	store, base := migratedToOne(t)
@@ -732,17 +736,36 @@ func TestCensusRefusesALockHolderWhoseAgeItCannotSee(t *testing.T) {
 		if _, err := store.Pool.Exec(ctx, "create role "+role+" login password 'census-test'"); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() {
-			// The grants in this database first, then the role itself, which spans the cluster.
-			for _, statement := range []string{"drop owned by " + role, "drop role " + role} {
-				if _, err := store.Pool.Exec(context.Background(), statement); err != nil {
-					t.Errorf("%s: %v", statement, err)
-				}
-			}
-		})
+		// The role spans the cluster: its cleanup drops the test database first, which takes
+		// the role's grants there with it, and then the role (dropRoleAfterTestDatabase).
+		t.Cleanup(func() { dropRoleAfterTestDatabase(t, store, role) })
+		// `drop owned by` needs the privileges of the role, which a login that is no superuser
+		// does not have of a role it creates (Postgres 16 and later give such a creator ADMIN
+		// alone): it grants the role to itself with INHERIT, so the cleanup can drop the role's
+		// grants before the role when the test database's drop fails and leaves them standing.
+		if _, err := store.Pool.Exec(ctx, "grant "+role+" to current_user with inherit true"); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := store.Pool.Exec(ctx, "grant select on all tables in schema public to "+role); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// The grant the second census needs, made now in a transaction that is rolled back, so a
+	// login that cannot make it is told so before anything is read.
+	probe, err := store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = probe.Exec(ctx, "grant pg_read_all_stats to "+censusRole)
+	if rollbackErr := probe.Rollback(ctx); rollbackErr != nil {
+		t.Fatalf("roll back the grant of pg_read_all_stats the server was asked about: %v", rollbackErr)
+	}
+	var pgErr *pgconn.PgError
+	switch {
+	case errors.As(err, &pgErr) && pgErr.Code == "42501":
+		testdb.SkipOutsideCI(t, "the test server's login cannot grant pg_read_all_stats, which the census's role needs to read the age of another role's transaction (the login must be a superuser or hold pg_read_all_stats with ADMIN): %v", err)
+	case err != nil:
+		t.Fatalf("grant pg_read_all_stats to the census's role, in a transaction rolled back: %v", err)
 	}
 	holderConfig := store.Pool.Config().ConnConfig.Copy()
 	holderConfig.User, holderConfig.Password = otherRole, "census-test"
@@ -1081,6 +1104,84 @@ func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *t
 				t.Fatalf("migration %d was not exercised by the census", version)
 			}
 		}
+	}
+}
+
+// queuedStateCensus is the census of INFRA-626's three migrations - the widened state checks and
+// connected_only (20261114081434), the index over a session's taken deliveries (20261114081435)
+// and the drop of the one it replaces (20261114081436) - over a database at 20261111212235, the
+// version before them, with the limit at one byte: every table they touch is over it, so a
+// migration of the three the census does not refuse on a table's size is one the limit never
+// applies to, at any size. Only each entry is read, never the verdict of the whole set, for the
+// reason TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives. It answers
+// version's entry, and fails the test when that migration is not pending, refuses, or touches a
+// table the limit would not have refused anyway.
+func queuedStateCensus(t *testing.T, version int) *pgmigrate.MigrationCensus {
+	t.Helper()
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, 20261111212235)
+	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261114081436), pgmigrate.CensusOptions{TableLimit: 1})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	for i := range report.Pending {
+		entry := &report.Pending[i]
+		if entry.Migration.Version != version {
+			continue
+		}
+		if len(entry.Refusals) != 0 {
+			t.Fatalf("%s refused: %v", entry.Migration.Name, entry.Refusals)
+		}
+		if len(entry.Tables) == 0 {
+			t.Fatalf("%s touches no table; report:\n%s", entry.Migration.Name, reportText(report))
+		}
+		for _, table := range entry.Tables {
+			if !table.Exists || table.Bytes <= 1 {
+				t.Fatalf("%s: %s is %d bytes, which leaves the limit nothing to exempt it from", entry.Migration.Name, table.Name, table.Bytes)
+			}
+		}
+		return entry
+	}
+	t.Fatalf("%d is not pending; report:\n%s", version, reportText(report))
+	return nil
+}
+
+// 20261114081434 drops both delivery state checks without cascade, adds each back with queued as
+// a check not valid, and adds message_deliveries.connected_only as a nullable text column with no
+// default and its own check not valid: every statement a catalog-only alter table, so the census
+// exempts it from the table limit on both tables.
+func TestCensusExemptsTheQueuedStateMigrationAtAnyTableSize(t *testing.T) {
+	entry := queuedStateCensus(t, 20261114081434)
+	if entry.TableSizeExemption != "alter table" {
+		t.Errorf("TableSizeExemption = %q, want %q", entry.TableSizeExemption, "alter table")
+	}
+	touched := map[string]bool{}
+	for _, table := range entry.Tables {
+		touched[table.Name] = true
+	}
+	if !touched["comment_deliveries"] || !touched["message_deliveries"] {
+		t.Errorf("tables = %+v, want comment_deliveries and message_deliveries", entry.Tables)
+	}
+}
+
+// 20261114081435 is one marked, non-unique CREATE INDEX CONCURRENTLY IF NOT EXISTS, which the
+// census admits over message_deliveries at any size: its scans hold off no ordinary write.
+func TestCensusAdmitsTheTakenDeliveriesIndexAtAnyTableSize(t *testing.T) {
+	entry := queuedStateCensus(t, 20261114081435)
+	if !entry.ConcurrentIndex {
+		t.Errorf("ConcurrentIndex = false, want the marked concurrent build admitted: %+v", entry)
+	}
+}
+
+// 20261114081436 is a plain drop index, RESTRICT by default, which the census exempts from the
+// table limit on message_deliveries, the table behind the index it drops.
+func TestCensusExemptsTheDropOfTheSentDeliveriesIndexAtAnyTableSize(t *testing.T) {
+	entry := queuedStateCensus(t, 20261114081436)
+	if entry.TableSizeExemption != "drop index" {
+		t.Errorf("TableSizeExemption = %q, want %q", entry.TableSizeExemption, "drop index")
+	}
+	if len(entry.Tables) != 1 || entry.Tables[0].Name != "message_deliveries" {
+		t.Errorf("tables = %+v, want message_deliveries alone", entry.Tables)
 	}
 }
 

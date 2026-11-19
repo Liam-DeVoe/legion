@@ -709,7 +709,7 @@ func HeadRuns(pr record.PullRequest) []record.AttemptRun {
 // current head, and returns the pull request ready to apply it. It may only when candidate.Head is
 // the current head: every other settlement - an earlier head's, a head a force push left - stands
 // for nothing. A settlement of a head other than the recorded one starts that head's fence afresh,
-// since check runs, generations and snapshots are each head's own.
+// since check runs, generations, snapshots and commit statuses are each head's own.
 func SettlementFor(pr record.PullRequest, candidate SettlementCandidate) (record.PullRequest, bool) {
 	head := candidate.Head
 	if head != pr.HeadSHA {
@@ -724,6 +724,7 @@ func SettlementFor(pr record.PullRequest, candidate SettlementCandidate) (record
 	pr.CheckRuns = nil
 	pr.Generation = 0
 	pr.Snapshot = ""
+	pr.Statuses = nil
 	return pr, true
 }
 
@@ -987,8 +988,8 @@ func boundedPushes(pushes []record.ClassifiedPush, head string) ([]record.Classi
 }
 
 // ApplySettlement applies a listener CI settlement whenever ClassifySettlement says it is newer,
-// merging its check runs into the fence per check name. It returns false for stale, duplicate
-// and conflicting observations.
+// merging its check runs into the fence per check name, and its commit statuses alone where it is
+// newer for those alone. It returns false for stale, duplicate and conflicting observations.
 //
 // Each run is stamped with the head it was reported on and the conclusion the candidate gives it
 // (stampedRuns) before it is merged, since the fence keeps the newest run of each name over
@@ -1003,9 +1004,29 @@ func boundedPushes(pushes []record.ClassifiedPush, head string) ([]record.Classi
 // are taken only from a settlement of the head the fence stands at (SettlementFor, which moves
 // that head to the candidate's whenever the candidate is the nearer one to the pull request's
 // head). A settlement of a head below it merges its runs and the conclusions of them, and leaves
-// the recorded head's numbering as it was.
+// the recorded head's numbering as it was. The commit statuses are taken from the same
+// settlements alone, and merged per context rather than replaced (mergedStatuses): for each
+// context the status with the later created_at stands, so a settlement that names fewer statuses
+// than the record keeps - the candidate's list is the whole list the head's CI record holds, which
+// can be fewer than GitHub holds, as record.PullRequest.Statuses says - leaves each context it
+// leaves out as it is, and an older settlement never puts back a status a newer one replaced. On
+// an equal created_at the settlement's entry stands. A settlement this does not apply leaves the
+// kept list as it is.
+//
+// A settlement that names a newer status and whose check runs are older than the fence's, or the
+// same at a generation no higher than the kept one (SettlementStatusesOnly), changes the kept
+// statuses alone, merged as above where it is of the checked head, but with the kept entry
+// standing on an equal created_at, since the settlement is the older view: the fence, the failing
+// and cancelled names, the generation and the snapshot stay as the newer settlements left them,
+// so the newer settlement delivered again is the duplicate it was before (ClassifySettlement says
+// why).
 func ApplySettlement(pr record.PullRequest, candidate SettlementCandidate) (record.PullRequest, bool) {
-	if ClassifySettlement(pr, candidate) != SettlementNewer {
+	classified := ClassifySettlement(pr, candidate)
+	if classified == SettlementStatusesOnly && candidate.Head == pr.CheckedHead {
+		pr.Statuses = mergedStatuses(pr, candidate, SettlementStatusesOnly)
+		return pr, true
+	}
+	if classified != SettlementNewer {
 		return pr, false
 	}
 	fence := mergeAttemptSets(pr.CheckRuns, stampedRuns(candidate))
@@ -1014,6 +1035,7 @@ func ApplySettlement(pr record.PullRequest, candidate SettlementCandidate) (reco
 	if candidate.Head == pr.CheckedHead {
 		pr.Generation = candidate.Generation
 		pr.Snapshot = candidate.Snapshot
+		pr.Statuses = mergedStatuses(pr, candidate, SettlementNewer)
 	}
 	pr.Failing = append([]string(nil), outcome.Failing...)
 	pr.Cancelled = append([]string(nil), outcome.Cancelled...)
@@ -1101,21 +1123,51 @@ func ApprovalSetAside(pr record.PullRequest, reviewed string) bool {
 }
 
 // CodeOnItsWay says whether a push lies on the path forward from the pull request's current head,
-// its new head not arrived yet: any push may change code. A push delivered late, after its new head
+// its new head not arrived yet: any push may change code. It is the one rule of what a recorded
+// push does to an approval. A recorded push from the head is code on its way, and it takes back an
+// approval of the head until its new head arrives. A push delivered late, after its new head
 // arrived and the branch returned to this one, is spent by the move the record made
 // (unspentPushes), so it is not on its way; the same two heads pushed again are spent as its repeat
 // (record.Move.Repeats), and look the same until their synchronize moves the head. The daemon
 // lands no merge meanwhile: the merger merges, and it merges the head its review approved.
+//
+// A push to no commit (record.NoCommit) is GitHub's deletion of the branch. It names no code, so
+// it is never on its way, and the path does not run through it. A release before the deletion
+// guard (intake's decodePush) stored such a push as it stored any push, so a record can hold one.
+//
+// A merged record keeps no pushes once its merge named the head, since that head is final
+// (workflow's merged), and it records no push after the merge (workflow's push). So a merged
+// record that still holds a push from its head is one whose merge did not name that head: a merge
+// the release before recorded, or a merge that names no head. That push can be the code GitHub
+// merged, so it stays on its way, and an approval of the head it left does not stand.
 func CodeOnItsWay(pr record.PullRequest) bool {
-	return len(pathFrom(pr.Pushes, pr.HeadSHA, true)) > 0
+	return len(pathFrom(withoutDeletions(pr.Pushes), pr.HeadSHA, true)) > 0
+}
+
+// withoutDeletions is pushes less GitHub's deletions of the branch, the pushes to no commit
+// (record.NoCommit). It returns pushes itself, with no copy, when it holds none.
+func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
+	for i, p := range pushes {
+		if p.SHA != record.NoCommit {
+			continue
+		}
+		kept := append(make([]record.ClassifiedPush, 0, len(pushes)-1), pushes[:i]...)
+		for _, q := range pushes[i+1:] {
+			if q.SHA != record.NoCommit {
+				kept = append(kept, q)
+			}
+		}
+		return kept
+	}
+	return pushes
 }
 
 // RoundWaitsOnMergeState says whether a review round waits on GitHub's answer about merging the
-// pull request's head: the issue is in reviewing, its reviewer's review approved the head the
-// pull request now stands at (ApprovalStands, which is the whole of that test: a review of
-// another head approves nothing, and a push on its way takes an approval of this head back), and
-// the merge state the record holds for that head is not one the issue may advance on
-// (record.MergeState.Mergeable), the unread state among them.
+// pull request's head: the issue is in reviewing, its pull request is open, its reviewer's review
+// approved the head the pull request now stands at (ApprovalStands, which is the whole of that
+// test: a review of another head approves nothing, and a push on its way takes an approval of this
+// head back), and the merge state the record holds for that head is not one the issue may advance
+// on (record.MergeState.Mergeable), the unread state among them.
 //
 // Two readers ask it, and they must answer alike, which is the whole reason the rule is here
 // rather than in either of them: the engine asks it to decide whether this round is one the
@@ -1133,14 +1185,17 @@ func CodeOnItsWay(pr record.PullRequest) bool {
 // only thing that would ever say so. What tells those apart is read by the caller that needs them
 // apart (ChecksConcludedOnHead), never here.
 //
-// It makes no test of the pull request being open: reviewRound makes none, the read the engine
-// asks for has its own (workflow's askMergeStateFor), and a caller that needs one makes it itself
-// (projection's mergeWaitView, over record.PullRequestOpen).
+// It holds only for an open pull request. A merged one has nothing left to merge. GitHub answers
+// `unknown` for it for good, and the daemon never reads its state after the merge: workflow's
+// askMergeStateFor refuses a pull request that is not open, so the state the record holds is the
+// one it held before the merge. A closed one merges nothing until a reopen, and a reopen asks for
+// a read of the head again (the opened handler, then Apply's askMergeState). Projection's
+// mergeWaitView makes no state test of its own and relies on this one.
 func RoundWaitsOnMergeState(issue record.Issue, reviewer record.PhaseRow, pr *record.PullRequest) bool {
 	if issue.Phase != phase.Reviewing || pr == nil || reviewer.Decision == nil {
 		return false
 	}
-	return reviewer.Decision.State == "approved" &&
+	return pr.State == record.PullRequestOpen && reviewer.Decision.State == "approved" &&
 		ApprovalStands(*pr, reviewer.Decision.Head) && !pr.MergeState.Mergeable()
 }
 

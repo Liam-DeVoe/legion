@@ -10,7 +10,7 @@
 //    `CLAUDE_ENV_FILE`, which Claude Code sources into every later Bash command of the session,
 //    each unless an earlier SessionStart already wrote that line there. The `dispatch` command
 //    reads the file ENVOY_CONFIG_FILE names whenever DISPATCH_HOST is set. A subagent's Bash can
-//    lack what that file holds (anthropics/claude-code#46696); the `dispatch` command it runs then
+//    lack what that file holds (Claude Code issue 46696); the `dispatch` command it runs then
 //    takes host `claude` from `CLAUDE_CODE_CHILD_SESSION=1` and reads `CLAUDE_CONFIG_DIR` itself.
 //    The path is single-quoted (`singleQuoted`, whose doc gives what Claude Code's
 //    PowerShell bridge reads of that form). The command reads the session id from `CLAUDE_CODE_SESSION_ID`, which
@@ -96,7 +96,7 @@ import {
 import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory, writeAtomically } from "@legion/envoy-client/dispatch-session-directory"
 import { offWithError } from "@legion/envoy-client/envoy-config"
-import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors"
+import { hasErrnoCode, messageFor, withoutUserinfo } from "@legion/envoy-client/errors"
 import {
   readSessionAnswers,
   SESSION_ANSWERS_DEADLINE_MS,
@@ -116,6 +116,7 @@ import { z } from "zod"
 import { claudeProjectDirectory, configuredValue } from "../src/claude-session"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import { recordChosenTitle } from "../src/session-state"
+import { parseHookArguments } from "./hook-arguments"
 import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "./session-hook-budgets"
 
 const OpenAsksInput = z.object({
@@ -143,6 +144,14 @@ const ANSWERS_LEAST_WAIT_MS = 150
 /** How long after the hook's print deadline a read that answered past it may still write
  *  `answers.json` for the next hook before the process exits. */
 const ANSWERS_SETTLE_MS = 50
+/**
+ * The host whose envoy.json this hook reads, and its mode and the mode's own arguments, from
+ * `<mode> [arguments…] [--host <claude|codex>]`. Claude Code's hooks.json names no host, so it is
+ * `claude`; the Codex plugin's names `--host codex`, so a Codex session reads the same envoy.json
+ * its MCP server and its other hook read (`sessionConfigFile`), and not `$CLAUDE_CONFIG_DIR`'s.
+ */
+const { host: HOST, mode, modeArguments } = parseHookArguments(process.argv.slice(2))
+
 /** The refresher's lock, holding its pid, and what it read for the hooks, in the session's
  *  Dispatch state directory. */
 const REFRESH_LOCK = "answers-refresh.lock"
@@ -247,7 +256,7 @@ async function openAsks(raw: unknown): Promise<void> {
   const envFile = process.env["CLAUDE_ENV_FILE"]
   // A file location that cannot be worked out hands nothing on: the open-asks summary below says
   // why Dispatch is unavailable.
-  const chosen = sessionConfigFile("claude", process.env)
+  const chosen = sessionConfigFile(HOST, process.env)
   if (envFile) {
     appendOnce(envFile, DISPATCH_HOST_LINE)
     if (chosen.path !== null) {
@@ -333,7 +342,7 @@ function dispatchFirst(raw: unknown): void {
     { CLAUDE_PROJECT_DIR: process.env["CLAUDE_PROJECT_DIR"] },
     input.cwd ?? process.cwd(),
   )
-  const chosen = sessionConfigFile("claude", process.env)
+  const chosen = sessionConfigFile(HOST, process.env)
   if (!sessionDispatchSettings(chosen, process.env, { cwd: directory }).dispatch.enabled) return
   const pluginRoot = configuredValue(process.env["CLAUDE_PLUGIN_ROOT"])
   if (pluginRoot === undefined) {
@@ -436,7 +445,7 @@ async function refreshedAnswers(
   }
   const lock = join(directory, REFRESH_LOCK)
   if (!refreshLockHeld(lock)) {
-    Bun.spawn([process.execPath, Bun.main, "answers-refresh", session, cwd], {
+    Bun.spawn([process.execPath, Bun.main, "answers-refresh", session, cwd, "--host", HOST], {
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
@@ -450,8 +459,12 @@ async function refreshedAnswers(
       if (outcome.dispatch_url === dispatchUrl) {
         return { text: outcome.text ?? undefined, notice: outcome.notice ?? undefined }
       }
+      // Compared whole above; the reason reaches the session's context, so it names the URL
+      // without the user and password it may carry.
+      const read =
+        outcome.dispatch_url === null ? "no Dispatch" : withoutUserinfo(outcome.dispatch_url)
       return {
-        reason: `the refresher read ${outcome.dispatch_url ?? "no Dispatch"}, not the Dispatch envoy.json names now`,
+        reason: `the refresher read ${read}, not the Dispatch envoy.json names now`,
       }
     }
     const left = remainingUntil(by)
@@ -475,7 +488,7 @@ async function answersMessage(
   startedAt: number,
   by: number,
 ): Promise<{ readonly text: string | undefined; readonly notice?: string | undefined }> {
-  const file = sessionConfigFile("claude", process.env)
+  const file = sessionConfigFile(HOST, process.env)
   let { dispatch } = sessionDispatchSettings(file, process.env, {
     cwd,
     commands: "kept",
@@ -568,7 +581,7 @@ async function answersRefresh(session: string, cwd: string): Promise<never> {
   const lock = join(directory, REFRESH_LOCK)
   if (takeRefreshLock(lock)) {
     try {
-      const file = sessionConfigFile("claude", process.env)
+      const file = sessionConfigFile(HOST, process.env)
       // The URL this refresher targets, resolved as the hook resolves the one it compares with and
       // before any command runs: when envoy.json moved on since the hook started this refresher, no
       // hook carries what it read, and when the token command fails, the hook for the same URL
@@ -595,7 +608,6 @@ async function answersRefresh(session: string, cwd: string): Promise<never> {
   process.exit(0)
 }
 
-const [mode, ...modeArguments] = process.argv.slice(2)
 if (mode === "answers-refresh") {
   const [session, cwd] = modeArguments
   if (session === undefined || cwd === undefined) {
