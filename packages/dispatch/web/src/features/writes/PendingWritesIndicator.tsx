@@ -63,9 +63,15 @@ function DraftToCopy({ text }: { text: string }): ReactNode {
   );
 }
 
-/** The writes the indicator shows: every one shown there that Dispatch has not yet made. */
+/** The writes the indicator shows: every one shown there that Dispatch has not yet made, but for
+ *  a refusal a surface mounted now settles with the reader (`claimed`), which is that surface's. */
 function shown(rows: readonly Write[]): readonly Write[] {
-  return rows.filter((row) => row.presentation === "indicator" && row.status !== "made");
+  return rows.filter(
+    (row) =>
+      row.presentation === "indicator" &&
+      row.status !== "made" &&
+      !(row.status === "refused" && row.claimed)
+  );
 }
 
 /** Whether `row` waits its turn behind an earlier write to its target and was never sent. */
@@ -101,8 +107,9 @@ export function uploadedPercent(row: Write): number | undefined {
  * failed; a late one with Stop trying; a refused one with why, Retry and Discard. A refusal only
  * the reader can settle (`isConflict`) says why in its own words and offers no Retry, since
  * Dispatch refuses its body the same way every time: the reader's own text the write carried is
- * drawn as written, to copy, beside Discard. A write still within its deadline is only counted,
- * since there is nothing to do about it yet.
+ * drawn as written, to copy, beside Discard. One a page mounted now settles with the reader
+ * (`Writes.claim`) is that page's, and stands here again once the page goes. A write still within
+ * its deadline is only counted, since there is nothing to do about it yet.
  */
 export function PendingWritesIndicator(): ReactNode {
   const writes = useWrites();

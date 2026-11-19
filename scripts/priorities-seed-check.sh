@@ -164,7 +164,9 @@ read_json /api/v1/priorities "$work/priorities.json"
 # Each priority of this document, in the order the board draws them (rank order), as
 # <id> <row> <version> <the keys its Advances line names>. The record's own marker is matched
 # whole, so a description that merely opens with those words is no marker, and the Advances line
-# is the line under the marker rather than the first line that reads like one.
+# is the first line under the marker that holds anything, rather than the first line that reads
+# like one: the seed writes each line of its record as a paragraph of its own, so a blank line
+# stands between them, and a record a release before that wrote holds none.
 board_ids=() board_rows=() board_versions=() board_advances=()
 while IFS=$'\t' read -r id row version advances; do
   board_ids+=("$id")
@@ -180,7 +182,7 @@ done < <(jq -r --arg document "$document" '
   | select($marker != null)
   | ($marker.value | split(" ")) as $words
   | select($words[4] == $document + ",")
-  | ($lines[$marker.key + 1] // "") as $under
+  | ([$lines[($marker.key + 1):][] | select(. != "")][0] // "") as $under
   | [$priority.id, $words[2], ($words[8] | rtrimstr(".")),
      (if ($under | startswith("Advances: ")) then ($under | ltrimstr("Advances: ") | rtrimstr(".")) else "" end)]
   | @tsv' "$work/priorities.json")

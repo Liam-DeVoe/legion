@@ -151,8 +151,25 @@ Some prose over the table.
 EOF
 cp "${state}/versions/7.md" "${state}/text.md"
 
-# priority <id> <row> <advances>: one priority of the board, as the seed's record writes it.
+# priority <id> <row> <advances>: one priority of the board, as the seed's record writes it: each
+# line of the record a paragraph of its own.
 priority() {
+  local id=$1 row=$2 advances=$3
+  printf '{"id":"%s","title":"row %s","description":"row %s\\n\\n---\\n\\nTable row %s of %s, read at version 7.\\n\\nAdvances: %s.\\n\\nNot advanced: none."}' \
+    "$id" "$row" "$row" "$row" "$document" "$advances"
+}
+
+# edited <id> <row> <advances>: the same priority once its description was edited in the
+# documents' editor, which writes the rule as `***` and ends the text in a newline.
+edited() {
+  local id=$1 row=$2 advances=$3
+  printf '{"id":"%s","title":"row %s","description":"row %s, edited\\n\\n***\\n\\nTable row %s of %s, read at version 7.\\n\\nAdvances: %s.\\n\\nNot advanced: none.\\n"}' \
+    "$id" "$row" "$row" "$row" "$document" "$advances"
+}
+
+# by_release_before <id> <row> <advances>: the same priority as a release of the seed before its
+# record's lines were paragraphs wrote it: the record's lines one under another.
+by_release_before() {
   local id=$1 row=$2 advances=$3
   printf '{"id":"%s","title":"row %s","description":"row %s\\n\\n---\\n\\nTable row %s of %s, read at version 7.\\nAdvances: %s.\\nNot advanced: none."}' \
     "$id" "$row" "$row" "$row" "$document" "$advances"
@@ -267,6 +284,20 @@ case_name='the version pinned on the argument is passed over for the one the boa
 run --artifact "${document}@v3"
 expect_status 0
 expect_output 'read at version 7'
+
+case_name='a board whose records the documents'"'"' editor rewrote passes, its relations read back'
+board "$(edited p1 1 'INFRA-21')" "$(edited p3 3 'INFRA-22')"
+run --artifact "$document"
+expect_status 0
+expect_output '2 rows stand on the board in the table'
+expect_output '2 relations read back'
+
+case_name='a record whose lines stand one under another, as a release before wrote it, reads the same'
+board "$(by_release_before p1 1 'INFRA-21')" "$(by_release_before p3 3 'INFRA-22')"
+run --artifact "$document"
+expect_status 0
+expect_output '2 rows stand on the board in the table'
+expect_output '2 relations read back'
 
 case_name='a row no priority holds fails, naming that row'
 board "$(priority p1 1 'INFRA-21')"

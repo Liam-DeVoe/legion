@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 const (
@@ -472,14 +473,11 @@ func priorityChangedRefusal(id string, stored prioritystore.Node, expected patch
 // priorityChangedQuoteMax characters, and past that its first priorityChangedQuoteMax characters
 // and a trailing "…". A character is a rune, so the cut never splits one.
 func priorityChangedQuote(value string) string {
-	characters := 0
-	for index := range value {
-		if characters == priorityChangedQuoteMax {
-			return fmt.Sprintf("%q", value[:index]+"…")
-		}
-		characters++
+	head := text.HeadRunes(value, priorityChangedQuoteMax)
+	if head != value {
+		head += "…"
 	}
-	return fmt.Sprintf("%q", value)
+	return fmt.Sprintf("%q", head)
 }
 
 // deletePriority is DELETE /api/v1/priorities/{id}: the state `gone`, and no row removed. The

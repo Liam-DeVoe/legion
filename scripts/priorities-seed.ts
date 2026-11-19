@@ -17,12 +17,16 @@
  * cases of that rule, and both the server's tests and this seed's are held to them.
  *
  * Each priority's description ends in the record below, which is what the check of R10 reads and
- * what makes a second run write no second priority and no second relation:
+ * what makes a second run write no second priority and no second relation. Each of its lines is
+ * a paragraph of its own, so an edit of the description in the documents' editor, which joins
+ * the lines of one paragraph with spaces, leaves each line whole:
  *
  *     ---
  *
  *     Table row 11 of dispatch://KEY/artifact/some-table-md, read at version 70.
+ *
  *     Advances: INFRA-2947, INFRA-2969.
+ *
  *     Not advanced: BET-1030 (done), FOO-12 (no issue carries this key).
  *
  * The row number is the idempotency key: a run against a table whose rows moved, or whose row was
@@ -276,7 +280,10 @@ export function parseTable(markdown: string): TableRow[] {
   throw new Error("this document holds no table with the columns #, Priority, Owner and Where");
 }
 
-/** The record this seed writes at the end of a priority's description. */
+/** The record this seed writes at the end of a priority's description. Each of its lines is a
+ *  paragraph of its own: the priority's page edits the description in the documents' editor,
+ *  which reads the lines of one paragraph as one line joined by spaces, and the marker is read
+ *  back as a whole line (`MARKER_PATTERN`). */
 export function priorityDescription(
   row: TableRow,
   document: string,
@@ -290,8 +297,8 @@ export function priorityDescription(
     `Table row ${row.number} of ${document}, read at version ${version ?? "none"}.`,
     `Advances: ${advances}.`,
     `Not advanced: ${held.length === 0 ? "none" : held.join(", ")}.`,
-  ].join("\n");
-  return [row.title, row.where, "---", record].filter((part) => part !== "").join("\n\n");
+  ];
+  return [row.title, row.where, "---", ...record].filter((part) => part !== "").join("\n\n");
 }
 
 /** The row a priority was written from, as its description records it, or undefined for a

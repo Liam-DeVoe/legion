@@ -1,3 +1,4 @@
+import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import type { ColumnDef } from "@tanstack/react-table";
 import { createContext, type ReactNode, useContext } from "react";
 import { Link } from "react-router-dom";
@@ -117,6 +118,7 @@ function TitleCell({ item }: { item: PriorityItem }) {
           <InPlaceField
             kept={actions.kept(id, "title", title)}
             label={`Title of ${item.order}`}
+            maxLength={ISSUE_TITLE_MAX}
             onKeptChange={(texts) => actions.onKeep(id, "title", texts)}
             onSave={(next) => actions.onRename(item, next)}
             required

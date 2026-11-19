@@ -1,8 +1,9 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
+import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { onFakeClock } from "../../__tests__/fake-clock";
 import { recordedEditors, selectText, writeAtEnd } from "../../__tests__/recorded-editors";
 import { answerPriorityPatches } from "../../__tests__/send-answers";
@@ -10,8 +11,10 @@ import { ApiError, api, priorityPatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
+import { PendingWritesIndicator } from "../writes/PendingWritesIndicator";
 import { writesOf } from "../writes/write-store";
 import { PriorityPage } from "./PriorityPage";
+import { PRIORITIES_PATH } from "./priority-routes";
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
   return {
@@ -137,21 +140,34 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
       return this.dataset.testid?.endsWith("-scroll") ? 600 : (descriptor?.get?.call(this) ?? 0);
     },
   });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(["whoami"], whoami);
+  const signedIn = () => {
+    const app = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    app.setQueryData(["whoami"], whoami);
+    return app;
+  };
   // The description is drawn in the documents' own editor, whose handles a test edits through.
   const editors = recordedEditors();
-  const view = render(
-    <MemoryRouter initialEntries={[`/priorities/${id}`]}>
-      <QueryClientProvider client={client}>
-        <DocumentRuntime.Provider value={editors.runtime}>
-          <Routes>
-            <Route element={<PriorityPage />} path="/priorities/:id" />
-          </Routes>
-        </DocumentRuntime.Provider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  // The page, the priorities page its link leads to - a stand-in with a way back - and the
+  // shell's line of pending writes, which stands above the router as the app's does.
+  const draw = (app: QueryClient) =>
+    render(
+      <MemoryRouter initialEntries={[`/priorities/${id}`]}>
+        <QueryClientProvider client={app}>
+          <DocumentRuntime.Provider value={editors.runtime}>
+            <Routes>
+              <Route element={<PriorityPage />} path="/priorities/:id" />
+              <Route
+                element={<Link to={`/priorities/${id}`}>Back to the priority</Link>}
+                path={PRIORITIES_PATH}
+              />
+            </Routes>
+            <PendingWritesIndicator />
+          </DocumentRuntime.Provider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+  let client = signedIn();
+  let view = draw(client);
   restores.push(() => {
     view.unmount();
     client.clear();
@@ -170,7 +186,17 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
     priorities.mockResolvedValue(written);
     act(() => client.setQueryData(prioritiesQuery().queryKey, written));
   };
-  return { client, editors, listing, patch, view, writtenElsewhere };
+  /** The page reloaded on the tab it was on: a new app, with a client and a store of its own,
+   *  which takes up the writes the tab kept, as the app does once signed in. */
+  const reload = () => {
+    view.unmount();
+    client.clear();
+    client = signedIn();
+    view = draw(client);
+    act(() => writesOf(client).resume("alice"));
+    return client;
+  };
+  return { client, editors, listing, patch, priorities, reload, view, writtenElsewhere };
 }
 
 test("the header carries the order, the title in place, the owner and the three counts", async () => {
@@ -278,6 +304,23 @@ test("a title the reader empties writes nothing, and left, shows the title again
   await user.tab();
   expect(title.value).toBe("Rocq and Lean speed work restarted");
   expect(patch).not.toHaveBeenCalled();
+});
+
+// Dispatch refuses a priority title longer than an issue title may be, so the field holds no
+// more than that: a longer text pasted in is cut at the bound, and no longer title is sent.
+test("the title holds no more than an issue title may, so no longer title is sent", async () => {
+  const user = userEvent.setup();
+  const { patch } = page();
+  const title = (await screen.findByRole("textbox", { name: "Title" })) as HTMLInputElement;
+  expect(title.maxLength).toBe(ISSUE_TITLE_MAX);
+  await user.clear(title);
+  await user.paste("t".repeat(ISSUE_TITLE_MAX + 1));
+  await user.tab();
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+  expect(patch.mock.calls[0]?.[1]).toEqual({
+    expected: { title: "Rocq and Lean speed work restarted" },
+    title: "t".repeat(ISSUE_TITLE_MAX),
+  });
 });
 
 test("the title's notice stands outside the heading, which is named by the title alone, and the field names the notice", async () => {
@@ -391,7 +434,8 @@ test("an id no priority carries says so and gives the way back", async () => {
 // A write a reload took up is the page's to settle with the reader as much as one pressed on it:
 // refused because another person wrote the description since the reader's edit started, it
 // stands on no line with a Retry that would send it again. The description shows it beside the
-// other person's text, drawn though the reader had closed it, and nothing of it is sent again.
+// other person's text, drawn though the reader had closed it, and nothing of it is sent again;
+// the store holds it for the page until the reader settles it.
 test("a description a reload took up and another person's change refused is kept beside the description, closed or not", async () => {
   const user = userEvent.setup();
   const { client, editors, patch } = page();
@@ -431,7 +475,106 @@ test("a description a reload took up and another person's change refused is kept
   });
   expect(within(notice).getByText(/Speedruns run again, every night\./)).toBeDefined();
   expect(within(notice).getByRole("button", { name: "Use my text" })).toBeDefined();
-  expect(writesOf(client).rows()).toEqual([]);
+  expect(writesOf(client).rows()).toMatchObject([{ claimed: true, status: "refused" }]);
+  expect(screen.queryByTestId("pending-writes")).toBeNull();
   expect(patch).toHaveBeenCalledTimes(1);
   expect(patch.mock.calls[0]?.[1]).toEqual(body);
+});
+
+/** Dispatch's refusal of a title another person wrote since the reader's edit started. */
+const TITLE_CHANGED = new ApiError(409, {
+  code: "PRIORITY_CHANGED",
+  error: "the title was written meanwhile",
+});
+
+/** The priority's read once another person wrote its title. */
+const RETITLED: Priorities = {
+  ...BODY,
+  priorities: ROWS.map((row) => (row.id === "rocq-lean" ? { ...row, title: "Theirs" } : row)),
+};
+
+/** The names of the writes this tab keeps across a reload. */
+function keptWrites(): string[] {
+  return Array.from({ length: window.sessionStorage.length }, (_, index) =>
+    window.sessionStorage.key(index)
+  ).filter((name): name is string => name?.startsWith("dispatch.write:") === true);
+}
+
+/** The reader writes `, mine` at the end of the title, and leaves the field: Dispatch refuses it
+ *  (`patch`), another person having written `Theirs` since, which the page reads (`priorities`)
+ *  once it takes the refusal. Answers the notice the page then draws, holding the reader's
+ *  text. */
+async function refusedTitle(
+  priorities: { mockResolvedValue: (body: Priorities) => unknown },
+  patch: { mockRejectedValueOnce: (refusal: Error) => unknown }
+) {
+  const user = userEvent.setup();
+  const title = await screen.findByRole("textbox", { name: "Title" });
+  priorities.mockResolvedValue(RETITLED);
+  patch.mockRejectedValueOnce(TITLE_CHANGED);
+  await user.type(title, ", mine");
+  await user.tab();
+  const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
+  expect(within(notice).getByText(`${ROWS[1]?.title}, mine`)).toBeDefined();
+  expect(title).toHaveValue("Theirs");
+  return { notice, user };
+}
+
+// The reader's text a refusal brought back is the store's, not the page's: leaving the page
+// hands the write back to the shell's line, which offers the text to copy with no Retry, and
+// the page drawn again takes it from there and offers it beside the title once more. Using it
+// then writes it over the other person's title, as a press of its own, and the refused write
+// goes, from the store and from what the tab keeps.
+test("a title another person's change refused outlives leaving the page, and is offered again on the way back", async () => {
+  const { client, patch, priorities } = page();
+  const { user } = await refusedTitle(priorities, patch);
+  expect(screen.queryByTestId("pending-writes")).toBeNull();
+
+  await user.click(screen.getByRole("link", { name: "‹ Priorities" }));
+  const line = await screen.findByTestId("pending-writes");
+  expect(
+    within(line).getByText(
+      "Not saved because another person changed it: Rename the priority “Rocq and Lean speed work restarted” to “Rocq and Lean speed work restarted, mine”"
+    )
+  ).toBeDefined();
+  expect(within(line).getByRole("note", { name: "Your text:" }).textContent).toBe(
+    `${ROWS[1]?.title}, mine`
+  );
+  expect(within(line).queryByRole("button", { name: "Retry" })).toBeNull();
+
+  await user.click(screen.getByRole("link", { name: "Back to the priority" }));
+  const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
+  expect(within(notice).getByText(`${ROWS[1]?.title}, mine`)).toBeDefined();
+  expect(screen.queryByTestId("pending-writes")).toBeNull();
+  expect(patch).toHaveBeenCalledTimes(1);
+
+  await user.click(within(notice).getByRole("button", { name: "Use my text" }));
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
+  expect(patch.mock.calls[1]?.slice(0, 2)).toEqual([
+    "rocq-lean",
+    { expected: { title: "Theirs" }, title: `${ROWS[1]?.title}, mine` },
+  ]);
+  await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+  expect(keptWrites()).toEqual([]);
+});
+
+// A reload takes the refused write up again from what the tab kept, and the page drawn on it
+// offers the reader's text as the page before did. Keeping the other person's title lets the
+// write go, and nothing of it is kept or sent.
+test("a title another person's change refused outlives a reload, and keeping theirs lets it go", async () => {
+  const { patch, priorities, reload } = page();
+  await refusedTitle(priorities, patch);
+  expect(keptWrites()).toHaveLength(1);
+  const client = reload();
+  const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
+  expect(within(notice).getByText(`${ROWS[1]?.title}, mine`)).toBeDefined();
+  expect(writesOf(client).rows()).toMatchObject([{ claimed: true, status: "refused" }]);
+  expect(screen.queryByTestId("pending-writes")).toBeNull();
+
+  await userEvent.setup().click(within(notice).getByRole("button", { name: "Keep their text" }));
+  expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
+  expect(writesOf(client).rows()).toEqual([]);
+  expect(keptWrites()).toEqual([]);
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Theirs");
+  expect(patch).toHaveBeenCalledTimes(1);
 });

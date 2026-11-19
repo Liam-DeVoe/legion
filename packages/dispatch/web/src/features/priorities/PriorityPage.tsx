@@ -1,3 +1,4 @@
+import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
@@ -114,6 +115,7 @@ export function PriorityPage(): ReactNode {
                   kept={kept(id, "title", title)}
                   key={id}
                   label="Title"
+                  maxLength={ISSUE_TITLE_MAX}
                   noticeAt={titleNoticeAt}
                   onKeptChange={(texts) => keep(id, "title", texts)}
                   onSave={(next) =>

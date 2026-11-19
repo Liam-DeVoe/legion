@@ -1,4 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
+import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the drag of a row onto another below is a drag and a drop, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -468,6 +469,22 @@ test("a title is renamed where it is read, with no edit mode and no Save button"
   expect(screen.queryByRole("button", { name: /^Save/ })).toBeNull();
 });
 
+// A row's title is bounded as the priority's own page bounds it: Dispatch refuses a longer one.
+test("a row's title holds no more than an issue title may, so no longer title is sent", async () => {
+  const user = userEvent.setup();
+  const { patch } = page(FIFTEEN);
+  const field = (await screen.findByRole("textbox", { name: "Title of P2" })) as HTMLInputElement;
+  expect(field.maxLength).toBe(ISSUE_TITLE_MAX);
+  await user.clear(field);
+  await user.paste("t".repeat(ISSUE_TITLE_MAX + 1));
+  await user.tab();
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+  expect(patch.mock.calls[0]?.slice(0, 2)).toEqual([
+    "linkage-closure",
+    { expected: { title: "Linkage closure eval" }, title: "t".repeat(ISSUE_TITLE_MAX) },
+  ]);
+});
+
 test("the reader's title kept beside a row outlives the row leaving the table, and is written when they use it", async () => {
   const user = userEvent.setup();
   const { patch, writtenElsewhere } = page(FIFTEEN);
@@ -511,9 +528,10 @@ const CHANGED = new ApiError(409, {
 
 // A rename of a row the server refused because another person's title landed first is the
 // table's to settle with the reader: their text is kept beside the row's title once the table
-// has read the other person's, and nothing stands for it on the shell's line. Should that title
-// take the row out of the view - here, out of the search - the text is not lost with the row: it
-// stands above the table, and its Use my text writes it over the title the page now reads.
+// has read the other person's, the store holds the write for it, and nothing stands for it on
+// the shell's line. Should that title take the row out of the view - here, out of the search -
+// the text is not lost with the row: it stands above the table, and its Use my text writes it
+// over the title the page now reads, and lets the refused write go.
 test("a title another person's change refused is kept beside its row, and above the table once the row leaves the view", async () => {
   const user = userEvent.setup();
   const { client, patch, priorities } = page(FIFTEEN);
@@ -526,7 +544,7 @@ test("a title another person's change refused is kept beside its row, and above 
     screen.queryByRole("alert", { name: "Title of P2, changed by another person" });
   await waitFor(() => expect(notice()).not.toBeNull());
   expect(field).toHaveValue("Linkage closure, theirs");
-  expect(writesOf(client).rows()).toEqual([]);
+  expect(writesOf(client).rows()).toMatchObject([{ claimed: true, status: "refused" }]);
   await user.type(screen.getByRole("searchbox", { name: "Search priorities" }), "OSS");
   await waitFor(() => expect(screen.queryByRole("textbox", { name: "Title of P2" })).toBeNull());
   const above = notice();
@@ -539,6 +557,13 @@ test("a title another person's change refused is kept beside its row, and above 
     { expected: { title: "Linkage closure, theirs" }, title: "Linkage closure eval, mine" },
   ]);
   expect(notice()).toBeNull();
+  await waitFor(() =>
+    expect(
+      writesOf(client)
+        .rows()
+        .filter((row) => row.status === "refused")
+    ).toEqual([])
+  );
 });
 
 // The table settles only the conflicts of the rows it draws: a refusal of a row a search leaves
@@ -587,7 +612,11 @@ test("a refusal of a row the table does not draw stays on the shell's line, and 
   expect(writes.rows()).toMatchObject([{ kind: "priority-text", status: "refused" }]);
   expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
   await user.clear(search);
-  await waitFor(() => expect(writes.rows()).toEqual([]));
+  await waitFor(() =>
+    expect(writes.rows()).toMatchObject([
+      { claimed: true, kind: "priority-text", status: "refused" },
+    ])
+  );
   const kept = await screen.findByRole("alert", {
     name: "Title of P2, changed by another person",
   });

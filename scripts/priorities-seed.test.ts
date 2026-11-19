@@ -1,7 +1,10 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PRIORITY_ID_MAX } from "../packages/contracts/src/dispatch-api-limits";
 import { bearerCredential } from "../packages/envoy-client/src/bearer";
+import { createHeadlessProof } from "../packages/proof-editor/src/lib-headless";
 import { holdDeadlines } from "./dispatch/__tests__/held-deadlines";
 import { priorityDescription, rowMarker, seedPriorities } from "./priorities-seed";
 import { priorityId } from "./priorities-seed-ids";
@@ -49,6 +52,10 @@ const DOCUMENT = "dispatch://TBL-1/artifact/priorities-md";
 
 /** The route the seed reads that document's table through, as Dispatch writes it. */
 const DOCUMENT_PATH = "/api/v1/issues/TBL-1/artifacts/priorities-md/text";
+
+/** The route the check of R10 reads that document at one version through: the version the
+ *  board's markers name. */
+const VERSIONS_PATH = "/api/v1/issues/TBL-1/artifacts/priorities-md/versions/";
 
 /**
  * The fixture table. It holds a row whose `Where` cell begins with `DONE`, a row naming a key
@@ -125,13 +132,14 @@ function issueBody(key: string, issue: HeldIssue): object {
 
 /**
  * A Dispatch holding one document, the issues above and the priorities a run writes. It answers
- * the routes the seed calls and refuses what the server of 2026-11-15 refused: a priority id no
- * row carries, a whole-set `advances` write whose revision is behind, and a create of an id it
- * holds, a gone one included (409 PRIORITY_EXISTS). A create takes the id its body names, which
- * it refuses past `PRIORITY_ID_MAX` characters, and where the body names none, the title's slug
- * with no cut, which it refuses past the same bound. It refuses the ids `none` and `any`, and a
- * title with no slug where it has to make the id. The listing answers live priorities only, and
- * a priority's history answers 200 for any id it holds and 404 for any other.
+ * the routes the seed and its check call and refuses what the server of 2026-11-15 refused: a
+ * priority id no row carries, a whole-set `advances` write whose revision is behind, and a create
+ * of an id it holds, a gone one included (409 PRIORITY_EXISTS). A create takes the id its body
+ * names, which it refuses past `PRIORITY_ID_MAX` characters, and where the body names none, the
+ * title's slug with no cut, which it refuses past the same bound. It refuses the ids `none` and
+ * `any`, and a title with no slug where it has to make the id. The listing answers live
+ * priorities only, a priority's history answers 200 for any id it holds and 404 for any other,
+ * and the document answers its one version by its number.
  */
 const server = Bun.serve({
   port: 0,
@@ -149,6 +157,9 @@ const server = Bun.serve({
     }
     if (request.method === "GET" && pathname === DOCUMENT_PATH) {
       return Response.json({ ...document, token: "sha256:document" });
+    }
+    if (request.method === "GET" && pathname === `${VERSIONS_PATH}${document.version}`) {
+      return Response.json({ markdown: document.markdown, number: document.version });
     }
     const key = /^\/api\/v1\/issues\/([A-Z][A-Z0-9]*-[0-9]+)$/.exec(pathname)?.[1];
     if (key !== undefined) {
@@ -335,6 +346,36 @@ async function runCommand(
   return { code, stdout, stderr };
 }
 
+/** The check of R10 (`priorities-seed-check.sh`) run against the fake Dispatch, its bearer in a
+ *  file of a scratch directory of its own, which goes with the run. */
+async function runCheck(): Promise<{
+  readonly code: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}> {
+  const scratch = mkdtempSync(join(tmpdir(), "priorities-seed-check."));
+  try {
+    const tokenFile = join(scratch, "token");
+    writeFileSync(tokenFile, "token", { mode: 0o600 });
+    const child = Bun.spawn(
+      ["bash", `${import.meta.dir}/priorities-seed-check.sh`, "--artifact", DOCUMENT],
+      {
+        env: { ...process.env, DISPATCH_TOKEN_FILE: tokenFile, DISPATCH_URL: config.url },
+        stderr: "pipe",
+        stdout: "pipe",
+      }
+    );
+    const [code, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    return { code, stdout, stderr };
+  } finally {
+    rmSync(scratch, { recursive: true });
+  }
+}
+
 /** A case of the shared list that gives an id rather than a refusal. */
 function givesId(one: IdCase): one is Extract<IdCase, { readonly id: string }> {
   return "id" in one;
@@ -404,7 +445,7 @@ test("records the key it did not relate with its status, and the key no issue ca
   const none = report.rows.find((row) => row.row === "5");
   expect(none?.related).toEqual([]);
   expect(none?.excluded).toEqual([]);
-  expect(priorities[3]?.description).toContain("Advances: none.\nNot advanced: none.");
+  expect(priorities[3]?.description).toContain("Advances: none.\n\nNot advanced: none.");
 });
 
 test("writes the row's own text, its number and the version it read as the description", async () => {
@@ -419,7 +460,9 @@ test("writes the row's own text, its number and the version it read as the descr
       "---",
       "",
       `Table row 6 of ${DOCUMENT}, read at version 1.`,
+      "",
       "Advances: TEST-4, TEST-5.",
+      "",
       "Not advanced: none.",
     ].join("\n")
   );
@@ -433,6 +476,40 @@ test("writes the row's own text, its number and the version it read as the descr
       []
     )
   ).toContain(`Table row 6 of ${DOCUMENT}, read at version none.`);
+});
+
+// A priority's page edits its description in the documents' editor, which reads the lines of one
+// paragraph as one line joined by spaces and writes the text back in its own form. Each line of
+// the record is a paragraph of its own, so after such an edit the marker is still a line of its
+// own: a second run keeps every row by it, and the check of R10 finds every row and its
+// relations by it. The editor's own parse and serialize stand in for the edit here
+// (`createHeadlessProof`: the soft-break rule the editor's `setMarkdown` applies, and the
+// serializer its `getMarkdown` writes with), since the browser editor needs a page to run in.
+test("a description edited in the documents' editor keeps its row by its marker, for a second run and the check", async () => {
+  await seedPriorities(config, DOCUMENT);
+  const proof = await createHeadlessProof();
+  for (const priority of priorities) {
+    priority.description = proof.serializeMarkdown(proof.parseMarkdown(priority.description));
+  }
+  // The editor writes the text in its own form: its rule is `***`.
+  expect(priorities[4]?.description).toContain("\n\n***\n\n");
+  const edited = priorities.map((priority) => ({ ...priority }));
+  requests.length = 0;
+
+  const second = await seedPriorities(config, DOCUMENT);
+
+  expect(writes()).toEqual([]);
+  expect(priorities).toEqual(edited);
+  expect(second.rows.map((row) => [row.row, row.kept])).toEqual(
+    ["1", "3", "4", "5", "6", "7", "8"].map((row) => [row, "marker"])
+  );
+  const check = await runCheck();
+  expect(check.stderr).toBe("");
+  expect(check.stdout).toContain(
+    `${DOCUMENT}, read at version 1: 7 rows stand on the board in the table's order, 0 rows ` +
+      "stand on it by their id, 1 rows passed over (DONE), 6 relations read back"
+  );
+  expect(check.code).toBe(0);
 });
 
 test("a second run writes no second priority and no second relation", async () => {

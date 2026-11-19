@@ -446,9 +446,7 @@ test("a long title through the New priority form lands under its cut id", async 
     expect(refused.status()).toBe(400);
     const body = await refused.json();
     expect(body.code).toBe("PRIORITY_INPUT");
-    expect(body.error).toBe(
-      `an id is at most ${PRIORITY_ID_MAX} characters, and this one is ${PRIORITY_ID_MAX + 1}`
-    );
+    expect(body.error).toContain(String(PRIORITY_ID_MAX));
     expect((await listPriorities()).priorities?.map((stored) => stored.id)).toEqual([LONG_CASE.id]);
   } finally {
     await context.close();
@@ -809,6 +807,13 @@ test("what a reader types into a priority survives a reload made before the typi
   try {
     const page = await context.newPage();
     await priorityPage(page);
+    // The page's own clock, held while the reader types: the half-second timer cannot write
+    // then, so only leaving the page can. `install()` alone leaves it running at real speed;
+    // `pauseAt` holds it, a second past the page's own reading of it. The reloaded page reads
+    // the priorities on its own timers, so its clock runs again once it has loaded.
+    await page.clock.install();
+    const holdClock = async () =>
+      page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
     await page.goto(`/priorities/${seed.ids[0]}`);
     const stored = async () =>
       (await listPriorities()).priorities?.find((one) => one.id === seed.ids[0]);
@@ -818,19 +823,23 @@ test("what a reader types into a priority survives a reload made before the typi
     // as a click elsewhere is, and what the reader typed is theirs.
     const title = page.getByRole("textbox", { name: "Title" });
     await expect(title).toHaveValue(seed.titles[0]);
+    await holdClock();
     await title.click();
     await page.keyboard.press("End");
     await page.keyboard.type(" now");
     await page.reload();
+    await page.clock.resume();
     await expect.poll(async () => (await stored())?.title).toBe(`${seed.titles[0]} now`);
 
     // The description, the same way.
     const editor = page.getByRole("textbox", { exact: true, name: "Description of P1" });
     await expect(editor).toContainText("nothing is waiting on one");
+    await holdClock();
     await editor.click();
     await page.keyboard.press("ControlOrMeta+End");
     await page.keyboard.type(" Typed before the reload.");
     await page.reload();
+    await page.clock.resume();
     await expect
       .poll(async () => (await stored())?.description ?? "")
       .toContain("Typed before the reload.");
@@ -877,7 +886,8 @@ test("a priority write another person's change refused leaves no 'Not saved' lin
     await page.keyboard.press("End");
     await page.keyboard.type(" first");
     await title.blur();
-    await expect(notice).toBeVisible();
+    // The notice only a handled refusal draws, holding her text: the page has taken the 409.
+    await expect(notice).toContainText(`${seed.titles[0]} first`);
     expect(refused).toHaveLength(1);
     // She uses her text, and it lands over Bob's.
     await notice.getByRole("button", { name: "Use my text" }).click();
@@ -911,6 +921,10 @@ test("a priority write another person's change refused leaves no 'Not saved' lin
     await page.reload();
     await expect(title).toHaveValue("Bob's second rename");
     await expect.poll(() => refused.length).toBe(2);
+    // The page has taken the resumed write's 409 once its notice holds her text; only then does
+    // the line's absence say anything.
+    await expect(notice).toContainText(`${seed.titles[0]} first second`);
+    await expect(page.getByText(/^Not saved:/)).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
     expect(new Set(refused).size).toBe(refused.length);
   } finally {

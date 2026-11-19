@@ -397,6 +397,43 @@ test("a conflict reads why, offers the reader's text to copy and Discard, and no
   }
 });
 
+// A conflict a page mounted now settles with the reader is that page's: the line draws nothing
+// of it while the page holds it, and draws it again, with the reader's text to copy and no
+// Retry, once the page has gone and handed it back.
+test("a conflict a page holds is not on the line, and is again once the page hands it back", async () => {
+  const { client, unmount } = mountIndicator();
+  const writes = writesOf(client);
+  try {
+    resumedRefusal(
+      writes,
+      { detail: { text: "My title" }, kind: draftedWrite.name, label: "Rename the priority “P1”" },
+      { code: "PRIORITY_CHANGED", message: "the title was written", status: 409 }
+    );
+    await settle();
+    const id = writes.rows()[0]?.id ?? 0;
+    expect(await screen.findByTestId("pending-writes")).toBeTruthy();
+    act(() => {
+      expect(writes.claim(id)).toBe(true);
+    });
+    expect(screen.queryByTestId("pending-writes")).toBeNull();
+    expect(writes.rows()).toMatchObject([{ claimed: true, status: "refused" }]);
+
+    act(() => writes.unclaim(id));
+    const indicator = await screen.findByTestId("pending-writes");
+    expect(
+      within(indicator).getByText(
+        "Not saved because another person changed it: Rename the priority “P1”"
+      )
+    ).toBeTruthy();
+    expect(within(indicator).getByRole("note", { name: "Your text:" }).textContent).toBe(
+      "My title"
+    );
+    expect(within(indicator).queryByRole("button", { name: "Retry" })).toBeNull();
+  } finally {
+    unmount();
+  }
+});
+
 // The issue page's Advances picker shows its refusal itself, but a write a reload took up is
 // the line's: refused 409 ADVANCES_REVISION, it says another person changed it, with no Retry
 // that would send the stale revision again, and no text to copy, since it carried none.

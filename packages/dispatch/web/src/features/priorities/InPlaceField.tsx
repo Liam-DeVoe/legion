@@ -131,6 +131,7 @@ export function InPlaceField({
   id,
   kept: keptByPage,
   label,
+  maxLength,
   noticeAt,
   onKeptChange,
   onSave,
@@ -145,6 +146,9 @@ export function InPlaceField({
    *  `onKeptChange` hears each change of them. */
   kept?: readonly string[];
   label: string;
+  /** The most characters the field holds, where Dispatch bounds the text, as it bounds a title
+   *  (`ISSUE_TITLE_MAX`): a longer text is never typed into the field, so never sent. */
+  maxLength?: number;
   /** Where the notice of the reader's kept texts is drawn, where the page gives it a place of its
    *  own: a field standing in a heading would else draw it inside the heading, whose name would
    *  then carry the notice's words. `null` is a place not drawn yet, which holds no notice until
@@ -248,6 +252,7 @@ export function InPlaceField({
         className={`w-full rounded-md border px-2 py-1 text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas} ${focusVisibleRing}`}
         id={id}
         list={listId}
+        maxLength={maxLength}
         onBlur={() => {
           save();
           setDraft((typed) => heldText(typed, base.current, required));

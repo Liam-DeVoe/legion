@@ -39,12 +39,14 @@ import {
 /** Where a write stands: waiting its turn behind an earlier write to its target (`queued`), out
  *  within its deadline (`sending`), out past it (`late`, `stopping` once the reader pressed Stop
  *  trying), refused - by Dispatch, or stopped - and not yet retried or discarded, or made: Dispatch
- *  answered it, and its kind shows the answer until it lets it go (`WriteKind.keepsMade`). */
+ *  answered it, and its kind shows the answer until it lets it go (`WriteKind.keepsMade`). A
+ *  refused one is `claimed` while a surface mounted now settles its conflict with the reader
+ *  (`WriteKind.claims`, `Writes.claim`), which the shell's line leaves to that surface. */
 export type WriteState =
   | { readonly status: "queued" }
   | { readonly status: "sending" }
   | { readonly status: "late"; readonly stopping: boolean }
-  | { readonly status: "refused"; readonly refusal: Error }
+  | { readonly status: "refused"; readonly refusal: Error; readonly claimed: boolean }
   | { readonly status: "made"; readonly answer: unknown };
 
 /** A write apart from where it stands: its key, its kind and its kind's record (`detail`), the
@@ -141,8 +143,11 @@ export interface WriteKind<D, K = D> {
   readonly undone?: (client: QueryClient, write: Write<D>) => void;
   /** Whether a surface takes `refusal`, a conflict only the reader can settle (`isConflict`), to
    *  settle with them: a page that shows what the write was of, which keeps the reader's text
-   *  beside it. A claimed write goes as an inline one does - its kind still undoes it, and its
-   *  outcome is still told - and a reload's kept one is let go unshown. Left out, none is. */
+   *  beside it. A claimed write stays, kept for a reload as any refusal is, but `claimed`: the
+   *  shell's line leaves it to that surface, which lets it go once the reader settles it there
+   *  (`Writes.settle`) and hands it back to the line as it goes (`Writes.unclaim`). Its kind
+   *  still undoes it, and its outcome is still told. A reload's kept one is asked again: no
+   *  claim outlives the page. Left out, none is. */
   readonly claims?: (client: QueryClient, write: Write<D>, refusal: ApiError) => boolean;
   /** The reader's own text the write carried, which the shell's line offers to copy while its
    *  refusal is a conflict; left out, or `undefined`, it carried none. */
@@ -325,15 +330,16 @@ let watcher: ((store: Writes) => void) | undefined;
  * and a refused or stopped one no longer holds the line (its Retry joins at the back). Every write
  * is kept (`write-storage.ts`, an upload's file in `kept-files.ts`) from its press until Dispatch
  * answers, so a reload takes it up again (`resume`). A refusal stays, with Retry and Discard,
- * until the reader takes one - unless its surface shows refusals itself (`inline`), a surface
- * takes it to settle with the reader (`WriteKind.claims`), or it is never shown (`quiet`), when
- * it goes at once. A conflict (`isConflict`) refuses the same body every time, so no Retry makes
- * it again. A write belongs to the person who pressed it: a session that lapses (whoami answers
- * 401, or the write itself is answered 401) stops every write's trying and starts none, but keeps
- * them all, in memory and in storage, until someone signs in - the same person's sign-in takes
- * them up again, and anyone else's drops every write of another login (`signedIn`). Dispatch
- * refuses one that reaches it under another session first (`Dispatch-Login`,
- * `409 LOGIN_CHANGED`).
+ * until the reader takes one - unless its surface shows refusals itself (`inline`), or it is never
+ * shown (`quiet`), when it goes at once. One a surface takes to settle with the reader
+ * (`WriteKind.claims`) stays too, kept as any refusal is, and is that surface's until the reader
+ * settles it there (`settle`) or the surface goes (`unclaim`). A conflict (`isConflict`) refuses
+ * the same body every time, so no Retry makes it again. A write belongs to the person who pressed
+ * it: a session that lapses (whoami answers 401, or the write itself is answered 401) stops every
+ * write's trying and starts none, but keeps them all, in memory and in storage, until someone
+ * signs in - the same person's sign-in takes them up again, and anyone else's drops every write of
+ * another login (`signedIn`). Dispatch refuses one that reaches it under another session first
+ * (`Dispatch-Login`, `409 LOGIN_CHANGED`).
  */
 export class Writes {
   /** The method of the request each of this page's send keys has already carried. A write's key
@@ -598,13 +604,35 @@ export class Writes {
     return true;
   }
 
-  /** Lets the refused write `id` go because a surface settles its conflict with the reader after
-   *  the fact: a page mounted after the refusal arrived, which keeps the reader's text beside what
-   *  the write was of, as one mounted then would have (`WriteKind.claims`). No outcome is told,
-   *  as for `supersede`: the reader dropped nothing. Says whether there was one. */
+  /** Takes the refused write `id` for a surface that settles its conflict with the reader after
+   *  the fact: a page drawn after the refusal arrived, which keeps the reader's text beside what
+   *  the write was of, as one drawn then would have (`WriteKind.claims`). The write stays, kept as
+   *  any refusal is, until the reader settles it there (`settle`) or the surface goes
+   *  (`unclaim`). Says whether it took it: a conflict no surface holds. */
   claim(id: number): boolean {
     const entry = this.#entries.get(id);
-    if (entry?.write.status !== "refused" || !isConflict(entry.write.refusal)) return false;
+    if (entry?.write.status !== "refused" || entry.write.claimed) return false;
+    if (!isConflict(entry.write.refusal)) return false;
+    this.#show(entry, { ...entry.write, claimed: true });
+    return true;
+  }
+
+  /** Hands the claimed write `id` back to the shell's line, its draft to copy and Discard beside
+   *  it: the surface that took it is gone, and the reader's text beside what the write was of
+   *  with it. A surface drawn later that shows what it was of takes it again (`claim`). */
+  unclaim(id: number): void {
+    const entry = this.#entries.get(id);
+    if (entry?.write.status !== "refused" || !entry.write.claimed) return;
+    this.#show(entry, { ...entry.write, claimed: false });
+  }
+
+  /** Lets the claimed write `id` go: the reader settled its conflict on the surface that took it,
+   *  keeping the other person's text, or writing theirs again as a press of its own. No outcome
+   *  is told: its refusal was told already, and the reader dropped nothing the surface did not
+   *  show them. Says whether there was one. */
+  settle(id: number): boolean {
+    const entry = this.#entries.get(id);
+    if (entry?.write.status !== "refused" || !entry.write.claimed) return false;
     this.#remove(entry);
     return true;
   }
@@ -777,9 +805,10 @@ export class Writes {
    * the request it last was, past its deadline already if it was then, and Dispatch answers the
    * repeat with what the first did; one the reader was stopping is asked once more and lands or
    * ends stopped. One pressed longer ago is not made again on its own: it shows refused
-   * (`SendInterruptedError`), for a Retry under its key or Discard. A refusal shows again, but
-   * for a conflict a surface takes to settle with the reader (`WriteKind.claims`), which is let
-   * go. A quiet write is let go rather than shown. The app calls this once signed in.
+   * (`SendInterruptedError`), for a Retry under its key or Discard. A refusal shows again; a
+   * conflict a surface takes to settle with the reader (`WriteKind.claims`) comes back as that
+   * surface's, claimed. A quiet write is let go rather than shown. The app calls this once signed
+   * in.
    */
   resume(login: string): void {
     if (this.#resumed) return;
@@ -866,13 +895,9 @@ export class Writes {
       this.#carried.get(kept.key) ?? null,
       now
     );
-    const write: Write = { ...entry.write, refusal, status: "refused" };
-    if (this.#claimed(write, refusal)) {
-      this.#forget(entry);
-      return;
-    }
+    const write: Write = { ...entry.write, claimed: false, refusal, status: "refused" };
     this.#entries.set(entry.write.id, entry);
-    this.#update(entry, write);
+    this.#update(entry, { ...write, claimed: this.#claimed(write, refusal) });
   }
 
   /** Puts `entry` in its target's line, to start at once if nothing ahead of it is still being
@@ -1089,10 +1114,11 @@ export class Writes {
   }
 
   /** The write `entry` was refused: it stays for Retry or Discard - unless its surface shows the
-   *  refusal itself, a surface takes it to settle with the reader (`#claimed`), or it is never
-   *  shown - and the next write of its target goes. One Dispatch refused because someone else is
-   *  signed in goes with every write of its login, and the page reads who is signed in again. A
-   *  refused sign-out leaves its person signed in, so every write of theirs it held goes on. */
+   *  refusal itself or it is never shown, when it goes, and claimed where a surface takes it to
+   *  settle with the reader (`#claimed`) - and the next write of its target goes. One Dispatch
+   *  refused because someone else is signed in goes with every write of its login, and the page
+   *  reads who is signed in again. A refused sign-out leaves its person signed in, so every write
+   *  of theirs it held goes on. */
   #refused(entry: Entry, refusal: Error): void {
     entry.press?.reject(refusal);
     entry.press = undefined;
@@ -1106,10 +1132,11 @@ export class Writes {
       void this.#client.invalidateQueries({ queryKey: ["whoami"] });
       return;
     }
-    const write: Write = { ...baseOf(entry.write), refusal, status: "refused" };
-    if (this.#claimed(write, refusal) || entry.write.inline || entry.write.presentation === "quiet")
-      this.#remove(entry);
-    else this.#update(entry, write);
+    const stays = !entry.write.inline && entry.write.presentation !== "quiet";
+    const refused: Write = { ...baseOf(entry.write), claimed: false, refusal, status: "refused" };
+    const write: Write = stays ? { ...refused, claimed: this.#claimed(refused, refusal) } : refused;
+    if (stays) this.#update(entry, write);
+    else this.#remove(entry);
     kinds.get(write.kind)?.undone?.(this.#client, write);
     this.#emit({ kind: "refused", refusal, write });
     this.#advance(write.target);

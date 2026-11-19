@@ -1895,10 +1895,12 @@ function claimedPress(writes: Writes, answer: () => Promise<unknown>, keys: stri
     .catch((error: unknown) => error);
 }
 
-// A conflict only the reader can settle that a surface takes goes from the store at once, as an
-// inline refusal does: nothing of it is kept, and nothing stands for it on the shell's line. Its
-// kind still undoes it, and what became of it is still told, for the surface that pressed it.
-test("a conflict a surface claims leaves the store, its outcome still told", async () => {
+// A conflict only the reader can settle that a surface takes stays in the store, kept for a
+// reload as any refusal is, and claimed: the shell's line leaves it to that surface. Its kind
+// still undoes it, and what became of it is still told, for the surface that pressed it. The
+// surface going hands it back (`unclaim`); the reader settling it there lets it go (`settle`),
+// with nothing kept of it and no outcome told.
+test("a conflict a surface claims stays in the store and kept, claimed, until the reader settles it", async () => {
   await onFakeClock(async () => {
     const { tab, writes } = storeOf();
     surface.claims = true;
@@ -1910,10 +1912,27 @@ test("a conflict a surface claims leaves the store, its outcome still told", asy
       const refused = claimedPress(writes, () => Promise.reject(changed), keys);
       await settle();
       expect(await refused).toBe(changed);
+      const claimed = row(writes);
+      expect(claimed).toMatchObject({ claimed: true, refusal: changed, status: "refused" });
+      expect(tab.kept(keys[0] ?? "")).toMatchObject({
+        detail: { text: "Mine" },
+        state: { refusal: { code: "PRIORITY_CHANGED" }, status: "refused" },
+      });
+      expect(outcomes).toEqual(["refused"]);
+      expect(surface.undone).toBe(1);
+      const id = claimed?.id ?? 0;
+      // Claimed already: no second surface takes it.
+      expect(writes.claim(id)).toBe(false);
+
+      writes.unclaim(id);
+      expect(row(writes)).toMatchObject({ claimed: false, status: "refused" });
+      // Only a surface that holds it settles it.
+      expect(writes.settle(id)).toBe(false);
+      expect(writes.claim(id)).toBe(true);
+      expect(writes.settle(id)).toBe(true);
       expect(writes.rows()).toEqual([]);
       expect(tab.kept(keys[0] ?? "")).toBeUndefined();
       expect(outcomes).toEqual(["refused"]);
-      expect(surface.undone).toBe(1);
     } finally {
       stop();
       surface.claims = false;
@@ -1978,10 +1997,11 @@ const keptConflict: KeptState = {
 /** The record `claimedWrite` keeps, as a reload reads it. */
 const keptClaimed = { detail: { text: "Mine" }, kind: claimedWrite.name };
 
-// A reload's kept conflict comes back as it stood. One a surface takes is let go unshown, and so
-// is one a surface drawn later takes after the fact (`claim`); until then it stands refused, and
-// no Retry of it sends its body again.
-test("a resumed conflict a surface claims is not shown, and one claimed later goes", async () => {
+// A reload's kept conflict comes back as it stood. One a surface takes comes back claimed, and
+// so is one a surface drawn later takes after the fact (`claim`); each stays kept until the
+// reader settles it. Until a surface takes it, it stands refused, and no Retry of it sends its
+// body again.
+test("a resumed conflict a surface claims comes back claimed, and one claimed later stays kept until settled", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();
     const send = spyOn(api, "send").mockResolvedValue({ key: "CORE-1" } as never);
@@ -1989,14 +2009,17 @@ test("a resumed conflict a surface claims is not shown, and one claimed later go
       surface.claims = true;
       const claimed = resuming(tab, "claimed-key", keptConflict, patch, keptClaimed);
       await settle();
-      expect(claimed.rows()).toEqual([]);
+      const taken = row(claimed);
+      expect(taken).toMatchObject({ claimed: true, kind: claimedWrite.name, status: "refused" });
+      expect(tab.kept("claimed-key")).toMatchObject({ state: { status: "refused" } });
+      expect(claimed.settle(taken?.id ?? 0)).toBe(true);
       expect(tab.kept("claimed-key")).toBeUndefined();
 
       surface.claims = false;
       const shown = resuming(tab, "shown-key", keptConflict, patch, keptClaimed);
       await settle();
       const refused = row(shown);
-      expect(refused).toMatchObject({ kind: claimedWrite.name, status: "refused" });
+      expect(refused).toMatchObject({ claimed: false, kind: claimedWrite.name, status: "refused" });
       expect(refused?.status === "refused" && refused.refusal).toMatchObject({
         code: "PRIORITY_CHANGED",
         status: 409,
@@ -2005,6 +2028,9 @@ test("a resumed conflict a surface claims is not shown, and one claimed later go
       await settle();
       expect(send).not.toHaveBeenCalled();
       expect(shown.claim(refused?.id ?? 0)).toBe(true);
+      expect(row(shown)).toMatchObject({ claimed: true, status: "refused" });
+      expect(tab.kept("shown-key")).toMatchObject({ state: { status: "refused" } });
+      expect(shown.settle(refused?.id ?? 0)).toBe(true);
       expect(shown.rows()).toEqual([]);
       expect(tab.kept("shown-key")).toBeUndefined();
       expect(send).not.toHaveBeenCalled();
