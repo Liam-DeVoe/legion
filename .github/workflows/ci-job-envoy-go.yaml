@@ -35,20 +35,21 @@ jobs:
     # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
     # prints the dump that names it. A timed-out step fails the job, so the bound is the steps
     # before it at their measured times plus its own limit: about 1 minute of setup, then the
-    # plain race-impossible step's three 10-minute runs, which is 31; after that step's measured
-    # 2 minutes and the corpus copy's seconds, the unit step's own 20 is 23; after the unit step,
-    # which runs strictly fewer packages than the 35 minutes it measured before the race lane's
-    # left it, and the 141 s the corpus tests and the load test's Postgres tests added to it
-    # (measured on a two-vCPU pod on 2026-11-18), so at most 38, the store-form count's own 5 is
-    # 46 (two packages, which go test starts at once with -p at least 2, so its -timeout bounds
-    # the step); after that step's seconds, the database skip count's own timeout-minutes of 25 is
-    # 66 (its -timeout bounds each package, not the step, so the step has a limit of its own, and
-    # its comment below says why 25); after that step's measured 6 minutes, the statement-timing
-    # step's own 15 is 62; after that step's 3, the differential's own 10 is 60; after that step's
-    # 2, the moto run's own 10 is 62; after the moto run, which no run has measured yet and so
-    # counts at that whole 10, natslive's default 10 and the bus matrix's own 5 are 77, and the
-    # integration step's 5 is less.
-    timeout-minutes: 80
+    # plain race-impossible step's four 10-minute runs, which is 41; after that step's measured
+    # 5 minutes (about 2 before the API's and delivery's xid window tests joined it, which took
+    # 134 s and 4 s on a two-vCPU pod) and the corpus copy's seconds, the unit step's own 20 is
+    # 26; after the unit step, which runs strictly fewer packages than the 35 minutes it measured
+    # before the race lane's left it, and the 141 s the corpus tests and the load test's Postgres
+    # tests added to it (measured on a two-vCPU pod on 2026-11-18), so at most 38, the store-form
+    # count's own 5 is 49 (two packages, which go test starts at once with -p at least 2, so its
+    # -timeout bounds the step); after that step's seconds, the database skip count's own
+    # timeout-minutes of 25 is 69 (its -timeout bounds each package, not the step, so the step
+    # has a limit of its own, and its comment below says why 25); after that step's measured 6
+    # minutes, the statement-timing step's own 15 is 65; after that step's 3, the differential's
+    # own 10 is 63; after that step's 2, the moto run's own 10 is 65; after the moto run, which no
+    # run has measured yet and so counts at that whole 10, natslive's default 10 and the bus
+    # matrix's own 5 are 80, and the integration step's 5 is less.
+    timeout-minutes: 85
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -114,27 +115,32 @@ jobs:
             packages/envoy/cmd/agent-secrets/secret_moto_test.go motoImage
       # The tests the race detector makes impossible, which the race job of each of these packages
       # therefore cannot make, so envoy-go keeps a plain run of exactly them: internal/bus counts
-      # HoldsSeed's allocations, which the race runtime's own allocations would be counted into,
-      # and the documents package measures the heap a room keeps, which the detector's shadow
-      # memory and instrumentation move. Those are out of the race build altogether
-      # (//go:build !race), and the two render-reuse storms run fewer seeds and fewer edits under
-      # it (raceEnabled), so this is their full-size run. The API's seven source guards, and
-      # one_expression_guard_test.go beside them, carry that tag too and are deliberately not
-      # here: they read the module's source, the text-check job runs their fifteen tests by name,
-      # and ci_job_reads.py's TEXT_CHECK_TESTS leaves exactly those out of this step rather than
-      # have each of them run twice. It comes before the unit step for the reason the API
-      # package's own run did: run beside the other package binaries,
+      # HoldsSeed's allocations, which the race runtime's own allocations would be counted into;
+      # the API's and delivery's xid window tests judge a window's gaps, which the detector
+      # stretches past any bound, so a race run checks only their shape, which this run checks as
+      # well (storetest.XidJudgesGaps, INFRA-636); and the documents package measures the heap a
+      # room keeps, which the detector's shadow memory and instrumentation move. Those are out of
+      # the race build altogether (//go:build !race), and the two render-reuse storms run fewer
+      # seeds and fewer edits under it (raceEnabled), so this is their full-size run. The API's
+      # seven source guards, and one_expression_guard_test.go beside them, carry that tag too and
+      # are deliberately not here: they read the module's source, the text-check job runs their
+      # fifteen tests by name, and ci_job_reads.py's TEXT_CHECK_TESTS leaves exactly those out of
+      # this step rather than have each of them run twice. It comes before the unit step for the
+      # reason the API package's own run did: run beside the other package binaries,
       # its Postgres-backed tests and the room-memory measurements queue their per-test database
       # cleanup on the service's one checkpointer, and the API's live-feed and delivery-hub tests
       # wait for the event log's safe horizon, which any open transaction on this job's Postgres
-      # delays. The two -run lists are derived in .github/scripts/ci_job_reads.py from the race
+      # delays. The four -run lists are derived in .github/scripts/ci_job_reads.py from the race
       # lane's own packages and those files' //go:build !race and raceEnabled, so a test added to
       # either and missing here fails the ci-filters job naming this step. Measured over three
       # runs on a two-vCPU pod: the bus under a tenth of a second and the documents package 92 to
-      # 127 s, so 10 minutes each is ample.
+      # 127 s; with the xid window tests in, one run on a two-vCPU pod took the API 134.082 s and
+      # delivery 4.106 s (INFRA-636). 10 minutes each is ample.
       - name: Test what the race build cannot run at all or at full size
         run: |
+          go test -v -count=1 -timeout 10m -run '^(TestXidWindowAttributionMoveRecorded|TestXidWindowDeployedEventRecorded)$' ./internal/dispatch/delivery
           go test -v -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
+          go test -v -count=1 -timeout 10m -run '^(TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec)$' ./internal/dispatch/api
           go test -v -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
         working-directory: packages/envoy
       # The corpus tests of internal/dispatch/pmdoc, which the unit step below runs - the
