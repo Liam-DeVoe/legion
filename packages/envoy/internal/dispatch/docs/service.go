@@ -2316,7 +2316,9 @@ func transactionHead(ctx context.Context, tx pgx.Tx, artifactID string) (int64, 
 
 // lockSettlementCursor takes the document's advisory lock in a settlement's transaction, which
 // already holds the document owner's lock (lockArtifactOwner). Outside Shutdown it waits for the
-// lock as every writer of the document does (lockDocumentRoom).
+// lock as every writer of the document does (lockDocumentRoom): until the holder lets go, or, for
+// the settlement a request runs (an issue's close, SettleIssueDocuments), within the bound of a
+// request's wait, past which the settlement stops short busy and its pending row keeps the debt.
 //
 // Shutdown will not wait long behind a writer, so a settlement during it waits for the lock at
 // most 100 ms, in one statement: pg_advisory_xact_lock under lock_timeout, inside a savepoint. A

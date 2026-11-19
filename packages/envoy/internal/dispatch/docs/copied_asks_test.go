@@ -1212,6 +1212,72 @@ func TestACopySettlingWhileItsSourceIsAnsweredWaitsForTheAnswerAndNeitherFails(t
 	}
 }
 
+// An answer to a project document's ask queued on its project's copy lock (SettleCopiesOf, which
+// the answer route takes it through) behind a holder that keeps the lock past the bound of a
+// lock's wait (store's lockWait) is refused busy once that bound runs out, which its request
+// answers 503 DATABASE_BUSY with Retry-After, and writes nothing: the ask is still open. Once the
+// holder lets go, the same answer goes through. The bound is the test's
+// (store.WithLockWaitForTest) rather than production's ten seconds.
+func TestAnAnswerQueuedOnAHeldCopyLockIsRefusedBusyAtItsBound(t *testing.T) {
+	const bound = 300 * time.Millisecond
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	shared := ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
+	original := createProjectDocument(t, service.store, "# Original")
+	seedServiceText(t, service, original, "Context\n\n"+shared)
+	settleCurrentGeneration(t, service, original)
+	source := blockAskOn(t, service, original, "shared")
+	holder, err := service.store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the copy lock's holder: %v", err)
+	}
+	defer holder.Rollback(context.Background())
+	if err := lockProjectCopies(ctx, holder, artifactOwner{Project: "DOC"}); err != nil {
+		t.Fatalf("hold the project's copy lock: %v", err)
+	}
+
+	answered := make(chan error, 1)
+	started := time.Now()
+	go func() {
+		answered <- answerSource(store.WithLockWaitForTest(ctx, bound), service, original, source, nil)
+	}()
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1, roomWait(t)); waiting < 1 {
+		t.Fatal("the answer never came to wait on the project's copy lock")
+	}
+	var refused error
+	select {
+	case refused = <-answered:
+	case <-time.After(10 * time.Second):
+		waited := time.Since(started)
+		_ = holder.Rollback(context.Background())
+		<-answered
+		t.Fatalf("the answer was still waiting on the project's copy lock %s after it began, past its wait's bound of %s: "+
+			"a request queued on a busy copy lock waits until the holder lets go", waited.Round(time.Millisecond), bound)
+	}
+	if waited := time.Since(started); !store.IsPoolBusy(refused) || waited < bound {
+		t.Fatalf("the answer queued on the held copy lock answered %v after %s, want ErrPoolBusy (503 DATABASE_BUSY) once its wait's bound of %s ran out",
+			refused, waited.Round(time.Millisecond), bound)
+	}
+	if waiting := storetest.WaitForLockWaiters(t, holder, 0, time.Second); waiting != 0 {
+		t.Fatalf("%d sessions still wait on the project's copy lock after the refusal, want none", waiting)
+	}
+	if state := blockAskOn(t, service, original, "shared").State; state != "open" {
+		t.Fatalf("the refused answer left the ask %s, want it open", state)
+	}
+
+	if err := holder.Rollback(context.Background()); err != nil {
+		t.Fatalf("release the project's copy lock: %v", err)
+	}
+	if err := answerSource(ctx, service, original, source, nil); err != nil {
+		t.Fatalf("the answer once the copy lock was let go: %v", err)
+	}
+	if state := blockAskOn(t, service, original, "shared").State; state != "answered" {
+		t.Fatalf("the answer sent once the copy lock was free left the ask %s, want it answered", state)
+	}
+}
+
 // answerSource answers source, the ask of the block shared on the project document original, as
 // closeSource does, with eu-west-1. between runs right after SettleCopiesOf.
 func answerSource(ctx context.Context, service *Service, original string, source model.Ask, between func()) error {

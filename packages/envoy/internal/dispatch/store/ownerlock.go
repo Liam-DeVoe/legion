@@ -191,7 +191,9 @@ func ownerLockArgs(keys []string) []any {
 // a read-phase owner lock's (lockOwnersAt) - the wait for the advisory lock, and beside an earlier
 // build the wait for the owner's row (lockOwnerRows) - and every other advisory lock a request's
 // write takes behind another writer's (LockWithinBound: api's dependency, rank-allocation, upload
-// and repository-mapping locks). A wait that runs it out is refused as a pool that could not serve
+// and repository-mapping locks, prioritystore's priority-rank lock, delivery's session-groups
+// lock, docs' copy and conditional-edit queue locks, and a request's wait for a document's own
+// lock, docs.lockDocumentRoom). A wait that runs it out is refused as a pool that could not serve
 // the call is refused (ErrPoolBusy, leaveBoundedWait): a request answers 503 DATABASE_BUSY with
 // Retry-After and its client sends the write again; a background pass logs it and tries again at
 // its next tick; a settlement stops short and its pending row resumes it. Without it the wait
@@ -340,8 +342,10 @@ func sendOne(ctx context.Context, q OwnerLocker, sql string) error {
 // read-phase owner lock waits: a lock still held when the bound runs out is refused ErrPoolBusy,
 // and the transaction is as it was before the statement (leaveBoundedWait). It is how a request's
 // write takes every advisory lock of its own besides the owner lock (api's dependency,
-// rank-allocation, upload and repository-mapping locks), so no write waits on one without end. It
-// is one round trip, as the statement alone was.
+// rank-allocation, upload and repository-mapping locks, prioritystore's priority-rank lock,
+// delivery's session-groups lock, docs' copy and conditional-edit queue locks, and a document's
+// lock where a request waits for it), so no write waits on one without end. It is one round trip,
+// as the statement alone was.
 func LockWithinBound(ctx context.Context, q OwnerLocker, lock string, args ...any) error {
 	wait := lockWaitSetting(ctx)
 	batch := &pgx.Batch{}

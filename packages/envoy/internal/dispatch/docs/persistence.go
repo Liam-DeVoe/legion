@@ -15,6 +15,7 @@ import (
 	"github.com/reearth/ygo/encoding"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -289,6 +290,17 @@ func (p *PgVersioned) AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string
 // takes it here; withRoomLock takes the session-level form on its own connection, and
 // lockSettlementCursor takes it for a settlement, waiting at most 100 ms under lock_timeout at
 // shutdown.
+//
+// Wait. A request's wait for this lock is bounded as an owner lock's is (store.LockWithinBound):
+// a request - an edit, an upload, a rebuild, a removal, an agent's live write, the settlement an
+// issue's close runs before it - is told apart by the admission ticket its context carries
+// (admission.TicketFrom), and one queued behind a holder past the bound is refused busy, which it
+// answers 503 DATABASE_BUSY with Retry-After. Every other taker waits until the holder lets go, as
+// before: the room's own appends and compactions, which are the holders' path, a settlement a
+// timer or the resumption runs, a background pass. A browser's keystrokes reach the store only
+// through the room's appends, so its room behaves as it did; those appends, and everything
+// reaching this through withRoomLock, take the session-level form first (appendRoomTx, lockRoom),
+// which is never bounded.
 // The rule between this lock and a document's owner has two halves, and both are load-bearing.
 //
 // Level. A writer serialises against the other writers of its document's owner on the owner's
@@ -334,11 +346,20 @@ func (p *PgVersioned) AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string
 // against a settlement if it takes them the other way round: two exclusive holds of one owner's
 // advisory lock conflict with each other.
 func lockDocumentRoom(ctx context.Context, tx pgx.Tx, room string) error {
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext($1))`, room); err != nil {
+	var err error
+	if admission.TicketFrom(ctx) != nil {
+		err = store.LockWithinBound(ctx, tx, documentRoomLock, room)
+	} else {
+		_, err = tx.Exec(ctx, documentRoomLock, room)
+	}
+	if err != nil {
 		return fmt.Errorf("lock document room: %w", err)
 	}
 	return nil
 }
+
+// documentRoomLock is the statement lockDocumentRoom takes a document's lock with.
+const documentRoomLock = `select pg_advisory_xact_lock(hashtext($1))`
 
 // LockDocumentRoom takes the room's lock of the document artifactID inside tx, for a transaction
 // of another package that must hold it before it reads live state. It is lockDocumentRoom under

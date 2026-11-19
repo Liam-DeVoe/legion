@@ -277,11 +277,13 @@ type patchPriorityInput struct {
 }
 
 // patchPriority is PATCH /api/v1/priorities/{id}: the attributes the body names, and the move
-// its rank names, in one transaction. A priority whose state is `gone` takes neither: the store
-// writes the node row of a live priority alone (prioritystore's liveRow), so both calls answer
-// ErrNoPriority and this route answers 404 PRIORITY_NOT_FOUND, in the wording its page and its
-// history already answer. The transaction is rolled back, so a refused write appends no tuple
-// and no `priority.updated` (priorityEvent).
+// its rank names, in one transaction. A move takes the order's allocation lock before the
+// transaction's first write (prioritystore.Move), as a create does (prioritystore.RankAt), so it
+// waits for that lock holding no transaction id. A priority whose state is `gone` takes neither
+// write: the store writes the node row of a live priority alone (prioritystore's liveRow), so the
+// write answers ErrNoPriority and this route answers 404 PRIORITY_NOT_FOUND, in the wording its
+// page and its history already answer. The transaction is rolled back, so a refused write appends
+// no tuple and no `priority.updated` (priorityEvent).
 func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 	var input patchPriorityInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -338,15 +340,14 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	at := time.Now().UTC()
-	if err := prioritystore.SetAttributes(r.Context(), tx, id, values, actor, at); err != nil {
+	if input.Rank != nil {
+		_, err = prioritystore.Move(r.Context(), tx, id, before, after, values, actor, at)
+	} else {
+		err = prioritystore.SetAttributes(r.Context(), tx, id, values, actor, at)
+	}
+	if err != nil {
 		s.refusePriorityWrite(w, r, id, err)
 		return
-	}
-	if input.Rank != nil {
-		if _, err := prioritystore.Move(r.Context(), tx, id, before, after, actor, at); err != nil {
-			s.refusePriorityWrite(w, r, id, err)
-			return
-		}
 	}
 	node, held, err := prioritystore.Read(r.Context(), tx, id)
 	if err != nil {

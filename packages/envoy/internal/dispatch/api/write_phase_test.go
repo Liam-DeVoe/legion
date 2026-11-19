@@ -14,8 +14,10 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -100,29 +102,36 @@ func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 // holding no transaction id, is refused 503 DATABASE_BUSY with Retry-After once that bound runs out
 // rather than waiting for the first to let go, and writes nothing; once the first lets go, the same
 // write goes through. One row per kind of lock a write waits on behind another writer: the issue's
-// owner lock (store.LockOwner), the deployment's dependency lock and the project's rank-allocation
-// lock (store.LockWithinBound; the upload, agent-upload and repository-mapping locks go through the
-// same call, held to it by store's TestALockWithinBoundEndsAtItsBoundAndLeavesTheTransactionUsable).
-// The bound is the test's (store.WithLockWaitForTest) rather than production's ten seconds, and the
-// first writer is a transaction of the test's own that holds the lock until the test lets it go.
+// owner lock (store.LockOwner), the deployment's dependency lock, the project's rank-allocation
+// lock, the priorities' rank lock, which a create and a rename that moves a priority each wait on,
+// the session groups' lock and a document's own lock, which an edit and an upload each wait on
+// (store.LockWithinBound; the upload, agent-upload and repository-mapping locks go through the
+// same call, held to it by store's TestALockWithinBoundEndsAtItsBoundAndLeavesTheTransactionUsable,
+// and docs' copy and conditional-edit queue locks by docs' own rows). The bound is the test's
+// (store.WithLockWaitForTest) rather than production's ten seconds, and the first writer is a
+// transaction of the test's own that holds the lock until the test lets it go.
 func TestAWriterQueuedOnABusyLockIsRefusedOnceItsWaitRunsOut(t *testing.T) {
 	const bound = time.Second
 	for _, row := range []struct {
 		name string
-		// hold takes the lock in the first writer's transaction.
-		hold func(ctx context.Context, holder pgx.Tx, issue string) error
+		// hold takes the lock in the first writer's transaction, issue being the issue the test
+		// writes and document that issue's spec.
+		hold func(ctx context.Context, holder pgx.Tx, issue, document string) error
 		// method, path and body are the second writer's request, and written its answer once the
-		// lock is free.
+		// lock is free. The path's {key} is the issue's key and its {doc} the spec's id.
 		method, path, body string
 		written            int
 		// unchanged, when it is true, holds the refused write to having changed no row anywhere.
 		// A create does more than its transaction before it is refused (its gates' reads and their
 		// records), so its row counts the project's issues instead.
 		unchanged bool
+		// seed, when it is set, writes what the second writer's request names before the first
+		// writer takes the lock.
+		seed func(t *testing.T, handler http.Handler)
 	}{
 		{
 			name: "a title change behind the issue's owner lock",
-			hold: func(ctx context.Context, holder pgx.Tx, issue string) error {
+			hold: func(ctx context.Context, holder pgx.Tx, issue, _ string) error {
 				return store.LockOwner(ctx, holder, store.IssueOwner(issue))
 			},
 			method: http.MethodPatch, path: "/api/v1/issues/{key}", body: `{"title":"Renamed behind the held lock"}`,
@@ -130,7 +139,7 @@ func TestAWriterQueuedOnABusyLockIsRefusedOnceItsWaitRunsOut(t *testing.T) {
 		},
 		{
 			name: "a blocker change behind the deployment's dependency lock",
-			hold: func(ctx context.Context, holder pgx.Tx, _ string) error {
+			hold: func(ctx context.Context, holder pgx.Tx, _, _ string) error {
 				return lockDeploymentIssueDependencies(ctx, holder)
 			},
 			method: http.MethodPatch, path: "/api/v1/issues/{key}", body: `{"title":"Unblocked behind the held lock","blocked_by":[]}`,
@@ -138,18 +147,71 @@ func TestAWriterQueuedOnABusyLockIsRefusedOnceItsWaitRunsOut(t *testing.T) {
 		},
 		{
 			name: "an issue create behind the project's rank-allocation lock",
-			hold: func(ctx context.Context, holder pgx.Tx, _ string) error {
+			hold: func(ctx context.Context, holder pgx.Tx, _, _ string) error {
 				return lockProjectRankAllocation(ctx, holder, "TEST")
 			},
 			method: http.MethodPost, path: "/api/v1/issues", body: `{"project":"TEST","title":"Ranked behind the held lock","force":true}`,
 			written: http.StatusCreated,
+		},
+		{
+			name: "a priority create behind the priority-rank lock",
+			hold: func(ctx context.Context, holder pgx.Tx, _, _ string) error {
+				_, err := prioritystore.RankAt(ctx, holder, "holding-the-rank", "", "")
+				return err
+			},
+			method: http.MethodPost, path: "/api/v1/priorities", body: `{"id":"ranked-behind-the-held-lock","title":"Ranked behind the held lock"}`,
+			written: http.StatusCreated, unchanged: true,
+		},
+		{
+			// The move's write also renames the priority, which it writes after the lock: a refused
+			// write leaves its title and its place as they were, and its wait holds no transaction id.
+			name: "a priority rename and move behind the priority-rank lock",
+			seed: func(t *testing.T, handler http.Handler) {
+				createTestPriority(t, handler, map[string]any{"id": "moving-priority", "title": "Moving priority"}, "alice")
+				createTestPriority(t, handler, map[string]any{"id": "neighbour-priority", "title": "Neighbour priority"}, "alice")
+			},
+			hold: func(ctx context.Context, holder pgx.Tx, _, _ string) error {
+				_, err := prioritystore.RankAt(ctx, holder, "holding-the-rank", "", "")
+				return err
+			},
+			method: http.MethodPatch, path: "/api/v1/priorities/moving-priority",
+			body:    `{"title":"Renamed behind the held lock","rank":{"after":"neighbour-priority"}}`,
+			written: http.StatusOK, unchanged: true,
+		},
+		{
+			name: "a session group create behind the session-groups lock",
+			hold: func(ctx context.Context, holder pgx.Tx, _, _ string) error {
+				_, err := delivery.CreateSessionGroup(ctx, holder, "Holding the lock", []string{"s-holding"}, model.Actor{Kind: "user", ID: "alice"})
+				return err
+			},
+			method: http.MethodPost, path: "/api/v1/delivery/session-groups", body: `{"name":"Grouped behind the held lock","sessions":["s-queued"]}`,
+			written: http.StatusCreated, unchanged: true,
+		},
+		{
+			name: "a document edit behind the document's lock",
+			hold: func(ctx context.Context, holder pgx.Tx, _, document string) error {
+				return docs.LockDocumentRoom(ctx, holder, document)
+			},
+			method: http.MethodPost, path: "/api/v1/artifacts/{doc}/edits", body: `{"ops":[{"op":"insert","markdown":"Edited behind the held lock.\n","after":"end"}]}`,
+			written: http.StatusOK, unchanged: true,
+		},
+		{
+			name: "a document upload behind the document's lock",
+			hold: func(ctx context.Context, holder pgx.Tx, _, document string) error {
+				return docs.LockDocumentRoom(ctx, holder, document)
+			},
+			method: http.MethodPost, path: "/api/v1/issues/{key}/artifacts", body: `{"name":"spec.md","content":"Uploaded behind the held lock.\n"}`,
+			written: http.StatusCreated, unchanged: true,
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			// The seeded spec's settlement takes the owner lock a row holds; keep it out of the queue.
 			handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 			issue := createInteractionIssue(t, handler, "TEST", "Held past the bound", "A spec")
-			path := strings.ReplaceAll(row.path, "{key}", issue.Key)
+			if row.seed != nil {
+				row.seed(t, handler)
+			}
+			path := strings.NewReplacer("{key}", issue.Key, "{doc}", issue.PrimaryArtifactID).Replace(row.path)
 			send := func() *httptest.ResponseRecorder {
 				request := httptest.NewRequest(row.method, path, strings.NewReader(row.body)).
 					WithContext(store.WithLockWaitForTest(context.Background(), bound))
@@ -178,7 +240,7 @@ func TestAWriterQueuedOnABusyLockIsRefusedOnceItsWaitRunsOut(t *testing.T) {
 				t.Fatalf("begin the first writer: %v", err)
 			}
 			defer func() { _ = holder.Rollback(ctx) }()
-			if err := row.hold(ctx, holder, issue.Key); err != nil {
+			if err := row.hold(ctx, holder, issue.Key, issue.PrimaryArtifactID); err != nil {
 				t.Fatalf("take the lock: %v", err)
 			}
 
