@@ -756,6 +756,13 @@ RULES = {
          "lists at :69 and its built binary reads")),
     f"{ENVOY}/internal/broker/config/config_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem",
                                                             "internal/broker/config/config_test.go:1454,1484 Load the URL whose sslrootcert is this bundle (rdsBundle :1414), which pgx reads to build the root pool")),
+    # The test that the judge asks its model through agentloop alone reads its own package's
+    # sources by parsing them, build tags or none, so a file a tag leaves out of the test build is
+    # still one it reads.
+    f"{ENVOY}/internal/broker/judge/imports_test.go": [
+        Read(path, "internal/broker/judge/imports_test.go:32 globs *.go in its own directory, and :42 parses each "
+                   "file it finds but the test files (:39)")
+        for path in files_but_tests(f"{ENVOY}/internal/broker/judge")],
     f"{ENVOY}/internal/broker/store/storetest/storetest_test.go": [
         run(f"{ENVOY}/internal/broker/store/storetest", ["."], "internal/broker/store/storetest/storetest_test.go:22 go list -deps .", mode="build")],
     f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:57")),
@@ -1032,6 +1039,10 @@ go test -tags twobuild -count=1 -timeout 30m -v -run "$pattern" ./cmd/dispatch""
 TWO_BUILDS_SAME_JOB = "dispatch-two-builds-same"
 TWO_BUILDS_SAME_STEP = "Two-build tests of the Dispatch server against its own build"
 BROKER_MP_STEP = "Two-process tests of the secrets broker"
+BROKER_K9_STEP = "Airlock check k9 under load"
+E2E_REFILL_STEP = "Bucket refill on a real listener and NATS"
+PARITY_FUZZ = "packages/proof-editor/scripts/parity-fuzz.ts"
+PARITY_FUZZ_STEP = "Parity fuzz of the proof editor's markdown patches and nesting bound"
 BROKER_MP_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} multiprocess ./cmd/broker)
 go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/broker"""
@@ -1052,6 +1063,8 @@ AIRLOCK_FUZZ_SCRIPT = "go test -v -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirl
 AIRLOCK_BUILD_STEP = "Build the Lean model"
 AIRLOCK_AXIOMS_STEP = "Print the theorems' axioms"
 AIRLOCK_AXIOMS_SCRIPT = f"{ENVOY}/scripts/airlock-lean-axioms.sh"
+AIRLOCK_MUTANTS_STEP = "Mutants of the airlock and its proxy"
+AIRLOCK_MUTANTS_SCRIPT = f"{ENVOY}/scripts/airlock-mutants.sh"
 # The document service's race step runs under .github/scripts/race_memory.py, which fails it with
 # a log when the race binary's memory passes RACE_MEM_LIMIT_KB (ci.yaml's comment on the step says
 # why), so its line is a shell assignment and a script, not a go command the simple form reduces.
@@ -1754,18 +1767,23 @@ def at_kind_rig(step):
 
 
 WORKER_IMAGE_FILTER = "worker_image"
+# The one file the worker_image filter names that no build of the image reads: the leak guard's
+# test, which worker-image.yaml's build job runs in the image it has just pushed, so that filter
+# owes it and the gate of another job that runs the image does not.
+WORKER_IMAGE_TEST = "scripts/e2e/leak-guard-image-probe.sh"
 
 
 def worker_image_reads(why):
     """The files the worker image is built from, as ci.yaml's worker_image filter names them: the
     reads of a gate whose job runs that image, which worker-image.yaml's build or a build of the
     same Dockerfile and context made. EXCLUDED leaves that filter to check-image-trigger-paths.sh,
-    which holds it to every file the build reads and to nothing the build does not, so it is the
-    one written list of those files, and this reads it back rather than write a second. Each of
-    its patterns is a read where none of its `!` patterns leaves part of what it matches out, and
-    where one does each file it keeps is, so the gate declares what the build reads and not what
-    the .dockerignore keeps out of the context. The filter's step reads it under
-    some-with-excludes, as every paths-filter step of the changes job does."""
+    which holds it to every file the build reads, so it is the one written list of those files,
+    and this reads it back rather than write a second, leaving out WORKER_IMAGE_TEST, the one file
+    of it the build job's own test reads and no build does. Each of its patterns is a read where
+    none of its `!` patterns leaves part of what it matches out, and where one does each file it
+    keeps is, so the gate declares what the build reads and not what the .dockerignore keeps out
+    of the context. The filter's step reads it under some-with-excludes, as every paths-filter
+    step of the changes job does."""
     document = yaml.safe_load(Path(CI).read_text(encoding="utf-8"))
     patterns = None
     for step in document["jobs"]["changes"]["steps"]:
@@ -1780,7 +1798,7 @@ def worker_image_reads(why):
     files = repo_files()
     out = []
     for pattern in patterns:
-        if pattern.startswith("!"):
+        if pattern.startswith("!") or pattern == WORKER_IMAGE_TEST:
             continue
         regex = glob_regex(pattern)
         matched = [f for f in files if regex.fullmatch(f)]
@@ -3343,6 +3361,8 @@ GATES = [
     gate("envoy_client", "envoy-client", reads=reads(
         ("packages/envoy-client/**", f"{at('envoy-client', 'Typecheck Envoy client')}, test and build in packages/envoy-client"),
         ("packages/broker-client/**", f"{at('envoy-client', 'Typecheck Envoy client')} and its tests compile it; packages/envoy-client/src/broker-credential.ts:21-28,30-34 imports @legion/broker-client/environment and @legion/broker-client/token-client"),
+        ("packages/pi-shared/test/omp-harness.ts", f"{at('envoy-client', 'Typecheck Envoy client')}: packages/envoy-client/test/session-stall.ts imports ../../pi-shared/test/omp-harness"),
+        ("packages/pi-shared/test/omp-natives.ts", f"{at('envoy-client', 'Typecheck Envoy client')}: packages/pi-shared/test/omp-harness.ts imports ./omp-natives"),
         (CONTRACTS_SRC, f"{at('envoy-client', 'Build contracts for Envoy client')}; tsconfig paths @legion/contracts -> ../contracts/src/index.ts"),
         (f"{FIX}/dispatch-targeted-delivery.json", "packages/envoy-client/src/__tests__/delivery.test.ts:17, dispatch-text.test.ts:128"),
         (f"{FIX}/envoy-session-no-interests.json", "packages/envoy-client/src/__tests__/transport.test.ts:3"),
@@ -3727,6 +3747,11 @@ GATES = [
         (CONTRACTS_SRC, "packages/contracts/scripts/gen-go.ts's imports of ../src/*"),
         (f"{ENVOY}/internal/dispatch/pmdoc/gen/**", f"{at('envoy-go-checks', 'Check pmdoc fixtures are up to date')} (gen.ts --check)"),
         ("packages/proof-editor/src/**", "packages/envoy/internal/dispatch/pmdoc/gen/gen.ts:4-6 imports @legion/proof-editor (exports -> src/lib.ts, src/lib-headless.ts, src/document-reading.ts)"),
+        # Its go command (refusedByGo's `go test -c` of internal/dispatch/pmdoc) is no Run: a step of
+        # this job sets env (COUNT), so no script go command of the job is reduced, and pmdoc's
+        # closure is packages/envoy alone, which the packages/envoy/** read above holds whole.
+        (PARITY_FUZZ, f"{at('envoy-go-checks', PARITY_FUZZ_STEP)} runs it; it imports ../src/block-nesting.js and "
+                      "../src/directive-container.js, under the read above"),
         # The web app's display-tree fixture, whose content the fixture step's --check compares the
         # trees it builds with, and whose existence the other test of WEB_FIXTURE_TESTS,
         # TestTheWebFixtureFindsItsFilesFromAnyDirectory (web_fixtures_test.go:248-255), stats in
@@ -3934,15 +3959,32 @@ GATES = [
         (TAGGED_TESTS, f"{at('listener-server-change', SOAK_STEP)} takes its -run from it"),
     ) + setup_go("listener-server-change", f"{ENVOY}/go.mod")),
 
-    gate("broker_multiprocess", "broker-multiprocess", exact=[
+    gate("broker_multiprocess", "broker-multiprocess", runs=[
+        script_run(f"{ENVOY}/scripts/dev-broker.sh", 'GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/$cmd" "./cmd/$cmd"',
+                   f"run through dev-airlock.sh by {ENVOY}/scripts/airlock-check.sh, which "
+                   f"{at('broker-multiprocess', BROKER_K9_STEP)} runs", ENVOY,
+                   [f"./cmd/{cmd}" for cmd in ("broker", "dev-oidc-issuer", "dev-airlock-stands", "agent-secrets",
+                                               "agent-secrets-helper", "agent-secrets-devrelay")], mode="build"),
+    ], exact=[
         pinned_step("broker-multiprocess", BROKER_MP_STEP, ENVOY, BROKER_MP_SCRIPT, [
             (ENVOY, ["./cmd/broker"], "go test -tags multiprocess ./cmd/broker", {"tags": "multiprocess"}),
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('broker-multiprocess', BROKER_MP_STEP)} takes its -run from it"),
+        (f"{ENVOY}/scripts/airlock-check.sh", f"{at('broker-multiprocess', BROKER_K9_STEP)} runs it"),
+        (f"{ENVOY}/scripts/dev-airlock.sh", f"{ENVOY}/scripts/airlock-check.sh's start_stack runs it"),
+        (f"{ENVOY}/scripts/dev-broker.sh", f"{ENVOY}/scripts/dev-airlock.sh runs it for Postgres, the issuer and the binaries"),
     ) + setup_go("broker-multiprocess", f"{ENVOY}/go.mod")),
 
-    gate("airlock_lean", AIRLOCK_JOB, exact=[
+    gate("airlock_lean", AIRLOCK_JOB, runs=[
+        # Each mutant runs in a copy of packages/envoy under $TMPDIR with one patch applied, so
+        # what these compile is this tree's packages, one patched file apart.
+        script_run(AIRLOCK_MUTANTS_SCRIPT, "go test -count=1 -run FuzzAirlock ./internal/broker/airlock/",
+                   f"run by {at(AIRLOCK_JOB, AIRLOCK_MUTANTS_STEP)} for each go-* and lean-* mutant", ENVOY, AIRLOCK_PKGS),
+        script_run(AIRLOCK_MUTANTS_SCRIPT, 'go test -count=1 -v -run "$pattern" ./internal/broker/airlockproxy/',
+                   f"run by {at(AIRLOCK_JOB, AIRLOCK_MUTANTS_STEP)} for each proxy-* mutant, with the tests its "
+                   "`# must fail:` lines name", ENVOY, ["./internal/broker/airlockproxy/"]),
+    ], exact=[
         pinned_step(AIRLOCK_JOB, AIRLOCK_SEED_STEP, ENVOY, AIRLOCK_SEED_SCRIPT, [
             (ENVOY, AIRLOCK_PKGS, "the airlock package's model comparisons: FuzzAirlock over the committed seed corpus, TestModelAgreesOnHostShapes and TestTheModelReadsAHostlessEntryWithGuidance", {}),
         ]),
@@ -3958,8 +4000,10 @@ GATES = [
         (f"{AIRLOCK_LEAN}/**", f"{at(AIRLOCK_JOB, AIRLOCK_BUILD_STEP)}: lake build reads the model's whole project, and "
                                f"{at(AIRLOCK_JOB, AIRLOCK_AXIOMS_STEP)} runs Axioms.lean over the library it builds"),
         (f"{AIRLOCK_LEAN}/lean-toolchain", f"{at(AIRLOCK_JOB, 'elan-cache')}: the elan cache's key is hashFiles of it"),
-        (AIRLOCK_AXIOMS_SCRIPT, f"{at(AIRLOCK_JOB, AIRLOCK_AXIOMS_STEP)} is one line running it, and check k15 of "
-                                f"{ENVOY}/scripts/airlock-check.sh runs the same script, so the two cannot drift"),
+        (AIRLOCK_AXIOMS_SCRIPT, f"{at(AIRLOCK_JOB, AIRLOCK_AXIOMS_STEP)} is one line running it"),
+        (AIRLOCK_MUTANTS_SCRIPT, f"{at(AIRLOCK_JOB, AIRLOCK_MUTANTS_STEP)} is one line running it"),
+        (f"{ENVOY}/internal/broker/airlockproxy/testdata/mutants/**",
+         f"{AIRLOCK_MUTANTS_SCRIPT}'s mutant_file finds each proxy mutant there, and apply_patch applies it"),
     ) + setup_go(AIRLOCK_JOB, f"{ENVOY}/go.mod")),
 
 
@@ -4040,9 +4084,16 @@ GATES = [
                    f"run by {at('envoy-e2e-local', 'Local end-to-end acceptance')}", ENVOY, ["./cmd/listener"], mode="build"),
         script_run(f"{ENVOY}/scripts/e2e-local.sh", 'go build -o "$nats_binary" ./internal/testnats/cmd/natsd',
                    f"run by {at('envoy-e2e-local', 'Local end-to-end acceptance')}", ENVOY, ["./internal/testnats/cmd/natsd"], mode="build"),
+        script_run(f"{ENVOY}/scripts/e2e-refill.sh", 'go build -o "$rig" ./internal/testnats/cmd/refillrig',
+                   f"run by {at('envoy-e2e-local', E2E_REFILL_STEP)}", ENVOY, ["./internal/testnats/cmd/refillrig"], mode="build"),
+        script_run(f"{ENVOY}/scripts/e2e-refill.sh", 'go build -o "${bin_dir}/listener" ./cmd/listener',
+                   f"run by {at('envoy-e2e-local', E2E_REFILL_STEP)}", ENVOY, ["./cmd/listener"], mode="build"),
+        script_run(f"{ENVOY}/scripts/e2e-refill.sh", 'go build -o "${bin_dir}/natsd" ./internal/testnats/cmd/natsd',
+                   f"run by {at('envoy-e2e-local', E2E_REFILL_STEP)}", ENVOY, ["./internal/testnats/cmd/natsd"], mode="build"),
     ], reads=reads(
         (f"{ENVOY}/scripts/e2e-local.test.sh", at("envoy-e2e-local", "Refusal test for e2e-local.sh")),
         (f"{ENVOY}/scripts/e2e-local.sh", f"{at('envoy-e2e-local', 'Local end-to-end acceptance')}; e2e-local.test.sh:6,27"),
+        (f"{ENVOY}/scripts/e2e-refill.sh", at("envoy-e2e-local", E2E_REFILL_STEP)),
         (f"{ENVOY}/scripts/fixtures/github/**", "packages/envoy/scripts/e2e-local.sh:1252-1283 posts each fixture"),
         # envoy-client's sources, and broker-client's with them, are the shared read below.
         (CONTRACTS_SRC, "packages/envoy-client/src/delivery.ts imports @legion/contracts"),
@@ -4068,9 +4119,38 @@ GATES = [
         (TEST_FIXTURES_SRC, "packages/pi-envoy/extensions/envoy.test.ts imports @legion/test-fixtures/environment"),
         ("packages/claude-envoy/**", f"{at(STALL, 'Stall test of claude-envoy')} (tests/envoy-channel-stall.test.ts runs bin/envoy-channel.ts)"),
         ("packages/pi-shared/src/**", "packages/pi-envoy and packages/claude-envoy import @legion/pi-shared/*"),
+        ("packages/pi-shared/test/**", f"{at(STALL, 'Session state rig of a stalled session')}: test/session-stall.ts "
+                                       "imports ../../pi-shared/test/omp-harness, which imports test/omp-natives"),
+        ("scripts/third-party-notices.ts", f"{at(STALL, 'Session state rig of a stalled session')}: test/session-stall.ts "
+                                           "runs packages/claude-envoy/scripts/build.ts, which reads it (:24)"),
+        ("scripts/pi-plugin-prepack.sh", "packages/claude-envoy/scripts/build.ts:198-202 --stage-skills @sjawhar/pi-legion, "
+                                         "which test/session-stall.ts runs"),
+        ("packages/pi-legion/agents/**", "packages/claude-envoy/scripts/build.ts:231-232, which test/session-stall.ts runs"),
+        ("skills/**", "packages/claude-envoy/scripts/build.ts:198-202 (the staged pi-legion partition), which "
+                      "test/session-stall.ts runs"),
+        (".bun-version", "packages/claude-envoy/scripts/build.ts:32 reads the Bun pin, which test/session-stall.ts runs"),
+        (".github/actions/install-claude-code/**", at(STALL, "./.github/actions/install-claude-code")),
+        (".claude-code-pin", ".github/actions/install-claude-code/action.yml:16 pin=$(<.claude-code-pin), the release "
+                             "test/session-stall.ts's third part runs"),
         ("packages/contracts/**", at(STALL, "Build contracts for the stall suites")),
         (BROKER_CLIENT_SRC, f"{at(STALL, 'Stall test of claude-envoy')} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/broker-client's seven modules through packages/envoy-client/src/broker-credential.ts:21-34"),
-    ) + ceiling_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL)),
+        # The two Dispatch proofs' go builds (./cmd/dispatch, natsd) compile packages/envoy alone,
+        # which the packages/envoy/** read of this filter holds whole, as smoke-role-takeover.sh's
+        # and smoke-session-title.sh's builds do.
+        ("scripts/e2e/dispatch-claimant-delivery.sh", at(STALL, "Claimant delivery of Dispatch's outbox")),
+        ("scripts/e2e/dispatch-claimant-delivery.ts", "scripts/e2e/dispatch-claimant-delivery.sh runs it with bun"),
+        ("scripts/e2e/verification-results.sh", at(STALL, "Verification results of Dispatch")),
+        ("scripts/e2e/verification-results.ts", "scripts/e2e/verification-results.sh runs it with bun"),
+        ("scripts/e2e/lib/rig.sh", "scripts/e2e/dispatch-claimant-delivery.sh and verification-results.sh source it"),
+        ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh sources it"),
+        ("scripts/e2e/lib/loopback-dsn.py", "scripts/e2e/lib/loopback-dsn.sh runs it beside itself"),
+        ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh sources it"),
+        ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh's start_held runs it"),
+        ("packages/dispatch/e2e/fake-envoy.ts", "scripts/e2e/dispatch-claimant-delivery.sh runs it with bun"),
+        ("packages/dispatch/e2e/fake-github.ts", "scripts/e2e/verification-results.sh runs it with bun"),
+        ("packages/dispatch/e2e/harness-ports.ts", "packages/dispatch/e2e/fake-envoy.ts and fake-github.ts import it"),
+    ) + ceiling_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL) + install_jj(STALL)
+      + install_omp(STALL)),
 
     gate("go_notices", "lint", step=NOTICES_STEP, runs=go_notices_runs(), reads=reads(
         (NOTICES_LOOPS, f"{at('lint', NOTICES_STEP)} runs it; it holds the loops"),

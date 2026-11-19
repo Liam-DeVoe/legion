@@ -357,79 +357,18 @@ the container, its anonymous data volume and every database in it.
 
 ## Acceptance drivers
 
-`e2e/acceptance/verification.sh` drives the verification rules end to end against a running
-server, as an agent sees it, through the HTTP API and the real `dispatch` CLI
-(`packages/envoy-client/bin/dispatch.ts`, run in an environment the script builds, so a calling
-shell's Dispatch URL, token file and Envoy configuration never reach it). It covers a
-`plan_task` and a `check` that serve a spec's `requirement`, and the `serves` and `needs` edges
-`GET /api/v1/references` lists for them; every attribute a `check`
-carries, read back on the head of `dispatch read --ref`; the refusals a pointer earns — a block no
-document holds, a block of an issue in another tree, a `needs` naming a block outside its own plan
-— and a `when` the schema does not know, each `400 INVALID_MARKDOWN` naming the pointer or the
-attribute; a requirement's id through a `move`; `dispatch result` and `dispatch results`, with a
-check id no Verification document in reach holds refused `400 UNKNOWN_CHECK` and a pass counting a
-skipped case refused `400 RESULT_CONTRADICTS`; a closed issue's result for an `after_merge` check,
-which it takes beside a comment and a message, and the result for a `before_merge` check and the
-document write it still refuses `409 ISSUE_CLOSED`; the coverage flags `dispatch read --issue` prints after `Coverage: `,
-cleared by a check of the issue and by a check of a child, back when that check is deleted, with
-the missing plan task named only once the issue has a plan document; the gap an approval request's
-answer names and the covered spec that earns none; `dispatch plan-approve`, refused `409
-NOT_PLAN_DOCUMENT` on a spec, and `dispatch request-approval`, refused `409
-PLAN_APPROVED_BY_REVIEW` on a plan; the one request that names a spec and its Verification
-document together; and, in the reading section, every result of a check printed with all forty
-characters of its commit, beside a result at a commit that repository does not hold refused
-`400 RESULT_COMMIT_UNKNOWN`. Its inputs are `DISPATCH_URL`, the server; `DISPATCH_TOKEN`, an
-agent bearer, or `DISPATCH_TOKEN_FILE`, a file holding one, which the script reads itself and
-never prints; `PROJECT`, an existing project key; and two optional ones:
-
-- `FAKE_GITHUB_PORT`, the harness's fake GitHub, which the server reads as
-  `DISPATCH_GITHUB_API_BASE`. The run gives it one repository holding one pull request whose
-  title names the issue and one further commit beside that pull request's head, replacing every
-  repository the fake served: where `PROJECT` maps no default repository the reading section
-  seeds a repository of its own, maps it as `PROJECT`'s default and removes the mapping on exit;
-  where `PROJECT` maps one, the setup seeds that repository and maps nothing. The results of the
-  check are then compared with that pull request's head, a result at the further commit — whose
-  first twelve characters are the head's — stands at none of them, and a result at a commit the
-  repository holds neither of is refused. Unset, one `SKIP: reading …` line stands in for the
-  section, which no other way of running has a pull request's head to read.
-- `DEV_SIGNIN_LOGIN`, a login the server's dev sign-in route (`/auth/_dev/signin`) signs in:
-  `bun run dispatch:local` has the route, a deployed server does not. Recording a review is a
-  person's write alone, so the two review sections sign that person in with a cookie jar and
-  answer the approval requests the script opened; unset, each prints one
-  `SKIP: review …: DEV_SIGNIN_LOGIN is unset; POST /api/v1/artifacts/{id}/reviews needs a person's …`
-  line and every other section runs.
-
-One rule governs every result the script records, beside the refusals above.
-A result at a 40-character commit the repository of the check's issue does not hold is refused `400 RESULT_COMMIT_UNKNOWN`, naming the commit and that `owner/repo`.
-Only GitHub's `422 No commit found for SHA` refuses, and the script reads `PROJECT`'s repository mappings once, in its setup, to know which of two runs it is.
-Where `PROJECT` maps no default repository, every result recorded outside the reading section is stored because the check's issue resolves to no repository, which is never asked about; inside the section, each stored result names a commit it seeded its fake GitHub with, and the one commit it seeds nothing with is the refusal it drives.
-Where `PROJECT` already maps one, every issue the script writes resolves to that repository, so the setup reads that repository's default-branch head from GitHub with `gh` and every result is recorded at that head: no check stands down, and the run prints no `SKIP` for a recorded result.
-A repository `gh` cannot read fails the run, naming it.
-Where `FAKE_GITHUB_PORT` is set the setup also gives that repository, that head, the look-alike and the pull request to the fake, since a server reading the fake asks the fake and not GitHub; a server reading the real GitHub needs no such seeding, and a fake-backed run proves this script's fixture and its count rather than a server talking to GitHub.
-Every other check runs either way, the `result` section's two refusals among them: a malformed field and an unknown check are refused before any commit is read.
-
-It writes four issues in `PROJECT` — a root with a spec, a Verification document and a plan, a
-child of it, a sibling in another tree and one more whose spec and Verification document are
-approved together — and closes every one of them, also when a check fails, which withdraws any
-approval request it left open. Nothing it writes is read by a second run. Against
-`bun run dispatch:local`:
-
-```bash
-DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
-  FAKE_GITHUB_PORT=9022 DEV_SIGNIN_LOGIN=alice \
-  bash packages/dispatch/e2e/acceptance/verification.sh
-```
-
-`e2e/acceptance/block-coverage.sh` takes the first three inputs, with `PROJECT` optional (unset,
-every project), and only reads. For every document it can list (each project's documents and each
-issue's documents), it counts the document as not indexed when `GET /api/v1/artifacts/{id}/blocks`
-lists blocks while `GET /api/v1/references?to=<document>&kind=part_of` lists none, and prints
+`e2e/acceptance/block-coverage.sh` takes `DISPATCH_URL`, the server; `DISPATCH_TOKEN`, an agent
+bearer, or `DISPATCH_TOKEN_FILE`, a file holding one, which the script reads itself and never
+prints; and an optional `PROJECT` (unset, every project). It only reads. For every document it can
+list (each project's documents and each issue's documents), it counts the document as not indexed
+when `GET /api/v1/artifacts/{id}/blocks` lists blocks while
+`GET /api/v1/references?to=<document>&kind=part_of` lists none, and prints
 `documents=<n> indexed=<n> not_indexed=<n>`, then each not-indexed document's reference. A document
 with no blocks counts as indexed, since it owes no nodes.
 
-Both source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
-missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
-without printing it, unsetting both so no process the script starts inherits it.
+It sources `e2e/acceptance/lib.sh`, a preamble that refuses an unset input or a missing command
+with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing
+it, unsetting both so no process the script starts inherits it.
 
 ## Acceptance run against the deployed image
 

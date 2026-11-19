@@ -45,7 +45,10 @@ jobs:
     # same listener build (.github/workflows/ci-caches.yaml fills it on a push to main). Without
     # it the pack step would recompile the set per architecture from nothing on every push, which
     # is the runner time this change exists to cut.
-    timeout-minutes: 30
+    # The proof editor's parity fuzz below, with a tenth of its default document counts, took 7
+    # minutes in a Legion pod on top of the 30 the other steps were held to. No runner has timed
+    # it yet: the first run measures it, and this limit becomes that time with headroom.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -153,6 +156,14 @@ jobs:
       - name: Check pmdoc fixtures are up to date
         run: bun run check
         working-directory: packages/envoy/internal/dispatch/pmdoc/gen
+      # The proof editor's four patched markdown packages against the unpatched ones as the
+      # oracle, which it installs under $TMPDIR, and its block-nesting bound against what
+      # pmdoc.Parse and pmdoc.ParseForWrite refuse, through the pmdoc test binary it builds: one
+      # CHECK line per check. A tenth of its default document counts keeps it to minutes; its
+      # full counts are a person's run (packages/proof-editor/scripts/parity-fuzz.ts's header).
+      - name: Parity fuzz of the proof editor's markdown patches and nesting bound
+        run: bun scripts/parity-fuzz.ts --documents 5200 --deep 800 --lazy 1200
+        working-directory: packages/proof-editor
       # The fixture the web app's view tests draw (pmdoc/web_fixtures_test.go): a corpus text
       # whose display reading changed and a fixture nobody regenerated fails here rather than
       # leaving a view's test asserting against a stale tree. This is the one run of that test,

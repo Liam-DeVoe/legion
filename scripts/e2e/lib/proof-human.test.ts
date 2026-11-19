@@ -134,30 +134,3 @@ describe("require_proof_human", () => {
     }
   });
 });
-
-describe("close_unpassed_run_pull_requests", () => {
-  test("makes no gh call in a run that never passed require_proof_human", () => {
-    const r = run("close_unpassed_run_pull_requests");
-    expect(r.status).toBe(0);
-    expect(r.calls).toEqual([]);
-  });
-
-  // A refused run's own sequence: the check fails, the run exits, and the EXIT trap runs the close.
-  // The probe must be the only gh call, since every other would act as the refused account.
-  test("a refused run's EXIT trap makes no gh call after the probe", () => {
-    const r = run("trap close_unpassed_run_pull_requests EXIT\nrequire_proof_human", {
-      login: "sjawhar",
-    });
-    expect(r.status).toBe(1);
-    expect(r.calls).toHaveLength(1);
-    expect(r.calls[0]).toContain(" api graphql ");
-  });
-
-  test("lists the run's pull requests once require_proof_human passed", () => {
-    const r = run("require_proof_human\nclose_unpassed_run_pull_requests", {
-      login: "sjawhar-agent[bot]",
-    });
-    expect(r.status).toBe(0);
-    expect(r.calls.some((c) => c.includes("-R sjawhar/legion-smoke pr list"))).toBe(true);
-  });
-});

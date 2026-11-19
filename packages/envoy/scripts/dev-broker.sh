@@ -316,8 +316,13 @@ DISPLAY_URL="$(printf '%s' "$POSTGRES_URL" | sed -E 's#^(postgres(ql)?://[^:/@?]
 # with. ---
 echo "dev-broker: building broker, dev-oidc-issuer, dev-airlock-stands, agent-secrets, agent-secrets-helper and agent-secrets-devrelay..." >&2
 mkdir -p "$BIN_DIR"
+# The go command stands on a line of its own, which is how .github/scripts/check-ci-filters.sh
+# reads what a script's go command compiles (broker-multiprocess runs this build for check k9).
 for cmd in broker dev-oidc-issuer dev-airlock-stands agent-secrets agent-secrets-helper agent-secrets-devrelay; do
-  ( cd "$ENVOY_DIR" && GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/$cmd" "./cmd/$cmd" )
+  (
+    cd "$ENVOY_DIR"
+    GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/$cmd" "./cmd/$cmd"
+  )
 done
 # The end of the build, which a caller that waits on the build reads under a bound of its own: on a
 # cold build cache the six builds take far longer than the start of what they built.

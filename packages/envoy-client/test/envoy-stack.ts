@@ -25,7 +25,28 @@ export interface EnvoyStack {
   readonly natsHostPort: string;
   /** natsd's monitoring base URL, `http://127.0.0.1:<port>` (`/connz`, `/jsz`). */
   readonly monitorUrl: string;
-  /** Stops the listener and natsd. Their scratch directory is the caller's, and goes with it. */
+  /**
+   * Starts one more listener on the same natsd, on a free loopback port, under the first
+   * listener's environment (the caller's `listenerEnv` included) and a machine id of its own, and
+   * resolves once its /healthz answers healthy. The stack stops it with the rest, and the caller
+   * may stop it sooner.
+   */
+  startListener(): Promise<StartedListener>;
+  /**
+   * Stops natsd, leaves the bus down for `downMs`, and starts it again on the same port and the
+   * same store, resolving once it holds the `ENVOY_NOTIFICATIONS` stream again: an outage of the
+   * bus under every client of the stack.
+   */
+  restartNats(downMs: number): Promise<void>;
+  /** Stops the listeners and natsd. Their scratch directory is the caller's, and goes with it. */
+  stop(): Promise<void>;
+}
+
+/** A listener `startListener` added to the stack. */
+export interface StartedListener {
+  /** Its base URL, `http://127.0.0.1:<port>`. */
+  readonly url: string;
+  /** Stops it. */
   stop(): Promise<void>;
 }
 
@@ -225,8 +246,17 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
   const { PATH = "" } = process.env;
   const work = options.work;
   const processes: Subprocess[] = [];
+  // natsd is stopped last, after every listener: a restart leaves the newest natsd at the end of
+  // `processes`, behind the listeners started before it.
+  const natsProcesses = new Set<Subprocess>();
   const stop = async () => {
-    for (const child of processes.reverse()) await stopProcess(child, "SIGTERM");
+    const order = [...processes].reverse();
+    for (const child of order.filter((one) => !natsProcesses.has(one))) {
+      await stopProcess(child, "SIGTERM");
+    }
+    for (const child of order.filter((one) => natsProcesses.has(one))) {
+      await stopProcess(child, "SIGTERM");
+    }
   };
   try {
     const bin = path.join(work, "bin");
@@ -238,9 +268,7 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
     });
     const [natsPort, monitorPort, listenerPort] = await freePorts(3);
     const natsHome = path.join(work, "nats-home");
-    const listenerHome = path.join(work, "listener-home");
     mkdirSync(natsHome);
-    mkdirSync(listenerHome);
     const machineID = `envoy-stack-${process.pid}`;
     const natsArgs = [
       "-p",
@@ -250,65 +278,101 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
       "-store_dir",
       path.join(work, "nats-store"),
     ];
-    const listenerEnv = {
-      PATH,
-      HOME: listenerHome,
-      PORT: String(listenerPort),
-      ENVOY_LISTEN_HOST: "127.0.0.1",
-      ENVOY_MACHINE_ID: machineID,
-      NATS_URLS: `nats://127.0.0.1:${natsPort}`,
-    };
     const natsLog = path.join(work, "natsd.log");
-    const natsOut = openSync(natsLog, "a");
-    const natsd = Bun.spawn([path.join(bin, "natsd"), ...natsArgs], {
-      env: { PATH, HOME: natsHome },
-      stdout: natsOut,
-      stderr: natsOut,
-    });
-    closeSync(natsOut);
-    processes.push(natsd);
     const monitor = `http://127.0.0.1:${monitorPort}`;
-    await awaitReady(
-      "natsd",
-      natsd,
-      natsLog,
-      ENVOY_READY,
-      async () => (await getJson(`${monitor}/healthz`, StatusSchema))?.status === "ok"
-    );
-
-    const natsHostPort = `127.0.0.1:${natsPort}`;
-    const natsUrl = `nats://${natsHostPort}`;
-    const envoyUrl = `http://127.0.0.1:${listenerPort}`;
-    const listenerLog = path.join(work, "listener.log");
-    const listenerOut = openSync(listenerLog, "a");
-    const listener = Bun.spawn([path.join(bin, "listener")], {
-      // The caller's environment last, so a test may replace a setting of the stack's own.
-      env: { ...listenerEnv, ...options.listenerEnv },
-      stdout: listenerOut,
-      stderr: listenerOut,
-    });
-    closeSync(listenerOut);
-    processes.push(listener);
-    await awaitReady(
-      "the listener",
-      listener,
-      listenerLog,
-      ENVOY_READY,
-      async () => (await getJson(`${envoyUrl}/healthz`, StatusSchema))?.status === "healthy"
-    );
-    await awaitReady(
-      "natsd's ENVOY_NOTIFICATIONS stream",
-      natsd,
-      natsLog,
-      ENVOY_READY,
-      async () => {
+    /** natsd on its one port and store, ready once it holds the notifications stream when the
+     *  listener has made it (`withStream`) or once its /healthz answers ok before that. */
+    const startNats = async (withStream: boolean): Promise<Subprocess> => {
+      const natsOut = openSync(natsLog, "a");
+      const natsd = Bun.spawn([path.join(bin, "natsd"), ...natsArgs], {
+        env: { PATH, HOME: natsHome },
+        stdout: natsOut,
+        stderr: natsOut,
+      });
+      closeSync(natsOut);
+      processes.push(natsd);
+      natsProcesses.add(natsd);
+      await awaitReady(
+        "natsd",
+        natsd,
+        natsLog,
+        ENVOY_READY,
+        async () => (await getJson(`${monitor}/healthz`, StatusSchema))?.status === "ok"
+      );
+      if (withStream) await awaitStream(natsd);
+      return natsd;
+    };
+    const awaitStream = (natsd: Subprocess) =>
+      awaitReady("natsd's ENVOY_NOTIFICATIONS stream", natsd, natsLog, ENVOY_READY, async () => {
         const jsz = await getJson(`${monitor}/jsz?streams=true`, JszSchema);
         return (jsz?.account_details ?? []).some((account) =>
           (account.stream_detail ?? []).some((stream) => stream.name === "ENVOY_NOTIFICATIONS")
         );
-      }
-    );
-    return { envoyUrl, natsUrl, natsHostPort, monitorUrl: monitor, stop };
+      });
+    let natsd = await startNats(false);
+
+    const natsHostPort = `127.0.0.1:${natsPort}`;
+    const natsUrl = `nats://${natsHostPort}`;
+    let listeners = 0;
+    /** One listener on `port`, under the stack's environment and a machine id and home of its own.
+     *  The port is `freePorts`' own element, which a caller compiling with
+     *  noUncheckedIndexedAccess reads as possibly undefined. */
+    const spawnListener = async (
+      port: number | undefined
+    ): Promise<{ url: string; child: Subprocess }> => {
+      listeners += 1;
+      const name = listeners === 1 ? "listener" : `listener-${listeners}`;
+      const home = path.join(work, `${name}-home`);
+      mkdirSync(home);
+      const url = `http://127.0.0.1:${port}`;
+      const log = path.join(work, `${name}.log`);
+      const out = openSync(log, "a");
+      const child = Bun.spawn([path.join(bin, "listener")], {
+        // The caller's environment last, so a test may replace a setting of the stack's own.
+        env: {
+          PATH,
+          HOME: home,
+          PORT: String(port),
+          ENVOY_LISTEN_HOST: "127.0.0.1",
+          ENVOY_MACHINE_ID: listeners === 1 ? machineID : `${machineID}-${listeners}`,
+          NATS_URLS: natsUrl,
+          ...options.listenerEnv,
+        },
+        stdout: out,
+        stderr: out,
+      });
+      closeSync(out);
+      processes.push(child);
+      await awaitReady(
+        `the ${name}`,
+        child,
+        log,
+        ENVOY_READY,
+        async () => (await getJson(`${url}/healthz`, StatusSchema))?.status === "healthy"
+      );
+      return { url, child };
+    };
+    const { url: envoyUrl } = await spawnListener(listenerPort);
+    await awaitStream(natsd);
+    const startListener = async (): Promise<StartedListener> => {
+      const [port] = await freePorts(1);
+      const { url, child } = await spawnListener(port);
+      return { url, stop: () => stopProcess(child, "SIGTERM") };
+    };
+    const restartNats = async (downMs: number): Promise<void> => {
+      await stopProcess(natsd, "SIGTERM");
+      await Bun.sleep(downMs);
+      natsd = await startNats(true);
+    };
+    return {
+      envoyUrl,
+      natsUrl,
+      natsHostPort,
+      monitorUrl: monitor,
+      startListener,
+      restartNats,
+      stop,
+    };
   } catch (error) {
     await stop();
     throw error;

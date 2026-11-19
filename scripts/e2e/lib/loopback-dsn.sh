@@ -18,12 +18,11 @@
 # NAME is the environment variable the caller read DSN from, and it starts that line. WHAT is
 # what the run does on that server, in a few words.
 #
-# Nine call sites read a DSN with this guard before they start anything, because the server must
-# be this machine's, and each is a proof of its own: plan-pointer-drive.sh,
-# verification-results.sh, dispatch-claimant-delivery.sh, stage2-tmux-supervision.sh,
-# controller-start-tmux.sh, clean-session-stop-tmux.sh, envoy-session-states.sh,
-# envoy-session-delivery.sh and dispatch-session-settings.sh. Seven of the nine call this
-# function.
+# Seven call sites read a DSN with this guard before they start anything, because the server must
+# be this machine's, and each is a proof of its own: verification-results.sh,
+# dispatch-claimant-delivery.sh, stage2-tmux-supervision.sh, controller-start-tmux.sh,
+# clean-session-stop-tmux.sh, envoy-session-delivery.sh and dispatch-session-settings.sh. Five of
+# the seven call this function.
 # envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN with
 # run_database_url alone, which begins with this guard's own check. Every proof that writes a
 # server its caller's DSN names reads that DSN with this guard before it starts anything.
@@ -39,7 +38,7 @@
 #
 # So the client the run connects with must be this one. A proof that reads the DSN with a second
 # parser decides the host twice, and the host it connects to is the second answer. Each of the
-# nine proofs those call sites serve reaches that server with psql, which is libpq. Seven
+# seven proofs those call sites serve reaches that server with psql, which is libpq. Five
 # of them give every server
 # they start the connection string run_database_url below rebuilds, which libpq read back inside
 # the helper.

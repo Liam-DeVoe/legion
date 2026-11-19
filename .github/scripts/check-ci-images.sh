@@ -375,6 +375,12 @@ IMAGE_FROM = {
         "the local tag the envoy-smoke job's own build loaded (the job sets it to "
         "legion-envoy-smoke:<sha>); no registry holds it, so the run fetches nothing"
     ),
+    (".github/workflows/worker-image.yaml", "REF"): (
+        "the digest reference of the worker image this same job just built and pushed (its "
+        "`Record digest` step's `ref` output); the image is this repository's own build, whose "
+        "Dockerfile packages/daemon/docker/worker.Dockerfile is in the reach above and whose FROM "
+        "references this check reads, so the run fetches nothing a row must hold"
+    ),
 }
 
 NO_CI_JOB = "no CI job runs it"
@@ -408,7 +414,6 @@ EXCEPTIONS = {
     "scripts/e2e/share-volumes-kind.sh": NO_CI_JOB,
     "scripts/e2e/stage4a-sandbox-runtime.sh": NO_CI_JOB,
     "scripts/e2e/stage4b-sandbox-tree.sh": NO_CI_JOB,
-    "scripts/e2e/verifiers-staging-token.sh": NO_CI_JOB,
     "packages/daemon/internal/testpg/testdb/testdb.go": FETCHES_NOTHING,
     "packages/envoy/scripts/dev-postgres.sh": FETCHES_NOTHING,
     "packages/envoy/scripts/dev-postgres.test.sh": FETCHES_NOTHING,

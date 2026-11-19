@@ -837,7 +837,7 @@ check "a third-party default fails" "$(is "$status" 1)"
 check "names the image the build fetches" "$(contains "$out" 'docker.io/library/debian:trixie-slim')"
 
 echo "case: a file of the \`no CI job runs it\` ground, moved into CI's reach"
-# scripts/e2e/verifiers-staging-token.sh may name mirror.gcr.io, because no CI job runs it. The
+# scripts/e2e/stage4b-sandbox-tree.sh may name mirror.gcr.io, because no CI job runs it. The
 # same line in stage1-skeleton.sh, which the test job runs, is refused.
 root=$(fixture mirror-in-reach-script)
 cat > "$root/scripts/e2e/stage1-skeleton.sh" <<'YAML'

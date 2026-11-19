@@ -88,19 +88,17 @@ Each item below names a script, then what it proves.
   closing an issue deletes its Sandbox with the role Secrets and leaves no disk, and the resume after it brings Sandbox, pod and disk afresh with `LEGION_WORKSPACE_RECREATED=true`; and the namespace matches its snapshot.
   Devbox only
 
-- `leak-guard-image-job.sh`
+- `leak-guard-image-probe.sh`
 
-  the published worker image's own `git` and `jj` refuse a push that names something private, driven as one Kubernetes Job on the image digest the caller names, under the rules of `docs/kubernetes.md`, "Running a workload in the cluster from a role":
+  the worker image's own `git` and `jj` refuse a push that names something private, run with `docker run` inside the image the `worker-image` job has just built and pushed:
   k1 of dispatch://INFRA-1527 — a commit whose message carries a refusable Tailscale MagicDNS host, one whose author identity carries it, one whose only hit is an added line of a tracked file, one whose only hit is the branch name, and a clean one — under `git push` and under `jj git push` in each shape jj's own help in that image enumerates (the bare shape, `--all`, `--change`, `--named` and `--deleted`, the last a ref change with no commit), with `git ls-remote` read before and after every push, the added-line case and the branch-name case reported as checks of their own, and the run failed outright where a shape the script drives is gone from jj;
   and k7's two shared-check failures at those same call sites, the stand-in check removed so that none resolves and a stand-in that exits 2 for an internal error, each of which must refuse under both commands and name the failure it met.
-  The Job runs no launcher, so the daemon pushes it no shared check.
-  It writes its own stand-in shared check into its `emptyDir`, and the rule file embedded in the image's `legion` decides every verdict;
-  k7's other two failures cannot be met in an image at all, since the rules are embedded in that binary and the engine is linked into it, which the Job says in its own log.
-  The probe the Job runs is `leak-guard-image-probe.sh` beside the harness, which reads it in and writes it into the Job's command, since a Job holds no checkout to read it from, so the two files are one recipe and neither is changed without the other.
-  Needs a pod whose projected credential may create a Job (`kubectl -n <namespace> auth can-i create jobs` answers `yes`), the image to prove by digest (`--image`, from the `Worker Image` run's `Record digest` step), and the deployment's compute class (`--node-selector`), whose value is in that deployment's own declaration and in no file of this repository.
-  Its negative control is the base branch's published image (`--control`), which carries no wrappers and lets all five cases through, and a run without it proves only the head;
-  `--dry-run` renders the manifest and validates it with `kubectl` without creating anything.
-  Legion pod only
+  A container started from the image runs no launcher, so the daemon pushes it no shared check.
+  It writes its own stand-in shared check into its scratch directory, and the rule file embedded in the image's `legion` decides every verdict;
+  k7's other two failures cannot be met in an image at all, since the rules are embedded in that binary and the engine is linked into it, which the run says in its own log.
+  Its control is the same image with `/opt/legion/bin` taken off `PATH`, where the real `git` and `jj` let all five cases through.
+  Each check prints one `CHECK <name>: PASS|FAIL` line.
+  The `worker-image` job of `ci.yaml` runs it after its build
 
 - `controller-start-tmux.sh`
 
@@ -137,21 +135,6 @@ Each item below names a script, then what it proves.
   A session on the released pi-envoy shows the restart notice.
   A switch is stored under the person who sent it
 
-- `envoy-session-states.sh`
-
-  a session is live, unresponsive or gone by its registration record's age alone (INFRA-392), run in a Legion pod against a listener and a NATS of its own and real sessions of both plugin hosts
-  — Oh My Pi on this checkout's `@sjawhar/pi-envoy` and Claude Code on its `packages/claude-envoy`:
-  a `SIGSTOP`ped session reads `unresponsive` with its own `last_seen`, is left out of the default list and answered the old `no live session` 404, is listed by `include=unresponsive`, and is read the same by a second listener and across a restart, `SIGCONT` returning it to `live`;
-  two stalled sessions keep their role claim and their issue claim across a three-minute bus outage;
-  a send to a stalled self-subscribed session is accepted `recipient_state: unresponsive` and a send to a stalled session that receives on a serving port is refused `404` naming that state, while a stored mention and message each reach the session once when it answers again, with nothing on `notifications.envoy.exceptions.*`;
-  a role publish to that stalled holder is kept `202` with `kept_reason: holder_lapsed` naming it, and the registration that makes the holder live again hands it to the session once, which the check waits up to a minute for after the stored mention and message have reached the session, keeping no margin for the five-minute sweep to stand in for that handover;
-  five lookups, a publish, a direct NATS publish and a reaper pass leave `envoy_roles` holder and `claimed_at` untouched, each lookup answers `holder_lapsed` with `claim_released: false`, the publish is kept `202` with `kept_reason: holder_lapsed`, and only a soft claim takes the role;
-  another agent's `dispatch claim` and release are refused naming the state and since when, which `dispatch read --issue` prints with the takeable time;
-  a `SIGKILL`ed session is `unresponsive` until a 90-second gone horizon and then `gone`, the latency measured and printed, its role claim released only then, while `/clear` and `new_session` leave the id each replaces `gone` at once and `claude --resume` gets its topics back;
-  both hosts show their model the peer's state and `last_seen`;
-  and a listener of the run's own raising `ENVOY_SESSION_MAX_AGE` to 2 h reaches both running listeners' `/healthz`, a session stalled seven minutes after that raise reading `unresponsive` where the shipping five minutes would already have dropped its key, and the rollback reaching both the same way.
-  Legion pod only
-
 - `clean-session-stop-tmux.sh`
 
   the daemon's clean stop of a dead role's Envoy session, measured (INFRA-392), against a listener and a NATS built from this checkout and an Anthropic Messages stand-in both harnesses call, over a real `legion start` daemon under `runtime: tmux` with a private tmux server of its own:
@@ -170,11 +153,6 @@ Each item below names a script, then what it proves.
   it completes that phase through the `legion` MCP tool's `handoff_complete` naming the Dispatch handoff record it wrote under that session beside its pushed commit;
   and, the pod deleted, its replacement installs its own generation's copy and runs `claude --resume <that id>` on the transcript its launcher restored from the table, its earlier bytes unchanged, and an earlier marker quoted back out of its context.
   Devbox only
-
-- `verifiers-staging-token.sh`
-
-  `dispatch` and the Envoy listener authenticate a projected service-account token the staging EKS cluster actually minted
-  — the right audience is accepted, the other binary's audience and a missing bearer are refused, each shared token still works, half an OIDC pair refuses either boot, an issuer that does not answer refuses the listener's boot, Dispatch starts and serves against such an issuer (`/healthz` `service_tokens` false, a JWT-shaped bearer `503 OIDC_ISSUER_UNAVAILABLE` until it discovers it in the background), and a refused token leaves its failure class in the log and nowhere else
 
 - `burstable-kind.sh`
 
@@ -213,35 +191,12 @@ Each item below names a script, then what it proves.
   It keeps every other value of a text flag byte for byte.
   Run against a base binary (`DISPATCH_BIN`) or against the command of another tree (`VERIFICATION_RESULTS_E2E_DISPATCH_CLI`), it is the change's negative control
 
-- `refusal-fallback-omp.sh`
-
-  a Legion worker a provider refused stays off that model for the whole of the plugin's cooldown and goes back to it when the cooldown ends (dispatch://INFRA-956 R1), measured on three real Legion panes of the pinned Oh My Pi, each the root architect of an issue of its own, each with this checkout's two plugins, an OpenAI-shaped model stand-in of its own and a chain that carries `retry.fallbackRevertPolicy: never`:
-  one pane is refused by a content filter with no content, one by the same filter after streamed text, and one is rate-limited with HTTP 429 and `retry-after: 60`;
-  each pane's first request goes to the refused model and the next to the chain's next one;
-  the arming the pane recorded carries the cause and the due time that fallback calls for;
-  no request at all reaches the refused model between the fifth minute and the cooldown's end at the tenth, which is the window a restore of Oh My Pi's own would show in;
-  the first request after the cooldown goes to that model again;
-  and the rate-limited pane comes back on the host's own suppression instead, about three minutes after its fallback.
-  Needs an Oh My Pi (`LEGION_OMP_PATH`), `go` for the one NATS server it builds and starts, and about fifteen minutes of wall clock, longer than any job of `ci.yaml` holds
-
 - `step-records-read.sh`
 
   the read, after the merge, of the step records of one issue a deployed Legion ran to done: `dispatch steps --issue <ISSUE>` run once in the operator's own shell with the operator's own credential, judged.
   It passes only when steps 1 to 5, the retro and the merge each have a record, every record has ended, every record of kind `step` or `retro` names an agent and every record of kind `step` a model;
   a read that lists no record, or that fails, is `UNKNOWN` and never a pass.
   A deployed Dispatch and the operator's credential; it starts nothing
-
-- `plan-pointer-drive.sh`
-
-  a Legion phase worker whose task line names a stale plan-handoff pointer builds from the newest `plan.md` version the plan review approved (dispatch://INFRA-2038), over two arms that differ in the implementer's role prompt alone:
-  the head arm's is composed from this checkout's `packages/daemon`, the control's from the daemon module of the commit `--base-commit` names, taken with `git archive`, and both are composed by the daemon's own composer.
-  Each run stages one issue on a Dispatch server and a database of its own — a `plan.md` at eight versions carrying three of the four designs (`early` at versions 1 to 3, `standing` at 4 to 6, `unapproved` at 7 and 8), approved at version 1 and again at version 6, so versions 7 and 8 are a revision no plan review approved, and six `plan` handoff records whose first cites version 1 — runs one real headless Oh My Pi session on the composed prompt with the daemon's own task line, writes the fourth design, `mid`, as a ninth version under that session the moment it first reads the plan, and prints a row naming every plan version it read and when, which design it wrote, and the verdict on it: `approved`, `pointer`, `stale`, `unapproved` or `other`.
-  `--mid-approval approved`, the default, has the watcher approve that ninth version, so the correct build becomes its design; `--mid-approval unapproved` leaves it unapproved, so the correct build stays the version 6 design.
-  `--tasks 1` stages a plan of one task, which begins after that ninth version lands, so a worker that reads the plan once cannot reach it and the new text's effect is visible.
-  `--tasks 2`, the default, stages a plan of two tasks, where a worker that reads the plan again between them reaches the ninth version: this staging measures how often a worker reads the plan again when no text tells it to.
-  `--base-commit` is required, and the run refuses two arms whose composed prompts are the same text.
-  A reproduction and a control, never a rate.
-  A model and a loopback PostgreSQL; no daemon, no cluster, no GitHub
 
 - `envoy-session-delivery.sh`
 
@@ -2793,76 +2748,6 @@ The page's notice for a session that sends no `settings` frame, a pi-envoy older
 This checkout's listener refuses every pi-envoy release before 14.1.0, the first that asks for a session consumer (`consumerPluginMinimumVersion` in `packages/envoy/cmd/listener/session_delivery.go`), and every release from 14.1.0 on sends the frame (`packages/pi-envoy/CHANGELOG.md`), so no session this stack serves can show the notice.
 `packages/dispatch/e2e/agent-view-settings.e2e.ts` holds the page to it.
 
-## verifiers-staging-token.sh
-
-```sh
-bash scripts/e2e/verifiers-staging-token.sh     # → "verifiers e2e: PASS", exit 0
-```
-
-Needs:
-
-- `go`
-
-- `docker`
-
-- `kubectl`
-
-- `jq`
-
-- `curl`
-
-- `python3`
-
-- `base64`
-
-- credentials for the `staging` kube context
-  — it mints two real tokens with `kubectl -n legion create token default --audience {dispatch,envoy} --duration 10m` (the TokenRequest API) and reads the issuer from the cluster's own `/.well-known/openid-configuration`
-
-That is why it is a devbox gate and not a CI job: GitHub's runners have no cluster to mint from.
-It builds both binaries from the checkout, so it proves the tree you are standing in.
-
-| input | default | meaning |
-| :--- | :--- | :--- |
-| `VERIFIERS_E2E_KUBE_CONTEXT` | `staging` | the cluster to read the issuer from and mint against |
-| `VERIFIERS_E2E_NAMESPACE` | `legion` | the namespace whose `default` service account the tokens are minted for |
-
-What the run touches, and nothing else:
-
-- `/tmp/verifiers-e2e` — the two built binaries, the boot logs, the refusal logs, the last response body, and the scratch `HOME` the binaries run under, so Dispatch's signing key never lands in the box's `~/.local/share/dispatch`.
-  Recreated from empty each run.
-
-- the containers `verifiers-e2e-pg` (pgvector on PostgreSQL 18, the image CI's Dispatch service runs, pinned by digest) and `verifiers-e2e-nats` (the hub's nats-server with `-js`, [`lib/nats-image.sh`](#libnats-imagesh)), both on ephemeral loopback ports.
-
-- two ports the kernel chose, one for `dispatch` and one for the listener, each held by [`lib/held-port.py`](#libheld-portpy) from that choice until its binary serves on it (`DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`).
-  The boot refusals exit before any bind and get none.
-
-After any exit — pass, failure, or an interrupt
-— the `EXIT` trap signals both binaries and removes both containers; `docker ps -a --filter name=verifiers-e2e` comes back empty.
-
-### No raw token is printed
-
-A token lives in a shell variable, reaches curl through a config document on stdin
-— never an argument, since `/proc/<pid>/cmdline` is world-readable, and never a file
-— and everything the script prints that it did not compose itself goes through `redact`, which replaces any JWT-shaped run with `<redacted-jwt>`.
-The two minted tokens are reported by their decoded `iss`, `aud`, `sub` and `exp`.
-The last step asserts that neither binary's log contains `eyJ`.
-
-### How it fails
-
-Every step is fatal and names its reason:
-a cluster that will not mint, a discovery document with no `https` issuer, a token whose `iss`, `aud` or `sub` is not the one asked for, a container that never becomes ready, a binary that exits during boot (reported at once from its dead pid, with its log, rather than after the whole wait), a Dispatch booted against an issuer that does not answer that exits, never answers `/healthz`, reports `service_tokens` as anything but `false`, or does not stop with status 0 within 30 s of its SIGTERM, a boot log that does not name the issuer, any of the nine calls answering the wrong status, a body that is not the actor the verifier should have produced (or, for the bearer sent before the issuer is discovered, not `OIDC_ISSUER_UNAVAILABLE`), a refusal whose class is missing from the log
-— or present in the 401 body, which would tell an unauthenticated caller which credential the listener is configured for.
-
-Two notes on what the script had to learn about its own surface:
-
-- Postgres readiness is probed **over TCP** (`pg_isready -h 127.0.0.1`).
-  The container entrypoint's bootstrap phase answers on the unix socket while nothing listens on 5432 yet, and a client that connects in that window is reset by the peer.
-
-- The listener answers `/healthz` 200 with `{"status":"starting"}` before NATS is up, and every `/v1` route is 503 until then, so the wait is for the healthy status and not for the port.
-
-- The "never prints a token" assertions are written `grep -q … && fail`, not `! grep -q …`:
-  `set -e` ignores a negated pipeline (shellcheck SC2251), so the negated form could never fail the run.
-
 ## burstable-kind.sh
 
 ```sh
@@ -3047,7 +2932,8 @@ Each mention case fails when the comment.created payload's mention does not carr
 the cases are about a mention that resolved, whatever its send did.
 A comment answers its mention attempts `pending` and its sender settles them after the response, so each mention case reads the comment's delivery rows once none is `pending`, and fails when one still is 10 s after the 201 (two of the listener client's 5 s windows).
 
-Every case runs and prints `== <case>`, what it read, and `ok <case>` or `FAIL <case>: <why>`; a summary follows, and any FAIL exits 1.
+Every case runs and prints `== <case>`, what it read, and `CHECK <case>: PASS` or `CHECK <case>: FAIL: <why>`, as each step before the cases does; a summary follows, and any FAIL exits 1.
+The `envoy-session-stall` job of `ci.yaml` runs it on a database of its own on the job's Postgres service.
 The work directory, under `TMPDIR`, holds the binaries and the logs of natsd, the fake listener and the server:
 removed when the run passes, kept (without the binaries) and printed when it fails.
 Every process the run started is stopped on any exit.
@@ -3239,7 +3125,8 @@ Each item below names a case and how it is driven, then what must hold for it to
   Each stored `run`, `observed` and `negative_control` equals byte for byte what its step gave, and the stdin text of step 1 keeps both its line feeds.
   A field that a step did not send reads as the empty string
 
-Every case prints `== <case>`, what it read, and `ok <case>` or `FAIL <case>: <why>`; a summary follows, and any FAIL exits 1.
+Every case prints `== <case>`, what it read, and `CHECK <case>: PASS` or `CHECK <case>: FAIL: <why>`, as each step before the cases does; a summary follows, and any FAIL exits 1.
+The `envoy-session-stall` job of `ci.yaml` runs it on a database of its own on the job's Postgres service.
 The work directory, under `TMPDIR`, holds the binaries and the logs of natsd, the two fakes and the server:
 removed when the run passes, kept (without the binaries) and printed when it fails.
 Every process the run started is stopped on any exit.
@@ -3289,50 +3176,6 @@ DATABASE_URL=… [DISPATCH_BIN=<envoy-dispatch>] \
 git -C <checkout> worktree remove --force "$TMPDIR/<head tree>"
 ```
 
-## refusal-fallback-omp.sh
-
-```sh
-LEGION_OMP_PATH=/opt/omp/bin/omp bash scripts/e2e/refusal-fallback-omp.sh     # → "refusal fallback e2e: PASS in <n>s", exit 0
-```
-
-dispatch://INFRA-956's live proof that a Legion worker a provider refused stays off that model for the whole of the plugin's cooldown and goes back to it when the cooldown ends (its R1).
-It is a script of its own because the window it measures is longer than any CI job holds:
-Oh My Pi's own floor for suppressing a model whose error it cannot classify is five minutes, the plugin's cooldown here is ten, and `ci.yaml`'s pi-legion job has `timeout-minutes: 10`, so the only way to see that nothing goes back at the five-minute mark and something does after the tenth is to spend the quarter of an hour.
-It runs on any Linux host with `bash`, `bun` (after `bun install` at the checkout's root) and `go`, which builds the one server it starts — no PostgreSQL, no Docker, no kube context and no tmux, so a Legion pod, a devbox and a runner holding the pinned binary all run it.
-`LEGION_OMP_PATH` is required and names the Oh My Pi every pane runs, an absolute executable, and the script prints which build it ran.
-It reaches no network:
-each pane's model gateway, the stand-in daemon and the stand-in Envoy listener are loopback servers of the driver's, and the NATS server the Envoy extension connects to is one the run builds and starts itself (`packages/envoy/internal/testnats/cmd/natsd`, on a port the kernel picks, logged to the evidence directory), since a session a listener can give no consumer receives nothing and its claim boot ends it.
-A whole run took 798 s measured in a Legion worker pod (omp/18.16.0), and a pane that never gets its model back holds one to about eighteen minutes.
-
-| check | what it holds |
-| :--- | :--- |
-| `prerequisites` | `bun` on PATH, the driver and the two packages' `node_modules`, and the Oh My Pi `LEGION_OMP_PATH` names, whose version is printed with the run's cooldown and drive times |
-| `nats` | the JetStream server the run builds and starts (`packages/envoy/internal/testnats/cmd/natsd`), whose URL the driver is given as `REFUSAL_FALLBACK_NATS_URL` |
-| `runs` | the driver (`packages/pi-legion/scripts/refusal-fallback-pane.ts`, run with `bun`), which prints one section per expectation of its own |
-
-Three Legion panes run at the same time, each the root architect of an issue of its own, each one real `omp --mode rpc` child of the pinned Oh My Pi with this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` loaded and an OpenAI-shaped model stand-in of its own, under a profile whose chain steps from `standin/strong-model` to `standin/weak-model` with `retry.fallbackRevertPolicy: never`, the shape a deployment's own operator overlay carries, and `retry.rateLimitWalksChain: true`, which Oh My Pi has off:
-on, a rate limit is admitted to the chain consult rather than deferred to another attempt on the same model.
-Each pane is driven about once a minute for about twelve and a half minutes — the stand-in answers every turn with a `bash sleep`, so one long turn asks again each minute — and the model of each request says where that session stood at that minute.
-The three differ in the one answer that refuses:
-
-- `filtered-clean`: `finish_reason: content_filter` with no content, which Oh My Pi may replay, so the host walks its own chain and the plugin arms the return from the host's own reason;
-
-- `filtered-after-text`: the same after streamed text, which is replay-unsafe, so the host leaves the session where it is and the plugin walks the chain itself;
-
-- `rate-limited`: HTTP 429 with `retry-after: 60`, which is no content filter, so the host notes a suppression of that model for the 60 s the provider asked for, the arming's cause is `other`, and the return waits on that suppression, which is a different clock from the cooldown.
-
-What the run holds each pane to:
-the first request goes to the refused model and the next to the chain's next one (`<pane>-walks-the-chain`);
-the arming the pane recorded in its own transcript has the cause and the due time that fallback calls for (`<pane>-arms-the-return`);
-no request at all goes to the refused model between the fifth minute and the end of the ten-minute cooldown (`<pane>-quiet-between-five-and-ten`), which is the window a restore of Oh My Pi's own would show in, since five minutes is its own floor for a suppression it cannot time;
-the first request after the cooldown goes to that model again (`<pane>-comes-back-after-ten`);
-and the rate-limited pane goes back about three minutes after its fallback, the 60 s suppression plus the gap between readings, rather than waiting the cooldown out (`rate-limited-comes-back-on-the-suppression`).
-Unlike a stage proof, a failed expectation does not stop the driver:
-the twelve minutes are already spent and every other measurement is evidence about the same run, so every expectation is reported and the run exits non-zero naming the first that failed.
-`REFUSAL_FALLBACK_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) holds the transcript, `logs/nats.log` of the JetStream server the run starts, and a copy of every pane's Oh My Pi transcript;
-each pane's scratch root is under `TMPDIR` too, since a pod's own disk is small and its `TMPDIR` names the issue's volume.
-The run's own scratch directory, which holds the natsd it built and that server's JetStream store, is removed at the end with the server, however the run ended; the evidence directory is never touched.
-
 ## step-records-read.sh
 
 ```sh
@@ -3352,118 +3195,6 @@ It reads an issue that is done, so every step of it has ended.
 | 2 | `UNKNOWN: <reason>` | nothing to judge: the read lists no record of the issue (`dispatch steps lists no record of <ISSUE>`), the command failed (its exit and what it printed), no `dispatch` is on PATH, or the answer is no read of the issue (no header, a line that is no run, a header whose count differs from the lines below it); a usage error is exit 2 too, with the usage on stderr |
 
 `scripts/e2e/lib/step-records-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints a recorded answer: a whole answer passes, the merge record missing fails, an empty read is `UNKNOWN`, and each fault above has its row.
-
-## plan-pointer-drive.sh
-
-```sh
-LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-  LEGION_OMP_PATH=<omp> bash scripts/e2e/plan-pointer-drive.sh --base-commit <rev> \
-  [--runs <n>] [--tasks <1|2>] [--mid-approval <approved|unapproved>]     # → "plan pointer drive: PASS in <n>s", exit 0
-```
-
-dispatch://INFRA-2038's live proof that a Legion phase worker whose task line names a stale plan-handoff pointer builds from the newest `plan.md` version the plan review approved.
-A grep over the prompt files says the words changed;
-only a session says what an agent reading them writes, and only a control says the change caused it ([`docs/solutions/testing/prove-a-prompt-change-with-the-production-composer-a-real-session-and-the-old-prompt-as-the-control-INFRA-336.md`](../../docs/solutions/testing/prove-a-prompt-change-with-the-production-composer-a-real-session-and-the-old-prompt-as-the-control-INFRA-336.md)).
-
-The staged issue carries four designs of one plan, as INFRA-1992's own history carried them, and each design names one call:
-
-| design | the plan.md versions that carry it | its call | the plan review's approval of it |
-| :--- | :--- | :--- | :--- |
-| `early` | 1 to 3 | `pulumi.Import` | version 1, which is the version the task's handoff pointer cites |
-| `standing` | 4 to 6 | `aws.s3.BucketV2` | version 6, so this is the approved plan when the session begins |
-| `unapproved` | 7 and 8 | `aws.s3.BucketReplicationConfig` | none, and version 8 is the newest version when the session begins: the rule under test forbids a build from it |
-| `mid` | 9, written by the watcher while the session runs | `pulumi.Alias` | the watcher's own, or none, as `--mid-approval` says |
-
-So "the version the task's pointer cites" (v1), "the newest approved version" (v6) and "the newest version" (v8) are three different answers before the session starts, and the row says which of them the session built from.
-
-`--mid-approval` chooses what the watcher does with version 9, which is the rule's second case.
-With `approved`, the default, the watcher records a plan review of version 9, and the correct build becomes `mid`.
-With `unapproved` it records none, the correct build stays `standing`, and a worker that writes `mid` built from a version nobody approved.
-
-`--tasks` chooses one of two stagings, and each staging is run on both arms.
-`--tasks 1` stages a plan of one task, the scored one, which begins after the mid-session version lands: a worker that reads the plan once cannot reach that version, so this staging is where the new text's effect is visible.
-`--tasks 2`, the default, stages a plan of two tasks, where a worker that reads the plan again between them reaches the mid-session version: this staging measures how often a worker reads the plan again when no text tells it to.
-Every other part of a run is the same in both.
-
-The two arms differ in one thing, the implementer's role prompt:
-
-| arm | its daemon module | what it carries |
-| :--- | :--- | :--- |
-| `head` | this checkout's `packages/daemon` | the change's text: the plan is the newest `plan.md` version the plan review approved, which the `Approval:` line of `dispatch read --issue <issue> --artifact plan-md` names, and the task's `Handoff: plan version <n>` line is the receipt for the record the daemon accepted |
-| `base` | `packages/daemon` of the commit `--base-commit` names, taken with `git archive` into the run's own work directory | the prompt before the change, which reads the plan through its handoff record alone |
-
-`--base-commit` is required and has no default.
-With a default of `trunk()` the base arm would compose the head arm's own prompt once this change is on trunk, and the run would print PASS with no control at all.
-Before it makes a database, a server or a session, the run composes both arms' prompts and refuses when they are the same text byte for byte, naming the base commit and this checkout's working copy.
-
-`packages/envoy` is taken with it, because `packages/daemon/go.mod` replaces `github.com/sjawhar/envoy` with `../envoy` and the composer runs `go run` in that module.
-Both prompts are composed by the daemon's own composer, `workerPane` in [`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`](../../packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts), with `systemPrompt: true`, the project token in lower case, and the real `gh` the shell itself resolved as `ghPath`;
-the whole `--append-system-prompt` argument it answers with is turned into the prompt file by the shell (`eval "args=( $(cat arg.txt) )"`), never by a regular expression.
-
-Its inputs:
-
-| input | what it is |
-| :--- | :--- |
-| `LEGION_TEST_PG_DSN` | required: the loopback PostgreSQL server each attempt creates a database of its own on with `psql`, named `ppd_<pid>_<arm>_<n>_<attempt>` and given to the run as the `dbname=` of a connection string [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `run_database_url` rebuilds from the DSN, so the database the DSN itself names is never written, every database the run made is dropped when it ends, on success and on failure, the run takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it, and `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` are unset before the first connection |
-| `LEGION_OMP_PATH` | required: the Oh My Pi binary each session runs, which must reach a model |
-| `LEGION_GH_PATH` | optional: the real `gh` the composer is told, the first `gh` on `PATH` otherwise, where the run refuses to start when there is neither and when the one it found is not an executable file |
-| `--base-commit <rev>` | required: the control's commit |
-| `--runs <n>` | how many runs each arm makes, default 1; three or more is what a reading needs |
-| `--tasks <n>` | how many tasks the staged plan holds, 1 or 2, default 2: `1` is the staging whose only task begins after the mid-session version lands, `2` the staging where a worker that reads the plan again between the two tasks reaches that version |
-| `--mid-approval <word>` | the watcher's shape, `approved` or `unapproved`, default `approved` |
-| `PLAN_POINTER_DRIVE_TRIGGER_SECONDS` | the watcher's bound, default 120 |
-| `PLAN_POINTER_DRIVE_SESSION_SECONDS` | each session's bound, default 900 |
-| `PLAN_POINTER_DRIVE_ATTEMPTS` | how many attempts one run makes before an unscorable run fails, default 3 |
-
-Each attempt of a run stages its own world and reads one row off it:
-
-| step | what it does |
-| :--- | :--- |
-| `<arm>-<n> try <k> database` | `create database`, through `psql` on that server |
-| `<arm>-<n> try <k> dispatch` | the e2e harness's Dispatch on it ([`packages/dispatch/e2e/run-server.sh`](../../packages/dispatch/e2e/run-server.sh), its fakes at port 1 and no secrets broker, as pi-legion's skill-scenario rig starts it), on the port the kernel chose, read from its own `msg="dispatch: listening"` line; its agent bearer is the pinned `e2e-token` |
-| `<arm>-<n> try <k> seed` | the staged issue through [`packages/dispatch/e2e/api.ts`](../../packages/dispatch/e2e/api.ts): a spec, a `plan.md` of one task or two, as `--tasks` says, at eight versions carrying the first three designs above, six `plan` handoff records (the first citing plan.md version 1, the sixth version 8), the plan review's approvals of version 1 and version 6, and the session's own task line, which the seed writes from its own constants and its own list of the staged tasks — an edit of `plan.md` the server answers `503 DOC_SERVICE_UNAVAILABLE`, which its document service does between states, is made again, up to five times and a second apart, and that retry matches the status and the code together, so another status whose body quotes the code stands at its first answer |
-| `<arm>-<n> try <k> prompt` | the arm's prompt, composed as above |
-| `<arm>-<n> try <k> dispatch-cli` | the real `dispatch` CLI reads the staged plan from the session's own environment before the session relies on it: `dispatch read --issue <key> --artifact plan-md` must print `Versions: 8` and an `Approval: approved v6 by …` line |
-| `<arm>-<n> try <k> task` | the task line the seed wrote, printed, whose `Handoff:` sentence is byte for byte the shape the daemon renders (`task`, [`packages/daemon/internal/workflow/effects.go`](../../packages/daemon/internal/workflow/effects.go)), and which names one file for each task the staged plan holds, one more for the `implement` handoff body, no plan version other than that line's, and nowhere says the plan can have moved |
-| `<arm>-<n> try <k> session` | one real headless session, `omp -p --session-dir`, started as a process of the script's own and bounded by `timeout`, so an interrupt stops it at once and the teardown stops its whole tree, with every `LEGION_*`, `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `GH_*`, `GITHUB_*`, `PG*`, `OMP_SESSION_*`, `PI_SESSION_*` and `PI_TOOL_CALL_ID` variable of the caller's shell unset, `OMP_SESSION_STORAGE=file` (which is what writes the transcript), `GH_CONFIG_DIR` an empty directory of the run's own, so the session's own `gh` reads no login of the operator's, the staged server as its Dispatch beside an Envoy address nothing listens on, and the watcher beside it writing plan.md version 9 — the last design change, with the plan review's approval of it when `--mid-approval` is `approved` — the moment the session's first read of the plan's text reaches a transcript, or at its bound when no such read does |
-| `<arm>-<n> try <k> row` | the attempt's row, from every transcript under the session directory, the session's own and each subagent's, and from the file of each task the session wrote |
-| `<arm>-<n> try <k> teardown` | that attempt's Dispatch stopped and its database dropped, before the next attempt or the next arm starts |
-
-Each task of the staged plan tells the implementer to write its design's call to a file of its own.
-With two tasks the first task's file carries `note: <call>` and the second `adopt: <call>`, and the second file is the one the summary counts, because a worker that reads the plan again between the two tasks reads it before that file is written.
-With one task the plan holds that scored task alone, so the session writes `adopt: <call>` and no first file: the row's `first-wrote` and `first-design` read `none` and its `designs-differ` reads `no`.
-The row says which design the session built from by reading those files, never by reading what the session said.
-Every version of `plan.md` carries a `PLANREV-<version>` marker, which is how a tool result in the transcript says which version the session read, and how the watcher tells a read of the plan from any other command.
-
-The row's verdict is its answer on the scored file, read against the approvals the session could have read when it wrote that file.
-It is the first of five words that holds:
-`approved` when the file names the newest approved design, which is what the rule asks for;
-`pointer` when it names the design of the `plan.md` version the task line's handoff record cites, which is the build the rule forbids;
-`stale` when it names an approved design that is neither the newest approved one nor the pointer's, which is lag;
-`unapproved` when it names a design no plan review approved;
-and `other` when it names no design's call, or more than one.
-The moment the verdict reads against is the transcript's own time of the write tool result for the scored file, or the file's modification time where the session wrote it by another route, and `scored-wrote-from=` says which of the two the row read.
-The watcher's own plan review counts for the verdict only where the session read the plan after the watcher's version landed, or read a text that carried it, and in both cases before it wrote the scored file, and `counted-mid-approval=` says whether it counted.
-A session that reads the approved plan, and writes that design a second after the watcher moves the plan, followed the rule it was given, so counting the watcher's approval there would read a compliant session as lag.
-
-A row names the arm, the run, which attempt of it wrote the row, the staging it came from (`tasks=1` or `tasks=2`), the watcher's shape (`mid-approval=`), the task's handoff pointer, the version that handoff record cites, the newest and approved versions at the start, the mid-session version, every plan read with its time, the trigger and the times it fired and the version landed, when the scored file was written, the call each task's file holds, and five judgements:
-`verdict=` as above, `counted-mid-approval=yes` when that verdict counted the watcher's own plan review, `designs-differ=yes` when the two files name different designs, which is the plan read again between the two tasks, `read-after-change=yes` when a plan read of the session's carried the mid-session version, and `scorable=no` when the scored file was written before that version landed.
-An unscorable attempt is neither a pass nor a failure, since the session wrote the scored file before the new version existed.
-The shell prints one line for it, with the two times, and makes the run again, up to `PLAN_POINTER_DRIVE_ATTEMPTS` attempts.
-A run whose every attempt is unscorable fails.
-One `summary` line per arm names the staging (`tasks=`) and the watcher's shape (`mid-approval=`), and counts the kept rows, one per run (`runs=`), beside the sessions that arm ran, the discarded attempts included (`attempts=`).
-It counts those rows by the design each wrote, one field per design in the order the plan writes them (`wrote-early=`, `wrote-standing=`, `wrote-unapproved=`, `wrote-mid=`, and `wrote-other=` for a file that names no design's call or more than one), and by the verdict each carries, one field per verdict word (`verdict-approved=`, `verdict-pointer=`, `verdict-stale=`, `verdict-unapproved=`, `verdict-other=`).
-Three counts end the line: `designs-differ=`, the rows whose two files name different designs, `read-after-change=`, the rows whose session read the plan after the watcher moved it, and `trigger-at-bound=`, the rows whose watcher reached its bound with no plan read to fire it.
-The work directory under `TMPDIR` is kept and printed either way, since the transcripts, prompts, task lines and rows in it are the evidence;
-only the extracted base tree is removed.
-
-What it does not cover:
-no daemon runs, so that the task line it writes is the line a daemon sends is the daemon's own tests' to prove, not this drive's;
-the session holds no `legion` tool, no jj workspace and no GitHub, so it completes no phase, opens no pull request and records nothing on the issue;
-Envoy is an address nothing listens on, so no role topic, message or notice reaches the session;
-and `skill://legion-worker` resolves to the `skills/legion-worker/SKILL.md` installed on the box, never this checkout's, so a change to that file is read by this drive rather than driven by it.
-With `--tasks 2`, a run whose two files name the same design does not say whether the session read the plan again, only that the second file carries no newer design.
-Two arms over a few runs are a reproduction and a control, not a rate.
 
 ## envoy-session-delivery.sh
 
@@ -3621,11 +3352,11 @@ Do not edit the script while a run is going: bash reads it as it runs.
 
 Prints what libpq reads from a PostgreSQL DSN, rewrites that DSN to name a run's own database, or refuses the DSN in one line.
 Python 3.9 or later, the standard library, and libpq itself, which it loads with `ctypes`.
-Nine call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
+Seven call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
 Each is a proof of its own:
-[`plan-pointer-drive.sh`](#plan-pointer-drivesh), [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), [`stage2-tmux-supervision.sh`](#stage2-tmux-supervisionsh), [`controller-start-tmux.sh`](#controller-start-tmuxsh), `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh).
-Each of those nine call sites calls it in one line, through [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` or through its `run_database_url`, which begins with the same check.
-Seven of them source that file through [`lib/rig.sh`](#librigsh), and [`stage2-tmux-supervision.sh`](#stage2-tmux-supervisionsh) and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) source it on their own:
+[`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), [`stage2-tmux-supervision.sh`](#stage2-tmux-supervisionsh), [`controller-start-tmux.sh`](#controller-start-tmuxsh), `clean-session-stop-tmux.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh).
+Each of those seven call sites calls it in one line, through [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` or through its `run_database_url`, which begins with the same check.
+Five of them source that file through [`lib/rig.sh`](#librigsh), and [`stage2-tmux-supervision.sh`](#stage2-tmux-supervisionsh) and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) source it on their own:
 
 ```sh
 require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" || fail "$db_host"
@@ -3640,7 +3371,7 @@ That one copy also says which client each call site then writes the server with,
 A caller clears `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` before its first connection, because this helper reads the DSN alone.
 psql reads `PGHOSTADDR`, and `PGSERVICE` with `PGSERVICEFILE` name an entry of `~/.pg_service.conf` that can set `hostaddr`.
 Measured with an exported entry that sets `hostaddr=127.0.0.2`: psql connected to 127.0.0.2, and the helper printed `127.0.0.1` for the same DSN.
-Each of the nine proofs those call sites serve drops the three before its first connection: six in the sweep of the environment it does not inherit, and `plan-pointer-drive.sh`, `stage2-tmux-supervision.sh` and `controller-start-tmux.sh` in an `unset` of their own.
+Each of the seven proofs those call sites serve drops the three before its first connection: five in the sweep of the environment it does not inherit, and `stage2-tmux-supervision.sh` and `controller-start-tmux.sh` in an `unset` of their own.
 
 `loopback-dsn.py NAME WHAT` reads the DSN from the environment variable NAME, never from the command line, so no process list holds its password.
 WHAT is what the run does on that server, in a few words, and a refusal about the host ends with it.
@@ -3760,7 +3491,7 @@ It builds the listener with `go`, so CI runs it after `setup-go`.
 
 Every stage proof and rig takes its servers' ports this way, apart from the ports Stage 4a and Stage 4b pin inside the range the devbox security group admits.
 [`lib/rig.sh`](#librigsh)'s `start_held`, `keep_port` and `start_kept` wrap it for the scripts that source the rig (Stage 1, Stage 3, the 4b.13b acceptance, `controller-start-tmux.sh`, `clean-session-stop-tmux.sh`, `dispatch-user-turns.sh`, the docs rigs and the skill-scenarios rig);
-Stage 2 and `verifiers-staging-token.sh` call it directly.
+Stage 2 calls it directly.
 A daemon always serves on a keeper's socket, since its `legion.yaml` must name the port before it starts.
 A process that binds port 0 itself and reports what it got
 — `nats-server -p -1`, a Bun fake, `kubectl port-forward :<port>` — needs no helper; the rig reads its report with `report_port`.
@@ -4118,7 +3849,7 @@ the caller does, with its work directory, `<key-dir>` unconditionally and `<dest
 
 ## lib/model-endpoint.sh
 
-The model endpoint a Claude Code backend proof's key file is for, sourced by [`claude-backend-sandbox.sh`](#claude-backend-sandboxsh), `clean-session-stop-tmux.sh` and `envoy-session-states.sh`, whose own `note` and `fail` it calls, and by [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh).
+The model endpoint a Claude Code backend proof's key file is for, sourced by [`claude-backend-sandbox.sh`](#claude-backend-sandboxsh) and `clean-session-stop-tmux.sh`, whose own `note` and `fail` it calls, and by [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh).
 `anthropic_base_url` is Anthropic's own endpoint, the one a run with no `LEGION_E2E_MODEL_BASE_URL` calls.
 `model_base_url_refusal URL` prints why `URL` cannot be a model base URL, and nothing when it can:
 an `http://` or `https://` URL of letters, digits and `:/._~-` alone (so it carries no user or password, and stays a plain YAML scalar), ending in neither a colon nor a slash.
@@ -4460,8 +4191,8 @@ It asks the devbox `gh` which account it acts as, through GraphQL's `viewer` wit
 an App installation token answers `viewer` with the App's bot login, where REST's `GET /user` refuses one (403, "Resource not accessible by integration").
 Unless the answer is `sjawhar-agent[bot]` it fails the check in one line:
 the account it found ("no account" when `gh` gave none, and why when it gave no answer within the probe's 60 s), the requirement (the operator's own Oh My Pi session, not a Legion pane, with no personal `GH_TOKEN` in its environment), and whatever `gh` wrote to stderr, where the shim names an inherited `GH_TOKEN`.
-Each harness's GitHub teardown (Stage 3's `close_unpassed_run_pull_requests`, 4b.13b's `github_cleanup`, Stage 4b's `remove_run_branches`) returns without a `gh` call unless the check passed.
-`lib/proof-human.test.ts` drives the check and Stage 3's teardown against a fake `gh` (`bun test scripts/e2e/lib`, which CI runs).
+Stage 4b's GitHub teardown (`remove_run_branches`) returns without a `gh` call unless the check passed.
+`lib/proof-human.test.ts` drives the check against a fake `gh` (`bun test scripts/e2e/lib`, which CI runs).
 
 `read_app_logins` proves the run's two role Apps against GitHub and reads the bot login of each, as GitHub names it today, and every check that names an App compares with it:
 no script carries an App's name or id, so an App renamed on GitHub changes what the run reads and no line of it, and a name another App takes over later is never mistaken for Legion's.
@@ -4479,10 +4210,10 @@ one fixture pull request, on the branch `proof/clean-main-<project, lowercased>`
 Stage 3's project is a fresh key per run, but Stage 4b's is `LEGSMOKE` in every run, so the branch's name alone cannot tell the run's own from one an earlier run left.
 The run records the branch as its own (`smoke_cleanup_branch`) once it has read that no such branch exists (`smoke_branch_state`, through `matching-refs`, which answers an absent branch with an empty list), just before it makes it, and empties the record once the merge has deleted it;
 it fails, naming the branch, when one is already there.
-`close_smoke_cleanup` is both stages' teardown of a run that stopped in between (Stage 3's `close_unpassed_run_pull_requests`, Stage 4b's `remove_run_branches`):
+`close_smoke_cleanup` is Stage 4b's teardown of a run that stopped in between (`remove_run_branches`):
 it closes each open pull request whose branch is exactly the recorded one, with a comment naming the run's script, project and pid, deletes the branch, prints one line per pull request (its URL, and gh's reason when the close failed) and for the branch, and returns 1 when the pull request may still be open or the branch remains.
 Without a record it makes no `gh` call.
-`lib/smoke-cleanup.test.ts` drives both teardowns against a fake `gh`.
+`lib/smoke-cleanup.test.ts` drives that teardown against a fake `gh`.
 
 Every wait for an issue to reach one phase is `wait_for_phase ISSUE PHASE [SECONDS]`:
 `phase_seconds` (600 s, the proof's budget for an agent's turn), unless the phase's worker runs a whole loop and the caller passes its own bound:

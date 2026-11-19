@@ -716,7 +716,7 @@ Each item below names a task and where its code is, then notes on it.
   the shared public leak check, resolved again at each call, and this repository's own four private-name rules in `private-names.toml`, which the `legion` binary embeds and the gitleaks engine linked into it reads in process.
   Its call sites are the worker image's `git` and `jj` wrappers through the pre-push hook and `legion leak-check` (`packages/daemon/docker/`), `legion gh`, the daemon's branch create, and the release lane's six writes (`.github/scripts/release-push.sh`).
   See `docs/kubernetes.md`;
-  the live proof of the image's half is `scripts/e2e/leak-guard-image-job.sh`
+  the image's half is tested by `scripts/e2e/leak-guard-image-probe.sh`, which the `worker-image` job runs in the image it has just built
 
 - Worker image (Kubernetes) — `packages/daemon/docker/worker.Dockerfile`, `.github/workflows/worker-image.yaml`
 

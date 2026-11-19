@@ -77,25 +77,8 @@
       "needs": "ci.yaml's agent-harness job, which runs it in its session-scripts part: the pinned Oh My Pi (LEGION_TEST_OMP), Claude Code (LEGION_TEST_CLAUDE), socat 1.8.0 or later and a loopback PostgreSQL with pgvector (LEGION_TEST_PG_DSN); it starts its own model stand-in, NATS, listeners and Dispatch"
     },
     {
-      "script": "envoy-session-states.sh",
-      "needs": "a Legion pod: its own model route for both agent runtimes (LEGION_E2E_MODEL_BASE_URL, LEGION_E2E_MODEL_KEY_FILE, LEGION_E2E_MODEL_ID and LEGION_E2E_CLAUDE_MODEL), the worker image's Oh My Pi and Claude Code pin, and a loopback PostgreSQL with pgvector (ENVOY_SESSION_STATES_PG_DSN); it starts its own NATS, listeners and Dispatch"
-    },
-    {
-      "script": "leak-guard-image-job.sh",
-      "needs": "a pod whose projected Kubernetes credential may create a Job (kubectl -n <namespace> auth can-i create jobs answers yes), the worker image digest to prove (--image, from the Worker Image run's Record digest step) and the deployment's compute class (--node-selector), with the base branch's digest as the negative control (--control); it starts one Job of that image and nothing of its own"
-    },
-    {
       "script": "leak-guard-image-probe.sh",
-      "needs": "the worker image and the Job leak-guard-image-job.sh creates: it is that proof's probe, not a proof of its own, and the harness writes it into the Job's command because a Job holds no checkout to read it from; it runs inside the image against a scratch repository on the Job's emptyDir and judges nothing a runner could give it"
-    },
-    {
-      "script": "plan-pointer-drive.sh",
-      "needs": "a host that reaches a model: a real Oh My Pi on a model route (LEGION_OMP_PATH) for one headless session per arm, a loopback PostgreSQL it creates a database of its own on (LEGION_TEST_PG_DSN), and jj, git, go, bun, psql, curl, the dispatch CLI, gh, python3 and openssl, each of which it refuses to start without: jj and git read the control's commit and extract its daemon module, go and bun run the daemon's prompt composer, gh is the one the composer is told, and psql, curl, python3 and openssl make and reach the e2e Dispatch server it starts"
-    },
-    {
-      "script": "refusal-fallback-omp.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), go, which it builds its own natsd with, bun with this repository's node_modules, and about fifteen minutes of wall clock, which is longer than any job of ci.yaml holds",
-      "timeout_minutes": 25
+      "needs": "ci.yaml's worker-image job, which runs it after the build with docker run on the image it built and pushed: it runs inside that image against a scratch repository of its own, once on the image's PATH and once with the wrappers bypassed as its control"
     },
     {
       "script": "share-volumes-kind.sh",
@@ -116,10 +99,6 @@
     {
       "script": "step-records-read.sh",
       "needs": "a deployed Dispatch and the operator's own credential: the dispatch command on PATH, run in the operator's own shell with its session (DISPATCH_HOST and DISPATCH_SESSION_ID) and the deployed Dispatch and token its envoy.json or DISPATCH_URL and DISPATCH_TOKEN name, and the key of one issue a deployed Legion ran to done after the release that records each step; it reads that issue's step records and starts nothing"
-    },
-    {
-      "script": "verifiers-staging-token.sh",
-      "needs": "a projected service-account token the staging EKS cluster minted, and its own Postgres and NATS containers"
     }
   ]
 }

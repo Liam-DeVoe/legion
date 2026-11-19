@@ -684,9 +684,7 @@ card.
 Starting the stack with `--judge-skip-checks` sets `BROKER_JUDGE_TEST_SKIP_CHECKS`: the judge
 still makes every check and records each, and none of them holds a request back, so the model is
 asked about a request a check would have stopped. It is the negative control of those checks, and
-a broker refuses it on a production start. `packages/envoy/scripts/judge-check.sh --help` lists
-the checks that script drives end to end, each on a stack of its own, printing what it observed
-beside what the check expected.
+a broker refuses it on a production start.
 
 ## Stop
 

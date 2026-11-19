@@ -21,8 +21,8 @@
 // write stamps the rule this build judges by; and the issue and the source that row holds now,
 // which no route answers either.
 //
-// Each case prints `== <case>`, what it read, then `ok <case>` or `FAIL <case>: <why>`; a summary
-// follows, and the exit status is 1 when any case failed. The first case,
+// Each case prints `== <case>`, what it read, then `CHECK <case>: PASS` or
+// `CHECK <case>: FAIL: <why>`; a summary follows, and the exit status is 1 when any case failed. The first case,
 // `the-results-route-is-served`, is the run's first result write, against a plain issue whose
 // spec marks nothing: when it fails, as it does against a binary built from the base commit,
 // which serves no such route, the run stops there, since every later case records a result too.
@@ -565,7 +565,7 @@ async function runCase(name: string, body: () => Promise<string | undefined>): P
     failure = error instanceof Error ? error.message : String(error);
   }
   results.push({ name, ok: failure === undefined });
-  console.log(failure === undefined ? `ok ${name}` : `FAIL ${name}: ${failure}`);
+  console.log(failure === undefined ? `CHECK ${name}: PASS` : `CHECK ${name}: FAIL: ${failure}`);
 }
 
 function summarise(stopped?: string): never {

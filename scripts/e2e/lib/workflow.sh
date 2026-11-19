@@ -463,8 +463,8 @@ role_app_slug() {
 # the owner the shim routes by, as each write's own repository does. The probe gets 60 s, as Stage
 # 4b's teardown gh calls do, so a network that never answers fails the check, saying so, instead of
 # hanging it. Every stage proof that writes to GitHub as the proof human calls it before its first
-# gh call, and each one's GitHub teardown (Stage 3's close_unpassed_run_pull_requests, 4b.13b's
-# github_cleanup, Stage 4b's remove_run_branches) returns without a gh call unless it passed.
+# gh call, and each one's GitHub teardown (Stage 4b's remove_run_branches) returns without a gh call
+# unless it passed.
 proof_human_login='sjawhar-agent[bot]'
 proof_human=
 require_proof_human() {
@@ -996,21 +996,6 @@ close_run_pull_requests() {
     fi
   done
   return "$refused"
-}
-# close_unpassed_run_pull_requests is the EXIT trap's part: a run that did not pass (`ok` unset)
-# closes what it opened, best effort, reporting to stderr: its issue pull requests, and the cleanup
-# pull request and branch of a smoke-main cleanup it stopped inside (close_smoke_cleanup, whose
-# lines name by URL what it could not close). A passing run closed the first in cleanup-is-complete
-# and merged the second in smoke-main-clean. A run that never established the proof human
-# (require_proof_human) opened nothing and makes no gh call here, since its gh may act as someone
-# else.
-close_unpassed_run_pull_requests() {
-  [ -z "${ok:-}" ] || return 0
-  [ -n "$proof_human" ] || return 0
-  close_run_pull_requests >&2 ||
-    printf "some of this run's pull requests may still be open on %s (above)\n" "$repo" >&2
-  close_smoke_cleanup >&2 || true
-  return 0
 }
 
 # ---- the handoffs the daemon accepted -------------------------------------------------------------

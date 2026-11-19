@@ -121,15 +121,15 @@ fills the bucket, and continues it once the bucket is full, just after a tick of
   `REFILL_RIG_DIR` exported, so another client (an MCP host, Dispatch) is checked in the same
   window; their output is in `refuse/during-refuse.log` and `refuse/after-refuse.log`.
 
-Each scenario prints `verdict <scenario> PASS <what it saw>`, `FAIL <reason>`, or
-`INVALID <reason>` when the run missed the window it was there to observe (no poll inside the read,
-a scan that finished before the interruption, a read that began before the bucket was filled, a
-self-health tick inside the read of `recreate-live`), which is never a pass. It exits 0 when every
-verdict passes, 1 on a `FAIL`, and 4 on an `INVALID` with no `FAIL`. `--listener-bin` and
+Each scenario prints `CHECK <scenario>: PASS` after a line naming what it saw, or
+`CHECK <scenario>: FAIL: <reason>`. A run that missed the window it was there to observe (no poll
+inside the read, a scan that finished before the interruption, a read that began before the bucket
+was filled, a self-health tick inside the read of `recreate-live`) is a `FAIL` naming that window,
+never a pass. It exits 0 when every check passes and 1 on a `FAIL`. `--listener-bin` and
 `--natsd-bin` run other builds, such as the merge base's for a negative control. The evidence (each
 scenario's listener and NATS logs and every poll, one JSON line each) goes to `--out` (default
 `$TMPDIR/envoy-e2e-refill`). `E2E_REFILL_NATS_PORT` (14232) and `E2E_REFILL_PORT` (19030) move the
-ports. A full run takes about ten minutes, so it is a manual proof, not a CI job.
+ports. A full run takes about ten minutes; the `envoy-e2e-local` job of `ci.yaml` runs it.
 
 ## dev-airlock.sh
 
@@ -194,86 +194,55 @@ expired, revoked, or its session ended".
 
 ## airlock-check.sh
 
-Runs one `before_merge` check of the airlock's verification document
-(dispatch://INFRA-1352/artifact/verification-md) end to end and says whether it
-passed, so the implementer who records the result and the tester who re-runs it read
-the same evidence. It starts the stack the check needs (`dev-airlock.sh`, with the
-options that check's negative control asks for), runs the check's steps, runs the
-negative control, stops the stack, and prints a result block to paste into `dispatch
-result` — what the check expected, what this run observed and what the control did —
-then one `PASS:` or `FAIL:` line for each property the check's outcome sentence
-names and one for its control, and last `check <id>: passed` or `check <id>: failed
-(<n> of <m>)`.
+Runs check `k9` of the airlock's verification document
+(dispatch://INFRA-1352/artifact/verification-md) end to end. Under a ten-minute load
+of generated traffic it fails when a call fails, when the proxy adds more than 100 ms
+at the median against the same calls through a plain tunnel, or when a broker process
+passes half its wall time in CPU or 1 GiB of memory, which are INFRA-1352's rules for
+the broker. It starts the stack (`dev-airlock.sh`), runs the check's steps, runs the
+negative control on a second stack under `--idle-seconds 60`, stops the stack, and
+prints a result block — what the check expected, what this run observed and what the
+control did — then one `CHECK k9-<property>: PASS` or
+`CHECK k9-<property>: FAIL: <what was seen>` line for each property the check's
+outcome sentence names and one for its control, and last `check k9: passed` or
+`check k9: failed (<n> of <m>)`. The `broker-multiprocess` job of `ci.yaml` runs it
+in merge groups and on a pull request that carries the `full-ci` label.
 
 ```bash
-DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/airlock-check.sh k3
+DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/airlock-check.sh k9
 ```
 
-`<id>` is `k1`, `k2`, `k3`, `k4`, `k5`, `k6`, `k7`, `k8a`, `k9` or `k15`.
 `--keep-stack` leaves the stack and the run's work directory up to look at a failure
-with, `--help` prints the usage, and a usage error exits 2. `k9` is a long run — ten
-minutes of connections and two stacks, about twenty-five minutes in all; every other
-check takes a few minutes.
+with, `--help` prints the usage, and a usage error exits 2. It is a long run — ten
+minutes of connections and two stacks, about twenty-five minutes in all.
 
 No line it prints is a credential: a value is compared by its SHA-256 (the first 16
 hex digits) and its length, and every line that compares one says so, which is a rule
 of the verification document itself.
 
-Four checks need more than the stack. `k1` scans the command's memory, and
-`/proc/sys/kernel/yama/ptrace_scope` is 1 in a Legion pod, so only an ancestor of the
-command may read its `/proc/<pid>/mem`: the scan is a small Python program
-(`scripts/airlock/memscan.py`) that starts `agent-secrets` itself and scans the
-descendant it started. `k6` and `k7` drive real clients and the real consumers:
-`airlock-clients.sh` below installs `az`, `gcloud`, `pulumi` and `boto3`, and the
-consumers (`scripts/az-broker`, `scripts/secret-run`, `shims/gh`,
-`scripts/gcloud-broker` and the tier commands of `gws/accounts.json`) are fetched from
-`sjawhar/dotfiles` at main with `gh api`. `k15` needs no stack: it builds the Lean
-model with `lake`, prints its theorem statements and their axioms, runs the comparison
-fuzz test for ten minutes, and runs the six mutants through `airlock-mutants.sh`.
-
-The programs the checks drive are files, not text a run writes out. The three Go
-clients are subcommands of `cmd/dev-airlock-stands`, the binary `dev-broker.sh`
-builds and `dev-airlock.sh` runs: `probe-private` is `k4`'s private-address probe,
-`probe-bound` is `k7`'s call to a bound host, and `load` is `k9`'s load driver and
-the plain tunnel its baseline goes through. CI compiles and vets all three with the
-rest of that command. The others are under `scripts/airlock/`: `memscan.py`, `k6`'s
-boto3 steps (`aws-boto3.py`), `k7`'s Slack poster (`slack.ts`) and `k7`'s git
-credential helper.
-
-Where a check needs a secret the stack does not hold, the run extends the stack's own
-fake Secrets Manager and makes every broker reread it. A control that needs other
-rules or another proxy setting — `k4`'s, which turns the refusal of a loopback address
-off for one host — is a second broker process on the stack's own database, authority
-and stand-ins with that one setting changed, and the step's `HTTPS_PROXY` pointed at
-it. Every broker the run starts of its own — that control's, `k7`'s and the ones `k8a`
-expects to refuse to start — takes its environment from the running stack broker
-(`/proc/<pid>/environ`) with the few variables it must change put in their place, so
-none of them can be missing a setting `dev-airlock.sh` gave the stack's. `k7` goes
-furthest with that device: its names are the consumers' own and its hosts are the real
-services, so its broker has the stack's whole environment with its rules file, its two
-ports and its public URL changed, and both `AGENT_SECRETS_URL` and the grant's proxy
-point at it. `k5`'s control is a second stack under `--keep-values`, `k6`'s a second
-stack under `--no-kind`, and `k9`'s a second stack under `--idle-seconds 60`.
-
-`k6` approves its own human-tier grant the way a person does: a pod session has no
-operator, so the run signs in at the stack's issuer, which signs the approver in with
-no page to fill, reads the request's page and posts the decision back with an `Origin`
-header. `k9` runs each broker with `GOMAXPROCS=1` by exporting it into the environment
-it starts the stack with, since `dev-airlock.sh` has no option for it, and reads each
+The load driver and the plain tunnel its baseline goes through are the `load`
+subcommand of `cmd/dev-airlock-stands`, the binary `dev-broker.sh` builds and
+`dev-airlock.sh` runs, so CI compiles and vets it with the rest of that command. The
+check runs each broker with `GOMAXPROCS=1` by exporting it into the environment it
+starts the stack with, since `dev-airlock.sh` has no option for it, and reads each
 broker's CPU time from `utime` and `stime` in `/proc/<pid>/stat` and its peak memory
-from `VmHWM` in `/proc/<pid>/status`, which is the quantity `getrusage` reports as
-`ru_maxrss` for a process one can wait on — these two are `dev-airlock.sh`'s children,
-not the check's.
+from `VmRSS` in `/proc/<pid>/status`, sampled every two seconds, since these two are
+`dev-airlock.sh`'s children and not the check's.
 
-It needs bash, curl, jq, go, python3, openssl, node and psql; `k2`, `k6` and `k7` also
-need `gh` (`k2`'s own step and the negative controls of `k2` and `k7` run the
-`agent-secrets` of the pinned release before the airlock, `OLD_CLI_DEFAULT_TAG` in the
-script, which `AIRLOCK_OLD_CLI_TAG` overrides, and `k6`'s and `k7`'s consumers come
-from `sjawhar/dotfiles`), `k6` and `k7` need `bun`,
-`wget`, `git`, `uv` and the clients `airlock-clients.sh` installs, `k9` needs `git`,
-and `k15` needs `lake` from the Lean toolchain the environment names. Each bound host
-listens on one loopback address and port 443, so only one stack runs on a machine at a
-time.
+The document's other checks are Go tests. `k3`, `k4`, `k5` and `k8a` are
+`TestAMethodOrPathTheEntryDoesNotAllowIsRefused` and
+`TestTheProxyRefusesTheAddressesItMustNeverDial` (`internal/broker/airlockproxy`),
+`TestARereadOfASecretReachesTheAirlocksProxy` and
+`TestAirlockCheckRefusesAFileTheBrokerWouldNotServe` (`cmd/broker`); `k1`'s memory
+and file scan is a row of `TestExecFormRunsACommandForANameBehindTheAirlock`
+(`cmd/agent-secrets`); the swaps `k6` and `k7` drove real clients through are
+`airlockproxy`'s Azure, AWS, GitHub App and gRPC tests; and `k15` is the
+`airlock-lean` job with `airlock-mutants.sh`. `k2` was a one-time check of a release
+from before the airlock.
+
+It needs bash, curl, jq, go, python3, openssl, node, psql and git, and a missing one
+is a `CHECK setup: FAIL` naming it. Each bound host listens on one loopback address
+and port 443, so only one stack runs on a machine at a time.
 
 ## backend-count.sh
 
@@ -327,57 +296,20 @@ its own (`timeout-minutes: 25`) that its time budget counts.
 ## airlock-lean-axioms.sh
 
 Holds the airlock model's theorems to the axioms Lean's own kernel admits, and is the
-one copy of that check: `ci.yaml`'s `airlock-lean` job runs it, and so does `k15` of
-`airlock-check.sh`, so what the model must rest on is written once, in this script.
-How many theorems there are is written nowhere: this script and `k15` both count the
-`#print axioms` lines of `Axioms.lean`, so a theorem added there is one both hold the
-model to.
+one copy of that check, which `ci.yaml`'s `airlock-lean` job runs. How many theorems
+there are is written nowhere: this script counts the `#print axioms` lines of
+`Axioms.lean`, so a theorem added there is one it holds the model to.
 
 ```bash
 packages/envoy/scripts/airlock-lean-axioms.sh packages/envoy/internal/broker/airlock/lean
 ```
 
 It runs `lake env lean Axioms.lean` in that directory and writes what that printed to
-its stdout, so a reader of either log sees the axioms. What is wrong goes to stderr
+its stdout, so a reader of the job's log sees the axioms. What is wrong goes to stderr
 and exits 1: an axiom outside `propext`, `Classical.choice` and `Quot.sound`, a
 `sorryAx`, a count of printed theorems other than the number of `#print axioms` lines
-in `Axioms.lean`, or a `lake env lean` that failed. `--axioms-file PATH` keeps a copy
-of the axiom text for a caller that reads it back, which is what `k15` does for its
-result block; `--help` prints the usage, and a usage error exits 2.
-
-## airlock-clients.sh
-
-Installs the clients checks `k6` and `k7` drive — the Azure CLI, the Google Cloud CLI,
-Pulumi with the Tailscale provider, and boto3 — each at a pinned version whose SHA-256
-is checked before anything of it runs, under `${TMPDIR:-/tmp}`, and prints the exports
-a check needs on stdout. A Legion issue pod has no Pulumi and no boto3, and a pod on a
-worker image from before dispatch://INFRA-3257 has no `az` and no `gcloud` either. An
-image since then carries both, and the script still installs its own, first on the
-`PATH` its exports set, so the checks drive the same versions on every digest:
-
-```bash
-eval "$(packages/envoy/scripts/airlock-clients.sh)"
-```
-
-Everything it says about itself goes to stderr and every line of stdout is an export
-(`PATH`, `CLOUDSDK_PYTHON`, `PULUMI_HOME`, `UV_CACHE_DIR`, `AIRLOCK_BOTO3_PYTHON`,
-`AIRLOCK_PULUMI_TAILSCALE_VERSION`, `AIRLOCK_CLIENTS_DIR`), so the line above is the
-whole of how a caller uses it; `airlock-check.sh` runs it that way for `k6` and `k7`.
-A second run finds what the first installed and fetches nothing: each client sits
-beside a stamp file holding the version and the digest the script pins, and a stamp
-that matches is the install. `--dir DIR` installs elsewhere, `--force` fetches again,
-`--help` prints the usage, and a usage error exits 2.
-
-Every fetch is a download with a checksum, this repository's one toolchain pattern
-(`.github/actions/install-elan/action.yml`,
-`packages/daemon/docker/worker.Dockerfile`): the bytes are written to a temporary
-name, their SHA-256 is compared with the pinned digest, and only then are they
-unpacked or installed. A digest that does not match leaves nothing behind and ends the
-run. The two Python clients are pinned that way rather than by `uv run --with
-<package>==<version>`, which pins the version but checks no digest: their wheels are
-fetched and checked, then installed with `uv` into an environment of their own, so the
-client itself is the pinned and checked artifact and `uv` resolves its dependencies
-from that wheel's own requirements.
+in `Axioms.lean`, or a `lake env lean` that failed. `--help` prints the usage, and a
+usage error exits 2.
 
 ## airlock-mutants.sh
 
@@ -394,9 +326,11 @@ AIRLOCK_MODEL=<the built airlock-model> packages/envoy/scripts/airlock-mutants.s
 ```
 
 With no name it runs every mutant; a name is a patch's file name with or without
-`.patch`. It prints one `PASS:` or `FAIL:` line per mutant and exits non-zero when
-any was not caught, 2 when the model mutants need `lake` and it is not installed.
-No patch ever touches this repository.
+`.patch`. It prints one `CHECK <mutant>: PASS` line, after the line naming what
+caught it, or `CHECK <mutant>: FAIL: <why>` per mutant and exits non-zero when any
+was not caught, 2 after a `CHECK setup: FAIL` when the model mutants need `lake` and
+it is not installed. No patch ever touches this repository. The `airlock-lean` job of
+`ci.yaml` runs it.
 
 ## daemon-release-gate.sh
 
@@ -708,55 +642,3 @@ where a state has no fit, it says the slowest state is not known and names the s
 `FAIL` means it is below 4, or that the head's time did not grow between the two scales in some state, so no fit is defined.
 The script exits with the test's own status, and with 1 when the test printed no `coverage-scale:` line.
 CI never runs it: the test skips while `DISPATCH_COVERAGE_SCALE_URL` is unset.
-
-## going-smoke.sh
-
-Proves, on a booted server, that the real `envoy-dispatch` binary answers a question over HTTP and
-streams it. It builds `./cmd/dispatch`, starts the fake chat-completions model it serves itself,
-boots the binary against `DATABASE_URL` with `DISPATCH_ANSWERER=endpoint` pointed at that model,
-reads `GET /api/v1/going/capability` and refuses anything but `{"model_configured":true}`, seeds a
-project and an issue whose own text is worth citing through the API as the identity header's
-person, asks a question of that issue over `POST /api/v1/going/requests` and prints the run's id
-and `ends_at`, then prints every frame of `GET /api/v1/going/requests/{id}/stream` as
-`<elapsed ms> <event> <data>` as it arrives, so two builds' runs diff, with the first `text`
-frame's arrival on a line of its own. It ends `going-smoke: OK` only when the stream carried at
-least one `text` frame, exactly one `item` frame naming the seeded issue and exactly one terminal
-frame, and the first `text` frame arrived before the stream ended; any refusal names what was
-missing and prints the server's and the model's logs. It needs `curl`, `jq`, `python3`, `openssl`
-and `psql`, and names the one it cannot find.
-
-No cloud model is called: the model is a fake the script starts. It serves TLS, because
-`DISPATCH_CHAT_ENDPOINT` is an absolute https URL with a host and no query or fragment
-(`cmd/dispatch/answerer.go`, `chatEndpoint`), so the run makes a self-signed certificate for
-`127.0.0.1` with the IP in a subject alternative name, serves it from a small `python3` server and
-hands the binary `SSL_CERT_FILE`, which Go's `crypto/x509` reads — no setting of Dispatch's own is
-bent to admit a plain-http endpoint. The fake answers a streamed completion that links the seeded
-issue by the href the server gave it, in several frames with a pause between them, and refuses any
-call that does not present the bearer `DISPATCH_CHAT_TOKEN_FILE` holds, so a run that reports OK is
-one whose token file reached the call. The server runs with a throwaway `HOME`, a made-up agent
-token and a trusted identity header, so it reads no operator configuration and holds no credential,
-and with NATS off. `DATABASE_URL` names the Postgres server rather than one database: the run makes
-a database of its own on it, which the binary migrates as every start does, and drops it at the end.
-
-```bash
-legion-testpg ensure
-cd packages/envoy && DATABASE_URL="$LEGION_TEST_PG_DSN" bash scripts/going-smoke.sh
-```
-
-Options:
-
-- `--binary <envoy-dispatch>` — run this binary instead of building `./cmd/dispatch` from this
-  checkout.
-- `--model-status <code>` — answer every call to the fake model with that status instead of a
-  completion. `--model-status 401` is one negative control: the stream carries
-  `error ANSWER_FAILED` and nothing else, and the run exits 1 naming the frames it did not get.
-- `--no-model` — boot the server with `DISPATCH_ANSWERER` unset and no `DISPATCH_CHAT_*` setting.
-  That is the other negative control: the capability route answers `{"model_configured":false}`
-  and the run exits 1 naming it.
-
-No CI job runs this one, and none should: it builds the binary, boots a server, serves TLS and
-reads an answer as it streams, which takes a machine with a Postgres server and the better part of
-a minute, and what it proves is that a reader gets an answer on a real deployment's own path — a
-thing a person reads rather than a status a job reports. Run it by hand, or as the role proving a
-change to `going/`, to the answerer settings in `cmd/dispatch`, or to the three `going` routes, and
-paste its output: the frame lines are the evidence.
