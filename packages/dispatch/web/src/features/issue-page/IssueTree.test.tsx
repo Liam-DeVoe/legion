@@ -1223,9 +1223,11 @@ test("on a block of the focused row that keeps its tab stop, the keys the browse
     const [row] = rowsFor(container, "comment-1");
     if (row === undefined) throw new Error("the comment has no row");
     expect(row.getAttribute("aria-expanded"), "the comment's reply is drawn").toBe("false");
-    /** The block of the focused row that keeps its tab stop under `name`. */
+    /** The block of the focused row that keeps its tab stop under `name`, marked as kept. */
     const kept = (name: string): HTMLElement => {
-      const block = row.querySelector<HTMLElement>(`[tabindex="0"][aria-label="${name}"]`);
+      const block = row.querySelector<HTMLElement>(
+        `[data-kept-scroller][tabindex="0"][aria-label="${name}"]`
+      );
       if (block === null) throw new Error(`the focused row keeps no tab stop named "${name}"`);
       return block;
     };

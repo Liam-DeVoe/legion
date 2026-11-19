@@ -104,11 +104,10 @@ const NODE_ROW = "[data-node-row]";
 const END = Number.MAX_SAFE_INTEGER;
 
 /** A block of a row's words that scrolls its own content and keeps a tab stop of its own while
- *  its row holds the focus: each code block, table and diagram's preview. `RowText.tsx`'s
- *  `useOutOfTabOrder` (`keepScrollers`) is the one writer of `tabindex="0"` inside a row, so a
- *  block carrying it is one of these. The form Change opens is in the tab order too, but carries
- *  no tabindex attribute. */
-const KEPT_SCROLLER = `${NODE_ROW} [tabindex="0"]`;
+ *  its row holds the focus: each code block, table and diagram's preview. It is known by the mark
+ *  `RowText.tsx`'s `useOutOfTabOrder` puts on each scroller `keepScrollers` keeps,
+ *  `data-kept-scroller`, and takes off wherever it leaves the tab order or the hook lets it go. */
+const KEPT_SCROLLER = `${NODE_ROW} [data-kept-scroller]`;
 
 /** The keys of this keymap the browser also scrolls by: the arrows, Home and End. It scrolls the
  *  box the focus is in where that box scrolls the key's way - Right a wide code block - and the
