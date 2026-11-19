@@ -399,8 +399,8 @@ var heldSentences = map[record.HeldReason]heldSentence{
 			"while these issues beneath it are still in the workflow: " + heldBy + ". Its retro does not start while one of them is."
 	}},
 	record.HeldTaskStopped: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(string) string {
-		return "Its task was stopped, by its owner or by a failed step that had no step to return to, so no step of the task runs. " +
-			"No release of its hold starts the task again."
+		return "Its task was stopped, by its owner or by a failed step that had no step to return to, so no step of the task runs " +
+			"until a later version of its plan changes the task (register_plan) or, on a root, a person sets it todo; a retry of its hold starts none."
 	}},
 	record.HeldAtWork: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(string) string {
 		return "It stands in a phase that keeps no admission slot, and the waiting line does not carry it: " +

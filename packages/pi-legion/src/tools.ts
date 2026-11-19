@@ -358,8 +358,9 @@ export function createLegionTool(deps: {
     // handoff_complete's contract, since the records it answers are not read from its name;
     // after that contract the shared sentence on request_backward_move (an architect's names the
     // issue it returns from accepting), then the architect's retry_or_escalate, its register_plan
-    // and stop_task, its sign_off and the controller's operations: the exact text tools.test.ts
-    // pins, so a change to the shared template cannot reach an Oh My Pi agent unnoticed.
+    // and stop_task, its sign_off and the controller's operations: the text tools.test.ts pins,
+    // stop_task's and sign_off's by their terms and the rest exactly, so a change to the shared
+    // template cannot reach an Oh My Pi agent unnoticed.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
@@ -384,13 +385,20 @@ export function createLegionTool(deps: {
         "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). " +
         "stop_task (issue, task) stops one task of the plan Legion runs for a recorded issue: its running step stops, and the issue is " +
         "held, `holdReason` task-stopped, until a later version of the plan, given with register_plan, changes or replaces that task, " +
-        "which then starts at its first step (a task that never started waits for its gate and its line, as any task does before its " +
-        "first step); retry_or_escalate does not start it again (TASK_STOPPED). The daemon refuses a task the plan " +
-        "does not hold (TASK_NOT_FOUND) and one that is done (TASK_DONE). " +
-        "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
-        "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
-        "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
-        "to done, and sign off again. " +
+        "or, on a root, a person sets the root todo; the task then starts at its first step (a task that never started waits for its " +
+        "gate and its line, as any task does before its first step); retry_or_escalate does not start it again (TASK_STOPPED). On an " +
+        "issue whose first step has not run, the stop first settles the plan that step would walk, the newest plan you gave or the " +
+        "project's default steps (task default), and then stops its task. The daemon refuses a task the plan does not hold " +
+        "(TASK_NOT_FOUND, naming the plan's tasks), one that is done (TASK_DONE) and a stop in a tree that lingers after it left the " +
+        "workflow (TREE_LINGERING). It also refuses, changing nothing, a stop of an issue outside your tree or one that left it " +
+        "(ISSUE_OUTSIDE_TREE), and a stop of a run of the issue that ended before Legion applied it: read the issue again " +
+        "(TASK_STALE_GENERATION). " +
+        "sign_off is the architect's acceptance of an issue in accepting, moving it to retro. The daemon refuses, changing nothing, a " +
+        "sign-off of an issue you no longer own (ISSUE_NOT_OWNED, or ISSUE_OUTSIDE_TREE once it left your tree), one of a run of the " +
+        "issue or of accepting that ended before Legion applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY: read the issue and " +
+        "its evidence again) and one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING); it also refuses it while an issue beneath it " +
+        "is still in the workflow (SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged " +
+        "work: run each one to done, and sign off again. " +
         "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
         "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +
         "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +

@@ -102,9 +102,15 @@ need from the planner's plan into your task's text.
   that step's process and keeps its session, and holds the issue from the phase its task stood in.
   The issue keeps its admission slot where that phase keeps one: a stop before `accepting` keeps
   it, and a stop in `accepting`, `retro` or `merging` holds none.
-  It refuses a task the plan does not hold (`404 TASK_NOT_FOUND`, naming the plan's tasks) and one
-  that is done or left the workflow with its issue (`409 TASK_DONE`). A stop of a task already
-  stopped changes nothing.
+  On an issue whose first step has not run, the stop first settles the plan that step would walk,
+  the newest plan you gave or the project's default steps (the task `default`), then stops its
+  task.
+  It refuses a task the plan does not hold (`404 TASK_NOT_FOUND`, naming the plan's tasks), one
+  that is done or left the workflow with its issue (`409 TASK_DONE`) and a stop in a tree that
+  lingers after it left the workflow (`409 TREE_LINGERING`). It also refuses, changing nothing, a
+  stop of an issue outside your tree or one that left it (`403 ISSUE_OUTSIDE_TREE`) and a stop of
+  a run of the issue that ended before Legion applied it (`409 TASK_STALE_GENERATION`): read the
+  issue again. A stop of a task already stopped changes nothing.
 - A stopped task stays held until you give a later version of the plan that changes it, or, on a
   root, until a person sets the root `todo`. Legion then starts it at its first step. A task that
   never started waits for its gate and its line first, as any task does before its first step.
@@ -120,7 +126,8 @@ need from the planner's plan into your task's text.
 - Legion refuses a version at or below the one it holds (`PLAN_VERSION_OLD`), a version above
   Dispatch's latest (`VERSION_NOT_IN_DISPATCH`), a version of another document than the plan in
   force (`PLAN_DOCUMENT_CHANGED`), a version that changes a task that is done or left the
-  workflow (`TASK_DONE`), and a plan given for a generation the issue left before Legion applied
+  workflow (`TASK_DONE`), a plan of an issue that left your tree before Legion applied it
+  (`ISSUE_OUTSIDE_TREE`), and a plan given for a generation the issue left before Legion applied
   it (`PLAN_STALE_GENERATION`).
 - A refusal records nothing, so the same version can be given again: one refused
   `PLAN_STALE_GENERATION` at once, and one refused while its task ran after `stop_task`.

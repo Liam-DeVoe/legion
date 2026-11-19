@@ -1770,7 +1770,11 @@ export const LegionEscalateRequest = z.strictObject({
  * it to `retro`; the daemon refuses it in every other phase (`SIGNOFF_OUTSIDE_ACCEPTING`). Since
  * contract 51 it is also refused while an issue beneath that one is still in the workflow
  * (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): children are accepted and merged before their
- * parent, whose own head proves their merged work (dispatch://INFRA-980). */
+ * parent, whose own head proves their merged work (dispatch://INFRA-980). Since contract 162 the
+ * daemon judges it again when it applies it, and refuses it, changing nothing, where the architect
+ * no longer owns the issue (`ISSUE_NOT_OWNED`, or `ISSUE_OUTSIDE_TREE` once the issue left its
+ * tree), where the run of the issue it read has ended (`SIGNOFF_STALE_GENERATION`), and where the
+ * run of `accepting` it read has ended (`SIGNOFF_STALE_ENTRY`). */
 export const LegionSignOffRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
@@ -1804,8 +1808,13 @@ export const LegionPlanRegisterRequest = z.strictObject({
 
 /** `api.TaskStopRequest`, stop_task (contract 162): the owner of a recorded issue stops one task of
  * the plan Legion runs for it, so that a later version of the plan may change that task; the issue
- * is then held with `holdReason` `task-stopped`. A task the plan does not hold is refused
- * (`TASK_NOT_FOUND`), and so is one that is done (`TASK_DONE`). */
+ * is then held with `holdReason` `task-stopped`. On an issue whose first step has not run, the
+ * stop first settles the plan that step would walk, the newest plan its owner gave or the
+ * project's default steps. A task the plan does not hold is refused (`TASK_NOT_FOUND`), and so is
+ * one that is done (`TASK_DONE`), a stop in a tree that lingers after it left the workflow
+ * (`TREE_LINGERING`), a stop of an issue outside the architect's tree or one that left it
+ * (`ISSUE_OUTSIDE_TREE`), and a stop of a run of the issue that ended before the daemon applied it
+ * (`TASK_STALE_GENERATION`). */
 export const LegionTaskStopRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,

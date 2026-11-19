@@ -181,7 +181,8 @@ export interface LegionDaemonClient {
     input: z.input<typeof LegionPlanRegisterRequest>
   ) => Promise<z.output<typeof LegionPlanRegisterResponse>>;
   /** The owner's `stop_task` (contract 162): one task of the plan Legion runs for the issue stops,
-   * and the issue is held `task-stopped` until a later version of the plan changes that task. */
+   * and the issue is held `task-stopped` until a later version of the plan changes that task or,
+   * on a root, a person sets the root `todo`. */
   readonly taskStop: (
     input: z.input<typeof LegionTaskStopRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;

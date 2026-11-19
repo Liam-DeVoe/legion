@@ -196,7 +196,7 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 			"It passed the last step of its task, and its plan has no acceptance step, so the daemon holds it before its retro while these issues beneath it are still in the workflow: LEGION-101. Its retro does not start while one of them is."},
 		{record.HeldTaskStopped, api.WhyUnlisted}: {taskStopped,
 			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldTaskStopped},
-			"Its task was stopped, by its owner or by a failed step that had no step to return to, so no step of the task runs. No release of its hold starts the task again."},
+			"Its task was stopped, by its owner or by a failed step that had no step to return to, so no step of the task runs until a later version of its plan changes the task (register_plan) or, on a root, a person sets it todo; a retry of its hold starts none."},
 		{record.HeldUnclassified, api.WhyUnlisted}: {unclassified,
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldUnclassified},
 			"The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, so no slot has been offered to it. No rule of the held list says what it waits for."},

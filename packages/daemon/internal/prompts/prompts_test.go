@@ -941,12 +941,14 @@ func TestEveryPromptGivesTheSeparatePodLine(t *testing.T) {
 
 // The owner of an issue picks which of Legion's step roles its one task runs. Its prompt therefore
 // lists each role with the type of its step, the owner's own acceptance step, the two operations
-// that give and stop a plan, the notices that a stopped task, a parent held before its retro and a
-// plan of an earlier owner send it, the two stops a task-stopped notice tells of (a failed step's,
-// and another architect's stop_task, whose notice names that architect) and the stop it is not
-// sent for (its own), the three sentences that say when a plan must be given and how a plan
-// replaces the default steps once the work started, and the answers a later version gets from the
-// workflow (workflow.planGiven): the running task's block, its text included, is refused and the
+// that give and stop a plan, a stop's answers by their codes and that a stop before an issue's
+// first step settles the plan that step would walk, the notices that a stopped task, a parent
+// held before its retro and a plan of an earlier owner send it, the two stops a task-stopped
+// notice tells of (a failed step's, and another architect's stop_task, whose notice names that
+// architect) and the stop it is not sent for (its own), the three sentences that say when a plan
+// must be given and how a plan replaces the default steps once the work started, and the answers
+// a later version gets from the workflow (workflow.planGiven), each by its code where it has
+// one: the running task's block, its text included, is refused and the
 // unchanged block taken, each refusal names its cause and changes nothing so the same version can
 // be given again, and an issue that started its work before Legion took plans takes none. Both
 // architect compositions share that part, so both are read. This shows the text is loaded, never
@@ -985,9 +987,23 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				"`TASK_STOPPED`",
 				"`HELD_FOR_CHILDREN`",
 				"never started",
-				"It refuses a task the plan does not hold (`TASK_NOT_FOUND`) and one that is done or left the workflow with its issue (`TASK_DONE`), and a stop of a task already stopped changes nothing.",
+				// stop_task's answers by their codes, and the stop before an issue's first step,
+				// which settles the plan that step would walk first.
+				"`TASK_NOT_FOUND`",
+				"`TASK_DONE`",
+				"`TREE_LINGERING`",
+				"`ISSUE_OUTSIDE_TREE`",
+				"`TASK_STALE_GENERATION`",
+				"settles the plan",
+				// sign_off's answers when the record moved under it, by their codes.
+				"`ISSUE_NOT_OWNED`",
+				"`SIGNOFF_STALE_GENERATION`",
+				"`SIGNOFF_STALE_ENTRY`",
 				"A later version may change or remove only a task that waits or is stopped. Legion refuses one that changes or removes the running task, a change of the text in its block alone included (`PLAN_REFUSED`, with the reason `task <id> is running: stop it with stop_task before you change it.`). It takes one that leaves the running task's block as it is, and the task goes on at its step.",
-				"It also refuses a version at or below the one it holds (`PLAN_VERSION_OLD`), a version of another document than the plan you gave (`PLAN_DOCUMENT_CHANGED`), a version that changes a task that is done or left the workflow (`TASK_DONE`), and a plan given for a generation the issue left before Legion applied it (`PLAN_STALE_GENERATION`).",
+				// A later version's answers by their codes.
+				"`PLAN_VERSION_OLD`",
+				"`PLAN_DOCUMENT_CHANGED`",
+				"`PLAN_STALE_GENERATION`",
 				"A refusal changes nothing, and the same version can be given again: one refused for a generation the issue left at once, and one refused while its task ran after stop_task.",
 				"An issue that started its work before Legion took plans takes no plan (`PLAN_REFUSED`): it runs the steps it started with to their end.",
 				"Where another architect of your tree stopped it with `stop_task`, its reason names that architect, the notice carries `stoppedBy`, and no step failed.",

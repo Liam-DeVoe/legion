@@ -2155,7 +2155,13 @@ package api
 // applied it), `409 TREE_LINGERING`, `403 ARCHITECT_REQUIRED`, `403 ISSUE_OUTSIDE_TREE`,
 // `404 ISSUE_NOT_FOUND`, `404 ARTIFACT_NOT_ON_ISSUE`, `502 PLAN_UNREADABLE` or
 // `502 DISPATCH_FAILED`. `POST /legion/v1/tasks/stop` (`grantId`, `issue`, `task`) stops one task
-// of the issue and answers 200 `{}`, `404 TASK_NOT_FOUND` or `409 TASK_DONE`. `POST
+// of the issue and answers 200 `{}`, `404 TASK_NOT_FOUND`, `409 TASK_DONE`, `409 TREE_LINGERING`,
+// `409 TASK_STALE_GENERATION`, `403 ARCHITECT_REQUIRED`, `403 ISSUE_OUTSIDE_TREE` or
+// `404 ISSUE_NOT_FOUND`; on an issue whose first step has not run, the stop first settles the plan
+// that step would walk (the newest plan its owner gave, or the project's default steps) and stops
+// that plan's task, and a task the plan does not hold is refused before anything is written. A
+// stopped task starts again at its first step on a later version of the plan that changes it
+// (register_plan), or on a root on a person's `todo`. `POST
 // /legion/v1/handoff/complete` takes one optional field, `returnTo`, the place of the step of the
 // issue's running task, 1 for its first, that a tester's completion with the verdict `fail` sends
 // the task back to: below 1 it is refused `400 INVALID_RETURN_TO`, and on any completion that

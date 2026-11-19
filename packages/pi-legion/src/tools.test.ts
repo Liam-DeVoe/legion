@@ -130,11 +130,11 @@ function recordingDaemon(options: {
   return { calls, daemon: () => daemon as never };
 }
 
-/** The `legion` tool description Oh My Pi agents read, written out whole but for two parts: the
+/** The `legion` tool description Oh My Pi agents read, written out whole but for three parts: the
  * shared `read_record` sentences, which are the shared template's own (`PHASE_OP_SENTENCES`), and
- * `stop_task`'s sentences, which the test holds by their terms (STOP_TASK_TERMS). The template
- * (`legionToolDescription` in `@legion/pi-shared/legion-phase-ops`) must reproduce the rest
- * exactly. This is the text before `stop_task`'s. */
+ * `stop_task`'s and `sign_off`'s sentences, which the test holds by their terms (STOP_TASK_TERMS,
+ * SIGN_OFF_TERMS). The template (`legionToolDescription` in `@legion/pi-shared/legion-phase-ops`)
+ * must reproduce the rest exactly. This is the text before `stop_task`'s. */
 const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
   PHASE_OP_SENTENCES.readRecord +
@@ -208,19 +208,40 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). ";
 
 /** `stop_task`'s part of the description, by its terms rather than its sentences: it opens with the
- * tool's name and its parameters, and names the hold it leaves and each refusal code its text
- * gives. */
+ * tool's name and its parameters, and names the hold it leaves, that a stop before the issue's
+ * first step settles its plan first, and each refusal code its text gives. */
 const STOP_TASK_TERMS = {
   opens: "stop_task (issue, task) ",
-  names: ["`holdReason` task-stopped", "register_plan", "(TASK_STOPPED)", "(TASK_NOT_FOUND)", "(TASK_DONE)"],
+  names: [
+    "`holdReason` task-stopped",
+    "register_plan",
+    "first step",
+    "settles the plan",
+    "(TASK_STOPPED)",
+    "(TASK_NOT_FOUND",
+    "(TASK_DONE)",
+    "(TREE_LINGERING)",
+    "(ISSUE_OUTSIDE_TREE)",
+    "(TASK_STALE_GENERATION)",
+  ],
 } as const;
 
-/** The text of the description after `stop_task`'s. */
-const OMP_LEGION_TOOL_DESCRIPTION_AFTER_STOP_TASK =
-  "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
-  "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
-  "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
-  "to done, and sign off again. " +
+/** `sign_off`'s part of the description, by its terms: it opens with the tool's name, and names
+ * each refusal code its text gives. */
+const SIGN_OFF_TERMS = {
+  opens: "sign_off ",
+  names: [
+    "(SIGNOFF_OUTSIDE_ACCEPTING)",
+    "(SIGNOFF_CHILD_IN_WORKFLOW",
+    "(ISSUE_NOT_OWNED",
+    "ISSUE_OUTSIDE_TREE",
+    "SIGNOFF_STALE_GENERATION",
+    "SIGNOFF_STALE_ENTRY",
+  ],
+} as const;
+
+/** The text of the description after `sign_off`'s. */
+const OMP_LEGION_TOOL_DESCRIPTION_AFTER_SIGN_OFF =
   "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
   "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +
   "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
@@ -302,17 +323,24 @@ const toolFor = (active: LegionToolSession) =>
     session: () => active,
   });
 
-test("the legion tool's description is the exact text Oh My Pi agents read, for every session, and names stop_task's terms", () => {
+test("the legion tool's description is the exact text Oh My Pi agents read, for every session, and names stop_task's and sign_off's terms", () => {
   for (const active of EVERY_SESSION) {
     const description = toolFor(active).description;
     const before = OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK;
-    const after = OMP_LEGION_TOOL_DESCRIPTION_AFTER_STOP_TASK;
+    const after = OMP_LEGION_TOOL_DESCRIPTION_AFTER_SIGN_OFF;
     expect(description.slice(0, before.length)).toBe(before);
     expect(description.slice(description.length - after.length)).toBe(after);
-    const stopTask = description.slice(before.length, description.length - after.length);
+    const held = description.slice(before.length, description.length - after.length);
+    const signOffAt = held.indexOf(SIGN_OFF_TERMS.opens);
+    expect(signOffAt).toBeGreaterThan(0);
+    const stopTask = held.slice(0, signOffAt);
+    const signOff = held.slice(signOffAt);
     expect(stopTask.startsWith(STOP_TASK_TERMS.opens)).toBe(true);
     for (const term of STOP_TASK_TERMS.names) {
       expect(stopTask).toContain(term);
+    }
+    for (const term of SIGN_OFF_TERMS.names) {
+      expect(signOff).toContain(term);
     }
   }
 });

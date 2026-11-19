@@ -1753,7 +1753,7 @@ func RestartOfLeftTask(issue, task string) *Refusal {
 // RetryOfStoppedTask is the 409 TASK_STOPPED refusal of a release of issue's hold — the
 // architect's retry or escalation, the operator's restart — where the issue is held because its
 // owner stopped task (record.HoldTaskStopped): a later version of the plan starts the task again,
-// and no release of the hold does.
+// and so does a person's todo on a root (workflow's releaseHeldRoot), but no retry of the hold does.
 func RetryOfStoppedTask(issue, task string) *Refusal {
 	return &Refusal{Status: 409, Code: "TASK_STOPPED", Message: fmt.Sprintf(
 		"task %s of %s was stopped by its owner; a later version of the plan that changes the task starts it again at its first step (register_plan), and a task that never started waits for its gate and its line first. This retry changed nothing.", task, issue)}
