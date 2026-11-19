@@ -30,68 +30,409 @@ index f9143e09370ab0b29c410c5efadc2bc529dd7ee1..2dd90f091e11c4bff04004c547d606d0
  export {setextUnderline} from './lib/setext-underline.js'
  export {thematicBreak} from './lib/thematic-break.js'
 diff --git a/dev/lib/attention.js b/dev/lib/attention.js
-index 9c93eb83f76e7948172bb84eb49acfc3595b84ad..1eb87fb9a1945868b865f0a2aefc9a45cb7b1ca0 100644
+index 9c93eb83f76e7948172bb84eb49acfc3595b84ad..124a8bc8e965ec61f4ebccd9b1c8356ec5f3d8ab 100644
 --- a/dev/lib/attention.js
 +++ b/dev/lib/attention.js
-@@ -13,9 +13,10 @@
-  */
- 
- import {ok as assert} from 'devlop'
--import {push, splice} from 'micromark-util-chunked'
-+import {push} from 'micromark-util-chunked'
+@@ -16,6 +16,7 @@ import {ok as assert} from 'devlop'
+ import {push, splice} from 'micromark-util-chunked'
  import {classifyCharacter} from 'micromark-util-classify-character'
  import {resolveAll} from 'micromark-util-resolve-all'
-+import {countWork, spliceCounted} from './work-counts.js'
++import {countWork} from './work-counts.js'
  import {codes, constants, types} from 'micromark-util-symbol'
  
  /** @type {Construct} */
-@@ -55,6 +56,7 @@ function resolveAllAttention(events, context) {
-   // Note: performance of this is fine on an mb of normal markdown, but it’s
-   // a bottleneck for malicious stuff.
-   while (++index < events.length) {
+@@ -28,13 +29,49 @@ export const attention = {
+ /**
+  * Take all events and resolve attention to emphasis or strong.
+  *
++ * Each closer is matched with the nearest opener before it that has the same
++ * marker and that the rule of three lets it take, as before, but the search
++ * reads a stack of the openers still open per marker rather than every event
++ * before the closer, and starts at the lowest opener a closer of the same
++ * marker, size modulo three and ability to open could still take
++ * (`bottoms`, as cmark’s `openers_bottom`): a closer that found nothing leaves
++ * its place as the bottom for its kind, since every opener below it was already
++ * read and refused by the rule of three, which reads nothing of the closer but
++ * that kind. A match puts the opener, what is between and the closer in place
++ * at the end of the events resolved so far, rather than splicing them into the
++ * whole list, so the events after a closer are never moved; everything between
++ * an opener and its closer is resolved then (its sequences become data), so the
++ * openers above the opener are dropped, and every bottom above the opener comes
++ * down to it, since the opener’s own size may have changed.
++ *
+  * @type {Resolver}
+  */
+ // eslint-disable-next-line complexity
+ function resolveAllAttention(events, context) {
+-  let index = -1
+-  /** @type {number} */
+-  let open
++  /** @type {Array<Event>} */
++  let resolved = []
++  /**
++   * Events to read before the rest of `events`: the markers left of a closer
++   * once it matched, which may close again.
++   *
++   * @type {Array<Event>}
++   */
++  const pending = []
++  /**
++   * The place in `resolved` of the exit of each sequence that can still open,
++   * per marker, lowest first.
++   *
++   * @type {Map<number, Array<number>>}
++   */
++  const openers = new Map()
++  /**
++   * Per marker, for each kind of closer (its size modulo three, plus three
++   * where it can open), the lowest place an opener it could take may be at.
++   *
++   * @type {Map<number, Array<number>>}
++   */
++  const bottoms = new Map()
++  let next = 0
+   /** @type {Token} */
+   let group
+   /** @type {Token} */
+@@ -47,158 +84,198 @@ function resolveAllAttention(events, context) {
+   let use
+   /** @type {Array<Event>} */
+   let nextEvents
+-  /** @type {number} */
+-  let offset
+ 
+   // Walk through all events.
+-  //
+-  // Note: performance of this is fine on an mb of normal markdown, but it’s
+-  // a bottleneck for malicious stuff.
+-  while (++index < events.length) {
++  while (pending.length > 0 || next < events.length) {
 +    countWork('attention', 1)
++    const event = pending.length > 0 ? pending.shift() : events[next++]
++    assert(event, 'expected an event')
++    const index = resolved.length
++    resolved.push(event)
++
++    if (event[1].type !== 'attentionSequence') continue
++
++    const marker = context.sliceSerialize(event[1]).charCodeAt(0)
++    let markerOpeners = openers.get(marker)
++    let markerBottoms = bottoms.get(marker)
++
++    if (!markerOpeners || !markerBottoms) {
++      markerOpeners = []
++      markerBottoms = [0, 0, 0, 0, 0, 0]
++      openers.set(marker, markerOpeners)
++      bottoms.set(marker, markerBottoms)
++    }
++
++    // A token that can open, once its sequence is done.
++    if (event[0] === 'exit') {
++      if (event[1]._open) markerOpeners.push(index)
++      continue
++    }
++
      // Find a token that can close.
-     if (
-       events[index][0] === 'enter' &&
-@@ -65,6 +67,7 @@ function resolveAllAttention(events, context) {
- 
-       // Now walk back to find an opener.
-       while (open--) {
-+        countWork('attention', 1)
-         // Find a token that can open the closer.
-         if (
-           events[open][0] === 'exit' &&
-@@ -153,6 +156,7 @@ function resolveAllAttention(events, context) {
-           )
- 
-           // Between.
-+          countWork('attention', index - open - 1)
-           nextEvents = push(
-             nextEvents,
-             resolveAll(
-@@ -181,7 +185,13 @@ function resolveAllAttention(events, context) {
-             offset = 0
-           }
- 
+-    if (
+-      events[index][0] === 'enter' &&
+-      events[index][1].type === 'attentionSequence' &&
+-      events[index][1]._close
+-    ) {
+-      open = index
+-
+-      // Now walk back to find an opener.
+-      while (open--) {
+-        // Find a token that can open the closer.
+-        if (
+-          events[open][0] === 'exit' &&
+-          events[open][1].type === 'attentionSequence' &&
+-          events[open][1]._open &&
+-          // If the markers are the same:
+-          context.sliceSerialize(events[open][1]).charCodeAt(0) ===
+-            context.sliceSerialize(events[index][1]).charCodeAt(0)
+-        ) {
+-          // If the opening can close or the closing can open,
+-          // and the close size *is not* a multiple of three,
+-          // but the sum of the opening and closing size *is* multiple of three,
+-          // then don’t match.
+-          if (
+-            (events[open][1]._close || events[index][1]._open) &&
+-            (events[index][1].end.offset - events[index][1].start.offset) % 3 &&
+-            !(
+-              (events[open][1].end.offset -
+-                events[open][1].start.offset +
+-                events[index][1].end.offset -
+-                events[index][1].start.offset) %
+-              3
+-            )
+-          ) {
+-            continue
+-          }
+-
+-          // Number of markers to use from the sequence.
+-          use =
+-            events[open][1].end.offset - events[open][1].start.offset > 1 &&
+-            events[index][1].end.offset - events[index][1].start.offset > 1
+-              ? 2
+-              : 1
+-
+-          const start = {...events[open][1].end}
+-          const end = {...events[index][1].start}
+-          movePoint(start, -use)
+-          movePoint(end, use)
+-
+-          openingSequence = {
+-            type: use > 1 ? types.strongSequence : types.emphasisSequence,
+-            start,
+-            end: {...events[open][1].end}
+-          }
+-          closingSequence = {
+-            type: use > 1 ? types.strongSequence : types.emphasisSequence,
+-            start: {...events[index][1].start},
+-            end
+-          }
+-          text = {
+-            type: use > 1 ? types.strongText : types.emphasisText,
+-            start: {...events[open][1].end},
+-            end: {...events[index][1].start}
+-          }
+-          group = {
+-            type: use > 1 ? types.strong : types.emphasis,
+-            start: {...openingSequence.start},
+-            end: {...closingSequence.end}
+-          }
+-
+-          events[open][1].end = {...openingSequence.start}
+-          events[index][1].start = {...closingSequence.end}
+-
+-          nextEvents = []
+-
+-          // If there are more markers in the opening, add them before.
+-          if (events[open][1].end.offset - events[open][1].start.offset) {
+-            nextEvents = push(nextEvents, [
+-              ['enter', events[open][1], context],
+-              ['exit', events[open][1], context]
+-            ])
+-          }
+-
+-          // Opening.
+-          nextEvents = push(nextEvents, [
+-            ['enter', group, context],
+-            ['enter', openingSequence, context],
+-            ['exit', openingSequence, context],
+-            ['enter', text, context]
+-          ])
+-
+-          // Always populated by defaults.
+-          assert(
+-            context.parser.constructs.insideSpan.null,
+-            'expected `insideSpan` to be populated'
+-          )
+-
+-          // Between.
+-          nextEvents = push(
+-            nextEvents,
+-            resolveAll(
+-              context.parser.constructs.insideSpan.null,
+-              events.slice(open + 1, index),
+-              context
+-            )
+-          )
+-
+-          // Closing.
+-          nextEvents = push(nextEvents, [
+-            ['exit', text, context],
+-            ['enter', closingSequence, context],
+-            ['exit', closingSequence, context],
+-            ['exit', group, context]
+-          ])
+-
+-          // If there are more markers in the closing, add them after.
+-          if (events[index][1].end.offset - events[index][1].start.offset) {
+-            offset = 2
+-            nextEvents = push(nextEvents, [
+-              ['enter', events[index][1], context],
+-              ['exit', events[index][1], context]
+-            ])
+-          } else {
+-            offset = 0
+-          }
+-
 -          splice(events, open - 1, index - open + 3, nextEvents)
-+          spliceCounted(
-+            'attention',
-+            events,
-+            open - 1,
-+            index - open + 3,
-+            nextEvents
-+          )
- 
-           index = open + nextEvents.length - offset - 2
-           break
-@@ -194,6 +204,7 @@ function resolveAllAttention(events, context) {
-   index = -1
- 
-   while (++index < events.length) {
-+    countWork('attention', 1)
-     if (events[index][1].type === 'attentionSequence') {
-       events[index][1].type = 'data'
+-
+-          index = open + nextEvents.length - offset - 2
+-          break
+-        }
++    if (!event[1]._close) continue
++
++    const closeSize = event[1].end.offset - event[1].start.offset
++    const kind = (closeSize % 3) + (event[1]._open ? 3 : 0)
++    let at = markerOpeners.length
++    let open = -1
++
++    // Now walk back to find an opener.
++    while (at-- && markerOpeners[at] >= markerBottoms[kind]) {
++      countWork('attention', 1)
++      const opening = resolved[markerOpeners[at]][1]
++
++      // If the opening can close or the closing can open,
++      // and the close size *is not* a multiple of three,
++      // but the sum of the opening and closing size *is* multiple of three,
++      // then don’t match.
++      if (
++        (opening._close || event[1]._open) &&
++        closeSize % 3 &&
++        !((opening.end.offset - opening.start.offset + closeSize) % 3)
++      ) {
++        continue
++      }
++
++      open = markerOpeners[at]
++      break
++    }
++
++    // No opener: every one below this closer was refused for its kind.
++    if (open === -1) {
++      markerBottoms[kind] = index
++      continue
++    }
++
++    const openToken = resolved[open][1]
++    const closeToken = event[1]
++
++    // Number of markers to use from the sequence.
++    use =
++      openToken.end.offset - openToken.start.offset > 1 && closeSize > 1 ? 2 : 1
++
++    const start = {...openToken.end}
++    const end = {...closeToken.start}
++    movePoint(start, -use)
++    movePoint(end, use)
++
++    openingSequence = {
++      type: use > 1 ? types.strongSequence : types.emphasisSequence,
++      start,
++      end: {...openToken.end}
++    }
++    closingSequence = {
++      type: use > 1 ? types.strongSequence : types.emphasisSequence,
++      start: {...closeToken.start},
++      end
++    }
++    text = {
++      type: use > 1 ? types.strongText : types.emphasisText,
++      start: {...openToken.end},
++      end: {...closeToken.start}
++    }
++    group = {
++      type: use > 1 ? types.strong : types.emphasis,
++      start: {...openingSequence.start},
++      end: {...closingSequence.end}
++    }
++
++    openToken.end = {...openingSequence.start}
++    closeToken.start = {...closingSequence.end}
++
++    nextEvents = []
++
++    // If there are more markers in the opening, add them before.
++    const openerLeft = openToken.end.offset - openToken.start.offset > 0
++
++    if (openerLeft) {
++      nextEvents = push(nextEvents, [
++        ['enter', openToken, context],
++        ['exit', openToken, context]
++      ])
++    }
++
++    // Opening.
++    nextEvents = push(nextEvents, [
++      ['enter', group, context],
++      ['enter', openingSequence, context],
++      ['exit', openingSequence, context],
++      ['enter', text, context]
++    ])
++
++    // Always populated by defaults.
++    assert(
++      context.parser.constructs.insideSpan.null,
++      'expected `insideSpan` to be populated'
++    )
++
++    // Between.
++    countWork('attention', index - open - 1)
++    nextEvents = push(
++      nextEvents,
++      resolveAll(
++        context.parser.constructs.insideSpan.null,
++        resolved.slice(open + 1, index),
++        context
++      )
++    )
++
++    // Closing.
++    nextEvents = push(nextEvents, [
++      ['exit', text, context],
++      ['enter', closingSequence, context],
++      ['exit', closingSequence, context],
++      ['exit', group, context]
++    ])
++
++    // The closer’s exit, which goes with its enter.
++    const closeExit = pending.length > 0 ? pending.shift() : events[next++]
++    assert(closeExit, 'expected the closer’s exit')
++
++    // The opener (where none is left), what is between, and the closer go:
++    // what replaces them is put in place at the end of what is resolved.
++    countWork('attention', index - open + 3 + nextEvents.length)
++    resolved.length = open - 1
++    resolved = push(resolved, nextEvents)
++
++    // If there are more markers in the closing, read them again: they may
++    // close an opener further back.
++    if (closeToken.end.offset - closeToken.start.offset) {
++      pending.push(['enter', closeToken, context], ['exit', closeToken, context])
++    }
++
++    // The openers above the opener were between it and its closer, and are
++    // data now; the opener goes too where nothing of it is left.
++    for (const [, places] of openers) {
++      while (places.length > 0 && places[places.length - 1] > open) {
++        countWork('attention', 1)
++        places.pop()
++      }
++    }
++
++    if (!openerLeft) markerOpeners.pop()
++
++    // What lay above the opener is gone, and its size may have changed.
++    for (const [, kinds] of bottoms) {
++      let kindIndex = -1
++      while (++kindIndex < kinds.length) {
++        if (kinds[kindIndex] > open) kinds[kindIndex] = open
+       }
      }
+   }
+ 
+   // Remove remaining sequences.
+-  index = -1
++  let index = -1
+ 
+-  while (++index < events.length) {
+-    if (events[index][1].type === 'attentionSequence') {
+-      events[index][1].type = 'data'
++  while (++index < resolved.length) {
++    countWork('attention', 1)
++    if (resolved[index][1].type === 'attentionSequence') {
++      resolved[index][1].type = 'data'
+     }
+   }
+ 
++  countWork('attention', events.length + resolved.length)
++  splice(events, 0, events.length, resolved)
+   return events
+ }
+ 
 diff --git a/dev/lib/code-text.js b/dev/lib/code-text.js
 index 0f4096f7ba7d24f5e6e82cb31b55aaf7df80acd4..cc5a719536607dbb50802390300e5c289189c917 100644
 --- a/dev/lib/code-text.js
@@ -691,61 +1032,380 @@ index 969b1cdf1228636c4ceccc85cea270ad47c3471f..9b757d8e2727a56e7e54df9a4afc901e
  export { thematicBreak } from './lib/thematic-break.js';
 \ No newline at end of file
 diff --git a/lib/attention.js b/lib/attention.js
-index 1040eb0498e88cae2a24997296689f56add69a0c..b6869d9342aff1f3cace1fca6d0ddf63fa9fa2ce 100644
+index 1040eb0498e88cae2a24997296689f56add69a0c..2bc517ba53cc98db356a3554b322ed2631c945af 100644
 --- a/lib/attention.js
 +++ b/lib/attention.js
-@@ -12,9 +12,10 @@
-  * } from 'micromark-util-types'
-  */
- 
--import { push, splice } from 'micromark-util-chunked';
-+import { push } from 'micromark-util-chunked';
+@@ -15,6 +15,7 @@
+ import { push, splice } from 'micromark-util-chunked';
  import { classifyCharacter } from 'micromark-util-classify-character';
  import { resolveAll } from 'micromark-util-resolve-all';
-+import { countWork, spliceCounted } from './work-counts.js';
++import { countWork } from './work-counts.js';
  /** @type {Construct} */
  export const attention = {
    name: 'attention',
-@@ -52,12 +53,14 @@ function resolveAllAttention(events, context) {
-   // Note: performance of this is fine on an mb of normal markdown, but it’s
-   // a bottleneck for malicious stuff.
-   while (++index < events.length) {
-+    countWork('attention', 1);
+@@ -25,140 +26,248 @@ export const attention = {
+ /**
+  * Take all events and resolve attention to emphasis or strong.
+  *
++ * Each closer is matched with the nearest opener before it that has the same
++ * marker and that the rule of three lets it take, as before, but the search
++ * reads a stack of the openers still open per marker rather than every event
++ * before the closer, and starts at the lowest opener a closer of the same
++ * marker, size modulo three and ability to open could still take
++ * (`bottoms`, as cmark’s `openers_bottom`): a closer that found nothing leaves
++ * its place as the bottom for its kind, since every opener below it was already
++ * read and refused by the rule of three, which reads nothing of the closer but
++ * that kind. A match puts the opener, what is between and the closer in place
++ * at the end of the events resolved so far, rather than splicing them into the
++ * whole list, so the events after a closer are never moved; everything between
++ * an opener and its closer is resolved then (its sequences become data), so the
++ * openers above the opener are dropped, and every bottom above the opener comes
++ * down to it, since the opener’s own size may have changed.
++ *
+  * @type {Resolver}
+  */
+ // eslint-disable-next-line complexity
+ function resolveAllAttention(events, context) {
+-  let index = -1;
+-  /** @type {number} */
+-  let open;
++  /** @type {Array<Event>} */
++  let resolved = []
++  /**
++   * Events to read before the rest of `events`: the markers left of a closer
++   * once it matched, which may close again.
++   *
++   * @type {Array<Event>}
++   */
++  const pending = []
++  /**
++   * The place in `resolved` of the exit of each sequence that can still open,
++   * per marker, lowest first.
++   *
++   * @type {Map<number, Array<number>>}
++   */
++  const openers = new Map()
++  /**
++   * Per marker, for each kind of closer (its size modulo three, plus three
++   * where it can open), the lowest place an opener it could take may be at.
++   *
++   * @type {Map<number, Array<number>>}
++   */
++  const bottoms = new Map()
++  let next = 0
+   /** @type {Token} */
+-  let group;
++  let group
+   /** @type {Token} */
+-  let text;
++  let text
+   /** @type {Token} */
+-  let openingSequence;
++  let openingSequence
+   /** @type {Token} */
+-  let closingSequence;
++  let closingSequence
+   /** @type {number} */
+-  let use;
++  let use
+   /** @type {Array<Event>} */
+-  let nextEvents;
+-  /** @type {number} */
+-  let offset;
++  let nextEvents
+ 
+   // Walk through all events.
+-  //
+-  // Note: performance of this is fine on an mb of normal markdown, but it’s
+-  // a bottleneck for malicious stuff.
+-  while (++index < events.length) {
++  while (pending.length > 0 || next < events.length) {
++    countWork('attention', 1)
++    const event = pending.length > 0 ? pending.shift() : events[next++]
++    const index = resolved.length
++    resolved.push(event)
++
++    if (event[1].type !== 'attentionSequence') continue
++
++    const marker = context.sliceSerialize(event[1]).charCodeAt(0)
++    let markerOpeners = openers.get(marker)
++    let markerBottoms = bottoms.get(marker)
++
++    if (!markerOpeners || !markerBottoms) {
++      markerOpeners = []
++      markerBottoms = [0, 0, 0, 0, 0, 0]
++      openers.set(marker, markerOpeners)
++      bottoms.set(marker, markerBottoms)
++    }
++
++    // A token that can open, once its sequence is done.
++    if (event[0] === 'exit') {
++      if (event[1]._open) markerOpeners.push(index)
++      continue
++    }
++
      // Find a token that can close.
-     if (events[index][0] === 'enter' && events[index][1].type === 'attentionSequence' && events[index][1]._close) {
-       open = index;
- 
-       // Now walk back to find an opener.
-       while (open--) {
-+        countWork('attention', 1);
-         // Find a token that can open the closer.
-         if (events[open][0] === 'exit' && events[open][1].type === 'attentionSequence' && events[open][1]._open &&
-         // If the markers are the same:
-@@ -131,6 +134,7 @@ function resolveAllAttention(events, context) {
-           // Always populated by defaults.
- 
-           // Between.
-+          countWork('attention', index - open - 1);
-           nextEvents = push(nextEvents, resolveAll(context.parser.constructs.insideSpan.null, events.slice(open + 1, index), context));
- 
-           // Closing.
-@@ -143,7 +147,7 @@ function resolveAllAttention(events, context) {
-           } else {
-             offset = 0;
-           }
+-    if (events[index][0] === 'enter' && events[index][1].type === 'attentionSequence' && events[index][1]._close) {
+-      open = index;
+-
+-      // Now walk back to find an opener.
+-      while (open--) {
+-        // Find a token that can open the closer.
+-        if (events[open][0] === 'exit' && events[open][1].type === 'attentionSequence' && events[open][1]._open &&
+-        // If the markers are the same:
+-        context.sliceSerialize(events[open][1]).charCodeAt(0) === context.sliceSerialize(events[index][1]).charCodeAt(0)) {
+-          // If the opening can close or the closing can open,
+-          // and the close size *is not* a multiple of three,
+-          // but the sum of the opening and closing size *is* multiple of three,
+-          // then don’t match.
+-          if ((events[open][1]._close || events[index][1]._open) && (events[index][1].end.offset - events[index][1].start.offset) % 3 && !((events[open][1].end.offset - events[open][1].start.offset + events[index][1].end.offset - events[index][1].start.offset) % 3)) {
+-            continue;
+-          }
+-
+-          // Number of markers to use from the sequence.
+-          use = events[open][1].end.offset - events[open][1].start.offset > 1 && events[index][1].end.offset - events[index][1].start.offset > 1 ? 2 : 1;
+-          const start = {
+-            ...events[open][1].end
+-          };
+-          const end = {
+-            ...events[index][1].start
+-          };
+-          movePoint(start, -use);
+-          movePoint(end, use);
+-          openingSequence = {
+-            type: use > 1 ? "strongSequence" : "emphasisSequence",
+-            start,
+-            end: {
+-              ...events[open][1].end
+-            }
+-          };
+-          closingSequence = {
+-            type: use > 1 ? "strongSequence" : "emphasisSequence",
+-            start: {
+-              ...events[index][1].start
+-            },
+-            end
+-          };
+-          text = {
+-            type: use > 1 ? "strongText" : "emphasisText",
+-            start: {
+-              ...events[open][1].end
+-            },
+-            end: {
+-              ...events[index][1].start
+-            }
+-          };
+-          group = {
+-            type: use > 1 ? "strong" : "emphasis",
+-            start: {
+-              ...openingSequence.start
+-            },
+-            end: {
+-              ...closingSequence.end
+-            }
+-          };
+-          events[open][1].end = {
+-            ...openingSequence.start
+-          };
+-          events[index][1].start = {
+-            ...closingSequence.end
+-          };
+-          nextEvents = [];
+-
+-          // If there are more markers in the opening, add them before.
+-          if (events[open][1].end.offset - events[open][1].start.offset) {
+-            nextEvents = push(nextEvents, [['enter', events[open][1], context], ['exit', events[open][1], context]]);
+-          }
+-
+-          // Opening.
+-          nextEvents = push(nextEvents, [['enter', group, context], ['enter', openingSequence, context], ['exit', openingSequence, context], ['enter', text, context]]);
+-
+-          // Always populated by defaults.
+-
+-          // Between.
+-          nextEvents = push(nextEvents, resolveAll(context.parser.constructs.insideSpan.null, events.slice(open + 1, index), context));
+-
+-          // Closing.
+-          nextEvents = push(nextEvents, [['exit', text, context], ['enter', closingSequence, context], ['exit', closingSequence, context], ['exit', group, context]]);
+-
+-          // If there are more markers in the closing, add them after.
+-          if (events[index][1].end.offset - events[index][1].start.offset) {
+-            offset = 2;
+-            nextEvents = push(nextEvents, [['enter', events[index][1], context], ['exit', events[index][1], context]]);
+-          } else {
+-            offset = 0;
+-          }
 -          splice(events, open - 1, index - open + 3, nextEvents);
-+          spliceCounted('attention', events, open - 1, index - open + 3, nextEvents);
-           index = open + nextEvents.length - offset - 2;
-           break;
-         }
-@@ -154,6 +158,7 @@ function resolveAllAttention(events, context) {
-   // Remove remaining sequences.
-   index = -1;
-   while (++index < events.length) {
-+    countWork('attention', 1);
-     if (events[index][1].type === 'attentionSequence') {
-       events[index][1].type = 'data';
+-          index = open + nextEvents.length - offset - 2;
+-          break;
+-        }
++    if (!event[1]._close) continue
++
++    const closeSize = event[1].end.offset - event[1].start.offset
++    const kind = (closeSize % 3) + (event[1]._open ? 3 : 0)
++    let at = markerOpeners.length
++    let open = -1
++
++    // Now walk back to find an opener.
++    while (at-- && markerOpeners[at] >= markerBottoms[kind]) {
++      countWork('attention', 1)
++      const opening = resolved[markerOpeners[at]][1]
++
++      // If the opening can close or the closing can open,
++      // and the close size *is not* a multiple of three,
++      // but the sum of the opening and closing size *is* multiple of three,
++      // then don’t match.
++      if (
++        (opening._close || event[1]._open) &&
++        closeSize % 3 &&
++        !((opening.end.offset - opening.start.offset + closeSize) % 3)
++      ) {
++        continue
++      }
++
++      open = markerOpeners[at]
++      break
++    }
++
++    // No opener: every one below this closer was refused for its kind.
++    if (open === -1) {
++      markerBottoms[kind] = index
++      continue
++    }
++
++    const openToken = resolved[open][1]
++    const closeToken = event[1]
++
++    // Number of markers to use from the sequence.
++    use =
++      openToken.end.offset - openToken.start.offset > 1 && closeSize > 1 ? 2 : 1
++
++    const start = {...openToken.end}
++    const end = {...closeToken.start}
++    movePoint(start, -use)
++    movePoint(end, use)
++
++    openingSequence = {
++      type: use > 1 ? "strongSequence" : "emphasisSequence",
++      start,
++      end: {...openToken.end}
++    }
++    closingSequence = {
++      type: use > 1 ? "strongSequence" : "emphasisSequence",
++      start: {...closeToken.start},
++      end
++    }
++    text = {
++      type: use > 1 ? "strongText" : "emphasisText",
++      start: {...openToken.end},
++      end: {...closeToken.start}
++    }
++    group = {
++      type: use > 1 ? "strong" : "emphasis",
++      start: {...openingSequence.start},
++      end: {...closingSequence.end}
++    }
++
++    openToken.end = {...openingSequence.start}
++    closeToken.start = {...closingSequence.end}
++
++    nextEvents = []
++
++    // If there are more markers in the opening, add them before.
++    const openerLeft = openToken.end.offset - openToken.start.offset > 0
++
++    if (openerLeft) {
++      nextEvents = push(nextEvents, [
++        ['enter', openToken, context],
++        ['exit', openToken, context]
++      ])
++    }
++
++    // Opening.
++    nextEvents = push(nextEvents, [
++      ['enter', group, context],
++      ['enter', openingSequence, context],
++      ['exit', openingSequence, context],
++      ['enter', text, context]
++    ])
++
++    // Always populated by defaults.
++
++    // Between.
++    countWork('attention', index - open - 1)
++    nextEvents = push(
++      nextEvents,
++      resolveAll(
++        context.parser.constructs.insideSpan.null,
++        resolved.slice(open + 1, index),
++        context
++      )
++    )
++
++    // Closing.
++    nextEvents = push(nextEvents, [
++      ['exit', text, context],
++      ['enter', closingSequence, context],
++      ['exit', closingSequence, context],
++      ['exit', group, context]
++    ])
++
++    // The closer’s exit, which goes with its enter.
++    const closeExit = pending.length > 0 ? pending.shift() : events[next++]
++
++    // The opener (where none is left), what is between, and the closer go:
++    // what replaces them is put in place at the end of what is resolved.
++    countWork('attention', index - open + 3 + nextEvents.length)
++    resolved.length = open - 1
++    resolved = push(resolved, nextEvents)
++
++    // If there are more markers in the closing, read them again: they may
++    // close an opener further back.
++    if (closeToken.end.offset - closeToken.start.offset) {
++      pending.push(['enter', closeToken, context], ['exit', closeToken, context])
++    }
++
++    // The openers above the opener were between it and its closer, and are
++    // data now; the opener goes too where nothing of it is left.
++    for (const [, places] of openers) {
++      while (places.length > 0 && places[places.length - 1] > open) {
++        countWork('attention', 1)
++        places.pop()
++      }
++    }
++
++    if (!openerLeft) markerOpeners.pop()
++
++    // What lay above the opener is gone, and its size may have changed.
++    for (const [, kinds] of bottoms) {
++      let kindIndex = -1
++      while (++kindIndex < kinds.length) {
++        if (kinds[kindIndex] > open) kinds[kindIndex] = open
+       }
      }
+   }
+ 
+   // Remove remaining sequences.
+-  index = -1;
+-  while (++index < events.length) {
+-    if (events[index][1].type === 'attentionSequence') {
+-      events[index][1].type = 'data';
++  let index = -1
++
++  while (++index < resolved.length) {
++    countWork('attention', 1)
++    if (resolved[index][1].type === 'attentionSequence') {
++      resolved[index][1].type = 'data'
+     }
+   }
+-  return events;
++
++  countWork('attention', events.length + resolved.length)
++  splice(events, 0, events.length, resolved)
++  return events
+ }
+ 
+ /**
 diff --git a/lib/code-text.js b/lib/code-text.js
 index c31568e892015ff204b81f0693506bd1a20069c6..115ca936db82cc1c078c7a408b9206280c8287b4 100644
 --- a/lib/code-text.js

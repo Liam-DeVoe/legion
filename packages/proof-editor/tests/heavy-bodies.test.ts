@@ -312,6 +312,39 @@ const shapes: HeavyShape[] = [
     },
   },
   {
+    // Every image is inside a strong run: micromark's attention resolver matches each closing
+    // `**` with its opener, and spliced each match into the paragraph's whole list of events,
+    // shifting every event after it (61.76 times the steps for 8 times the runs, 1,730,040 at 312
+    // and 106,852,500 at 2,500, 2026-11-19); `patches/micromark-core-commonmark@2.0.3.patch` puts
+    // each match in place once. The strong mark is also one no inline leaf may carry, so
+    // `withoutLeafMarks` changes each image, as the linked images above.
+    name: "a paragraph of 2,500 bold images",
+    grow: (size) => "**![i](u)** ".repeat(size),
+    full: 2_500,
+    opensContainers: false,
+    expectDoc: (doc) => {
+      expect(nodesOf(doc, "image")).toBe(2_500);
+      let marked = 0;
+      doc.descendants((node) => {
+        if (node.type.name === "image" && node.marks.length > 0) marked++;
+      });
+      expect(marked).toBe(0);
+    },
+  },
+  {
+    // Every `*` can close and none can open, so the attention resolver finds no opener for any of
+    // them: a search that read every event before each closer read about the square of the
+    // paragraph; it now reads the openers still open, from the lowest a closer of its kind could
+    // still take (cmark's `openers_bottom`).
+    name: "a paragraph of 3,000 closers with no opener",
+    grow: (size) => "a* ".repeat(size),
+    full: 3_000,
+    opensContainers: false,
+    expectDoc: (doc) => {
+      expect(doc.textContent).toBe("a* ".repeat(3_000).trim());
+    },
+  },
+  {
     // The HTML (flow) resolver runs once a block, on the events the document has so far, so one
     // that read them from the first would read about the square of the blocks.
     name: "1,000 blocks of HTML, each with a paragraph after it",
