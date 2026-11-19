@@ -86,12 +86,12 @@ func MemberKind(ctx context.Context, q Querier, login string) (model.MemberKind,
 }
 
 // The lock order every access write takes, so no two of them wait on each other in a cycle: a
-// group's name first (LockGroupName), then a project's row, then the rows a write appends events
-// on. A write of a group (PutGroup, DeleteGroup) takes the name and then the projects its delete
-// sweeps; a write of a project's list that names a group takes the same name before the project
-// (LockForAccessWrite), so a delete of that group and the write are ordered by the name: the
-// delete waits for the write and then sweeps its row, or the write, seeing the delete committed,
-// finds no group.
+// group's name first (LockGroupName), then the project's owner lock (store.LockOwner), then the
+// rows a write appends events on. A write of a group (PutGroup, DeleteGroup) takes the name and
+// then the projects its delete sweeps; a write of a project's list that names a group takes the
+// same name before the project (LockForAccessWrite), so a delete of that group and the write are
+// ordered by the name: the delete waits for the write and then sweeps its row, or the write,
+// seeing the delete committed, finds no group.
 
 // LockGroupName takes, for the rest of tx, the lock that orders every write of group name.
 func LockGroupName(ctx context.Context, tx pgx.Tx, name string) error {
@@ -102,26 +102,38 @@ func LockGroupName(ctx context.Context, tx pgx.Tx, name string) error {
 }
 
 // LockForAccessWrite takes, in the order above, the locks a write of project key's access takes:
-// the group's name when the write names a group (empty when it names none), then the project's row,
-// `for no key update`, the level TestNoForUpdateOnOwnerTables holds every lock on projects to. It
-// answers the project's owner as tx reads it under that lock, nil for a project with none, and
-// ErrProjectNotFound for an unknown key. AddPrincipal and RemovePrincipal of a group are sound only
-// after it.
+// the group's name when the write names a group (empty when it names none), then the project's
+// owner lock, the advisory lock every writer of a project takes (store.LockOwner), and never a
+// row lock on projects (TestNoForUpdateOnOwnerTables). It answers the project's owner as tx reads
+// it in the statement after that lock, nil for a project with none, and ErrProjectNotFound for an
+// unknown key. AddPrincipal and RemovePrincipal of a group are sound only after it.
 func LockForAccessWrite(ctx context.Context, tx pgx.Tx, key, group string) (*string, error) {
 	if group != "" {
 		if err := LockGroupName(ctx, tx, group); err != nil {
 			return nil, err
 		}
 	}
+	if err := lockProject(ctx, tx, key); err != nil {
+		return nil, err
+	}
 	var owner *string
-	err := tx.QueryRow(ctx, `select owner from projects where key = $1 for no key update`, key).Scan(&owner)
+	err := tx.QueryRow(ctx, `select owner from projects where key = $1`, key).Scan(&owner)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("lock project %s: %w", key, err)
+		return nil, fmt.Errorf("read the owner of project %s: %w", key, err)
 	}
 	return owner, nil
+}
+
+// lockProject takes project key's owner lock for the rest of tx; taking it again in tx returns at
+// once. The read it guards is a statement of its own after it (store.LockOwner).
+func lockProject(ctx context.Context, tx pgx.Tx, key string) error {
+	if err := store.LockOwner(ctx, tx, store.ProjectOwner(key)); err != nil {
+		return fmt.Errorf("lock project %s: %w", key, err)
+	}
+	return nil
 }
 
 // ReadProject answers who may see project key and who changes that.
@@ -257,13 +269,16 @@ func AddPrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kind, 
 		return model.ProjectAccess{}, model.Event{}, err
 	}
 	by = by.Recorded()
-	// One statement reads the project, the group and the list's size, and writes the row only
-	// when all three allow it, so the answer says which refused.
+	if err := lockProject(ctx, tx, key); err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
+	}
+	// One statement, after the project's lock, reads the project, the group and the list's size,
+	// and writes the row only when all three allow it, so the answer says which refused.
 	var project, group, listed bool
 	var size int
 	if err := tx.QueryRow(ctx, `
 		with target as (
-			select key from projects where key = $1 for no key update
+			select key from projects where key = $1
 		), named_group as (
 			select 1 from access_groups where $2 = 'group' and name = $3
 		), size as (
@@ -306,10 +321,13 @@ func RemovePrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kin
 	if err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
 	}
+	if err := lockProject(ctx, tx, key); err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
+	}
 	var project bool
 	if err := tx.QueryRow(ctx, `
 		with target as (
-			select key from projects where key = $1 for no key update
+			select key from projects where key = $1
 		), removed as (
 			delete from project_access
 			where project_key = $1 and principal_kind = $2 and principal = $3 and exists (select 1 from target)
