@@ -135,7 +135,7 @@ func requireTheObjectBatchLockOrder(t *testing.T) {
 }
 
 // requireTheBlockScopeBatchLockOrder holds writeScopeBatch over block nodes to its steps. A block's
-// node is written under the revision fence, so the fill takes each document's owner row and then
+// node is written under the revision fence, so the fill takes each document's owner lock and then
 // its document_block_versions row first (blockDocuments, then lockBlockDocuments), the order the
 // block batch takes them in (TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow). Only then does
 // graphstore.FillScopes take the node rows, in ascending (kind, id) and in a statement of their
@@ -146,14 +146,14 @@ func requireTheObjectBatchLockOrder(t *testing.T) {
 // the artifact.version event of the version that wrote them, naming no project and no parties,
 // with the document_blocks rows that name them. The issue's and the document's nodes are written
 // by a backfill run before the blocks exist, as the object pass writes them, so the run the test
-// follows takes no owner row for them; its one batch that does work is this fill. The first
+// follows takes no owner lock for them; its one batch that does work is this fill. The first
 // block's project tuple carries the version's event, which gives it a repeat key a hold can stand
 // on.
 //
 // The comment nodes the same call site fills are held in a run of their own
 // (requireTheCommentScopeBatchLockOrder): the comment fill runs before the block fill, and in one
-// run its node row would be taken before the block fill's owner row, which the owner-first rule
-// reads as one writer taking a node row before an owner row.
+// run its node row would be taken before the block fill's owner lock, which the owner-first rule
+// reads as one writer taking a node row before an owner lock.
 func requireTheBlockScopeBatchLockOrder(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -243,7 +243,7 @@ func requireTheBlockScopeBatchLockOrder(t *testing.T) {
 }
 
 // requireTheCommentScopeBatchLockOrder holds writeScopeBatch over comment nodes to its steps. A
-// comment's node is written under no fence, so the fill takes no owner row and no
+// comment's node is written under no fence, so the fill takes no owner lock and no
 // document_block_versions row: graphstore.FillScopes takes the node rows, gives each its
 // project_key, and appends each one's project tuple, under the node's own cause. It names no node
 // on a comments row and appends no event.
