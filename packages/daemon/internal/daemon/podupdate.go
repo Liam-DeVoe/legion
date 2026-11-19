@@ -122,12 +122,24 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 // slot would hold the issue's own next round back behind the project's open-round limit
 // (dispatch://INFRA-3276, R5).
 //
-// A group whose claims record no pod at all decides nothing from its claims: no locator is no
-// evidence either way — every claim of the issue may be suspended (letGo clears the locator), or
-// the one live claim may be minutes into a relaunch. So the runtime is asked, by the issue alone,
-// which pod the issue's Sandbox holds now (podlessRound): another pod than the round's, or none,
-// is the round's pod gone, and the round ends as a gone pod's round does; the round's own pod, or
-// no answer, leaves the round waiting for a claim to record a pod again.
+// A claim whose launch the runtime refused for want of its pod's update round records no process,
+// and the pod its launch waits on stands in for one (supervise.Claim.AwaitsPod, podLocator): under
+// dispatch_token_broker with no transition token, a launch that would keep a live pod built
+// before the exchange identity is refused at every try until that pod's round replaces it, and
+// such a claim may be the issue's only one. So that pod is the group's pod (groupPod), its drift
+// is read through that claim (groupDrift), and the round opens over it as over a pod a process
+// runs in. The round waits on no answer and no turn of such a claim, and names no work of it lost
+// with the pod, since it has no process there (waitingClaims, lostClaims); where no claim records
+// a process in the pod, the pod is replaced through it (podProcess), and its next try, within a
+// minute, comes up in the pod that replaced it (dispatch://INFRA-4425 R4).
+//
+// A group whose claims record no pod at all, neither a process nor a pod a launch waits on,
+// decides nothing from its claims: no locator is no evidence either way — every claim of the
+// issue may be suspended (letGo clears the locator), or the one live claim may be minutes into a
+// relaunch. So the runtime is asked, by the issue alone, which pod the issue's Sandbox holds now
+// (podlessRound): another pod than the round's, or none, is the round's pod gone, and the round
+// ends as a gone pod's round does; the round's own pod, or no answer, leaves the round waiting
+// for a claim to record a pod again.
 //
 // A group whose claims record a pod the runtime no longer has ends the round open over it at
 // that sweep, and decides nothing else (groupDrift, podGone, endRoundOverAGonePod). It is one of
@@ -354,10 +366,10 @@ const (
 	// (heldByOperator), with a live claim recording a process in the round's own pod, read
 	// whatever the clock says.
 	waitsForOperator
-	// waitsForProcessInItsPod is no live claim recording a process in the round's own pod
-	// (podProcess), read whatever the clock says. It carries the claims an operator's suspension
-	// holds, if any: that hold is read only once the pod is known to be there
-	// (roundWithNoProcessInItsPod).
+	// waitsForProcessInItsPod is no live claim recording a process in the round's own pod, nor
+	// one whose launch waits on it (podProcess), read whatever the clock says. It carries the
+	// claims an operator's suspension holds, if any: that hold is read only once the pod is known
+	// to be there (roundWithNoProcessInItsPod).
 	waitsForProcessInItsPod
 	// waitsForTurn is a worker of the issue running a turn (workingClaims), read only before the
 	// round's bound.
@@ -695,9 +707,10 @@ func operatorHoldReason(held []supervise.Claim) string {
 // a claim it has not asked yet. A read that could not be made leaves such a round undecided too,
 // and tells nobody of a hold over a pod it could not read.
 //
-// The snapshot always records a process in that pod, and that process's claim is the one this
-// asks through: the sweep decides a round here only over the pod its claims record, and ends a
-// round over any other pod before it gets this far (reconcileIssuePodUpdate).
+// The snapshot always records a process in that pod, or a claim whose launch waits on it
+// (podLocator), and that claim is the one this asks through: the sweep decides a round here only
+// over the pod its claims record, and ends a round over any other pod before it gets this far
+// (reconcileIssuePodUpdate).
 //
 // It reports whether it decided the round (completePodUpdate).
 func (s *supervision) roundWithNoProcessInItsPod(ctx context.Context, issue string, snapshot, live []supervise.Claim, round, pod, reasons string, now time.Time, held []supervise.Claim) bool {
@@ -910,6 +923,12 @@ func (s *supervision) tellLateRound(ctx context.Context, issue string, group []s
 // pods and implements no such read — leaves the round where it stands, waiting for a claim to
 // record a pod again, and tells the operator's side of it once the round's bound has come
 // (tellPodlessRound).
+//
+// A claim whose launch waits on a pod records that pod for this reading (podLocator, groupPod),
+// so an issue such a claim holds never comes here: neither its round's end nor its wait is read
+// from the Sandbox, and a round over the pod that claim waits on is carried as any round over a
+// pod a process runs in. Read here, the round would wait for a claim to record a pod again, and
+// that claim's every launch is refused until the round replaces the pod.
 func (s *supervision) podlessRound(ctx context.Context, issue string, group []supervise.Claim, round string, now time.Time) {
 	if pods, ok := s.runtime.(runtime.IssuePodReader); ok {
 		if held, read := pods.IssuePod(issue); read && supervise.PodRound(held) != round {
@@ -1046,13 +1065,16 @@ func (s *supervision) endRoundOverAGonePod(ctx context.Context, issue string, gr
 // ask changes nothing it decides.
 //
 // A claim that blocks the round has a session — an agent has run for it, and may hold unpushed
-// work. A claim with no session has never had a worker and blocks nothing. An operator-suspended
-// claim holds the round until the operator acts, whatever the round's bound, which is this
-// issue's own rule (readReplacement's waitsForOperator), as long as the round's pod is there: a
-// gone pod ends its round whatever the hold (roundWithNoProcessInItsPod). The late-round notice
-// is what tells the operator (tellLateRound, tellPodlessRound). A failed claim runs no turn on
-// the pod and is asked nothing, so the round does not wait for it (askedClaims). A worker whose
-// plugin has no ready_for_update op is asked like any other.
+// work. A claim with no session has never had a worker and blocks nothing. A claim whose launch
+// waits on the round's pod is posted the round too, with a session or without, since it may be
+// the one claim the round can be recorded on, and the round waits on no answer of it
+// (blockingClaims, waitingClaims). An operator-suspended claim holds the round until the
+// operator acts, whatever the round's bound, which is this issue's own rule (readReplacement's
+// waitsForOperator), as long as the round's pod is there: a gone pod ends its round whatever the
+// hold (roundWithNoProcessInItsPod). The late-round notice is what tells the operator
+// (tellLateRound, tellPodlessRound). A failed claim runs no turn on the pod and is asked nothing,
+// so the round does not wait for it (askedClaims). A worker whose plugin has no ready_for_update
+// op is asked like any other.
 //
 // It tells nobody. A round that waits on its roles is no stall: its bound ends the wait whatever
 // they say, and the readings that hold a round past its bound are told where they are read.
@@ -1323,8 +1345,11 @@ const (
 )
 
 // groupDrift is why the group's pod has drifted: the union of the runtime's PodDrift over every
-// claim of the group that records a process, in the claims' own order and without repeats, with
-// the reading that says what those reasons are worth (podReading).
+// claim of the group that records a process or a pod its launch waits on (podLocator), in the
+// claims' own order and without repeats, with the reading that says what those reasons are worth
+// (podReading). A claim's awaited pod is asked about as the pod of a process there is: the
+// runtime refused that claim's launch because the pod lacks the exchange identity a pod built now
+// carries, which is drift PodDrift reports of the pod, so the round opens over it.
 //
 // It reads podUnread when the runtime could not be asked at all: an error is never a statement
 // that something drifted, and a round must neither open nor end on one.
@@ -1338,10 +1363,11 @@ const (
 func (s *supervision) groupDrift(ctx context.Context, issue string, group []supervise.Claim) ([]string, podReading) {
 	var reasons []string
 	for _, c := range group {
-		if c.Locator == nil {
+		loc := podLocator(c)
+		if loc == nil {
 			continue
 		}
-		drift, err := s.runtime.PodDrift(ctx, runtime.Known{Claim: c.Token, Locator: c.Locator})
+		drift, err := s.runtime.PodDrift(ctx, runtime.Known{Claim: c.Token, Locator: loc})
 		if errors.Is(err, runtime.ErrPodGone) {
 			return nil, podGone
 		}
@@ -1360,12 +1386,13 @@ func (s *supervision) groupDrift(ctx context.Context, issue string, group []supe
 	return reasons, podRead
 }
 
-// groupPod is the pod every claim of the group that records one runs in, and whether they record
-// two different pods, which is a replacement already in flight.
+// groupPod is the pod every claim of the group that records one runs in, or that a claim's launch
+// waits on (podLocator), and whether they record two different pods, which is a replacement
+// already in flight.
 func groupPod(group []supervise.Claim) (string, bool) {
 	pod := ""
 	for _, c := range group {
-		found := podOf(c.Locator)
+		found := podOf(podLocator(c))
 		if found == "" {
 			continue
 		}
@@ -1384,6 +1411,27 @@ func podOf(locator *runtime.Locator) string {
 		return ""
 	}
 	return locator.Sandbox.PodUID
+}
+
+// podLocator is where c stands in its issue's pod for a round: the process it records, or, where
+// it records none, the live pod its launch waits on because that pod waits for its update round
+// (supervise.Claim.AwaitsPod). Such a claim is refused at every try until the round replaces the
+// pod, and it may be the issue's only claim, so a round read from the process alone would never
+// open over that pod, and the claim would wait for ever.
+func podLocator(c supervise.Claim) *runtime.Locator {
+	if c.Locator != nil {
+		return c.Locator
+	}
+	return c.AwaitsPod
+}
+
+// awaitsRoundPod is whether c records no process and its launch waits on round's own pod
+// (podLocator). Such a claim has no process and no turn in that pod: the round asks it nothing,
+// since it never said it is ready (askRound), waits on no answer of it (waitingClaims) and names
+// no work of it lost with the pod (lostClaims), and the pod is replaced through it where no claim
+// records a process there (podProcess).
+func awaitsRoundPod(c supervise.Claim, round string) bool {
+	return c.Locator == nil && c.AwaitsPod != nil && supervise.PodRound(podOf(c.AwaitsPod)) == round
 }
 
 // openPodRound is the pod round open over the group, and "" when none is. Every claim the sweep
@@ -1476,14 +1524,22 @@ func roundTold(group []supervise.Claim, round string) bool {
 	return false
 }
 
-// blockingClaims is every claim of the group the round waits on: one with a session, whose agent
-// has run and may hold unpushed work. Every claim the sweep groups is live already
+// blockingClaims is every claim of the group the round is recorded on: one with a session, whose
+// agent has run and may hold unpushed work, and one whose launch waits on a pod
+// (supervise.Claim.AwaitsPod), session or none. Every claim the sweep groups is live already
 // (reconcilePodUpdates drops the retired ones), and a claim with no session has never had a
 // worker.
+//
+// A claim whose launch waits on the pod is the round's own way to that pod where no claim
+// records a process in it (podProcess), and it may be the issue's only claim. A round is open
+// only while a claim records it (openPodRound), so such a claim is posted the round whether or
+// not it has a session: a round posted to nobody would be opened again at every sweep and
+// carried at none, and that claim would be refused at every try. It records the round, and the
+// round waits on no answer of it (waitingClaims).
 func blockingClaims(group []supervise.Claim) []supervise.Claim {
 	var blocking []supervise.Claim
 	for _, c := range group {
-		if c.Session != "" {
+		if c.Session != "" || (c.Locator == nil && c.AwaitsPod != nil) {
 			blocking = append(blocking, c)
 		}
 	}
@@ -1511,11 +1567,18 @@ func blockingClaims(group []supervise.Claim) []supervise.Claim {
 // hold the pod no longer, and its disk could be deleted with work on it the round had asked
 // nobody for.
 //
+// A claim whose launch waits on this round's own pod waits for nothing either (awaitsRoundPod).
+// It records no process, so it has no turn in that pod and can give no answer: no process of it
+// has said it is ready, so the round never asks it (askRound), and each of its launches is
+// refused until the round replaces the pod. A replacement held for its answer would wait out the
+// round's bound for an answer nobody can give, and where it is the issue's only claim that wait
+// is all the round would do.
+//
 // What a claim lost is the other question (lostClaims), and the two are never the same set.
 func waitingClaims(group []supervise.Claim, round string) []supervise.Claim {
 	var waiting []supervise.Claim
 	for _, c := range askedClaims(group) {
-		if !answered(c, round) && !c.LeftPodRound(round) {
+		if !answered(c, round) && !c.LeftPodRound(round) && !awaitsRoundPod(c, round) {
 			waiting = append(waiting, c)
 		}
 	}
@@ -1566,10 +1629,13 @@ func memberOf(c supervise.Claim, round string) bool {
 // answered in the round's own pod or had already answered when it left: leaving records no
 // answer and withdraws none. One that never answered lost whatever it had not pushed. No turn
 // and no answer of the process that replaced it changes either reading.
+//
+// A member whose launch waits on the round's own pod is named nothing (awaitsRoundPod): it has no
+// process in that pod, so the round asked it nothing and no work of it ran there while it waited.
 func lostClaims(group []supervise.Claim, round string) []supervise.Claim {
 	var lost []supervise.Claim
 	for _, c := range blockingClaims(group) {
-		if memberOf(c, round) && !answered(c, round) {
+		if memberOf(c, round) && !answered(c, round) && !awaitsRoundPod(c, round) {
 			lost = append(lost, c)
 		}
 	}
@@ -1592,10 +1658,22 @@ func workingClaims(group []supervise.Claim) []string {
 // recorded process: a claim the sweep relaunched while the round ran records the pod that
 // replaced this one, and ending that pod would delete a pod no round covers, which has drifted
 // from nothing and which the round's own replacement has just built.
+//
+// Where no claim records a process in that pod, it is the first claim whose launch waits on it
+// (awaitsRoundPod), through the locator the runtime's refusal named, which is the pod's as a
+// process's there is: the runtime takes it for PodDrift and ReplacePod alike. Such a claim is
+// refused at every try until the round replaces the pod, and where it is the issue's only claim
+// the round has no other way to its pod. A process that runs there is still the one the pod is
+// ended through, whichever claim sorts first.
 func podProcess(group []supervise.Claim, round string) (runtime.Known, bool) {
 	for _, c := range group {
 		if c.Locator != nil && supervise.PodRound(podOf(c.Locator)) == round {
 			return runtime.Known{Claim: c.Token, Locator: c.Locator}, true
+		}
+	}
+	for _, c := range group {
+		if awaitsRoundPod(c, round) {
+			return runtime.Known{Claim: c.Token, Locator: c.AwaitsPod}, true
 		}
 	}
 	return runtime.Known{}, false

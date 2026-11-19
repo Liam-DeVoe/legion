@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -88,4 +89,92 @@ func TestAWaitForAPodRoundIsNotChargedToTheClaim(t *testing.T) {
 	h.wantCalls("Resume", 5)
 	wantWaitLines(2, "after that new wait's retry,")
 	h.wantBudgets(Budgets{LaunchFailures: 2}) // the two deaths' charges: neither wait costs anything
+}
+
+// The claim keeps the pod its start waits on while it waits (Claim.AwaitsPod): it records no
+// process, and the daemon's update round has nothing else to open over that pod or to replace it
+// through. The pod is the refusal's own locator (runtime.AwaitingPodRound), reported by Claim and
+// by the view the sweep reads without waiting on the machine (View, Machine.AwaitsPod), from the
+// refusal that begins the wait, through the next minute's retry — while that retry's own start
+// runs, too — and until a start goes through, which records its process and names no pod. A
+// suspension ends the wait, and the pod with it: an operator's is held for the wait's retry
+// (holdSuspendUntilReady), which suspends the claim in place of launching it. The store is never
+// written the pod.
+func TestAWaitForAPodRoundNamesThePodItWaitsOn(t *testing.T) {
+	const podUID = "6b0f2d4e-8a17-4c39-b5e2-1d9a7c3f0e58"
+	awaited := runtime.Locator{
+		Runtime: runtime.RuntimeSandbox, Claim: testToken, Incarnation: runtime.SandboxIncarnation(podUID, 2),
+		Sandbox: &runtime.SandboxLocator{
+			Namespace: "legion", Name: "legion-legion-legion-209", PodUID: podUID,
+			Container: runtime.IssuePodContainer, Generation: 2,
+		},
+	}
+	refusal := fmt.Errorf("launch %s: %w", testToken, &runtime.AwaitingPodRound{Pod: awaited,
+		Reason: "pod legion-legion-legion-209 carries no exchange identity and dispatch_token_transition_file is not set; its update round replaces it"})
+	h := newBareHarness(t)
+	h.store.PutClaim(h.ctx, queuedClaim())
+	h.start(queuedClaim())
+	h.reach(StateIdle)
+	same := func(got, want *runtime.Locator) bool {
+		return (got == nil) == (want == nil) && (got == nil || reflect.DeepEqual(*got, *want))
+	}
+	wantAwaits := func(want *runtime.Locator, when string) {
+		t.Helper()
+		for name, got := range map[string]*runtime.Locator{
+			"Claim": h.claim().AwaitsPod, "View": h.m.View().AwaitsPod, "AwaitsPod": h.m.AwaitsPod(),
+		} {
+			if !same(got, want) {
+				t.Fatalf("%s %s reports the awaited pod %+v, want %+v", when, name, got, want)
+			}
+		}
+		if stored := h.store.load(testToken).AwaitsPod; stored != nil {
+			t.Fatalf("%s the store holds the awaited pod %+v, want none: it is memory only", when, stored)
+		}
+	}
+	wantAwaits(nil, "before any refusal,")
+
+	h.rt.OnResume = func(context.Context) error { return refusal }
+	if err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}); !errors.Is(err, runtime.ErrAwaitingPodRound) {
+		t.Fatalf("the death's relaunch answered %v, want the runtime's wait for the pod's round", err)
+	}
+	if c := h.claim(); c.State != StateLaunching || c.Locator != nil {
+		t.Fatalf("the refused claim is %s at %+v, want launching with no process", c.State, c.Locator)
+	}
+	wantAwaits(&awaited, "at the refusal that began the wait,")
+
+	// The retry lets nothing go, and the sweep that reads the view while its start is in the
+	// runtime still finds the pod.
+	var during *runtime.Locator
+	h.rt.OnResume = func(context.Context) error {
+		during = h.m.AwaitsPod()
+		return refusal
+	}
+	h.advance(podRoundRetry)
+	h.wantCalls("Resume", 2)
+	if !same(during, &awaited) {
+		t.Fatalf("while the retry's start ran the view reported the awaited pod %+v, want %+v", during, awaited)
+	}
+	wantAwaits(&awaited, "at the retry's refusal,")
+
+	h.rt.OnResume = nil
+	h.advance(podRoundRetry)
+	h.wantCalls("Resume", 3)
+	if h.claim().Locator == nil {
+		t.Fatal("the start after the round records no process")
+	}
+	wantAwaits(nil, "once a start went through,")
+
+	h.rt.OnResume = func(context.Context) error { return refusal }
+	if err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}); !errors.Is(err, runtime.ErrAwaitingPodRound) {
+		t.Fatalf("the second death's relaunch answered %v, want the runtime's wait for the pod's round", err)
+	}
+	wantAwaits(&awaited, "at a new wait's refusal,")
+	if err := h.handle(RequestSuspend{Claim: testToken, By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
+		t.Fatalf("the operator's suspension of the waiting claim answered %v, want it held for the wait's retry", err)
+	}
+	wantAwaits(&awaited, "while the operator's suspension is held for the retry,")
+	h.advance(podRoundRetry)
+	h.wantState(StateSuspended)
+	h.wantCalls("Resume", 4)
+	wantAwaits(nil, "once the retry ran the held suspension,")
 }

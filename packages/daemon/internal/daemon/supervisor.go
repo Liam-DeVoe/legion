@@ -182,13 +182,26 @@ func (s *supervisor) Create(ctx context.Context, c supervise.Claim, rolePrompt s
 	return m, true, nil
 }
 
-// Claims is every claim of this daemon's project, as the store holds them.
+// Claims is every claim of this daemon's project, as the store holds them, with the one thing the
+// update round reads of a claim that only its machine holds: the live pod the claim's launch waits
+// on (supervise.Claim.AwaitsPod), which the store never writes. A claim refused for want of its
+// pod's round records no process, and may be its issue's only claim, so without it the sweep
+// would find no pod to open that round over (groupPod). It is read off each machine's published
+// view (supervise.Machine.AwaitsPod), never off Machine.Claim, which waits out the decision in
+// flight: the round's last word reads this under a pod's launch turn (replacementDue), and a
+// decision in flight can be a launch waiting for that same turn.
 func (s *supervisor) Claims(ctx context.Context) ([]supervise.Claim, error) {
 	claims, err := s.store.Claims(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return ofProject(claims, s.project), nil
+	own := ofProject(claims, s.project)
+	for i := range own {
+		if m, ok := s.Machine(own[i].Token); ok {
+			own[i].AwaitsPod = m.AwaitsPod()
+		}
+	}
+	return own, nil
 }
 
 // Step is one claim's step record as the store holds it, for the operator routes that answer one

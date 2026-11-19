@@ -3,6 +3,7 @@ package sandbox
 import (
 	"errors"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -150,6 +151,12 @@ func TestAPodWithTheExchangeIdentityNeverGetsTheTransitionToken(t *testing.T) {
 // file named, is refused before anything of the pod is touched: no write reaches the cluster and
 // no start reaches the pod's launcher, and the refusal is runtime.ErrAwaitingPodRound, naming the
 // pod and the round that replaces it, which the supervisor waits out charging nothing.
+//
+// The refusal names the pod by a locator too (runtime.AwaitingPodRound): the one a process of the
+// refused claim in that pod would have, at the launch's own generation, which this runtime's
+// PodDrift takes as it takes a running process's and answers the identity the pod lacks. That is
+// what the supervisor keeps of a claim that records no process, and what the update round opens
+// over and replaces the pod through where no claim records one.
 func TestAKeptPodWithNoTransitionFileWaitsForItsRound(t *testing.T) {
 	g := newRig(t, nil, withOptions(dispatchBearer))
 	loc := g.spawn(workerSpec(t))
@@ -185,6 +192,66 @@ func TestAKeptPodWithNoTransitionFileWaitsForItsRound(t *testing.T) {
 	if pod := g.pod(loc.Sandbox.Name); pod == nil || string(pod.UID) != loc.Sandbox.PodUID {
 		t.Errorf("the pod after the refusal is %v, want %s still running", pod, loc.Sandbox.PodUID)
 	}
+	var refusal *runtime.AwaitingPodRound
+	if !errors.As(err, &refusal) {
+		t.Fatalf("the refusal %v names no pod by a locator, want a runtime.AwaitingPodRound", err)
+	}
+	want := runtime.Locator{
+		Runtime: runtime.RuntimeSandbox, Claim: workerToken, Incarnation: runtime.SandboxIncarnation(loc.Sandbox.PodUID, spec.Generation),
+		Sandbox: &runtime.SandboxLocator{
+			Namespace: loc.Sandbox.Namespace, Name: loc.Sandbox.Name, PodUID: loc.Sandbox.PodUID,
+			Container: loc.Sandbox.Container, Generation: spec.Generation,
+		},
+	}
+	if !reflect.DeepEqual(refusal.Pod, want) {
+		t.Fatalf("the refusal names the pod as %+v (%+v), want %+v (%+v): the locator of the claim's process in the kept pod at this launch's generation",
+			refusal.Pod, refusal.Pod.Sandbox, want, want.Sandbox)
+	}
+	if err := r2.checkLocator(refusal.Pod); err != nil {
+		t.Fatalf("the runtime refuses the locator its own refusal named: %v", err)
+	}
+	identity := (movedAddress{agentSecretsExchangeVolume, "(unset)", enrollmentName(exchangeTokenProjection(r2.agentSecrets))}).String()
+	if drifted := driftOf(t, g.ctx, r2, refusal.Pod); !slices.Contains(drifted, identity) {
+		t.Errorf("PodDrift through the refusal's locator = %q, want %q among it: the identity the pod lacks is the drift its round is opened for",
+			drifted, identity)
+	}
+}
+
+// The round replaces the pod through the locator the refusal named, as it replaces a pod through
+// the locator of a process there, and the claim's next launch builds the pod in its place, which
+// carries the exchange identity: that launch carries no Dispatch token at all, and tells its role
+// DISPATCH_TOKEN_BROKER=1 (dispatch://INFRA-4425 R4).
+func TestTheRoundReplacesThePodItsRefusalNamesAndTheNextLaunchTradesTheIdentity(t *testing.T) {
+	g := newRig(t, nil, withOptions(dispatchBearer))
+	loc := g.spawn(workerSpec(t))
+	r2 := restartedOver(t, g, loc, dispatchBroker(""))
+	spec := workerSpec(t)
+	spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
+	_, err := r2.Resume(g.ctx, &loc, spec)
+	var refusal *runtime.AwaitingPodRound
+	if !errors.As(err, &refusal) {
+		t.Fatalf("Resume = %v, want a runtime.AwaitingPodRound naming the kept pod", err)
+	}
+
+	if err := r2.ReplacePod(g.ctx, runtime.Known{Claim: workerToken, Locator: &refusal.Pod}, stillDue); err != nil {
+		t.Fatalf("ReplacePod through the refusal's locator: %v", err)
+	}
+	spec.Generation, spec.BootToken = 3, "boot-tester-g3"
+	next, err := r2.Resume(g.ctx, &loc, spec)
+	if err != nil {
+		t.Fatalf("the launch after the round: %v", err)
+	}
+	if next.Sandbox.PodUID == loc.Sandbox.PodUID {
+		t.Fatalf("the launch after the round kept pod %s, which the round replaced", loc.Sandbox.PodUID)
+	}
+	if found := exchangeTokenVolumes(g.pod(loc.Sandbox.Name).Spec, testExchangeAudience); len(found) != 1 {
+		t.Fatalf("the pod in the replaced one's place projects %+v for the exchange, want its one token", found)
+	}
+	start := lastStart(t, g, workerToken)
+	if start.Generation != 3 {
+		t.Fatalf("the last start is of generation %d, want the launch after the round's 3", start.Generation)
+	}
+	wantNoDispatchToken(t, "the launch after the round", start)
 }
 
 // The controller's launch takes the same path as an issue pod's, and its pod is never one a launch

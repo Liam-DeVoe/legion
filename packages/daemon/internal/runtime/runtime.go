@@ -177,8 +177,33 @@ var ErrSessionStore = errors.New("the session store could not be asked")
 // identity, cures it, and a launch never replaces a pod a round covers (the sandbox runtime's
 // relaunch). It is not the claim's own failure: the caller charges nothing and starts again every
 // minute until the pod it finds carries the identity (supervise's startWaitsForPodRound). Nothing
-// of the pod was touched and nothing was started.
+// of the pod was touched and nothing was started. The Sandbox runtime refuses with an
+// AwaitingPodRound, which names the pod the launch waits on.
 var ErrAwaitingPodRound = errors.New("the launch waits for its pod's update round")
+
+// AwaitingPodRound is ErrAwaitingPodRound with the pod it is about: Pod is the live pod the
+// refused launch would keep, as the locator of a process of the refused claim in that pod is made
+// (its namespace, its Sandbox's name, the pod's uid, its container and the launch's generation),
+// so PodDrift and ReplacePod take it as they take the locator of a process there; Reason is the
+// refusal's own sentence, which names the pod.
+//
+// The claim records no process while it waits, so the pod is what the daemon's update round has
+// of it: the supervisor keeps Pod on the claim until a later launch starts a process
+// (supervise's Claim.AwaitsPod), and the round opens over that pod and replaces it through this
+// locator where no claim records a process in it (internal/daemon's groupPod, podProcess).
+// Without it, a pod whose only claim is the one refused would never have a round, and the claim
+// would be refused at every try.
+type AwaitingPodRound struct {
+	Pod    Locator
+	Reason string
+}
+
+// Error is ErrAwaitingPodRound's words followed by the refusal's own sentence.
+func (e *AwaitingPodRound) Error() string { return ErrAwaitingPodRound.Error() + ": " + e.Reason }
+
+// Is makes every AwaitingPodRound an ErrAwaitingPodRound, so each errors.Is of the sentinel reads
+// the refusal as it did before the refusal named its pod.
+func (e *AwaitingPodRound) Is(target error) bool { return target == ErrAwaitingPodRound }
 
 // ErrPodGone is PodDrift asked about a place that is not there, or on its way out for an act
 // that is not its round's: the Sandbox the locator records is gone, no pod of it is running, the
