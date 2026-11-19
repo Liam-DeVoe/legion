@@ -1023,6 +1023,11 @@ type GateRegistered struct {
 	RequestAsk              string
 	RequestWaitsOnAgent     bool
 	ReviewedBy              dispatch.Actor
+	// By and Generation are the architect's register_gate (api's gateRegister): its claim and the
+	// root's generation its route read, which the workflow judges again under the fact lock
+	// (ArchitectRequest). A registration the workflow makes itself carries neither.
+	By         claim.Token
+	Generation uint64
 }
 
 func (GateRegistered) isFact() {}
@@ -1170,11 +1175,37 @@ func (f RetryOrEscalate) StaleGeneration(now uint64) *Refusal {
 	return staleGeneration("RETRY_STALE_GENERATION", "the retry_or_escalate", f.Issue, f.Generation, now, "Read the issue again before you decide its hold. This decision changed nothing.")
 }
 
+// Request is the root architect's close_root (api's closeRoot), which only the root's own
+// architect makes (record.ArchitectAbove); a fact that names no claim is none of an architect's
+// request.
+func (f CloseRoot) Request() (Request, bool) {
+	return Request{Issue: f.Issue, By: f.By, Generation: f.Generation, Owners: record.OwnerAbove, Operation: "close_root"}, f.By != ""
+}
+
+// Request is the root architect's register_gate (api's gateRegister), which only the root's own
+// architect makes (record.ArchitectAbove); a registration the workflow makes itself names no claim
+// and is no architect's request.
+func (f GateRegistered) Request() (Request, bool) {
+	return Request{Issue: f.Issue, By: f.By, Generation: f.Generation, Owners: record.OwnerAbove, Operation: "register_gate"}, f.By != ""
+}
+
+func (f CloseRoot) StaleGeneration(now uint64) *Refusal {
+	return staleGeneration("CLOSE_STALE_GENERATION", "the close", f.Issue, f.Generation, now, "Read the root again before you close it. This close changed nothing.")
+}
+
+func (f GateRegistered) StaleGeneration(now uint64) *Refusal {
+	return staleGeneration("GATE_STALE_GENERATION", "the registration", f.Issue, f.Generation, now, "Register the document again for the run that stands. This registration changed nothing.")
+}
+
 // CloseRoot is a tree root's architect ending its tree before the tree's first phase starts, with
-// the reason it gives: a human decided no change at the design gate, or the issue is moot.
+// the reason it gives: a human decided no change at the design gate, or the issue is moot. By and
+// Generation are the architect's claim and the root's generation its route read (api's
+// closeRoot), which the workflow judges again under the fact lock (ArchitectRequest).
 type CloseRoot struct {
-	Issue  string
-	Reason string
+	Issue      string
+	Reason     string
+	By         claim.Token
+	Generation uint64
 }
 
 func (CloseRoot) isFact() {}

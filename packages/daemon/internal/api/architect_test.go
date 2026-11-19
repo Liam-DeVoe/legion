@@ -1041,8 +1041,8 @@ func TestGateRegistrationCarriesAnApprovalDispatchAlreadyShows(t *testing.T) {
 	}
 	want := []intake.Fact{
 		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093", Version: 3, ApprovedVersion: 3,
-			ReviewedBy: dispatch.Actor{Kind: "user", ID: "alice"}, DispatchVersion: 3, Since: record.EventMark{Seq: 7}},
-		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: "4a6b8c0d-2e4f-4a6b-8c0d-2e4f6a8b0c1d", Version: 3, DispatchVersion: 3, Since: record.EventMark{Seq: 7}},
+			ReviewedBy: dispatch.Actor{Kind: "user", ID: "alice"}, DispatchVersion: 3, Since: record.EventMark{Seq: 7}, By: rootArchitect208},
+		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: "4a6b8c0d-2e4f-4a6b-8c0d-2e4f6a8b0c1d", Version: 3, DispatchVersion: 3, Since: record.EventMark{Seq: 7}, By: rootArchitect208},
 	}
 	if got := facts.recorded(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("gate facts = %#v, want the approved document to carry its approval and the other none", got)
@@ -1078,9 +1078,9 @@ func TestGateRegistrationCarriesAChangesRequestDispatchAlreadyShows(t *testing.T
 	since := record.EventMark{Seq: 7}
 	want := []intake.Fact{
 		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: changed, Version: 4, ChangesRequestedVersion: 4, ChangesReason: reason,
-			ChangesRequestedMark: record.EventMark{Seq: 6, At: reviewed}, ReviewedBy: dispatch.Actor{Kind: "user", ID: "bob"}, DispatchVersion: 4, Since: since},
-		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: open, Version: 4, DispatchVersion: 4, Since: since},
-		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: superseded, Version: 4, DispatchVersion: 5, Since: since},
+			ChangesRequestedMark: record.EventMark{Seq: 6, At: reviewed}, ReviewedBy: dispatch.Actor{Kind: "user", ID: "bob"}, DispatchVersion: 4, Since: since, By: rootArchitect208},
+		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: open, Version: 4, DispatchVersion: 4, Since: since, By: rootArchitect208},
+		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: superseded, Version: 4, DispatchVersion: 5, Since: since, By: rootArchitect208},
 	}
 	if got := facts.recorded(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("gate facts = %#v, want %#v", got, want)
@@ -1113,8 +1113,8 @@ func TestGateRegistrationCarriesTheOpenRequestAndItsTurn(t *testing.T) {
 	}
 	since := record.EventMark{Seq: 7}
 	want := []intake.Fact{
-		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: withPerson, Version: 4, DispatchVersion: 4, Since: since, RequestAsk: "ask-person"},
-		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: withAgent, Version: 4, DispatchVersion: 4, Since: since, RequestAsk: "ask-agent", RequestWaitsOnAgent: true},
+		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: withPerson, Version: 4, DispatchVersion: 4, Since: since, RequestAsk: "ask-person", By: rootArchitect208},
+		intake.GateRegistered{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: withAgent, Version: 4, DispatchVersion: 4, Since: since, RequestAsk: "ask-agent", RequestWaitsOnAgent: true, By: rootArchitect208},
 	}
 	if got := facts.recorded(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("gate facts = %#v, want %#v", got, want)
@@ -1180,6 +1180,10 @@ func TestASecondRegistrationAtOneVersionCarriesWhatItsOwnReadFound(t *testing.T)
 	}
 }
 
+// rootArchitect208 is the claim of LEGION-208's architect, which names each request its routes
+// record of that root (the harness's tree records the root at generation 0).
+const rootArchitect208 = claim.Token("legion-legion-legion-208-architect")
+
 // A root architect ends its own tree before its first phase starts: a human decided no change at
 // the design gate, or the issue is moot. The route takes the reason; nothing else ends an admitted
 // root from the architect's side, since sign_off needs the production check and a backward move
@@ -1194,7 +1198,7 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 	if closed.Code != http.StatusOK {
 		t.Fatalf("close = %d: %s", closed.Code, closed.Body)
 	}
-	if got := facts.recorded(); len(got) != 1 || got[0] != (intake.CloseRoot{Issue: "LEGION-208", Reason: "The human decided no change is needed."}) {
+	if got := facts.recorded(); len(got) != 1 || got[0] != (intake.CloseRoot{Issue: "LEGION-208", Reason: "The human decided no change is needed.", By: architect.token}) {
 		t.Fatalf("close facts = %#v", got)
 	}
 
@@ -1238,7 +1242,7 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 	if closedLong.Code != http.StatusOK {
 		t.Fatalf("close with a reason of six blocks = %d: %s", closedLong.Code, closedLong.Body)
 	}
-	if got := facts.recorded(); len(got) != 2 || got[1] != (intake.CloseRoot{Issue: "LEGION-208", Reason: long}) {
+	if got := facts.recorded(); len(got) != 2 || got[1] != (intake.CloseRoot{Issue: "LEGION-208", Reason: long, By: architect.token}) {
 		t.Fatalf("close facts = %#v, want the 40,000-character reason applied whole", got)
 	}
 }

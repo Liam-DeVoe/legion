@@ -370,7 +370,8 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	fact := intake.GateRegistered{Issue: req.Issue, Step: step, ArtifactID: artifactID, Version: req.Version, ApprovedVersion: approval.ApprovedLatest(),
 		ChangesRequestedVersion: changes, ChangesReason: reason, ReviewedBy: approval.LatestReviewer(),
 		DispatchVersion: approval.LatestVersion, Since: record.EventMark{Seq: since},
-		RequestAsk: approval.AskID, RequestWaitsOnAgent: approval.AskID != "" && approval.WaitingOn == "agent"}
+		RequestAsk: approval.AskID, RequestWaitsOnAgent: approval.AskID != "" && approval.WaitingOn == "agent",
+		By: grant.Claim, Generation: recorded.Generation}
 	review := record.EventMark{Seq: approval.Seq, At: approval.At}
 	if changes != 0 {
 		fact.ChangesRequestedMark = review
@@ -1390,6 +1391,7 @@ func (s *server) closeRoot(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.rootArchitectOf(w, r, grant, recorded, closeRootRoute) {
 		return
 	}
+	fact.By, fact.Generation = grant.Claim, recorded.Generation
 	s.applyFact(w, r, requestFactID("roots-close"), fact, EmptyResponse{})
 }
 

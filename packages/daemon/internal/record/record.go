@@ -2302,7 +2302,8 @@ func ArchitectOfTree(ctx context.Context, store Store, tx pgx.Tx, architect clai
 // request's route judges and its fact judges again under the fact lock (workflow's Engine.Apply):
 // OwnerOfTree, every architect of the issue's tree (ArchitectOfTree), for register_plan and
 // stop_task; or OwnerAbove, of those the issue's own architect or one above it in its tree
-// (ArchitectAbove), for sign_off, request_backward_move and retry_or_escalate.
+// (ArchitectAbove), for sign_off, request_backward_move, retry_or_escalate, close_root and
+// register_gate.
 type OwnerRule int
 
 const (
