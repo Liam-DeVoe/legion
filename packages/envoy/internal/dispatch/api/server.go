@@ -450,7 +450,8 @@ type server struct {
 	// inProcess is the route table this server mounts, behind the cross-site origin check
 	// routes.New puts in front of the whole server (EnforceCookieOrigin): what a command-bar write
 	// is performed through, as its caller, so every check a route makes runs on it exactly as on
-	// a request off the network (going_writes.go). register sets it.
+	// a request off the network (going_writes.go). Its requests name their caller on their
+	// context and carry no cookie, so the origin check passes them. register sets it.
 	inProcess       http.Handler
 	adviceQueryHook func(context.Context, pgx.Tx, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
@@ -1344,6 +1345,19 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 	}, nil
 }
 
+// presentsBearer reports whether r's caller is an agent's bearer: a request off the network that
+// presents an Authorization header, or a request the command bar sent in-process as a caller that
+// is no person's own sign-in, which names its caller on its context and sends no header. The
+// routes only an agent's session writes - the accept and the replies of a delivery - refuse every
+// other caller before they read anything.
+func presentsBearer(r *http.Request) bool {
+	if goingServedInProcess(r.Context()) {
+		caller, named := r.Context().Value(resolvedCallerKey{}).(resolvedCaller)
+		return named && !caller.human
+	}
+	return strings.TrimSpace(r.Header.Get("Authorization")) != ""
+}
+
 // writeAuthenticationError answers a caller that did not resolve: 401 NO_IDENTITY, or 503
 // SIGNIN_UNAVAILABLE for a person whose lapsed confirmation the sign-in issuer could not renew,
 // as identity.WriteError renders both; anything else as writeHandlerError does. Only identity's
@@ -1505,10 +1519,13 @@ func (s *server) refuseReadOnlyToken(listed bool, next http.HandlerFunc) http.Ha
 // The agent is not lost: Act names the credential that acted — its scopes, the personal token it
 // is, the session a broker-issued token proved — so a write records which credential made it and
 // not only whom it was made for. A browser's cookie names no agent, since the person themselves
-// acted, and carries none. A credential that proved no session takes the one the `session` query
-// parameter names where the caller gives it, the convention messages.go already reads; one that
-// proved a session is refused a parameter naming another, 403 ACTOR_SESSION_MISMATCH, which is
-// what bearerSessionActor answers the same disagreement in a body.
+// acted, and carries none. An act the resolved caller already carries is kept: the command bar's,
+// which the caller of a run's call names (going_grant.go), and which no request off the network
+// can carry, since only the server's own in-process caller is resolved with one. A credential
+// that proved no session takes the one the `session` query parameter names where the caller gives
+// it, the convention messages.go already reads; one that proved a session is refused a parameter
+// naming another, 403 ACTOR_SESSION_MISMATCH, which is what bearerSessionActor answers the same
+// disagreement in a body.
 func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Actor, bool) {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
@@ -1528,6 +1545,12 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 		person = *actor.Owner
 	}
 	var act *model.ActorAct
+	if actor.Act != nil {
+		// A copy: the caller rides on every request of its run's call, and the session below is
+		// this request's alone.
+		carried := *actor.Act
+		act = &carried
+	}
 	if credential.TokenID != "" || credential.Session != "" {
 		session := credential.Session
 		if named := strings.TrimSpace(r.URL.Query().Get("session")); named != "" {
@@ -1538,15 +1561,13 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 			}
 			session = named
 		}
-		act = &model.ActorAct{
-			Session: session,
-			// Only the session the credential itself proved; one a personal token's `?session=`
-			// names is the caller's word.
-			SessionProven: session != "" && session == credential.Session,
-			TokenID:       credential.TokenID,
-			TokenName:     credential.TokenName,
-			Scopes:        credential.Scopes,
+		if act == nil {
+			act = &model.ActorAct{TokenID: credential.TokenID, TokenName: credential.TokenName, Scopes: credential.Scopes}
 		}
+		act.Session = session
+		// Only the session the credential itself proved; one a personal token's `?session=`
+		// names is the caller's word.
+		act.SessionProven = session != "" && session == credential.Session
 	}
 	// Proven: every credential that holds the person scope proves its person - the cookie its
 	// login, a personal or broker-issued token the owner it names.

@@ -40,7 +40,7 @@ func TestGoingInProcessRequestsRefuseAMemberTheirRouteDoesNotDeclare(t *testing.
 	rig := newGoingWritesRig(t)
 	issue := createInteractionIssue(t, rig.mux, "DEMO", "An issue to reply on", "The spec.\n").Key
 	ask := rig.ask(t, issue, "Ship it on Friday?")
-	doer := rig.served.goingDoer(goingCallerOf(t, rig, false))
+	doer := rig.served.goingDoer(goingCallerOf(t, rig, false), testServerURL)
 	comments := func(t *testing.T, body string) (all, underTheAsk int) {
 		t.Helper()
 		if err := rig.database.Pool.QueryRow(context.Background(), `

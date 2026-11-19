@@ -42,7 +42,7 @@ func goingSeveralRequestRows(t *testing.T, rig goingWritesRig) []goingSeveralReq
 	if err != nil {
 		t.Fatal(err)
 	}
-	caller := GoingCaller{Catalogue: catalogue, Doer: rig.served.goingDoer(goingCallerOf(t, rig, false))}
+	caller := GoingCaller{Catalogue: catalogue, Doer: rig.served.goingDoer(goingCallerOf(t, rig, false), testServerURL)}
 	several := func(action string, route GoingRoute, arguments map[string]any) bool {
 		prepared, err := caller.prepare(context.Background(), action, arguments)
 		if err != nil || prepared.route.Method != route.Method || prepared.route.Pattern != route.Pattern {
@@ -145,7 +145,7 @@ func (row goingSeveralRequestRow) on(t *testing.T, rig goingWritesRig, issue str
 	if err != nil {
 		t.Fatal(err)
 	}
-	caller := GoingCaller{Catalogue: catalogue, Doer: rig.served.goingDoer(goingCallerOf(t, rig, false))}
+	caller := GoingCaller{Catalogue: catalogue, Doer: rig.served.goingDoer(goingCallerOf(t, rig, false), testServerURL)}
 	prepared, err := caller.prepare(context.Background(), row.action, arguments)
 	if err != nil {
 		t.Fatalf("prepare %s on %s: %v", row.action, issue, err)
@@ -166,7 +166,7 @@ func (row goingSeveralRequestRow) firstDigest(t *testing.T, rig goingWritesRig, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	caller := GoingCaller{Catalogue: catalogue, Doer: rig.served.goingDoer(goingCallerOf(t, rig, false))}
+	caller := GoingCaller{Catalogue: catalogue, Doer: rig.served.goingDoer(goingCallerOf(t, rig, false), testServerURL)}
 	prepared, err := caller.prepare(context.Background(), row.action, arguments)
 	if err != nil {
 		t.Fatalf("prepare %s: %v", row.action, err)

@@ -43,14 +43,15 @@ func newGoingConditionFixtures(t *testing.T, rig goingWritesRig) goingConditionF
 	return f
 }
 
-// goingConditioned sends spec to handler in-process as login, carrying condition on its context,
-// as the command bar's caller sends a write back or an upload, and answers its status and body.
+// goingConditioned sends spec to handler in-process as login's own sign-in, carrying condition on
+// its context, as the command bar's caller sends a write back or an upload, and answers its status
+// and body.
 func goingConditioned(t *testing.T, handler http.Handler, login string, spec goingSend, condition goingCondition) (int, string) {
 	t.Helper()
-	caller := httptest.NewRequest(http.MethodPost, "/api/v1/going/runs/caller/undo", nil)
-	caller.Header.Set("X-Dispatch-User", login)
+	person := model.Actor{Kind: "user", ID: login, Credential: personCredential, Proven: true}
 	spec.condition = &condition
-	return goingInProcessSend(t, goingInProcess{handler: handler, caller: caller, identityHeader: "X-Dispatch-User"}, spec)
+	doer := (&server{inProcess: handler}).goingDoer(goingBarCaller(person, true, goingTestRun), testServerURL)
+	return goingInProcessSend(t, doer, spec)
 }
 
 // goingJSONSend is one JSON request of body.

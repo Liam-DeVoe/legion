@@ -528,8 +528,9 @@ func isSessionSwitchCommand(body string) bool {
 
 // isSessionSwitch reports whether a send of message in mode delivery is a model or thinking switch
 // the session runs as its own turn: a message a person wrote themselves (an author of kind "user"
-// with no act, the agent an author records when it wrote for its person) on no issue, no
-// broadcast's copy, sent as Send (steer) or Aside, whose body is one switch line
+// with no act, the agent an author records when it wrote for its person - a token's, or the
+// command bar's for a run of its) on no issue, no broadcast's copy, sent as Send (steer) or Aside,
+// whose body is one switch line
 // (isSessionSwitchCommand). It mirrors isUserTurnCandidate in
 // packages/pi-shared/src/accept-user-turn.ts and the accept route's own checks (acceptDelivery,
 // which refuses a message an agent wrote for its person as ACCEPT_WRITTEN_BY_AGENT), which admit

@@ -52,8 +52,8 @@ const (
 // the credential is a browser's cookie, which a bearer-only row refuses, the scopes it holds,
 // the session it proved (session), which fills a row addressing the caller's own session, and
 // whether it is presented with a proof bound to each request (a broker-issued access token under
-// DPoP), which a write made in-process cannot carry (goingInProcess copies the credential and no
-// proof, and a proof is single use and bound to one URL).
+// DPoP), which is no credential the command bar acts with: a run acts with a person's own
+// credential (going_grant.go), and a proof is single use and bound to one URL.
 type goingCredential struct {
 	cookie     bool
 	credential *model.Credential
@@ -92,9 +92,8 @@ func (route GoingRoute) runnableBy(caller goingCredential) bool {
 // runnableBy is the catalogue as one caller may run it: each action keeps the rows
 // the caller may call, and an action left with none is not offered at all, so a person is never
 // offered a handoff or a reply to a delivery, which only a session's bearer may write. A caller
-// whose token needs a proof per request is offered no action at all: an action runs through the
-// table in-process (goingInProcess), which carries the credential and no proof, so every write
-// and every read it makes would be refused 401.
+// whose token needs a proof per request is offered no action at all: the bar acts as a person's
+// own credential, and a broker-issued token is not one.
 func (c GoingCatalogue) runnableBy(caller goingCredential) []GoingAction {
 	runnable := make([]GoingAction, 0, len(c.actions))
 	if caller.proofBound {

@@ -3332,6 +3332,8 @@ export interface components {
       service?: string;
     };
     ActorAct: {
+      agent?: string;
+      run?: string;
       scopes?: string[];
       session?: string;
       session_proven?: boolean;

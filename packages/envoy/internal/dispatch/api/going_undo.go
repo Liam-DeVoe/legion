@@ -139,7 +139,7 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeOptionalJSON(w, r, &input) {
 		return
 	}
-	actor, _, err := s.optionalActor(r)
+	actor, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
@@ -212,7 +212,8 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	undoer := goingUndoer{
-		s: s, doer: s.goingDoer(r), login: caller.ID, session: goingCredentialOf(r, actor, false).session(),
+		s: s, doer: s.goingDoer(goingBarCaller(actor, human, run.ID), PublicOrigin(s.deps.ServerURL, r)),
+		login: caller.ID, session: goingCredentialOf(r, actor, false).session(),
 		reason: cmp.Or(strings.TrimSpace(input.Reason), goingUndoReasonByDefault),
 	}
 	undoer.observer = goingObserver{read: goingReader{doer: undoer.doer}, s: s}

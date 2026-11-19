@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -313,18 +312,27 @@ func goingPathMatches(pattern, path string) bool {
 	return true
 }
 
-// goingCallerOf is a request standing for the caller a write is performed as: a person's browser
-// on this deployment's page, or a session's bearer.
-func goingCallerOf(t *testing.T, rig goingWritesRig, bearer bool) *http.Request {
+// goingTestRun is the run the command bar's act names on a call a test makes through the route
+// table in-process outside any run's write.
+const goingTestRun = "0190c7d2-1111-7222-8333-444444444444"
+
+// goingCallerOf is the caller a write is performed as, resolved as the writes route resolves its
+// own from a request standing for it - a person's browser on this deployment's page, or a
+// session's bearer - with the command bar's act beside it.
+func goingCallerOf(t *testing.T, rig goingWritesRig, bearer bool) resolvedCaller {
 	t.Helper()
 	caller := httptest.NewRequest(http.MethodPost, "/api/v1/going/runs/caller/writes", nil)
 	if bearer {
 		caller.Header.Set("Authorization", "Bearer agent-token")
-		return caller
+	} else {
+		caller.Header.Set("Origin", testServerURL)
+		caller.AddCookie(rig.cookie(t, "alice"))
 	}
-	caller.Header.Set("Origin", testServerURL)
-	caller.AddCookie(rig.cookie(t, "alice"))
-	return caller
+	actor, human, err := rig.served.optionalActor(caller)
+	if err != nil {
+		t.Fatalf("resolve the caller: %v", err)
+	}
+	return goingBarCaller(actor, human, goingTestRun)
 }
 
 // goingRowCase is the call one row of the catalogue is executed with: the arguments the fake
@@ -502,7 +510,7 @@ func TestEveryGoingRowExecutesThroughTheCallerAgainstTheServedTable(t *testing.T
 					t.Fatalf("the proposal is %+v, want %s offered once", proposal, action.Action)
 				}
 				invocation := proposal.Offers[0].Invocations[0]
-				doer := &goingRecordingDoer{doer: rig.served.goingDoer(goingCallerOf(t, rig, row.bearer))}
+				doer := &goingRecordingDoer{doer: rig.served.goingDoer(goingCallerOf(t, rig, row.bearer), testServerURL)}
 				if row.session != "" {
 					// The session a person names by its title, resolved as the person
 					// may read the roster.
@@ -891,8 +899,8 @@ func TestGoingWriteClaimedIsUnderWayUntilItsRecordCanNoLongerLand(t *testing.T) 
 }
 
 // TestGoingOffersNoActionToACallerWhoseTokenNeedsAProof: a caller presenting a broker token under
-// DPoP is offered no action, since a write made in-process carries its credential and no proof and
-// would be refused 401; the same credential presented as a bearer is offered the catalogue.
+// DPoP is offered no action, since the bar acts with a person's own credential and a broker token
+// is none; the same credential presented as a bearer is offered the catalogue.
 func TestGoingOffersNoActionToACallerWhoseTokenNeedsAProof(t *testing.T) {
 	catalogue, err := BuildGoingCatalogue()
 	if err != nil {
@@ -2211,13 +2219,10 @@ func TestGoingWritesRefuseIdenticallyThroughTheWritesRouteAndTheNetwork(t *testi
 		if seen.Status != http.StatusForbidden || seen.Error != "invalid request origin" {
 			t.Fatalf("both refused %+v, want 403 invalid request origin", seen)
 		}
-		// The in-process write runs the check itself: a writes request no origin check stood in
-		// front of has its write refused by the check on the copy, as the route's own refusal.
-		inner := goingRequestTo(t, rig.mux, http.MethodPost, "/api/v1/going/runs/"+run+"/writes", write, elsewhere, rig.cookie(t, "alice"))
-		same(t, direct, inner)
-		writes := rig.record(t, "alice", run).Writes
-		if len(writes) != 1 || writes[0].Outcome.OK || writes[0].Outcome.Status != http.StatusForbidden {
-			t.Fatalf("the run keeps %+v, want the origin refusal as the write's outcome", writes)
+		// The origin check refuses the writes request before its route runs: the run records no
+		// write.
+		if writes := rig.record(t, "alice", run).Writes; len(writes) != 0 {
+			t.Fatalf("the run keeps %+v, want no write: the origin check refused the writes request", writes)
 		}
 		comments := decodeBody[[]model.Comment](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/issues/"+issue+"/comments", nil))
 		if len(comments) != 0 {
@@ -2235,89 +2240,6 @@ func TestGoingWritesRefuseIdenticallyThroughTheWritesRouteAndTheNetwork(t *testi
 			t.Fatalf("both refused %+v, want ISSUE_CLAIMED", seen)
 		}
 	})
-}
-
-// TestGoingWritesCarryOnlyTheCallersFiveCredentialHeaders: an in-process write carries the
-// caller's Authorization, Cookie, Origin, Sec-Fetch-Site and Dispatch-Login, and no other header
-// of the caller's request - the header its deployment names its people by besides, on a deployment
-// that names them by one and on no other: a header-identity deployment's trusted header, and on an
-// IAP deployment, where a browser's credential is that assertion and no cookie, the assertion
-// Identity-Aware Proxy signs - and resolves its caller itself rather than taking the one the
-// caller's request already resolved.
-func TestGoingWritesCarryOnlyTheCallersFiveCredentialHeaders(t *testing.T) {
-	five := []string{"Authorization", "Cookie", contracts.DispatchLoginHeader, "Origin", "Sec-Fetch-Site"}
-	for _, mode := range []struct {
-		name           string
-		identityHeader string
-		want           []string
-	}{
-		{"a cookie deployment", "", five},
-		{"a header-identity deployment", "X-Dispatch-User", append(slices.Clone(five), "X-Dispatch-User")},
-		{"an IAP deployment", identity.IAPAssertionHeader, append(slices.Clone(five), http.CanonicalHeaderKey(identity.IAPAssertionHeader))},
-	} {
-		t.Run(mode.name, func(t *testing.T) {
-			var seen *http.Request
-			capture := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				seen = r
-				w.WriteHeader(http.StatusNoContent)
-			})
-			caller := httptest.NewRequest(http.MethodPost, "/api/v1/going/runs/x/writes", nil)
-			for name, value := range map[string]string{
-				"Authorization": "Bearer dsp_token", "Cookie": "dispatch_session=abc", "Origin": testServerURL,
-				"Sec-Fetch-Site": "same-origin", contracts.DispatchLoginHeader: "alice",
-				"X-Dispatch-User": "alice", identity.IAPAssertionHeader: "an.iap.assertion", "X-Forwarded-User": "bob",
-				"Idempotency-Key": "key-1", "Accept-Encoding": "gzip", "Dispatch-Trees": "1",
-			} {
-				caller.Header.Set(name, value)
-			}
-			ctx := context.WithValue(caller.Context(), resolvedCallerKey{}, resolvedCaller{actor: model.Actor{Kind: "user", ID: "bob"}})
-			caller = caller.WithContext(ctx)
-			request, err := goingSend{method: http.MethodPost, path: "/api/v1/issues/DEMO-1/claim"}.build(ctx, "")
-			if err != nil {
-				t.Fatal(err)
-			}
-			response, err := goingInProcess{handler: capture, caller: caller, identityHeader: mode.identityHeader}.Do(request)
-			if err != nil || response.StatusCode != http.StatusNoContent {
-				t.Fatalf("the in-process call answered %v, %v", response, err)
-			}
-			carried := slices.Sorted(maps.Keys(seen.Header))
-			want := slices.Clone(mode.want)
-			slices.Sort(want)
-			if !slices.Equal(carried, want) {
-				t.Fatalf("the in-process write carried %v, want %v alone", carried, want)
-			}
-			if _, resolved := seen.Context().Value(resolvedCallerKey{}).(resolvedCaller); resolved {
-				t.Fatal("the in-process write carried the caller its caller's request had resolved")
-			}
-		})
-	}
-}
-
-// TestGoingDoerCarriesTheHeaderItsDeploymentNamesItsPeopleBy: the route table called in-process as
-// a caller reads that caller from the header its deployment names its people by - IAP's assertion
-// on an IAP deployment, the configured header on a header-identity deployment - and from no
-// header of its own on a cookie deployment, so the write is made as its caller on each.
-func TestGoingDoerCarriesTheHeaderItsDeploymentNamesItsPeopleBy(t *testing.T) {
-	caller := httptest.NewRequest(http.MethodPost, "/api/v1/going/runs/x/writes", nil)
-	for _, deployment := range []struct {
-		name   string
-		people identity.Identity
-		want   string
-	}{
-		{"an IAP deployment", identity.IAPIdentity{}, identity.IAPAssertionHeader},
-		{"a header-identity deployment", identity.HeaderIdentity{Header: "X-Dispatch-User"}, "X-Dispatch-User"},
-		{"a cookie deployment", identity.CookieIdentity{}, ""},
-	} {
-		t.Run(deployment.name, func(t *testing.T) {
-			doer, inProcess := (&server{deps: Deps{Identity: deployment.people}}).goingDoer(caller).(goingInProcess)
-			if !inProcess {
-				t.Fatalf("goingDoer answered %T, want the route table called in-process", doer)
-			}
-			if doer.identityHeader != deployment.want {
-				t.Fatalf("the in-process write reads its caller from %q, want %q", doer.identityHeader, deployment.want)
-			}
-		})
-	}
 }
 
 // TestGoingSettingsAreThePersonsOwnAndReadFalseUntilSet: the confirmation setting is held for the

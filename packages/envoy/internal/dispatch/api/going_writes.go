@@ -8,12 +8,12 @@ package api
 // shows its refusal in its own line and an undo of a write still queued stops it before it is
 // sent.
 //
-// The write runs as the caller: through the server's own route table, called
-// in-process (server.inProcess), with the caller's credential copied from this request and
-// nothing else of it. Every check a route makes - its auth class, its scopes, the cross-site
-// origin check, the project and session checks, the claim's rules - runs on the copy exactly as
-// it runs on a request off the network, so the bar can do nothing its caller could not do by
-// hand, and a route's refusal is answered as the route answered it.
+// The write runs as the caller: through the server's own route table, called in-process
+// (server.inProcess), as the caller this request resolved, with the command bar's act beside them
+// (goingBarCaller), named on each request's context and by no header. Every check a route makes -
+// its auth class, its scopes, the project and session checks, the claim's rules - runs on each
+// request exactly as it runs on a request off the network, so the bar can do nothing its caller
+// could not do by hand, and a route's refusal is answered as the route answered it.
 
 import (
 	"bytes"
@@ -27,79 +27,69 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// goingCredentialHeaders are the only headers of the caller's request an in-process write
-// carries: the two credentials, the two the cross-site check reads, and the login the write was
-// pressed as (refuseChangedLogin). No other header of the caller's rides along, so nothing the
-// caller sent can change what a route decides beyond what the caller's own request to that route
-// would have. The one exception is a deployment that names its people by a header: one that
-// trusts a header of its own (identity.HeaderIdentity, a local and test mode), and one behind
-// Identity-Aware Proxy, which names them by the assertion IAP signs (identity.IAPIdentity). There
-// that header is the caller's credential, so it is carried too, and it alone.
-var goingCredentialHeaders = []string{"Authorization", "Cookie", "Origin", "Sec-Fetch-Site", contracts.DispatchLoginHeader}
+// goingInProcessAddr is the peer of every request the command bar sends in-process, which the
+// access log shows: no network address sent it.
+const goingInProcessAddr = "unix:agent"
 
 // goingInProcess is the server's own route table called as one caller: every request it is given
-// carries that caller's credential headers, its host and its peer, and is served by the whole
-// chain a request off the network is (server.inProcess). identityHeader is the header a
-// deployment that names its people by one reads the caller from - its own trusted header, or
-// IAP's assertion - and "" on every other.
+// names that caller on its context (resolvedCallerKey), which optionalActor reads before any
+// credential, carries no credential header, and is served by the whole chain a request off the
+// network is (server.inProcess), at the server's public origin (PublicOrigin) - its scheme and
+// its host, so a route that writes a link names the public address - with no TLS state and
+// goingInProcessAddr for its peer.
 type goingInProcess struct {
-	handler        http.Handler
-	caller         *http.Request
-	identityHeader string
+	handler      http.Handler
+	caller       resolvedCaller
+	scheme, host string
 }
 
-// goingDoer is the route table called in-process as the caller of r.
-func (s *server) goingDoer(r *http.Request) GoingDoer {
-	doer := goingInProcess{handler: s.inProcess, caller: r}
-	switch deployed := s.deps.Identity.(type) {
-	case identity.HeaderIdentity:
-		doer.identityHeader = deployed.Header
-	case identity.IAPIdentity:
-		doer.identityHeader = identity.IAPAssertionHeader
+// goingDoer is the route table called in-process as caller, at origin, the server's public origin
+// as PublicOrigin answers it.
+func (s *server) goingDoer(caller resolvedCaller, origin string) GoingDoer {
+	scheme, host, _ := strings.Cut(origin, "://")
+	return goingInProcess{handler: s.inProcess, caller: caller, scheme: scheme, host: host}
+}
+
+// goingBarDoer is the route table called in-process as the caller of r, the request that pressed a
+// write or an undo of run, with the command bar's act beside them (goingBarCaller).
+func (s *server) goingBarDoer(r *http.Request, run string) (GoingDoer, error) {
+	actor, human, err := s.optionalActor(r)
+	if err != nil {
+		return nil, err
 	}
-	return doer
+	return s.goingDoer(goingBarCaller(actor, human, run), PublicOrigin(s.deps.ServerURL, r)), nil
 }
 
 // Do serves request in-process. The request is built fresh by the caller and carries the
-// caller's own context, with three of its values taken off: the caller this request already
-// resolved, so the route resolves the copied credential itself (resolvedCallerKey); the caller's
-// Idempotency-Key claim, which belongs to the writes route and not to the routes it calls
-// (requestKeyClaimKey); and the claim's commit step (store.WithBeforeCommit). A write of the bar
-// may make several requests - a reasoned close posts its reason and then closes - so no one of
-// them is the write: the writes route's key is marked committed by the write's own record, once
-// the write reached a final outcome (recordGoingRunWrite). In its place a request that carries a
-// landing (goingLandings.on) takes the step that records it landed, in its route's own
-// transaction (goingLanding.step), for as long as the route runs: a delivery the route detached
-// commits after it, and is no landing of the request's. Such a request also carries the sink its
-// route hands what it is about to answer (goingRecordAnswer), which the step records beside the
-// landing. The request is marked as served in-process (goingServedInProcess), so its route refuses
-// a member of its body it does not declare rather than ignoring it (judgeUndeclaredMembers): sender
-// and route are one build.
+// caller's own context, with the doer's caller put on it in place of any caller the context held
+// (resolvedCallerKey), and two of its values taken off: the caller's Idempotency-Key claim, which
+// belongs to the writes route and not to the routes it calls (requestKeyClaimKey); and the
+// claim's commit step (store.WithBeforeCommit). A write of the bar may make several requests - a
+// reasoned close posts its reason and then closes - so no one of them is the write: the writes
+// route's key is marked committed by the write's own record, once the write reached a final
+// outcome (recordGoingRunWrite). In its place a request that carries a landing
+// (goingLandings.on) takes the step that records it landed, in its route's own transaction
+// (goingLanding.step), for as long as the route runs: a delivery the route detached commits after
+// it, and is no landing of the request's. Such a request also carries the sink its route hands
+// what it is about to answer (goingRecordAnswer), which the step records beside the landing. The
+// request is marked as served in-process (goingServedInProcess), so its route refuses a member of
+// its body it does not declare rather than ignoring it (judgeUndeclaredMembers): sender and route
+// are one build.
 func (d goingInProcess) Do(request *http.Request) (*http.Response, error) {
-	carried := goingCredentialHeaders
-	if d.identityHeader != "" {
-		carried = append(slices.Clone(carried), d.identityHeader)
-	}
-	for _, name := range carried {
-		if values := d.caller.Header.Values(name); len(values) > 0 {
-			request.Header[http.CanonicalHeaderKey(name)] = slices.Clone(values)
-		}
-	}
-	request.Host = d.caller.Host
-	request.TLS = d.caller.TLS
-	request.RemoteAddr = d.caller.RemoteAddr
-	ctx := context.WithValue(request.Context(), resolvedCallerKey{}, nil)
+	request.URL.Scheme, request.URL.Host, request.Host = d.scheme, d.host, d.host
+	request.TLS = nil
+	request.RemoteAddr = goingInProcessAddr
+	ctx := context.WithValue(request.Context(), resolvedCallerKey{}, d.caller)
 	ctx = context.WithValue(ctx, requestKeyClaimKey{}, nil)
 	ctx = context.WithValue(ctx, goingInProcessKey{}, true)
 	ctx = store.WithoutBeforeCommit(ctx)
@@ -332,13 +322,13 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	actor, _, err := s.optionalActor(r)
+	actor, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
 	}
 	session := goingCredentialOf(r, actor, false).session()
-	doer := s.goingDoer(r)
+	doer := s.goingDoer(goingBarCaller(actor, human, run.ID), PublicOrigin(s.deps.ServerURL, r))
 	arguments, named, refused := goingArgumentsOf(invocation, input)
 	if refused != nil {
 		s.writeHandlerError(w, refused)
@@ -621,6 +611,11 @@ func (s *server) answerGoingWriteLanded(w http.ResponseWriter, r *http.Request, 
 	if latest == nil || !latest.Pending || time.Since(latest.At) < s.goingClaimBound() || !goingLandedWhole(*latest) {
 		return false
 	}
+	doer, err := s.goingBarDoer(r, run.ID)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return true
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.keyedRunLimit())
 	defer cancel()
 	if err := s.adoptGoingRunWrite(ctx, run.ID, login, latest.ID, time.Now().UTC()); err != nil {
@@ -634,7 +629,7 @@ func (s *server) answerGoingWriteLanded(w http.ResponseWriter, r *http.Request, 
 		return true
 	}
 	claim := goingWriteClaim{s: s, w: w, ctx: ctx, run: run.ID, login: login, write: *latest}
-	claim.landedWhole(goingObserver{read: goingReader{doer: s.goingDoer(r)}, s: s})
+	claim.landedWhole(goingObserver{read: goingReader{doer: doer}, s: s})
 	return true
 }
 
