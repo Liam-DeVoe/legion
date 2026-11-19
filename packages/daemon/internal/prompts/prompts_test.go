@@ -60,8 +60,10 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 		// off it, and carries the message it writes itself; its completion is an ordinary phase
 		// completion, refused only on the grounds every phase worker's is (dispatch://INFRA-714, R2).
 		// It also disarms an auto-merge an older release armed, since GitHub holds an armed pull
-		// request to no head, and it merges nothing while the design gate is closed (R5).
+		// request to no head, and it merges nothing while the design gate is closed (R5). It merges
+		// only the head its task names as approved, and nothing where the task names none.
 		{"merger", claim.RoleMerger, false, []string{"mechanics/headless.md", "merger.md"}, []string{"merger.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
+			"Approved head: <sha>", "`Approved head: none.`", "`headRefOid` must be that head",
 			"gh pr merge <n> --squash --match-head-commit <head> --subject '<pull request title> (#<n>)' --body ''",
 			"enqueuePullRequest", "squash_merge_commit_message",
 			"gh pr merge <n> --disable-auto", "autoMergeRequest", "dequeuePullRequest(input:{id:$pr})",
@@ -220,7 +222,7 @@ func TestNoComposedPromptCommitsAHandoff(t *testing.T) {
 	retired := []string{"No role pushes a `.legion/` deletion", "No role removes `.legion/`", "nobody removes it before the merge", "strips whatever `.legion/`", "still carries `.legion/`",
 		"Retro then commits only `docs/solutions/`", "no file changes above the approved head", "the same sha when retro added nothing", "Retro's `docs/solutions/` commit is never",
 		"'~(docs/solutions | .legion/<issue>)'", ".legion/<issue>/<phase>.json", "record handoff", "handoff-only", "Retro's last commit removes",
-		"committed handoff", "`READY_UNREVIEWED_CHANGE`", "`READY_NOT_APPROVED`", "Approved head:"}
+		"committed handoff", "`READY_UNREVIEWED_CHANGE`", "`READY_NOT_APPROVED`"}
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
 		text := composedText(t, composer, role, false)
 		for _, phrase := range retired {

@@ -1427,11 +1427,12 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if moved {
 		return e.phaseNow(ctx, tx, issue)
 	}
-	text, err := e.withApprovedHead(ctx, tx, issue.Key, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, reason))
+	role := phase.RoleFor(from)
+	text, err := e.withApprovedHead(ctx, tx, issue.Key, role, task(issue, record.PhaseRow{}, pr, reason))
 	if err != nil {
 		return "", err
 	}
-	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), text, freshSession)
+	return from, e.restart(ctx, tx, issue, role, text, freshSession)
 }
 
 // withApprovedHead is text, a task of role's, with the head the review approved after it when role
@@ -1711,12 +1712,13 @@ func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRo
 		return record.Notice{Kind: "checks-red", Role: claim.RoleArchitect, Phase: from, Reason: reason}
 	case TriggerGateOpened:
 		return record.Notice{Kind: "phase-finished", Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
-	case TriggerBackward:
+	case TriggerBackward, TriggerHeadMoved:
+		mover := "the " + string(RoleFor(from))
+		if trigger == TriggerHeadMoved {
+			mover = "the daemon"
+		}
 		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
-			Reason: fmt.Sprintf("moved back to %s by the %s: %s", to, RoleFor(from), reason)}
-	case TriggerHeadMoved:
-		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
-			Reason: fmt.Sprintf("moved back to %s by the daemon: %s", to, reason)}
+			Reason: fmt.Sprintf("moved back to %s by %s: %s", to, mover, reason)}
 	case TriggerSignOff, TriggerPullRequestMerged:
 		return record.Notice{}
 	}
