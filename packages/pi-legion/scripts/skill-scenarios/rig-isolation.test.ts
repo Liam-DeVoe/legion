@@ -65,6 +65,7 @@ stagings.push(() => {
     "loopback-dsn.sh",
     "loopback-dsn.py",
     "port-file.sh",
+    "wait-gone.sh",
     "held-port.py",
   ]) {
     mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
