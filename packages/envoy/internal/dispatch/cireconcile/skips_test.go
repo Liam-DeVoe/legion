@@ -275,21 +275,26 @@ func TestNoBucketYetNoPass(t *testing.T) {
 
 // A mapped name no repository GitHub could hold is skipped and named at WARN with the request
 // that mends it, which differs by the kind of row the name is. A mapping is removed by a DELETE
-// that spells its name as it is stored, since the settings route removes the mapping its path
-// spells before it reads the path any other way: `acme/..` and `Zeta/..` with the dots
-// percent-encoded, and `acme/.git` as it is, where the route's lower-casing, `.git`-trimming
-// reading would name `zeta/..` and `acme/`. A renamed_to stored as `acme/...git` is no mapping's
-// own name, so a DELETE of it removes nothing: it is mended by the PUT of the mapping it belongs
-// to, `oldco/tools`.
+// that spells its name as it is stored, since the settings route's DELETE removes only the
+// mapping its path spells: `acme/..` and `Zeta/..` with the dots percent-encoded, and `acme/.git`
+// as it is, where the route's lower-casing, `.git`-trimming reading would name `zeta/..` and
+// `acme/`. A mapping stored under `acme/`, a name no path spells, is removed by no request, so
+// the WARN says it is removed by SQL. A renamed_to stored as `acme/...git` is no mapping's own
+// name, so a DELETE of it removes nothing: it is mended by the PUT of the mapping it belongs to,
+// `oldco/tools`.
 //
 // The negative controls are the DELETE of the name named for every row, which names a removal
-// for the renamed_to that removes nothing and no PUT, and the DELETE of a path that reading reads
-// as the row, as the WARN named before the route read a path's own spelling first, which names
-// `acme/.git.git` for `acme/.git` and no request for `Zeta/..`.
+// for the renamed_to that removes nothing and no PUT; the DELETE of a path that reading reads as
+// the row, as the WARN named before the route read a path's own spelling first, which names
+// `acme/.git.git` for `acme/.git`, `acme/.git` for `acme/` and no request for `Zeta/..`; and the
+// removal the WARN named while the route read a path that second way where its spelling named no
+// mapping, which names for `acme/` the DELETE of `acme/.git` and says that request removes the
+// mapping stored under `acme/.git` first.
 func TestARefusedMappedNameIsNamedWithTheRequestThatMendsIt(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.mapRepository("acme/..")
 	h.mapRepository("acme/.git")
+	h.mapRepository("acme/")
 	h.mapRepository("Zeta/..")
 	h.mapRenamedRepository("oldco/tools", "acme/...git")
 
@@ -299,14 +304,15 @@ func TestARefusedMappedNameIsNamedWithTheRequestThatMendsIt(t *testing.T) {
 	for _, line := range h.lines("ci reconcile skipped a repository whose name is not an owner/name GitHub allows") {
 		skipped[fmt.Sprint(line["repository"])] = line
 	}
-	if len(skipped) != 4 {
-		t.Fatalf("the pass named %d refused names, want acme/.., acme/.git, Zeta/.. and acme/...git:\n%s", len(skipped), h.logs.String())
+	if len(skipped) != 5 {
+		t.Fatalf("the pass named %d refused names, want acme/.., acme/.git, acme/, Zeta/.. and acme/...git:\n%s", len(skipped), h.logs.String())
 	}
 	for _, want := range []struct {
 		row, removedBy, mendedBy string
 	}{
 		{row: "acme/..", removedBy: "DELETE /api/v1/settings/repo-projects/acme/%2E%2E"},
 		{row: "acme/.git", removedBy: "DELETE /api/v1/settings/repo-projects/acme/.git"},
+		{row: "acme/", removedBy: `no request reaches the mapping stored under "acme/": remove it by SQL`},
 		{row: "Zeta/..", removedBy: "DELETE /api/v1/settings/repo-projects/Zeta/%2E%2E"},
 		{row: "acme/...git", mendedBy: `PUT /api/v1/settings/repo-projects/oldco/tools with its project and a renamed_to GitHub allows, or "" to clear it`},
 	} {
@@ -321,7 +327,7 @@ func TestARefusedMappedNameIsNamedWithTheRequestThatMendsIt(t *testing.T) {
 			}
 		}
 	}
-	if got := number(t, h.passLine(), "mappings_skipped"); got != 4 {
-		t.Errorf("the pass line reports %d mappings skipped, want 4", got)
+	if got := number(t, h.passLine(), "mappings_skipped"); got != 5 {
+		t.Errorf("the pass line reports %d mappings skipped, want 5", got)
 	}
 }

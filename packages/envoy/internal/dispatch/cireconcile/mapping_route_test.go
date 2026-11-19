@@ -36,8 +36,8 @@ type mappingRow struct {
 // canonical reading of a path trims into one another or cannot match as they are; `oldco/tools`,
 // an ordinary name whose renamed_to that rule refuses; `oldco/..`, a refused renamed_to on a
 // mapping whose own name the strict PUT refuses as well; `Zeta/..`, a name that reading
-// lower-cases into another; `Zeta/`, a name no path reads as either way; and `acme/widgets`, which
-// no warning names.
+// lower-cases into another; `Zeta/`, an empty name as `acme/` is, with an owner that reading
+// lower-cases; and `acme/widgets`, which no warning names.
 var storedMappings = []mappingRow{
 	{repo: "Zeta/", project: "CIR"},
 	{repo: "Zeta/..", project: "CIR"},
@@ -51,28 +51,25 @@ var storedMappings = []mappingRow{
 
 // The request the pass's WARN names beside a refused mapped name, sent through the real settings
 // route, removes or mends the one mapping the WARN is about and touches no other row. The route's
-// DELETE removes the mapping stored under its path's own spelling, the segments as the mux
-// unescapes them, and only where none is stored reads the path as api's storedRepoProjectPath
-// does, through externalRef, which lower-cases the name and trims one trailing `.git` off it; its
-// PUT reads a path that second way, and through the strict rule as well (api's repoProjectPath).
-// So `acme/.git` is removed by its own name, `acme/..` and `Zeta/..` by theirs with the dots
-// percent-encoded, `acme/`, which no path spells, by `acme/.git` where no mapping is stored under
-// that name, the renamed_to of `oldco/tools` is cleared by that mapping's PUT, and the renamed_to
-// of `oldco/..`, whose own name the PUT refuses, is ended by that mapping's removal. Each request
-// runs against the whole table, so a request that reached a neighbour shows as that neighbour
-// gone.
+// DELETE removes only the mapping stored under its path's own spelling, the segments as the mux
+// unescapes them; its PUT reads a path as api's parseSourceRepo does, through externalRef,
+// which lower-cases the name and trims one trailing `.git` off it, and through the strict rule as
+// well (api's repoProjectPath). So `acme/.git` is removed by its own name, `acme/..` and `Zeta/..`
+// by theirs with the dots percent-encoded, the renamed_to of `oldco/tools` is cleared by that
+// mapping's PUT, and the renamed_to of `oldco/..`, whose own name the PUT refuses, is ended by
+// that mapping's removal. Each request runs against the whole table, so a request that reached a
+// neighbour shows as that neighbour gone.
 //
-// Where `acme/.git` is stored beside `acme/`, the DELETE of `acme/.git` removes `acme/.git`, so
-// the WARN for `acme/` names that request and the mapping it removes, and says `acme/` is removed
-// by SQL. For `Zeta/` the WARN names no request, since no path reaches it, and says it is removed
-// by SQL; the DELETE of its name with one `.git` more, as it is and lower-cased, removes nothing.
+// `acme/` and `Zeta/`, which no path spells, are removed by no request: the WARN names none and
+// says the mapping is removed by SQL, and the DELETE of the name with one `.git` more, which the
+// route's reading reads as `acme/` (and as `zeta/`, lower-cased), removes nothing, `acme/.git`
+// among them where no mapping is stored under that spelling.
 //
-// The negative controls: mappingRemoval writing the path the route's second reading reads as
-// repo for every mapping, as it did, names no request for `Zeta/..` and names the DELETE of
-// `acme/.git` for `acme/` beside `acme/.git`, which removes `acme/.git`; the DELETE reading every
-// path that second way alone, as it did, removes `acme/` for the DELETE of `acme/.git` and
-// nothing for that of `Zeta/%2E%2E`; and mappingRemoval naming `acme/.git` for `acme/` without
-// asking whether `acme/.git` is stored removes `acme/.git` where it is.
+// The negative controls: mappingRemoval naming, for a mapping no path spells, the DELETE of the
+// path the route's reading reads as it, as it did, names
+// `DELETE /api/v1/settings/repo-projects/acme/.git` for `acme/`; and the DELETE reaching, where
+// its spelling names no mapping, the row that reading names, as it did, removes `acme/` for the
+// DELETE of `acme/.git` where `acme/.git` is not stored.
 func TestTheRequestAMappingWarningNamesReachesThatMappingThroughTheSettingsRoute(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -84,8 +81,6 @@ func TestTheRequestAMappingWarningNamesReachesThatMappingThroughTheSettingsRoute
 		// row is the name the pass refuses and names in its WARN: a mapping's canonical name,
 		// which is its renamed_to where it names one.
 		row string
-		// unstored is a mapping taken out of the table before the WARN is read, "" for none.
-		unstored string
 		// field is the WARN's field that names the request; removed is the mapping that
 		// request removes, and mended the mapping whose renamed_to it clears.
 		field, removed, mended string
@@ -93,15 +88,11 @@ func TestTheRequestAMappingWarningNamesReachesThatMappingThroughTheSettingsRoute
 		{name: "a mapping stored under a dot segment", row: "acme/..", field: "removed_by", removed: "acme/.."},
 		{name: "a mapping stored under a name ending in .git", row: "acme/.git", field: "removed_by", removed: "acme/.git"},
 		{name: "a mapping stored under a name the reading lower-cases", row: "Zeta/..", field: "removed_by", removed: "Zeta/.."},
-		{name: "a mapping stored under an empty name", row: "acme/", unstored: "acme/.git", field: "removed_by", removed: "acme/"},
 		{name: "a refused renamed_to of an ordinary mapping", row: "acme/...git", field: "mended_by", mended: "oldco/tools"},
 		{name: "a refused renamed_to of a mapping the PUT refuses", row: "newco/...git", field: "removed_by", removed: "oldco/.."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			seedMappings(t, database)
-			if _, err := database.Pool.Exec(ctx, `delete from repo_projects where repo = $1`, tc.unstored); err != nil {
-				t.Fatalf("take %q out of the table: %v", tc.unstored, err)
-			}
 			field, named := namedRepair(t, reconciler.MappingRepairs(ctx, tc.row))
 			method, rest, _ := strings.Cut(named, " ")
 			target, _, _ := strings.Cut(rest, " ")
@@ -118,7 +109,7 @@ func TestTheRequestAMappingWarningNamesReachesThatMappingThroughTheSettingsRoute
 				t.Errorf("%s answered %d %s", named, response.Code, response.Body.String())
 			}
 			want := slices.Clone(storedMappings)
-			want = slices.DeleteFunc(want, func(row mappingRow) bool { return row.repo == tc.removed || row.repo == tc.unstored })
+			want = slices.DeleteFunc(want, func(row mappingRow) bool { return row.repo == tc.removed })
 			for i := range want {
 				if want[i].repo == tc.mended {
 					want[i].renamedTo = ""
@@ -133,37 +124,46 @@ func TestTheRequestAMappingWarningNamesReachesThatMappingThroughTheSettingsRoute
 		})
 	}
 
-	t.Run("a mapping whose path spells another stored beside it", func(t *testing.T) {
-		seedMappings(t, database)
-		field, named := namedRepair(t, reconciler.MappingRepairs(ctx, "acme/"))
-		const target = "/api/v1/settings/repo-projects/acme/.git"
-		if want := `DELETE ` + target + `, the request that reads as "acme/", removes the mapping stored under "acme/.git" first: remove "acme/" by SQL`; field != "removed_by" || named != want {
-			t.Errorf("the WARN names %s %q, want removed_by %q", field, named, want)
-		}
-		if response := settingsRequest(t, handler, http.MethodDelete, target, nil); response.Code != http.StatusNoContent {
-			t.Errorf("DELETE %s answered %d %s, want 204", target, response.Code, response.Body.String())
-		}
-		want := slices.DeleteFunc(slices.Clone(storedMappings), func(row mappingRow) bool { return row.repo == "acme/.git" })
-		if got := tableMappings(t, database); !slices.Equal(got, want) {
-			t.Errorf("DELETE %s changed the table to\n%+v\nwant\n%+v, acme/.git alone gone", target, got, want)
-		}
-	})
-
-	t.Run("a mapping no path reaches", func(t *testing.T) {
-		seedMappings(t, database)
-		field, named := namedRepair(t, reconciler.MappingRepairs(ctx, "Zeta/"))
-		if want := `no request reaches the mapping stored under "Zeta/": remove it by SQL`; field != "removed_by" || named != want {
-			t.Errorf("the WARN names %s %q, want removed_by %q", field, named, want)
-		}
-		for _, target := range []string{"/api/v1/settings/repo-projects/Zeta/.git", "/api/v1/settings/repo-projects/zeta/.git"} {
-			if response := settingsRequest(t, handler, http.MethodDelete, target, nil); response.Code != http.StatusNoContent {
-				t.Errorf("DELETE %s answered %d %s, want 204 for a mapping it does not hold", target, response.Code, response.Body.String())
+	for _, tc := range []struct {
+		name string
+		// row is the mapping no path spells; named is what the WARN names for it.
+		row, named string
+		// unstored is a mapping taken out of the table first, "" for none.
+		unstored string
+		// targets are DELETEs of row's name with one `.git` more, which the route's reading
+		// reads as row or, lower-cased, as another name.
+		targets []string
+	}{
+		{
+			name: "a mapping stored under an empty name", row: "acme/", unstored: "acme/.git",
+			named:   `no request reaches the mapping stored under "acme/": remove it by SQL`,
+			targets: []string{"/api/v1/settings/repo-projects/acme/.git"},
+		},
+		{
+			name: "a mapping stored under an empty name and an owner the reading lower-cases", row: "Zeta/",
+			named:   `no request reaches the mapping stored under "Zeta/": remove it by SQL`,
+			targets: []string{"/api/v1/settings/repo-projects/Zeta/.git", "/api/v1/settings/repo-projects/zeta/.git"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seedMappings(t, database)
+			if _, err := database.Pool.Exec(ctx, `delete from repo_projects where repo = $1`, tc.unstored); err != nil {
+				t.Fatalf("take %q out of the table: %v", tc.unstored, err)
 			}
-			if got := tableMappings(t, database); !slices.Equal(got, storedMappings) {
-				t.Errorf("DELETE %s changed the table to\n%+v\nwant\n%+v", target, got, storedMappings)
+			want := slices.DeleteFunc(slices.Clone(storedMappings), func(row mappingRow) bool { return row.repo == tc.unstored })
+			if field, named := namedRepair(t, reconciler.MappingRepairs(ctx, tc.row)); field != "removed_by" || named != tc.named {
+				t.Errorf("the WARN names %s %q, want removed_by %q", field, named, tc.named)
 			}
-		}
-	})
+			for _, target := range tc.targets {
+				if response := settingsRequest(t, handler, http.MethodDelete, target, nil); response.Code != http.StatusNoContent {
+					t.Errorf("DELETE %s answered %d %s, want 204 for a mapping it does not hold", target, response.Code, response.Body.String())
+				}
+				if got := tableMappings(t, database); !slices.Equal(got, want) {
+					t.Errorf("DELETE %s changed the table to\n%+v\nwant\n%+v", target, got, want)
+				}
+			}
+		})
+	}
 }
 
 // settingsRoute is the real Dispatch API mounted on database as cmd/dispatch mounts it
